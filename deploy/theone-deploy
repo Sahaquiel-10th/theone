@@ -38,7 +38,10 @@ runuser -u theone-deploy -- env HOME=/home/theone-deploy npm --prefix "$staging"
 runuser -u theone-deploy -- env HOME=/home/theone-deploy npm --prefix "$staging" run build
 
 ln -s "$shared/data" "$staging/data"
-chmod -R a-w "$staging"
+# The deploy user owns immutable release files; the app user may only read and
+# traverse them. Shared runtime data stays separately writable by `theone`.
+chgrp -R theone "$staging"
+chmod -R g+rX,o-rwx "$staging"
 install -d -m 0755 "$releases"
 mv "$staging" "$release"
 trap - EXIT
