@@ -1,0 +1,13 @@
+CREATE DATABASE IF NOT EXISTS one
+  DEFAULT CHARACTER SET utf8mb4
+  DEFAULT COLLATE utf8mb4_unicode_ci;
+
+USE one;
+
+-- 当前持久层将完整的版本化应用状态保存在一条 JSON 记录中。
+-- 所有业务对象都包含 workspaceId，并由服务端鉴权中间件强制隔离。
+CREATE TABLE IF NOT EXISTS app_state (
+  id VARCHAR(64) PRIMARY KEY,
+  data JSON NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

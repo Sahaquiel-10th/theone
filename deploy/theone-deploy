@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+sha="${1:-}"
+root=/srv/theone
+releases="$root/releases"
+shared="$root/shared"
+release="$releases/$sha"
+staging="$root/incoming/$sha.$$"
+previous=""
+
+if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "Invalid release id" >&2
+  exit 2
+fi
+
+cleanup() { rm -rf -- "$staging"; }
+trap cleanup EXIT
+
+if [[ -L "$root/current" ]]; then
+  previous="$(readlink -f "$root/current")"
+fi
+
+if [[ -d "$release" ]]; then
+  if [[ "$previous" == "$release" ]] && curl --fail --silent --max-time 2 http://127.0.0.1:3091/api/health >/dev/null; then
+    echo "ONE is already running release: $sha"
+    exit 0
+  fi
+  rm -rf -- "$release"
+fi
+
+install -d -m 0750 -o theone-deploy -g theone-deploy "$staging"
+tar --extract --file=- --directory="$staging" --no-same-owner --no-same-permissions
+chown -R theone-deploy:theone-deploy "$staging"
+
+runuser -u theone-deploy -- env HOME=/home/theone-deploy npm --prefix "$staging" ci --ignore-scripts
+runuser -u theone-deploy -- env HOME=/home/theone-deploy npm --prefix "$staging" test
+runuser -u theone-deploy -- env HOME=/home/theone-deploy npm --prefix "$staging" run build
+
+ln -s "$shared/data" "$staging/data"
+chmod -R a-w "$staging"
+install -d -m 0755 "$releases"
+mv "$staging" "$release"
+trap - EXIT
+
+ln -sfn "$release" "$root/current.next"
+mv -Tf "$root/current.next" "$root/current"
+systemctl restart theone.service
+
+healthy=false
+for _ in $(seq 1 30); do
+  if curl --fail --silent --show-error --max-time 2 http://127.0.0.1:3091/api/health >/dev/null; then
+    healthy=true
+    break
+  fi
+  sleep 1
+done
+
+if [[ "$healthy" != true ]]; then
+  echo "ONE health check failed; rolling back" >&2
+  journalctl -u theone.service -n 80 --no-pager >&2 || true
+  if [[ -n "$previous" && -d "$previous" ]]; then
+    ln -sfn "$previous" "$root/current.next"
+    mv -Tf "$root/current.next" "$root/current"
+    systemctl restart theone.service
+  else
+    systemctl stop theone.service || true
+    rm -f "$root/current"
+  fi
+  exit 1
+fi
+
+# Retain the active release and four recent rollback candidates.
+find "$releases" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' \
+  | sort -nr \
+  | awk 'NR > 5 { sub(/^[^ ]+ /, ""); print }' \
+  | while IFS= read -r old_release; do
+      [[ "$old_release" == "$(readlink -f "$root/current")" ]] || rm -rf -- "$old_release"
+    done
+
+echo "ONE deployed: $sha"
