@@ -3263,6 +3263,24 @@ summary {
 .price-fields label { display: grid; gap: 4px; color: #625e57; font-size: 11px; }
 .price-fields small { color: #9a958d; font-size: 9px; }
 
+.context-debugger { min-height: 640px; display: grid; grid-template-columns: minmax(230px, 320px) minmax(0, 1fr); gap: 14px; }
+.context-trace-list, .context-detail { min-width: 0; border: 1px solid rgb(255 255 255 / 76%); border-radius: 17px; background: rgb(255 255 255 / 58%); box-shadow: 0 12px 45px rgb(45 40 34 / 5%); }
+.context-trace-list { padding: 9px; display: flex; flex-direction: column; gap: 7px; overflow: auto; }
+.context-private-note { margin: 2px 2px 5px; padding: 10px; display: flex; gap: 8px; color: #756f66; font-size: 11px; line-height: 1.5; border-radius: 11px; background: rgb(45 41 36 / 5%); }
+.context-private-note svg { flex: 0 0 auto; }
+.context-trace-list > button { padding: 12px; display: grid; gap: 5px; text-align: left; border: 0; border-radius: 12px; background: transparent; }
+.context-trace-list > button:hover, .context-trace-list > button.active { background: #ebe8e2; }
+.context-trace-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.context-trace-list span, .context-trace-list small { color: #8f8980; font-size: 10px; }
+.context-detail { padding: 20px; overflow: auto; }
+.context-detail > header { margin-bottom: 17px; padding-bottom: 17px; display: flex; justify-content: space-between; gap: 24px; border-bottom: 1px solid rgb(55 50 43 / 8%); }
+.context-detail > header h3 { margin: 5px 0 0; font-size: 18px; }
+.context-detail > header small { color: #918b82; font-size: 10px; }
+.context-detail > header > span { display: grid; gap: 4px; flex: 0 0 auto; text-align: right; color: #777168; font-size: 11px; }
+.context-section { margin-top: 12px; overflow: hidden; border: 1px solid rgb(55 50 43 / 8%); border-radius: 13px; background: rgb(255 255 255 / 48%); }
+.context-section h4 { margin: 0; padding: 10px 13px; color: #5c574f; font-size: 11px; border-bottom: 1px solid rgb(55 50 43 / 7%); background: rgb(45 41 36 / 3%); }
+.context-section pre { margin: 0; padding: 14px; color: #312e2a; font: 12px/1.75 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif; white-space: pre-wrap; overflow-wrap: anywhere; }
+
 @media (max-width: 900px) {
   .ops-dashboard { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ops-table-head { display: none; }
@@ -3276,6 +3294,8 @@ summary {
   .recharge-inline > span { display: none; }
   .ops-dashboard { grid-template-columns: 1fr 1fr; }
   .ops-table-row { grid-template-columns: 1fr; }
+  .context-debugger { grid-template-columns: 1fr; }
+  .context-trace-list { max-height: 260px; }
 }
 
 /* ONE / Dia-inspired intent surface */

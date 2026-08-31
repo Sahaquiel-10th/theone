@@ -52,6 +52,18 @@ export type RetrievalLog = {
   matchedItemsJson: unknown; injectedContext: string; createdAt: string;
 };
 
+export type ContextTraceSection = {
+  key: "safety" | "model_prompt" | "knowledge" | "memory" | "attachments" | "web_search" | "history" | "current_input";
+  title: string;
+  content: string;
+};
+
+export type ContextTrace = {
+  id: string; workspaceId: string; userId: string; conversationId: string; assistantMessageId: string;
+  modelId: string; requestId?: string; query: string; responsePreview: string;
+  sections: ContextTraceSection[]; createdAt: string;
+};
+
 export type ModelUsageRecord = {
   id: string; workspaceId: string; userId: string; conversationId: string; modelId: string; inputTokens: number;
   outputTokens: number; totalTokens: number; source: "provider" | "estimated"; chargedMicros?: number; costMicros?: number;
@@ -98,7 +110,7 @@ export type OneTimeLoginCode = {
 export type Database = {
   users: User[]; workspaces: Workspace[]; workspaceMembers: WorkspaceMember[]; conversationFolders: ConversationFolder[];
   models: ModelConfig[]; conversations: Conversation[]; messages: MessageRecord[]; userSavedMemories: UserSavedMemory[];
-  retrievalLogs: RetrievalLog[]; modelUsageRecords: ModelUsageRecord[]; knowledgeConnections: KnowledgeConnection[];
+  retrievalLogs: RetrievalLog[]; contextTraces: ContextTrace[]; modelUsageRecords: ModelUsageRecord[]; knowledgeConnections: KnowledgeConnection[];
   oneKeyDevices: OneKeyDevice[]; deviceChallenges: DeviceChallenge[]; oneTimeLoginCodes: OneTimeLoginCode[];
   powerAccounts: PowerAccount[]; powerLedger: PowerLedgerEntry[]; rechargeOrders: RechargeOrder[]; auditLogs: AuditLog[];
   agents: Agent[]; attachments: Attachment[]; settings: SystemSettings;

@@ -35,7 +35,7 @@ function seed(): Database {
   const admin: User = { id: uid("usr"), username: process.env.ADMIN_USERNAME?.trim() || "admin", passwordHash: hashPassword(initialPassword), role: "admin", defaultWorkspaceId: workspace.id, enabled: true, createdAt };
   return {
     users: [admin], workspaces: [workspace], workspaceMembers: [{ id: uid("wsm"), workspaceId: workspace.id, userId: admin.id, role: "owner", createdAt }],
-    conversationFolders: [], models: defaultModels(), conversations: [], messages: [], userSavedMemories: [], retrievalLogs: [],
+    conversationFolders: [], models: defaultModels(), conversations: [], messages: [], userSavedMemories: [], retrievalLogs: [], contextTraces: [],
     modelUsageRecords: [], knowledgeConnections: [], oneKeyDevices: [], deviceChallenges: [], oneTimeLoginCodes: [],
     powerAccounts: [{ id: uid("pwa"), workspaceId: workspace.id, userId: admin.id, balanceMicros: 10_000_000, createdAt, updatedAt: createdAt }],
     powerLedger: [{ id: uid("pwl"), workspaceId: workspace.id, userId: admin.id, type: "gift", amountMicros: 10_000_000, balanceBeforeMicros: 0, balanceAfterMicros: 10_000_000, title: "初始体验电力", createdAt }],
@@ -133,6 +133,20 @@ function migrateDatabase(raw: Record<string, any>): Database {
   const usage = collection("modelUsageRecords");
   const agents = collection("agents");
   for (const item of [...messages, ...attachments, ...memories, ...usage]) { item.workspaceId = ownerWorkspace(item); delete item.companyId; }
+  const persistedMessagesByConversation = new Map<string, any[]>();
+  for (const message of messages) {
+    const group = persistedMessagesByConversation.get(message.conversationId) || [];
+    group.push(message);
+    persistedMessagesByConversation.set(message.conversationId, group);
+  }
+  for (const conversation of conversations) {
+    const persisted = persistedMessagesByConversation.get(conversation.id);
+    if (!persisted?.length) continue;
+    conversation.messages = persisted
+      .slice()
+      .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+      .map((message) => ({ id: message.id, role: message.role, content: message.content, imageUrl: message.imageUrl, sources: message.sources, modelId: message.modelId, createdAt: message.createdAt }));
+  }
   for (const item of agents) { item.workspaceId = ownerWorkspace(item); delete item.companyId; }
   for (const memory of memories) { delete memory.memoryUserId; delete memory.bailianMemoryId; if (memory.status === "failed") memory.status = "deleted"; }
   const models = collection("models").length ? collection("models") : defaultModels();
@@ -163,7 +177,8 @@ function migrateDatabase(raw: Record<string, any>): Database {
     conversations,
     messages,
     userSavedMemories: memories,
-    retrievalLogs: [],
+    retrievalLogs: collection("retrievalLogs"),
+    contextTraces: collection("contextTraces"),
     modelUsageRecords: usage,
     knowledgeConnections: collection("knowledgeConnections"),
     oneKeyDevices: collection("oneKeyDevices"),

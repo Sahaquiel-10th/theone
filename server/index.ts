@@ -10,6 +10,7 @@ import { hasImageGenerationIntent } from "./imageIntent.js";
 import { decodeGeneratedImageDataUrl } from "./generatedImage.js";
 import { asyncRoute, auth, requireRole } from "./middleware.js";
 import { callModel } from "./modelGateway.js";
+import { buildContextTraceSections } from "./contextTrace.js";
 import { isSupportedAttachment, parseAttachment, safeAttachmentExtension } from "./attachmentParser.js";
 import { hashPassword, signToken, uid, verifyPassword } from "./security.js";
 import { adminModel, publicModel, publicUser } from "./serializers.js";
@@ -270,7 +271,10 @@ app.post("/api/chat", auth(jwtSecret), asyncRoute(async (req, res) => {
   const history = latest.messages.filter((item) => item.conversationId === conversation.id && item.workspaceId === req.workspaceId && item.id !== userMessage.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-chatHistoryMessages).map((item) => ({ role: item.role, content: item.content, modelId: item.modelId, createdAt: item.createdAt } as Message));
   const providerSources = knowledge.map((item) => ({ title: item.title, url: item.sourceUrl || (item.id ? `https://biji.com/note/${item.id}` : "https://www.biji.com"), snippet: item.content.slice(0, 400) }));
   const allSources = [...providerSources, ...searchSources];
-  const modelMessages: Message[] = [knowledgeContext, memoryContext, buildAttachmentContext(selectedAttachments), buildSearchContext(searchSources)].filter(Boolean).map((text) => ({ role: "system", content: text, modelId: executionModel.id, createdAt: now() } as Message)).concat(history, [{ ...userMessage, inputImageDataUrls: await attachmentImageDataUrls(selectedAttachments) }]);
+  const attachmentContext = buildAttachmentContext(selectedAttachments);
+  const webSearchContext = buildSearchContext(searchSources);
+  const modelMessages: Message[] = [knowledgeContext, memoryContext, attachmentContext, webSearchContext].filter(Boolean).map((text) => ({ role: "system", content: text, modelId: executionModel.id, createdAt: now() } as Message)).concat(history, [{ ...userMessage, inputImageDataUrls: await attachmentImageDataUrls(selectedAttachments) }]);
+  const contextTraceSections = buildContextTraceSections({ safetyRules: db.settings.safetyRules, modelPrompt: executionModel.systemPrompt, knowledgeContext, memoryContext, attachmentContext, webSearchContext, history, currentInput: content });
   let result; const assistantMessageId = uid("msg"); let generatedImage: Awaited<ReturnType<typeof persistGeneratedImage>>;
   try { result = await callModel(executionModel, modelMessages, db.settings.safetyRules, res.locals.requestId); generatedImage = await persistGeneratedImage({ imageUrl: result.imageUrl, workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id, messageId: assistantMessageId }); }
   catch (error) { await store.mutate((mutable) => { const target = mutable.conversations.find((item) => item.id === conversation.id && item.workspaceId === req.workspaceId); if (!target) return; target.messages = target.messages.filter((item) => item.id !== userMessage.id); mutable.messages = mutable.messages.filter((item) => item.id !== userMessage.id); if (!target.messages.length) mutable.conversations = mutable.conversations.filter((item) => item.id !== target.id); }); throw error; }
@@ -279,6 +283,8 @@ app.post("/api/chat", auth(jwtSecret), asyncRoute(async (req, res) => {
     const target = mutable.conversations.find((item) => item.id === conversation.id && item.workspaceId === req.workspaceId)!; target.messages.push(assistantMessage); target.updatedAt = assistantMessage.createdAt; mutable.messages.push(messageRecord(assistantMessage, { workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: target.id }));
     if (generatedImage) mutable.attachments.push(generatedImage.attachment); for (const attachment of mutable.attachments) if (attachmentIds.includes(attachment.id) && attachment.workspaceId === req.workspaceId && attachment.userId === req.user!.id) { attachment.conversationId = target.id; attachment.messageId = userMessage.id; }
     if (knowledge.length) mutable.retrievalLogs.push({ id: uid("ret"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: target.id, query: content, provider: "getnote", matchedItemsJson: knowledge, injectedContext: knowledgeContext, createdAt: assistantMessage.createdAt });
+    mutable.contextTraces.push({ id: uid("ctx"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: target.id, assistantMessageId, modelId: executionModel.id, requestId: res.locals.requestId, query: content, responsePreview: assistantMessage.content.slice(0, 240), sections: contextTraceSections, createdAt: assistantMessage.createdAt });
+    if (mutable.contextTraces.length > 200) mutable.contextTraces.splice(0, mutable.contextTraces.length - 200);
     if (result.usage) {
       const usageId = uid("use"); const billing = calculateModelPower(executionModel, result.usage.inputTokens, result.usage.outputTokens);
       chargePower(mutable, { workspaceId: req.workspaceId!, userId: req.user!.id, amountMicros: billing.chargedMicros, modelId: executionModel.id, usageRecordId: usageId, title: `${executionModel.name} 对话` });
@@ -291,7 +297,7 @@ app.post("/api/chat", auth(jwtSecret), asyncRoute(async (req, res) => {
 }));
 
 app.patch("/api/conversations/:id", auth(jwtSecret), asyncRoute(async (req, res) => { const conversation = await store.mutate((db) => { const target = db.conversations.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id); if (!target) throw new Error("对话不存在"); if (typeof req.body.archived === "boolean") target.archived = req.body.archived; if (typeof req.body.folderId === "string") target.folderId = req.body.folderId && db.conversationFolders.some((item) => item.id === req.body.folderId && item.workspaceId === req.workspaceId && item.userId === req.user!.id) ? req.body.folderId : undefined; target.updatedAt = now(); return target; }); res.json({ conversation }); }));
-app.delete("/api/conversations/:id", auth(jwtSecret), asyncRoute(async (req, res) => { let paths: string[] = []; await store.mutate((db) => { const target = db.conversations.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id); if (!target) throw new Error("对话不存在"); paths = db.attachments.filter((item) => item.workspaceId === req.workspaceId && item.conversationId === target.id).map((item) => item.storagePath); db.conversations = db.conversations.filter((item) => item.id !== target.id); db.messages = db.messages.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.attachments = db.attachments.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); }); await Promise.all(paths.map((item) => fs.promises.rm(item, { force: true }).catch(() => undefined))); res.json({ ok: true }); }));
+app.delete("/api/conversations/:id", auth(jwtSecret), asyncRoute(async (req, res) => { let paths: string[] = []; await store.mutate((db) => { const target = db.conversations.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id); if (!target) throw new Error("对话不存在"); paths = db.attachments.filter((item) => item.workspaceId === req.workspaceId && item.conversationId === target.id).map((item) => item.storagePath); db.conversations = db.conversations.filter((item) => item.id !== target.id); db.messages = db.messages.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.attachments = db.attachments.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.retrievalLogs = db.retrievalLogs.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.contextTraces = db.contextTraces.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); }); await Promise.all(paths.map((item) => fs.promises.rm(item, { force: true }).catch(() => undefined))); res.json({ ok: true }); }));
 
 app.get("/api/memories", auth(jwtSecret), asyncRoute(async (req, res) => { const db = await store.read(); const memories = db.userSavedMemories.filter((item) => item.workspaceId === req.workspaceId && item.userId === req.user!.id && item.status === "active").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((item) => ({ id: item.id, text: item.content, createdAt: item.createdAt, updatedAt: item.updatedAt })); res.json({ memories, limits: { maxItems: 20, maxCharsPerItem: 500, maxTotalChars: 5000, usedItems: memories.length, usedChars: memories.reduce((n, item) => n + item.text.length, 0) } }); }));
 app.post("/api/memories", auth(jwtSecret), asyncRoute(async (req, res) => { const content = requiredString(req.body.content, "记忆").slice(0, 500); const memory: UserSavedMemory = { id: uid("mem"), workspaceId: req.workspaceId!, userId: req.user!.id, content, status: "active", createdAt: now(), updatedAt: now() }; await store.mutate((db) => { const active = db.userSavedMemories.filter((item) => item.workspaceId === req.workspaceId && item.userId === req.user!.id && item.status === "active"); if (active.length >= 20) throw new Error("最多保存 20 条记忆"); db.userSavedMemories.push(memory); }); res.json({ memory: { id: memory.id, text: memory.content, createdAt: memory.createdAt, updatedAt: memory.updatedAt } }); }));
@@ -391,6 +397,7 @@ app.delete("/api/admin/users/:id", ...admin, asyncRoute(async (req, res) => {
     db.messages = db.messages.filter((item) => !workspaceIds.has(item.workspaceId));
     db.userSavedMemories = db.userSavedMemories.filter((item) => !workspaceIds.has(item.workspaceId));
     db.retrievalLogs = db.retrievalLogs.filter((item) => !workspaceIds.has(item.workspaceId));
+    db.contextTraces = db.contextTraces.filter((item) => !workspaceIds.has(item.workspaceId));
     db.modelUsageRecords = db.modelUsageRecords.filter((item) => !workspaceIds.has(item.workspaceId));
     db.knowledgeConnections = db.knowledgeConnections.filter((item) => !workspaceIds.has(item.workspaceId));
     db.powerAccounts = db.powerAccounts.filter((item) => !workspaceIds.has(item.workspaceId));
@@ -412,6 +419,29 @@ app.get("/api/admin/operations", ...admin, asyncRoute(async (_req, res) => {
   const ledger = db.powerLedger.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 200).map((item) => ({ ...item, username: db.users.find((user) => user.id === item.userId)?.username || "未知用户" }));
   const logs = db.auditLogs.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 200).map((item) => ({ ...item, actorName: db.users.find((user) => user.id === item.actorUserId)?.username || "系统" }));
   res.json({ pendingOrders: pendingOrders.map((item) => ({ ...item, username: db.users.find((user) => user.id === item.userId)?.username || "未知用户" })), usage, ledger, logs, settings: { rechargeCnyPerPower: db.settings.rechargeCnyPerPower }, summary: { users: db.users.length, balanceMicros: db.powerAccounts.reduce((sum, item) => sum + item.balanceMicros, 0), chargedMicros: db.modelUsageRecords.reduce((sum, item) => sum + (item.chargedMicros ?? 0), 0), costMicros: db.modelUsageRecords.reduce((sum, item) => sum + (item.costMicros ?? 0), 0) } });
+}));
+app.get("/api/admin/context-traces", ...admin, asyncRoute(async (_req, res) => {
+  const db = await store.read();
+  const traces = db.contextTraces.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 100).map((item) => ({
+    id: item.id,
+    workspaceId: item.workspaceId,
+    userId: item.userId,
+    username: db.users.find((user) => user.id === item.userId)?.username || "未知用户",
+    conversationId: item.conversationId,
+    conversationTitle: db.conversations.find((conversation) => conversation.id === item.conversationId)?.title || "已删除对话",
+    modelName: db.models.find((model) => model.id === item.modelId)?.name || "已删除模型",
+    requestId: item.requestId,
+    query: item.query,
+    responsePreview: item.responsePreview,
+    createdAt: item.createdAt
+  }));
+  res.json({ traces });
+}));
+app.get("/api/admin/context-traces/:id", ...admin, asyncRoute(async (req, res) => {
+  const db = await store.read();
+  const trace = db.contextTraces.find((item) => item.id === req.params.id);
+  if (!trace) return res.status(404).json({ error: "上下文记录不存在", code: "NOT_FOUND" });
+  res.json({ trace: { ...trace, username: db.users.find((user) => user.id === trace.userId)?.username || "未知用户", modelName: db.models.find((model) => model.id === trace.modelId)?.name || "已删除模型" } });
 }));
 app.post("/api/admin/users/:id/power", ...admin, asyncRoute(async (req, res) => {
   const power = Number(req.body.power); if (!Number.isFinite(power) || power <= 0 || power > 1_000_000) throw new Error("赠送电力必须大于 0");

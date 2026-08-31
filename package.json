@@ -10,6 +10,7 @@
     "build": "tsc --noEmit && vite build",
     "test": "tsx --test server/*.test.ts server/knowledge/*.test.ts",
     "build:one-key:mac": "node scripts/build-macos-one-key.mjs",
+    "provision:one-key:mac": "node scripts/provision-one-key-usb.mjs",
     "start": "NODE_ENV=production tsx server/index.ts"
   },
   "dependencies": {

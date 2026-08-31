@@ -191,6 +191,8 @@ type RechargeOrder = { id: string; userId: string; requestedMicros: number; amou
 type UsageRecord = { id: string; userId: string; modelId: string; inputTokens: number; outputTokens: number; totalTokens: number; chargedMicros?: number; costMicros?: number; requestId?: string; createdAt: string; username?: string; modelName?: string };
 type AuditItem = { id: string; actorName?: string; action: string; targetType: string; requestId?: string; createdAt: string };
 type OneKeyDevice = { id: string; serialNumber: string; workspaceId: string; userId: string; username: string; status: "active" | "revoked"; createdAt: string; lastUsedAt?: string; revokedAt?: string };
+type ContextTraceSummary = { id: string; workspaceId: string; userId: string; username: string; conversationId: string; conversationTitle: string; modelName: string; requestId?: string; query: string; responsePreview: string; createdAt: string };
+type ContextTraceDetail = ContextTraceSummary & { assistantMessageId: string; modelId: string; sections: { key: string; title: string; content: string }[] };
 type OneKeyCredential = { version: 1; deviceId: string; privateKeyRaw: string; publicKeyRaw: string; serverBaseUrl?: string };
 
 class ApiError extends Error {
@@ -1619,24 +1621,27 @@ function MemoriesPage({ onOpenSidebar }: { onOpenSidebar: () => void }) {
 }
 
 function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Promise<void>; onOpenSidebar: () => void }) {
-  const [tab, setTab] = useState<"overview" | "users" | "keys" | "models" | "billing" | "usage" | "logs">("overview");
+  const [tab, setTab] = useState<"overview" | "users" | "keys" | "models" | "billing" | "usage" | "contexts" | "logs">("overview");
   const [users, setUsers] = useState<User[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [devices, setDevices] = useState<OneKeyDevice[]>([]);
+  const [contextTraces, setContextTraces] = useState<ContextTraceSummary[]>([]);
   const [operations, setOperations] = useState<{ pendingOrders: RechargeOrder[]; usage: UsageRecord[]; ledger: PowerLedgerEntry[]; logs: AuditItem[]; settings: { rechargeCnyPerPower: number }; summary: { users: number; balanceMicros: number; chargedMicros: number; costMicros: number } } | null>(null);
   const [notice, setNotice] = useState("");
 
   async function load() {
-    const [userResult, modelResult, deviceResult, operationResult] = await Promise.all([
+    const [userResult, modelResult, deviceResult, operationResult, contextResult] = await Promise.all([
       api<{ users: User[] }>("/api/admin/users"),
       api<{ models: Model[] }>("/api/admin/models"),
       api<{ devices: OneKeyDevice[] }>("/api/admin/one-keys"),
-      api<typeof operations>("/api/admin/operations")
+      api<typeof operations>("/api/admin/operations"),
+      api<{ traces: ContextTraceSummary[] }>("/api/admin/context-traces")
     ]);
     setUsers(userResult.users);
     setModels(modelResult.models);
     setDevices(deviceResult.devices);
     setOperations(operationResult);
+    setContextTraces(contextResult.traces);
   }
 
   useEffect(() => {
@@ -1661,6 +1666,7 @@ function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Pro
           <button className={tab === "models" ? "active" : ""} onClick={() => setTab("models")}><Bot size={16} />模型</button>
           <button className={tab === "billing" ? "active" : ""} onClick={() => setTab("billing")}><Wallet size={16} />电力</button>
           <button className={tab === "usage" ? "active" : ""} onClick={() => setTab("usage")}><ReceiptText size={16} />账单</button>
+          <button className={tab === "contexts" ? "active" : ""} onClick={() => setTab("contexts")}><Eye size={16} />上下文</button>
           <button className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}><FileText size={16} />日志</button>
         </nav>
         {notice ? <div className="notice">{notice}</div> : null}
@@ -1671,6 +1677,7 @@ function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Pro
           {tab === "models" ? <ModelsTab models={models} reload={async () => { await load(); await refreshModels(); }} /> : null}
           {tab === "billing" ? <AdminBilling users={users} operations={operations} reload={load} /> : null}
           {tab === "usage" ? <AdminUsage usage={operations?.usage || []} /> : null}
+          {tab === "contexts" ? <AdminContexts traces={contextTraces} /> : null}
           {tab === "logs" ? <AdminLogs logs={operations?.logs || []} /> : null}
         </div>
       </section>
@@ -1701,6 +1708,42 @@ function AdminBilling({ users, operations, reload }: { users: User[]; operations
 }
 
 function AdminUsage({ usage }: { usage: UsageRecord[] }) { return <div className="ops-table"><div className="ops-table-head"><span>用户 / 模型</span><span>Token</span><span>收入 / 成本</span><span>时间 / 请求</span></div>{usage.map((item) => <div className="ops-table-row" key={item.id}><span><strong>{item.username}</strong><small>{item.modelName}</small></span><span>{item.inputTokens.toLocaleString()} in<br />{item.outputTokens.toLocaleString()} out</span><span>{power(item.chargedMicros, 6)} / {power(item.costMicros, 6)}</span><span>{dateTime(item.createdAt)}<small>{item.requestId || "-"}</small></span></div>)}</div>; }
+function AdminContexts({ traces }: { traces: ContextTraceSummary[] }) {
+  const [selectedId, setSelectedId] = useState(traces[0]?.id || "");
+  const [detail, setDetail] = useState<ContextTraceDetail | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!selectedId && traces[0]?.id) setSelectedId(traces[0].id);
+  }, [selectedId, traces]);
+
+  useEffect(() => {
+    if (!selectedId) { setDetail(null); return; }
+    setError("");
+    api<{ trace: ContextTraceDetail }>(`/api/admin/context-traces/${selectedId}`)
+      .then((result) => setDetail(result.trace))
+      .catch((err) => setError(err.message));
+  }, [selectedId]);
+
+  if (!traces.length) return <div className="empty-state compact"><Eye size={36} /><h2>还没有上下文记录</h2><p>部署后完成一次新问答，这里就会出现。</p></div>;
+  return <div className="context-debugger">
+    <aside className="context-trace-list">
+      <div className="context-private-note"><LockKeyhole size={15} /><span>仅超管可见，包含用户私密对话与召回原文。</span></div>
+      {traces.map((trace) => <button key={trace.id} className={selectedId === trace.id ? "active" : ""} onClick={() => setSelectedId(trace.id)}>
+        <strong>{trace.query}</strong>
+        <span>{trace.username} · {trace.modelName}</span>
+        <small>{dateTime(trace.createdAt)}</small>
+      </button>)}
+    </aside>
+    <section className="context-detail">
+      {error ? <div className="error">{error}</div> : null}
+      {detail ? <>
+        <header><div><small>{detail.username} · {detail.modelName}</small><h3>{detail.query}</h3></div><span>{dateTime(detail.createdAt)}<small>{detail.requestId || "-"}</small></span></header>
+        {detail.sections.map((section) => <article key={section.key} className="context-section"><h4>{section.title}</h4><pre>{section.content}</pre></article>)}
+      </> : <div className="empty-state compact">正在读取…</div>}
+    </section>
+  </div>;
+}
 function AdminLogs({ logs }: { logs: AuditItem[] }) { return <div className="ops-table"><div className="ops-table-head"><span>操作人</span><span>事件</span><span>对象</span><span>时间 / 请求</span></div>{logs.map((item) => <div className="ops-table-row" key={item.id}><span>{item.actorName}</span><span>{item.action}</span><span>{item.targetType}</span><span>{dateTime(item.createdAt)}<small>{item.requestId || "-"}</small></span></div>)}</div>; }
 
 function OneKeysTab({ users, devices, reload }: { users: User[]; devices: OneKeyDevice[]; reload: () => Promise<void> }) {

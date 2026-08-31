@@ -151,7 +151,11 @@ async function callAnthropicModel(
   safetyRules = "",
   requestId = "unknown"
 ): Promise<ChatResult> {
-  const system = [safetyRules, model.systemPrompt].map((content) => content.trim()).filter(Boolean).join("\n\n");
+  const system = [
+    safetyRules,
+    model.systemPrompt,
+    ...messages.filter((message) => message.role === "system").map((message) => message.content)
+  ].map((content) => content.trim()).filter(Boolean).join("\n\n");
   const endpoint = `${model.baseUrl.replace(/\/$/, "")}/messages`;
   const startedAt = Date.now();
   console.log(JSON.stringify({
