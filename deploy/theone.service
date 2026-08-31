@@ -9,6 +9,7 @@ User=theone
 Group=theone
 WorkingDirectory=/srv/theone/current
 EnvironmentFile=/srv/theone/shared/.env
+Environment=NODE_ENV=production
 ExecStart=/usr/bin/node --import tsx server/index.ts
 Restart=on-failure
 RestartSec=5
