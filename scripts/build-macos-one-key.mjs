@@ -29,8 +29,8 @@ fs.writeFileSync(path.join(contents, "Info.plist"), `<?xml version="1.0" encodin
 <key>CFBundleIdentifier</key><string>one.theone.key</string>
 <key>CFBundleName</key><string>ONE</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.2.1</string>
-<key>CFBundleVersion</key><string>3</string>
+<key>CFBundleShortVersionString</key><string>0.2.2</string>
+<key>CFBundleVersion</key><string>4</string>
 <key>CFBundleIconFile</key><string>ONE.icns</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSHighResolutionCapable</key><true/>
@@ -40,12 +40,18 @@ execFileSync("/usr/bin/swiftc", ["-parse-as-library", "-O", path.join(root, "lau
 
 const iconset = path.join(outputRoot, "ONE.iconset");
 fs.mkdirSync(iconset, { recursive: true });
-const iconSource = path.join(root, "public/favicon.png");
+const iconSourceVector = path.join(root, "public/one-app-icon.svg");
+const renderedIconRoot = path.join(outputRoot, ".icon-source");
+fs.mkdirSync(renderedIconRoot, { recursive: true });
+execFileSync("/usr/bin/qlmanage", ["-t", "-s", "1024", "-o", renderedIconRoot, iconSourceVector], { stdio: "ignore" });
+const iconSource = path.join(renderedIconRoot, `${path.basename(iconSourceVector)}.png`);
+if (!fs.existsSync(iconSource)) throw new Error("无法从 ONE 矢量标志生成 macOS App 图标");
 for (const [name, size] of [["icon_16x16.png",16],["icon_16x16@2x.png",32],["icon_32x32.png",32],["icon_32x32@2x.png",64],["icon_128x128.png",128],["icon_128x128@2x.png",256],["icon_256x256.png",256],["icon_256x256@2x.png",512],["icon_512x512.png",512],["icon_512x512@2x.png",1024]]) {
   execFileSync("/usr/bin/sips", ["-z", String(size), String(size), iconSource, "--out", path.join(iconset, name)], { stdio: "ignore" });
 }
 execFileSync("/usr/bin/iconutil", ["-c", "icns", iconset, "-o", path.join(resources, "ONE.icns")], { stdio: "inherit" });
 fs.rmSync(iconset, { recursive: true, force: true });
+fs.rmSync(renderedIconRoot, { recursive: true, force: true });
 
 if (credentialData) {
   fs.mkdirSync(path.join(outputRoot, ".one"), { recursive: true });

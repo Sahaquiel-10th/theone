@@ -248,7 +248,7 @@ function readableFileSize(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-type OneEyeMood = "idle" | "attentive" | "thinking" | "pleased" | "sleepy";
+type OneEyeMood = "idle" | "attentive" | "thinking" | "pleased" | "cozy" | "angry" | "surprised" | "curious";
 
 function OneEye({
   mood = "idle",
@@ -269,6 +269,8 @@ function OneEye({
       aria-hidden={decorative || undefined}
     >
       <span className="one-eye-white"><span className="one-eye-pupil" /></span>
+      <span className="one-eye-lid one-eye-lid-top" />
+      <span className="one-eye-lid one-eye-lid-bottom" />
     </span>
   );
 }
@@ -829,6 +831,16 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     }
   }
 
+  const heroMood: OneEyeMood = error
+    ? "angry"
+    : notice
+      ? "pleased"
+      : activeLoading
+        ? "thinking"
+        : content.trim()
+          ? "curious"
+          : "cozy";
+
   return (
     <main className="app-shell one-shell">
       <header className="one-chrome">
@@ -935,9 +947,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             ))
           ) : (
             <div className="empty-state one-hero">
-              <div className="one-presence"><OneEye size="hero" mood={activeLoading ? "thinking" : "idle"} /></div>
-              <div className="one-hero-kicker"><span className="one-kicker-one">1</span> ONE IS HERE</div>
-              <h2>{activeAgent?.name || `What’s on your mind, ${user.username}?`}</h2>
+              <div className="one-presence"><OneEye size="hero" mood={heroMood} /></div>
+              <div className="one-hero-kicker"><span className="one-kicker-one">1</span> ONE IS WITH YOU</div>
+              <h2>{activeAgent?.name || `今天，想一起做点什么，${user.username}？`}</h2>
               <p>{activeAgent?.description || "说出你想知道、想完成，或者只是隐约想到的事。"}</p>
             </div>
           )}
@@ -979,9 +991,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           </div>
           {!active ? (
             <div className="dia-prompts">
-              <button type="button" onClick={() => setContent("帮我回想最近反复提到的重要想法")}><small>RECALL</small><span>我最近在反复想什么？</span></button>
-              <button type="button" onClick={() => setContent("结合我的知识，把现在最重要的事情整理成一个行动方案")}><small>MAKE</small><span>把想法变成行动方案</span></button>
-              <button type="button" onClick={() => setContent("从我的个人知识中，找出现在最值得重新关注的内容")}><small>DISCOVER</small><span>从过去发现新线索</span></button>
+              <button type="button" onClick={() => setContent("帮我回想最近反复提到的重要想法")}><OneEye size="xs" mood="curious" decorative /><small>RECALL</small><span>我最近在反复想什么？</span></button>
+              <button type="button" onClick={() => setContent("结合我的知识，把现在最重要的事情整理成一个行动方案")}><OneEye size="xs" mood="attentive" decorative /><small>MAKE</small><span>把想法变成行动方案</span></button>
+              <button type="button" onClick={() => setContent("从我的个人知识中，找出现在最值得重新关注的内容")}><OneEye size="xs" mood="pleased" decorative /><small>DISCOVER</small><span>从过去发现新线索</span></button>
             </div>
           ) : null}
         </form>
