@@ -253,50 +253,17 @@ type OneEyeMood = "idle" | "attentive" | "thinking" | "pleased" | "cozy" | "angr
 function OneEye({
   mood = "idle",
   size = "md",
-  playful = false,
   decorative = false,
   className = ""
 }: {
   mood?: OneEyeMood;
   size?: "xs" | "sm" | "md" | "lg" | "hero";
-  playful?: boolean;
   decorative?: boolean;
   className?: string;
 }) {
-  const [playfulMood, setPlayfulMood] = useState<OneEyeMood | null>(null);
-
-  useEffect(() => {
-    if (!playful || mood !== "idle" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      setPlayfulMood(null);
-      return;
-    }
-    let expressionTimer = 0;
-    let resetTimer = 0;
-    let cancelled = false;
-    const expressions: OneEyeMood[] = ["attentive", "curious", "cozy", "curious"];
-    const schedule = () => {
-      expressionTimer = window.setTimeout(() => {
-        if (cancelled) return;
-        setPlayfulMood(expressions[Math.floor(Math.random() * expressions.length)]);
-        resetTimer = window.setTimeout(() => {
-          if (cancelled) return;
-          setPlayfulMood(null);
-          schedule();
-        }, 650 + Math.random() * 700);
-      }, 4200 + Math.random() * 5200);
-    };
-    schedule();
-    return () => {
-      cancelled = true;
-      window.clearTimeout(expressionTimer);
-      window.clearTimeout(resetTimer);
-    };
-  }, [mood, playful]);
-
-  const currentMood = playfulMood || mood;
   return (
     <span
-      className={`one-eye one-eye-${size} mood-${currentMood} ${className}`.trim()}
+      className={`one-eye one-eye-${size} mood-${mood} ${className}`.trim()}
       role={decorative ? undefined : "img"}
       aria-label={decorative ? undefined : "ONE 猫眼标志"}
       aria-hidden={decorative || undefined}
@@ -313,6 +280,53 @@ function OnePupilMark({ className = "" }: { className?: string }) {
     <svg className={`one-pupil-mark ${className}`.trim()} viewBox="0 0 12 28" aria-hidden="true">
       <path d="M8.1 2.4C5.7 10.8 4.9 18.7 5.5 25.5" />
     </svg>
+  );
+}
+
+type HeroEyeState = "idle" | "hover" | "squint" | "rebound" | "thinking" | "alert";
+
+function OneHeroEye({ mood }: { mood: OneEyeMood }) {
+  const [hovered, setHovered] = useState(false);
+  const [phase, setPhase] = useState<"squint" | "rebound" | null>(null);
+
+  useEffect(() => {
+    if (!phase) return;
+    const timer = window.setTimeout(() => {
+      if (phase === "squint") setPhase("rebound");
+      else setPhase(null);
+    }, phase === "squint" ? 95 : 210);
+    return () => window.clearTimeout(timer);
+  }, [phase]);
+
+  const state: HeroEyeState = phase
+    || (mood === "thinking"
+      ? "thinking"
+      : mood === "angry"
+        ? "alert"
+        : mood === "pleased" || hovered
+          ? "hover"
+          : "idle");
+
+  return (
+    <button
+      className="one-presence"
+      type="button"
+      aria-label="逗一下 ONE"
+      data-eye-state={state}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+      onClick={() => setPhase("squint")}
+    >
+      <svg className="one-hero-eye" viewBox="0 0 100 100" role="img" aria-label="ONE 猫眼">
+        <rect className="one-hero-eye-shell" x="2" y="2" width="96" height="96" rx="25" />
+        <g className="one-hero-expression">
+          <path className="one-hero-aperture aperture-a2" d="M13 50C15 31 32 22 50 22C70 22 85 32 88 49C89 64 72 74 50 75C29 75 12 65 13 50Z" />
+          <path className="one-hero-aperture aperture-a3" d="M14 52C20 40 37 36 54 37C72 38 84 45 87 52C83 62 67 66 49 66C31 66 17 61 14 52Z" />
+          <path className="one-hero-aperture aperture-a5" d="M13 51C17 33 34 25 52 25C72 26 86 37 88 51C85 65 69 72 49 72C29 72 13 63 13 51Z" />
+          <path className="one-hero-pupil" d="M53 33C50.5 43.5 49.8 56.3 50.8 67" />
+        </g>
+      </svg>
+    </button>
   );
 }
 
@@ -988,9 +1002,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             ))
           ) : (
             <div className="empty-state one-hero">
-              <button className="one-presence" type="button" aria-label="逗一下 ONE">
-                <OneEye size="hero" mood={heroMood} playful />
-              </button>
+              <OneHeroEye mood={heroMood} />
               <div className="one-hero-kicker"><OnePupilMark /> ONE IS WITH YOU</div>
               <h2>{activeAgent?.name || `今天，想一起做点什么，${user.username}？`}</h2>
               <p>{activeAgent?.description || "说出你想知道、想完成，或者只是隐约想到的事。"}</p>
