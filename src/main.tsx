@@ -253,17 +253,50 @@ type OneEyeMood = "idle" | "attentive" | "thinking" | "pleased" | "cozy" | "angr
 function OneEye({
   mood = "idle",
   size = "md",
+  playful = false,
   decorative = false,
   className = ""
 }: {
   mood?: OneEyeMood;
   size?: "xs" | "sm" | "md" | "lg" | "hero";
+  playful?: boolean;
   decorative?: boolean;
   className?: string;
 }) {
+  const [playfulMood, setPlayfulMood] = useState<OneEyeMood | null>(null);
+
+  useEffect(() => {
+    if (!playful || mood !== "idle" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setPlayfulMood(null);
+      return;
+    }
+    let expressionTimer = 0;
+    let resetTimer = 0;
+    let cancelled = false;
+    const expressions: OneEyeMood[] = ["attentive", "curious", "cozy", "curious"];
+    const schedule = () => {
+      expressionTimer = window.setTimeout(() => {
+        if (cancelled) return;
+        setPlayfulMood(expressions[Math.floor(Math.random() * expressions.length)]);
+        resetTimer = window.setTimeout(() => {
+          if (cancelled) return;
+          setPlayfulMood(null);
+          schedule();
+        }, 650 + Math.random() * 700);
+      }, 4200 + Math.random() * 5200);
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(expressionTimer);
+      window.clearTimeout(resetTimer);
+    };
+  }, [mood, playful]);
+
+  const currentMood = playfulMood || mood;
   return (
     <span
-      className={`one-eye one-eye-${size} mood-${mood} ${className}`.trim()}
+      className={`one-eye one-eye-${size} mood-${currentMood} ${className}`.trim()}
       role={decorative ? undefined : "img"}
       aria-label={decorative ? undefined : "ONE 猫眼标志"}
       aria-hidden={decorative || undefined}
@@ -272,6 +305,14 @@ function OneEye({
       <span className="one-eye-lid one-eye-lid-top" />
       <span className="one-eye-lid one-eye-lid-bottom" />
     </span>
+  );
+}
+
+function OnePupilMark({ className = "" }: { className?: string }) {
+  return (
+    <svg className={`one-pupil-mark ${className}`.trim()} viewBox="0 0 12 28" aria-hidden="true">
+      <path d="M8.1 2.4C5.7 10.8 4.9 18.7 5.5 25.5" />
+    </svg>
   );
 }
 
@@ -839,7 +880,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         ? "thinking"
         : content.trim()
           ? "curious"
-          : "cozy";
+          : "idle";
 
   return (
     <main className="app-shell one-shell">
@@ -947,8 +988,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             ))
           ) : (
             <div className="empty-state one-hero">
-              <div className="one-presence"><OneEye size="hero" mood={heroMood} /></div>
-              <div className="one-hero-kicker"><span className="one-kicker-one">1</span> ONE IS WITH YOU</div>
+              <button className="one-presence" type="button" aria-label="逗一下 ONE">
+                <OneEye size="hero" mood={heroMood} playful />
+              </button>
+              <div className="one-hero-kicker"><OnePupilMark /> ONE IS WITH YOU</div>
               <h2>{activeAgent?.name || `今天，想一起做点什么，${user.username}？`}</h2>
               <p>{activeAgent?.description || "说出你想知道、想完成，或者只是隐约想到的事。"}</p>
             </div>
