@@ -4924,10 +4924,9 @@ body { background: var(--one-paper); }
 }
 
 .one-presence[data-eye-state="idle"] .aperture-a2,
-.one-presence[data-eye-state="rebound"] .aperture-a2,
-.one-presence[data-eye-state="hover"] .aperture-a5,
+.one-presence[data-eye-state="tracking"] .aperture-a2,
+.one-presence[data-eye-state="blink"] .aperture-a2,
 .one-presence[data-eye-state="alert"] .aperture-a5,
-.one-presence[data-eye-state="squint"] .aperture-a3,
 .one-presence[data-eye-state="thinking"] .aperture-a3 {
   opacity: 1;
 }
@@ -4940,17 +4939,12 @@ body { background: var(--one-paper); }
   animation: oneHeroLook 10.8s cubic-bezier(.65, 0, .35, 1) infinite;
 }
 
-.one-presence[data-eye-state="hover"] .one-hero-pupil {
-  transform: translate(3px, 1px) scaleY(.92);
-}
-
-.one-presence[data-eye-state="squint"] .one-hero-pupil,
 .one-presence[data-eye-state="thinking"] .one-hero-pupil {
   transform: translate(1px, 4px) scaleY(.72);
 }
 
-.one-presence[data-eye-state="rebound"] .one-hero-expression {
-  animation: oneHeroRebound 210ms cubic-bezier(.2, 1.55, .3, 1) both;
+.one-presence[data-eye-state="blink"] .one-hero-expression {
+  animation: oneHeroPokeBlink 170ms cubic-bezier(.2, .9, .28, 1) both;
 }
 
 .one-presence[data-eye-state="alert"] .one-hero-expression {
@@ -4969,10 +4963,9 @@ body { background: var(--one-paper); }
   76%, 91% { transform: translate(2px, 1px) rotate(2deg); }
 }
 
-@keyframes oneHeroRebound {
-  0% { transform: scale(.96, .68); }
-  62% { transform: scale(1.04, 1.08); }
-  100% { transform: scale(1); }
+@keyframes oneHeroPokeBlink {
+  0%, 100% { transform: scaleY(1); }
+  48% { transform: scaleY(.06); }
 }
 
 @keyframes oneHeroAlert {
@@ -5129,4 +5122,398 @@ body { background: var(--one-paper); }
 
   .dia-prompts { padding-bottom: 10px; }
   .dia-prompts button { min-width: 238px; min-height: 88px; }
+}
+
+/* ONE V0.3 — editorial scale, restrained character, decisive interaction. */
+:root {
+  --one-ink: #11110f;
+  --one-paper: #f2efe8;
+  --one-surface: #fffdf8;
+  --one-line: #d8d3c9;
+  --one-muted: #777168;
+}
+
+.app-shell.one-shell:not(.execution-shell) {
+  grid-template-rows: 74px minmax(0, 1fr);
+  background:
+    radial-gradient(ellipse at 50% 26%, rgb(255 255 255 / 96%) 0, rgb(255 255 255 / 42%) 34%, transparent 62%),
+    radial-gradient(circle at 100% 100%, rgb(18 17 14 / 5%), transparent 30%),
+    var(--one-paper);
+}
+
+.one-shell:not(.execution-shell) .one-chrome {
+  min-height: 74px;
+  padding: 14px 26px;
+  border-bottom: 0;
+}
+
+.one-shell:not(.execution-shell) .one-brand-button {
+  height: 44px;
+  border-radius: 14px;
+  box-shadow: 0 9px 30px rgb(22 20 16 / 14%);
+}
+
+.one-shell:not(.execution-shell) .one-current-space {
+  padding: 9px 17px;
+  border-color: rgb(255 255 255 / 86%);
+  background: rgb(255 253 248 / 64%);
+  color: #716b62;
+  box-shadow: 0 7px 26px rgb(32 28 22 / 5%);
+}
+
+.one-shell:not(.execution-shell) .one-chrome-button {
+  min-height: 38px;
+  border-color: rgb(255 255 255 / 80%);
+  background: rgb(255 253 248 / 58%);
+  color: #686258;
+}
+
+.one-shell:not(.execution-shell) .one-chat.home-mode {
+  grid-template-rows: minmax(300px, 1fr) auto minmax(24px, .12fr);
+}
+
+.one-shell:not(.execution-shell) .home-mode .messages {
+  padding: 34px 24px 0;
+}
+
+.one-shell:not(.execution-shell) .one-hero {
+  width: min(1040px, 100%);
+  max-width: 1040px;
+  margin-bottom: 42px;
+}
+
+.one-shell:not(.execution-shell) .one-presence {
+  width: 132px;
+  height: 132px;
+  margin-bottom: 38px;
+}
+
+.one-shell:not(.execution-shell) .one-presence::before {
+  inset: -82px;
+  opacity: .52;
+  background: radial-gradient(circle, rgb(20 18 15 / 13%), transparent 64%);
+}
+
+.one-shell:not(.execution-shell) .one-hero-eye {
+  filter: drop-shadow(0 30px 34px rgb(28 24 19 / 21%));
+}
+
+.one-shell:not(.execution-shell) .one-hero-kicker {
+  margin-bottom: 17px;
+  color: #918a80;
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: .22em;
+}
+
+.one-shell:not(.execution-shell) .one-hero-kicker .one-pupil-mark {
+  width: 10px;
+  height: 21px;
+  margin-right: 7px;
+}
+
+.one-shell:not(.execution-shell) .one-hero h2 {
+  max-width: 1020px;
+  margin-bottom: 16px;
+  font-size: clamp(48px, 5vw, 74px);
+  font-weight: 625;
+  letter-spacing: -.065em;
+  line-height: 1.02;
+}
+
+.one-shell:not(.execution-shell) .one-hero p {
+  color: #756f65;
+  font-size: 16px;
+}
+
+.one-shell:not(.execution-shell) .home-mode .composer {
+  width: min(980px, 100%);
+}
+
+.one-shell:not(.execution-shell) .home-mode .composer-row {
+  min-height: 82px;
+  padding: 13px;
+  border: 1px solid rgb(39 36 30 / 10%);
+  border-radius: 25px;
+  background: rgb(255 253 248 / 92%);
+  box-shadow: 0 30px 90px rgb(37 32 25 / 14%), inset 0 1px rgb(255 255 255 / 92%);
+}
+
+.one-shell:not(.execution-shell) .home-mode .composer-row textarea {
+  min-height: 54px;
+  padding: 15px 12px;
+  color: #24211d;
+  font-size: 16px;
+}
+
+.one-shell:not(.execution-shell) .home-mode .send {
+  width: 54px;
+  height: 54px;
+  min-height: 54px;
+  flex-basis: 54px;
+  border-radius: 17px;
+}
+
+.one-shell:not(.execution-shell) .dia-prompts {
+  margin-top: 22px;
+  gap: 11px;
+}
+
+.one-shell:not(.execution-shell) .dia-prompts button,
+.one-shell:not(.execution-shell) .dia-prompts button:nth-child(1),
+.one-shell:not(.execution-shell) .dia-prompts button:nth-child(2),
+.one-shell:not(.execution-shell) .dia-prompts button:nth-child(3) {
+  position: relative;
+  min-height: 124px;
+  padding: 22px 52px 21px 23px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
+  align-content: stretch;
+  row-gap: 16px;
+  border: 1px solid rgb(30 28 24 / 10%);
+  border-radius: 21px;
+  background: rgb(255 253 248 / 58%);
+  color: #25221e;
+  box-shadow: inset 0 1px rgb(255 255 255 / 78%);
+  transform: none;
+  transition: color 220ms ease, background 220ms ease, border-color 220ms ease, transform 220ms cubic-bezier(.2, .9, .3, 1), box-shadow 220ms ease;
+}
+
+.one-shell:not(.execution-shell) .dia-prompts small,
+.one-shell:not(.execution-shell) .dia-prompts span {
+  grid-column: 1;
+}
+
+.one-shell:not(.execution-shell) .dia-prompts small {
+  color: #8a8379;
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: .16em;
+  transition: color 220ms ease;
+}
+
+.one-shell:not(.execution-shell) .dia-prompts span {
+  align-self: end;
+  color: inherit;
+  font-size: 15px;
+  font-weight: 590;
+  letter-spacing: -.02em;
+  line-height: 1.35;
+}
+
+.one-shell:not(.execution-shell) .dia-prompts i {
+  position: absolute;
+  top: 18px;
+  right: 20px;
+  color: #918a80;
+  font-size: 19px;
+  font-style: normal;
+  transition: color 220ms ease, transform 220ms ease;
+}
+
+.one-shell:not(.execution-shell) .dia-prompts button:hover,
+.one-shell:not(.execution-shell) .dia-prompts button:nth-child(1):hover,
+.one-shell:not(.execution-shell) .dia-prompts button:nth-child(2):hover,
+.one-shell:not(.execution-shell) .dia-prompts button:nth-child(3):hover {
+  border-color: var(--one-ink);
+  background: var(--one-ink);
+  color: #fff;
+  box-shadow: 0 22px 54px rgb(27 24 19 / 18%);
+  transform: translateY(-4px);
+}
+
+.one-shell:not(.execution-shell) .dia-prompts button:hover small,
+.one-shell:not(.execution-shell) .dia-prompts button:hover i {
+  color: #aaa49b;
+}
+
+.one-shell:not(.execution-shell) .dia-prompts button:hover i {
+  transform: translate(3px, -3px);
+}
+
+.one-shell:not(.execution-shell) .conversation-mode .messages {
+  padding-top: 66px;
+  gap: 46px;
+}
+
+.one-shell:not(.execution-shell) .conversation-mode .message {
+  width: min(960px, 100%);
+}
+
+.one-shell:not(.execution-shell) .conversation-mode .message.user .bubble {
+  padding-bottom: 30px;
+  font-size: clamp(24px, 3vw, 36px);
+  font-weight: 590;
+  letter-spacing: -.04em;
+}
+
+.one-shell:not(.execution-shell) .conversation-mode .markdown-body {
+  color: #2c2924;
+  font-size: 16px;
+  line-height: 1.9;
+}
+
+.one-shell:not(.execution-shell) .conversation-mode .composer-row {
+  border-radius: 20px;
+  box-shadow: 0 18px 60px rgb(35 31 25 / 10%);
+}
+
+.one-shell:not(.execution-shell) .admin-header {
+  padding: 34px 34px 20px;
+}
+
+.one-shell:not(.execution-shell) .admin-header h2 {
+  font-size: clamp(27px, 3vw, 38px);
+  font-weight: 625;
+  letter-spacing: -.045em;
+}
+
+.one-shell:not(.execution-shell) .admin-header p {
+  margin-top: 8px;
+  color: #837d73;
+}
+
+.one-shell:not(.execution-shell) .account-body,
+.one-shell:not(.execution-shell) .admin-body,
+.one-shell:not(.execution-shell) .agents-board,
+.one-shell:not(.execution-shell) .memory-list {
+  padding-right: 34px;
+  padding-left: 34px;
+}
+
+.one-shell:not(.execution-shell) .account-body {
+  gap: 18px;
+}
+
+.one-shell:not(.execution-shell) .account-panel,
+.one-shell:not(.execution-shell) .admin-form,
+.one-shell:not(.execution-shell) .table-row,
+.one-shell:not(.execution-shell) .memory-card,
+.one-shell:not(.execution-shell) details,
+.one-shell:not(.execution-shell) .agent-card,
+.one-shell:not(.execution-shell) .knowledge-panel {
+  border: 1px solid rgb(35 31 25 / 8%);
+  border-radius: 22px;
+  background: rgb(255 253 248 / 74%);
+  box-shadow: 0 16px 56px rgb(38 33 25 / 6%);
+  backdrop-filter: blur(20px);
+}
+
+.one-shell:not(.execution-shell) .account-panel {
+  padding: 24px;
+}
+
+.one-shell:not(.execution-shell) .account-balance-card {
+  border-color: var(--one-ink);
+  background: var(--one-ink);
+  color: #fff;
+  box-shadow: 0 25px 70px rgb(24 21 17 / 20%);
+}
+
+.one-shell:not(.execution-shell) .account-balance-card .account-panel-title,
+.one-shell:not(.execution-shell) .account-balance-card h3,
+.one-shell:not(.execution-shell) .account-balance-card .power-balance {
+  color: #fff;
+}
+
+.one-shell:not(.execution-shell) .account-balance-card .hint,
+.one-shell:not(.execution-shell) .account-balance-card .power-balance small,
+.one-shell:not(.execution-shell) .account-balance-card .recharge-inline > span {
+  color: #aaa69e;
+}
+
+.one-shell:not(.execution-shell) .account-balance-card select {
+  border-color: #3a3935;
+  background: #22221f;
+  color: #fff;
+}
+
+.one-shell:not(.execution-shell) .account-balance-card .primary {
+  background: #fff;
+  color: var(--one-ink);
+}
+
+.one-shell:not(.execution-shell) .agent-card {
+  min-height: 184px;
+  padding: 20px;
+  transition: transform 200ms ease, box-shadow 200ms ease, border-color 200ms ease;
+}
+
+.one-shell:not(.execution-shell) .agent-card:hover {
+  border-color: rgb(35 31 25 / 16%);
+  box-shadow: 0 22px 64px rgb(38 33 25 / 10%);
+  transform: translateY(-3px);
+}
+
+.one-shell:not(.execution-shell) .tabs {
+  gap: 6px;
+  padding-right: 34px;
+  padding-left: 34px;
+  border-bottom-color: rgb(35 31 25 / 8%);
+}
+
+.one-shell:not(.execution-shell) input,
+.one-shell:not(.execution-shell) select,
+.one-shell:not(.execution-shell) textarea {
+  border-color: #d5d0c6;
+  border-radius: 12px;
+  background-color: rgb(255 254 251 / 84%);
+}
+
+@media (max-width: 760px) {
+  .app-shell.one-shell:not(.execution-shell) {
+    grid-template-rows: 60px minmax(0, 1fr);
+    overflow-x: hidden;
+  }
+
+  .one-shell:not(.execution-shell) .one-chrome { min-height: 60px; padding: 9px 10px; }
+  .one-shell:not(.execution-shell) .one-chat.home-mode {
+    min-width: 0;
+    grid-template-rows: minmax(250px, 1fr) auto 12px;
+    overflow-x: hidden;
+  }
+  .one-shell:not(.execution-shell) .home-mode .messages { padding: 18px 16px 0; }
+
+  .one-shell:not(.execution-shell) .one-presence {
+    width: 88px;
+    height: 88px;
+    margin-bottom: 27px;
+  }
+
+  .one-shell:not(.execution-shell) .one-hero { margin-bottom: 27px; }
+  .one-shell:not(.execution-shell) .one-hero h2 { font-size: clamp(34px, 10vw, 46px); }
+  .one-shell:not(.execution-shell) .one-hero p { font-size: 14px; }
+  .one-shell:not(.execution-shell) .home-mode .composer {
+    width: 100%;
+    min-width: 0;
+    padding-inline: 11px;
+  }
+  .one-shell:not(.execution-shell) .home-mode .composer-row { min-height: 68px; padding: 8px; border-radius: 20px; }
+  .one-shell:not(.execution-shell) .home-mode .composer-row textarea { min-height: 48px; padding: 11px 8px; }
+
+  .one-shell:not(.execution-shell) .dia-prompts {
+    width: 100%;
+    min-width: 0;
+    margin-top: 13px;
+    gap: 8px;
+  }
+
+  .one-shell:not(.execution-shell) .dia-prompts button,
+  .one-shell:not(.execution-shell) .dia-prompts button:nth-child(1),
+  .one-shell:not(.execution-shell) .dia-prompts button:nth-child(2),
+  .one-shell:not(.execution-shell) .dia-prompts button:nth-child(3) {
+    min-width: 250px;
+    min-height: 112px;
+  }
+
+  .one-shell:not(.execution-shell) .admin-header { padding: 24px 16px 14px; }
+  .one-shell:not(.execution-shell) .account-body,
+  .one-shell:not(.execution-shell) .admin-body,
+  .one-shell:not(.execution-shell) .agents-board,
+  .one-shell:not(.execution-shell) .memory-list,
+  .one-shell:not(.execution-shell) .tabs {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
 }

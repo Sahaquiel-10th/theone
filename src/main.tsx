@@ -283,29 +283,35 @@ function OnePupilMark({ className = "" }: { className?: string }) {
   );
 }
 
-type HeroEyeState = "idle" | "hover" | "squint" | "rebound" | "thinking" | "alert";
+type HeroEyeState = "idle" | "tracking" | "blink" | "thinking" | "alert";
 
 function OneHeroEye({ mood }: { mood: OneEyeMood }) {
-  const [hovered, setHovered] = useState(false);
-  const [phase, setPhase] = useState<"squint" | "rebound" | null>(null);
+  const [tracking, setTracking] = useState(false);
+  const [blinking, setBlinking] = useState(false);
+  const [look, setLook] = useState({ x: 0, y: 0 });
 
   useEffect(() => {
-    if (!phase) return;
-    const timer = window.setTimeout(() => {
-      if (phase === "squint") setPhase("rebound");
-      else setPhase(null);
-    }, phase === "squint" ? 95 : 210);
+    if (!blinking) return;
+    const timer = window.setTimeout(() => setBlinking(false), 170);
     return () => window.clearTimeout(timer);
-  }, [phase]);
+  }, [blinking]);
 
-  const state: HeroEyeState = phase
-    || (mood === "thinking"
+  const state: HeroEyeState = blinking
+    ? "blink"
+    : (mood === "thinking"
       ? "thinking"
       : mood === "angry"
         ? "alert"
-        : mood === "pleased" || hovered
-          ? "hover"
+        : tracking
+          ? "tracking"
           : "idle");
+
+  function trackPointer(event: React.PointerEvent<HTMLButtonElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const x = ((event.clientX - bounds.left) / bounds.width - .5) * 10;
+    const y = ((event.clientY - bounds.top) / bounds.height - .5) * 5;
+    setLook({ x, y });
+  }
 
   return (
     <button
@@ -313,9 +319,10 @@ function OneHeroEye({ mood }: { mood: OneEyeMood }) {
       type="button"
       aria-label="逗一下 ONE"
       data-eye-state={state}
-      onPointerEnter={() => setHovered(true)}
-      onPointerLeave={() => setHovered(false)}
-      onClick={() => setPhase("squint")}
+      onPointerEnter={() => setTracking(true)}
+      onPointerMove={trackPointer}
+      onPointerLeave={() => { setTracking(false); setLook({ x: 0, y: 0 }); }}
+      onClick={() => setBlinking(true)}
     >
       <svg className="one-hero-eye" viewBox="0 0 100 100" role="img" aria-label="ONE 猫眼">
         <rect className="one-hero-eye-shell" x="2" y="2" width="96" height="96" rx="25" />
@@ -323,7 +330,7 @@ function OneHeroEye({ mood }: { mood: OneEyeMood }) {
           <path className="one-hero-aperture aperture-a2" d="M13 50C15 31 32 22 50 22C70 22 85 32 88 49C89 64 72 74 50 75C29 75 12 65 13 50Z" />
           <path className="one-hero-aperture aperture-a3" d="M14 52C20 40 37 36 54 37C72 38 84 45 87 52C83 62 67 66 49 66C31 66 17 61 14 52Z" />
           <path className="one-hero-aperture aperture-a5" d="M13 51C17 33 34 25 52 25C72 26 86 37 88 51C85 65 69 72 49 72C29 72 13 63 13 51Z" />
-          <path className="one-hero-pupil" d="M53 33C50.5 43.5 49.8 56.3 50.8 67" />
+          <path className="one-hero-pupil" style={{ transform: `translate(${look.x}px, ${look.y}px)` }} d="M53 33C50.5 43.5 49.8 56.3 50.8 67" />
         </g>
       </svg>
     </button>
@@ -1046,9 +1053,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           </div>
           {!active ? (
             <div className="dia-prompts">
-              <button type="button" onClick={() => setContent("帮我回想最近反复提到的重要想法")}><OneEye size="xs" mood="curious" decorative /><small>RECALL</small><span>我最近在反复想什么？</span></button>
-              <button type="button" onClick={() => setContent("结合我的知识，把现在最重要的事情整理成一个行动方案")}><OneEye size="xs" mood="attentive" decorative /><small>MAKE</small><span>把想法变成行动方案</span></button>
-              <button type="button" onClick={() => setContent("从我的个人知识中，找出现在最值得重新关注的内容")}><OneEye size="xs" mood="pleased" decorative /><small>DISCOVER</small><span>从过去发现新线索</span></button>
+              <button type="button" onClick={() => setContent("帮我回想最近反复提到的重要想法")}><small>01 · RECALL</small><span>我最近在反复想什么？</span><i aria-hidden="true">↗</i></button>
+              <button type="button" onClick={() => setContent("结合我的知识，把现在最重要的事情整理成一个行动方案")}><small>02 · MAKE</small><span>把想法变成行动方案</span><i aria-hidden="true">↗</i></button>
+              <button type="button" onClick={() => setContent("从我的个人知识中，找出现在最值得重新关注的内容")}><small>03 · DISCOVER</small><span>从过去发现新线索</span><i aria-hidden="true">↗</i></button>
             </div>
           ) : null}
         </form>
