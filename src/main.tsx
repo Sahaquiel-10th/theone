@@ -248,6 +248,40 @@ function readableFileSize(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+type OneEyeMood = "idle" | "attentive" | "thinking" | "pleased" | "sleepy";
+
+function OneEye({
+  mood = "idle",
+  size = "md",
+  decorative = false,
+  className = ""
+}: {
+  mood?: OneEyeMood;
+  size?: "xs" | "sm" | "md" | "lg" | "hero";
+  decorative?: boolean;
+  className?: string;
+}) {
+  return (
+    <span
+      className={`one-eye one-eye-${size} mood-${mood} ${className}`.trim()}
+      role={decorative ? undefined : "img"}
+      aria-label={decorative ? undefined : "ONE 猫眼标志"}
+      aria-hidden={decorative || undefined}
+    >
+      <span className="one-eye-white"><span className="one-eye-pupil" /></span>
+    </span>
+  );
+}
+
+function OneWordmark({ inverse = false }: { inverse?: boolean }) {
+  return (
+    <span className={`one-wordmark ${inverse ? "inverse" : ""}`} aria-label="ONE">
+      <OneEye size="sm" decorative />
+      <span className="one-wordmark-letters">ne</span>
+    </span>
+  );
+}
+
 function AttachmentIcon({ kind, size = 15 }: { kind: AttachmentSummary["kind"]; size?: number }) {
   if (kind === "image") return <Image size={size} />;
   if (kind === "spreadsheet") return <FileSpreadsheet size={size} />;
@@ -319,7 +353,7 @@ function Login({ onDone }: { onDone: (user: User) => void }) {
     <main className="login-shell">
       <form className="login-panel" onSubmit={submit}>
         <div className="login-brand">
-          <strong className="one-wordmark">ONE</strong>
+          <OneWordmark />
           <div className="login-divider" />
           <div>
             <h1>个人 AI 工作台</h1>
@@ -799,7 +833,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     <main className="app-shell one-shell">
       <header className="one-chrome">
         <button className="one-brand-button" type="button" onClick={startNewChat} title="回到 ONE">
-          <strong className="one-wordmark">ONE</strong>
+          <OneWordmark inverse />
           <span className="one-live-signal" />
         </button>
         <button className="one-current-space" type="button" onClick={startNewChat}>
@@ -870,7 +904,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             active!.messages.map((message, index) => (
               <article key={`${message.createdAt}-${index}`} className={`message ${message.role}`}>
                 {message.role === "assistant" ? (
-                  <div className="avatar">1</div>
+                  <div className="avatar"><OneEye size="xs" mood="attentive" decorative /></div>
                 ) : null}
                 <div className="bubble">
                   {message.attachments?.length ? <AttachmentList attachments={message.attachments} /> : null}
@@ -901,8 +935,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             ))
           ) : (
             <div className="empty-state one-hero">
-              <div className="one-presence" aria-hidden="true"><span /><span /><span /></div>
-              <div className="one-hero-kicker">ONE IS HERE</div>
+              <div className="one-presence"><OneEye size="hero" mood={activeLoading ? "thinking" : "idle"} /></div>
+              <div className="one-hero-kicker"><span className="one-kicker-one">1</span> ONE IS HERE</div>
               <h2>{activeAgent?.name || `What’s on your mind, ${user.username}?`}</h2>
               <p>{activeAgent?.description || "说出你想知道、想完成，或者只是隐约想到的事。"}</p>
             </div>
