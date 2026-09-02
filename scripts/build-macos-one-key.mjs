@@ -8,6 +8,7 @@ const args = process.argv.slice(2);
 const value = (name) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : ""; };
 const outputRoot = path.resolve(root, value("--output") || "output/ONE-Key-macOS");
 const credentialPath = value("--credential") ? path.resolve(value("--credential")) : "";
+const codexBinary = value("--codex-bin") ? path.resolve(value("--codex-bin")) : "";
 const credentialData = credentialPath
   ? fs.existsSync(credentialPath)
     ? fs.readFileSync(credentialPath)
@@ -29,14 +30,20 @@ fs.writeFileSync(path.join(contents, "Info.plist"), `<?xml version="1.0" encodin
 <key>CFBundleIdentifier</key><string>one.theone.key</string>
 <key>CFBundleName</key><string>ONE</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.2.2</string>
-<key>CFBundleVersion</key><string>4</string>
+<key>CFBundleShortVersionString</key><string>0.2.3</string>
+<key>CFBundleVersion</key><string>5</string>
 <key>CFBundleIconFile</key><string>ONE.icns</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
+<key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>`);
 
 execFileSync("/usr/bin/swiftc", ["-parse-as-library", "-O", path.join(root, "launcher/macos/ONEKeyLauncher.swift"), "-o", path.join(macos, "ONE")], { stdio: "inherit" });
+if (codexBinary) {
+  if (!fs.existsSync(codexBinary)) throw new Error(`Codex Runtime 不存在：${codexBinary}`);
+  fs.copyFileSync(codexBinary, path.join(resources, "codex"));
+  fs.chmodSync(path.join(resources, "codex"), 0o755);
+}
 
 const iconset = path.join(outputRoot, "ONE.iconset");
 fs.mkdirSync(iconset, { recursive: true });
@@ -57,7 +64,7 @@ if (credentialData) {
   fs.mkdirSync(path.join(outputRoot, ".one"), { recursive: true });
   fs.writeFileSync(path.join(outputRoot, ".one/credential.json"), credentialData, { mode: 0o600 });
 }
-fs.writeFileSync(path.join(outputRoot, "使用 ONE.txt"), "插入 ONE Key 后，双击 ONE 图标即可打开已登录的 ONE。\n\n如果提示凭证不存在，请确认隐藏目录 .one 中存在 credential.json。\n普通 U 盘凭证可以被复制；遗失后请管理员立即在 ONE 超管后台挂失。\n");
+fs.writeFileSync(path.join(outputRoot, "使用 ONE.txt"), "插入 ONE Key 后，双击 ONE 图标即可打开已登录的 ONE。\n\n第一次从对话进入执行时，选择一次允许 Codex 工作的文件夹；后续不需要重复安装或选择。\n如果提示凭证不存在，请确认隐藏目录 .one 中存在 credential.json。\n普通 U 盘凭证可以被复制；遗失后请管理员立即在 ONE 超管后台挂失。\n");
 // Icon generation may leave Finder/resource-fork metadata that codesign rejects.
 execFileSync("/usr/bin/xattr", ["-cr", app], { stdio: "inherit" });
 execFileSync("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", app], { stdio: "inherit" });

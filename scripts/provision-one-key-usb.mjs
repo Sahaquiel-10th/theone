@@ -57,8 +57,13 @@ try {
   fs.cpSync(path.join(buildOutput, "ONE.app"), appTarget, { recursive: true, errorOnExist: true });
   fs.cpSync(path.join(buildOutput, ".one"), hiddenTarget, { recursive: true, errorOnExist: true });
   fs.copyFileSync(path.join(buildOutput, "使用 ONE.txt"), path.join(volumePath, "使用 ONE.txt"));
+  // FAT volumes represent macOS metadata as AppleDouble `._*` files. Clean only
+  // the freshly copied ONE payload so xattr/codesign do not fail on those files.
+  execFileSync("/usr/sbin/dot_clean", ["-m", appTarget], { stdio: "inherit" });
+  execFileSync("/usr/sbin/dot_clean", ["-m", hiddenTarget], { stdio: "inherit" });
   execFileSync("/usr/bin/xattr", ["-cr", appTarget], { stdio: "inherit" });
   execFileSync("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", appTarget], { stdio: "inherit" });
+  execFileSync("/usr/sbin/dot_clean", ["-m", appTarget], { stdio: "inherit" });
   execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", appTarget], { stdio: "inherit" });
   console.log(`\n灌装完成\nU 盘：${volumePath}\n设备 ID：${credential.deviceId}\n服务：${credential.serverBaseUrl}\n\n现在可弹出 U 盘，重新插入后双击 ONE.app 验证。`);
 } finally {

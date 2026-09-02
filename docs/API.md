@@ -62,6 +62,17 @@ Launcher 只把一次性码放在 URL Fragment（`#one-key=...`）中，因此 W
 
 聊天请求由服务端使用当前 Workspace 的连接执行得到全局语义搜索，将 Top K 结果作为不可信参考上下文注入模型，并在回答中附带来源。连接缺失时不执行第三方召回；Provider 失败时记录故障并降级为无知识回答，不中断模型主链。
 
+## Codex 执行（当前）
+
+- `POST /api/executions/from-message`：从指定对话消息创建任务。服务端只读取截至该消息的当前 Workspace 对话，隐藏整理执行说明，并发送给当前 ONE Key 连接的本机 Runtime。
+- `GET /api/executions?conversationId=...`：读取当前用户在该对话下的任务摘要。
+- `GET /api/executions/:id`：读取任务和可展示事件，不返回内部执行说明或设备 ID。
+- `GET /api/executions/:id/stream`：在一次 ONE Key 请求证明后持续推送任务状态、Codex 消息、命令与文件变更摘要，任务结束时关闭。
+- `POST /api/executions/:id/messages`：在同一 Codex thread 中继续发指令。
+- `POST /api/executions/:id/cancel`：停止本机进程。
+
+所有读取、继续、停止与 Launcher 回传都同时校验 `workspaceId + userId + deviceId`，不能靠猜测任务 ID 跨租户访问。
+
 ## 模型与电力（当前）
 
 - `GET /api/models`：只返回超管已开放的模型和对外价格，不返回 Key、系统提示词或采购成本；

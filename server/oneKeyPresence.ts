@@ -3,6 +3,7 @@ import type { Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import type { Store } from "./db.js";
 import { uid } from "./security.js";
+import { appendExecutionEvent } from "./executionService.js";
 
 const proofTimeoutMs = 5000;
 const authTimeoutMs = 5000;
@@ -91,6 +92,18 @@ export class OneKeyPresence {
     return Boolean(socket && socket.readyState === WebSocket.OPEN);
   }
 
+  async startExecution(deviceId: string, taskId: string, instruction: string) {
+    await this.sendToDevice(deviceId, { type: "execution_start", taskId, instruction });
+  }
+
+  async continueExecution(deviceId: string, taskId: string, instruction: string) {
+    await this.sendToDevice(deviceId, { type: "execution_continue", taskId, instruction });
+  }
+
+  async cancelExecution(deviceId: string, taskId: string) {
+    await this.sendToDevice(deviceId, { type: "execution_cancel", taskId });
+  }
+
   async close() {
     if (this.pingTimer) clearInterval(this.pingTimer);
     for (const proof of this.pending.values()) { clearTimeout(proof.timeout); proof.reject(new Error("服务已关闭")); }
@@ -125,7 +138,10 @@ export class OneKeyPresence {
   private async message(socket: WebSocket, raw: string) {
     const state = this.states.get(socket);
     if (!state) return;
-    let message: { type?: string; challengeId?: string; signature?: string };
+    let message: {
+      type?: string; challengeId?: string; signature?: string; taskId?: string;
+      kind?: string; text?: string; providerThreadId?: string; targetName?: string; status?: string;
+    };
     try { message = JSON.parse(raw); } catch { socket.close(4000, "Invalid message"); return; }
     if (message.type === "auth_response" && !state.authenticated && message.challengeId === state.authChallengeId && message.signature) {
       const db = await this.store.read();
@@ -155,7 +171,40 @@ export class OneKeyPresence {
       const device = db.oneKeyDevices.find((item) => item.id === state.deviceId && item.status === "active");
       if (!device || !verifySignature(device.publicKey, proof.nonce, message.signature)) proof.reject(new OneKeyPresenceError("ONE Key 请求签名无效"));
       else proof.resolve();
+      return;
     }
+    if (message.type === "execution_event" && state.authenticated && message.taskId && message.kind) {
+      await this.executionEvent(state.deviceId, { taskId: message.taskId, kind: message.kind, text: message.text, providerThreadId: message.providerThreadId, targetName: message.targetName, status: message.status });
+    }
+  }
+
+  private async sendToDevice(deviceId: string, payload: Record<string, unknown>) {
+    const socket = this.sockets.get(deviceId);
+    if (!socket || socket.readyState !== WebSocket.OPEN) throw new OneKeyPresenceError("本机执行未连接，请插入 ONE Key 并双击 ONE 图标");
+    await new Promise<void>((resolve, reject) => socket.send(JSON.stringify(payload), (error) => error ? reject(new OneKeyPresenceError("本机执行连接已断开")) : resolve()));
+  }
+
+  private async executionEvent(deviceId: string, message: {
+    taskId: string; kind: string; text?: string; providerThreadId?: string; targetName?: string; status?: string;
+  }) {
+    const allowedKinds = new Set(["status", "message", "command", "file_change", "error"]);
+    const kind = allowedKinds.has(message.kind) ? message.kind as "status" | "message" | "command" | "file_change" | "error" : "status";
+    const text = typeof message.text === "string" ? message.text.trim().slice(0, 20_000) : "";
+    await this.store.mutate((database) => {
+      const device = database.oneKeyDevices.find((item) => item.id === deviceId && item.status === "active");
+      const task = database.executionTasks.find((item) => item.id === message.taskId && item.deviceId === deviceId);
+      if (!device || !task || task.workspaceId !== device.workspaceId || task.userId !== device.userId) return;
+      const timestamp = new Date().toISOString();
+      if (message.providerThreadId) task.providerThreadId = message.providerThreadId.slice(0, 200);
+      if (message.targetName) task.targetName = message.targetName.slice(0, 200);
+      if (message.status === "selecting_target") task.status = "selecting_target";
+      if (message.status === "running") { task.status = "running"; task.startedAt ??= timestamp; task.lastError = undefined; }
+      if (message.status === "completed") { task.status = "completed"; task.completedAt = timestamp; if (text) task.finalResponse = text; }
+      if (message.status === "failed") { task.status = "failed"; task.completedAt = timestamp; task.lastError = text || "Codex 执行失败"; }
+      if (message.status === "cancelled") { task.status = "cancelled"; task.completedAt = timestamp; }
+      task.updatedAt = timestamp;
+      if (text) appendExecutionEvent(database, { id: uid("exe"), workspaceId: task.workspaceId, userId: task.userId, taskId: task.id, kind, text, createdAt: timestamp });
+    });
   }
 
   private remove(socket: WebSocket) {

@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Archive,
+  ArrowLeft,
   Brain,
   Bot,
   ChevronDown,
@@ -37,12 +38,14 @@ import {
   ShieldCheck,
   Star,
   Trash2,
+  Square,
   UserRound,
   UserPlus,
   Users,
   Usb,
   Wallet,
-  X
+  X,
+  Zap
 } from "lucide-react";
 import "./styles.css";
 
@@ -116,6 +119,30 @@ type KnowledgeConnection = {
   credentialExpiresAt?: string;
   lastCheckedAt?: string;
   lastError?: string;
+};
+
+type ExecutionTask = {
+  id: string;
+  workspaceId: string;
+  userId: string;
+  conversationId: string;
+  sourceMessageId: string;
+  provider: "codex";
+  status: "queued" | "selecting_target" | "running" | "completed" | "failed" | "cancelled";
+  targetName?: string;
+  providerThreadId?: string;
+  finalResponse?: string;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ExecutionEvent = {
+  id: string;
+  taskId: string;
+  kind: "status" | "user_message" | "message" | "command" | "file_change" | "error";
+  text: string;
+  createdAt: string;
 };
 
 type GetNoteDeviceFlow = {
@@ -495,11 +522,17 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     status: "disconnected"
   });
   const [knowledgeConfigured, setKnowledgeConfigured] = useState(false);
+  const [executionTask, setExecutionTask] = useState<ExecutionTask | null>(null);
+  const [executionEvents, setExecutionEvents] = useState<ExecutionEvent[]>([]);
+  const [executionMode, setExecutionMode] = useState(false);
+  const [preparingExecution, setPreparingExecution] = useState(false);
 
   const active = useMemo(() => conversations.find((item) => item.id === activeId), [activeId, conversations]);
   const activeModelId = active?.modelId || draftModelId;
   const activeLoadingKey = active?.id || "draft";
   const activeLoading = Boolean(loadingByConversation[activeLoadingKey]);
+  const executionBusy = executionTask?.status === "queued" || executionTask?.status === "selecting_target" || executionTask?.status === "running";
+  const activeExecutionMode = Boolean(executionMode && active && (preparingExecution || executionTask?.conversationId === active.id));
   const currentModel = models.find((model) => model.id === activeModelId);
   const activeAgentId = active?.agentId || draftAgentId;
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
@@ -578,6 +611,31 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     return () => document.removeEventListener("visibilitychange", refreshWhenVisible);
   }, [showArchived, activeId]);
 
+  useEffect(() => {
+    if (!executionTask?.id) return;
+    if (!executionBusy) return;
+    const stream = new EventSource(`/api/executions/${encodeURIComponent(executionTask.id)}/stream`);
+    stream.onmessage = (event) => {
+      const result = JSON.parse(event.data) as { task: ExecutionTask; events: ExecutionEvent[] };
+      setExecutionTask(result.task);
+      setExecutionEvents(result.events);
+      if (!["queued", "selecting_target", "running"].includes(result.task.status)) stream.close();
+    };
+    return () => stream.close();
+  }, [executionTask?.id, executionTask?.status, executionBusy]);
+
+  async function loadLatestExecution(conversationId: string) {
+    try {
+      const result = await api<{ tasks: ExecutionTask[] }>(`/api/executions?conversationId=${encodeURIComponent(conversationId)}`);
+      const latest = result.tasks[0];
+      if (!latest) return;
+      setExecutionTask(latest);
+      const detail = await api<{ task: ExecutionTask; events: ExecutionEvent[] }>(`/api/executions/${encodeURIComponent(latest.id)}`);
+      setExecutionTask(detail.task);
+      setExecutionEvents(detail.events);
+    } catch { /* Execution history is an enhancement to the chat view. */ }
+  }
+
   async function loadMoreConversations() {
     if (loadingMoreConversations || !hasMoreConversations) return;
     const nextPage = conversationPage + 1;
@@ -608,6 +666,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setError("");
     setSidebarOpen(false);
     setHistoryOpen(false);
+    setExecutionMode(false);
+    void loadLatestExecution(conversation.id);
     if (conversation.messagesLoaded) return;
     setLoadingByConversation((items) => ({ ...items, [conversation.id]: true }));
     try {
@@ -642,6 +702,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setView("chat");
     setSidebarOpen(false);
     setHistoryOpen(false);
+    setExecutionMode(false);
   }
 
   function startAgentChat(agent: Agent) {
@@ -793,6 +854,11 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   async function send(event: FormEvent) {
     event.preventDefault();
     const text = content;
+    if (activeExecutionMode) {
+      if (!text.trim()) return;
+      await sendExecutionMessage(text);
+      return;
+    }
     if (!text.trim() && !pendingAttachments.length) return;
     setContent("");
     await sendMessage(text);
@@ -879,18 +945,52 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     await navigator.clipboard.writeText(content);
   }
 
-  async function saveMessageToMemory(conversation: Conversation, message: Message) {
-    if (!message.content.trim()) return;
+  async function executeFromMessage(message: Message) {
+    if (!active?.id || !message.id || preparingExecution) return;
+    setPreparingExecution(true);
+    setExecutionMode(true);
+    setExecutionTask(null);
+    setExecutionEvents([]);
+    setError("");
     try {
-      await api("/api/memories", {
+      const result = await api<{ task: ExecutionTask; events: ExecutionEvent[] }>("/api/executions/from-message", {
         method: "POST",
-        body: JSON.stringify({ content: message.content })
+        body: JSON.stringify({ conversationId: active.id, sourceMessageId: message.id })
       });
-      setNotice("已保存到当前工作区的个人记忆。");
-      window.setTimeout(() => setNotice(""), 2800);
+      setExecutionTask(result.task);
+      setExecutionEvents(result.events);
+      setContent("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "保存失败");
+      setExecutionMode(false);
+      setError(err instanceof Error ? err.message : "无法交给 Codex 执行");
+    } finally {
+      setPreparingExecution(false);
     }
+  }
+
+  async function sendExecutionMessage(rawText: string) {
+    const text = rawText.trim();
+    if (!executionTask || !text || executionBusy) return;
+    setContent("");
+    setError("");
+    try {
+      const result = await api<{ task: ExecutionTask }>(`/api/executions/${encodeURIComponent(executionTask.id)}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ content: text })
+      });
+      setExecutionTask(result.task);
+      setExecutionEvents((items) => [...items, { id: localId("exe"), taskId: executionTask.id, kind: "user_message", text, createdAt: new Date().toISOString() }]);
+    } catch (err) {
+      setContent(text);
+      setError(err instanceof Error ? err.message : "无法继续 Codex 会话");
+    }
+  }
+
+  async function cancelExecution() {
+    if (!executionTask || !executionBusy) return;
+    try {
+      await api(`/api/executions/${encodeURIComponent(executionTask.id)}/cancel`, { method: "POST" });
+    } catch (err) { setError(err instanceof Error ? err.message : "无法停止执行"); }
   }
 
   const heroMood: OneEyeMood = error
@@ -904,7 +1004,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           : "idle";
 
   return (
-    <main className="app-shell one-shell">
+    <main className={`app-shell one-shell ${activeExecutionMode ? "execution-shell" : ""}`}>
       <header className="one-chrome">
         <button className="one-brand-button" type="button" onClick={startNewChat} title="回到 ONE">
           <OneWordmark inverse />
@@ -914,6 +1014,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {view === "chat" ? active?.title || "Ask ONE" : view === "knowledge" ? "Knowledge" : view === "admin" ? "Control" : "Account"}
         </button>
         <div className="one-chrome-actions">
+          {active && executionTask?.conversationId === active.id ? (
+            <button className={`one-chrome-button execution-entry ${executionMode ? "active" : ""}`} type="button" title="Codex 执行" onClick={() => setExecutionMode(true)}>
+              <span className={`execution-dot ${executionTask.status}`} />
+              <span>{executionBusy ? "Codex 执行中" : "Codex 任务"}</span>
+            </button>
+          ) : null}
           <button className="one-chrome-button knowledge" type="button" title="知识来源" onClick={() => { setView("knowledge"); setActiveId(""); setHistoryOpen(false); }}>
             <span className={`connection-dot ${knowledgeConnection.status}`} />
             <span>{knowledgeConnection.status === "connected" ? "知识已连接" : "连接知识"}</span>
@@ -972,9 +1078,32 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       ) : view === "account" ? (
         <AccountPage user={user} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : (
-      <section className={`chat one-chat ${(active?.messages ?? []).length ? "conversation-mode" : "home-mode"}`}>
+      <section className={`chat one-chat ${(active?.messages ?? []).length ? "conversation-mode" : "home-mode"} ${activeExecutionMode ? "execution-mode" : ""}`}>
         <div className="messages">
-          {(active?.messages ?? []).length ? (
+          {activeExecutionMode && executionTask ? (
+            <div className="execution-workspace">
+              <header className="execution-header">
+                <button type="button" onClick={() => setExecutionMode(false)}><ArrowLeft size={16} />返回对话</button>
+                <div><small>CODEX EXECUTION</small><strong>{executionTask.targetName || "本机任务"}</strong></div>
+                {executionBusy ? <button className="execution-stop" type="button" onClick={cancelExecution}><Square size={13} />停止</button> : <span className={`execution-state ${executionTask.status}`}>{executionTask.status === "completed" ? "已完成" : executionTask.status === "failed" ? "失败" : executionTask.status === "cancelled" ? "已停止" : "执行中"}</span>}
+              </header>
+              <div className="execution-feed">
+                {executionEvents.map((event) => event.kind === "message" || event.kind === "user_message" ? (
+                  <article className={`execution-message ${event.kind === "user_message" ? "user" : "codex"}`} key={event.id}>
+                    <div className="execution-speaker">{event.kind === "user_message" ? "YOU" : "CODEX"}</div>
+                    <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{event.text}</ReactMarkdown></div>
+                  </article>
+                ) : (
+                  <div className={`execution-event ${event.kind}`} key={event.id}><span />{event.text}</div>
+                ))}
+                {executionBusy ? <div className="execution-live"><span />Codex 正在工作，你可以切回对话，任务会继续运行。</div> : null}
+              </div>
+            </div>
+          ) : activeExecutionMode && preparingExecution ? (
+            <div className="execution-workspace execution-preparing">
+              <div className="execution-live"><span />正在交给 Codex，ONE 会在后台整理上下文。</div>
+            </div>
+          ) : (active?.messages ?? []).length ? (
             active!.messages.map((message, index) => (
               <article key={`${message.createdAt}-${index}`} className={`message ${message.role}`}>
                 {message.role === "assistant" ? (
@@ -991,16 +1120,23 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                         <button title="复制" onClick={() => copyMarkdown(message.content)}>
                           <Copy size={14} />
                         </button>
-                        {active ? (
-                          <button title="记录这句对话" onClick={() => saveMessageToMemory(active, message)}>
-                            <Brain size={14} />
+                        {active && message.id ? (
+                          <button title="执行这个方案" disabled={preparingExecution} onClick={() => executeFromMessage(message)}>
+                            <Zap size={14} />
                           </button>
                         ) : null}
                       </div>
                       <MessageSources sources={message.sources} />
                     </>
                   ) : (
-                    <pre>{message.content}</pre>
+                    <>
+                      <pre>{message.content}</pre>
+                      {active && message.id ? (
+                        <div className="message-actions user-actions">
+                          <button title="执行这个需求" disabled={preparingExecution} onClick={() => executeFromMessage(message)}><Zap size={14} /></button>
+                        </div>
+                      ) : null}
+                    </>
                   )}
                   {message.imageUrl ? <img className="generated-image" src={message.imageUrl} alt={message.content} /> : null}
                   <small className="message-time">{dateTime(message.createdAt)}</small>
@@ -1015,7 +1151,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               <p>{activeAgent?.description || "说出你想知道、想完成，或者只是隐约想到的事。"}</p>
             </div>
           )}
-          {activeLoading ? <div className="typing">{waitMessages[waitIndex % waitMessages.length]}</div> : null}
+          {activeLoading && !activeExecutionMode ? <div className="typing">{waitMessages[waitIndex % waitMessages.length]}</div> : null}
         </div>
 
         <form className="composer" onSubmit={send}>
@@ -1031,7 +1167,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               ) : null}
             </div>
           ) : null}
-          {pendingAttachments.length ? (
+          {pendingAttachments.length && !activeExecutionMode ? (
             <div className="composer-attachments">
               <AttachmentList attachments={pendingAttachments} removable onRemove={removePendingAttachment} />
             </div>
@@ -1044,14 +1180,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               onCompositionEnd={() => setIsComposing(false)}
               onKeyDown={handleComposerKeyDown}
               onPaste={handleComposerPaste}
-              placeholder={currentModel?.kind === "image" ? "输入修改要求，也可直接粘贴图片" : "输入消息，Enter 发送，Shift+Enter 换行"}
+              placeholder={activeExecutionMode ? (preparingExecution ? "正在连接 Codex…" : executionBusy ? "Codex 正在执行当前步骤…" : "继续给 Codex 指令") : currentModel?.kind === "image" ? "输入修改要求，也可直接粘贴图片" : "输入消息，Enter 发送，Shift+Enter 换行"}
+              disabled={activeExecutionMode && (preparingExecution || executionBusy)}
               rows={2}
             />
-            <button className="primary send" type="submit" disabled={!activeModelId || activeLoading || (!content.trim() && !pendingAttachments.length)}>
+            <button className="primary send" type="submit" disabled={activeExecutionMode ? preparingExecution || executionBusy || !content.trim() : !activeModelId || activeLoading || (!content.trim() && !pendingAttachments.length)}>
               <Send size={18} />
             </button>
           </div>
-          {!active ? (
+          {!active && !activeExecutionMode ? (
             <div className="dia-prompts">
               <button type="button" onClick={() => setContent("帮我回想最近反复提到的重要想法")}><small>01 · RECALL</small><span>我最近在反复想什么？</span><i aria-hidden="true">↗</i></button>
               <button type="button" onClick={() => setContent("结合我的知识，把现在最重要的事情整理成一个行动方案")}><small>02 · MAKE</small><span>把想法变成行动方案</span><i aria-hidden="true">↗</i></button>

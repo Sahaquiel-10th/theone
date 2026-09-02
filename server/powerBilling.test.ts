@@ -10,7 +10,7 @@ function database(): Database {
       { id: "a", workspaceId: "workspace-a", userId: "user-a", balanceMicros: 5_000_000, createdAt: "now", updatedAt: "now" },
       { id: "b", workspaceId: "workspace-b", userId: "user-b", balanceMicros: 8_000_000, createdAt: "now", updatedAt: "now" }
     ],
-    powerLedger: [], rechargeOrders: [], auditLogs: [], agents: [], attachments: [], settings: { safetyRules: "", rechargeCnyPerPower: 7 }
+    powerLedger: [], rechargeOrders: [], auditLogs: [], agents: [], attachments: [], executionTasks: [], executionEvents: [], settings: { safetyRules: "", rechargeCnyPerPower: 7 }
   };
 }
 

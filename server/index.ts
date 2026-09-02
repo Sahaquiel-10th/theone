@@ -14,7 +14,7 @@ import { buildContextTraceSections } from "./contextTrace.js";
 import { isSupportedAttachment, parseAttachment, safeAttachmentExtension } from "./attachmentParser.js";
 import { hashPassword, signToken, uid, verifyPassword } from "./security.js";
 import { adminModel, publicModel, publicUser } from "./serializers.js";
-import { Agent, Attachment, AttachmentSummary, Conversation, ConversationFolder, KnowledgeConnection, Message, MessageRecord, ModelConfig, User, UserSavedMemory, Workspace } from "./types.js";
+import { Agent, Attachment, AttachmentSummary, Conversation, ConversationFolder, ExecutionTask, KnowledgeConnection, Message, MessageRecord, ModelConfig, User, UserSavedMemory, Workspace } from "./types.js";
 import { normalizeUploadFilename } from "./uploadFilename.js";
 import { buildSearchContext, searchWeb, webSearchEnabled } from "./webSearch.js";
 import { encryptCredential } from "./knowledge/credentialCipher.js";
@@ -23,6 +23,7 @@ import { KnowledgeService } from "./knowledge/knowledgeService.js";
 import { OneKeyService } from "./oneKeyService.js";
 import { calculateModelPower, chargePower, creditPower, MICROS_PER_POWER, powerAccount } from "./powerBilling.js";
 import { oneKeyPresence } from "./runtime.js";
+import { appendExecutionEvent, buildExecutionCompilerMessages, messagesThrough, publicExecutionTask, taskEvents } from "./executionService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -297,7 +298,7 @@ app.post("/api/chat", auth(jwtSecret), asyncRoute(async (req, res) => {
 }));
 
 app.patch("/api/conversations/:id", auth(jwtSecret), asyncRoute(async (req, res) => { const conversation = await store.mutate((db) => { const target = db.conversations.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id); if (!target) throw new Error("对话不存在"); if (typeof req.body.archived === "boolean") target.archived = req.body.archived; if (typeof req.body.folderId === "string") target.folderId = req.body.folderId && db.conversationFolders.some((item) => item.id === req.body.folderId && item.workspaceId === req.workspaceId && item.userId === req.user!.id) ? req.body.folderId : undefined; target.updatedAt = now(); return target; }); res.json({ conversation }); }));
-app.delete("/api/conversations/:id", auth(jwtSecret), asyncRoute(async (req, res) => { let paths: string[] = []; await store.mutate((db) => { const target = db.conversations.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id); if (!target) throw new Error("对话不存在"); paths = db.attachments.filter((item) => item.workspaceId === req.workspaceId && item.conversationId === target.id).map((item) => item.storagePath); db.conversations = db.conversations.filter((item) => item.id !== target.id); db.messages = db.messages.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.attachments = db.attachments.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.retrievalLogs = db.retrievalLogs.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.contextTraces = db.contextTraces.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); }); await Promise.all(paths.map((item) => fs.promises.rm(item, { force: true }).catch(() => undefined))); res.json({ ok: true }); }));
+app.delete("/api/conversations/:id", auth(jwtSecret), asyncRoute(async (req, res) => { let paths: string[] = []; await store.mutate((db) => { const target = db.conversations.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id); if (!target) throw new Error("对话不存在"); paths = db.attachments.filter((item) => item.workspaceId === req.workspaceId && item.conversationId === target.id).map((item) => item.storagePath); const taskIds = new Set(db.executionTasks.filter((item) => item.conversationId === target.id && item.workspaceId === req.workspaceId).map((item) => item.id)); db.conversations = db.conversations.filter((item) => item.id !== target.id); db.messages = db.messages.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.attachments = db.attachments.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.retrievalLogs = db.retrievalLogs.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.contextTraces = db.contextTraces.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.executionTasks = db.executionTasks.filter((item) => !taskIds.has(item.id)); db.executionEvents = db.executionEvents.filter((item) => !taskIds.has(item.taskId)); }); await Promise.all(paths.map((item) => fs.promises.rm(item, { force: true }).catch(() => undefined))); res.json({ ok: true }); }));
 
 app.get("/api/memories", auth(jwtSecret), asyncRoute(async (req, res) => { const db = await store.read(); const memories = db.userSavedMemories.filter((item) => item.workspaceId === req.workspaceId && item.userId === req.user!.id && item.status === "active").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((item) => ({ id: item.id, text: item.content, createdAt: item.createdAt, updatedAt: item.updatedAt })); res.json({ memories, limits: { maxItems: 20, maxCharsPerItem: 500, maxTotalChars: 5000, usedItems: memories.length, usedChars: memories.reduce((n, item) => n + item.text.length, 0) } }); }));
 app.post("/api/memories", auth(jwtSecret), asyncRoute(async (req, res) => { const content = requiredString(req.body.content, "记忆").slice(0, 500); const memory: UserSavedMemory = { id: uid("mem"), workspaceId: req.workspaceId!, userId: req.user!.id, content, status: "active", createdAt: now(), updatedAt: now() }; await store.mutate((db) => { const active = db.userSavedMemories.filter((item) => item.workspaceId === req.workspaceId && item.userId === req.user!.id && item.status === "active"); if (active.length >= 20) throw new Error("最多保存 20 条记忆"); db.userSavedMemories.push(memory); }); res.json({ memory: { id: memory.id, text: memory.content, createdAt: memory.createdAt, updatedAt: memory.updatedAt } }); }));
@@ -359,6 +360,108 @@ app.post("/api/knowledge/connections/getnote/device-flow/:flowId/poll", auth(jwt
 }));
 app.delete("/api/knowledge/connections/getnote", auth(jwtSecret), requireWorkspaceOwner, asyncRoute(async (req, res) => { await store.mutate((db) => { const connection = db.knowledgeConnections.find((item) => item.workspaceId === req.workspaceId && item.provider === "getnote"); if (!connection) return; connection.status = "revoked"; connection.encryptedApiKey = undefined; connection.providerSpaceId = undefined; connection.providerSpaceName = undefined; connection.updatedAt = now(); }); res.json({ ok: true }); }));
 
+app.get("/api/executions", auth(jwtSecret), asyncRoute(async (req, res) => {
+  const conversationId = typeof req.query.conversationId === "string" ? req.query.conversationId : "";
+  const db = await store.read();
+  const tasks = db.executionTasks
+    .filter((item) => item.workspaceId === req.workspaceId && item.userId === req.user!.id && (!conversationId || item.conversationId === conversationId))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  res.json({ tasks: tasks.map(publicExecutionTask) });
+}));
+
+app.get("/api/executions/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
+  const db = await store.read();
+  const task = db.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
+  if (!task) return res.status(404).json({ error: "执行任务不存在", code: "EXECUTION_NOT_FOUND" });
+  res.json({ task: publicExecutionTask(task), events: taskEvents(db, task) });
+}));
+
+app.get("/api/executions/:id/stream", auth(jwtSecret), asyncRoute(async (req, res) => {
+  const initial = await store.read();
+  const initialTask = initial.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
+  if (!initialTask) return res.status(404).json({ error: "执行任务不存在", code: "EXECUTION_NOT_FOUND" });
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+  let lastPayload = "";
+  let closed = false;
+  const push = async () => {
+    if (closed) return;
+    const database = await store.read();
+    const task = database.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
+    if (!task) { res.write("event: error\ndata: {\"error\":\"执行任务不存在\"}\n\n"); res.end(); return; }
+    const payload = JSON.stringify({ task: publicExecutionTask(task), events: taskEvents(database, task) });
+    if (payload !== lastPayload) { lastPayload = payload; res.write(`data: ${payload}\n\n`); }
+    if (["completed", "failed", "cancelled"].includes(task.status)) res.end();
+  };
+  await push();
+  if (res.writableEnded) return;
+  const timer = setInterval(() => { void push().catch(() => res.end()); }, 500);
+  timer.unref();
+  req.on("close", () => { closed = true; clearInterval(timer); });
+}));
+
+app.post("/api/executions/from-message", auth(jwtSecret), asyncRoute(async (req, res) => {
+  if (!req.oneKeyDeviceId) return res.status(428).json({ error: "请通过 ONE Key 打开 ONE 后再执行本地任务", code: "ONE_RUNNER_REQUIRED" });
+  if (!oneKeyPresence.isConnected(req.oneKeyDeviceId)) return res.status(428).json({ error: "本机执行未连接，请插入 ONE Key 并双击 ONE 图标", code: "ONE_RUNNER_REQUIRED" });
+  const conversationId = requiredString(req.body.conversationId, "对话 ID");
+  const sourceMessageId = requiredString(req.body.sourceMessageId, "消息 ID");
+  const db = await store.read();
+  const conversation = db.conversations.find((item) => item.id === conversationId && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
+  if (!conversation) return res.status(404).json({ error: "对话不存在", code: "CONVERSATION_NOT_FOUND" });
+  const model = db.models.find((item) => item.id === conversation.modelId && item.enabled && item.kind === "chat");
+  if (!model) return res.status(409).json({ error: "当前对话模型不能整理执行指令", code: "EXECUTION_COMPILER_UNAVAILABLE" });
+  const account = powerAccount(db, req.workspaceId!, req.user!.id);
+  if (!account || account.balanceMicros <= 0) return res.status(402).json({ error: "电力不足，无法整理执行指令", code: "POWER_REQUIRED" });
+  const prefix = messagesThrough(db.messages, conversation.id, req.workspaceId!, sourceMessageId);
+  const compiled = await callModel(model, buildExecutionCompilerMessages(prefix, sourceMessageId), "你是 ONE 的执行交接编译器。只整理用户已经表达或确认的意图，不替用户扩大授权范围。", res.locals.requestId);
+  const timestamp = now();
+  const task: ExecutionTask = {
+    id: uid("ext"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id,
+    sourceMessageId, provider: "codex", status: "queued", instruction: compiled.content.trim(), deviceId: req.oneKeyDeviceId,
+    createdAt: timestamp, updatedAt: timestamp
+  };
+  await store.mutate((mutable) => {
+    mutable.executionTasks.push(task);
+    appendExecutionEvent(mutable, { id: uid("exe"), workspaceId: task.workspaceId, userId: task.userId, taskId: task.id, kind: "status", text: "正在连接本机 Codex…", createdAt: timestamp });
+    if (compiled.usage) {
+      const usageId = uid("use"); const billing = calculateModelPower(model, compiled.usage.inputTokens, compiled.usage.outputTokens);
+      chargePower(mutable, { workspaceId: task.workspaceId, userId: task.userId, amountMicros: billing.chargedMicros, modelId: model.id, usageRecordId: usageId, title: "整理 Codex 执行指令" });
+      mutable.modelUsageRecords.push({ id: usageId, workspaceId: task.workspaceId, userId: task.userId, conversationId: conversation.id, modelId: model.id, inputTokens: compiled.usage.inputTokens, outputTokens: compiled.usage.outputTokens, totalTokens: compiled.usage.totalTokens, source: compiled.usage.source, chargedMicros: billing.chargedMicros, costMicros: billing.costMicros, inputPowerPerMillionSnapshot: model.inputPowerPerMillion, outputPowerPerMillionSnapshot: model.outputPowerPerMillion, costInputPowerPerMillionSnapshot: model.costInputPowerPerMillion, costOutputPowerPerMillionSnapshot: model.costOutputPowerPerMillion, requestId: res.locals.requestId, status: "success", createdAt: timestamp });
+    }
+    mutable.auditLogs.push({ id: uid("aud"), workspaceId: task.workspaceId, actorUserId: task.userId, action: "execution.codex.created", targetType: "execution_task", targetId: task.id, details: { conversationId, sourceMessageId }, requestId: res.locals.requestId, createdAt: timestamp });
+  });
+  try { await oneKeyPresence.startExecution(task.deviceId, task.id, task.instruction); }
+  catch (error) {
+    const failure = error instanceof Error ? error.message : "无法连接本机执行";
+    await store.mutate((mutable) => { const target = mutable.executionTasks.find((item) => item.id === task.id); if (target) { target.status = "failed"; target.lastError = failure; target.updatedAt = now(); target.completedAt = target.updatedAt; appendExecutionEvent(mutable, { id: uid("exe"), workspaceId: target.workspaceId, userId: target.userId, taskId: target.id, kind: "error", text: failure, createdAt: target.updatedAt }); } });
+  }
+  const latest = await store.read(); const saved = latest.executionTasks.find((item) => item.id === task.id)!;
+  res.status(201).json({ task: publicExecutionTask(saved), events: taskEvents(latest, saved) });
+}));
+
+app.post("/api/executions/:id/messages", auth(jwtSecret), asyncRoute(async (req, res) => {
+  const content = requiredString(req.body.content, "执行消息").slice(0, 12_000);
+  const task = await store.mutate((database) => {
+    const target = database.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
+    if (!target) throw new Error("执行任务不存在");
+    if (target.status === "queued" || target.status === "selecting_target" || target.status === "running") throw new Error("Codex 正在执行，请等待当前步骤完成");
+    const timestamp = now(); target.status = "queued"; target.updatedAt = timestamp; target.completedAt = undefined; target.lastError = undefined;
+    appendExecutionEvent(database, { id: uid("exe"), workspaceId: target.workspaceId, userId: target.userId, taskId: target.id, kind: "user_message", text: content, createdAt: timestamp });
+    return target;
+  });
+  await oneKeyPresence.continueExecution(task.deviceId, task.id, content);
+  res.status(202).json({ task: publicExecutionTask(task) });
+}));
+
+app.post("/api/executions/:id/cancel", auth(jwtSecret), asyncRoute(async (req, res) => {
+  const db = await store.read();
+  const task = db.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
+  if (!task) return res.status(404).json({ error: "执行任务不存在", code: "EXECUTION_NOT_FOUND" });
+  await oneKeyPresence.cancelExecution(task.deviceId, task.id);
+  res.status(202).json({ ok: true });
+}));
+
 const admin = [auth(jwtSecret), requireRole("admin")] as const;
 app.get("/api/admin/one-keys", ...admin, asyncRoute(async (_req, res) => {
   const db = await store.read();
@@ -409,6 +512,8 @@ app.delete("/api/admin/users/:id", ...admin, asyncRoute(async (req, res) => {
     db.oneTimeLoginCodes = db.oneTimeLoginCodes.filter((item) => !deviceIds.has(item.deviceId));
     db.agents = db.agents.filter((item) => !workspaceIds.has(item.workspaceId));
     db.attachments = db.attachments.filter((item) => !workspaceIds.has(item.workspaceId));
+    db.executionTasks = db.executionTasks.filter((item) => !workspaceIds.has(item.workspaceId));
+    db.executionEvents = db.executionEvents.filter((item) => !workspaceIds.has(item.workspaceId));
   });
   res.json({ ok: true });
 }));

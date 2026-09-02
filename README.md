@@ -30,7 +30,15 @@ npm run dev
 npm run build:one-key:mac -- --credential /path/to/credential.json
 ```
 
-把生成目录整体复制到 U 盘，用户双击 `ONE.app` 即可完成设备挑战并打开 ONE。macOS 不允许普通 U 盘在插入时静默自动运行；完全零点击需要用户预装受信任的常驻 Helper，不属于 V0.1。当前构建使用本机 ad-hoc 签名供开发测试，正式交付需要 Developer ID 签名和 Apple 公证。
+便携测试可以把生成目录整体复制到 U 盘。正式方案是在新 Mac 上把内置 Runtime 的 `ONE.app` 安装到“应用程序”一次，U 盘以后只保存很小的设备凭证；本地 App 会自动寻找已插入的 ONE Key。macOS 不允许普通 U 盘在插入时静默自动运行；完全零点击需要用户预装受信任的常驻 Helper，不属于 V0.1。当前构建使用本机 ad-hoc 签名供开发测试，正式交付需要 Developer ID 签名和 Apple 公证。
+
+开发版会依次寻找 App 内置 Runtime、ChatGPT 内置 Codex 和系统 Codex。正式安装包应固定并内置经过验证的 Runtime，用户只安装一次，日常执行不会下载或显示安装进度：
+
+```bash
+npm run build:one-key:mac -- --credential /path/to/credential.json --codex-bin /path/to/codex
+```
+
+首次从消息旁点击执行时选择一个本地工作文件夹；之后 ONE 在黑色执行页直接显示 Codex 的过程和结果，切回普通聊天不会中断任务。
 
 ## 验证
 

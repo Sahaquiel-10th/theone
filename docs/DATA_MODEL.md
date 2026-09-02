@@ -61,6 +61,16 @@
 - 断开连接必须清除加密 API Key；
 - Migration 进入共享环境后只能追加。
 
+## Codex 执行
+
+### `execution_tasks`
+
+保存 `workspace_id`、`user_id`、`conversation_id`、作为上下文终点的 `source_message_id`、`device_id`、内部执行说明、Codex thread ID、目标目录显示名、状态和时间戳。公开序列化必须移除内部执行说明和设备 ID。
+
+### `execution_events`
+
+保存 `workspace_id`、`user_id`、`task_id`、事件类型、展示文本和时间戳。事件只能由与任务完全匹配的已认证设备写入；每个任务限制事件数量和单条长度。
+
 ## 模型与电力
 
 - `models`：接口协议、Base URL、加密 API Key、模型 ID、公开展示名、默认状态，以及每百万输入/输出 Token 的对外电力价与采购成本；采购成本仅超管可见。

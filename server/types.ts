@@ -93,6 +93,19 @@ export type KnowledgeConnection = {
   credentialExpiresAt?: string; lastCheckedAt?: string; lastError?: string; createdAt: string; updatedAt: string;
 };
 
+export type ExecutionTaskStatus = "queued" | "selecting_target" | "running" | "completed" | "failed" | "cancelled";
+export type ExecutionTask = {
+  id: string; workspaceId: string; userId: string; conversationId: string; sourceMessageId: string;
+  provider: "codex"; status: ExecutionTaskStatus; instruction: string; deviceId: string;
+  targetName?: string; providerThreadId?: string; finalResponse?: string; lastError?: string;
+  createdAt: string; updatedAt: string; startedAt?: string; completedAt?: string;
+};
+export type ExecutionEvent = {
+  id: string; workspaceId: string; userId: string; taskId: string;
+  kind: "status" | "user_message" | "message" | "command" | "file_change" | "error";
+  text: string; createdAt: string;
+};
+
 export type OneKeyDevice = {
   id: string; serialNumber: string; workspaceId: string; userId: string; status: "active" | "revoked";
   publicKey: string; createdAt: string; lastUsedAt?: string; revokedAt?: string;
@@ -113,7 +126,7 @@ export type Database = {
   retrievalLogs: RetrievalLog[]; contextTraces: ContextTrace[]; modelUsageRecords: ModelUsageRecord[]; knowledgeConnections: KnowledgeConnection[];
   oneKeyDevices: OneKeyDevice[]; deviceChallenges: DeviceChallenge[]; oneTimeLoginCodes: OneTimeLoginCode[];
   powerAccounts: PowerAccount[]; powerLedger: PowerLedgerEntry[]; rechargeOrders: RechargeOrder[]; auditLogs: AuditLog[];
-  agents: Agent[]; attachments: Attachment[]; settings: SystemSettings;
+  agents: Agent[]; attachments: Attachment[]; executionTasks: ExecutionTask[]; executionEvents: ExecutionEvent[]; settings: SystemSettings;
 };
 
 export type PublicUser = Omit<User, "passwordHash">;
