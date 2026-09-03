@@ -65,28 +65,213 @@ class JsonStore implements Store {
 
 class MySqlStore implements Store {
   private state: Database | null = null;
-  private saveQueue: Promise<void> = Promise.resolve();
+  private mutationQueue: Promise<void> = Promise.resolve();
   constructor(private pool: mysql.Pool) {}
   async init() {
-    await this.pool.execute(`CREATE TABLE IF NOT EXISTS app_state (id VARCHAR(64) PRIMARY KEY, data JSON NOT NULL, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-    const [rows] = await this.pool.query<mysql.RowDataPacket[]>("SELECT data FROM app_state WHERE id = 'main' LIMIT 1");
-    const raw = rows.length ? (typeof rows[0].data === "string" ? JSON.parse(rows[0].data) : rows[0].data) : fs.existsSync(dbPath) ? JSON.parse(fs.readFileSync(dbPath, "utf8")) : seed();
-    this.state = migrateDatabase(raw as Record<string, unknown>);
-    await this.save();
+    await ensureRelationalSchema(this.pool);
+    const loaded = await loadRelationalState(this.pool);
+    if (loaded) this.state = migrateDatabase(loaded as unknown as Record<string, unknown>);
+    else {
+      const legacy = await loadLegacyState(this.pool);
+      const raw = legacy ?? (fs.existsSync(dbPath) ? JSON.parse(fs.readFileSync(dbPath, "utf8")) : seed());
+      this.state = migrateDatabase(raw as Record<string, unknown>);
+      await persistRelationalState(this.pool, emptyDatabase(), this.state);
+    }
   }
   async read() { if (!this.state) throw new Error("数据库尚未初始化"); return this.state; }
   async mutate<T>(fn: (db: Database) => T) {
-    if (!this.state) throw new Error("数据库尚未初始化");
-    const result = fn(this.state);
-    const queued = this.saveQueue.then(() => this.save());
-    this.saveQueue = queued.catch(() => undefined);
+    let result!: T;
+    let failure: unknown;
+    const queued = this.mutationQueue.then(async () => {
+      if (!this.state) throw new Error("数据库尚未初始化");
+      const before = structuredClone(this.state);
+      try {
+        result = fn(this.state);
+        await persistRelationalState(this.pool, before, this.state);
+      } catch (error) {
+        this.state = before;
+        failure = error;
+      }
+    });
+    this.mutationQueue = queued.catch(() => undefined);
     await queued;
+    if (failure) throw failure;
     return result;
   }
-  private async save() {
-    if (!this.state) return;
-    await this.pool.execute("INSERT INTO app_state (id, data) VALUES ('main', ?) ON DUPLICATE KEY UPDATE data = VALUES(data)", [JSON.stringify(this.state, omitRedundantPersistedData)]);
+}
+
+type CollectionName = Exclude<keyof Database, "settings">;
+type StoredRecord = { id: string; workspaceId?: string; userId?: string; [key: string]: unknown };
+
+const relationalTables: Record<CollectionName, string> = {
+  users: "users", workspaces: "workspaces", workspaceMembers: "workspace_members", conversationFolders: "conversation_folders",
+  models: "models", conversations: "conversations", messages: "messages", userSavedMemories: "user_saved_memories",
+  retrievalLogs: "retrieval_logs", contextTraces: "context_traces", modelUsageRecords: "model_usage_records",
+  knowledgeConnections: "knowledge_connections", oneKeyDevices: "one_key_devices", deviceChallenges: "device_challenges",
+  oneTimeLoginCodes: "one_time_login_codes", powerAccounts: "power_accounts", powerLedger: "power_ledger",
+  rechargeOrders: "recharge_orders", auditLogs: "audit_logs", agents: "agents", attachments: "attachments",
+  executionTasks: "execution_tasks", executionEvents: "execution_events"
+};
+
+const relationalSchema = Object.values(relationalTables).map((table) => `
+  CREATE TABLE IF NOT EXISTS ${table} (
+    id VARCHAR(96) NOT NULL PRIMARY KEY,
+    workspace_id VARCHAR(96) NULL,
+    user_id VARCHAR(96) NULL,
+    parent_id VARCHAR(96) NULL,
+    lookup_key VARCHAR(255) NULL,
+    record_json JSON NOT NULL,
+    created_at VARCHAR(40) NULL,
+    updated_at VARCHAR(40) NULL,
+    UNIQUE KEY uq_${table}_lookup (lookup_key),
+    KEY idx_${table}_workspace (workspace_id),
+    KEY idx_${table}_workspace_user (workspace_id, user_id),
+    KEY idx_${table}_parent (parent_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+`);
+
+async function ensureRelationalSchema(pool: mysql.Pool) {
+  if (process.env.MYSQL_AUTO_MIGRATE !== "true") {
+    try {
+      const [rows] = await pool.query<mysql.RowDataPacket[]>("SELECT version FROM schema_migrations WHERE version = 1 LIMIT 1");
+      if (rows.length) return;
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code !== "ER_NO_SUCH_TABLE") throw error;
+    }
+    throw new Error("ONE 数据库结构尚未初始化，请先以数据库管理员身份执行 deploy/mysql-schema.sql");
   }
+  await pool.execute(`CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INT NOT NULL PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  for (const statement of relationalSchema) await pool.execute(statement);
+  await pool.execute(`CREATE TABLE IF NOT EXISTS system_settings (
+    id VARCHAR(64) NOT NULL PRIMARY KEY, record_json JSON NOT NULL, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await pool.execute("INSERT IGNORE INTO schema_migrations (version) VALUES (1)");
+}
+
+async function loadRelationalState(pool: mysql.Pool): Promise<Database | null> {
+  const [userCount] = await pool.query<mysql.RowDataPacket[]>("SELECT COUNT(*) AS count FROM users");
+  const [settingsRows] = await pool.query<mysql.RowDataPacket[]>("SELECT record_json FROM system_settings WHERE id = 'main' LIMIT 1");
+  if (Number(userCount[0]?.count ?? 0) === 0 && settingsRows.length === 0) return null;
+  const result = emptyDatabase();
+  for (const [collection, table] of Object.entries(relationalTables) as [CollectionName, string][]) {
+    const [rows] = await pool.query<mysql.RowDataPacket[]>(`SELECT record_json FROM ${table}`);
+    (result[collection] as unknown as StoredRecord[]) = rows.map((row) => parseJsonColumn(row.record_json) as StoredRecord);
+  }
+  if (settingsRows.length) result.settings = parseJsonColumn(settingsRows[0].record_json) as Database["settings"];
+  return result;
+}
+
+async function loadLegacyState(pool: mysql.Pool): Promise<Record<string, unknown> | null> {
+  const [tables] = await pool.query<mysql.RowDataPacket[]>("SHOW TABLES LIKE 'app_state'");
+  if (!tables.length) return null;
+  const [rows] = await pool.query<mysql.RowDataPacket[]>("SELECT data FROM app_state WHERE id = 'main' LIMIT 1");
+  return rows.length ? parseJsonColumn(rows[0].data) as Record<string, unknown> : null;
+}
+
+function parseJsonColumn(value: unknown): unknown {
+  return typeof value === "string" ? JSON.parse(value) : value;
+}
+
+async function persistRelationalState(pool: mysql.Pool, before: Database, after: Database) {
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    for (const [collection, table] of Object.entries(relationalTables) as [CollectionName, string][]) {
+      const previous = before[collection] as unknown as StoredRecord[];
+      const current = after[collection] as unknown as StoredRecord[];
+      if (stableJson(previous) === stableJson(current)) continue;
+      const previousIds = new Set(previous.map((item) => item.id));
+      const currentIds = new Set(current.map((item) => item.id));
+      for (const id of previousIds) if (!currentIds.has(id)) await connection.execute(`DELETE FROM ${table} WHERE id = ?`, [id]);
+      const previousById = new Map(previous.map((item) => [item.id, stableJson(item)]));
+      for (const item of current) {
+        if (previousById.get(item.id) === stableJson(item)) continue;
+        const metadata = relationalRecordMetadata(collection, item, after);
+        await connection.execute(
+          `INSERT INTO ${table} (id, workspace_id, user_id, parent_id, lookup_key, record_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE workspace_id = VALUES(workspace_id), user_id = VALUES(user_id), parent_id = VALUES(parent_id), lookup_key = VALUES(lookup_key), record_json = VALUES(record_json), created_at = VALUES(created_at), updated_at = VALUES(updated_at)`,
+          [item.id, metadata.workspaceId, metadata.userId, metadata.parentId, metadata.lookupKey, stableJson(item), stringOrNull(item.createdAt), stringOrNull(item.updatedAt)]
+        );
+      }
+    }
+    if (stableJson(before.settings) !== stableJson(after.settings)) {
+      await connection.execute(
+        "INSERT INTO system_settings (id, record_json) VALUES ('main', ?) ON DUPLICATE KEY UPDATE record_json = VALUES(record_json)",
+        [stableJson(after.settings)]
+      );
+    }
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+export function relationalRecordMetadata(collection: CollectionName, item: StoredRecord, db: Database) {
+  return {
+    workspaceId: recordWorkspaceId(collection, item, db),
+    userId: recordUserId(collection, item),
+    parentId: recordParentId(collection, item),
+    lookupKey: recordLookupKey(collection, item)
+  };
+}
+
+function recordWorkspaceId(collection: CollectionName, item: StoredRecord, db: Database): string | null {
+  if (typeof item.workspaceId === "string" && item.workspaceId) return item.workspaceId;
+  if (collection === "workspaces") return item.id;
+  if (collection === "users" && typeof item.defaultWorkspaceId === "string") return item.defaultWorkspaceId;
+  if ((collection === "deviceChallenges" || collection === "oneTimeLoginCodes") && typeof item.deviceId === "string") {
+    return db.oneKeyDevices.find((device) => device.id === item.deviceId)?.workspaceId ?? null;
+  }
+  if (collection === "executionEvents" && typeof item.taskId === "string") {
+    return db.executionTasks.find((task) => task.id === item.taskId)?.workspaceId ?? null;
+  }
+  return null;
+}
+
+function recordUserId(collection: CollectionName, item: StoredRecord): string | null {
+  if (typeof item.userId === "string" && item.userId) return item.userId;
+  if (collection === "users") return item.id;
+  if (typeof item.ownerId === "string" && item.ownerId) return item.ownerId;
+  if (typeof item.actorUserId === "string" && item.actorUserId) return item.actorUserId;
+  return null;
+}
+
+function recordParentId(collection: CollectionName, item: StoredRecord): string | null {
+  const fields = collection === "messages" || collection === "retrievalLogs" || collection === "contextTraces" || collection === "modelUsageRecords" || collection === "attachments"
+    ? ["conversationId"]
+    : collection === "deviceChallenges" || collection === "oneTimeLoginCodes" ? ["deviceId"]
+    : collection === "executionEvents" ? ["taskId"] : [];
+  const value = fields.length ? item[fields[0]] : undefined;
+  return typeof value === "string" && value ? value : null;
+}
+
+function recordLookupKey(collection: CollectionName, item: StoredRecord): string | null {
+  if (collection === "users" && typeof item.username === "string") return item.username.trim().toLowerCase();
+  if (collection === "workspaces" && typeof item.slug === "string") return item.slug.trim().toLowerCase();
+  if (collection === "workspaceMembers" && typeof item.workspaceId === "string" && typeof item.userId === "string") return `${item.workspaceId}:${item.userId}`;
+  if (collection === "knowledgeConnections" && typeof item.workspaceId === "string" && typeof item.provider === "string") return `${item.workspaceId}:${item.provider}`;
+  if (collection === "oneKeyDevices" && typeof item.serialNumber === "string") return item.serialNumber.trim();
+  if (collection === "oneTimeLoginCodes" && typeof item.tokenHash === "string") return item.tokenHash;
+  if (collection === "powerAccounts" && typeof item.workspaceId === "string" && typeof item.userId === "string") return `${item.workspaceId}:${item.userId}`;
+  return null;
+}
+
+function stableJson(value: unknown) { return JSON.stringify(value, omitRedundantPersistedData); }
+function stringOrNull(value: unknown) { return typeof value === "string" && value ? value : null; }
+
+function emptyDatabase(): Database {
+  return {
+    users: [], workspaces: [], workspaceMembers: [], conversationFolders: [], models: [], conversations: [], messages: [],
+    userSavedMemories: [], retrievalLogs: [], contextTraces: [], modelUsageRecords: [], knowledgeConnections: [], oneKeyDevices: [],
+    deviceChallenges: [], oneTimeLoginCodes: [], powerAccounts: [], powerLedger: [], rechargeOrders: [], auditLogs: [], agents: [],
+    attachments: [], executionTasks: [], executionEvents: [], settings: { safetyRules: "", rechargeCnyPerPower: 7 }
+  };
 }
 
 function omitRedundantPersistedData(this: unknown, key: string, value: unknown) {

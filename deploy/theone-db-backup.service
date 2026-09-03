@@ -1,0 +1,13 @@
+[Unit]
+Description=ONE MySQL backup
+After=mysql.service
+
+[Service]
+Type=oneshot
+User=theone
+Group=theone
+ExecStart=/srv/theone/current/deploy/theone-db-backup
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+

@@ -1,0 +1,12 @@
+[Unit]
+Description=Nightly ONE MySQL backup
+
+[Timer]
+OnCalendar=*-*-* 03:25:00 Asia/Shanghai
+RandomizedDelaySec=15m
+Persistent=true
+Unit=theone-db-backup.service
+
+[Install]
+WantedBy=timers.target
+

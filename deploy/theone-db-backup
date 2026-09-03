@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+backup_root="/srv/theone/shared/backups/mysql"
+defaults_file="/srv/theone/shared/mysql-backup.cnf"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+target="$backup_root/theone_prod-$stamp.sql.gz"
+
+[[ -r "$defaults_file" ]] || { echo "Missing readable MySQL backup credentials." >&2; exit 1; }
+install -d -m 0750 "$backup_root"
+
+mysqldump --defaults-extra-file="$defaults_file" --single-transaction --quick --skip-lock-tables --no-tablespaces theone_prod \
+  | gzip -9 > "$target"
+gzip --test "$target"
+sha256sum "$target" > "$target.sha256"
+
+# Optional operator-owned off-site uploader. It receives the dump and checksum
+# paths and must exit non-zero when the remote copy was not confirmed.
+if [[ -x /srv/theone/shared/backup-upload ]]; then
+  /srv/theone/shared/backup-upload "$target" "$target.sha256"
+fi
+
+find "$backup_root" -type f \( -name 'theone_prod-*.sql.gz' -o -name 'theone_prod-*.sql.gz.sha256' \) -mtime +14 -delete
+echo "Created $target"
+
