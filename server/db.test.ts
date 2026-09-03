@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { relationalRecordMetadata } from "./db.js";
+import { relationalRecordMetadata } from "./dbRelationalMetadata.js";
 import type { Database } from "./types.js";
 
 const database = {

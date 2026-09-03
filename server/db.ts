@@ -5,6 +5,8 @@ import mysql from "mysql2/promise";
 import { Database, ModelConfig, User, Workspace } from "./types.js";
 import { hashPassword, uid } from "./security.js";
 import { decryptCredential, encryptCredential } from "./knowledge/credentialCipher.js";
+import { relationalRecordMetadata } from "./dbRelationalMetadata.js";
+import type { CollectionName, StoredRecord } from "./dbRelationalMetadata.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -99,9 +101,6 @@ class MySqlStore implements Store {
     return result;
   }
 }
-
-type CollectionName = Exclude<keyof Database, "settings">;
-type StoredRecord = { id: string; workspaceId?: string; userId?: string; [key: string]: unknown };
 
 const relationalTables: Record<CollectionName, string> = {
   users: "users", workspaces: "workspaces", workspaceMembers: "workspace_members", conversationFolders: "conversation_folders",
@@ -210,56 +209,6 @@ async function persistRelationalState(pool: mysql.Pool, before: Database, after:
   } finally {
     connection.release();
   }
-}
-
-export function relationalRecordMetadata(collection: CollectionName, item: StoredRecord, db: Database) {
-  return {
-    workspaceId: recordWorkspaceId(collection, item, db),
-    userId: recordUserId(collection, item),
-    parentId: recordParentId(collection, item),
-    lookupKey: recordLookupKey(collection, item)
-  };
-}
-
-function recordWorkspaceId(collection: CollectionName, item: StoredRecord, db: Database): string | null {
-  if (typeof item.workspaceId === "string" && item.workspaceId) return item.workspaceId;
-  if (collection === "workspaces") return item.id;
-  if (collection === "users" && typeof item.defaultWorkspaceId === "string") return item.defaultWorkspaceId;
-  if ((collection === "deviceChallenges" || collection === "oneTimeLoginCodes") && typeof item.deviceId === "string") {
-    return db.oneKeyDevices.find((device) => device.id === item.deviceId)?.workspaceId ?? null;
-  }
-  if (collection === "executionEvents" && typeof item.taskId === "string") {
-    return db.executionTasks.find((task) => task.id === item.taskId)?.workspaceId ?? null;
-  }
-  return null;
-}
-
-function recordUserId(collection: CollectionName, item: StoredRecord): string | null {
-  if (typeof item.userId === "string" && item.userId) return item.userId;
-  if (collection === "users") return item.id;
-  if (typeof item.ownerId === "string" && item.ownerId) return item.ownerId;
-  if (typeof item.actorUserId === "string" && item.actorUserId) return item.actorUserId;
-  return null;
-}
-
-function recordParentId(collection: CollectionName, item: StoredRecord): string | null {
-  const fields = collection === "messages" || collection === "retrievalLogs" || collection === "contextTraces" || collection === "modelUsageRecords" || collection === "attachments"
-    ? ["conversationId"]
-    : collection === "deviceChallenges" || collection === "oneTimeLoginCodes" ? ["deviceId"]
-    : collection === "executionEvents" ? ["taskId"] : [];
-  const value = fields.length ? item[fields[0]] : undefined;
-  return typeof value === "string" && value ? value : null;
-}
-
-function recordLookupKey(collection: CollectionName, item: StoredRecord): string | null {
-  if (collection === "users" && typeof item.username === "string") return item.username.trim().toLowerCase();
-  if (collection === "workspaces" && typeof item.slug === "string") return item.slug.trim().toLowerCase();
-  if (collection === "workspaceMembers" && typeof item.workspaceId === "string" && typeof item.userId === "string") return `${item.workspaceId}:${item.userId}`;
-  if (collection === "knowledgeConnections" && typeof item.workspaceId === "string" && typeof item.provider === "string") return `${item.workspaceId}:${item.provider}`;
-  if (collection === "oneKeyDevices" && typeof item.serialNumber === "string") return item.serialNumber.trim();
-  if (collection === "oneTimeLoginCodes" && typeof item.tokenHash === "string") return item.tokenHash;
-  if (collection === "powerAccounts" && typeof item.workspaceId === "string" && typeof item.userId === "string") return `${item.workspaceId}:${item.userId}`;
-  return null;
 }
 
 function stableJson(value: unknown) { return JSON.stringify(value, omitRedundantPersistedData); }
