@@ -2,6 +2,18 @@ import type { Database, ExecutionEvent, ExecutionTask, Message, MessageRecord } 
 
 const maxCompilerContextChars = 36_000;
 
+export function executionTrace(database: Database, taskId: string, workspaceId: string, userId: string) {
+  const task = database.executionTasks.find((item) => item.id === taskId && item.workspaceId === workspaceId && item.userId === userId);
+  if (!task) return undefined;
+  return {
+    task: publicExecutionTask(task),
+    instruction: task.instruction,
+    messages: messagesThrough(database.messages.filter((item) => item.userId === userId), task.conversationId, workspaceId, task.sourceMessageId)
+      .map(({ id, role, content }) => ({ id, role, content })),
+    contextLimitChars: maxCompilerContextChars
+  };
+}
+
 export function messagesThrough(records: MessageRecord[], conversationId: string, workspaceId: string, sourceMessageId: string) {
   const ordered = records
     .filter((item) => item.conversationId === conversationId && item.workspaceId === workspaceId)

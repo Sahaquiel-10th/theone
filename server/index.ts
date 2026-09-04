@@ -23,7 +23,7 @@ import { KnowledgeService } from "./knowledge/knowledgeService.js";
 import { OneKeyService } from "./oneKeyService.js";
 import { calculateModelPower, chargePower, creditPower, MICROS_PER_POWER, powerAccount } from "./powerBilling.js";
 import { oneKeyPresence } from "./runtime.js";
-import { appendExecutionEvent, buildExecutionCompilerMessages, messagesThrough, publicExecutionTask, taskEvents } from "./executionService.js";
+import { appendExecutionEvent, buildExecutionCompilerMessages, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -384,6 +384,12 @@ app.get("/api/executions/:id", auth(jwtSecret), asyncRoute(async (req, res) => {
   const task = db.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
   if (!task) return res.status(404).json({ error: "执行任务不存在", code: "EXECUTION_NOT_FOUND" });
   res.json({ task: publicExecutionTask(task), events: taskEvents(db, task) });
+}));
+
+app.get("/api/executions/:id/trace", auth(jwtSecret), asyncRoute(async (req, res) => {
+  const trace = executionTrace(await store.read(), String(req.params.id), req.workspaceId!, req.user!.id);
+  if (!trace) return res.status(404).json({ error: "执行任务不存在", code: "EXECUTION_NOT_FOUND" });
+  res.json(trace);
 }));
 
 app.get("/api/executions/:id/stream", auth(jwtSecret), asyncRoute(async (req, res) => {

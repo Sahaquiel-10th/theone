@@ -524,6 +524,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [knowledgeConfigured, setKnowledgeConfigured] = useState(false);
   const [executionTask, setExecutionTask] = useState<ExecutionTask | null>(null);
   const [executionEvents, setExecutionEvents] = useState<ExecutionEvent[]>([]);
+  const [executionTraceText, setExecutionTraceText] = useState("");
   const [executionMode, setExecutionMode] = useState(false);
   const [preparingExecution, setPreparingExecution] = useState(false);
 
@@ -951,6 +952,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setExecutionMode(true);
     setExecutionTask(null);
     setExecutionEvents([]);
+    setExecutionTraceText("");
     setError("");
     try {
       const result = await api<{ task: ExecutionTask; events: ExecutionEvent[] }>("/api/executions/from-message", {
@@ -1088,6 +1090,17 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                 {executionBusy ? <button className="execution-stop" type="button" onClick={cancelExecution}><Square size={13} />停止</button> : <span className={`execution-state ${executionTask.status}`}>{executionTask.status === "completed" ? "已完成" : executionTask.status === "failed" ? "失败" : executionTask.status === "cancelled" ? "已停止" : "执行中"}</span>}
               </header>
               <div className="execution-feed">
+                <details onToggle={async (event) => {
+                  if (!event.currentTarget.open) return;
+                  setExecutionTraceText("正在读取本次交接记录…");
+                  try {
+                    const trace = await api<{ instruction: string; messages: { role: string; content: string }[]; contextLimitChars: number }>(`/api/executions/${executionTask.id}/trace`);
+                    setExecutionTraceText(`发给 Codex 的实际指令\n\n${trace.instruction}\n\n截至所选消息的原对话\n\n${trace.messages.map((item) => `${item.role}: ${item.content}`).join("\n\n")}\n\n编译输入上限：${trace.contextLimitChars} 字符；超出时当前实现保留尾部。`);
+                  } catch (error) { setExecutionTraceText(error instanceof Error ? error.message : "读取失败"); }
+                }}>
+                  <summary>查看执行上下文（调试）</summary>
+                  <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{executionTraceText}</pre>
+                </details>
                 {executionEvents.map((event) => event.kind === "message" || event.kind === "user_message" ? (
                   <article className={`execution-message ${event.kind === "user_message" ? "user" : "codex"}`} key={event.id}>
                     <div className="execution-speaker">{event.kind === "user_message" ? "YOU" : "CODEX"}</div>

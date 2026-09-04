@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Database, ExecutionTask, MessageRecord } from "./types.js";
-import { appendExecutionEvent, buildExecutionCompilerMessages, messagesThrough, publicExecutionTask, taskEvents } from "./executionService.js";
+import { appendExecutionEvent, buildExecutionCompilerMessages, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
+
+test("execution trace cannot expose another workspace or user's instruction", () => {
+  const database = { executionTasks: [{ id: "t", workspaceId: "a", userId: "u", instruction: "private" }], messages: [] } as unknown as Database;
+  assert.equal(executionTrace(database, "t", "b", "u"), undefined);
+  assert.equal(executionTrace(database, "t", "a", "other"), undefined);
+});
 
 const records: MessageRecord[] = [
   { id: "m1", workspaceId: "workspace-a", userId: "user-a", conversationId: "c1", role: "user", content: "先分析登录问题", createdAt: "2026-01-01T00:00:00.000Z" },
