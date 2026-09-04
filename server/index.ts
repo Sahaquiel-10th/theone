@@ -352,7 +352,17 @@ app.post("/api/knowledge/connections/getnote/device-flow/:flowId/poll", auth(jwt
   if (flow.expiresAt <= Date.now()) { getNoteFlows.delete(flowId); return res.status(410).json({ error: "授权已过期，请重新连接", code: "FLOW_EXPIRED" }); }
   if (flow.nextPollAt > Date.now()) return res.status(429).json({ error: "轮询过快", code: "POLL_TOO_FAST", retryAfterMs: flow.nextPollAt - Date.now() });
   flow.nextPollAt = Date.now() + 5000;
-  const token = await getNoteProvider.pollDeviceFlow(flow.clientId, flow.code); if (token.status === "pending") return res.status(202).json({ status: "pending" });
+  let token;
+  try { token = await getNoteProvider.pollDeviceFlow(flow.clientId, flow.code); }
+  catch (error) {
+    const message = error instanceof Error ? error.message : "授权检查失败";
+    if (/access_denied|expired_token/.test(message)) {
+      getNoteFlows.delete(flowId);
+      return res.status(410).json({ error: /access_denied/.test(message) ? "已取消授权，可以重新连接" : "授权已过期，请重新连接", code: "FLOW_ENDED" });
+    }
+    throw error;
+  }
+  if (token.status === "pending") { flow.nextPollAt = Date.now() + (token.retryAfterSeconds || 5) * 1000; return res.status(202).json(token); }
   if (!token.apiKey) throw new Error("得到大脑授权成功但未返回 API Key");
   await getNoteProvider.verify({ clientId: token.clientId, apiKey: token.apiKey });
   const connection = await store.mutate((mutable) => { const timestamp = now(); let target = mutable.knowledgeConnections.find((item) => item.workspaceId === req.workspaceId && item.provider === "getnote"); if (!target) { target = { id: uid("knc"), workspaceId: req.workspaceId!, provider: "getnote", status: "connected", clientId: token.clientId, createdAt: timestamp, updatedAt: timestamp }; mutable.knowledgeConnections.push(target); } target.status = "connected"; target.clientId = token.clientId; target.encryptedApiKey = encryptCredential(token.apiKey); target.providerSpaceId = undefined; target.providerSpaceName = undefined; target.credentialExpiresAt = token.expiresAt ? new Date(token.expiresAt * 1000).toISOString() : undefined; target.lastCheckedAt = timestamp; target.lastError = undefined; target.updatedAt = timestamp; return target; });

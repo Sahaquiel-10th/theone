@@ -223,7 +223,7 @@ type ContextTraceDetail = ContextTraceSummary & { assistantMessageId: string; mo
 type OneKeyCredential = { version: 1; deviceId: string; privateKeyRaw: string; publicKeyRaw: string; serverBaseUrl?: string };
 
 class ApiError extends Error {
-  constructor(message: string, readonly requestId?: string) {
+  constructor(message: string, readonly requestId?: string, readonly status?: number) {
     super(message);
   }
 }
@@ -242,7 +242,7 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (!response.ok) {
     const requestId = payload.requestId || response.headers.get("x-request-id") || undefined;
     const message = payload.error || (response.status === 504 ? "模型响应超时，请稍后重试" : `请求失败（${response.status}）`);
-    throw new ApiError(requestId ? `${message} · 编号 ${requestId}` : message, requestId);
+    throw new ApiError(requestId ? `${message} · 编号 ${requestId}` : message, requestId, response.status);
   }
   return payload as T;
 }
@@ -1621,9 +1621,14 @@ function KnowledgePage({
     if (!flow || !polling) return;
     let cancelled = false;
     const delay = Math.max(5, flow.interval || 5) * 1000;
-    const timer = window.setTimeout(async () => {
+    const expiresAt = Date.now() + flow.expiresIn * 1000;
+    let retries = 0;
+    let timer: number;
+    async function poll() {
+      if (cancelled) return;
+      if (Date.now() >= expiresAt) { setFlow(null); setPolling(false); setNotice("授权已过期，请重新连接。"); return; }
       try {
-        const result = await api<{ status?: "pending"; connection?: KnowledgeConnection }>(`/api/knowledge/connections/getnote/device-flow/${encodeURIComponent(flow.flowId)}/poll`, { method: "POST" });
+        const result = await api<{ status?: "pending"; retryAfterSeconds?: number; connection?: KnowledgeConnection }>(`/api/knowledge/connections/getnote/device-flow/${encodeURIComponent(flow!.flowId)}/poll`, { method: "POST" });
         if (cancelled) return;
         if (result.connection) {
           setConnection(result.connection);
@@ -1632,13 +1637,20 @@ function KnowledgePage({
           setPolling(false);
           setNotice("连接成功，ONE 现在可以读取你的得到大脑知识。");
         } else {
-          setPolling(false);
-          window.setTimeout(() => setPolling(true), delay);
+          retries = 0;
+          timer = window.setTimeout(poll, Math.max(delay, (result.retryAfterSeconds || 0) * 1000));
         }
       } catch (err) {
-        if (!cancelled) { setPolling(false); setNotice(err instanceof Error ? err.message : "授权检查失败"); }
+        if (cancelled) return;
+        if (err instanceof ApiError && [400, 401, 403, 404, 410, 428].includes(err.status || 0)) {
+          setFlow(null); setPolling(false); setNotice(err.message);
+        } else {
+          setNotice("连接暂时不稳定，正在自动重试；你可以继续完成官方授权。");
+          timer = window.setTimeout(poll, Math.min(30000, delay * 2 ** ++retries));
+        }
       }
-    }, delay);
+    }
+    timer = window.setTimeout(poll, delay);
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [flow, polling]);
 
@@ -1698,6 +1710,7 @@ function KnowledgePage({
                 <div className="notice">
                   授权码：<strong>{flow.userCode}</strong>。授权页已打开，系统正在自动确认…
                   <a href={flow.verificationUri} target="_blank" rel="noreferrer">重新打开授权页</a>
+                  <button type="button" onClick={() => { setFlow(null); setPolling(false); setNotice(""); }}>取消等待 / 重新开始</button>
                 </div>
               ) : null}
             </>

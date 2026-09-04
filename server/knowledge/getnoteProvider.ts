@@ -38,7 +38,7 @@ async function request<T>(path: string, credentials?: KnowledgeCredentials, init
 }
 
 export type GetNoteDeviceCode = { code: string; verificationUri: string; userCode: string; expiresIn: number; interval: number };
-export type GetNoteTokenResult = { status: "pending" } | { status: "connected"; clientId: string; apiKey: string; expiresAt?: number };
+export type GetNoteTokenResult = { status: "pending"; retryAfterSeconds?: number } | { status: "connected"; clientId: string; apiKey: string; expiresAt?: number };
 
 export class GetNoteProvider implements KnowledgeProvider {
   async verify(credentials: KnowledgeCredentials): Promise<void> {
@@ -55,11 +55,16 @@ export class GetNoteProvider implements KnowledgeProvider {
 
   async pollDeviceFlow(clientId: string, code: string): Promise<GetNoteTokenResult> {
     try {
-      const data = await request<{ client_id: string; api_key: string; expires_at?: number }>("/oauth/token", undefined, { method: "POST", body: JSON.stringify({ grant_type: "device_code", client_id: clientId, code }) });
+      const data = await request<{ msg?: string; client_id: string; api_key: string; expires_at?: number }>("/oauth/token", undefined, { method: "POST", body: JSON.stringify({ grant_type: "device_code", client_id: clientId, code }) });
+      if (data.msg === "authorization_pending") return { status: "pending" };
+      if (data.msg === "slow_down") return { status: "pending", retryAfterSeconds: 10 };
+      if (data.msg === "access_denied" || data.msg === "expired_token") throw new Error(data.msg);
+      if (typeof data.api_key !== "string" || !data.api_key.trim()) throw new Error("得到授权响应缺少凭据，请重新发起授权");
       return { status: "connected", clientId: data.client_id || clientId, apiKey: data.api_key, expiresAt: data.expires_at };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (/authorization_pending/i.test(message)) return { status: "pending" };
+      if (/slow_down/i.test(message)) return { status: "pending", retryAfterSeconds: 10 };
       throw error;
     }
   }

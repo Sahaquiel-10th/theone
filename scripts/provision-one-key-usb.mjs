@@ -45,7 +45,8 @@ if ((fs.existsSync(appTarget) || fs.existsSync(hiddenTarget)) && !has("--replace
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "one-key-usb-"));
 const buildOutput = path.join(temporaryRoot, "payload");
 try {
-  execFileSync(process.execPath, [path.join(projectRoot, "scripts/build-macos-one-key.mjs"), "--credential", credentialPath, "--output", buildOutput], { stdio: "inherit" });
+  const runtimeArgs = value("--codex-bin") ? ["--codex-bin", path.resolve(value("--codex-bin"))] : [];
+  execFileSync(process.execPath, [path.join(projectRoot, "scripts/build-macos-one-key.mjs"), "--credential", credentialPath, "--output", buildOutput, ...runtimeArgs], { stdio: "inherit" });
   if (fs.existsSync(appTarget) || fs.existsSync(hiddenTarget)) {
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "");
     const backupRoot = path.join(volumePath, `.one-backup-${stamp}`);

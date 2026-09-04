@@ -2,6 +2,24 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { GetNoteProvider } from "./getnoteProvider.js";
 
+test("real HTTP 200 pending response remains pending until a credential arrives", async () => {
+  const originalFetch = globalThis.fetch;
+  const responses = [
+    { success: true, data: { msg: "authorization_pending" } },
+    { success: true, data: { msg: "slow_down" } },
+    { success: true, data: { api_key: "test-key", client_id: "one" } },
+    { success: true, data: {} }
+  ];
+  globalThis.fetch = (async () => new Response(JSON.stringify(responses.shift()), { status: 200 })) as typeof fetch;
+  try {
+    const provider = new GetNoteProvider();
+    assert.deepEqual(await provider.pollDeviceFlow("one", "test-code"), { status: "pending" });
+    assert.deepEqual(await provider.pollDeviceFlow("one", "test-code"), { status: "pending", retryAfterSeconds: 10 });
+    assert.equal((await provider.pollDeviceFlow("one", "test-code")).status, "connected");
+    await assert.rejects(provider.pollDeviceFlow("one", "test-code"), /缺少凭据/);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("uses GetNote device authorization and global knowledge search", async () => {
   const originalFetch = globalThis.fetch;
   const calls: Array<{ url: string; init?: RequestInit }> = [];
