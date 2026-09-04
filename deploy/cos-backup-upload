@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+[[ "$#" -eq 2 ]] || { echo "Usage: cos-backup-upload DUMP CHECKSUM" >&2; exit 2; }
+dump_file="$1"
+checksum_file="$2"
+config_file="/srv/theone/shared/cos-backup.yaml"
+remote_root="cos://one-backup/production/mysql"
+
+[[ -r "$dump_file" && -r "$checksum_file" ]] || { echo "Backup files are not readable." >&2; exit 1; }
+[[ -r "$config_file" ]] || { echo "COS backup configuration is not readable." >&2; exit 1; }
+command -v coscli >/dev/null || { echo "coscli is not installed." >&2; exit 1; }
+
+for local_file in "$dump_file" "$checksum_file"; do
+  remote_file="$remote_root/$(basename "$local_file")"
+  coscli cp "$local_file" "$remote_file" --config-path "$config_file" --forbid-overwrite=true --thread-num 1 --err-retry-num 5 --encryption-type SSE-COS --server-side-encryption AES256
+  coscli stat "$remote_file" --config-path "$config_file" >/dev/null
+done
+
+echo "Confirmed COS copies under $remote_root/"

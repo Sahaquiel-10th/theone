@@ -57,3 +57,20 @@ Before the external pilot, install an executable
 `/srv/theone/shared/backup-upload`; it receives the dump and checksum paths and
 must upload both to a private COS bucket. This keeps COS credentials outside the
 repository and makes a failed off-site copy fail the backup job visibly.
+
+### Tencent COS without permanent keys
+
+Create a private COS bucket in `ap-nanjing`, then bind a least-privilege CAM role
+to the CVM. COSCLI obtains rotating temporary credentials from the instance role,
+so no SecretId or SecretKey is stored on disk. After the role is attached, run:
+
+```bash
+sudo bash /srv/theone/current/deploy/setup-cos-backup.sh BUCKET-NAME-WITH-APPID CVM-ROLE-NAME
+```
+
+The setup downloads and verifies the official Linux amd64 COSCLI, installs a
+role-based configuration, enables the pre-existing upload hook, creates a fresh
+database backup and confirms both the dump and SHA-256 file exist remotely under
+`production/mysql/`. Uploads request COS-managed AES-256 encryption and never
+grant the CVM permission to download or delete backups. Start from
+`deploy/cos-backup-cam-policy.template.json` when creating the CAM policy.
