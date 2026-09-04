@@ -30,8 +30,8 @@ fs.writeFileSync(path.join(contents, "Info.plist"), `<?xml version="1.0" encodin
 <key>CFBundleIdentifier</key><string>one.theone.key</string>
 <key>CFBundleName</key><string>ONE</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.2.3</string>
-<key>CFBundleVersion</key><string>5</string>
+<key>CFBundleShortVersionString</key><string>0.2.4</string>
+<key>CFBundleVersion</key><string>6</string>
 <key>CFBundleIconFile</key><string>ONE.icns</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSUIElement</key><true/>
@@ -43,6 +43,15 @@ if (codexBinary) {
   if (!fs.existsSync(codexBinary)) throw new Error(`Codex Runtime 不存在：${codexBinary}`);
   fs.copyFileSync(codexBinary, path.join(resources, "codex"));
   fs.chmodSync(path.join(resources, "codex"), 0o755);
+  // Desktop runtimes delegate code-mode execution to this sibling binary.
+  // Include only known runtime components, never the user's Codex home/auth.
+  for (const name of ["codex-code-mode-host", "rg"]) {
+    const source = path.join(path.dirname(codexBinary), name);
+    if (fs.existsSync(source)) {
+      fs.copyFileSync(source, path.join(resources, name));
+      fs.chmodSync(path.join(resources, name), 0o755);
+    }
+  }
 }
 
 const iconset = path.join(outputRoot, "ONE.iconset");

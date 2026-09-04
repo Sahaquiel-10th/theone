@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import Foundation
+import CFNetwork
 
 struct DeviceCredential: Decodable {
     let version: Int
@@ -136,6 +137,28 @@ func codexExecutable() -> String? {
     return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
 }
 
+// Finder-launched processes do not inherit shell proxy variables. Honor the
+// user's configured system HTTP proxies without hard-coding a proxy service.
+func executionEnvironment() -> [String: String] {
+    var environment = ProcessInfo.processInfo.environment
+    guard let settings = CFNetworkCopySystemProxySettings()?.takeRetainedValue() as? [String: Any] else { return environment }
+    for (prefix, variable) in [("HTTP", "HTTP_PROXY"), ("HTTPS", "HTTPS_PROXY")] {
+        guard environment[variable] == nil, environment[variable.lowercased()] == nil,
+              environment["ALL_PROXY"] == nil, environment["all_proxy"] == nil,
+              (settings[prefix + "Enable"] as? NSNumber)?.boolValue == true,
+              let host = settings[prefix + "Proxy"] as? String,
+              let port = settings[prefix + "Port"] as? Int, (1...65535).contains(port) else { continue }
+        var url = URLComponents()
+        url.scheme = "http"; url.host = host; url.port = port
+        if let value = url.url?.absoluteString { environment[variable] = value }
+    }
+    if environment["NO_PROXY"] == nil, environment["no_proxy"] == nil {
+        let exceptions = (settings["ExceptionsList"] as? [String] ?? []).map { $0.hasPrefix("*.") ? String($0.dropFirst()) : $0 }
+        environment["NO_PROXY"] = (["localhost", "127.0.0.1", "::1"] + exceptions).joined(separator: ",")
+    }
+    return environment
+}
+
 final class CodexExecutionRunner: @unchecked Sendable {
     private let socket: URLSessionWebSocketTask
     private let deviceId: String
@@ -182,6 +205,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
         let process = Process()
         let stdout = Pipe(), stderr = Pipe(), stdin = Pipe()
         process.executableURL = URL(fileURLWithPath: executable)
+        process.environment = executionEnvironment()
         var arguments = ["exec", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check", "-C", projectPath]
         if resume, let threadId { arguments += ["resume", threadId, "-"] } else { arguments.append("-") }
         process.arguments = arguments
@@ -222,7 +246,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
             let (wasCancelled, finalResponse, errorText) = result
             if wasCancelled { return }
             if exitCode == 0 {
-                await send(taskId: taskId, kind: "status", text: finalResponse == nil ? "Codex 已完成任务，但没有返回文字结果" : "Codex 已完成任务", status: "completed")
+                await send(taskId: taskId, kind: "status", text: finalResponse == nil ? "Codex 本轮已结束，但没有返回文字结果" : "Codex 本轮已结束，请查看执行结果", status: "completed")
             } else {
                 await send(taskId: taskId, kind: "error", text: errorText.isEmpty ? "Codex 执行失败" : String(errorText.prefix(4000)), status: "failed")
             }
@@ -345,6 +369,9 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func runSession() async {
+        var openedLogin = false
+        var failures = 0
+        while !stopping {
         do {
             guard let foundUrl = findCredentialUrl() else { throw LauncherError.message("没有找到 ONE Key，请插入后重试") }
             let foundCredential = try loadCredential(foundUrl)
@@ -358,13 +385,28 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             ready = true
             removalTask = Task { await monitorRemoval(of: foundUrl) }
 
-            try await openLoginPage(base: foundBase, credentialUrl: foundUrl, deviceId: foundCredential.deviceId)
+            if !openedLogin {
+                try await openLoginPage(base: foundBase, credentialUrl: foundUrl, deviceId: foundCredential.deviceId)
+                openedLogin = true
+            }
+            failures = 0
             try await serveProofs(connectedSocket, credentialUrl: foundUrl, deviceId: foundCredential.deviceId)
             if !stopping { throw LauncherError.message("ONE Key 连接已断开，请重新双击 ONE 图标") }
         } catch is CancellationError {
-            // Normal application termination.
+            return
         } catch {
-            if !stopping { showFailure(error) }
+            failures += 1
+            let terminalClose = [4003, 4009].contains(socket?.closeCode.rawValue ?? 0)
+            if !stopping, !terminalClose, openedLogin, failures <= 10, let credentialUrl, FileManager.default.fileExists(atPath: credentialUrl.path) {
+                socket?.cancel(with: .goingAway, reason: nil)
+                removalTask?.cancel()
+                ready = false
+                do { try await Task.sleep(for: .seconds(min(failures * 3, 15))) } catch { return }
+            } else {
+                if !stopping { showFailure(error) }
+                return
+            }
+        }
         }
     }
 
