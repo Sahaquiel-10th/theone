@@ -68,7 +68,8 @@ so no SecretId or SecretKey is stored on disk. After the role is attached, run:
 sudo bash /srv/theone/current/deploy/setup-cos-backup.sh BUCKET-NAME-WITH-APPID CVM-ROLE-NAME
 ```
 
-The setup downloads and verifies the official Linux amd64 COSCLI, installs a
+The setup downloads the Linux amd64 COSCLI from Tencent Cloud's mainland mirror,
+verifies its published SHA-256 checksum, installs a
 role-based configuration, enables the pre-existing upload hook, creates a fresh
 database backup and confirms both the dump and SHA-256 file exist remotely under
 `production/mysql/`. Uploads request COS-managed AES-256 encryption and never

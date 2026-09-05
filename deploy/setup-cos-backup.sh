@@ -14,7 +14,7 @@ bucket_name="$1"
 role_name="$2"
 app_root="/srv/theone"
 config_file="$app_root/shared/cos-backup.yaml"
-binary_url="https://github.com/tencentyun/coscli/releases/download/v1.0.9/coscli-v1.0.9-linux-amd64"
+binary_url="https://cosbrowser.cloud.tencent.com/software/coscli/coscli-linux-amd64"
 binary_sha256="a07de5ba2800147a700ed29036b0c76a4229088cee68e1682d0eae19b638a915"
 
 [[ "$bucket_name" =~ ^[a-z0-9][a-z0-9-]*-[0-9]+$ ]] || { echo "Bucket must include its APPID suffix, for example theone-backup-1250000000." >&2; exit 2; }
@@ -23,8 +23,11 @@ binary_sha256="a07de5ba2800147a700ed29036b0c76a4229088cee68e1682d0eae19b638a915"
 
 tmp_binary="$(mktemp)"
 trap 'rm -f "$tmp_binary"' EXIT
-curl --fail --location --silent --show-error "$binary_url" --output "$tmp_binary"
-printf '%s  %s\n' "$binary_sha256" "$tmp_binary" | sha256sum --check --status
+curl --fail --location --silent --show-error --connect-timeout 10 --max-time 120 "$binary_url" --output "$tmp_binary"
+if ! printf '%s  %s\n' "$binary_sha256" "$tmp_binary" | sha256sum --check --status; then
+  echo "Downloaded COSCLI did not match Tencent Cloud's published SHA-256 checksum." >&2
+  exit 1
+fi
 install -m 0755 "$tmp_binary" /usr/local/bin/coscli
 
 cat > "$config_file" <<EOF
