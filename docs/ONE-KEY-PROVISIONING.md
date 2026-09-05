@@ -14,12 +14,21 @@ npm run provision:one-key:mac -- --credential ~/Downloads/ONE-序列号.one-key.
 
 如果这只 U 盘以前灌装过，确认需要替换后增加 `--replace`。脚本会先把旧的 `ONE.app` 和 `.one` 目录移动到带时间戳的备份目录，不会格式化 U 盘，也不会修改其他文件。
 
-5. 弹出再插入 U 盘，双击 `ONE.app`。首次验证成功后应直接打开对应用户的 ONE。
-6. 在超管后台核对序列号、绑定用户和最后使用时间，再贴标并交付。
+5. 需要兼容 Windows 时，在同一只已经写入凭证的 U 盘上继续执行：
+
+```bash
+npm run provision:one-key:windows -- --volume /Volumes/U盘名称
+```
+
+Windows 构建需要 Go 1.23 或更高版本。可用 `--go-bin /完整路径/go` 指定不安装到系统的 Go 工具链。重复灌装时增加 `--replace`。
+
+6. 弹出再插入 U 盘：macOS 双击 `ONE.app`，Windows 双击 `ONE.exe`。两端共用 `.one/credential.json`，因此对应同一个 ONE Key、账号和 Workspace。
+7. 在超管后台核对序列号、绑定用户和最后使用时间，再贴标并交付。
 
 ## 当前边界
 
 - 序列号是运营标签，不是普通 U 盘可靠的硬件唯一标识。
 - 普通 U 盘里的私钥仍可被复制；挂失会让该设备 ID 的所有副本一起失效。
 - 当前是“超管创建账号并预绑定 U 盘”，还不是用户收到未绑定 U 盘后自行认领。
-- macOS 不允许普通 U 盘凭自身内容自动运行应用；V0.1 保留“插入后双击 ONE.app”。
+- macOS 和 Windows 都不应依赖普通 U 盘自动运行应用；V0.1 保留“插入后双击对应 ONE 图标”。
+- Windows V0.1 启动器支持 ONE Key 登录、在场验证、聊天与知识问答；本机 Codex 文件执行仍只随 macOS 启动器提供。
