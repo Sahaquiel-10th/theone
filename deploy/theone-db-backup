@@ -14,12 +14,13 @@ mysqldump --defaults-extra-file="$defaults_file" --single-transaction --quick --
 gzip --test "$target"
 sha256sum "$target" > "$target.sha256"
 
-# Optional operator-owned off-site uploader. It receives the dump and checksum
-# paths and must exit non-zero when the remote copy was not confirmed.
-if [[ -x /srv/theone/shared/backup-upload ]]; then
+# The release-owned COS uploader is updated atomically with ONE deployments.
+# A custom operator-owned hook remains available for other backup destinations.
+if [[ -r /srv/theone/shared/cos-backup.yaml && -x /srv/theone/current/deploy/cos-backup-upload ]]; then
+  /srv/theone/current/deploy/cos-backup-upload "$target" "$target.sha256"
+elif [[ -x /srv/theone/shared/backup-upload ]]; then
   /srv/theone/shared/backup-upload "$target" "$target.sha256"
 fi
 
 find "$backup_root" -type f \( -name 'theone_prod-*.sql.gz' -o -name 'theone_prod-*.sql.gz.sha256' \) -mtime +14 -delete
 echo "Created $target"
-

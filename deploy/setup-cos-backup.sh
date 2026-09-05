@@ -47,7 +47,7 @@ chown root:theone "$config_file"
 chmod 0640 "$config_file"
 install -m 0750 -o root -g theone "$app_root/current/deploy/cos-backup-upload" "$app_root/shared/backup-upload"
 
-sudo -u theone coscli ls cos://one-backup/ --config-path "$config_file" --limit 1 >/dev/null
+sudo -u theone coscli ls cos://one-backup/ --config-path "$config_file" --limit 1 --disable-log >/dev/null
 systemctl start theone-db-backup.service
 systemctl --no-pager --full status theone-db-backup.service
 

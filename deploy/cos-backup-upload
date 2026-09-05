@@ -13,8 +13,8 @@ command -v coscli >/dev/null || { echo "coscli is not installed." >&2; exit 1; }
 
 for local_file in "$dump_file" "$checksum_file"; do
   remote_file="$remote_root/$(basename "$local_file")"
-  coscli cp "$local_file" "$remote_file" --config-path "$config_file" --forbid-overwrite=true --thread-num 1 --err-retry-num 5 --encryption-type SSE-COS --server-side-encryption AES256
-  coscli stat "$remote_file" --config-path "$config_file" >/dev/null
+  coscli cp "$local_file" "$remote_file" --config-path "$config_file" --forbid-overwrite=true --thread-num 1 --err-retry-num 5 --encryption-type SSE-COS --server-side-encryption AES256 --disable-log --process-log=false
+  coscli stat "$remote_file" --config-path "$config_file" --disable-log >/dev/null
 done
 
 echo "Confirmed COS copies under $remote_root/"
