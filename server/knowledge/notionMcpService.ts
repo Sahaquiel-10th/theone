@@ -15,7 +15,7 @@ const readOnlyTools = new Set(["notion-fetch", "notion-search", "notion-ai-searc
 const flowLifetimeMs = 10 * 60 * 1000;
 const maxChunkChars = 24_000;
 
-type OAuthClient = { clientId: string; clientSecret?: string };
+type OAuthClient = { clientId: string; clientSecret?: string; tokenAuthMethod: "none" | "client_secret_post" };
 type OAuthFlow = OAuthClient & {
   workspaceId: string;
   userId: string;
@@ -156,6 +156,7 @@ export class NotionMcpService {
       if (connection.status !== "connected") connection.status = "pending";
       connection.clientId = client.clientId;
       connection.encryptedClientSecret = client.clientSecret ? encryptCredential(client.clientSecret) : undefined;
+      connection.oauthTokenAuthMethod = client.tokenAuthMethod;
       connection.lastError = undefined;
       connection.updatedAt = timestamp;
     });
@@ -186,6 +187,7 @@ export class NotionMcpService {
       target.status = "connected";
       target.clientId = token.client_id || flow.clientId;
       target.encryptedClientSecret = flow.clientSecret ? encryptCredential(flow.clientSecret) : undefined;
+      target.oauthTokenAuthMethod = flow.tokenAuthMethod;
       target.encryptedAccessToken = encryptCredential(token.access_token);
       target.encryptedRefreshToken = token.refresh_token ? encryptCredential(token.refresh_token) : undefined;
       target.credentialExpiresAt = token.expires_in ? new Date(Date.now() + token.expires_in * 1000).toISOString() : undefined;
@@ -213,7 +215,7 @@ export class NotionMcpService {
     if (current?.encryptedAccessToken) {
       const body = new URLSearchParams({ token: decryptCredential(current.encryptedAccessToken), client_id: current.clientId });
       const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
-      if (current.encryptedClientSecret) headers.Authorization = `Basic ${Buffer.from(`${current.clientId}:${decryptCredential(current.encryptedClientSecret)}`).toString("base64")}`;
+      if (current.encryptedClientSecret && current.oauthTokenAuthMethod === "client_secret_post") body.append("client_secret", decryptCredential(current.encryptedClientSecret));
       await this.fetcher(TOKEN_URL, { method: "POST", headers, body, signal: AbortSignal.timeout(3_000) }).catch(() => undefined);
     }
     await this.store.mutate(db => {
@@ -339,9 +341,9 @@ export class NotionMcpService {
     if (existing) return existing;
     const refresh = (async () => {
       if (!connection.encryptedRefreshToken) throw new Error("Notion 授权已过期，请重新连接");
-      const params = new URLSearchParams({ grant_type: "refresh_token", refresh_token: decryptCredential(connection.encryptedRefreshToken), client_id: connection.clientId, resource: MCP_URL });
-      const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
-      if (connection.encryptedClientSecret) headers.Authorization = `Basic ${Buffer.from(`${connection.clientId}:${decryptCredential(connection.encryptedClientSecret)}`).toString("base64")}`;
+      const params = new URLSearchParams({ grant_type: "refresh_token", refresh_token: decryptCredential(connection.encryptedRefreshToken), client_id: connection.clientId });
+      const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" };
+      if (connection.encryptedClientSecret && connection.oauthTokenAuthMethod === "client_secret_post") params.append("client_secret", decryptCredential(connection.encryptedClientSecret));
       const response = await this.fetcher(TOKEN_URL, { method: "POST", headers, body: params });
       if (!response.ok) throw new Error("Notion 授权已过期，请重新连接");
       const token = await response.json() as TokenResponse;
@@ -364,23 +366,29 @@ export class NotionMcpService {
 
   private async oauthClient(db: Database, redirectUri: string): Promise<OAuthClient> {
     const configuredId = process.env.NOTION_MCP_CLIENT_ID?.trim();
-    if (configuredId) return { clientId: configuredId, clientSecret: process.env.NOTION_MCP_CLIENT_SECRET?.trim() || undefined };
-    const stored = db.knowledgeConnections.find(item => item.provider === "notion" && item.clientId);
-    if (stored) return { clientId: stored.clientId, clientSecret: stored.encryptedClientSecret ? decryptCredential(stored.encryptedClientSecret) : undefined };
+    if (configuredId) {
+      const clientSecret = process.env.NOTION_MCP_CLIENT_SECRET?.trim() || undefined;
+      return { clientId: configuredId, clientSecret, tokenAuthMethod: clientSecret ? "client_secret_post" : "none" };
+    }
+    // Connections created before the auth-method fix are intentionally ignored:
+    // their clients were registered as client_secret_basic and cannot complete
+    // Notion's documented public-client exchange.
+    const stored = db.knowledgeConnections.find(item => item.provider === "notion" && item.clientId && item.oauthTokenAuthMethod);
+    if (stored) return { clientId: stored.clientId, clientSecret: stored.encryptedClientSecret ? decryptCredential(stored.encryptedClientSecret) : undefined, tokenAuthMethod: stored.oauthTokenAuthMethod! };
     const response = await this.fetcher(REGISTRATION_URL, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ client_name: "ONE", redirect_uris: [redirectUri], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "client_secret_basic" })
+      body: JSON.stringify({ client_name: "ONE", client_uri: safeOrigin(redirectUri), redirect_uris: [redirectUri], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" })
     });
     if (!response.ok) throw new Error("暂时无法初始化 Notion 授权，请稍后重试");
     const registered = await response.json() as { client_id?: string; client_secret?: string };
     if (!registered.client_id) throw new Error("Notion 未返回 OAuth Client ID");
-    return { clientId: registered.client_id, clientSecret: registered.client_secret };
+    return { clientId: registered.client_id, tokenAuthMethod: "none" };
   }
 
   private async exchangeToken(flow: OAuthFlow, code: string) {
-    const body = new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: flow.redirectUri, client_id: flow.clientId, code_verifier: flow.verifier, resource: MCP_URL });
-    const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
-    if (flow.clientSecret) headers.Authorization = `Basic ${Buffer.from(`${flow.clientId}:${flow.clientSecret}`).toString("base64")}`;
+    const body = new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: flow.redirectUri, client_id: flow.clientId, code_verifier: flow.verifier });
+    const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json", "User-Agent": "ONE-MCP-Client/0.1" };
+    if (flow.clientSecret && flow.tokenAuthMethod === "client_secret_post") body.append("client_secret", flow.clientSecret);
     const response = await this.fetcher(TOKEN_URL, { method: "POST", headers, body });
     if (!response.ok) throw new Error("Notion 授权确认失败，请返回 ONE 重试");
     const token = await response.json() as TokenResponse;

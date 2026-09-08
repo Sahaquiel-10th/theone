@@ -403,7 +403,8 @@ app.get("/api/knowledge/connections/notion/oauth/callback", asyncRoute(async (re
   try {
     await notionMcpService.completeAuthorization(state, code);
     return notionOAuthReturn(res, appOrigin, "connected");
-  } catch {
+  } catch (error) {
+    console.warn(JSON.stringify({ event: "notion_oauth_callback_failed", requestId: res.locals.requestId, error: error instanceof Error ? error.message : "Notion OAuth callback failed" }));
     return notionOAuthReturn(res, appOrigin, "failed");
   }
 }));

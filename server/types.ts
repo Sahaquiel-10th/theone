@@ -90,6 +90,7 @@ export type AuditLog = {
 export type KnowledgeConnection = {
   id: string; workspaceId: string; provider: "getnote" | "notion"; status: "pending" | "connected" | "error" | "revoked";
   clientId: string; encryptedApiKey?: string; encryptedAccessToken?: string; encryptedRefreshToken?: string; encryptedClientSecret?: string;
+  oauthTokenAuthMethod?: "none" | "client_secret_post";
   providerSpaceId?: string; providerSpaceName?: string; providerUserId?: string;
   credentialExpiresAt?: string; lastCheckedAt?: string; lastError?: string; createdAt: string; updatedAt: string;
 };

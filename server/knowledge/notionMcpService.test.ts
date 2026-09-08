@@ -19,7 +19,7 @@ test("Notion OAuth uses PKCE, stores only encrypted tokens and rejects state rep
   const requests: Array<{ url: string; init?: RequestInit }> = [];
   const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
     requests.push({ url: String(input), init });
-    if (String(input).endsWith("/register")) return new Response(JSON.stringify({ client_id: "notion-client", client_secret: "client-secret" }));
+    if (String(input).endsWith("/register")) return new Response(JSON.stringify({ client_id: "notion-client" }));
     if (String(input).endsWith("/token")) return new Response(JSON.stringify({ access_token: "access-secret", refresh_token: "refresh-secret", expires_in: 3600, workspace_id: "notion-space", workspace_name: "My Notion", user_id: "notion-user" }));
     throw new Error("unexpected request");
   };
@@ -31,7 +31,8 @@ test("Notion OAuth uses PKCE, stores only encrypted tokens and rejects state rep
   assert.equal(authorization.searchParams.get("redirect_uri"), "https://one.example/api/knowledge/connections/notion/oauth/callback");
   assert.equal(authorization.searchParams.get("code_challenge_method"), "S256");
   assert.ok(authorization.searchParams.get("code_challenge"));
-  assert.ok(!started.authorizationUrl.includes("client-secret"));
+  const registrationBody = JSON.parse(String(requests[0].init?.body));
+  assert.equal(registrationBody.token_endpoint_auth_method, "none");
 
   const connection = await service.completeAuthorization(state, "one-time-code");
   assert.equal(connection.workspaceId, "workspace-a");
@@ -41,6 +42,8 @@ test("Notion OAuth uses PKCE, stores only encrypted tokens and rejects state rep
   assert.doesNotMatch(JSON.stringify(connection), /access-secret|refresh-secret|client-secret/);
   const tokenBody = String(requests[1].init?.body);
   assert.match(tokenBody, /code_verifier=/);
+  assert.doesNotMatch(tokenBody, /resource=/);
+  assert.equal(new Headers(requests[1].init?.headers).get("Authorization"), null);
   await assert.rejects(service.completeAuthorization(state, "replayed-code"), /过期/);
 });
 
@@ -48,7 +51,7 @@ test("cancelling a reconnect keeps the existing working Notion connection", asyn
   const f = fixture();
   f.database.knowledgeConnections.push({
     id: "notion-a", workspaceId: "workspace-a", provider: "notion", status: "connected", clientId: "client-a",
-    encryptedAccessToken: encryptCredential("still-valid"), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+    encryptedAccessToken: encryptCredential("still-valid"), oauthTokenAuthMethod: "none", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
   });
   const service = new NotionMcpService(f.store);
   const started = await service.beginAuthorization({ workspaceId: "workspace-a", userId: "user-a", appOrigin: "https://one.example" });
