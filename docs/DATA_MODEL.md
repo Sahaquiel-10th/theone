@@ -61,11 +61,11 @@
 - 断开连接必须清除加密 API Key；
 - Migration 进入共享环境后只能追加。
 
-## Codex 执行
+## 本机执行
 
 ### `execution_tasks`
 
-保存 `workspace_id`、`user_id`、`conversation_id`、作为上下文终点的 `source_message_id`、`device_id`、内部执行说明、Codex thread ID、目标目录显示名、状态和时间戳。公开序列化必须移除内部执行说明和设备 ID。
+保存 `workspace_id`、`user_id`、`conversation_id`、作为上下文终点的 `source_message_id`、`device_id`、执行提供方、内部执行说明、目标目录显示名、状态和时间戳。公开序列化必须移除内部执行说明和设备 ID。
 
 ### `execution_events`
 

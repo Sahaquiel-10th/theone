@@ -63,7 +63,7 @@
 - [ ] 对接正式 AI 中转 API；
 - [~] Device、Challenge、One-Time Code 服务端原型已实现；标准关系表和 Session 撤销待完成；
 - [~] ONE Key 预绑定初始化、运营签发/下载、登录与挂失已完成；未激活认领模式待实现；
-- [~] macOS 原生 Launcher 已完成并通过本机签名验证；Windows Launcher 待做；
+- [~] macOS 原生 Launcher 已完成并通过本机签名验证；Windows x64 Launcher 与 Local Agent 已完成构建，待真实 Windows 验收与签名；
 - [ ] 未激活认领码、手机号激活和正式设备密钥落盘；
 - [x] 严格模式请求级 ONE Key 证明、断开拒绝和单设备在线限制；
 - [x] 超管按次查看真实模型上下文，知识召回、提示词和历史对话分区展示；

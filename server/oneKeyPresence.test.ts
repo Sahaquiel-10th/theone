@@ -109,3 +109,42 @@ test("accepts execution events only for the authenticated device workspace", asy
   await presence.close();
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 });
+
+test("negotiates local tools and isolates request responses to the authenticated task", async () => {
+  const pair = crypto.generateKeyPairSync("ed25519");
+  const timestamp = new Date().toISOString();
+  const device = { id: "device-a", serialNumber: "ONE-A", workspaceId: "workspace-a", userId: "user-a", status: "active", publicKey: pair.publicKey.export({ type: "spki", format: "pem" }).toString(), createdAt: timestamp };
+  const store = { read: async () => ({ oneKeyDevices: [device] }) } as any;
+  const presence = new OneKeyPresence(store);
+  const server = createServer();
+  presence.attach(server);
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("测试服务未启动");
+  const socket = new WebSocket(`ws://127.0.0.1:${address.port}/api/one-key/launcher?deviceId=device-a`);
+  const [authRaw] = await once(socket, "message");
+  const auth = JSON.parse(authRaw.toString());
+  socket.send(JSON.stringify({ type: "auth_response", challengeId: auth.challengeId, signature: sign(pair.privateKey, auth.nonce), capabilities: ["local_tools_v1"] }));
+  await once(socket, "message");
+  assert.equal(presence.supportsLocalAgent("device-a"), true);
+
+  const preparing = presence.prepareLocalExecution("device-a", "task-a");
+  const [prepareRaw] = await once(socket, "message");
+  const prepare = JSON.parse(prepareRaw.toString());
+  assert.equal(prepare.type, "local_prepare");
+  socket.send(JSON.stringify({ type: "local_ready", taskId: "task-a", requestId: prepare.requestId, targetName: "project-a" }));
+  assert.deepEqual(await preparing, { targetName: "project-a", output: "" });
+
+  const running = presence.executeLocalTool("device-a", "task-a", "read_file", { path: "README.md" });
+  const [toolRaw] = await once(socket, "message");
+  const tool = JSON.parse(toolRaw.toString());
+  assert.equal(tool.tool, "read_file");
+  socket.send(JSON.stringify({ type: "tool_result", taskId: "task-a", requestId: tool.requestId, ok: true, output: "hello" }));
+  assert.deepEqual(await running, { targetName: undefined, output: "hello" });
+
+  socket.close();
+  await once(socket, "close");
+  await presence.close();
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+});

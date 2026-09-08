@@ -96,7 +96,7 @@ export type KnowledgeConnection = {
 export type ExecutionTaskStatus = "queued" | "selecting_target" | "running" | "completed" | "failed" | "cancelled";
 export type ExecutionTask = {
   id: string; workspaceId: string; userId: string; conversationId: string; sourceMessageId: string;
-  provider: "codex"; status: ExecutionTaskStatus; instruction: string; deviceId: string;
+  provider: "codex" | "local_agent"; status: ExecutionTaskStatus; instruction: string; deviceId: string;
   targetName?: string; providerThreadId?: string; finalResponse?: string; lastError?: string;
   createdAt: string; updatedAt: string; startedAt?: string; completedAt?: string;
 };

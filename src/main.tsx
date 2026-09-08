@@ -127,7 +127,7 @@ type ExecutionTask = {
   userId: string;
   conversationId: string;
   sourceMessageId: string;
-  provider: "codex";
+  provider: "codex" | "local_agent";
   status: "queued" | "selecting_target" | "running" | "completed" | "failed" | "cancelled";
   targetName?: string;
   providerThreadId?: string;
@@ -964,7 +964,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       setContent("");
     } catch (err) {
       setExecutionMode(false);
-      setError(err instanceof Error ? err.message : "无法交给 Codex 执行");
+      setError(err instanceof Error ? err.message : "无法交给本机执行");
     } finally {
       setPreparingExecution(false);
     }
@@ -984,7 +984,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       setExecutionEvents((items) => [...items, { id: localId("exe"), taskId: executionTask.id, kind: "user_message", text, createdAt: new Date().toISOString() }]);
     } catch (err) {
       setContent(text);
-      setError(err instanceof Error ? err.message : "无法继续 Codex 会话");
+      setError(err instanceof Error ? err.message : "无法继续本机任务");
     }
   }
 
@@ -1017,9 +1017,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </button>
         <div className="one-chrome-actions">
           {active && executionTask?.conversationId === active.id ? (
-            <button className={`one-chrome-button execution-entry ${executionMode ? "active" : ""}`} type="button" title="Codex 执行" onClick={() => setExecutionMode(true)}>
+            <button className={`one-chrome-button execution-entry ${executionMode ? "active" : ""}`} type="button" title="本机执行" onClick={() => setExecutionMode(true)}>
               <span className={`execution-dot ${executionTask.status}`} />
-              <span>{executionBusy ? "Codex 执行中" : "Codex 任务"}</span>
+              <span>{executionBusy ? "本机执行中" : "本机任务"}</span>
             </button>
           ) : null}
           <button className="one-chrome-button knowledge" type="button" title="知识来源" onClick={() => { setView("knowledge"); setActiveId(""); setHistoryOpen(false); }}>
@@ -1095,7 +1095,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                   setExecutionTraceText("正在读取本次交接记录…");
                   try {
                     const trace = await api<{ instruction: string; messages: { role: string; content: string }[]; contextLimitChars: number }>(`/api/executions/${executionTask.id}/trace`);
-                    setExecutionTraceText(`发给 Codex 的实际指令\n\n${trace.instruction}\n\n截至所选消息的原对话\n\n${trace.messages.map((item) => `${item.role}: ${item.content}`).join("\n\n")}\n\n编译输入上限：${trace.contextLimitChars} 字符；超出时当前实现保留尾部。`);
+                    setExecutionTraceText(`发给本机执行器的实际指令\n\n${trace.instruction}\n\n截至所选消息的原对话\n\n${trace.messages.map((item) => `${item.role}: ${item.content}`).join("\n\n")}\n\n编译输入上限：${trace.contextLimitChars} 字符；超出时当前实现保留尾部。`);
                   } catch (error) { setExecutionTraceText(error instanceof Error ? error.message : "读取失败"); }
                 }}>
                   <summary>查看执行上下文（调试）</summary>
@@ -1109,12 +1109,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                 ) : (
                   <div className={`execution-event ${event.kind}`} key={event.id}><span />{event.text}</div>
                 ))}
-                {executionBusy ? <div className="execution-live"><span />Codex 正在工作，你可以切回对话，任务会继续运行。</div> : null}
+                {executionBusy ? <div className="execution-live"><span />ONE 正在本机工作，你可以切回对话，任务会继续运行。</div> : null}
               </div>
             </div>
           ) : activeExecutionMode && preparingExecution ? (
             <div className="execution-workspace execution-preparing">
-              <div className="execution-live"><span />正在交给 Codex，ONE 会在后台整理上下文。</div>
+              <div className="execution-live"><span />正在连接本机，ONE 会在后台整理任务。</div>
             </div>
           ) : (active?.messages ?? []).length ? (
             active!.messages.map((message, index) => (
@@ -1193,7 +1193,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               onCompositionEnd={() => setIsComposing(false)}
               onKeyDown={handleComposerKeyDown}
               onPaste={handleComposerPaste}
-              placeholder={activeExecutionMode ? (preparingExecution ? "正在连接 Codex…" : executionBusy ? "Codex 正在执行当前步骤…" : "继续给 Codex 指令") : currentModel?.kind === "image" ? "输入修改要求，也可直接粘贴图片" : "输入消息，Enter 发送，Shift+Enter 换行"}
+              placeholder={activeExecutionMode ? (preparingExecution ? "正在连接本机…" : executionBusy ? "ONE 正在执行当前步骤…" : "继续给 ONE 指令") : currentModel?.kind === "image" ? "输入修改要求，也可直接粘贴图片" : "输入消息，Enter 发送，Shift+Enter 换行"}
               disabled={activeExecutionMode && (preparingExecution || executionBusy)}
               rows={2}
             />

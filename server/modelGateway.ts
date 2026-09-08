@@ -12,6 +12,34 @@ type ChatResult = {
   raw?: unknown;
 };
 
+export type ModelToolDefinition = {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+};
+
+export type ModelToolCall = {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+};
+
+export type ModelToolMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | null;
+  tool_call_id?: string;
+  tool_calls?: ModelToolCall[];
+};
+
+export type ToolChatResult = {
+  content: string;
+  toolCalls: ModelToolCall[];
+  usage?: ChatResult["usage"];
+};
+
 const requestTimeoutMs = numberEnv("MODEL_REQUEST_TIMEOUT_MS", 150000);
 const imageRequestTimeoutMs = numberEnv("IMAGE_REQUEST_TIMEOUT_MS", 180000);
 const maxOutputTokens = numberEnv("MODEL_MAX_OUTPUT_TOKENS", 3000);
@@ -136,6 +164,91 @@ export async function callModel(
   } catch (error) {
     console.error(JSON.stringify({
       event: "model_request_failed",
+      requestId,
+      modelId: model.id,
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : "未知错误"
+    }));
+    throw error;
+  }
+}
+
+export async function callModelWithTools(
+  model: ModelConfig,
+  messages: ModelToolMessage[],
+  tools: ModelToolDefinition[],
+  requestId = "unknown"
+): Promise<ToolChatResult> {
+  if (!model.enabled) throw new Error("模型未启用");
+  if (!model.apiKey) throw new Error("模型缺少 API Key");
+  if (model.kind !== "chat" || model.protocol !== "openai") throw new Error("ONE Local Agent 首版需要兼容 OpenAI function calling 的对话模型");
+
+  const endpoint = `${model.baseUrl.replace(/\/$/, "")}/chat/completions`;
+  const startedAt = Date.now();
+  console.log(JSON.stringify({
+    event: "local_agent_model_request_started",
+    requestId,
+    modelId: model.id,
+    model: model.model,
+    inputMessages: messages.length,
+    tools: tools.length
+  }));
+  try {
+    const response = await fetchWithTimeout(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${model.apiKey}`
+      },
+      body: JSON.stringify({
+        model: model.model,
+        messages,
+        tools,
+        tool_choice: "auto",
+        temperature: 0.2,
+        max_tokens: maxOutputTokens
+      })
+    }, requestTimeoutMs);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = typeof payload?.error?.message === "string" ? payload.error.message : response.statusText;
+      throw new Error(`Local Agent 模型调用失败（上游 ${response.status}）：${detail}`);
+    }
+    const message = payload?.choices?.[0]?.message;
+    if (!message || (message.content != null && typeof message.content !== "string")) throw new Error("Local Agent 模型响应格式不正确");
+    const toolCalls: ModelToolCall[] = Array.isArray(message.tool_calls)
+      ? message.tool_calls.filter((item: unknown): item is ModelToolCall => {
+          if (!item || typeof item !== "object") return false;
+          const candidate = item as Partial<ModelToolCall>;
+          return typeof candidate.id === "string" && candidate.type === "function" &&
+            typeof candidate.function?.name === "string" && typeof candidate.function.arguments === "string";
+        })
+      : [];
+    const providerInputTokens = Number(payload?.usage?.prompt_tokens ?? payload?.usage?.input_tokens);
+    const providerOutputTokens = Number(payload?.usage?.completion_tokens ?? payload?.usage?.output_tokens);
+    const hasProviderUsage = Number.isFinite(providerInputTokens) && Number.isFinite(providerOutputTokens);
+    console.log(JSON.stringify({
+      event: "local_agent_model_request_completed",
+      requestId,
+      modelId: model.id,
+      durationMs: Date.now() - startedAt,
+      toolCalls: toolCalls.length
+    }));
+    return {
+      content: typeof message.content === "string" ? message.content : "",
+      toolCalls,
+      usage: hasProviderUsage ? {
+        inputTokens: providerInputTokens,
+        outputTokens: providerOutputTokens,
+        totalTokens: Number.isFinite(Number(payload?.usage?.total_tokens))
+          ? Number(payload.usage.total_tokens)
+          : providerInputTokens + providerOutputTokens,
+        source: "provider"
+      } : undefined
+    };
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "local_agent_model_request_failed",
       requestId,
       modelId: model.id,
       durationMs: Date.now() - startedAt,

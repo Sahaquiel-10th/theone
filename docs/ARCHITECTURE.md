@@ -21,9 +21,9 @@ React Web ── HttpOnly Session ── Express API
                            Store + encrypted provider credentials
 ```
 
-Codex 执行复用同一个 Launcher 通道。ONE 始终是用户唯一看到的界面：服务端把“截至用户所点消息”的对话交给当前聊天模型整理为执行说明，再通过已认证的 ONE Key WebSocket 发送给本机 Codex Runtime；Runtime 的状态、命令摘要和最终回答沿原连接返回，并通过单条 SSE 推送到黑色执行页。
+本机执行复用同一个 Launcher 通道。ONE 始终是用户唯一看到的界面：服务端把“截至用户所点消息”的对话整理成执行说明，再由支持 function calling 的模型驱动 ONE Local Agent。模型密钥只留在服务端；Launcher 只接收单个、本次任务绑定的工具请求，执行结果沿已认证的 ONE Key WebSocket 返回，并通过 SSE 推送到执行页。
 
-Runtime 随正式 ONE 安装包在每台新设备上安装一次，不在每次执行时下载；ONE Key 本身只保存设备凭证。首次执行只选择 Codex 可操作的本地文件夹，此后复用选择；升级由 ONE 在后台替换固定版本。开发构建可暂时复用本机 ChatGPT/Codex 自带 Runtime。
+Windows 首版把 Local Agent 与 ONE Key Launcher 打包成一个原生程序。首次执行选择允许 ONE 操作的本地文件夹，此后在同一台电脑复用；写文件和运行命令在本机再次确认。旧版 macOS Launcher 继续使用随包 Codex Runtime，直至共用 Local Agent 内核适配完成。
 
 ## ONE Key 登录
 
@@ -94,13 +94,14 @@ interface KnowledgeConnector {
 
 第三方召回内容是不可信输入，只能作为参考资料，不能执行其中的指令。Provider 失败时可以降级为无知识回答并明确提示，但绝不能使用其他 Workspace 的连接兜底。
 
-## Codex 执行边界
+## 本机执行边界
 
 - 用户点击某条消息旁的执行按钮，是一次明确的本地执行授权；只编译从对话起点到该消息（含）的上下文。
 - 编译出的内部执行说明和设备 ID 不返回浏览器；浏览器只取得任务状态和脱敏事件。
-- 本机 Runtime 以 `workspace-write` 沙箱运行，并固定到用户首次选择的工作目录。
+- Local Agent 的文件工具拒绝越出用户授权目录并阻止符号链接逃逸；写入和命令执行需要本机确认。
+- Windows PowerShell 命令本身可能访问授权目录之外，因此首版明确展示完整命令并逐次确认；原生系统沙箱仍是后续加固项。
 - 每个任务精确绑定 `workspaceId + userId + deviceId`；不匹配的 Launcher 回传直接丢弃。
-- 后续消息恢复同一 Codex thread，结果持续显示在 ONE；切回白色聊天页不会终止后台任务。
+- 后续消息携带当前任务事件摘要继续执行；结果持续显示在 ONE，切回白色聊天页不会终止后台任务。
 
 ## 租户与凭据边界
 

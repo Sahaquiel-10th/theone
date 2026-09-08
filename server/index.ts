@@ -22,7 +22,7 @@ import { getNoteProvider } from "./knowledge/getnoteProvider.js";
 import { KnowledgeService } from "./knowledge/knowledgeService.js";
 import { OneKeyService } from "./oneKeyService.js";
 import { calculateModelPower, chargePower, creditPower, MICROS_PER_POWER, powerAccount } from "./powerBilling.js";
-import { oneKeyPresence } from "./runtime.js";
+import { localAgentService, oneKeyPresence } from "./runtime.js";
 import { appendExecutionEvent, buildExecutionCompilerMessages, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -432,22 +432,26 @@ app.post("/api/executions/from-message", auth(jwtSecret), asyncRoute(async (req,
   const prefix = messagesThrough(db.messages, conversation.id, req.workspaceId!, sourceMessageId);
   const compiled = await callModel(model, buildExecutionCompilerMessages(prefix, sourceMessageId), "你是 ONE 的执行交接编译器。只整理用户已经表达或确认的意图，不替用户扩大授权范围。", res.locals.requestId);
   const timestamp = now();
+  const useLocalAgent = oneKeyPresence.supportsLocalAgent(req.oneKeyDeviceId);
   const task: ExecutionTask = {
     id: uid("ext"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id,
-    sourceMessageId, provider: "codex", status: "queued", instruction: compiled.content.trim(), deviceId: req.oneKeyDeviceId,
+    sourceMessageId, provider: useLocalAgent ? "local_agent" : "codex", status: "queued", instruction: compiled.content.trim(), deviceId: req.oneKeyDeviceId,
     createdAt: timestamp, updatedAt: timestamp
   };
   await store.mutate((mutable) => {
     mutable.executionTasks.push(task);
-    appendExecutionEvent(mutable, { id: uid("exe"), workspaceId: task.workspaceId, userId: task.userId, taskId: task.id, kind: "status", text: "正在连接本机 Codex…", createdAt: timestamp });
+    appendExecutionEvent(mutable, { id: uid("exe"), workspaceId: task.workspaceId, userId: task.userId, taskId: task.id, kind: "status", text: useLocalAgent ? "正在连接 ONE Local Agent…" : "正在连接本机 Codex…", createdAt: timestamp });
     if (compiled.usage) {
       const usageId = uid("use"); const billing = calculateModelPower(model, compiled.usage.inputTokens, compiled.usage.outputTokens);
       chargePower(mutable, { workspaceId: task.workspaceId, userId: task.userId, amountMicros: billing.chargedMicros, modelId: model.id, usageRecordId: usageId, title: "整理 Codex 执行指令" });
       mutable.modelUsageRecords.push({ id: usageId, workspaceId: task.workspaceId, userId: task.userId, conversationId: conversation.id, modelId: model.id, inputTokens: compiled.usage.inputTokens, outputTokens: compiled.usage.outputTokens, totalTokens: compiled.usage.totalTokens, source: compiled.usage.source, chargedMicros: billing.chargedMicros, costMicros: billing.costMicros, inputPowerPerMillionSnapshot: model.inputPowerPerMillion, outputPowerPerMillionSnapshot: model.outputPowerPerMillion, costInputPowerPerMillionSnapshot: model.costInputPowerPerMillion, costOutputPowerPerMillionSnapshot: model.costOutputPowerPerMillion, requestId: res.locals.requestId, status: "success", createdAt: timestamp });
     }
-    mutable.auditLogs.push({ id: uid("aud"), workspaceId: task.workspaceId, actorUserId: task.userId, action: "execution.codex.created", targetType: "execution_task", targetId: task.id, details: { conversationId, sourceMessageId }, requestId: res.locals.requestId, createdAt: timestamp });
+    mutable.auditLogs.push({ id: uid("aud"), workspaceId: task.workspaceId, actorUserId: task.userId, action: useLocalAgent ? "execution.local_agent.created" : "execution.codex.created", targetType: "execution_task", targetId: task.id, details: { conversationId, sourceMessageId }, requestId: res.locals.requestId, createdAt: timestamp });
   });
-  try { await oneKeyPresence.startExecution(task.deviceId, task.id, task.instruction); }
+  try {
+    if (useLocalAgent) localAgentService.start(task.id);
+    else await oneKeyPresence.startExecution(task.deviceId, task.id, task.instruction);
+  }
   catch (error) {
     const failure = error instanceof Error ? error.message : "无法连接本机执行";
     await store.mutate((mutable) => { const target = mutable.executionTasks.find((item) => item.id === task.id); if (target) { target.status = "failed"; target.lastError = failure; target.updatedAt = now(); target.completedAt = target.updatedAt; appendExecutionEvent(mutable, { id: uid("exe"), workspaceId: target.workspaceId, userId: target.userId, taskId: target.id, kind: "error", text: failure, createdAt: target.updatedAt }); } });
@@ -461,12 +465,13 @@ app.post("/api/executions/:id/messages", auth(jwtSecret), asyncRoute(async (req,
   const task = await store.mutate((database) => {
     const target = database.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
     if (!target) throw new Error("执行任务不存在");
-    if (target.status === "queued" || target.status === "selecting_target" || target.status === "running") throw new Error("Codex 正在执行，请等待当前步骤完成");
+    if (target.status === "queued" || target.status === "selecting_target" || target.status === "running") throw new Error("本机任务正在执行，请等待当前步骤完成");
     const timestamp = now(); target.status = "queued"; target.updatedAt = timestamp; target.completedAt = undefined; target.lastError = undefined;
     appendExecutionEvent(database, { id: uid("exe"), workspaceId: target.workspaceId, userId: target.userId, taskId: target.id, kind: "user_message", text: content, createdAt: timestamp });
     return target;
   });
-  await oneKeyPresence.continueExecution(task.deviceId, task.id, content);
+  if (task.provider === "local_agent") localAgentService.start(task.id, content);
+  else await oneKeyPresence.continueExecution(task.deviceId, task.id, content);
   res.status(202).json({ task: publicExecutionTask(task) });
 }));
 
@@ -474,7 +479,8 @@ app.post("/api/executions/:id/cancel", auth(jwtSecret), asyncRoute(async (req, r
   const db = await store.read();
   const task = db.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
   if (!task) return res.status(404).json({ error: "执行任务不存在", code: "EXECUTION_NOT_FOUND" });
-  await oneKeyPresence.cancelExecution(task.deviceId, task.id);
+  if (task.provider === "local_agent") await localAgentService.cancel(task.id);
+  else await oneKeyPresence.cancelExecution(task.deviceId, task.id);
   res.status(202).json({ ok: true });
 }));
 
