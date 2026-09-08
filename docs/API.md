@@ -36,7 +36,15 @@ Launcher 只把一次性码放在 URL Fragment（`#one-key=...`）中，因此 W
 
 挂失设备并使未完成的 challenge、一次性登录码失效。已存在浏览器 Session 的集中撤销作为上线前加固项。
 
-## 得到连接（当前）
+## 内部连接工厂 0.1（2026-09-08）
+
+- `GET /api/connectors`：在已验证的当前 Workspace 下列出服务端登记的连接器、版本、能力和状态，不触发远端探测。
+- `POST /api/connectors/:id/check`：显式检查已登记连接器。得到的有效存储授权使用检索接口检查；本机执行只确认通道，不启动任务或隐式授权。
+- 两者沿用 Session、Membership 和 ONE Key 请求证明，服务层再次校验 Workspace；不接受请求体或查询参数覆盖账号、工作区、设备或目标地址。
+- 返回 `health.state/code/message/evidence`，显式检查另含 `checkedAt`；原始错误、密钥、设备标识和个人内容不出现在结果中。
+- 无任意注册/脚本/URL 执行接口。详见 [内部连接工厂](CONNECTOR-FACTORY.md)。
+
+## 得到授权兼容接口
 
 ### `GET /api/knowledge/connections/getnote`
 

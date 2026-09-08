@@ -22,7 +22,8 @@ import { getNoteProvider } from "./knowledge/getnoteProvider.js";
 import { KnowledgeService } from "./knowledge/knowledgeService.js";
 import { OneKeyService } from "./oneKeyService.js";
 import { calculateModelPower, chargePower, creditPower, MICROS_PER_POWER, powerAccount } from "./powerBilling.js";
-import { localAgentService, oneKeyPresence } from "./runtime.js";
+import { connectorRegistry, connectorService, oneKeyPresence } from "./runtime.js";
+import { connectorRoutes } from "./connectorRoutes.js";
 import { appendExecutionEvent, buildExecutionCompilerMessages, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -32,7 +33,7 @@ const port = Number(process.env.PORT ?? 3001);
 const host = process.env.HOST?.trim() || "127.0.0.1";
 const jwtSecret = process.env.JWT_SECRET?.trim() || (process.env.NODE_ENV === "production" ? "" : "dev-secret-change-me");
 if (!jwtSecret) throw new Error("生产环境必须配置 JWT_SECRET");
-const knowledgeService = new KnowledgeService(store);
+const knowledgeService = new KnowledgeService(store, connectorRegistry);
 const oneKeyService = new OneKeyService(store);
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 const getNoteFlows = new Map<string, { workspaceId: string; clientId: string; code: string; expiresAt: number; nextPollAt: number }>();
@@ -113,6 +114,7 @@ async function persistGeneratedImage(params: { imageUrl?: string; workspaceId: s
 }
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
+app.use("/api/connectors", auth(jwtSecret), connectorRoutes(connectorService));
 
 app.post("/api/auth/login", asyncRoute(async (req, res) => {
   const attemptKey = req.ip || req.socket.remoteAddress || "unknown";
@@ -423,13 +425,15 @@ app.post("/api/executions/from-message", auth(jwtSecret), asyncRoute(async (req,
   if (!model) return res.status(409).json({ error: "当前对话模型不能整理执行指令", code: "EXECUTION_COMPILER_UNAVAILABLE" });
   const account = powerAccount(db, req.workspaceId!, req.user!.id);
   if (!account || account.balanceMicros <= 0) return res.status(402).json({ error: "电力不足，无法整理执行指令", code: "POWER_REQUIRED" });
+  const scope = { workspaceId: req.workspaceId!, userId: req.user!.id, deviceId: req.oneKeyDeviceId };
+  const executionProvider = await connectorService.selectExecution(scope);
   const prefix = messagesThrough(db.messages, conversation.id, req.workspaceId!, sourceMessageId);
   const compiled = await callModel(model, buildExecutionCompilerMessages(prefix, sourceMessageId), "你是 ONE 的执行交接编译器。只整理用户已经表达或确认的意图，不替用户扩大授权范围。", res.locals.requestId);
   const timestamp = now();
-  const useLocalAgent = oneKeyPresence.supportsLocalAgent(req.oneKeyDeviceId);
+  const useLocalAgent = executionProvider === "local_agent";
   const task: ExecutionTask = {
     id: uid("ext"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id,
-    sourceMessageId, provider: useLocalAgent ? "local_agent" : "codex", status: "queued", instruction: compiled.content.trim(), deviceId: req.oneKeyDeviceId,
+    sourceMessageId, provider: executionProvider, status: "queued", instruction: compiled.content.trim(), deviceId: req.oneKeyDeviceId,
     createdAt: timestamp, updatedAt: timestamp
   };
   await store.mutate((mutable) => {
@@ -443,8 +447,7 @@ app.post("/api/executions/from-message", auth(jwtSecret), asyncRoute(async (req,
     mutable.auditLogs.push({ id: uid("aud"), workspaceId: task.workspaceId, actorUserId: task.userId, action: useLocalAgent ? "execution.local_agent.created" : "execution.codex.created", targetType: "execution_task", targetId: task.id, details: { conversationId, sourceMessageId }, requestId: res.locals.requestId, createdAt: timestamp });
   });
   try {
-    if (useLocalAgent) localAgentService.start(task.id);
-    else await oneKeyPresence.startExecution(task.deviceId, task.id, task.instruction);
+    await connectorService.dispatch(scope, task.id, "start");
   }
   catch (error) {
     const failure = error instanceof Error ? error.message : "无法连接本机执行";
@@ -457,15 +460,26 @@ app.post("/api/executions/from-message", auth(jwtSecret), asyncRoute(async (req,
 app.post("/api/executions/:id/messages", auth(jwtSecret), asyncRoute(async (req, res) => {
   const content = requiredString(req.body.content, "执行消息").slice(0, 12_000);
   const task = await store.mutate((database) => {
-    const target = database.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
+    const target = database.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id && item.deviceId === req.oneKeyDeviceId);
     if (!target) throw new Error("执行任务不存在");
     if (target.status === "queued" || target.status === "selecting_target" || target.status === "running") throw new Error("本机任务正在执行，请等待当前步骤完成");
     const timestamp = now(); target.status = "queued"; target.updatedAt = timestamp; target.completedAt = undefined; target.lastError = undefined;
     appendExecutionEvent(database, { id: uid("exe"), workspaceId: target.workspaceId, userId: target.userId, taskId: target.id, kind: "user_message", text: content, createdAt: timestamp });
     return target;
   });
-  if (task.provider === "local_agent") localAgentService.start(task.id, content);
-  else await oneKeyPresence.continueExecution(task.deviceId, task.id, content);
+  try {
+    await connectorService.dispatch({ workspaceId: req.workspaceId!, userId: req.user!.id, deviceId: req.oneKeyDeviceId }, task.id, "continue", content);
+  } catch (error) {
+    // A disabled/disconnected adapter must not leave a continuation queued forever.
+    await store.mutate((database) => {
+      const target = database.executionTasks.find(item => item.id === task.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id && item.deviceId === req.oneKeyDeviceId);
+      if (!target || target.status !== "queued") return;
+      const timestamp = now();
+      target.status = "failed"; target.lastError = "无法继续执行，请检查原设备连接后重试"; target.updatedAt = timestamp; target.completedAt = timestamp;
+      appendExecutionEvent(database, { id: uid("exe"), workspaceId: target.workspaceId, userId: target.userId, taskId: target.id, kind: "error", text: target.lastError, createdAt: timestamp });
+    });
+    throw error;
+  }
   res.status(202).json({ task: publicExecutionTask(task) });
 }));
 
@@ -473,8 +487,7 @@ app.post("/api/executions/:id/cancel", auth(jwtSecret), asyncRoute(async (req, r
   const db = await store.read();
   const task = db.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
   if (!task) return res.status(404).json({ error: "执行任务不存在", code: "EXECUTION_NOT_FOUND" });
-  if (task.provider === "local_agent") await localAgentService.cancel(task.id);
-  else await oneKeyPresence.cancelExecution(task.deviceId, task.id);
+  await connectorService.dispatch({ workspaceId: req.workspaceId!, userId: req.user!.id, deviceId: req.oneKeyDeviceId }, task.id, "cancel");
   res.status(202).json({ ok: true });
 }));
 

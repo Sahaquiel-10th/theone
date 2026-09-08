@@ -62,6 +62,8 @@ V0.1 普通 U 盘凭证可能被复制，必须诚实记录这一安全边界。
 
 ## Knowledge Connector
 
+2026-09-08：增加服务端内部连接器登记表与 ConnectorService。知识适配器和执行适配器共享能力描述、版本、停用与状态检查契约，保留各自的数据调用和任务生命周期。现有得到授权接口不迁移；Windows Local Agent 与 macOS Codex 的分发改走登记表。没有通用 MCP/API 动态执行器，也不开放客户注册代码。详见 [内部连接工厂 0.1](CONNECTOR-FACTORY.md)。
+
 业务层只依赖通用搜索能力：
 
 ```ts
