@@ -1,10 +1,10 @@
-import React, { FormEvent, useEffect, useMemo, useState } from "react";
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Archive,
-  ArrowLeft,
   Bot,
   ChevronDown,
   ChevronLeft,
@@ -144,6 +144,12 @@ type ExecutionEvent = {
   createdAt: string;
 };
 
+type TransitionPoint = { x: number; y: number };
+type OneViewTransition = { ready: Promise<void>; finished: Promise<void> };
+type ViewTransitionDocument = Document & {
+  startViewTransition?: (update: () => void) => OneViewTransition;
+};
+
 type GetNoteDeviceFlow = {
   flowId: string;
   verificationUri: string;
@@ -244,6 +250,16 @@ function power(value = 0, digits = 4) { return (value / 1_000_000).toFixed(digit
 
 function localId(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function executionStatusLabel(task: ExecutionTask | null, preparing = false) {
+  if (preparing) return "正在接管任务";
+  if (!task) return "准备开始";
+  if (task.status === "queued" || task.status === "selecting_target") return "正在连接本机";
+  if (task.status === "running") return "正在替你工作";
+  if (task.status === "completed") return "任务已经完成";
+  if (task.status === "cancelled") return "任务已停止";
+  return "遇到了一点问题";
 }
 
 function titleFrom(content: string) {
@@ -511,6 +527,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [executionTraceText, setExecutionTraceText] = useState("");
   const [executionMode, setExecutionMode] = useState(false);
   const [preparingExecution, setPreparingExecution] = useState(false);
+  const [executionSourceMessageId, setExecutionSourceMessageId] = useState("");
+  const executionOriginRef = useRef<TransitionPoint>({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+  const executionWasBusyRef = useRef(false);
 
   const active = useMemo(() => conversations.find((item) => item.id === activeId), [activeId, conversations]);
   const activeModelId = active?.modelId || draftModelId;
@@ -609,16 +628,65 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     return () => stream.close();
   }, [executionTask?.id, executionTask?.status, executionBusy]);
 
+  useEffect(() => {
+    if (executionBusy) executionWasBusyRef.current = true;
+    if (!executionMode || !executionTask || executionBusy || !executionWasBusyRef.current) return;
+    const timer = window.setTimeout(() => {
+      transitionExecutionMode(false, executionOriginRef.current);
+      executionWasBusyRef.current = false;
+    }, executionTask.status === "completed" ? 1100 : 700);
+    return () => window.clearTimeout(timer);
+  }, [executionBusy, executionMode, executionTask?.status]);
+
   async function loadLatestExecution(conversationId: string) {
     try {
       const result = await api<{ tasks: ExecutionTask[] }>(`/api/executions?conversationId=${encodeURIComponent(conversationId)}`);
       const latest = result.tasks[0];
       if (!latest) return;
       setExecutionTask(latest);
+      setExecutionSourceMessageId(latest.sourceMessageId);
       const detail = await api<{ task: ExecutionTask; events: ExecutionEvent[] }>(`/api/executions/${encodeURIComponent(latest.id)}`);
       setExecutionTask(detail.task);
       setExecutionEvents(detail.events);
     } catch { /* Execution history is an enhancement to the chat view. */ }
+  }
+
+  function pointFromElement(element?: HTMLElement | null): TransitionPoint {
+    if (!element) return executionOriginRef.current;
+    const bounds = element.getBoundingClientRect();
+    return { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 };
+  }
+
+  function transitionExecutionMode(next: boolean, source?: HTMLElement | TransitionPoint | null) {
+    const point = source instanceof HTMLElement ? pointFromElement(source) : source || executionOriginRef.current;
+    if (next) executionOriginRef.current = point;
+
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const transitionDocument = document as ViewTransitionDocument;
+    if (!transitionDocument.startViewTransition || reducedMotion) {
+      setExecutionMode(next);
+      return;
+    }
+
+    const radius = Math.hypot(
+      Math.max(point.x, window.innerWidth - point.x),
+      Math.max(point.y, window.innerHeight - point.y)
+    );
+    const transition = transitionDocument.startViewTransition(() => {
+      flushSync(() => setExecutionMode(next));
+    });
+
+    transition.ready.then(() => {
+      document.documentElement.animate(
+        { clipPath: [`circle(0px at ${point.x}px ${point.y}px)`, `circle(${radius}px at ${point.x}px ${point.y}px)`] },
+        {
+          duration: next ? 430 : 380,
+          easing: next ? "cubic-bezier(.2,.82,.2,1)" : "cubic-bezier(.3,.72,.2,1)",
+          fill: "both",
+          pseudoElement: "::view-transition-new(root)"
+        } as KeyframeAnimationOptions & { pseudoElement: string }
+      );
+    }).catch(() => undefined);
   }
 
   async function loadMoreConversations() {
@@ -926,10 +994,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     await navigator.clipboard.writeText(content);
   }
 
-  async function executeFromMessage(message: Message) {
+  async function executeFromMessage(message: Message, source?: HTMLElement | null) {
     if (!active?.id || !message.id || preparingExecution) return;
+    const origin = pointFromElement(source);
+    executionOriginRef.current = origin;
+    executionWasBusyRef.current = false;
     setPreparingExecution(true);
-    setExecutionMode(true);
+    setExecutionSourceMessageId(message.id);
+    transitionExecutionMode(true, origin);
     setExecutionTask(null);
     setExecutionEvents([]);
     setExecutionTraceText("");
@@ -939,11 +1011,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         method: "POST",
         body: JSON.stringify({ conversationId: active.id, sourceMessageId: message.id })
       });
+      executionWasBusyRef.current = true;
       setExecutionTask(result.task);
       setExecutionEvents(result.events);
       setContent("");
     } catch (err) {
-      setExecutionMode(false);
+      transitionExecutionMode(false, origin);
       setError(err instanceof Error ? err.message : "无法交给本机执行");
     } finally {
       setPreparingExecution(false);
@@ -968,10 +1041,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     }
   }
 
-  async function cancelExecution() {
+  async function cancelExecution(source?: HTMLElement | null) {
     if (!executionTask || !executionBusy) return;
     try {
       await api(`/api/executions/${encodeURIComponent(executionTask.id)}/cancel`, { method: "POST" });
+      transitionExecutionMode(false, pointFromElement(source));
+      executionWasBusyRef.current = false;
     } catch (err) { setError(err instanceof Error ? err.message : "无法停止执行"); }
   }
 
@@ -996,12 +1071,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {view === "chat" ? active?.title || "Ask ONE" : view === "knowledge" ? "Knowledge" : view === "admin" ? "Control" : "Account"}
         </button>
         <div className="one-chrome-actions">
-          {active && executionTask?.conversationId === active.id ? (
-            <button className={`one-chrome-button execution-entry ${executionMode ? "active" : ""}`} type="button" title="本机执行" onClick={() => setExecutionMode(true)}>
-              <span className={`execution-dot ${executionTask.status}`} />
-              <span>{executionBusy ? "本机执行中" : "本机任务"}</span>
-            </button>
-          ) : null}
           <button className="one-chrome-button knowledge" type="button" title="知识来源" onClick={() => { setView("knowledge"); setActiveId(""); setHistoryOpen(false); }}>
             <span className={`connection-dot ${knowledgeConnection.status}`} />
             <span>{knowledgeConnection.status === "connected" ? "知识已连接" : "连接知识"}</span>
@@ -1060,79 +1129,92 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       ) : (
       <section className={`chat one-chat ${(active?.messages ?? []).length ? "conversation-mode" : "home-mode"} ${activeExecutionMode ? "execution-mode" : ""}`}>
         <div className="messages">
-          {activeExecutionMode && executionTask ? (
-            <div className="execution-workspace">
-              <header className="execution-header">
-                <button type="button" onClick={() => setExecutionMode(false)}><ArrowLeft size={16} />返回对话</button>
-                <div><small>{executionTask.provider === "local_agent" ? "ONE LOCAL AGENT" : "CODEX EXECUTION"}</small><strong>{executionTask.targetName || "本机任务"}</strong></div>
-                {executionBusy ? <button className="execution-stop" type="button" onClick={cancelExecution}><Square size={13} />停止</button> : <span className={`execution-state ${executionTask.status}`}>{executionTask.status === "completed" ? "已完成" : executionTask.status === "failed" ? "失败" : executionTask.status === "cancelled" ? "已停止" : "执行中"}</span>}
-              </header>
-              <div className="execution-feed">
-                <details onToggle={async (event) => {
-                  if (!event.currentTarget.open) return;
-                  setExecutionTraceText("正在读取本次交接记录…");
-                  try {
-                    const trace = await api<{ instruction: string; messages: { role: string; content: string }[]; contextLimitChars: number }>(`/api/executions/${executionTask.id}/trace`);
-                    setExecutionTraceText(`发给本机执行器的实际指令\n\n${trace.instruction}\n\n截至所选消息的原对话\n\n${trace.messages.map((item) => `${item.role}: ${item.content}`).join("\n\n")}\n\n编译输入上限：${trace.contextLimitChars} 字符；超出时当前实现保留尾部。`);
-                  } catch (error) { setExecutionTraceText(error instanceof Error ? error.message : "读取失败"); }
-                }}>
-                  <summary>查看执行上下文（调试）</summary>
-                  <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{executionTraceText}</pre>
-                </details>
-                {executionEvents.map((event) => event.kind === "message" || event.kind === "user_message" ? (
-                  <article className={`execution-message ${event.kind === "user_message" ? "user" : "codex"}`} key={event.id}>
-                    <div className="execution-speaker">{event.kind === "user_message" ? "YOU" : executionTask.provider === "local_agent" ? "ONE" : "CODEX"}</div>
-                    <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{event.text}</ReactMarkdown></div>
-                  </article>
-                ) : (
-                  <div className={`execution-event ${event.kind}`} key={event.id}><span />{event.text}</div>
-                ))}
-                {executionBusy ? <div className="execution-live"><span />ONE 正在本机工作，你可以切回对话，任务会继续运行。</div> : null}
-              </div>
-            </div>
-          ) : activeExecutionMode && preparingExecution ? (
-            <div className="execution-workspace execution-preparing">
-              <div className="execution-live"><span />正在连接本机，ONE 会在后台整理任务。</div>
-            </div>
-          ) : (active?.messages ?? []).length ? (
+          {(active?.messages ?? []).length ? (
             active!.messages.map((message, index) => (
-              <article key={`${message.createdAt}-${index}`} className={`message ${message.role}`}>
-                {message.role === "assistant" ? (
-                  <div className="avatar"><OneEye size="xs" mood="attentive" decorative /></div>
-                ) : null}
-                <div className="bubble">
-                  {message.attachments?.length ? <AttachmentList attachments={message.attachments} /> : null}
+              <React.Fragment key={`${message.createdAt}-${index}`}>
+                <article className={`message ${message.role} ${message.id && message.id === (executionTask?.sourceMessageId || executionSourceMessageId) && activeExecutionMode ? "execution-source" : ""}`}>
                   {message.role === "assistant" ? (
-                    <>
-                      <div className="markdown-body">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-                      </div>
-                      <div className="message-actions">
-                        <button title="复制" onClick={() => copyMarkdown(message.content)}>
-                          <Copy size={14} />
-                        </button>
-                        {active && message.id ? (
-                          <button title="执行这个方案" disabled={preparingExecution} onClick={() => executeFromMessage(message)}>
-                            <Zap size={14} />
-                          </button>
-                        ) : null}
-                      </div>
-                      <MessageSources sources={message.sources} />
-                    </>
-                  ) : (
-                    <>
-                      <pre>{message.content}</pre>
-                      {active && message.id ? (
-                        <div className="message-actions user-actions">
-                          <button title="执行这个需求" disabled={preparingExecution} onClick={() => executeFromMessage(message)}><Zap size={14} /></button>
+                    <div className="avatar"><OneEye size="xs" mood="attentive" decorative /></div>
+                  ) : null}
+                  <div className="bubble">
+                    {message.attachments?.length ? <AttachmentList attachments={message.attachments} /> : null}
+                    {message.role === "assistant" ? (
+                      <>
+                        <div className="markdown-body">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
                         </div>
+                        <div className="message-actions">
+                          <button title="复制" onClick={() => copyMarkdown(message.content)}>
+                            <Copy size={14} />
+                          </button>
+                          {active && message.id ? (
+                            <button className="execution-trigger" title="交给 ONE 执行" disabled={preparingExecution || executionBusy} onClick={(event) => executeFromMessage(message, event.currentTarget)}>
+                              <Zap size={14} />
+                            </button>
+                          ) : null}
+                        </div>
+                        <MessageSources sources={message.sources} />
+                      </>
+                    ) : (
+                      <>
+                        <pre>{message.content}</pre>
+                        {active && message.id ? (
+                          <div className="message-actions user-actions">
+                            <button className="execution-trigger" title="交给 ONE 执行" disabled={preparingExecution || executionBusy} onClick={(event) => executeFromMessage(message, event.currentTarget)}><Zap size={14} /></button>
+                          </div>
+                        ) : null}
+                      </>
+                    )}
+                    {message.imageUrl ? <img className="generated-image" src={message.imageUrl} alt={message.content} /> : null}
+                    <small className="message-time">{dateTime(message.createdAt)}</small>
+                  </div>
+                </article>
+                {message.id && message.id === (executionTask?.sourceMessageId || executionSourceMessageId) && (preparingExecution || executionTask) ? (
+                  <aside className={`one-execution-presence ${executionTask?.status || "preparing"}`} aria-live="polite">
+                    <div className="one-execution-presence-head">
+                      <OneEye
+                        size="sm"
+                        mood={executionTask?.status === "completed" ? "pleased" : executionTask?.status === "failed" ? "angry" : "thinking"}
+                        decorative
+                      />
+                      <div>
+                        <small>ONE · ACTIVE</small>
+                        <strong>{executionStatusLabel(executionTask, preparingExecution)}</strong>
+                      </div>
+                      {executionBusy ? (
+                        <button type="button" onClick={(event) => cancelExecution(event.currentTarget)}><Square size={11} />停止</button>
                       ) : null}
-                    </>
-                  )}
-                  {message.imageUrl ? <img className="generated-image" src={message.imageUrl} alt={message.content} /> : null}
-                  <small className="message-time">{dateTime(message.createdAt)}</small>
-                </div>
-              </article>
+                    </div>
+                    <div className="one-execution-stream">
+                      {preparingExecution ? <div className="one-execution-step active"><span />正在整理上下文并连接你的电脑</div> : null}
+                      {executionEvents
+                        .filter((event) => event.kind === "status" || event.kind === "error")
+                        .slice(-5)
+                        .map((event) => (
+                          <div className={`one-execution-step ${event.kind}`} key={event.id}><span />{event.text}</div>
+                        ))}
+                    </div>
+                    {executionTask?.finalResponse ? (
+                      <div className="one-execution-result markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{executionTask.finalResponse}</ReactMarkdown></div>
+                    ) : executionTask?.status === "failed" && executionTask.lastError ? (
+                      <div className="one-execution-result error">{executionTask.lastError}</div>
+                    ) : null}
+                    {executionTask ? (
+                      <details className="one-execution-details" onToggle={async (event) => {
+                        if (!event.currentTarget.open) return;
+                        setExecutionTraceText("正在读取本次交接记录…");
+                        try {
+                          const trace = await api<{ instruction: string; messages: { role: string; content: string }[]; contextLimitChars: number }>(`/api/executions/${executionTask.id}/trace`);
+                          setExecutionTraceText(`发给本机执行器的实际指令\n\n${trace.instruction}\n\n截至所选消息的原对话\n\n${trace.messages.map((item) => `${item.role}: ${item.content}`).join("\n\n")}\n\n编译输入上限：${trace.contextLimitChars} 字符；超出时当前实现保留尾部。`);
+                        } catch (error) { setExecutionTraceText(error instanceof Error ? error.message : "读取失败"); }
+                      }}>
+                        <summary>执行细节</summary>
+                        <pre>{executionTraceText}</pre>
+                      </details>
+                    ) : null}
+                  </aside>
+                ) : null}
+              </React.Fragment>
             ))
           ) : (
             <div className="empty-state one-hero">
