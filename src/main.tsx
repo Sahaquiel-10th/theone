@@ -1086,7 +1086,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             <div className="execution-workspace">
               <header className="execution-header">
                 <button type="button" onClick={() => setExecutionMode(false)}><ArrowLeft size={16} />返回对话</button>
-                <div><small>CODEX EXECUTION</small><strong>{executionTask.targetName || "本机任务"}</strong></div>
+                <div><small>{executionTask.provider === "local_agent" ? "ONE LOCAL AGENT" : "CODEX EXECUTION"}</small><strong>{executionTask.targetName || "本机任务"}</strong></div>
                 {executionBusy ? <button className="execution-stop" type="button" onClick={cancelExecution}><Square size={13} />停止</button> : <span className={`execution-state ${executionTask.status}`}>{executionTask.status === "completed" ? "已完成" : executionTask.status === "failed" ? "失败" : executionTask.status === "cancelled" ? "已停止" : "执行中"}</span>}
               </header>
               <div className="execution-feed">
@@ -1103,7 +1103,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                 </details>
                 {executionEvents.map((event) => event.kind === "message" || event.kind === "user_message" ? (
                   <article className={`execution-message ${event.kind === "user_message" ? "user" : "codex"}`} key={event.id}>
-                    <div className="execution-speaker">{event.kind === "user_message" ? "YOU" : "CODEX"}</div>
+                    <div className="execution-speaker">{event.kind === "user_message" ? "YOU" : executionTask.provider === "local_agent" ? "ONE" : "CODEX"}</div>
                     <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{event.text}</ReactMarkdown></div>
                   </article>
                 ) : (
