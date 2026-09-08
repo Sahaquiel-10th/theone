@@ -20,7 +20,11 @@ npm run dev
 4. ONE 加密保存每个 Workspace 独立凭据，后续聊天直接进行全局语义检索，并把结果加入 AI 上下文。
 5. 不同 Workspace 的凭据和检索日志互不共用。首版不把第三方知识正文同步保存到 ONE。
 
-生产环境必须设置长度不少于 32 个字符的 `PROVIDER_CREDENTIALS_KEY`，得到大脑 API Key 只以 AES-256-GCM 密文持久化。
+生产环境必须设置长度不少于 32 个字符的 `PROVIDER_CREDENTIALS_KEY`，知识平台凭据只以 AES-256-GCM 密文持久化。
+
+## Notion 连接
+
+登录 ONE 后进入“知识来源”，点击“连接 Notion”，在 Notion 官方页面确认一次即可。服务端默认通过 Notion 官方 MCP 的动态客户端注册完成初始化；生产环境也可预置 `NOTION_MCP_CLIENT_ID` 和 `NOTION_MCP_CLIENT_SECRET`。Notion 首版只允许搜索和读取，不开放任何创建、更新、评论或删除工具。
 
 ## macOS ONE Key 原型
 

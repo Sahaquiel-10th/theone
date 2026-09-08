@@ -113,8 +113,9 @@ type AppCapabilities = {
 };
 
 type KnowledgeConnection = {
-  provider: "getnote";
+  provider: "getnote" | "notion";
   status: "disconnected" | "pending" | "connected" | "error" | "revoked";
+  providerSpaceName?: string;
   credentialExpiresAt?: string;
   lastCheckedAt?: string;
   lastError?: string;
@@ -514,7 +515,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [view, setView] = useState<"chat" | "admin" | "knowledge" | "account" | "agents" | "agentEditor">("chat");
+  const [view, setView] = useState<"chat" | "admin" | "knowledge" | "account" | "agents" | "agentEditor">(() => new URLSearchParams(window.location.search).has("notion") ? "knowledge" : "chat");
   const [editingAgentId, setEditingAgentId] = useState<string | "new">("new");
   const [showArchived, setShowArchived] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
@@ -536,7 +537,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     provider: "getnote",
     status: "disconnected"
   });
-  const [knowledgeConfigured, setKnowledgeConfigured] = useState(false);
+  const [notionConnection, setNotionConnection] = useState<KnowledgeConnection>({ provider: "notion", status: "disconnected" });
   const [executionTask, setExecutionTask] = useState<ExecutionTask | null>(null);
   const [executionEvents, setExecutionEvents] = useState<ExecutionEvent[]>([]);
   const [executionTraceText, setExecutionTraceText] = useState("");
@@ -575,7 +576,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   ];
 
   async function refresh() {
-    const [modelResult, conversationResult, workspaceResult, agentResult, capabilityResult, knowledgeResult] = await Promise.all([
+    const [modelResult, conversationResult, workspaceResult, agentResult, capabilityResult, knowledgeResult, notionResult] = await Promise.all([
       api<{ models: Model[]; defaultModelId: string }>("/api/models"),
       api<{ conversations: Conversation[]; pagination: { page: number; hasMore: boolean } }>(
         `/api/conversations?summary=1&page=1&pageSize=${conversationPageSize}&archived=${showArchived}`
@@ -583,7 +584,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       api<{ folders: ConversationFolder[] }>("/api/folders"),
       api<{ agents: Agent[] }>("/api/agents"),
       api<AppCapabilities>("/api/capabilities"),
-      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/getnote")
+      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/getnote"),
+      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/notion")
     ]);
     setModels(modelResult.models);
     setDefaultModelId(modelResult.defaultModelId);
@@ -607,7 +609,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setAgents(agentResult.agents);
     setCapabilities(capabilityResult);
     setKnowledgeConnection(knowledgeResult.connection);
-    setKnowledgeConfigured(knowledgeResult.configured);
+    setNotionConnection(notionResult.connection);
     setDraftModelId((current) => (
       modelResult.models.some((model) => model.id === current)
         ? current
@@ -1151,8 +1153,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </button>
         <div className="one-chrome-actions">
           <button className="one-chrome-button knowledge" type="button" title="知识来源" onClick={() => openSurface("knowledge")}>
-            <span className={`connection-dot ${knowledgeConnection.status}`} />
-            <span>{knowledgeConnection.status === "connected" ? "知识已连接" : "连接知识"}</span>
+            <span className={`connection-dot ${knowledgeConnection.status === "connected" || notionConnection.status === "connected" ? "connected" : "disconnected"}`} />
+            <span>{knowledgeConnection.status === "connected" || notionConnection.status === "connected" ? "知识已连接" : "连接知识"}</span>
           </button>
           <button className={`one-chrome-button icon-only ${historyOpen ? "active" : ""}`} type="button" title="最近任务" onClick={() => setHistoryOpen((open) => !open)}>
             <Archive size={16} />
@@ -1198,10 +1200,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       ) : view === "knowledge" ? (
         <KnowledgePage
           onOpenSidebar={() => setSidebarOpen(true)}
-          onConnectionChange={(next, configured) => {
-            setKnowledgeConnection(next);
-            setKnowledgeConfigured(configured);
-          }}
+          onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : setKnowledgeConnection(next)}
         />
       ) : view === "account" ? (
         <AccountPage user={user} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setSidebarOpen(true)} />
@@ -1754,24 +1753,42 @@ function KnowledgePage({
   onConnectionChange
 }: {
   onOpenSidebar: () => void;
-  onConnectionChange?: (connection: KnowledgeConnection, configured: boolean) => void;
+  onConnectionChange?: (connection: KnowledgeConnection) => void;
 }) {
   const [connection, setConnection] = useState<KnowledgeConnection>({ provider: "getnote", status: "disconnected" });
+  const [notionConnection, setNotionConnection] = useState<KnowledgeConnection>({ provider: "notion", status: "disconnected" });
   const [configured, setConfigured] = useState(false);
+  const [notionConfigured, setNotionConfigured] = useState(false);
+  const [notionBusy, setNotionBusy] = useState(false);
   const [testConnectAvailable, setTestConnectAvailable] = useState(false);
   const [flow, setFlow] = useState<GetNoteDeviceFlow | null>(null);
   const [polling, setPolling] = useState(false);
   const [notice, setNotice] = useState("");
 
   async function load() {
-    const result = await api<{ connection: KnowledgeConnection; configured: boolean; testConnectAvailable?: boolean }>("/api/knowledge/connections/getnote");
+    const [result, notion] = await Promise.all([
+      api<{ connection: KnowledgeConnection; configured: boolean; testConnectAvailable?: boolean }>("/api/knowledge/connections/getnote"),
+      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/notion")
+    ]);
     setConnection(result.connection);
     setConfigured(result.configured);
     setTestConnectAvailable(Boolean(result.testConnectAvailable));
-    onConnectionChange?.(result.connection, result.configured);
+    setNotionConnection(notion.connection);
+    setNotionConfigured(notion.configured);
+    onConnectionChange?.(result.connection);
+    onConnectionChange?.(notion.connection);
   }
 
-  useEffect(() => { load().catch((err) => setNotice(err.message)); }, []);
+  useEffect(() => {
+    const outcome = new URLSearchParams(window.location.search).get("notion");
+    if (outcome) {
+      setNotice(outcome === "connected" ? "Notion 连接成功，聊天时会自动读取相关页面。" : outcome === "cancelled" ? "已取消 Notion 授权。" : "Notion 授权没有完成，请重试。");
+      const url = new URL(window.location.href);
+      url.searchParams.delete("notion");
+      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+    load().catch((err) => setNotice(err.message));
+  }, []);
 
   useEffect(() => {
     if (!flow || !polling) return;
@@ -1788,7 +1805,7 @@ function KnowledgePage({
         if (cancelled) return;
         if (result.connection) {
           setConnection(result.connection);
-          onConnectionChange?.(result.connection, configured);
+          onConnectionChange?.(result.connection);
           setFlow(null);
           setPolling(false);
           setNotice("连接成功，ONE 现在可以读取你的得到大脑知识。");
@@ -1816,7 +1833,7 @@ function KnowledgePage({
       if (testConnectAvailable) {
         const result = await api<{ connection: KnowledgeConnection }>("/api/knowledge/connections/getnote/test-connect", { method: "POST" });
         setConnection(result.connection);
-        onConnectionChange?.(result.connection, configured);
+        onConnectionChange?.(result.connection);
         setNotice("测试知识已连接，现在可以直接提问。");
         return;
       }
@@ -1837,6 +1854,25 @@ function KnowledgePage({
     await load();
   }
 
+  async function connectNotion() {
+    setNotice("");
+    setNotionBusy(true);
+    try {
+      const result = await api<{ authorizationUrl: string }>("/api/knowledge/connections/notion/oauth/start", { method: "POST" });
+      window.location.assign(result.authorizationUrl);
+    } catch (err) {
+      setNotionBusy(false);
+      setNotice(err instanceof Error ? err.message : "无法发起 Notion 授权");
+    }
+  }
+
+  async function disconnectNotion() {
+    if (!confirm("确认断开当前工作区与 Notion 的连接？")) return;
+    await api("/api/knowledge/connections/notion", { method: "DELETE" });
+    await load();
+    setNotice("已断开 Notion。你仍可随时重新连接。");
+  }
+
   return (
     <section className="account-page">
       <header className="admin-header">
@@ -1844,6 +1880,7 @@ function KnowledgePage({
         <div><h2>知识来源</h2><p>授权一次，之后由 ONE 自动读取并交给 AI</p></div>
       </header>
       <div className="account-body">
+        {notice ? <div className={`${/失败|无法|过期|不稳定|尚未配置/.test(notice) ? "error" : "notice"} account-wide-notice`}>{notice}</div> : null}
         <section className="account-panel knowledge-panel">
           <div className="knowledge-provider-head">
             <div className="provider-icon"><Database size={19} /></div>
@@ -1871,7 +1908,26 @@ function KnowledgePage({
               ) : null}
             </>
           )}
-          {notice ? <div className={connection.status === "connected" ? "notice" : "error"}>{notice}</div> : null}
+        </section>
+        <section className="account-panel knowledge-panel">
+          <div className="knowledge-provider-head">
+            <div className="provider-icon"><FileText size={19} /></div>
+            <div><h3>Notion</h3><p>搜索并读取你授权的页面</p></div>
+            <span className={`provider-status ${notionConnection.status}`}>{notionConnection.status === "connected" ? "已连接" : notionConnection.status === "pending" ? "授权中" : "未连接"}</span>
+          </div>
+          {notionConnection.status === "connected" ? (
+            <>
+              <div className="notice">已连接{notionConnection.providerSpaceName ? `：${notionConnection.providerSpaceName}` : " Notion"}</div>
+              <p className="hint">聊天时 ONE 会按需搜索并读取相关页面。首版严格只读，不会创建、修改或删除任何 Notion 内容。</p>
+              <button className="danger" type="button" onClick={disconnectNotion}>断开连接</button>
+            </>
+          ) : (
+            <>
+              <p className="hint">点击一次后会前往 Notion 官方授权页；确认后自动回到 ONE。无需复制令牌，也不需要安装插件。</p>
+              <button className="primary" type="button" disabled={!notionConfigured || notionBusy} onClick={connectNotion}>{notionBusy ? "正在打开 Notion…" : "连接 Notion"}</button>
+              {!notionConfigured ? <div className="error">服务端尚未配置公开访问地址 APP_ORIGIN。</div> : null}
+            </>
+          )}
         </section>
       </div>
     </section>

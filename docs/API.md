@@ -66,9 +66,18 @@ Launcher 只把一次性码放在 URL Fragment（`#one-key=...`）中，因此 W
 
 清除加密凭据并停止后续召回。
 
+## Notion MCP 只读连接
+
+- `GET /api/knowledge/connections/notion`：返回当前 Workspace 的公开连接状态，不返回 OAuth 客户端 secret、access token 或 refresh token。
+- `POST /api/knowledge/connections/notion/oauth/start`：为当前 Workspace 启动带 PKCE 的 Notion 官方 OAuth；仅 Workspace 所有者可用，返回官方授权地址。
+- `GET /api/knowledge/connections/notion/oauth/callback`：使用短时、单次 state 完成 code 交换，把加密凭据绑定到发起授权的 Workspace，再无感返回 ONE。
+- `DELETE /api/knowledge/connections/notion`：清除当前 Workspace 的用户令牌并停止 Notion 召回。
+
+ONE 通过官方托管 MCP 只调用 `notion-fetch`、`notion-search` 和 `notion-ai-search`。即使 MCP 服务返回其他工具，它们也不会进入允许列表或模型工具面；首版不能创建、编辑、评论、移动或删除 Notion 内容。
+
 ## Chat（当前，已调整）
 
-聊天请求由服务端使用当前 Workspace 的连接执行得到全局语义搜索，将 Top K 结果作为不可信参考上下文注入模型，并在回答中附带来源。连接缺失时不执行第三方召回；Provider 失败时记录故障并降级为无知识回答，不中断模型主链。
+聊天请求由服务端使用当前 Workspace 已连接的知识来源执行实时搜索；多个 Provider 的结果公平合并后，将 Top K 作为不可信参考上下文注入模型，并在回答中附带来源。连接缺失时不执行第三方召回；单个 Provider 失败不允许回退到其他 Workspace 的连接。
 
 ## 本机执行（当前）
 

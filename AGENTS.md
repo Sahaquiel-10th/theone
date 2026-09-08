@@ -9,10 +9,10 @@ GetNote is the first Knowledge Connector, not the permanent product center. Cust
 ## Current scope
 
 - Keep chat, attachments, model gateway, web search and the minimum operations surface needed by the MVP.
-- Use 得到大脑 as the only implemented Knowledge Connector in V0.1 and use account-wide semantic search.
+- Keep 得到大脑 account-wide semantic search and add Notion as the first official-MCP, read-only Knowledge Connector.
 - Do not copy or synchronize third-party knowledge into ONE in V0.1; retrieve it on demand.
 - Build ONE Key device challenge, one-time browser login and revocation before Source/Memory/View work.
-- Do not add Bailian, DingTalk, Wanliniu, Alipay, employee surveillance, enterprise data-query features, or additional knowledge providers.
+- Do not add Bailian, DingTalk, Wanliniu, Alipay, employee surveillance, enterprise data-query features, or knowledge providers beyond the explicitly approved Notion connector.
 - Do not prioritize a document editor, GraphRAG, native knowledge store, Credits or agent marketplace before the MVP Key → Connector → AI loop works.
 - Provider names and credentials must not leak into general business logic or the browser.
 
@@ -20,7 +20,7 @@ GetNote is the first Knowledge Connector, not the permanent product center. Cust
 
 - Every user-owned record must carry `workspaceId` and every request must authorize it server-side.
 - Never trust a `workspaceId` supplied by the browser without membership verification.
-- Knowledge access goes through `KnowledgeProvider`; the chat route must not call GetNote HTTP endpoints directly.
+- Knowledge access goes through reviewed Knowledge Connector adapters; the chat route must not call provider HTTP or MCP endpoints directly.
 - Device challenges and login codes must be short-lived, single-use and resistant to replay.
 - An ordinary USB credential is a prototype security boundary; never claim secure-element-level anti-copy protection.
 - Provider failures may degrade to no-knowledge mode but must never fall back to another workspace's connection.
@@ -50,7 +50,7 @@ If global npm is unavailable in Codex Desktop, load the bundled workspace depend
 ## Security red lines
 
 - No production secrets or fallback admin passwords in source.
-- No model/GetNote credentials in client bundles, URLs, logs, or API responses.
+- No model or knowledge-provider credentials in client bundles, URLs, logs, or API responses.
 - No public object-storage paths for private files.
 - No admin access to personal conversation content unless a separately approved support workflow is introduced.
 - No knowledge retrieval without an exact authorized workspace binding.

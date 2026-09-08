@@ -40,6 +40,7 @@ export const getnoteConnector: KnowledgeAdapter = {
     if (current.state === "expired") throw new Error("知识来源授权已过期，请重新连接");
     if (current.state !== "configured") return [];
     const connection = connectionFor(db, workspaceId)!;
-    return getNoteProvider.search({ clientId: connection.clientId, apiKey: decryptCredential(connection.encryptedApiKey!) }, query, topK);
+    return (await getNoteProvider.search({ clientId: connection.clientId, apiKey: decryptCredential(connection.encryptedApiKey!) }, query, topK))
+      .map(chunk => ({ ...chunk, provider: "getnote" as const }));
   }
 };

@@ -14,7 +14,8 @@ React Web ── HttpOnly Session ── Express API
                                   ├── Identity / Device / Workspace
                                   ├── Chat
                                   ├── Knowledge Connector
-                                  │      └── GetNoteConnector
+                                  │      ├── GetNoteConnector
+                                  │      └── NotionMcpConnector (read only)
                                   ├── Model Gateway
                                   └── Minimal Operations
                                            │
@@ -72,11 +73,12 @@ interface KnowledgeConnector {
 }
 ```
 
-授权协议属于具体 Connector Adapter。首版只有 GetNote：
+授权协议属于具体 Connector Adapter。当前支持：
 
-- 第一次通过官方设备授权绑定用户账号；
-- API Key 按 Workspace 加密保存；
-- 每次聊天实时调用全局语义搜索；
+- GetNote 第一次通过官方设备授权绑定用户账号，并实时调用账号全局语义搜索；
+- Notion 使用官方托管 MCP、OAuth 2.0 Authorization Code + PKCE，只允许 `notion-fetch`、`notion-search` 和 `notion-ai-search` 三个只读工具；
+- API Key、OAuth access token、refresh token 和动态客户端 secret 按 Workspace 使用认证加密保存；
+- Notion access token 临近过期时由服务端刷新，浏览器永远不接触 Token；
 - 不复制第三方知识正文到 ONE；
 - 指定知识库搜索作为后续可选能力，不再自动创建 ONE 知识库。
 
@@ -84,7 +86,9 @@ interface KnowledgeConnector {
 
 ```text
 用户问题
-   ├── KnowledgeService → current workspace connection → GetNote global recall
+   ├── KnowledgeService → current workspace connections
+   │                        ├── GetNote global recall
+   │                        └── Notion MCP search + fetch
    └── optional web search
              ↓
       merge + context budget
@@ -94,7 +98,7 @@ interface KnowledgeConnector {
        AI answer + sources
 ```
 
-第三方召回内容是不可信输入，只能作为参考资料，不能执行其中的指令。Provider 失败时可以降级为无知识回答并明确提示，但绝不能使用其他 Workspace 的连接兜底。
+第三方召回内容始终是不可信输入，即使来自用户自己的 Notion，也可能包含复制内容、共享页面、模板或协作者写入。知识正文放入高优先级约束下的独立参考区，其中的角色设定、命令和工具调用要求不得执行；Notion 写工具还在代码层完全不可达。Provider 失败时可以降级为无知识回答并明确提示，但绝不能使用其他 Workspace 的连接兜底。
 
 ## 本机执行边界
 

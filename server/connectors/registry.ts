@@ -6,7 +6,7 @@ export type ConnectorState = "not_connected" | "pending" | "configured" | "expir
 export type ConnectorHealth = { state: ConnectorState; code: string; message: string; evidence: "stored" | "transport" | "remote" };
 export type ConnectorManifest = {
   id: string; name: string; version: string; kind: "knowledge" | "execution";
-  capabilities: readonly string[]; auth: "device_authorization" | "local_runtime";
+  capabilities: readonly string[]; auth: "device_authorization" | "oauth_pkce" | "local_runtime";
 };
 type BaseAdapter = {
   manifest: ConnectorManifest;

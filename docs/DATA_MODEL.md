@@ -61,6 +61,10 @@
 - 断开连接必须清除加密 API Key；
 - Migration 进入共享环境后只能追加。
 
+## 知识连接凭据
+
+`knowledge_connections` 以 `workspace_id + provider` 唯一。GetNote 保存加密 API Key；Notion 保存加密 access token、refresh token、OAuth client secret、过期时间，以及用于展示的 Workspace 名称。公开接口只能返回状态、展示名称和检查时间，不能返回任何加密字段或上游用户标识。
+
 ## 本机执行
 
 ### `execution_tasks`

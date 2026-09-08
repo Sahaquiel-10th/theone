@@ -48,7 +48,7 @@ export type UserSavedMemory = {
 };
 
 export type RetrievalLog = {
-  id: string; workspaceId: string; userId: string; conversationId: string; query: string; provider: "getnote";
+  id: string; workspaceId: string; userId: string; conversationId: string; query: string; provider: "getnote" | "notion" | "multiple";
   matchedItemsJson: unknown; injectedContext: string; createdAt: string;
 };
 
@@ -88,8 +88,9 @@ export type AuditLog = {
 };
 
 export type KnowledgeConnection = {
-  id: string; workspaceId: string; provider: "getnote"; status: "pending" | "connected" | "error" | "revoked";
-  clientId: string; encryptedApiKey?: string; providerSpaceId?: string; providerSpaceName?: string;
+  id: string; workspaceId: string; provider: "getnote" | "notion"; status: "pending" | "connected" | "error" | "revoked";
+  clientId: string; encryptedApiKey?: string; encryptedAccessToken?: string; encryptedRefreshToken?: string; encryptedClientSecret?: string;
+  providerSpaceId?: string; providerSpaceName?: string; providerUserId?: string;
   credentialExpiresAt?: string; lastCheckedAt?: string; lastError?: string; createdAt: string; updatedAt: string;
 };
 
