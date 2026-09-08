@@ -5,7 +5,6 @@ import remarkGfm from "remark-gfm";
 import {
   Archive,
   ArrowLeft,
-  Brain,
   Bot,
   ChevronDown,
   ChevronLeft,
@@ -196,21 +195,6 @@ type Agent = {
   authorRole: Role;
   createdAt: string;
   updatedAt: string;
-};
-
-type MemoryItem = {
-  id: string;
-  text: string;
-  createdAt?: string;
-  updatedAt?: string;
-};
-
-type MemoryLimits = {
-  maxItems: number;
-  maxCharsPerItem: number;
-  maxTotalChars: number;
-  usedItems: number;
-  usedChars: number;
 };
 
 type PowerLedgerEntry = { id: string; type: "gift" | "recharge" | "usage" | "adjustment" | "refund"; amountMicros: number; balanceAfterMicros: number; title: string; createdAt: string; username?: string };
@@ -499,7 +483,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [view, setView] = useState<"chat" | "admin" | "memories" | "knowledge" | "account" | "agents" | "agentEditor">("chat");
+  const [view, setView] = useState<"chat" | "admin" | "knowledge" | "account" | "agents" | "agentEditor">("chat");
   const [editingAgentId, setEditingAgentId] = useState<string | "new">("new");
   const [showArchived, setShowArchived] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
@@ -806,7 +790,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       );
     }
     try {
-      const result = await api<{ conversation: Conversation; memoryNotice?: string; knowledgeWarning?: string }>("/api/chat", {
+      const result = await api<{ conversation: Conversation; knowledgeWarning?: string }>("/api/chat", {
         method: "POST",
         body: JSON.stringify({
           content: text,
@@ -828,10 +812,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       if (result.knowledgeWarning) {
         setNotice("知识来源暂时不可用，本次已使用 AI 直接回答。");
         window.setTimeout(() => setNotice(""), 4200);
-      }
-      if (result.memoryNotice) {
-        setNotice(result.memoryNotice);
-        window.setTimeout(() => setNotice(""), 2800);
       }
     } catch (err) {
       setPendingAttachments(attachments);
@@ -1067,8 +1047,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
       {view === "admin" && user.role === "admin" ? (
         <AdminPanel refreshModels={refresh} onOpenSidebar={() => setSidebarOpen(true)} />
-      ) : view === "memories" ? (
-        <MemoriesPage onOpenSidebar={() => setSidebarOpen(true)} />
       ) : view === "knowledge" ? (
         <KnowledgePage
           onOpenSidebar={() => setSidebarOpen(true)}
@@ -1731,162 +1709,6 @@ function KnowledgePage({
           {notice ? <div className={connection.status === "connected" ? "notice" : "error"}>{notice}</div> : null}
         </section>
       </div>
-    </section>
-  );
-}
-
-function MemoriesPage({ onOpenSidebar }: { onOpenSidebar: () => void }) {
-  const [memories, setMemories] = useState<MemoryItem[]>([]);
-  const [limits, setLimits] = useState<MemoryLimits>({
-    maxItems: 10,
-    maxCharsPerItem: 200,
-    maxTotalChars: 2000,
-    usedItems: 0,
-    usedChars: 0
-  });
-  const [content, setContent] = useState("");
-  const [editing, setEditing] = useState<Record<string, string>>({});
-  const [loading, setLoading] = useState(true);
-  const [notice, setNotice] = useState("");
-
-  async function load() {
-    setLoading(true);
-    try {
-      const result = await api<{ memories: MemoryItem[]; limits: MemoryLimits }>("/api/memories");
-      setMemories(result.memories);
-      setLimits(result.limits);
-    } catch (err) {
-      setNotice(err instanceof Error ? err.message : "加载失败");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
-  }, []);
-
-  async function addMemory(event: FormEvent) {
-    event.preventDefault();
-    if (!content.trim()) return;
-    try {
-      await api("/api/memories", {
-        method: "POST",
-        body: JSON.stringify({ content: content.trim() })
-      });
-      setContent("");
-      setNotice("记忆已添加");
-      await load();
-    } catch (err) {
-      setNotice(err instanceof Error ? err.message : "添加失败");
-    }
-  }
-
-  async function saveMemory(memory: MemoryItem) {
-    const value = editing[memory.id]?.trim();
-    if (!value) return;
-    try {
-      await api(`/api/memories/${encodeURIComponent(memory.id)}`, {
-        method: "PATCH",
-        body: JSON.stringify({ content: value })
-      });
-      setEditing(({ [memory.id]: _removed, ...rest }) => rest);
-      setNotice("记忆已更新");
-      await load();
-    } catch (err) {
-      setNotice(err instanceof Error ? err.message : "更新失败");
-    }
-  }
-
-  async function deleteMemory(memory: MemoryItem) {
-    if (!confirm("确认删除这条个人记忆？")) return;
-    try {
-      await api(`/api/memories/${encodeURIComponent(memory.id)}`, { method: "DELETE" });
-      setNotice("记忆已删除");
-      await load();
-    } catch (err) {
-      setNotice(err instanceof Error ? err.message : "删除失败");
-    }
-  }
-
-  return (
-    <section className="memory-page">
-      <header className="admin-header">
-        <button className="mobile-menu" title="打开导航" onClick={onOpenSidebar}>
-          <Menu size={20} />
-        </button>
-        <div>
-          <h2>我的记忆</h2>
-          <p>{limits.usedItems}/{limits.maxItems} 条 · {limits.usedChars}/{limits.maxTotalChars} 字</p>
-        </div>
-        <button className="secondary" onClick={load}>
-          <Brain size={16} />
-          刷新
-        </button>
-      </header>
-      {notice ? <div className="notice">{notice}</div> : null}
-      <form className="memory-create" onSubmit={addMemory}>
-        <textarea
-          value={content}
-          maxLength={limits.maxCharsPerItem}
-          rows={3}
-          placeholder="添加一条希望 AI 长期记住的内容"
-          onChange={(event) => setContent(event.target.value)}
-        />
-        <div className="memory-create-actions">
-          <small>{content.length}/{limits.maxCharsPerItem}</small>
-          <button className="primary" type="submit" disabled={!content.trim() || limits.usedItems >= limits.maxItems}>
-            <Plus size={16} />
-            添加
-          </button>
-        </div>
-      </form>
-      {loading ? (
-        <div className="empty-state compact">加载中...</div>
-      ) : memories.length ? (
-        <div className="memory-list">
-          {memories.map((memory) => (
-            <article className="memory-card" key={memory.id}>
-              {editing[memory.id] !== undefined ? (
-                <textarea
-                  value={editing[memory.id]}
-                  maxLength={limits.maxCharsPerItem}
-                  rows={3}
-                  onChange={(event) => setEditing({ ...editing, [memory.id]: event.target.value })}
-                />
-              ) : (
-                <pre>{memory.text}</pre>
-              )}
-              <div className="memory-meta">
-                <small>{memory.updatedAt ? dateTime(memory.updatedAt) : memory.createdAt ? dateTime(memory.createdAt) : ""}</small>
-                {editing[memory.id] !== undefined ? <small>{editing[memory.id].length}/{limits.maxCharsPerItem}</small> : null}
-              </div>
-              <div className="memory-card-actions">
-                {editing[memory.id] !== undefined ? (
-                  <button className="secondary" onClick={() => saveMemory(memory)}>
-                    <Save size={15} />
-                    保存
-                  </button>
-                ) : (
-                  <button className="secondary" onClick={() => setEditing({ ...editing, [memory.id]: memory.text })}>
-                    <Edit3 size={15} />
-                    编辑
-                  </button>
-                )}
-                <button className="danger" onClick={() => deleteMemory(memory)}>
-                  <Trash2 size={15} />
-                  删除
-                </button>
-              </div>
-            </article>
-          ))}
-        </div>
-      ) : (
-        <div className="empty-state compact">
-          <Brain size={36} />
-          <h2>暂无个人记忆</h2>
-        </div>
-      )}
     </section>
   );
 }

@@ -181,7 +181,8 @@ export async function callModelWithTools(
 ): Promise<ToolChatResult> {
   if (!model.enabled) throw new Error("模型未启用");
   if (!model.apiKey) throw new Error("模型缺少 API Key");
-  if (model.kind !== "chat" || model.protocol !== "openai") throw new Error("ONE Local Agent 首版需要兼容 OpenAI function calling 的对话模型");
+  if (model.kind !== "chat") throw new Error("ONE Local Agent 需要支持 function calling 的对话模型");
+  if (model.protocol === "anthropic") return callAnthropicModelWithTools(model, messages, tools, requestId);
 
   const endpoint = `${model.baseUrl.replace(/\/$/, "")}/chat/completions`;
   const startedAt = Date.now();
@@ -251,6 +252,131 @@ export async function callModelWithTools(
       event: "local_agent_model_request_failed",
       requestId,
       modelId: model.id,
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : "未知错误"
+    }));
+    throw error;
+  }
+}
+
+async function callAnthropicModelWithTools(
+  model: ModelConfig,
+  messages: ModelToolMessage[],
+  tools: ModelToolDefinition[],
+  requestId: string
+): Promise<ToolChatResult> {
+  const system = messages
+    .filter((message) => message.role === "system" && typeof message.content === "string")
+    .map((message) => message.content?.trim())
+    .filter(Boolean)
+    .join("\n\n");
+  const anthropicMessages: Array<{ role: "user" | "assistant"; content: Array<Record<string, unknown>> }> = [];
+  const append = (role: "user" | "assistant", blocks: Array<Record<string, unknown>>) => {
+    const previous = anthropicMessages.at(-1);
+    if (previous?.role === role) previous.content.push(...blocks);
+    else anthropicMessages.push({ role, content: blocks });
+  };
+
+  for (const message of messages) {
+    if (message.role === "system") continue;
+    if (message.role === "tool") {
+      append("user", [{
+        type: "tool_result",
+        tool_use_id: message.tool_call_id || "unknown",
+        content: message.content || ""
+      }]);
+      continue;
+    }
+    const blocks: Array<Record<string, unknown>> = [];
+    if (message.content) blocks.push({ type: "text", text: message.content });
+    if (message.role === "assistant") {
+      for (const call of message.tool_calls ?? []) {
+        let input: unknown = {};
+        try { input = JSON.parse(call.function.arguments || "{}"); } catch { input = {}; }
+        blocks.push({ type: "tool_use", id: call.id, name: call.function.name, input });
+      }
+    }
+    if (blocks.length) append(message.role, blocks);
+  }
+
+  const endpoint = `${model.baseUrl.replace(/\/$/, "")}/messages`;
+  const startedAt = Date.now();
+  console.log(JSON.stringify({
+    event: "local_agent_model_request_started",
+    requestId,
+    modelId: model.id,
+    model: model.model,
+    protocol: "anthropic",
+    inputMessages: anthropicMessages.length,
+    tools: tools.length
+  }));
+  try {
+    const response = await fetchWithTimeout(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": model.apiKey,
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({
+        model: model.model,
+        system: system || undefined,
+        messages: anthropicMessages,
+        tools: tools.map((tool) => ({
+          name: tool.function.name,
+          description: tool.function.description,
+          input_schema: tool.function.parameters
+        })),
+        tool_choice: { type: "auto" },
+        temperature: 0.2,
+        max_tokens: maxOutputTokens
+      })
+    }, requestTimeoutMs);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = typeof payload?.error?.message === "string" ? payload.error.message : response.statusText;
+      throw new Error(`Local Agent 模型调用失败（上游 ${response.status}）：${detail}`);
+    }
+    const blocks = Array.isArray(payload?.content) ? payload.content : [];
+    const content = blocks
+      .filter((item: { type?: string; text?: unknown }) => item?.type === "text" && typeof item.text === "string")
+      .map((item: { text: string }) => item.text)
+      .join("\n");
+    const toolCalls: ModelToolCall[] = blocks
+      .filter((item: { type?: string; id?: unknown; name?: unknown }) => item?.type === "tool_use" && typeof item.id === "string" && typeof item.name === "string")
+      .map((item: { id: string; name: string; input?: unknown }) => ({
+        id: item.id,
+        type: "function" as const,
+        function: { name: item.name, arguments: JSON.stringify(item.input ?? {}) }
+      }));
+    if (!content && !toolCalls.length) throw new Error("Local Agent 模型响应格式不正确");
+    const inputTokens = Number(payload?.usage?.input_tokens);
+    const outputTokens = Number(payload?.usage?.output_tokens);
+    const hasProviderUsage = Number.isFinite(inputTokens) && Number.isFinite(outputTokens);
+    console.log(JSON.stringify({
+      event: "local_agent_model_request_completed",
+      requestId,
+      modelId: model.id,
+      protocol: "anthropic",
+      durationMs: Date.now() - startedAt,
+      toolCalls: toolCalls.length
+    }));
+    return {
+      content,
+      toolCalls,
+      usage: hasProviderUsage ? {
+        inputTokens,
+        outputTokens,
+        totalTokens: inputTokens + outputTokens,
+        source: "provider"
+      } : undefined
+    };
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "local_agent_model_request_failed",
+      requestId,
+      modelId: model.id,
+      protocol: "anthropic",
       durationMs: Date.now() - startedAt,
       error: error instanceof Error ? error.message : "未知错误"
     }));

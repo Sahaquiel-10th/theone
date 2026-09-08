@@ -842,6 +842,16 @@ pre {
 .execution-state.completed { border-color: rgb(117 229 155 / 35%); color: #75e59b; }
 .execution-state.failed { border-color: rgb(255 107 107 / 35%); color: #ff8585; }
 .execution-feed { display: grid; gap: 20px; }
+.one-shell.execution-shell .execution-feed details {
+  border: 1px solid #2a2a2a;
+  border-radius: 13px;
+  background: #111;
+  color: #deded8;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.one-shell.execution-shell .execution-feed details summary { color: #d8d8d2; }
+.one-shell.execution-shell .execution-feed details pre { color: #f0f0eb; }
 .execution-message { max-width: 820px; padding: 19px 21px; border: 1px solid #2a2a2a; border-radius: 13px; background: #111; }
 .execution-message.user { justify-self: end; max-width: 72%; background: #f0f0eb; color: #111; border-color: #f0f0eb; }
 .execution-message.codex { justify-self: start; }
@@ -1251,7 +1261,6 @@ label.composer-tool {
 
 .admin-page,
 .account-page,
-.memory-page,
 .agents-page {
   min-width: 0;
   height: 100dvh;
@@ -1782,7 +1791,6 @@ label.composer-tool {
 }
 
 .table-row,
-.memory-card,
 details {
   border: 1px solid #dfe3e8;
   border-radius: 8px;
@@ -1853,52 +1861,6 @@ details {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
-.memory-create,
-.memory-list {
-  max-width: 920px;
-}
-
-.memory-create {
-  display: grid;
-  gap: 10px;
-  margin: 10px 26px 0;
-  padding: 15px;
-  border: 1px solid #dfe3e8;
-  border-radius: 8px;
-  background: #fff;
-}
-
-.memory-list {
-  display: grid;
-  gap: 10px;
-  padding: 20px 26px 32px;
-}
-
-.memory-create-actions,
-.memory-card-actions,
-.memory-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.memory-create-actions,
-.memory-card-actions {
-  justify-content: flex-end;
-}
-
-.memory-create-actions .primary {
-  width: auto;
-  min-width: 90px;
-  margin: 0;
-}
-
-.memory-card {
-  display: grid;
-  gap: 10px;
-  padding: 15px;
 }
 
 .agents-board {
@@ -2310,10 +2272,6 @@ details {
 
 .public-composer {
   border-top: 1px solid #f0f2f5;
-}
-
-.memory-meta {
-  flex-wrap: wrap;
 }
 
 .empty-state.compact {
@@ -3257,14 +3215,6 @@ summary {
     padding: 14px 12px 24px;
   }
 
-  .memory-create {
-    margin: 8px 12px 0;
-  }
-
-  .memory-list {
-    padding: 14px 12px 24px;
-  }
-
   summary {
     align-items: flex-start;
     flex-direction: column;
@@ -3669,7 +3619,6 @@ summary {
 .one-shell > .chat,
 .one-shell > .admin-page,
 .one-shell > .account-page,
-.one-shell > .memory-page,
 .one-shell > .agents-page {
   min-height: 0;
   grid-row: 2;
@@ -3906,7 +3855,6 @@ summary {
 
 .one-shell .admin-page,
 .one-shell .account-page,
-.one-shell .memory-page,
 .one-shell .agents-page {
   height: auto;
   background: transparent;
@@ -5145,7 +5093,6 @@ body { background: var(--one-paper); }
 .one-shell .account-panel,
 .one-shell .admin-form,
 .one-shell .table-row,
-.one-shell .memory-card,
 .one-shell details,
 .one-shell .agent-card,
 .one-shell .knowledge-panel {
@@ -5440,8 +5387,7 @@ body { background: var(--one-paper); }
 
 .one-shell:not(.execution-shell) .account-body,
 .one-shell:not(.execution-shell) .admin-body,
-.one-shell:not(.execution-shell) .agents-board,
-.one-shell:not(.execution-shell) .memory-list {
+.one-shell:not(.execution-shell) .agents-board {
   padding-right: 34px;
   padding-left: 34px;
 }
@@ -5453,7 +5399,6 @@ body { background: var(--one-paper); }
 .one-shell:not(.execution-shell) .account-panel,
 .one-shell:not(.execution-shell) .admin-form,
 .one-shell:not(.execution-shell) .table-row,
-.one-shell:not(.execution-shell) .memory-card,
 .one-shell:not(.execution-shell) details,
 .one-shell:not(.execution-shell) .agent-card,
 .one-shell:not(.execution-shell) .knowledge-panel {
@@ -5575,7 +5520,6 @@ body { background: var(--one-paper); }
   .one-shell:not(.execution-shell) .account-body,
   .one-shell:not(.execution-shell) .admin-body,
   .one-shell:not(.execution-shell) .agents-board,
-  .one-shell:not(.execution-shell) .memory-list,
   .one-shell:not(.execution-shell) .tabs {
     padding-right: 14px;
     padding-left: 14px;

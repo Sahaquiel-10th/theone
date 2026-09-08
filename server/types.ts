@@ -53,7 +53,7 @@ export type RetrievalLog = {
 };
 
 export type ContextTraceSection = {
-  key: "safety" | "model_prompt" | "knowledge" | "memory" | "attachments" | "web_search" | "history" | "current_input";
+  key: "safety" | "model_prompt" | "knowledge" | "attachments" | "web_search" | "history" | "current_input";
   title: string;
   content: string;
 };

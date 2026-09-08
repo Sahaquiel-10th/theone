@@ -84,7 +84,7 @@ Launcher 只把一次性码放在 URL Fragment（`#one-key=...`）中，因此 W
 - `/api/admin/models*`：超管维护接口地址、API Key、模型 ID、售价和进价；
 - `/api/admin/operations`：超管读取经营总览、计量账单和非内容审计日志；
 - `GET /api/admin/context-traces`：超管读取最近 100 次成功问答的上下文摘要；
-- `GET /api/admin/context-traces/:id`：超管按次查看分区后的平台提示词、模型提示词、知识召回原文、用户记忆、附件、联网结果、历史对话和当前问题。该接口包含用户私密内容，只允许超管访问；不包含任何 Provider 或模型密钥；
+- `GET /api/admin/context-traces/:id`：超管按次查看分区后的平台提示词、模型提示词、知识召回原文、附件、联网结果、历史对话和当前问题。该接口包含用户私密内容，只允许超管访问；不包含任何 Provider 或模型密钥；
 - `POST /api/admin/users/:id/power`：赠送电力并原子写入账本；
 - `POST /api/admin/recharge-orders/:id/approve`：人工确认充值入账；
 - `PATCH /api/admin/settings/billing`：配置人民币购买电力的汇率。

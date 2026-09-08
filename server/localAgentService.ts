@@ -131,7 +131,6 @@ export class LocalAgentService {
       const conversation = db.conversations.find((item) => item.id === task!.conversationId && item.workspaceId === task!.workspaceId && item.userId === task!.userId);
       const model = conversation ? db.models.find((item) => item.id === conversation.modelId && item.enabled && item.kind === "chat") : undefined;
       if (!model) throw new Error("当前对话没有可供 Local Agent 使用的模型");
-      if (model.protocol !== "openai") throw new Error("当前 Local Agent 首版只支持 OpenAI 兼容 function calling 模型");
 
       await this.update(task, "selecting_target", task.targetName ? "正在确认本机授权文件夹" : "请在电脑上选择 ONE 可以操作的文件夹");
       const prepared = await this.presence.prepareLocalExecution(task.deviceId, task.id);
