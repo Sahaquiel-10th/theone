@@ -5645,6 +5645,300 @@ body { background: var(--one-paper); }
   }
 }
 
+/* ONE continuous workspace — the first prompt stays in place while the assistant wakes up. */
+.one-shell .composer {
+  view-transition-name: one-composer;
+}
+
+.one-working-presence {
+  width: min(960px, calc(100% - 48px));
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 15px;
+  color: #24211d;
+  view-transition-name: one-assistant-presence;
+}
+
+.one-working-eye {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+.one-working-eye::after {
+  position: absolute;
+  inset: -9px;
+  z-index: -1;
+  content: "";
+  border-radius: 50%;
+  background: radial-gradient(circle, rgb(26 23 19 / 10%), transparent 70%);
+  animation: oneWorkingAura 2.4s ease-in-out infinite;
+}
+
+.one-working-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.one-working-copy small {
+  color: #979086;
+  font-size: 8px;
+  font-weight: 760;
+  letter-spacing: .2em;
+}
+
+.one-working-copy strong {
+  color: #2c2924;
+  font-size: 14px;
+  font-weight: 630;
+  letter-spacing: -.015em;
+}
+
+.one-working-copy span {
+  overflow: hidden;
+  color: #8a8379;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.one-working-presence.compact {
+  padding: 2px 0 6px;
+}
+
+.one-working-presence.compact .one-eye {
+  box-shadow: 0 8px 24px rgb(24 21 17 / 14%), inset 0 1px rgb(255 255 255 / 10%);
+}
+
+.one-shell .one-chat.handoff-mode {
+  padding: clamp(30px, 5vw, 74px) clamp(24px, 6vw, 94px);
+  grid-template-columns: minmax(0, 1.18fr) minmax(300px, .82fr);
+  grid-template-rows: minmax(0, 1fr);
+  align-items: center;
+  column-gap: clamp(42px, 7vw, 112px);
+  overflow: hidden;
+}
+
+.one-shell .handoff-mode .messages {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  overflow: visible;
+}
+
+.one-home-handoff {
+  width: 100%;
+}
+
+.one-working-presence.expanded {
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  gap: 24px;
+  text-align: center;
+}
+
+.one-working-presence.expanded .one-working-eye::after {
+  inset: -72px;
+  background: radial-gradient(circle, rgb(28 24 19 / 14%), transparent 66%);
+}
+
+.one-working-presence.expanded .one-presence {
+  margin: 0;
+}
+
+.one-working-presence.expanded .one-working-copy {
+  gap: 8px;
+}
+
+.one-working-presence.expanded .one-working-copy small {
+  font-size: 9px;
+}
+
+.one-working-presence.expanded .one-working-copy strong {
+  max-width: 380px;
+  font-size: clamp(24px, 2.6vw, 38px);
+  font-weight: 620;
+  letter-spacing: -.045em;
+  line-height: 1.08;
+  text-wrap: balance;
+}
+
+.one-working-presence.expanded .one-working-copy span {
+  font-size: 13px;
+}
+
+.one-shell .handoff-mode .composer {
+  position: relative;
+  grid-column: 1;
+  grid-row: 1;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.one-shell .handoff-mode .composer::before {
+  display: block;
+  margin: 0 0 15px 4px;
+  content: "YOUR REQUEST · IN MOTION";
+  color: #90897f;
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: .2em;
+}
+
+.one-shell .handoff-mode .composer-row {
+  min-height: 164px;
+  padding: 20px;
+  align-items: flex-end;
+  border: 1px solid rgb(33 30 25 / 11%);
+  border-radius: 27px;
+  background: rgb(255 253 248 / 82%);
+  box-shadow: 0 34px 100px rgb(36 31 24 / 13%), inset 0 1px rgb(255 255 255 / 94%);
+}
+
+.one-shell .handoff-mode .composer-row textarea {
+  min-height: 122px;
+  padding: 4px 8px;
+  color: #292621;
+  font-size: clamp(20px, 2.3vw, 31px);
+  font-weight: 560;
+  letter-spacing: -.035em;
+  line-height: 1.35;
+  opacity: 1;
+  -webkit-text-fill-color: #292621;
+}
+
+.one-shell .handoff-mode .send:disabled {
+  opacity: 1;
+  background: #171714;
+  color: #fff;
+}
+
+.one-shell .handoff-mode .send svg {
+  animation: oneSendInMotion 1.5s cubic-bezier(.2, .9, .3, 1) infinite;
+}
+
+.one-shell .intent-ready .one-hero {
+  transform: translateY(-8px);
+}
+
+.one-shell .intent-ready .one-presence {
+  transform: scale(1.04);
+}
+
+.one-shell .intent-ready .composer-row {
+  border-color: rgb(28 25 21 / 23%);
+  box-shadow: 0 34px 92px rgb(38 33 26 / 18%), 0 0 0 5px rgb(28 25 21 / 3%);
+}
+
+.one-shell .intent-ready .dia-prompts {
+  opacity: .52;
+  transform: translateY(4px);
+}
+
+.one-shell .one-hero,
+.one-shell .one-presence,
+.one-shell .dia-prompts {
+  transition: opacity 260ms ease, transform 360ms cubic-bezier(.2, .82, .2, 1);
+}
+
+.one-shell > .admin-page,
+.one-shell > .knowledge-page,
+.one-shell > .account-page,
+.one-shell > .agents-page,
+.one-shell > .agent-editor-page {
+  animation: oneSurfaceArrive 340ms cubic-bezier(.2, .82, .2, 1) both;
+}
+
+@keyframes oneWorkingAura {
+  0%, 100% { opacity: .45; transform: scale(.88); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+
+@keyframes oneSendInMotion {
+  0%, 100% { opacity: .72; transform: translate(0, 0) rotate(0); }
+  48% { opacity: 1; transform: translate(2px, -2px) rotate(-5deg); }
+}
+
+@keyframes oneSurfaceArrive {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 760px) {
+  .one-shell .one-chat.handoff-mode {
+    padding: 20px 12px 14px;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(190px, 1fr) auto;
+    row-gap: 22px;
+    overflow-y: auto;
+  }
+
+  .one-shell .handoff-mode .messages {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .one-shell .handoff-mode .composer {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .one-working-presence.expanded {
+    gap: 17px;
+  }
+
+  .one-working-presence.expanded .one-presence {
+    width: 92px;
+    height: 92px;
+  }
+
+  .one-working-presence.expanded .one-working-eye::after {
+    inset: -42px;
+  }
+
+  .one-working-presence.expanded .one-working-copy strong {
+    font-size: clamp(24px, 8vw, 32px);
+  }
+
+  .one-shell .handoff-mode .composer-row {
+    min-height: 124px;
+    padding: 14px;
+    border-radius: 22px;
+  }
+
+  .one-shell .handoff-mode .composer-row textarea {
+    min-height: 92px;
+    font-size: 20px;
+  }
+
+  .one-working-presence.compact {
+    width: calc(100% - 24px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .one-working-eye::after,
+  .one-shell .handoff-mode .send svg,
+  .one-shell > .admin-page,
+  .one-shell > .knowledge-page,
+  .one-shell > .account-page,
+  .one-shell > .agents-page,
+  .one-shell > .agent-editor-page {
+    animation: none;
+  }
+}
+
 /* Keep the takeover palette last so the V0.3 structural system remains unchanged. */
 .app-shell.one-shell.execution-shell {
   --one-ink: #f5f3ed;

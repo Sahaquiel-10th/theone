@@ -364,6 +364,21 @@ function OneHeroEye({ mood }: { mood: OneEyeMood }) {
   );
 }
 
+function OneWorkingPresence({ message, expanded = false }: { message: string; expanded?: boolean }) {
+  return (
+    <div className={`one-working-presence ${expanded ? "expanded" : "compact"}`} role="status" aria-live="polite">
+      <div className="one-working-eye">
+        {expanded ? <OneHeroEye mood="thinking" /> : <OneEye size="sm" mood="thinking" decorative />}
+      </div>
+      <div className="one-working-copy">
+        <small>ONE · THINKING</small>
+        <strong>{expanded ? "我接住了，正在把它想清楚" : "我正在整理这件事"}</strong>
+        <span>{message}</span>
+      </div>
+    </div>
+  );
+}
+
 function OneWordmark({ inverse = false }: { inverse?: boolean }) {
   return (
     <span className={`one-wordmark ${inverse ? "inverse" : ""}`} aria-label="ONE">
@@ -528,8 +543,11 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [executionMode, setExecutionMode] = useState(false);
   const [preparingExecution, setPreparingExecution] = useState(false);
   const [executionSourceMessageId, setExecutionSourceMessageId] = useState("");
+  const [homeHandoff, setHomeHandoff] = useState<{ message: string } | null>(null);
   const executionOriginRef = useRef<TransitionPoint>({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
   const executionWasBusyRef = useRef(false);
+  const homeHandoffTimerRef = useRef<number | null>(null);
+  const homeEntryIdRef = useRef("");
 
   const active = useMemo(() => conversations.find((item) => item.id === activeId), [activeId, conversations]);
   const activeModelId = active?.modelId || draftModelId;
@@ -548,18 +566,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const visibleConversations = conversations.filter((conversation) => conversation.archived === showArchived);
   const ungroupedConversations = visibleConversations.filter((conversation) => !conversation.folderId);
   const waitMessages = [
-    "AI 疯狂翻书中 (ง •̀_•́)ง",
-    "什么？刚睡醒，等我找找 (。-ω-)zzz",
-    "答案正在路上，请勿催单 ( •̀ ω •́ )✧",
-    "正在知识库里东翻西找 (￣▽￣)~*",
-    "脑子转得有点快，先别打断我 (¬‿¬)",
-    "让我再想得像样一点 ( • ̀ω•́ )",
-    "正在努力避免一本正经地胡说八道 (._.)",
-    "这个问题有点东西，我再琢磨琢磨 (˘･_･˘)",
-    "AI 临时加班中，马上回来 (ง'̀-'́)ง",
-    "正在组织语言，争取不像机器人 (￣﹃￣)",
-    "别急，好的答案值得多等两秒 (๑•̀ㅂ•́)و",
-    "上下文有点多，我正在认真捋顺 (＠_＠;)"
+    "正在读懂你的上下文",
+    "正在个人知识里寻找相关线索",
+    "我在把零散信息连成一条清晰路径",
+    "正在核对细节，避免错过重要信息",
+    "我已经找到方向，再往前想一步",
+    "正在把结果整理成更好用的表达"
   ];
 
   async function refresh() {
@@ -638,6 +650,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     return () => window.clearTimeout(timer);
   }, [executionBusy, executionMode, executionTask?.status]);
 
+  useEffect(() => () => {
+    if (homeHandoffTimerRef.current) window.clearTimeout(homeHandoffTimerRef.current);
+  }, []);
+
   async function loadLatestExecution(conversationId: string) {
     try {
       const result = await api<{ tasks: ExecutionTask[] }>(`/api/executions?conversationId=${encodeURIComponent(conversationId)}`);
@@ -689,6 +705,49 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     }).catch(() => undefined);
   }
 
+  function transitionInterface(update: () => void) {
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const transitionDocument = document as ViewTransitionDocument;
+    if (!transitionDocument.startViewTransition || reducedMotion) {
+      update();
+      return;
+    }
+
+    const transition = transitionDocument.startViewTransition(() => flushSync(update));
+    transition.ready.then(() => {
+      document.documentElement.animate(
+        [
+          { opacity: .5, transform: "translateY(5px)" },
+          { opacity: 1, transform: "translateY(0)" }
+        ],
+        {
+          duration: 300,
+          easing: "cubic-bezier(.2,.82,.2,1)",
+          fill: "both",
+          pseudoElement: "::view-transition-new(root)"
+        } as KeyframeAnimationOptions & { pseudoElement: string }
+      );
+    }).catch(() => undefined);
+  }
+
+  function clearHomeHandoff() {
+    if (homeHandoffTimerRef.current) window.clearTimeout(homeHandoffTimerRef.current);
+    homeHandoffTimerRef.current = null;
+    homeEntryIdRef.current = "";
+    setHomeHandoff(null);
+  }
+
+  function openSurface(next: "chat" | "admin" | "knowledge" | "account") {
+    clearHomeHandoff();
+    transitionInterface(() => {
+      setView(next);
+      if (next !== "chat") setActiveId("");
+      setHistoryOpen(false);
+      setSidebarOpen(false);
+      setExecutionMode(false);
+    });
+  }
+
   async function loadMoreConversations() {
     if (loadingMoreConversations || !hasMoreConversations) return;
     const nextPage = conversationPage + 1;
@@ -714,12 +773,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   async function openConversation(conversation: Conversation) {
-    setActiveId(conversation.id);
-    setView("chat");
-    setError("");
-    setSidebarOpen(false);
-    setHistoryOpen(false);
-    setExecutionMode(false);
+    clearHomeHandoff();
+    transitionInterface(() => {
+      setActiveId(conversation.id);
+      setView("chat");
+      setError("");
+      setSidebarOpen(false);
+      setHistoryOpen(false);
+      setExecutionMode(false);
+    });
     void loadLatestExecution(conversation.id);
     if (conversation.messagesLoaded) return;
     setLoadingByConversation((items) => ({ ...items, [conversation.id]: true }));
@@ -745,29 +807,35 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }, [loadingByConversation]);
 
   function startNewChat() {
-    setActiveId("");
-    setDraftAgentId("");
-    setDraftModelId(defaultModelId || models[0]?.id || "");
-    setContent("");
-    setError("");
-    setPendingAttachments([]);
-    setWebSearch(false);
-    setView("chat");
-    setSidebarOpen(false);
-    setHistoryOpen(false);
-    setExecutionMode(false);
+    clearHomeHandoff();
+    transitionInterface(() => {
+      setActiveId("");
+      setDraftAgentId("");
+      setDraftModelId(defaultModelId || models[0]?.id || "");
+      setContent("");
+      setError("");
+      setPendingAttachments([]);
+      setWebSearch(false);
+      setView("chat");
+      setSidebarOpen(false);
+      setHistoryOpen(false);
+      setExecutionMode(false);
+    });
   }
 
   function startAgentChat(agent: Agent) {
-    setActiveId("");
-    setDraftAgentId(agent.id);
-    setDraftModelId(agent.modelId);
-    setContent("");
-    setError("");
-    setPendingAttachments([]);
-    setWebSearch(false);
-    setView("chat");
-    setSidebarOpen(false);
+    clearHomeHandoff();
+    transitionInterface(() => {
+      setActiveId("");
+      setDraftAgentId(agent.id);
+      setDraftModelId(agent.modelId);
+      setContent("");
+      setError("");
+      setPendingAttachments([]);
+      setWebSearch(false);
+      setView("chat");
+      setSidebarOpen(false);
+    });
   }
 
   async function uploadAttachments(files: FileList | File[] | null) {
@@ -847,7 +915,16 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         updatedAt: userMessage.createdAt
       };
       setConversations((items) => [optimistic, ...items]);
-      setActiveId(tempId);
+      homeEntryIdRef.current = tempId;
+      setHomeHandoff({ message: userMessage.content });
+      homeHandoffTimerRef.current = window.setTimeout(() => {
+        const targetId = homeEntryIdRef.current;
+        homeHandoffTimerRef.current = null;
+        transitionInterface(() => {
+          setActiveId(targetId);
+          setHomeHandoff(null);
+        });
+      }, 760);
     } else {
       setConversations((items) =>
         items.map((item) =>
@@ -874,6 +951,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         const rest = items.filter((item) => item.id !== result.conversation.id && item.id !== tempId);
         return [{ ...result.conversation, messagesLoaded: true }, ...rest];
       });
+      if (isNewConversation) homeEntryIdRef.current = result.conversation.id;
       setActiveId((current) => (current === tempId || current === active?.id ? result.conversation.id : current));
       setPendingAttachments([]);
       setWebSearch(false);
@@ -882,6 +960,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         window.setTimeout(() => setNotice(""), 4200);
       }
     } catch (err) {
+      if (isNewConversation) clearHomeHandoff();
       setPendingAttachments(attachments);
       setFailedMessage(text || " ");
       setConversations((items) =>
@@ -1054,7 +1133,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     ? "angry"
     : notice
       ? "pleased"
-      : activeLoading
+      : activeLoading || homeHandoff
         ? "thinking"
         : content.trim()
           ? "curious"
@@ -1071,16 +1150,16 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {view === "chat" ? active?.title || "Ask ONE" : view === "knowledge" ? "Knowledge" : view === "admin" ? "Control" : "Account"}
         </button>
         <div className="one-chrome-actions">
-          <button className="one-chrome-button knowledge" type="button" title="知识来源" onClick={() => { setView("knowledge"); setActiveId(""); setHistoryOpen(false); }}>
+          <button className="one-chrome-button knowledge" type="button" title="知识来源" onClick={() => openSurface("knowledge")}>
             <span className={`connection-dot ${knowledgeConnection.status}`} />
             <span>{knowledgeConnection.status === "connected" ? "知识已连接" : "连接知识"}</span>
           </button>
           <button className={`one-chrome-button icon-only ${historyOpen ? "active" : ""}`} type="button" title="最近任务" onClick={() => setHistoryOpen((open) => !open)}>
             <Archive size={16} />
           </button>
-          {user.role === "admin" ? <button className="one-chrome-button icon-only" type="button" title="超管后台" onClick={() => { setView("admin"); setHistoryOpen(false); }}><ShieldCheck size={16} /></button> : null}
-          <button className="one-chrome-button icon-only" type="button" title="设置" onClick={() => { setView("account"); setActiveId(""); setHistoryOpen(false); }}><Settings size={16} /></button>
-          <button className="one-user-button" type="button" title="账号" onClick={() => { setView("account"); setActiveId(""); setHistoryOpen(false); }}>
+          {user.role === "admin" ? <button className="one-chrome-button icon-only" type="button" title="超管后台" onClick={() => openSurface("admin")}><ShieldCheck size={16} /></button> : null}
+          <button className="one-chrome-button icon-only" type="button" title="设置" onClick={() => openSurface("account")}><Settings size={16} /></button>
+          <button className="one-user-button" type="button" title="账号" onClick={() => openSurface("account")}>
             {user.username.slice(0, 1).toUpperCase()}
           </button>
         </div>
@@ -1127,7 +1206,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       ) : view === "account" ? (
         <AccountPage user={user} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setSidebarOpen(true)} />
       ) : (
-      <section className={`chat one-chat ${(active?.messages ?? []).length ? "conversation-mode" : "home-mode"} ${activeExecutionMode ? "execution-mode" : ""}`}>
+      <section className={`chat one-chat ${(active?.messages ?? []).length ? "conversation-mode" : "home-mode"} ${homeHandoff ? "handoff-mode" : content.trim() ? "intent-ready" : ""} ${activeExecutionMode ? "execution-mode" : ""}`}>
         <div className="messages">
           {(active?.messages ?? []).length ? (
             active!.messages.map((message, index) => (
@@ -1216,6 +1295,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                 ) : null}
               </React.Fragment>
             ))
+          ) : homeHandoff ? (
+            <div className="one-home-handoff">
+              <OneWorkingPresence expanded message={waitMessages[waitIndex % waitMessages.length]} />
+            </div>
           ) : (
             <div className="empty-state one-hero">
               <OneHeroEye mood={heroMood} />
@@ -1224,7 +1307,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               <p>{activeAgent?.description || "说出你想知道、想完成，或者只是隐约想到的事。"}</p>
             </div>
           )}
-          {activeLoading && !activeExecutionMode ? <div className="typing">{waitMessages[waitIndex % waitMessages.length]}</div> : null}
+          {activeLoading && !activeExecutionMode ? <OneWorkingPresence message={waitMessages[waitIndex % waitMessages.length]} /> : null}
         </div>
 
         <form className="composer" onSubmit={send}>
@@ -1247,21 +1330,21 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           ) : null}
           <div className="composer-row">
             <textarea
-              value={content}
+              value={homeHandoff?.message ?? content}
               onChange={(event) => setContent(event.target.value)}
               onCompositionStart={() => setIsComposing(true)}
               onCompositionEnd={() => setIsComposing(false)}
               onKeyDown={handleComposerKeyDown}
               onPaste={handleComposerPaste}
               placeholder={activeExecutionMode ? (preparingExecution ? "正在连接本机…" : executionBusy ? "ONE 正在执行当前步骤…" : "继续给 ONE 指令") : currentModel?.kind === "image" ? "输入修改要求，也可直接粘贴图片" : "输入消息，Enter 发送，Shift+Enter 换行"}
-              disabled={activeExecutionMode && (preparingExecution || executionBusy)}
+              disabled={Boolean(homeHandoff) || (activeExecutionMode && (preparingExecution || executionBusy))}
               rows={2}
             />
-            <button className="primary send" type="submit" disabled={activeExecutionMode ? preparingExecution || executionBusy || !content.trim() : !activeModelId || activeLoading || (!content.trim() && !pendingAttachments.length)}>
+            <button className="primary send" type="submit" disabled={activeExecutionMode ? preparingExecution || executionBusy || !content.trim() : Boolean(homeHandoff) || !activeModelId || activeLoading || (!content.trim() && !pendingAttachments.length)}>
               <Send size={18} />
             </button>
           </div>
-          {!active && !activeExecutionMode ? (
+          {!active && !homeHandoff && !activeExecutionMode ? (
             <div className="dia-prompts">
               <button type="button" onClick={() => setContent("帮我回想最近反复提到的重要想法")}><small>01 · RECALL</small><span>我最近在反复想什么？</span><i aria-hidden="true">↗</i></button>
               <button type="button" onClick={() => setContent("结合我的知识，把现在最重要的事情整理成一个行动方案")}><small>02 · MAKE</small><span>把想法变成行动方案</span><i aria-hidden="true">↗</i></button>
