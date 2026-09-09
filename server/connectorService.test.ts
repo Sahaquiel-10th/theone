@@ -40,6 +40,8 @@ test("connector registry rejects duplicates and unknown disable targets", () => 
   assert.throws(() => new ConnectorRegistry([getnoteConnector, getnoteConnector]));
   assert.throws(() => new ConnectorRegistry([getnoteConnector], ["unknown"]));
   assert.throws(() => new ConnectorRegistry([{ ...getnoteConnector, manifest: { ...getnoteConnector.manifest, version: "latest" } }]));
+  assert.throws(() => new ConnectorRegistry([{ ...getnoteConnector, manifest: { ...getnoteConnector.manifest, security: { ...getnoteConnector.manifest.security, allowedHosts: [] } } }]));
+  assert.throws(() => new ConnectorRegistry([{ ...getnoteConnector, manifest: { ...getnoteConnector.manifest, security: { ...getnoteConnector.manifest.security, allowedHosts: ["https://attacker.example"] } } }]));
   const registry = new ConnectorRegistry([getnoteConnector]);
   assert.throws(() => { registry.get("getnote")!.manifest.id = "changed"; });
 });

@@ -95,6 +95,14 @@ export type KnowledgeConnection = {
   credentialExpiresAt?: string; lastCheckedAt?: string; lastError?: string; createdAt: string; updatedAt: string;
 };
 
+export type ConnectorAuthorizationSession = {
+  id: string; workspaceId: string; userId: string; connectorId: "getnote" | "notion";
+  protocol: "device_authorization" | "oauth_pkce";
+  status: "pending" | "exchanging" | "verifying" | "failed";
+  stateHash?: string; encryptedPayload: string; expiresAt: string; nextAttemptAt?: string;
+  createdAt: string; updatedAt: string;
+};
+
 export type ExecutionTaskStatus = "queued" | "selecting_target" | "running" | "completed" | "failed" | "cancelled";
 export type ExecutionTask = {
   id: string; workspaceId: string; userId: string; conversationId: string; sourceMessageId: string;
@@ -126,6 +134,7 @@ export type Database = {
   users: User[]; workspaces: Workspace[]; workspaceMembers: WorkspaceMember[]; conversationFolders: ConversationFolder[];
   models: ModelConfig[]; conversations: Conversation[]; messages: MessageRecord[]; userSavedMemories: UserSavedMemory[];
   retrievalLogs: RetrievalLog[]; contextTraces: ContextTrace[]; modelUsageRecords: ModelUsageRecord[]; knowledgeConnections: KnowledgeConnection[];
+  connectorAuthorizationSessions: ConnectorAuthorizationSession[];
   oneKeyDevices: OneKeyDevice[]; deviceChallenges: DeviceChallenge[]; oneTimeLoginCodes: OneTimeLoginCode[];
   powerAccounts: PowerAccount[]; powerLedger: PowerLedgerEntry[]; rechargeOrders: RechargeOrder[]; auditLogs: AuditLog[];
   agents: Agent[]; attachments: Attachment[]; executionTasks: ExecutionTask[]; executionEvents: ExecutionEvent[]; settings: SystemSettings;

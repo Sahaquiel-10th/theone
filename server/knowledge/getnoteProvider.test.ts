@@ -55,3 +55,13 @@ test("uses GetNote device authorization and global knowledge search", async () =
     globalThis.fetch = originalFetch;
   }
 });
+
+test("rejects a provider-supplied authorization link outside the approved domain", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    data: { code: "device-code", verification_uri: "https://biji.com.attacker.example/login", user_code: "ABCD", expires_in: 600, interval: 5 }
+  }))) as typeof fetch;
+  try {
+    await assert.rejects(new GetNoteProvider().startDeviceFlow("cli_one"), /未获准/);
+  } finally { globalThis.fetch = originalFetch; }
+});

@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Store } from "../db.js";
 import type { Database } from "../types.js";
-import { decryptCredential, encryptCredential } from "./credentialCipher.js";
+import { decryptCredential, encryptCredential, knowledgeCredentialContext } from "./credentialCipher.js";
 import { NotionMcpService } from "./notionMcpService.js";
 
 function fixture() {
-  const database = { knowledgeConnections: [], auditLogs: [] } as unknown as Database;
+  const database = { knowledgeConnections: [], connectorAuthorizationSessions: [], auditLogs: [] } as unknown as Database;
   const store = {
     async read() { return database; },
     async mutate<T>(fn: (db: Database) => T) { return fn(database); }
@@ -23,7 +23,12 @@ test("Notion OAuth uses PKCE, stores only encrypted tokens and rejects state rep
     if (String(input).endsWith("/token")) return new Response(JSON.stringify({ access_token: "access-secret", refresh_token: "refresh-secret", expires_in: 3600, workspace_id: "notion-space", workspace_name: "My Notion", user_id: "notion-user" }));
     throw new Error("unexpected request");
   };
-  const service = new NotionMcpService(f.store, { fetch: fetcher as typeof fetch });
+  const createClient = async (token: string) => ({
+    async listTools() { return { tools: [{ name: "notion-fetch" }] }; },
+    async callTool() { assert.equal(token, "access-secret"); return { content: [{ type: "text", text: "verified" }] }; },
+    async close() {}
+  });
+  const service = new NotionMcpService(f.store, { fetch: fetcher as typeof fetch, createClient });
   const started = await service.beginAuthorization({ workspaceId: "workspace-a", userId: "user-a", appOrigin: "https://one.example" });
   const authorization = new URL(started.authorizationUrl);
   const state = authorization.searchParams.get("state")!;
@@ -34,17 +39,19 @@ test("Notion OAuth uses PKCE, stores only encrypted tokens and rejects state rep
   const registrationBody = JSON.parse(String(requests[0].init?.body));
   assert.equal(registrationBody.token_endpoint_auth_method, "none");
 
-  const connection = await service.completeAuthorization(state, "one-time-code");
+  // A different service instance can finish the callback after a restart.
+  const restarted = new NotionMcpService(f.store, { fetch: fetcher as typeof fetch, createClient });
+  const connection = await restarted.completeAuthorization(state, "one-time-code");
   assert.equal(connection.workspaceId, "workspace-a");
   assert.equal(connection.providerSpaceName, "My Notion");
-  assert.equal(decryptCredential(connection.encryptedAccessToken!), "access-secret");
-  assert.equal(decryptCredential(connection.encryptedRefreshToken!), "refresh-secret");
+  assert.equal(decryptCredential(connection.encryptedAccessToken!, knowledgeCredentialContext("workspace-a", "notion", "access_token")), "access-secret");
+  assert.equal(decryptCredential(connection.encryptedRefreshToken!, knowledgeCredentialContext("workspace-a", "notion", "refresh_token")), "refresh-secret");
   assert.doesNotMatch(JSON.stringify(connection), /access-secret|refresh-secret|client-secret/);
   const tokenBody = String(requests[1].init?.body);
   assert.match(tokenBody, /code_verifier=/);
   assert.doesNotMatch(tokenBody, /resource=/);
   assert.equal(new Headers(requests[1].init?.headers).get("Authorization"), null);
-  await assert.rejects(service.completeAuthorization(state, "replayed-code"), /过期/);
+  await assert.rejects(service.completeAuthorization(state, "replayed-code"), /无效|使用/);
 });
 
 test("cancelling a reconnect keeps the existing working Notion connection", async () => {
@@ -115,6 +122,6 @@ test("Notion refresh stays scoped to the exact workspace connection", async () =
   });
   await service.verify("workspace-a");
   assert.deepEqual(usedTokens, ["new-workspace-a"]);
-  assert.equal(decryptCredential(f.database.knowledgeConnections[0].encryptedAccessToken!), "new-workspace-a");
+  assert.equal(decryptCredential(f.database.knowledgeConnections[0].encryptedAccessToken!, knowledgeCredentialContext("workspace-a", "notion", "access_token")), "new-workspace-a");
   assert.equal(decryptCredential(f.database.knowledgeConnections[1].encryptedAccessToken!), "old-workspace-b");
 });

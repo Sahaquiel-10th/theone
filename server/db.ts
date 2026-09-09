@@ -38,7 +38,7 @@ function seed(): Database {
   return {
     users: [admin], workspaces: [workspace], workspaceMembers: [{ id: uid("wsm"), workspaceId: workspace.id, userId: admin.id, role: "owner", createdAt }],
     conversationFolders: [], models: defaultModels(), conversations: [], messages: [], userSavedMemories: [], retrievalLogs: [], contextTraces: [],
-    modelUsageRecords: [], knowledgeConnections: [], oneKeyDevices: [], deviceChallenges: [], oneTimeLoginCodes: [],
+    modelUsageRecords: [], knowledgeConnections: [], connectorAuthorizationSessions: [], oneKeyDevices: [], deviceChallenges: [], oneTimeLoginCodes: [],
     powerAccounts: [{ id: uid("pwa"), workspaceId: workspace.id, userId: admin.id, balanceMicros: 10_000_000, createdAt, updatedAt: createdAt }],
     powerLedger: [{ id: uid("pwl"), workspaceId: workspace.id, userId: admin.id, type: "gift", amountMicros: 10_000_000, balanceBeforeMicros: 0, balanceAfterMicros: 10_000_000, title: "初始体验电力", createdAt }],
     rechargeOrders: [], auditLogs: [], agents: [], attachments: [], executionTasks: [], executionEvents: [],
@@ -106,7 +106,7 @@ const relationalTables: Record<CollectionName, string> = {
   users: "users", workspaces: "workspaces", workspaceMembers: "workspace_members", conversationFolders: "conversation_folders",
   models: "models", conversations: "conversations", messages: "messages", userSavedMemories: "user_saved_memories",
   retrievalLogs: "retrieval_logs", contextTraces: "context_traces", modelUsageRecords: "model_usage_records",
-  knowledgeConnections: "knowledge_connections", oneKeyDevices: "one_key_devices", deviceChallenges: "device_challenges",
+  knowledgeConnections: "knowledge_connections", connectorAuthorizationSessions: "connector_authorization_sessions", oneKeyDevices: "one_key_devices", deviceChallenges: "device_challenges",
   oneTimeLoginCodes: "one_time_login_codes", powerAccounts: "power_accounts", powerLedger: "power_ledger",
   rechargeOrders: "recharge_orders", auditLogs: "audit_logs", agents: "agents", attachments: "attachments",
   executionTasks: "execution_tasks", executionEvents: "execution_events"
@@ -217,7 +217,7 @@ function stringOrNull(value: unknown) { return typeof value === "string" && valu
 function emptyDatabase(): Database {
   return {
     users: [], workspaces: [], workspaceMembers: [], conversationFolders: [], models: [], conversations: [], messages: [],
-    userSavedMemories: [], retrievalLogs: [], contextTraces: [], modelUsageRecords: [], knowledgeConnections: [], oneKeyDevices: [],
+    userSavedMemories: [], retrievalLogs: [], contextTraces: [], modelUsageRecords: [], knowledgeConnections: [], connectorAuthorizationSessions: [], oneKeyDevices: [],
     deviceChallenges: [], oneTimeLoginCodes: [], powerAccounts: [], powerLedger: [], rechargeOrders: [], auditLogs: [], agents: [],
     attachments: [], executionTasks: [], executionEvents: [], settings: { safetyRules: "", rechargeCnyPerPower: 7 }
   };
@@ -315,6 +315,7 @@ function migrateDatabase(raw: Record<string, any>): Database {
     contextTraces: collection("contextTraces"),
     modelUsageRecords: usage,
     knowledgeConnections: collection("knowledgeConnections"),
+    connectorAuthorizationSessions: collection("connectorAuthorizationSessions"),
     oneKeyDevices: collection("oneKeyDevices"),
     deviceChallenges: collection("deviceChallenges"),
     oneTimeLoginCodes: collection("oneTimeLoginCodes"),

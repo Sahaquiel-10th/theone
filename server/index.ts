@@ -10,20 +10,21 @@ import { hasImageGenerationIntent } from "./imageIntent.js";
 import { decodeGeneratedImageDataUrl } from "./generatedImage.js";
 import { asyncRoute, auth, requireRole } from "./middleware.js";
 import { callModel } from "./modelGateway.js";
-import { buildContextTraceSections } from "./contextTrace.js";
+import { appendOwnerContextTrace, buildContextTraceSections, ownerContextTraces } from "./contextTrace.js";
 import { isSupportedAttachment, parseAttachment, safeAttachmentExtension } from "./attachmentParser.js";
 import { hashPassword, signToken, uid, verifyPassword } from "./security.js";
 import { adminModel, publicModel, publicUser } from "./serializers.js";
 import { Agent, Attachment, AttachmentSummary, Conversation, ConversationFolder, ExecutionTask, KnowledgeConnection, Message, MessageRecord, ModelConfig, User, Workspace } from "./types.js";
 import { normalizeUploadFilename } from "./uploadFilename.js";
 import { buildSearchContext, searchWeb, webSearchEnabled } from "./webSearch.js";
-import { encryptCredential } from "./knowledge/credentialCipher.js";
+import { encryptCredential, knowledgeCredentialContext } from "./knowledge/credentialCipher.js";
 import { getNoteProvider } from "./knowledge/getnoteProvider.js";
 import { KnowledgeConnectorError, KnowledgeService } from "./knowledge/knowledgeService.js";
 import { OneKeyService } from "./oneKeyService.js";
 import { calculateModelPower, chargePower, creditPower, MICROS_PER_POWER, powerAccount } from "./powerBilling.js";
 import { connectorRegistry, connectorService, notionMcpService, oneKeyPresence } from "./runtime.js";
 import { connectorRoutes } from "./connectorRoutes.js";
+import { AuthorizationSessionError, AuthorizationSessions } from "./connectors/authorizationSessions.js";
 import { appendExecutionEvent, buildExecutionCompilerMessages, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -36,7 +37,7 @@ if (!jwtSecret) throw new Error("生产环境必须配置 JWT_SECRET");
 const knowledgeService = new KnowledgeService(store, connectorRegistry);
 const oneKeyService = new OneKeyService(store);
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
-const getNoteFlows = new Map<string, { workspaceId: string; clientId: string; code: string; expiresAt: number; nextPollAt: number }>();
+const connectorAuthorizationSessions = new AuthorizationSessions(store);
 const chatHistoryMessages = Math.max(0, Math.min(30, Number(process.env.CHAT_HISTORY_MESSAGES ?? 12)));
 const attachmentMaxFiles = 4;
 const attachmentMaxBytes = Math.max(1024 * 1024, Number(process.env.ATTACHMENT_MAX_BYTES ?? 10 * 1024 * 1024));
@@ -300,8 +301,7 @@ app.post("/api/chat", auth(jwtSecret), asyncRoute(async (req, res) => {
       const provider = providers.size === 1 ? [...providers][0]! : "multiple";
       mutable.retrievalLogs.push({ id: uid("ret"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: target.id, query: content, provider, matchedItemsJson: knowledge, injectedContext: knowledgeContext, createdAt: assistantMessage.createdAt });
     }
-    mutable.contextTraces.push({ id: uid("ctx"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: target.id, assistantMessageId, modelId: executionModel.id, requestId: res.locals.requestId, query: content, responsePreview: assistantMessage.content.slice(0, 240), sections: contextTraceSections, createdAt: assistantMessage.createdAt });
-    if (mutable.contextTraces.length > 200) mutable.contextTraces.splice(0, mutable.contextTraces.length - 200);
+    appendOwnerContextTrace(mutable, { id: uid("ctx"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: target.id, assistantMessageId, modelId: executionModel.id, requestId: res.locals.requestId, query: content, responsePreview: assistantMessage.content.slice(0, 240), sections: contextTraceSections, createdAt: assistantMessage.createdAt });
     if (result.usage) {
       const usageId = uid("use"); const billing = calculateModelPower(executionModel, result.usage.inputTokens, result.usage.outputTokens);
       chargePower(mutable, { workspaceId: req.workspaceId!, userId: req.user!.id, amountMicros: billing.chargedMicros, modelId: executionModel.id, usageRecordId: usageId, title: `${executionModel.name} 对话` });
@@ -342,7 +342,7 @@ app.post("/api/knowledge/connections/getnote/test-connect", auth(jwtSecret), req
     }
     target.status = "connected";
     target.clientId = clientId;
-    target.encryptedApiKey = encryptCredential(apiKey);
+    target.encryptedApiKey = encryptCredential(apiKey, knowledgeCredentialContext(req.workspaceId!, "getnote", "api_key"));
     target.credentialExpiresAt = undefined;
     target.lastCheckedAt = timestamp;
     target.lastError = undefined;
@@ -353,31 +353,44 @@ app.post("/api/knowledge/connections/getnote/test-connect", auth(jwtSecret), req
 }));
 app.post("/api/knowledge/connections/getnote/device-flow", auth(jwtSecret), requireWorkspaceOwner, asyncRoute(async (req, res) => {
   const clientId = process.env.GETNOTE_CLIENT_ID?.trim(); if (!clientId) return res.status(503).json({ error: "ONE 尚未配置得到大脑 Client ID", code: "GETNOTE_NOT_CONFIGURED" });
-  const device = await getNoteProvider.startDeviceFlow(clientId); const flowId = uid("gof"); const current = Date.now(); getNoteFlows.set(flowId, { workspaceId: req.workspaceId!, clientId, code: device.code, expiresAt: current + device.expiresIn * 1000, nextPollAt: current });
+  const device = await getNoteProvider.startDeviceFlow(clientId);
+  const current = Date.now();
+  const session = await connectorAuthorizationSessions.create({
+    workspaceId: req.workspaceId!, userId: req.user!.id, connectorId: "getnote", protocol: "device_authorization",
+    payload: { clientId, code: device.code }, expiresAt: current + device.expiresIn * 1000
+  });
   await store.mutate((db) => { const existing = db.knowledgeConnections.find((item) => item.workspaceId === req.workspaceId && item.provider === "getnote"); const timestamp = now(); if (existing) { existing.status = "pending"; existing.lastError = undefined; existing.updatedAt = timestamp; } else db.knowledgeConnections.push({ id: uid("knc"), workspaceId: req.workspaceId!, provider: "getnote", status: "pending", clientId, createdAt: timestamp, updatedAt: timestamp }); });
-  res.json({ flowId, verificationUri: device.verificationUri, userCode: device.userCode, expiresIn: device.expiresIn, interval: device.interval });
+  res.json({ flowId: session.id, verificationUri: device.verificationUri, userCode: device.userCode, expiresIn: device.expiresIn, interval: device.interval });
 }));
 app.post("/api/knowledge/connections/getnote/device-flow/:flowId/poll", auth(jwtSecret), requireWorkspaceOwner, asyncRoute(async (req, res) => {
   const flowId = String(req.params.flowId);
-  const flow = getNoteFlows.get(flowId); if (!flow || flow.workspaceId !== req.workspaceId) return res.status(404).json({ error: "授权流程不存在", code: "FLOW_NOT_FOUND" });
-  if (flow.expiresAt <= Date.now()) { getNoteFlows.delete(flowId); return res.status(410).json({ error: "授权已过期，请重新连接", code: "FLOW_EXPIRED" }); }
-  if (flow.nextPollAt > Date.now()) return res.status(429).json({ error: "轮询过快", code: "POLL_TOO_FAST", retryAfterMs: flow.nextPollAt - Date.now() });
-  flow.nextPollAt = Date.now() + 5000;
+  let polling;
+  try {
+    polling = await connectorAuthorizationSessions.poll({ id: flowId, workspaceId: req.workspaceId!, userId: req.user!.id, connectorId: "getnote", minimumDelayMs: 5000 });
+  } catch (error) {
+    if (!(error instanceof AuthorizationSessionError)) throw error;
+    if (error.code === "POLL_TOO_FAST") return res.status(429).json({ error: error.message, code: error.code, retryAfterMs: error.retryAfterMs });
+    return res.status(error.code === "EXPIRED" ? 410 : 404).json({ error: error.message, code: error.code === "EXPIRED" ? "FLOW_EXPIRED" : "FLOW_NOT_FOUND" });
+  }
+  const clientId = typeof polling.payload.clientId === "string" ? polling.payload.clientId : "";
+  const deviceCode = typeof polling.payload.code === "string" ? polling.payload.code : "";
+  if (!clientId || !deviceCode) { await connectorAuthorizationSessions.finish(flowId); throw new Error("得到授权资料格式无效，请重新连接"); }
   let token;
-  try { token = await getNoteProvider.pollDeviceFlow(flow.clientId, flow.code); }
+  try { token = await getNoteProvider.pollDeviceFlow(clientId, deviceCode); }
   catch (error) {
     const message = error instanceof Error ? error.message : "授权检查失败";
     if (/access_denied|expired_token/.test(message)) {
-      getNoteFlows.delete(flowId);
+      await connectorAuthorizationSessions.finish(flowId);
+      await store.mutate(db => { const target = db.knowledgeConnections.find(item => item.workspaceId === req.workspaceId && item.provider === "getnote" && item.status === "pending"); if (target) { target.status = "revoked"; target.updatedAt = now(); } });
       return res.status(410).json({ error: /access_denied/.test(message) ? "已取消授权，可以重新连接" : "授权已过期，请重新连接", code: "FLOW_ENDED" });
     }
     throw error;
   }
-  if (token.status === "pending") { flow.nextPollAt = Date.now() + (token.retryAfterSeconds || 5) * 1000; return res.status(202).json(token); }
+  if (token.status === "pending") { await connectorAuthorizationSessions.defer(flowId, (token.retryAfterSeconds || 5) * 1000); return res.status(202).json(token); }
   if (!token.apiKey) throw new Error("得到大脑授权成功但未返回 API Key");
   await getNoteProvider.verify({ clientId: token.clientId, apiKey: token.apiKey });
-  const connection = await store.mutate((mutable) => { const timestamp = now(); let target = mutable.knowledgeConnections.find((item) => item.workspaceId === req.workspaceId && item.provider === "getnote"); if (!target) { target = { id: uid("knc"), workspaceId: req.workspaceId!, provider: "getnote", status: "connected", clientId: token.clientId, createdAt: timestamp, updatedAt: timestamp }; mutable.knowledgeConnections.push(target); } target.status = "connected"; target.clientId = token.clientId; target.encryptedApiKey = encryptCredential(token.apiKey); target.providerSpaceId = undefined; target.providerSpaceName = undefined; target.credentialExpiresAt = token.expiresAt ? new Date(token.expiresAt * 1000).toISOString() : undefined; target.lastCheckedAt = timestamp; target.lastError = undefined; target.updatedAt = timestamp; return target; });
-  getNoteFlows.delete(flowId); res.json({ connection: publicConnection(connection) });
+  const connection = await store.mutate((mutable) => { const timestamp = now(); let target = mutable.knowledgeConnections.find((item) => item.workspaceId === req.workspaceId && item.provider === "getnote"); if (!target) { target = { id: uid("knc"), workspaceId: req.workspaceId!, provider: "getnote", status: "connected", clientId: token.clientId, createdAt: timestamp, updatedAt: timestamp }; mutable.knowledgeConnections.push(target); } target.status = "connected"; target.clientId = token.clientId; target.encryptedApiKey = encryptCredential(token.apiKey, knowledgeCredentialContext(req.workspaceId!, "getnote", "api_key")); target.providerSpaceId = undefined; target.providerSpaceName = undefined; target.credentialExpiresAt = token.expiresAt ? new Date(token.expiresAt * 1000).toISOString() : undefined; target.lastCheckedAt = timestamp; target.lastError = undefined; target.updatedAt = timestamp; return target; });
+  await connectorAuthorizationSessions.finish(flowId); res.json({ connection: publicConnection(connection) });
 }));
 app.delete("/api/knowledge/connections/getnote", auth(jwtSecret), requireWorkspaceOwner, asyncRoute(async (req, res) => { await store.mutate((db) => { const connection = db.knowledgeConnections.find((item) => item.workspaceId === req.workspaceId && item.provider === "getnote"); if (!connection) return; connection.status = "revoked"; connection.encryptedApiKey = undefined; connection.providerSpaceId = undefined; connection.providerSpaceName = undefined; connection.updatedAt = now(); }); res.json({ ok: true }); }));
 
@@ -396,7 +409,7 @@ app.get("/api/knowledge/connections/notion/oauth/callback", asyncRoute(async (re
   const appOrigin = safeAppOrigin(process.env.APP_ORIGIN?.trim() || `${req.protocol}://${req.get("host")}`);
   const state = typeof req.query.state === "string" ? req.query.state : "";
   const code = typeof req.query.code === "string" ? req.query.code : "";
-  if (typeof req.query.error === "string" || !state || !code) {
+  if (typeof req.query.error === "string" || !state || !code || state.length > 512 || code.length > 4096) {
     await notionMcpService.cancelAuthorization(state);
     return notionOAuthReturn(res, appOrigin, "cancelled");
   }
@@ -601,9 +614,9 @@ app.get("/api/admin/operations", ...admin, asyncRoute(async (_req, res) => {
   const logs = db.auditLogs.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 200).map((item) => ({ ...item, actorName: db.users.find((user) => user.id === item.actorUserId)?.username || "系统" }));
   res.json({ pendingOrders: pendingOrders.map((item) => ({ ...item, username: db.users.find((user) => user.id === item.userId)?.username || "未知用户" })), usage, ledger, logs, settings: { rechargeCnyPerPower: db.settings.rechargeCnyPerPower }, summary: { users: db.users.length, balanceMicros: db.powerAccounts.reduce((sum, item) => sum + item.balanceMicros, 0), chargedMicros: db.modelUsageRecords.reduce((sum, item) => sum + (item.chargedMicros ?? 0), 0), costMicros: db.modelUsageRecords.reduce((sum, item) => sum + (item.costMicros ?? 0), 0) } });
 }));
-app.get("/api/admin/context-traces", ...admin, asyncRoute(async (_req, res) => {
+app.get("/api/admin/context-traces", ...admin, asyncRoute(async (req, res) => {
   const db = await store.read();
-  const traces = db.contextTraces.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 100).map((item) => ({
+  const traces = ownerContextTraces(db, req.workspaceId!, req.user!.id).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 100).map((item) => ({
     id: item.id,
     workspaceId: item.workspaceId,
     userId: item.userId,
@@ -620,7 +633,7 @@ app.get("/api/admin/context-traces", ...admin, asyncRoute(async (_req, res) => {
 }));
 app.get("/api/admin/context-traces/:id", ...admin, asyncRoute(async (req, res) => {
   const db = await store.read();
-  const trace = db.contextTraces.find((item) => item.id === req.params.id);
+  const trace = ownerContextTraces(db, req.workspaceId!, req.user!.id).find((item) => item.id === req.params.id);
   if (!trace) return res.status(404).json({ error: "上下文记录不存在", code: "NOT_FOUND" });
   res.json({ trace: { ...trace, username: db.users.find((user) => user.id === trace.userId)?.username || "未知用户", modelName: db.models.find((model) => model.id === trace.modelId)?.name || "已删除模型" } });
 }));

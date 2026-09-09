@@ -1,4 +1,4 @@
-import { ContextTraceSection, Message } from "./types.js";
+import { ContextTrace, ContextTraceSection, Database, Message } from "./types.js";
 
 type TraceInput = {
   safetyRules: string;
@@ -22,6 +22,17 @@ export function buildContextTraceSections(input: TraceInput): ContextTraceSectio
     section("history", "本次携带的历史对话", formatHistory(input.history)),
     section("current_input", "用户本次问题", input.currentInput)
   ];
+}
+
+export function ownerContextTraces(db: Database, workspaceId: string, userId: string) {
+  return db.contextTraces.filter(item => item.workspaceId === workspaceId && item.userId === userId);
+}
+
+export function appendOwnerContextTrace(db: Database, trace: ContextTrace, limit = 200) {
+  db.contextTraces.push(trace);
+  const own = ownerContextTraces(db, trace.workspaceId, trace.userId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const remove = new Set(own.slice(0, Math.max(0, own.length - limit)).map(item => item.id));
+  if (remove.size) db.contextTraces = db.contextTraces.filter(item => !remove.has(item.id));
 }
 
 function section(key: ContextTraceSection["key"], title: string, content: string): ContextTraceSection {

@@ -2042,7 +2042,7 @@ function AdminContexts({ traces }: { traces: ContextTraceSummary[] }) {
   if (!traces.length) return <div className="empty-state compact"><Eye size={36} /><h2>还没有上下文记录</h2><p>部署后完成一次新问答，这里就会出现。</p></div>;
   return <div className="context-debugger">
     <aside className="context-trace-list">
-      <div className="context-private-note"><LockKeyhole size={15} /><span>仅超管可见，包含用户私密对话与召回原文。</span></div>
+      <div className="context-private-note"><LockKeyhole size={15} /><span>仅当前账号可见，其他用户和超管都不能读取。</span></div>
       {traces.map((trace) => <button key={trace.id} className={selectedId === trace.id ? "active" : ""} onClick={() => setSelectedId(trace.id)}>
         <strong>{trace.query}</strong>
         <span>{trace.username} · {trace.modelName}</span>

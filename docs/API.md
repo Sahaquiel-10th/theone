@@ -61,6 +61,7 @@ Launcher 只把一次性码放在 URL Fragment（`#one-key=...`）中，因此 W
 ### `POST /api/knowledge/connections/getnote/device-flow/:flowId/poll`
 
 等待时返回 202；成功后按 Workspace 加密保存 API Key。首版不再创建或绑定专属知识库。
+授权事务同时绑定 Workspace、发起用户和连接器；服务器重启后可以继续轮询，其他账户使用同一 `flowId` 只会得到不存在。
 
 ### `DELETE /api/knowledge/connections/getnote`
 
@@ -70,7 +71,7 @@ Launcher 只把一次性码放在 URL Fragment（`#one-key=...`）中，因此 W
 
 - `GET /api/knowledge/connections/notion`：返回当前 Workspace 的公开连接状态，不返回 OAuth 客户端 secret、access token 或 refresh token。
 - `POST /api/knowledge/connections/notion/oauth/start`：为当前 Workspace 启动带 PKCE 的 Notion 官方 OAuth；仅 Workspace 所有者可用，返回官方授权地址。
-- `GET /api/knowledge/connections/notion/oauth/callback`：使用短时、单次 state 完成 code 交换，把加密凭据绑定到发起授权的 Workspace，再无感返回 ONE。
+- `GET /api/knowledge/connections/notion/oauth/callback`：使用只存哈希的短时、单次 state 完成 code 交换，真实执行一次只读检查后，把加密凭据绑定到发起授权的 Workspace，再无感返回 ONE。应用重启不会丢失尚未完成的回调。
 - `DELETE /api/knowledge/connections/notion`：清除当前 Workspace 的用户令牌并停止 Notion 召回。
 
 ONE 通过官方托管 MCP 只调用 `notion-fetch`、`notion-search` 和 `notion-ai-search`。即使 MCP 服务返回其他工具，它们也不会进入允许列表或模型工具面；首版不能创建、编辑、评论、移动或删除 Notion 内容。

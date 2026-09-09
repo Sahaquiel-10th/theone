@@ -1,5 +1,5 @@
 import type { Database } from "../types.js";
-import { decryptCredential } from "../knowledge/credentialCipher.js";
+import { decryptCredential, knowledgeCredentialContext } from "../knowledge/credentialCipher.js";
 import { getNoteProvider } from "../knowledge/getnoteProvider.js";
 import type { ConnectorHealth, KnowledgeAdapter } from "./registry.js";
 
@@ -20,14 +20,17 @@ function status(db: Database, workspaceId: string): ConnectorHealth {
 
 export const getnoteConnector: KnowledgeAdapter = {
   kind: "knowledge",
-  manifest: { id: "getnote", name: "得到大脑", version: "0.1.0", kind: "knowledge", capabilities: ["knowledge.search"], auth: "device_authorization" },
+  manifest: {
+    id: "getnote", name: "得到大脑", version: "0.2.0", kind: "knowledge", capabilities: ["knowledge.search"], auth: "device_authorization",
+    security: { trust: "untrusted_reference", transport: "fixed_https", access: "read_only", allowedHosts: ["openapi.biji.com"] }
+  },
   status: (db, scope) => status(db, scope.workspaceId),
   async check(db, scope) {
     const current = status(db, scope.workspaceId);
     if (current.state !== "configured") return current;
     const connection = connectionFor(db, scope.workspaceId)!;
     try {
-      await getNoteProvider.verify({ clientId: connection.clientId, apiKey: decryptCredential(connection.encryptedApiKey!) });
+      await getNoteProvider.verify({ clientId: connection.clientId, apiKey: decryptCredential(connection.encryptedApiKey!, knowledgeCredentialContext(connection.workspaceId, "getnote", "api_key")) });
       return { state: "verified", code: "REMOTE_CHECK_PASSED", message: "知识检索接口检查通过", evidence: "remote" };
     } catch {
       // Provider errors may contain response bodies or credentials. Never expose
@@ -40,7 +43,7 @@ export const getnoteConnector: KnowledgeAdapter = {
     if (current.state === "expired") throw new Error("知识来源授权已过期，请重新连接");
     if (current.state !== "configured") return [];
     const connection = connectionFor(db, workspaceId)!;
-    return (await getNoteProvider.search({ clientId: connection.clientId, apiKey: decryptCredential(connection.encryptedApiKey!) }, query, topK))
+    return (await getNoteProvider.search({ clientId: connection.clientId, apiKey: decryptCredential(connection.encryptedApiKey!, knowledgeCredentialContext(connection.workspaceId, "getnote", "api_key")) }, query, topK))
       .map(chunk => ({ ...chunk, provider: "getnote" as const }));
   }
 };

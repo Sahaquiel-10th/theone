@@ -2,9 +2,11 @@ import crypto from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Store } from "../db.js";
+import { AuthorizationSessions } from "../connectors/authorizationSessions.js";
+import { assertAllowedConnectorUrl, readBoundedJson } from "../connectors/securityPolicy.js";
 import { uid } from "../security.js";
-import type { Database, KnowledgeConnection } from "../types.js";
-import { decryptCredential, encryptCredential } from "./credentialCipher.js";
+import type { ConnectorAuthorizationSession, Database, KnowledgeConnection } from "../types.js";
+import { decryptCredential, encryptCredential, knowledgeCredentialContext } from "./credentialCipher.js";
 import type { KnowledgeChunk } from "./provider.js";
 
 const MCP_URL = "https://mcp.notion.com/mcp";
@@ -14,6 +16,9 @@ const REGISTRATION_URL = "https://mcp.notion.com/register";
 const readOnlyTools = new Set(["notion-fetch", "notion-search", "notion-ai-search"]);
 const flowLifetimeMs = 10 * 60 * 1000;
 const maxChunkChars = 24_000;
+const maxToolTextChars = 256_000;
+const notionHosts = ["mcp.notion.com"] as const;
+const mcpTimeoutMs = Math.max(3_000, Number(process.env.NOTION_MCP_TIMEOUT_MS ?? 20_000));
 
 type OAuthClient = { clientId: string; clientSecret?: string; tokenAuthMethod: "none" | "client_secret_post" };
 type OAuthFlow = OAuthClient & {
@@ -23,7 +28,6 @@ type OAuthFlow = OAuthClient & {
   previousStatus?: KnowledgeConnection["status"];
   redirectUri: string;
   verifier: string;
-  expiresAt: number;
 };
 type TokenResponse = {
   access_token: string;
@@ -34,11 +38,52 @@ type TokenResponse = {
   workspace_name?: string;
   user_id?: string;
 };
+
+function requiredResponseString(value: unknown, label: string, maxLength: number) {
+  if (typeof value !== "string" || !value || value.length > maxLength) throw new Error(`Notion ${label}响应格式无效`);
+  return value;
+}
+
+function optionalResponseString(value: unknown, label: string, maxLength: number) {
+  return value === undefined || value === null ? undefined : requiredResponseString(value, label, maxLength);
+}
+
+function validatedToken(value: unknown): TokenResponse {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Notion 授权响应格式无效");
+  const token = value as Record<string, unknown>;
+  const expires = token.expires_in === undefined ? undefined : Number(token.expires_in);
+  if (expires !== undefined && (!Number.isFinite(expires) || expires <= 0 || expires > 366 * 24 * 60 * 60)) throw new Error("Notion 授权有效期响应格式无效");
+  return {
+    access_token: requiredResponseString(token.access_token, "访问令牌", 65_536),
+    refresh_token: optionalResponseString(token.refresh_token, "刷新令牌", 65_536),
+    client_id: optionalResponseString(token.client_id, "客户端", 2_000),
+    workspace_id: optionalResponseString(token.workspace_id, "工作空间", 2_000),
+    workspace_name: optionalResponseString(token.workspace_name, "工作空间名称", 500),
+    user_id: optionalResponseString(token.user_id, "用户", 2_000),
+    expires_in: expires
+  };
+}
 type McpClient = {
   listTools(): Promise<{ tools: Array<{ name: string }> }>;
   callTool(params: { name: string; arguments?: Record<string, unknown> }): Promise<unknown>;
   close(): Promise<void>;
 };
+
+async function withinDeadline<T>(operation: Promise<T>, message: string, timeoutMs = mcpTimeoutMs) {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(message)), timeoutMs); })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function closeClient(client: McpClient) {
+  await withinDeadline(client.close(), "Notion MCP 连接关闭超时", 2_000).catch(() => undefined);
+}
 
 export type NotionMcpServiceOptions = {
   fetch?: typeof fetch;
@@ -47,6 +92,14 @@ export type NotionMcpServiceOptions = {
 
 function connectionFor(db: Database, workspaceId: string) {
   return db.knowledgeConnections.find(item => item.workspaceId === workspaceId && item.provider === "notion");
+}
+
+function connectionSecret(connection: KnowledgeConnection, field: "client_secret" | "access_token" | "refresh_token", encrypted: string) {
+  return decryptCredential(encrypted, knowledgeCredentialContext(connection.workspaceId, "notion", field));
+}
+
+function protectConnectionSecret(workspaceId: string, field: "client_secret" | "access_token" | "refresh_token", value: string) {
+  return encryptCredential(value, knowledgeCredentialContext(workspaceId, "notion", field));
 }
 
 function safeOrigin(value: string) {
@@ -67,7 +120,15 @@ function textContent(result: unknown) {
     if (!block || typeof block !== "object") return "";
     const value = block as { type?: unknown; text?: unknown };
     return value.type === "text" && typeof value.text === "string" ? value.text : "";
-  }).filter(Boolean).join("\n");
+  }).filter(Boolean).join("\n").slice(0, maxToolTextChars);
+}
+
+function safeNotionSourceUrl(value?: string) {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && (url.hostname === "notion.so" || url.hostname === "www.notion.so") ? url.toString() : undefined;
+  } catch { return undefined; }
 }
 
 function jsonContent(text: string): unknown {
@@ -84,16 +145,16 @@ function objectString(value: unknown, keys: string[]) {
 function searchCandidates(value: unknown) {
   const found: Array<{ id?: string; title?: string; url?: string; excerpt?: string }> = [];
   const seen = new Set<unknown>();
-  function visit(current: unknown) {
-    if (!current || typeof current !== "object" || seen.has(current)) return;
+  function visit(current: unknown, depth = 0) {
+    if (!current || typeof current !== "object" || seen.has(current) || seen.size >= 2_000 || depth > 12) return;
     seen.add(current);
-    if (Array.isArray(current)) { current.forEach(visit); return; }
+    if (Array.isArray(current)) { current.forEach(item => visit(item, depth + 1)); return; }
     const id = objectString(current, ["id", "page_id", "database_id"]);
-    const url = objectString(current, ["url", "href"]);
+    const url = safeNotionSourceUrl(objectString(current, ["url", "href"]));
     const title = objectString(current, ["title", "name"]);
     const excerpt = objectString(current, ["highlight", "excerpt", "snippet", "text"]);
     if ((id || url) && (title || excerpt)) found.push({ id, url, title, excerpt });
-    Object.values(current as Record<string, unknown>).forEach(visit);
+    Object.values(current as Record<string, unknown>).forEach(item => visit(item, depth + 1));
   }
   visit(value);
   const unique = new Map<string, (typeof found)[number]>();
@@ -105,7 +166,7 @@ function fetchedChunk(result: unknown, fallback: { id?: string; title?: string; 
   const text = textContent(result);
   const parsed = jsonContent(text);
   const title = objectString(parsed, ["title", "name"]) || fallback.title || "Notion 页面";
-  const sourceUrl = objectString(parsed, ["url", "href"]) || fallback.url;
+  const sourceUrl = safeNotionSourceUrl(objectString(parsed, ["url", "href"]) || fallback.url);
   const body = objectString(parsed, ["text", "content", "markdown"]) || text || fallback.excerpt || "";
   return { id: fallback.id, provider: "notion", title, sourceUrl, content: body.slice(0, maxChunkChars) };
 }
@@ -113,17 +174,18 @@ function fetchedChunk(result: unknown, fallback: { id?: string; title?: string; 
 export class NotionMcpService {
   private readonly fetcher: typeof fetch;
   private readonly createClient: (accessToken: string) => Promise<McpClient>;
-  private readonly flows = new Map<string, OAuthFlow>();
+  private readonly authorizationSessions: AuthorizationSessions;
   private readonly refreshes = new Map<string, Promise<string>>();
 
   constructor(private store: Store, options: NotionMcpServiceOptions = {}) {
     this.fetcher = options.fetch || fetch;
+    this.authorizationSessions = new AuthorizationSessions(store);
     this.createClient = options.createClient || (async (accessToken) => {
       const client = new Client({ name: "ONE", version: "0.1.0" });
-      const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
-        requestInit: { headers: { Authorization: `Bearer ${accessToken}` } }
+      const transport = new StreamableHTTPClientTransport(assertAllowedConnectorUrl(MCP_URL, notionHosts), {
+        requestInit: { redirect: "error", headers: { Authorization: `Bearer ${accessToken}` } }
       });
-      await client.connect(transport);
+      await withinDeadline(client.connect(transport), "Notion MCP 连接超时");
       return client;
     });
   }
@@ -138,14 +200,17 @@ export class NotionMcpService {
   }
 
   async beginAuthorization(params: { workspaceId: string; userId: string; appOrigin: string }) {
-    await this.pruneFlows();
     const redirectUri = `${safeOrigin(params.appOrigin)}/api/knowledge/connections/notion/oauth/callback`;
     const db = await this.store.read();
     const client = await this.oauthClient(db, redirectUri);
     const previous = connectionFor(db, params.workspaceId);
     const state = crypto.randomBytes(32).toString("base64url");
     const verifier = crypto.randomBytes(48).toString("base64url");
-    this.flows.set(state, { ...client, workspaceId: params.workspaceId, userId: params.userId, connectionId: previous?.id, previousStatus: previous?.status === "pending" ? undefined : previous?.status, redirectUri, verifier, expiresAt: Date.now() + flowLifetimeMs });
+    await this.authorizationSessions.create({
+      workspaceId: params.workspaceId, userId: params.userId, connectorId: "notion", protocol: "oauth_pkce", state,
+      payload: { ...client, connectionId: previous?.id, previousStatus: previous?.status === "pending" ? undefined : previous?.status, redirectUri, verifier },
+      expiresAt: Date.now() + flowLifetimeMs
+    });
     await this.store.mutate(mutable => {
       const timestamp = new Date().toISOString();
       let connection = connectionFor(mutable, params.workspaceId);
@@ -155,7 +220,7 @@ export class NotionMcpService {
       }
       if (connection.status !== "connected") connection.status = "pending";
       connection.clientId = client.clientId;
-      connection.encryptedClientSecret = client.clientSecret ? encryptCredential(client.clientSecret) : undefined;
+      connection.encryptedClientSecret = client.clientSecret ? protectConnectionSecret(params.workspaceId, "client_secret", client.clientSecret) : undefined;
       connection.oauthTokenAuthMethod = client.tokenAuthMethod;
       connection.lastError = undefined;
       connection.updatedAt = timestamp;
@@ -170,13 +235,20 @@ export class NotionMcpService {
   }
 
   async completeAuthorization(state: string, code: string) {
-    const flow = this.flows.get(state);
-    if (!flow || flow.expiresAt <= Date.now()) { this.flows.delete(state); throw new Error("Notion 授权流程已过期，请返回 ONE 重试"); }
-    // State and authorization code are single-use even when the token exchange fails.
-    this.flows.delete(state);
+    const claimed = await this.authorizationSessions.claimState("notion", state);
+    let flow: OAuthFlow;
+    try { flow = this.oauthFlow(claimed.session, claimed.payload); }
+    catch (error) { await this.authorizationSessions.finish(claimed.session.id); throw error; }
     let token: TokenResponse;
-    try { token = await this.exchangeToken(flow, code); }
-    catch (error) { await this.restoreFlow(flow); throw error; }
+    try {
+      token = await this.exchangeToken(flow, code);
+      await this.authorizationSessions.markVerifying(claimed.session.id);
+      await this.verifyAccessToken(token.access_token);
+    } catch (error) {
+      await this.authorizationSessions.finish(claimed.session.id);
+      await this.restoreFlow(flow);
+      throw error;
+    }
     const timestamp = new Date().toISOString();
     const connection = await this.store.mutate(db => {
       let target = connectionFor(db, flow.workspaceId);
@@ -186,10 +258,10 @@ export class NotionMcpService {
       }
       target.status = "connected";
       target.clientId = token.client_id || flow.clientId;
-      target.encryptedClientSecret = flow.clientSecret ? encryptCredential(flow.clientSecret) : undefined;
+      target.encryptedClientSecret = flow.clientSecret ? protectConnectionSecret(flow.workspaceId, "client_secret", flow.clientSecret) : undefined;
       target.oauthTokenAuthMethod = flow.tokenAuthMethod;
-      target.encryptedAccessToken = encryptCredential(token.access_token);
-      target.encryptedRefreshToken = token.refresh_token ? encryptCredential(token.refresh_token) : undefined;
+      target.encryptedAccessToken = protectConnectionSecret(flow.workspaceId, "access_token", token.access_token);
+      target.encryptedRefreshToken = token.refresh_token ? protectConnectionSecret(flow.workspaceId, "refresh_token", token.refresh_token) : undefined;
       target.credentialExpiresAt = token.expires_in ? new Date(Date.now() + token.expires_in * 1000).toISOString() : undefined;
       target.providerSpaceId = token.workspace_id;
       target.providerSpaceName = token.workspace_name;
@@ -200,23 +272,22 @@ export class NotionMcpService {
       db.auditLogs.push({ id: uid("aud"), workspaceId: flow.workspaceId, actorUserId: flow.userId, action: "knowledge.notion.connected", targetType: "knowledge_connection", targetId: target.id, createdAt: timestamp });
       return target;
     });
+    await this.authorizationSessions.finish(claimed.session.id);
     return connection;
   }
 
   async cancelAuthorization(state: string) {
-    const flow = this.flows.get(state);
-    if (!flow) return;
-    this.flows.delete(state);
-    await this.restoreFlow(flow);
+    const cancelled = await this.authorizationSessions.cancelState("notion", state);
+    if (cancelled) await this.restoreFlow(this.oauthFlow(cancelled.session, cancelled.payload));
   }
 
   async disconnect(workspaceId: string, userId: string) {
     const current = connectionFor(await this.store.read(), workspaceId);
     if (current?.encryptedAccessToken) {
-      const body = new URLSearchParams({ token: decryptCredential(current.encryptedAccessToken), client_id: current.clientId });
+      const body = new URLSearchParams({ token: connectionSecret(current, "access_token", current.encryptedAccessToken), client_id: current.clientId });
       const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
-      if (current.encryptedClientSecret && current.oauthTokenAuthMethod === "client_secret_post") body.append("client_secret", decryptCredential(current.encryptedClientSecret));
-      await this.fetcher(TOKEN_URL, { method: "POST", headers, body, signal: AbortSignal.timeout(3_000) }).catch(() => undefined);
+      if (current.encryptedClientSecret && current.oauthTokenAuthMethod === "client_secret_post") body.append("client_secret", connectionSecret(current, "client_secret", current.encryptedClientSecret));
+      await this.fetcher(assertAllowedConnectorUrl(TOKEN_URL, notionHosts), { method: "POST", headers, body, redirect: "error", signal: AbortSignal.timeout(3_000) }).catch(() => undefined);
     }
     await this.store.mutate(db => {
       const connection = connectionFor(db, workspaceId);
@@ -243,12 +314,12 @@ export class NotionMcpService {
   private async searchConnected(connection: KnowledgeConnection, query: string, topK: number): Promise<KnowledgeChunk[]> {
     const client = await this.clientFor(connection);
     try {
-      const listed = await client.listTools();
+      const listed = await withinDeadline(client.listTools(), "Notion MCP 工具查询超时");
       const available = new Set(listed.tools.map(tool => tool.name).filter(name => readOnlyTools.has(name)));
       let aiSearchAvailable = false;
       if (available.has("notion-fetch") && available.has("notion-ai-search")) {
         try {
-          const self = await client.callTool({ name: "notion-fetch", arguments: { id: "self" } });
+          const self = await withinDeadline(client.callTool({ name: "notion-fetch", arguments: { id: "self" } }), "Notion MCP 读取超时");
           this.assertToolResult(self);
           const selfText = textContent(self);
           aiSearchAvailable = /["']?ai_search["']?[\s\S]{0,300}["']?status["']?\s*:\s*["']available["']/i.test(selfText);
@@ -259,7 +330,7 @@ export class NotionMcpService {
       }
       const searchTool = aiSearchAvailable ? "notion-ai-search" : available.has("notion-search") ? "notion-search" : "";
       if (!searchTool) throw new Error("Notion MCP 当前没有可用的只读搜索工具");
-      const searchResult = await client.callTool({ name: searchTool, arguments: { query } });
+      const searchResult = await withinDeadline(client.callTool({ name: searchTool, arguments: { query } }), "Notion MCP 搜索超时");
       this.assertToolResult(searchResult);
       const searchText = textContent(searchResult);
       const candidates = searchCandidates(jsonContent(searchText)).slice(0, topK);
@@ -268,7 +339,7 @@ export class NotionMcpService {
       for (const candidate of candidates) {
         if (available.has("notion-fetch") && (candidate.id || candidate.url)) {
           try {
-            const result = await client.callTool({ name: "notion-fetch", arguments: { id: candidate.id || candidate.url! } });
+            const result = await withinDeadline(client.callTool({ name: "notion-fetch", arguments: { id: candidate.id || candidate.url! } }), "Notion MCP 读取超时");
             this.assertToolResult(result);
             chunks.push(fetchedChunk(result, candidate));
             continue;
@@ -281,7 +352,7 @@ export class NotionMcpService {
       }
       return chunks.filter(chunk => chunk.content);
     } finally {
-      await client.close().catch(() => undefined);
+      await closeClient(client);
     }
   }
 
@@ -289,13 +360,25 @@ export class NotionMcpService {
     if (!readOnlyTools.has(name)) throw new Error("Notion 工具未获准使用");
     const client = await this.clientFor(connection);
     try {
-      const listed = await client.listTools();
+      const listed = await withinDeadline(client.listTools(), "Notion MCP 工具查询超时");
       if (!listed.tools.some(tool => tool.name === name)) throw new Error("Notion MCP 缺少所需的只读工具");
-      const result = await client.callTool({ name, arguments: args });
+      const result = await withinDeadline(client.callTool({ name, arguments: args }), "Notion MCP 读取超时");
       this.assertToolResult(result);
       return result;
     } finally {
-      await client.close().catch(() => undefined);
+      await closeClient(client);
+    }
+  }
+
+  private async verifyAccessToken(accessToken: string) {
+    const client = await this.createClient(accessToken);
+    try {
+      const listed = await withinDeadline(client.listTools(), "Notion MCP 工具查询超时");
+      if (!listed.tools.some(tool => tool.name === "notion-fetch")) throw new Error("Notion MCP 缺少所需的只读工具");
+      const result = await withinDeadline(client.callTool({ name: "notion-fetch", arguments: { id: "self" } }), "Notion MCP 读取超时");
+      this.assertToolResult(result);
+    } finally {
+      await closeClient(client);
     }
   }
 
@@ -333,7 +416,7 @@ export class NotionMcpService {
   }
 
   private async clientFor(connection: KnowledgeConnection) {
-    return this.createClient(decryptCredential(connection.encryptedAccessToken!));
+    return withinDeadline(this.createClient(connectionSecret(connection, "access_token", connection.encryptedAccessToken!)), "Notion MCP 连接超时");
   }
 
   private async refreshAccessToken(connection: KnowledgeConnection) {
@@ -341,18 +424,17 @@ export class NotionMcpService {
     if (existing) return existing;
     const refresh = (async () => {
       if (!connection.encryptedRefreshToken) throw new Error("Notion 授权已过期，请重新连接");
-      const params = new URLSearchParams({ grant_type: "refresh_token", refresh_token: decryptCredential(connection.encryptedRefreshToken), client_id: connection.clientId });
+      const params = new URLSearchParams({ grant_type: "refresh_token", refresh_token: connectionSecret(connection, "refresh_token", connection.encryptedRefreshToken), client_id: connection.clientId });
       const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" };
-      if (connection.encryptedClientSecret && connection.oauthTokenAuthMethod === "client_secret_post") params.append("client_secret", decryptCredential(connection.encryptedClientSecret));
-      const response = await this.fetcher(TOKEN_URL, { method: "POST", headers, body: params });
+      if (connection.encryptedClientSecret && connection.oauthTokenAuthMethod === "client_secret_post") params.append("client_secret", connectionSecret(connection, "client_secret", connection.encryptedClientSecret));
+      const response = await this.fetcher(assertAllowedConnectorUrl(TOKEN_URL, notionHosts), { method: "POST", headers, body: params, redirect: "error" });
       if (!response.ok) throw new Error("Notion 授权已过期，请重新连接");
-      const token = await response.json() as TokenResponse;
-      if (!token.access_token) throw new Error("Notion 刷新授权未返回访问令牌");
+      const token = validatedToken(await readBoundedJson<unknown>(response, 256 * 1024));
       await this.store.mutate(db => {
         const target = connectionFor(db, connection.workspaceId);
         if (!target || target.id !== connection.id || target.status === "revoked") throw new Error("Notion 连接已被撤销");
-        target.encryptedAccessToken = encryptCredential(token.access_token);
-        if (token.refresh_token) target.encryptedRefreshToken = encryptCredential(token.refresh_token);
+        target.encryptedAccessToken = protectConnectionSecret(target.workspaceId, "access_token", token.access_token);
+        if (token.refresh_token) target.encryptedRefreshToken = protectConnectionSecret(target.workspaceId, "refresh_token", token.refresh_token);
         target.credentialExpiresAt = token.expires_in ? new Date(Date.now() + token.expires_in * 1000).toISOString() : undefined;
         target.status = "connected";
         target.lastError = undefined;
@@ -374,33 +456,43 @@ export class NotionMcpService {
     // their clients were registered as client_secret_basic and cannot complete
     // Notion's documented public-client exchange.
     const stored = db.knowledgeConnections.find(item => item.provider === "notion" && item.clientId && item.oauthTokenAuthMethod);
-    if (stored) return { clientId: stored.clientId, clientSecret: stored.encryptedClientSecret ? decryptCredential(stored.encryptedClientSecret) : undefined, tokenAuthMethod: stored.oauthTokenAuthMethod! };
-    const response = await this.fetcher(REGISTRATION_URL, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+    if (stored) return { clientId: stored.clientId, clientSecret: stored.encryptedClientSecret ? connectionSecret(stored, "client_secret", stored.encryptedClientSecret) : undefined, tokenAuthMethod: stored.oauthTokenAuthMethod! };
+    const response = await this.fetcher(assertAllowedConnectorUrl(REGISTRATION_URL, notionHosts), {
+      method: "POST", redirect: "error", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ client_name: "ONE", client_uri: safeOrigin(redirectUri), redirect_uris: [redirectUri], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" })
     });
     if (!response.ok) throw new Error("暂时无法初始化 Notion 授权，请稍后重试");
-    const registered = await response.json() as { client_id?: string; client_secret?: string };
-    if (!registered.client_id) throw new Error("Notion 未返回 OAuth Client ID");
-    return { clientId: registered.client_id, tokenAuthMethod: "none" };
+    const registered = await readBoundedJson<{ client_id?: unknown }>(response, 256 * 1024);
+    return { clientId: requiredResponseString(registered.client_id, "OAuth Client ID", 2_000), tokenAuthMethod: "none" };
   }
 
   private async exchangeToken(flow: OAuthFlow, code: string) {
     const body = new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: flow.redirectUri, client_id: flow.clientId, code_verifier: flow.verifier });
     const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json", "User-Agent": "ONE-MCP-Client/0.1" };
     if (flow.clientSecret && flow.tokenAuthMethod === "client_secret_post") body.append("client_secret", flow.clientSecret);
-    const response = await this.fetcher(TOKEN_URL, { method: "POST", headers, body });
+    const response = await this.fetcher(assertAllowedConnectorUrl(TOKEN_URL, notionHosts), { method: "POST", headers, body, redirect: "error" });
     if (!response.ok) throw new Error("Notion 授权确认失败，请返回 ONE 重试");
-    const token = await response.json() as TokenResponse;
-    if (!token.access_token) throw new Error("Notion 授权成功但未返回访问令牌");
-    return token;
+    return validatedToken(await readBoundedJson<unknown>(response, 256 * 1024));
   }
 
-  private async pruneFlows() {
-    for (const [state, flow] of this.flows) if (flow.expiresAt <= Date.now()) {
-      this.flows.delete(state);
-      await this.restoreFlow(flow);
-    }
+  private oauthFlow(session: ConnectorAuthorizationSession, payload: Record<string, unknown>): OAuthFlow {
+    const required = (key: string) => {
+      const value = payload[key];
+      if (typeof value !== "string" || !value) throw new Error("Notion 授权资料格式无效");
+      return value;
+    };
+    const method = payload.tokenAuthMethod;
+    if (method !== "none" && method !== "client_secret_post") throw new Error("Notion 授权客户端认证方式无效");
+    const previousStatus = payload.previousStatus;
+    if (previousStatus !== undefined && !["pending", "connected", "error", "revoked"].includes(String(previousStatus))) throw new Error("Notion 原连接状态无效");
+    return {
+      workspaceId: session.workspaceId, userId: session.userId, clientId: required("clientId"),
+      clientSecret: typeof payload.clientSecret === "string" ? payload.clientSecret : undefined,
+      tokenAuthMethod: method,
+      connectionId: typeof payload.connectionId === "string" ? payload.connectionId : undefined,
+      previousStatus: previousStatus as KnowledgeConnection["status"] | undefined,
+      redirectUri: required("redirectUri"), verifier: required("verifier")
+    };
   }
 
   private async restoreFlow(flow: OAuthFlow) {

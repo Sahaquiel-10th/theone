@@ -5,7 +5,10 @@ import type { ConnectorHealth, KnowledgeAdapter } from "./registry.js";
 export function notionConnector(service: NotionMcpService): KnowledgeAdapter {
   return {
     kind: "knowledge",
-    manifest: { id: "notion", name: "Notion", version: "0.1.0", kind: "knowledge", capabilities: ["knowledge.search", "knowledge.read"], auth: "oauth_pkce" },
+    manifest: {
+      id: "notion", name: "Notion", version: "0.2.0", kind: "knowledge", capabilities: ["knowledge.search", "knowledge.read"], auth: "oauth_pkce",
+      security: { trust: "untrusted_reference", transport: "fixed_https", access: "read_only", allowedHosts: ["mcp.notion.com"] }
+    },
     status(db: Database, scope): ConnectorHealth { return service.localStatus(db, scope.workspaceId); },
     async check(_db, scope) {
       try {

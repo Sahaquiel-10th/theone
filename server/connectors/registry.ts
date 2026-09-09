@@ -7,6 +7,12 @@ export type ConnectorHealth = { state: ConnectorState; code: string; message: st
 export type ConnectorManifest = {
   id: string; name: string; version: string; kind: "knowledge" | "execution";
   capabilities: readonly string[]; auth: "device_authorization" | "oauth_pkce" | "local_runtime";
+  security: {
+    trust: "untrusted_reference" | "local_execution";
+    transport: "fixed_https" | "local_transport";
+    access: "read_only" | "user_confirmed_execution";
+    allowedHosts: readonly string[];
+  };
 };
 type BaseAdapter = {
   manifest: ConnectorManifest;
@@ -34,8 +40,14 @@ export class ConnectorRegistry {
     for (const adapter of adapters) {
       const { id, version, kind } = adapter.manifest;
       if (!/^[a-z][a-z0-9_]*$/.test(id) || !/^\d+\.\d+\.\d+$/.test(version) || kind !== adapter.kind || this.adapters.has(id)) throw new Error("连接器登记无效或重复");
+      const policy = adapter.manifest.security;
+      const remoteKnowledge = kind === "knowledge" && policy.trust === "untrusted_reference" && policy.transport === "fixed_https" && policy.access === "read_only" && policy.allowedHosts.length > 0;
+      const localExecution = kind === "execution" && policy.trust === "local_execution" && policy.transport === "local_transport" && policy.access === "user_confirmed_execution" && policy.allowedHosts.length === 0;
+      if (!remoteKnowledge && !localExecution) throw new Error("连接器安全策略与类型不匹配");
+      for (const host of policy.allowedHosts) if (!/^[a-z0-9.-]+$/i.test(host) || host.includes("..") || host.startsWith(".") || host.endsWith(".")) throw new Error("连接器远端域名允许列表无效");
       if (adapter.kind === "execution" && [...this.adapters.values()].some(item => item.kind === "execution" && item.provider === adapter.provider)) throw new Error("执行提供方重复登记");
-      const manifest = Object.freeze({ ...adapter.manifest, capabilities: Object.freeze([...adapter.manifest.capabilities]) });
+      const security = Object.freeze({ ...policy, allowedHosts: Object.freeze([...policy.allowedHosts]) });
+      const manifest = Object.freeze({ ...adapter.manifest, capabilities: Object.freeze([...adapter.manifest.capabilities]), security });
       this.adapters.set(id, Object.freeze({ ...adapter, manifest }));
     }
     for (const id of disabled) if (!this.adapters.has(id)) throw new Error("停用的连接器未登记");

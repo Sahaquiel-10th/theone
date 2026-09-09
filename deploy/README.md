@@ -36,6 +36,11 @@ Each deployment is built and tested in a new release directory. The `current`
 symlink changes atomically. A failed health check restores the previous release,
 and only the five latest releases are retained.
 
+When ONE already uses MySQL, the deployment gate applies every append-only,
+idempotent SQL file in `deploy/migrations` before switching the release symlink.
+New migrations must remain compatible with the currently running release because
+the database change precedes the process restart.
+
 ## First local MySQL cutover
 
 The server's existing databases are not reused. After deploying the release that

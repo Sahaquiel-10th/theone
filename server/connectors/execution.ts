@@ -9,7 +9,10 @@ export function executionConnectors(presence: ExecutionPresence, local: LocalExe
   return (["codex", "local_agent"] as const).map(provider => ({
     kind: "execution",
     provider,
-    manifest: { id: provider, name: provider === "codex" ? "Codex" : "ONE Local Agent", version: "0.1.0", kind: "execution", capabilities: ["execution.start", "execution.continue", "execution.cancel"], auth: "local_runtime" },
+    manifest: {
+      id: provider, name: provider === "codex" ? "Codex" : "ONE Local Agent", version: "0.2.0", kind: "execution", capabilities: ["execution.start", "execution.continue", "execution.cancel"], auth: "local_runtime",
+      security: { trust: "local_execution", transport: "local_transport", access: "user_confirmed_execution", allowedHosts: [] }
+    },
     status(db, scope) {
       const device = db.oneKeyDevices.find(item => item.id === scope.deviceId && item.workspaceId === scope.workspaceId && item.userId === scope.userId && item.status === "active");
       if (!device || !presence.isConnected(device.id)) return { state: "offline", code: "DEVICE_OFFLINE", message: "请通过当前账号的 ONE Key 打开本机执行", evidence: "transport" };
