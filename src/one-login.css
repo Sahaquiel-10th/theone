@@ -1,0 +1,167 @@
+/* The door to ONE uses the same quiet paper as the workspace. */
+.login-shell,
+.boot {
+  min-height: 100svh;
+  padding: 40px 24px;
+  background: #f6f5f1;
+  color: #24251f;
+  background-image: none;
+}
+
+.login-shell {
+  display: grid;
+  place-items: center;
+}
+
+.login-shell .login-panel {
+  width: min(420px, 100%);
+  min-width: 0;
+  margin: 0;
+  padding: 20px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.login-panel .login-brand {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: start;
+  align-items: start;
+  gap: 30px;
+  margin: 0 0 34px;
+}
+
+.login-panel .login-divider { display: none; }
+.login-panel .login-brand .one-wordmark {
+  color: #24251f;
+  font-size: 39px;
+  font-weight: 690;
+  letter-spacing: -.065em;
+}
+.login-panel .login-brand .one-eye-sm {
+  width: 40px;
+  height: 40px;
+  box-shadow: none;
+}
+.login-panel .login-brand h1 {
+  margin: 0;
+  color: #24251f;
+  font-size: 27px;
+  font-weight: 560;
+  line-height: 1.4;
+  letter-spacing: -.04em;
+}
+.login-panel .login-brand p {
+  margin-top: 8px;
+  color: #74766b;
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.login-shell .login-panel label {
+  display: grid;
+  gap: 9px;
+  color: #62655a;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.login-shell .login-panel label + label { margin-top: 21px; }
+.login-shell .login-panel input {
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  padding: 12px 14px;
+  border: 1px solid #dcdfd4;
+  border-radius: 10px;
+  background: #fffefa;
+  color: #24251f;
+  box-shadow: none;
+  font-size: 16px;
+  line-height: 1.5;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+.login-shell .login-panel input::placeholder { color: #8b8c81; }
+.login-shell .login-panel input:hover { border-color: #b9beb0; }
+.login-shell .login-panel input:focus {
+  border-color: #747b69;
+  box-shadow: 0 0 0 3px rgb(71 79 58 / 7%);
+}
+.login-shell .login-panel :is(input, button):focus-visible {
+  outline: 2px solid #747b69;
+  outline-offset: 3px;
+}
+.login-shell .login-panel input:-webkit-autofill {
+  -webkit-text-fill-color: #24251f;
+  caret-color: #24251f;
+  -webkit-box-shadow: 0 0 0 1000px #fffefa inset;
+}
+.login-shell .login-panel .primary {
+  width: 100%;
+  min-height: 48px;
+  margin-top: 28px;
+  padding: 12px 16px;
+  border: 1px solid #24251f;
+  border-radius: 10px;
+  background: #24251f;
+  color: #f6f5f1;
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.5;
+  transform: none;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+.login-shell .login-panel .primary > svg { width: 15px; height: 15px; }
+.login-shell .login-panel .primary:hover:not(:disabled) { border-color: #0f110c; background: #0f110c; }
+.login-shell .login-panel .primary:active:not(:disabled) { background: #414638; transform: none; }
+.login-shell .login-panel .primary:disabled { opacity: .42; cursor: default; }
+.login-shell .login-panel .error {
+  margin-top: 20px;
+  padding: 11px 13px;
+  border: 1px solid #e0c9c0;
+  border-radius: 9px;
+  background: #f6eee9;
+  color: #9a5140;
+  font-size: 12px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+
+.boot {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 20px;
+  color: #74766b;
+  font-size: 12px;
+  line-height: 1.8;
+  text-align: center;
+}
+.boot::before {
+  content: "";
+  display: block;
+  width: 44px;
+  height: 44px;
+  background: url("/one-mark.svg") center / contain no-repeat;
+}
+
+@media (max-width: 520px) {
+  .login-shell,
+  .boot { padding: 32px 26px; }
+  .login-shell .login-panel { padding: 12px 0; }
+  .login-panel .login-brand { margin-bottom: 30px; gap: 27px; }
+  .login-panel .login-brand h1 { font-size: 25px; }
+}
+
+@media (max-height: 620px) {
+  .login-shell { place-items: start center; padding-block: 26px; }
+  .login-panel .login-brand { gap: 20px; margin-bottom: 25px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-shell .login-panel :is(input, .primary) { transition: none; }
+}

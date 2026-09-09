@@ -8,7 +8,7 @@
     "dev:server": "tsx watch server/index.ts",
     "dev:web": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
-    "test": "tsx --test server/*.test.ts server/connectors/*.test.ts server/knowledge/*.test.ts",
+    "test": "tsx --test src/*.test.ts server/*.test.ts server/connectors/*.test.ts server/knowledge/*.test.ts",
     "build:one-key:mac": "node scripts/build-macos-one-key.mjs",
     "build:one-key:windows": "node scripts/build-windows-one-key.mjs",
     "provision:one-key:mac": "node scripts/provision-one-key-usb.mjs",
