@@ -65,7 +65,7 @@
 
 `knowledge_connections` 以 `workspace_id + provider` 唯一。GetNote 保存加密 API Key；Notion 保存加密 access token、refresh token、OAuth client secret、过期时间，以及用于展示的 Workspace 名称。公开接口只能返回状态、展示名称和检查时间，不能返回任何加密字段或上游用户标识。
 
-`connector_authorization_sessions` 保存十分钟级别的授权事务，包含 `workspaceId`、`userId`、连接器、协议、状态和过期时间。OAuth state 只保存哈希；设备码、PKCE verifier 等载荷加密保存。事务完成、取消或失败后立即删除，不能跨 Workspace/用户轮询或复用。
+`knowledge_connections.authorizationSession` 保存十分钟级别的嵌入式授权事务，包含 `workspaceId`、`userId`、连接器、协议、状态和过期时间。OAuth state 只保存哈希；设备码、PKCE verifier 等载荷加密保存。一个 Workspace 的同一连接器最多存在一笔进行中的事务；完成、取消或失败后立即清除，不能跨 Workspace/用户轮询或复用。它复用现有关系记录，不需要为短期状态增加独立数据库权限或迁移表。
 
 知识凭据的新密文使用 Workspace、平台和字段名作为 AES-GCM 附加认证数据。数据库记录误绑定到另一账户时不能成功解密；V1 旧密文仅为滚动兼容保留。
 

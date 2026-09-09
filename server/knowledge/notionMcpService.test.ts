@@ -6,7 +6,7 @@ import { decryptCredential, encryptCredential, knowledgeCredentialContext } from
 import { NotionMcpService } from "./notionMcpService.js";
 
 function fixture() {
-  const database = { knowledgeConnections: [], connectorAuthorizationSessions: [], auditLogs: [] } as unknown as Database;
+  const database = { knowledgeConnections: [], auditLogs: [] } as unknown as Database;
   const store = {
     async read() { return database; },
     async mutate<T>(fn: (db: Database) => T) { return fn(database); }

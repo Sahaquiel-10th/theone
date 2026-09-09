@@ -15,7 +15,7 @@
 
 ## 0.2 安全与可靠性底座
 
-- 得到和 Notion 的授权事务不再保存在进程内存；设备码、PKCE verifier 和 OAuth 客户端资料加密、短时、单次持久化，并精确绑定 Workspace、用户和连接器。
+- 得到和 Notion 的授权事务不再保存在进程内存；它嵌入现有 Workspace 平台连接记录，设备码、PKCE verifier 和 OAuth 客户端资料加密、短时、单次持久化，并精确绑定 Workspace、用户和连接器。
 - 新写入的知识凭据使用 AES-GCM 附加认证数据绑定 Workspace、平台和字段用途。把密文复制到另一 Workspace 或把 refresh token 当 access token 使用都会解密失败；旧 V1 密文继续兼容，刷新或重新授权后升级。
 - 每个连接器必须声明安全策略。知识连接器只能是 `untrusted_reference + fixed_https + read_only`；本机执行只能是 `local_execution + local_transport + user_confirmed_execution`。
 - 远端地址使用服务端精确 HTTPS 域名允许列表，不接受浏览器提供的 URL，不跟随重定向；普通 JSON 响应限制大小。

@@ -5,7 +5,7 @@ import { Database, ModelConfig } from "./types.js";
 
 function database(): Database {
   return {
-    users: [], workspaces: [], workspaceMembers: [], conversationFolders: [], models: [], conversations: [], messages: [], userSavedMemories: [], retrievalLogs: [], contextTraces: [], modelUsageRecords: [], knowledgeConnections: [], connectorAuthorizationSessions: [], oneKeyDevices: [], deviceChallenges: [], oneTimeLoginCodes: [],
+    users: [], workspaces: [], workspaceMembers: [], conversationFolders: [], models: [], conversations: [], messages: [], userSavedMemories: [], retrievalLogs: [], contextTraces: [], modelUsageRecords: [], knowledgeConnections: [], oneKeyDevices: [], deviceChallenges: [], oneTimeLoginCodes: [],
     powerAccounts: [
       { id: "a", workspaceId: "workspace-a", userId: "user-a", balanceMicros: 5_000_000, createdAt: "now", updatedAt: "now" },
       { id: "b", workspaceId: "workspace-b", userId: "user-b", balanceMicros: 8_000_000, createdAt: "now", updatedAt: "now" }

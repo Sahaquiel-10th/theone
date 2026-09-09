@@ -9,7 +9,6 @@ fi
 app_root="/srv/theone"
 env_file="$app_root/shared/.env"
 schema_file="$app_root/current/deploy/migrations/001-relational-records.sql"
-migration_dir="$app_root/current/deploy/migrations"
 data_file="$app_root/shared/data/db.json"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 snapshot_dir="$app_root/shared/migration-backups/$stamp"
@@ -29,9 +28,6 @@ cp -a "$env_file" "$snapshot_dir/.env.before-mysql"
 
 db_password="$(openssl rand -hex 32)"
 mysql < "$schema_file"
-for migration in "$migration_dir"/*.sql; do
-  [[ "$migration" == "$schema_file" ]] || mysql < "$migration"
-done
 mysql --execute="CREATE USER IF NOT EXISTS 'theone_app'@'127.0.0.1' IDENTIFIED BY '$db_password'; ALTER USER 'theone_app'@'127.0.0.1' IDENTIFIED BY '$db_password'; GRANT SELECT, INSERT, UPDATE, DELETE ON theone_prod.* TO 'theone_app'@'127.0.0.1'; FLUSH PRIVILEGES;"
 
 set_env() {

@@ -91,6 +91,7 @@ export type KnowledgeConnection = {
   id: string; workspaceId: string; provider: "getnote" | "notion"; status: "pending" | "connected" | "error" | "revoked";
   clientId: string; encryptedApiKey?: string; encryptedAccessToken?: string; encryptedRefreshToken?: string; encryptedClientSecret?: string;
   oauthTokenAuthMethod?: "none" | "client_secret_post";
+  authorizationSession?: ConnectorAuthorizationSession;
   providerSpaceId?: string; providerSpaceName?: string; providerUserId?: string;
   credentialExpiresAt?: string; lastCheckedAt?: string; lastError?: string; createdAt: string; updatedAt: string;
 };
@@ -134,7 +135,6 @@ export type Database = {
   users: User[]; workspaces: Workspace[]; workspaceMembers: WorkspaceMember[]; conversationFolders: ConversationFolder[];
   models: ModelConfig[]; conversations: Conversation[]; messages: MessageRecord[]; userSavedMemories: UserSavedMemory[];
   retrievalLogs: RetrievalLog[]; contextTraces: ContextTrace[]; modelUsageRecords: ModelUsageRecord[]; knowledgeConnections: KnowledgeConnection[];
-  connectorAuthorizationSessions: ConnectorAuthorizationSession[];
   oneKeyDevices: OneKeyDevice[]; deviceChallenges: DeviceChallenge[]; oneTimeLoginCodes: OneTimeLoginCode[];
   powerAccounts: PowerAccount[]; powerLedger: PowerLedgerEntry[]; rechargeOrders: RechargeOrder[]; auditLogs: AuditLog[];
   agents: Agent[]; attachments: Attachment[]; executionTasks: ExecutionTask[]; executionEvents: ExecutionEvent[]; settings: SystemSettings;

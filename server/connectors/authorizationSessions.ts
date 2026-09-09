@@ -53,11 +53,18 @@ export class AuthorizationSessions {
     };
     await this.store.mutate(db => {
       const now = Date.now();
-      db.connectorAuthorizationSessions = db.connectorAuthorizationSessions.filter(item =>
-        Date.parse(item.expiresAt) > now &&
-        !(item.workspaceId === params.workspaceId && item.connectorId === params.connectorId)
-      );
-      db.connectorAuthorizationSessions.push(session);
+      for (const connection of db.knowledgeConnections) {
+        if (connection.authorizationSession && Date.parse(connection.authorizationSession.expiresAt) <= now) connection.authorizationSession = undefined;
+      }
+      let connection = db.knowledgeConnections.find(item => item.workspaceId === params.workspaceId && item.provider === params.connectorId);
+      if (!connection) {
+        const clientId = typeof params.payload.clientId === "string" ? params.payload.clientId : "";
+        if (!clientId) throw new Error("连接授权缺少客户端标识");
+        connection = { id: uid("knc"), workspaceId: params.workspaceId, provider: params.connectorId, status: "pending", clientId, createdAt: timestamp, updatedAt: timestamp };
+        db.knowledgeConnections.push(connection);
+      }
+      connection.authorizationSession = session;
+      connection.updatedAt = timestamp;
     });
     return { id: session.id };
   }
@@ -70,11 +77,8 @@ export class AuthorizationSessions {
     minimumDelayMs: number;
   }) {
     const result = await this.store.mutate(db => {
-      const target = db.connectorAuthorizationSessions.find(item =>
-        item.id === params.id && item.workspaceId === params.workspaceId && item.userId === params.userId &&
-        item.connectorId === params.connectorId && item.status === "pending"
-      );
-      if (!target) throw new AuthorizationSessionError("NOT_FOUND", "授权流程不存在");
+      const target = db.knowledgeConnections.find(item => item.workspaceId === params.workspaceId && item.provider === params.connectorId)?.authorizationSession;
+      if (target?.id !== params.id || target.userId !== params.userId || target.status !== "pending") throw new AuthorizationSessionError("NOT_FOUND", "授权流程不存在");
       const now = Date.now();
       if (!Number.isFinite(Date.parse(target.expiresAt)) || Date.parse(target.expiresAt) <= now) {
         return { expiredId: target.id };
@@ -95,8 +99,8 @@ export class AuthorizationSessions {
 
   async defer(id: string, retryAfterMs: number) {
     await this.store.mutate(db => {
-      const target = db.connectorAuthorizationSessions.find(item => item.id === id && item.status === "pending");
-      if (!target) return;
+      const target = db.knowledgeConnections.find(item => item.authorizationSession?.id === id)?.authorizationSession;
+      if (!target || target.status !== "pending") return;
       target.nextAttemptAt = new Date(Date.now() + retryAfterMs).toISOString();
       target.updatedAt = new Date().toISOString();
     });
@@ -106,8 +110,8 @@ export class AuthorizationSessions {
     if (!state) throw new AuthorizationSessionError("INVALID_STATE", "授权状态无效，请返回 ONE 重试");
     const wanted = stateHash(state);
     const result = await this.store.mutate(db => {
-      const target = db.connectorAuthorizationSessions.find(item => item.connectorId === connectorId && item.stateHash === wanted && item.status === "pending");
-      if (!target) throw new AuthorizationSessionError("INVALID_STATE", "授权状态无效或已经使用，请返回 ONE 重试");
+      const target = db.knowledgeConnections.find(item => item.provider === connectorId && item.authorizationSession?.stateHash === wanted)?.authorizationSession;
+      if (target?.status !== "pending") throw new AuthorizationSessionError("INVALID_STATE", "授权状态无效或已经使用，请返回 ONE 重试");
       if (!Number.isFinite(Date.parse(target.expiresAt)) || Date.parse(target.expiresAt) <= Date.now()) {
         return { expiredId: target.id };
       }
@@ -127,17 +131,20 @@ export class AuthorizationSessions {
     if (!state) return undefined;
     const wanted = stateHash(state);
     const session = await this.store.mutate(db => {
-      const index = db.connectorAuthorizationSessions.findIndex(item => item.connectorId === connectorId && item.stateHash === wanted && item.status === "pending");
-      if (index < 0) return undefined;
-      return db.connectorAuthorizationSessions.splice(index, 1)[0];
+      const connection = db.knowledgeConnections.find(item => item.provider === connectorId && item.authorizationSession?.stateHash === wanted && item.authorizationSession.status === "pending");
+      if (!connection?.authorizationSession) return undefined;
+      const target = connection.authorizationSession;
+      connection.authorizationSession = undefined;
+      connection.updatedAt = new Date().toISOString();
+      return target;
     });
     return session ? { session, payload: decodePayload(session) } : undefined;
   }
 
   async markVerifying(id: string) {
     await this.store.mutate(db => {
-      const target = db.connectorAuthorizationSessions.find(item => item.id === id && item.status === "exchanging");
-      if (!target) throw new AuthorizationSessionError("NOT_FOUND", "授权流程不存在或已经结束");
+      const target = db.knowledgeConnections.find(item => item.authorizationSession?.id === id)?.authorizationSession;
+      if (!target || target.status !== "exchanging") throw new AuthorizationSessionError("NOT_FOUND", "授权流程不存在或已经结束");
       target.status = "verifying";
       target.updatedAt = new Date().toISOString();
     });
@@ -145,7 +152,10 @@ export class AuthorizationSessions {
 
   async finish(id: string) {
     await this.store.mutate(db => {
-      db.connectorAuthorizationSessions = db.connectorAuthorizationSessions.filter(item => item.id !== id);
+      const connection = db.knowledgeConnections.find(item => item.authorizationSession?.id === id);
+      if (!connection) return;
+      connection.authorizationSession = undefined;
+      connection.updatedAt = new Date().toISOString();
     });
   }
 }

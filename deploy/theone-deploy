@@ -37,14 +37,6 @@ runuser -u theone-deploy -- env HOME=/home/theone-deploy npm --prefix "$staging"
 runuser -u theone-deploy -- env HOME=/home/theone-deploy npm --prefix "$staging" test
 runuser -u theone-deploy -- env HOME=/home/theone-deploy npm --prefix "$staging" run build
 
-# Migrations are append-only and must run before the new process reads a new
-# relational collection. They are additive, idempotent and backward-compatible
-# with the currently active release.
-if grep -q '^DB_PROVIDER=mysql$' "$shared/.env"; then
-  command -v mysql >/dev/null || { echo "mysql client is required for schema migrations" >&2; exit 1; }
-  for migration in "$staging"/deploy/migrations/*.sql; do mysql < "$migration"; done
-fi
-
 ln -s "$shared/data" "$staging/data"
 # The deploy user owns immutable release files; the app user may only read and
 # traverse them. Shared runtime data stays separately writable by `theone`.

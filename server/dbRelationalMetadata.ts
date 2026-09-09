@@ -47,7 +47,6 @@ function recordLookupKey(collection: CollectionName, item: StoredRecord): string
   if (collection === "workspaces" && typeof item.slug === "string") return item.slug.trim().toLowerCase();
   if (collection === "workspaceMembers" && typeof item.workspaceId === "string" && typeof item.userId === "string") return `${item.workspaceId}:${item.userId}`;
   if (collection === "knowledgeConnections" && typeof item.workspaceId === "string" && typeof item.provider === "string") return `${item.workspaceId}:${item.provider}`;
-  if (collection === "connectorAuthorizationSessions" && typeof item.stateHash === "string" && item.stateHash) return `${item.connectorId}:${item.stateHash}`;
   if (collection === "oneKeyDevices" && typeof item.serialNumber === "string") return item.serialNumber.trim();
   if (collection === "oneTimeLoginCodes" && typeof item.tokenHash === "string") return item.tokenHash;
   if (collection === "powerAccounts" && typeof item.workspaceId === "string" && typeof item.userId === "string") return `${item.workspaceId}:${item.userId}`;

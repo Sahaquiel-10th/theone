@@ -5,7 +5,7 @@ import type { Database } from "../types.js";
 import { AuthorizationSessionError, AuthorizationSessions } from "./authorizationSessions.js";
 
 function fixture() {
-  const db = { connectorAuthorizationSessions: [] } as unknown as Database;
+  const db = { knowledgeConnections: [] } as unknown as Database;
   const store = { async read() { return db; }, async mutate<T>(fn: (value: Database) => T) { return fn(db); } } as Store;
   return { db, store, sessions: new AuthorizationSessions(store) };
 }
@@ -14,7 +14,7 @@ test("authorization sessions encrypt secrets and bind device polling to workspac
   const f = fixture();
   const created = await f.sessions.create({
     workspaceId: "workspace-a", userId: "user-a", connectorId: "getnote", protocol: "device_authorization",
-    payload: { code: "private-device-code" }, expiresAt: Date.now() + 60_000
+    payload: { clientId: "client-a", code: "private-device-code" }, expiresAt: Date.now() + 60_000
   });
   assert.doesNotMatch(JSON.stringify(f.db), /private-device-code/);
   await assert.rejects(f.sessions.poll({ id: created.id, workspaceId: "workspace-b", userId: "user-a", connectorId: "getnote", minimumDelayMs: 1000 }), AuthorizationSessionError);
@@ -28,7 +28,7 @@ test("OAuth state is hashed, single-use and survives a service instance restart"
   const f = fixture();
   await f.sessions.create({
     workspaceId: "workspace-a", userId: "user-a", connectorId: "notion", protocol: "oauth_pkce",
-    state: "raw-private-state", payload: { verifier: "private-verifier" }, expiresAt: Date.now() + 60_000
+    state: "raw-private-state", payload: { clientId: "client-a", verifier: "private-verifier" }, expiresAt: Date.now() + 60_000
   });
   assert.doesNotMatch(JSON.stringify(f.db), /raw-private-state|private-verifier/);
   const restarted = new AuthorizationSessions(f.store);
@@ -36,5 +36,5 @@ test("OAuth state is hashed, single-use and survives a service instance restart"
   assert.equal(claimed.payload.verifier, "private-verifier");
   await assert.rejects(restarted.claimState("notion", "raw-private-state"), (error: unknown) => error instanceof AuthorizationSessionError && error.code === "INVALID_STATE");
   await restarted.finish(claimed.session.id);
-  assert.equal(f.db.connectorAuthorizationSessions.length, 0);
+  assert.equal(f.db.knowledgeConnections[0].authorizationSession, undefined);
 });
