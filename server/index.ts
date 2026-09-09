@@ -39,6 +39,10 @@ const oneKeyService = new OneKeyService(store);
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 const connectorAuthorizationSessions = new AuthorizationSessions(store);
 const chatHistoryMessages = Math.max(0, Math.min(30, Number(process.env.CHAT_HISTORY_MESSAGES ?? 12)));
+const configuredOneKeySessionSeconds = Number(process.env.ONE_KEY_SESSION_SECONDS ?? 2_592_000);
+const oneKeySessionSeconds = Number.isFinite(configuredOneKeySessionSeconds)
+  ? Math.floor(Math.max(43_200, Math.min(7_776_000, configuredOneKeySessionSeconds)))
+  : 2_592_000;
 const attachmentMaxFiles = 4;
 const attachmentMaxBytes = Math.max(1024 * 1024, Number(process.env.ATTACHMENT_MAX_BYTES ?? 10 * 1024 * 1024));
 const generatedImageMaxBytes = Math.max(attachmentMaxBytes, Number(process.env.GENERATED_IMAGE_MAX_BYTES ?? 25 * 1024 * 1024));
@@ -162,9 +166,9 @@ app.post("/api/auth/one-key/redeem", asyncRoute(async (req, res) => {
   const binding = await oneKeyService.redeem(requiredString(req.body.loginCode, "一次性登录码"));
   const db = await store.read(); const user = db.users.find((item) => item.id === binding.userId && item.enabled);
   if (!user) return res.status(401).json({ error: "账号不可用", code: "ACCOUNT_UNAVAILABLE" });
-  const token = signToken({ sub: user.id, role: user.role, workspaceId: binding.workspaceId, deviceId: binding.deviceId }, jwtSecret);
+  const token = signToken({ sub: user.id, role: user.role, workspaceId: binding.workspaceId, deviceId: binding.deviceId }, jwtSecret, oneKeySessionSeconds * 1000);
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  res.setHeader("Set-Cookie", `one_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${secure}`);
+  res.setHeader("Set-Cookie", `one_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${oneKeySessionSeconds}${secure}`);
   res.json({ user: publicUser(user), workspaceId: binding.workspaceId });
 }));
 

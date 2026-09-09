@@ -22,10 +22,10 @@ function base64Url(input: Buffer | string) {
   return Buffer.from(input).toString("base64url");
 }
 
-export function signToken(payload: Record<string, unknown>, secret: string) {
+export function signToken(payload: Record<string, unknown>, secret: string, ttlMs = TOKEN_TTL_MS) {
   const body = {
     ...payload,
-    exp: Date.now() + TOKEN_TTL_MS
+    exp: Date.now() + ttlMs
   };
   const encoded = base64Url(JSON.stringify(body));
   const sig = crypto.createHmac("sha256", secret).update(encoded).digest("base64url");

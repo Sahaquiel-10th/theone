@@ -27,7 +27,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const version = "0.2.0"
+const version = "0.2.1"
 
 type deviceCredential struct {
 	Version       int    `json:"version"`
@@ -97,6 +97,9 @@ func run() error {
 	openedLogin := false
 
 	for failures := 0; ; {
+		if !fileExists(credentialPath) {
+			credentialPath = waitForCredential(credential.DeviceID)
+		}
 		connection, err := connectLauncher(base, credentialPath, credential.DeviceID)
 		if err == nil {
 			if !openedLogin {
@@ -110,9 +113,6 @@ func run() error {
 			err = serveProofs(connection, credentialPath, credential.DeviceID)
 		}
 
-		if !fileExists(credentialPath) {
-			return nil
-		}
 		var closeError *websocket.CloseError
 		if errors.As(err, &closeError) && closeError.Code == 4009 {
 			// A newer ONE.exe instance has taken over this Key. Exit the old
@@ -123,28 +123,42 @@ func run() error {
 			return fmt.Errorf("ONE Key 已挂失或凭证无效")
 		}
 		failures++
-		if !openedLogin || failures > 10 {
-			return fmt.Errorf("ONE Key 连接已断开，请确认网络正常后重新双击 ONE.exe")
-		}
+		failures = min(failures, 5)
 		time.Sleep(time.Duration(min(failures*3, 15)) * time.Second)
 	}
 }
 
 func findCredential() (string, error) {
-	executable, err := os.Executable()
-	if err == nil {
-		portable := filepath.Join(filepath.Dir(executable), ".one", "credential.json")
-		if fileExists(portable) {
-			return portable, nil
-		}
-	}
-	for drive := 'D'; drive <= 'Z'; drive++ {
-		candidate := fmt.Sprintf("%c:\\.one\\credential.json", drive)
-		if fileExists(candidate) {
-			return candidate, nil
-		}
+	if path := findCredentialForDevice(""); path != "" {
+		return path, nil
 	}
 	return "", errors.New("没有找到 ONE Key，请确认 U 盘已插入，并且 ONE.exe 位于 U 盘根目录")
+}
+
+func findCredentialForDevice(expectedDeviceID string) string {
+	candidates := make([]string, 0, 24)
+	executable, err := os.Executable()
+	if err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(executable), ".one", "credential.json"))
+	}
+	for drive := 'D'; drive <= 'Z'; drive++ {
+		candidates = append(candidates, fmt.Sprintf("%c:\\.one\\credential.json", drive))
+	}
+	for _, candidate := range candidates {
+		if _, err := loadCredential(candidate, expectedDeviceID); err == nil {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func waitForCredential(deviceID string) string {
+	for {
+		if path := findCredentialForDevice(deviceID); path != "" {
+			return path
+		}
+		time.Sleep(750 * time.Millisecond)
+	}
 }
 
 func loadCredential(path string, expectedDeviceID string) (deviceCredential, error) {
@@ -208,7 +222,11 @@ func connectLauncher(base, credentialPath, deviceID string) (*websocket.Conn, er
 	}
 	connection.SetReadDeadline(time.Now().Add(8 * time.Second))
 	var challenge socketMessage
-	if err := connection.ReadJSON(&challenge); err != nil || challenge.Type != "auth_challenge" || challenge.ChallengeID == "" || challenge.Nonce == "" {
+	if err := connection.ReadJSON(&challenge); err != nil {
+		connection.Close()
+		return nil, err
+	}
+	if challenge.Type != "auth_challenge" || challenge.ChallengeID == "" || challenge.Nonce == "" {
 		connection.Close()
 		return nil, errors.New("ONE 在线验证握手失败")
 	}
@@ -222,7 +240,11 @@ func connectLauncher(base, credentialPath, deviceID string) (*websocket.Conn, er
 		return nil, errors.New("ONE 在线验证发送失败")
 	}
 	var ready socketMessage
-	if err := connection.ReadJSON(&ready); err != nil || ready.Type != "ready" || ready.DeviceID != deviceID {
+	if err := connection.ReadJSON(&ready); err != nil {
+		connection.Close()
+		return nil, err
+	}
+	if ready.Type != "ready" || ready.DeviceID != deviceID {
 		connection.Close()
 		return nil, errors.New("ONE Key 在线验证失败")
 	}

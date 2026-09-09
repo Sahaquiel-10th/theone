@@ -60,13 +60,22 @@ func loadCredential(_ credentialUrl: URL, expectedDeviceId: String? = nil) throw
     return credential
 }
 
-func findCredentialUrl() -> URL? {
+func findCredentialUrl(expectedDeviceId: String? = nil) -> URL? {
     let portable = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent(".one/credential.json")
-    if FileManager.default.fileExists(atPath: portable.path) { return portable }
     let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? []
-    return volumes
-        .map { $0.appendingPathComponent(".one/credential.json") }
-        .first { FileManager.default.fileExists(atPath: $0.path) }
+    return ([portable] + volumes.map { $0.appendingPathComponent(".one/credential.json") })
+        .first { url in
+            guard FileManager.default.fileExists(atPath: url.path), let credential = try? loadCredential(url) else { return false }
+            return expectedDeviceId == nil || credential.deviceId == expectedDeviceId
+        }
+}
+
+func waitForCredentialUrl(deviceId: String) async -> URL? {
+    while !Task.isCancelled {
+        if let url = findCredentialUrl(expectedDeviceId: deviceId) { return url }
+        do { try await Task.sleep(for: .milliseconds(750)) } catch { return nil }
+    }
+    return nil
 }
 
 func signNonce(_ nonce: String, credentialUrl: URL, deviceId: String) throws -> String {
@@ -350,6 +359,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private var loginTask: Task<Void, Never>?
     private var stopping = false
     private var ready = false
+    private var loginRequested = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         sessionTask = Task { await runSession() }
@@ -373,19 +383,20 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         var failures = 0
         while !stopping {
         do {
-            guard let foundUrl = findCredentialUrl() else { throw LauncherError.message("没有找到 ONE Key，请插入后重试") }
+            guard let foundUrl = findCredentialUrl(expectedDeviceId: credential?.deviceId) else { throw LauncherError.message("没有找到 ONE Key，请插入后重试") }
             let foundCredential = try loadCredential(foundUrl)
             let foundBase = foundCredential.serverBaseUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            let connectedSocket = try await connectLauncher(base: foundBase, credentialUrl: foundUrl, deviceId: foundCredential.deviceId)
-
             credentialUrl = foundUrl
             credential = foundCredential
             base = foundBase
+            let connectedSocket = try await connectLauncher(base: foundBase, credentialUrl: foundUrl, deviceId: foundCredential.deviceId)
+
             socket = connectedSocket
             ready = true
             removalTask = Task { await monitorRemoval(of: foundUrl) }
 
-            if !openedLogin {
+            if !openedLogin || loginRequested {
+                loginRequested = false
                 try await openLoginPage(base: foundBase, credentialUrl: foundUrl, deviceId: foundCredential.deviceId)
                 openedLogin = true
             }
@@ -397,11 +408,14 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             failures += 1
             let terminalClose = [4003, 4009].contains(socket?.closeCode.rawValue ?? 0)
-            if !stopping, !terminalClose, openedLogin, failures <= 10, let credentialUrl, FileManager.default.fileExists(atPath: credentialUrl.path) {
+            if !stopping, !terminalClose, let expectedDeviceId = credential?.deviceId {
                 socket?.cancel(with: .goingAway, reason: nil)
                 removalTask?.cancel()
                 ready = false
+                guard let recoveredUrl = await waitForCredentialUrl(deviceId: expectedDeviceId) else { return }
+                credentialUrl = recoveredUrl
                 do { try await Task.sleep(for: .seconds(min(failures * 3, 15))) } catch { return }
+                failures = min(failures, 5)
             } else {
                 if !stopping { showFailure(error) }
                 return
@@ -411,7 +425,9 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func requestLogin() {
+        loginRequested = true
         guard ready, loginTask == nil, let credentialUrl, let credential else { return }
+        loginRequested = false
         let base = self.base
         loginTask = Task {
             do {
@@ -429,9 +445,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         while !Task.isCancelled {
             do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
             if !FileManager.default.fileExists(atPath: credentialUrl.path) {
-                stopping = true
                 socket?.cancel(with: .goingAway, reason: nil)
-                NSApplication.shared.terminate(nil)
                 return
             }
         }
