@@ -1,0 +1,180 @@
+/* A quiet room for ONE; its personality lives in the eye and its voice. */
+.one-shell:not(.execution-shell) .one-chrome-button,
+.one-shell:not(.execution-shell) .one-current-space {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.one-shell:not(.execution-shell) .one-chrome-button:hover,
+.one-shell:not(.execution-shell) .one-chrome-button.active {
+  background: rgb(28 26 22 / 5%);
+  color: #25241f;
+}
+
+.one-shell .one-brand-button { box-shadow: none; }
+.one-shell.entry-shell .one-current-space { visibility: hidden; }
+.app-shell.one-shell.entry-shell { background: #f6f5f1; }
+.one-shell.entry-shell::before { display: none; }
+
+.one-shell.entry-shell .one-chat.home-mode {
+  grid-template-rows: minmax(200px, 1fr) auto minmax(40px, .62fr);
+  overflow-y: auto;
+}
+
+.one-shell.entry-shell .home-mode .messages {
+  padding: 42px 24px 0;
+}
+
+.one-shell.entry-shell .one-hero {
+  width: min(720px, 100%);
+  margin: auto auto 30px;
+}
+
+.one-shell.entry-shell .one-presence {
+  width: 90px;
+  height: 90px;
+  margin-bottom: 26px;
+}
+
+.one-shell.entry-shell .one-presence::before {
+  inset: -22px;
+  background: radial-gradient(circle, rgb(33 30 24 / 7%), transparent 65%);
+  animation: none;
+}
+
+.one-shell.entry-shell .one-hero-eye {
+  filter: drop-shadow(0 12px 15px rgb(28 24 19 / 10%));
+}
+
+.one-shell.entry-shell .one-hero h2 {
+  margin: 0 0 13px;
+  color: #25241f;
+  font-size: clamp(30px, 3.2vw, 42px);
+  font-weight: 540;
+  letter-spacing: -.045em;
+  line-height: 1.25;
+}
+
+.one-shell.entry-shell .one-hero p {
+  color: #77746c;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.one-shell.entry-shell .home-mode .composer {
+  width: min(790px, 100%);
+  padding-inline: 24px;
+}
+
+.one-shell.entry-shell .home-mode .composer-row {
+  min-height: 122px;
+  padding: 16px;
+  border: 1px solid #deddd5;
+  border-radius: 22px;
+  background: #fffefa;
+  box-shadow: 0 8px 32px rgb(38 34 26 / 4%);
+}
+
+.one-shell.entry-shell .home-mode .composer-row:focus-within,
+.one-shell.entry-shell .intent-ready .composer-row {
+  border-color: #b8b6aa;
+  box-shadow: 0 12px 35px rgb(38 34 26 / 6%);
+}
+
+.one-shell.entry-shell .home-mode .composer-row textarea,
+.one-shell.entry-shell .home-mode .composer-row textarea:focus {
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+}
+
+.one-shell.entry-shell .home-mode .composer-row textarea {
+  min-height: 88px;
+  padding: 5px 6px;
+  background: transparent;
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+.one-shell.entry-shell .home-mode .composer-row textarea::placeholder { color: #88857c; }
+.one-shell.entry-shell .home-mode .send {
+  width: 42px;
+  height: 42px;
+  min-height: 42px;
+  flex-basis: 42px;
+  border-radius: 13px;
+}
+.one-shell.entry-shell .send:disabled { background: #ebeae3; color: #959185; opacity: 1; }
+.one-shell.entry-shell .intent-ready .one-hero,
+.one-shell.entry-shell .intent-ready .one-presence,
+.one-shell.entry-shell .intent-ready .dia-prompts { transform: none; opacity: 1; }
+
+.one-composer-caption {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 23px 3px 10px;
+  color: #79766c;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.one-keyboard-hint { color: #918c81; font-size: 10px; }
+.one-shell.entry-shell .dia-prompts { margin: 0; gap: 12px; }
+.one-shell.entry-shell .dia-prompts button:nth-child(n) {
+  min-width: 0;
+  min-height: 55px;
+  padding: 13px 28px 13px 3px;
+  grid-template-rows: auto;
+  border: 0;
+  border-top: 1px solid #dddbd2;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  color: #59564c;
+  transform: none;
+}
+.one-shell.entry-shell .dia-prompts span { align-self: center; font-size: 13px; font-weight: 450; line-height: 1.6; text-wrap: pretty; }
+.one-shell.entry-shell .dia-prompts i { top: 15px; right: 4px; color: #8a867b; font-size: 16px; }
+.one-shell.entry-shell .dia-prompts button:nth-child(n):hover { border-color: #403d34; color: #1d1c17; }
+.one-shell.entry-shell .dia-prompts button:hover i { color: #1d1c17; transform: translate(2px, -2px); }
+
+/* The aside is character copy, not a fabricated progress report. */
+.one-working-copy .one-wait-line {
+  overflow: visible;
+  max-width: 44ch;
+  color: #777167;
+  font-size: 13px;
+  line-height: 1.8;
+  white-space: normal;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  animation: oneAsideArrive 360ms ease-out both;
+}
+.one-working-presence.expanded .one-wait-line { max-width: 32ch; min-height: 3.6em; margin-inline: auto; }
+@keyframes oneAsideArrive { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+
+@media (max-width: 760px) {
+  .one-shell.entry-shell .one-chat.home-mode { grid-template-rows: minmax(185px, 1fr) auto minmax(28px, .35fr); }
+  .one-shell.entry-shell .home-mode .messages { padding: 28px 18px 0; }
+  .one-shell.entry-shell .one-hero { margin-bottom: 24px; }
+  .one-shell.entry-shell .one-presence { width: 76px; height: 76px; margin-bottom: 23px; }
+  .one-shell.entry-shell .one-hero h2 { font-size: 32px; }
+  .one-shell.entry-shell .one-hero p { font-size: 13px; }
+  .one-shell.entry-shell .home-mode .composer { padding-inline: 20px; }
+  .one-shell.entry-shell .home-mode .composer-row { min-height: 122px; padding: 13px; border-radius: 19px; }
+  .one-shell.entry-shell .home-mode .composer-row textarea { min-height: 94px; }
+  .one-shell.entry-shell .dia-prompts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; overflow: visible; padding-bottom: 0; }
+  .one-shell.entry-shell .dia-prompts button:nth-child(n) { min-height: 45px; padding-block: 10px; }
+  .one-shell.entry-shell .dia-prompts i { top: 10px; }
+  .one-composer-caption { margin-top: 20px; }
+  .one-keyboard-hint { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .one-working-copy .one-wait-line { animation: none; }
+}

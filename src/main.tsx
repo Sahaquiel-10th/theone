@@ -47,6 +47,8 @@ import {
   Zap
 } from "lucide-react";
 import "./styles.css";
+import "./one-refinements.css";
+import { ONE_WAIT_INTERVAL_MS, ONE_WAIT_LINES } from "./oneVoice";
 
 type Role = "admin" | "user";
 
@@ -367,14 +369,14 @@ function OneHeroEye({ mood }: { mood: OneEyeMood }) {
 
 function OneWorkingPresence({ message, expanded = false }: { message: string; expanded?: boolean }) {
   return (
-    <div className={`one-working-presence ${expanded ? "expanded" : "compact"}`} role="status" aria-live="polite">
+    <div className={`one-working-presence ${expanded ? "expanded" : "compact"}`}>
       <div className="one-working-eye">
         {expanded ? <OneHeroEye mood="thinking" /> : <OneEye size="sm" mood="thinking" decorative />}
       </div>
       <div className="one-working-copy">
         <small>ONE · THINKING</small>
-        <strong>{expanded ? "我接住了，正在把它想清楚" : "我正在整理这件事"}</strong>
-        <span>{message}</span>
+        <strong role="status">{expanded ? "让我认真想想。" : "正在认真想"}</strong>
+        <span className="one-wait-line" key={message} aria-live="off">{message}</span>
       </div>
     </div>
   );
@@ -566,14 +568,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const canSearch = currentModel?.kind === "chat" && capabilities.webSearch.enabled && (!activeAgent || activeAgent.allowWebSearch);
   const visibleConversations = conversations.filter((conversation) => conversation.archived === showArchived);
   const ungroupedConversations = visibleConversations.filter((conversation) => !conversation.folderId);
-  const waitMessages = [
-    "正在读懂你的上下文",
-    "正在个人知识里寻找相关线索",
-    "我在把零散信息连成一条清晰路径",
-    "正在核对细节，避免错过重要信息",
-    "我已经找到方向，再往前想一步",
-    "正在把结果整理成更好用的表达"
-  ];
+  const isWaiting = activeLoading || Boolean(homeHandoff);
+  const waitingAside = ONE_WAIT_LINES[waitIndex % ONE_WAIT_LINES.length];
 
   async function refresh() {
     const [modelResult, conversationResult, workspaceResult, agentResult, capabilityResult, knowledgeResult, notionResult] = await Promise.all([
@@ -802,11 +798,13 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   useEffect(() => {
-    const hasLoading = Object.values(loadingByConversation).some(Boolean);
-    if (!hasLoading) return;
-    const timer = window.setInterval(() => setWaitIndex((index) => index + 1), 3200);
+    if (!isWaiting) return;
+    setWaitIndex(0);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") setWaitIndex((index) => index + 1);
+    }, ONE_WAIT_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [loadingByConversation]);
+  }, [isWaiting]);
 
   function startNewChat() {
     clearHomeHandoff();
@@ -1142,14 +1140,13 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           : "idle";
 
   return (
-    <main className={`app-shell one-shell ${activeExecutionMode ? "execution-shell" : ""}`}>
+    <main className={`app-shell one-shell ${view === "chat" && !active?.messages.length && !homeHandoff ? "entry-shell" : ""} ${activeExecutionMode ? "execution-shell" : ""}`}>
       <header className="one-chrome">
         <button className="one-brand-button" type="button" onClick={startNewChat} title="回到 ONE">
           <OneWordmark inverse />
-          <span className="one-live-signal" />
         </button>
         <button className="one-current-space" type="button" onClick={startNewChat}>
-          {view === "chat" ? active?.title || "Ask ONE" : view === "knowledge" ? "Knowledge" : view === "admin" ? "Control" : "Account"}
+          {view === "chat" ? active?.title || "你的 ONE" : view === "knowledge" ? "知识来源" : view === "admin" ? "管理" : "设置"}
         </button>
         <div className="one-chrome-actions">
           <button className="one-chrome-button knowledge" type="button" title="知识来源" onClick={() => openSurface("knowledge")}>
@@ -1296,17 +1293,16 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             ))
           ) : homeHandoff ? (
             <div className="one-home-handoff">
-              <OneWorkingPresence expanded message={waitMessages[waitIndex % waitMessages.length]} />
+              <OneWorkingPresence expanded message={waitingAside} />
             </div>
           ) : (
             <div className="empty-state one-hero">
               <OneHeroEye mood={heroMood} />
-              <div className="one-hero-kicker"><OnePupilMark /> ONE IS WITH YOU</div>
-              <h2>{activeAgent?.name || `今天，想一起做点什么，${user.username}？`}</h2>
-              <p>{activeAgent?.description || "说出你想知道、想完成，或者只是隐约想到的事。"}</p>
+              <h2>{activeAgent?.name || "我在，慢慢说。"}</h2>
+              <p>{activeAgent?.description || "一个念头，一件小事，都可以从这里开始。"}</p>
             </div>
           )}
-          {activeLoading && !activeExecutionMode ? <OneWorkingPresence message={waitMessages[waitIndex % waitMessages.length]} /> : null}
+          {activeLoading && !activeExecutionMode ? <OneWorkingPresence message={waitingAside} /> : null}
         </div>
 
         <form className="composer" onSubmit={send}>
@@ -1329,26 +1325,30 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           ) : null}
           <div className="composer-row">
             <textarea
+              aria-label="给 ONE 发消息"
               value={homeHandoff?.message ?? content}
               onChange={(event) => setContent(event.target.value)}
               onCompositionStart={() => setIsComposing(true)}
               onCompositionEnd={() => setIsComposing(false)}
               onKeyDown={handleComposerKeyDown}
               onPaste={handleComposerPaste}
-              placeholder={activeExecutionMode ? (preparingExecution ? "正在连接本机…" : executionBusy ? "ONE 正在执行当前步骤…" : "继续给 ONE 指令") : currentModel?.kind === "image" ? "输入修改要求，也可直接粘贴图片" : "输入消息，Enter 发送，Shift+Enter 换行"}
+              placeholder={activeExecutionMode ? (preparingExecution ? "正在连接本机…" : executionBusy ? "ONE 正在执行当前步骤…" : "继续给 ONE 指令") : currentModel?.kind === "image" ? "输入修改要求，也可直接粘贴图片" : active ? "接着说，我在听…" : "想找点什么，或把一件事交给我…"}
               disabled={Boolean(homeHandoff) || (activeExecutionMode && (preparingExecution || executionBusy))}
               rows={2}
             />
-            <button className="primary send" type="submit" disabled={activeExecutionMode ? preparingExecution || executionBusy || !content.trim() : Boolean(homeHandoff) || !activeModelId || activeLoading || (!content.trim() && !pendingAttachments.length)}>
+            <button className="primary send" type="submit" aria-label="发送消息" title="发送消息" disabled={activeExecutionMode ? preparingExecution || executionBusy || !content.trim() : Boolean(homeHandoff) || !activeModelId || activeLoading || (!content.trim() && !pendingAttachments.length)}>
               <Send size={18} />
             </button>
           </div>
           {!active && !homeHandoff && !activeExecutionMode ? (
+            <>
+            <div className="one-composer-caption"><span>也可以从这里聊起</span><span className="one-keyboard-hint">Enter 发送 · Shift + Enter 换行</span></div>
             <div className="dia-prompts">
-              <button type="button" onClick={() => setContent("帮我回想最近反复提到的重要想法")}><small>01 · RECALL</small><span>我最近在反复想什么？</span><i aria-hidden="true">↗</i></button>
-              <button type="button" onClick={() => setContent("结合我的知识，把现在最重要的事情整理成一个行动方案")}><small>02 · MAKE</small><span>把想法变成行动方案</span><i aria-hidden="true">↗</i></button>
-              <button type="button" onClick={() => setContent("从我的个人知识中，找出现在最值得重新关注的内容")}><small>03 · DISCOVER</small><span>从过去发现新线索</span><i aria-hidden="true">↗</i></button>
+              <button type="button" onClick={() => setContent("帮我回想最近反复提到的重要想法")}><span>我最近在反复想什么？</span><i aria-hidden="true">↗</i></button>
+              <button type="button" onClick={() => setContent("结合我的知识，把现在最重要的事情整理成一个行动方案")}><span>把一个想法变成行动</span><i aria-hidden="true">↗</i></button>
+              <button type="button" onClick={() => setContent("从我的个人知识中，找出现在最值得重新关注的内容")}><span>找找被我忘掉的好东西</span><i aria-hidden="true">↗</i></button>
             </div>
+            </>
           ) : null}
         </form>
       </section>
