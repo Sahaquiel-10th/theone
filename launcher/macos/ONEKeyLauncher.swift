@@ -3,6 +3,12 @@ import CryptoKit
 import Foundation
 import CFNetwork
 
+let launcherVersion = "0.2.7"
+let residentArgument = "--one-resident"
+let deviceArgument = "--device-id"
+
+func oneDefaults() -> UserDefaults { UserDefaults(suiteName: "one.theone.key") ?? .standard }
+
 struct DeviceCredential: Decodable {
     let version: Int
     let deviceId: String
@@ -70,6 +76,41 @@ func findCredentialUrl(expectedDeviceId: String? = nil) -> URL? {
         }
 }
 
+func commandLineValue(_ name: String) -> String? {
+    guard let index = CommandLine.arguments.firstIndex(of: name), CommandLine.arguments.indices.contains(index + 1) else { return nil }
+    return CommandLine.arguments[index + 1]
+}
+
+func launchResidentCopy() throws {
+    guard let credentialUrl = findCredentialUrl(), let source = Bundle.main.executableURL else {
+        throw LauncherError.message("没有找到 ONE Key，请确认 U 盘已插入")
+    }
+    let credential = try loadCredential(credentialUrl)
+    let applicationSupport = try FileManager.default.url(
+        for: .applicationSupportDirectory,
+        in: .userDomainMask,
+        appropriateFor: nil,
+        create: true
+    )
+    let installDirectory = applicationSupport.appendingPathComponent("ONE", isDirectory: true)
+    try FileManager.default.createDirectory(at: installDirectory, withIntermediateDirectories: true)
+    let target = installDirectory.appendingPathComponent("ONEPresence-\(launcherVersion)")
+    if !FileManager.default.fileExists(atPath: target.path) {
+        let temporary = installDirectory.appendingPathComponent(".ONEPresence-\(UUID().uuidString)")
+        try FileManager.default.copyItem(at: source, to: temporary)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: temporary.path)
+        try FileManager.default.moveItem(at: temporary, to: target)
+    }
+
+    let process = Process()
+    process.executableURL = target
+    process.arguments = [residentArgument, deviceArgument, credential.deviceId]
+    process.standardInput = FileHandle.nullDevice
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+}
+
 func signNonce(_ nonce: String, credentialUrl: URL, deviceId: String) throws -> String {
     let credential = try loadCredential(credentialUrl, expectedDeviceId: deviceId)
     guard let privateData = base64UrlDecode(credential.privateKeyRaw), let nonceData = base64UrlDecode(nonce) else {
@@ -114,7 +155,7 @@ func connectLauncher(base: String, credentialUrl: URL, deviceId: String) async t
 @MainActor
 func executionProject(deviceId: String) -> String? {
     let key = "one.execution.project.\(deviceId)"
-    if let saved = UserDefaults.standard.string(forKey: key), FileManager.default.fileExists(atPath: saved) { return saved }
+    if let saved = oneDefaults().string(forKey: key), FileManager.default.fileExists(atPath: saved) { return saved }
     NSApplication.shared.activate(ignoringOtherApps: true)
     let panel = NSOpenPanel()
     panel.title = "选择允许 ONE 执行任务的文件夹"
@@ -124,17 +165,22 @@ func executionProject(deviceId: String) -> String? {
     panel.canChooseFiles = false
     panel.allowsMultipleSelection = false
     guard panel.runModal() == .OK, let path = panel.url?.path else { return nil }
-    UserDefaults.standard.set(path, forKey: key)
+    oneDefaults().set(path, forKey: key)
     return path
 }
 
-func codexExecutable() -> String? {
-    let candidates = [
-        Bundle.main.resourceURL?.appendingPathComponent("codex").path,
+func codexExecutable(credentialUrl: URL) -> String? {
+    let volumeRoot = credentialUrl.deletingLastPathComponent().deletingLastPathComponent()
+    var candidates = [String]()
+    if let bundled = Bundle.main.resourceURL?.appendingPathComponent("codex").path {
+        candidates.append(bundled)
+    }
+    candidates.append(contentsOf: [
+        volumeRoot.appendingPathComponent("ONE.app/Contents/Resources/codex").path,
         "/Applications/ChatGPT.app/Contents/Resources/codex",
         "/opt/homebrew/bin/codex",
         "/usr/local/bin/codex"
-    ].compactMap { $0 }
+    ])
     return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
 }
 
@@ -163,6 +209,7 @@ func executionEnvironment() -> [String: String] {
 final class CodexExecutionRunner: @unchecked Sendable {
     private let socket: URLSessionWebSocketTask
     private let deviceId: String
+    private let credentialUrl: URL
     private let lock = NSLock()
     private var processes: [String: Process] = [:]
     private var threadIds: [String: String] = [:]
@@ -172,7 +219,11 @@ final class CodexExecutionRunner: @unchecked Sendable {
     private var outputBuffers: [String: String] = [:]
     private var errorBuffers: [String: String] = [:]
 
-    init(socket: URLSessionWebSocketTask, deviceId: String) { self.socket = socket; self.deviceId = deviceId }
+    init(socket: URLSessionWebSocketTask, deviceId: String, credentialUrl: URL) {
+        self.socket = socket
+        self.deviceId = deviceId
+        self.credentialUrl = credentialUrl
+    }
 
     func start(taskId: String, instruction: String, resume: Bool) {
         Task { await self.run(taskId: taskId, instruction: instruction, resume: resume) }
@@ -187,7 +238,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
     private func run(taskId: String, instruction: String, resume: Bool) async {
         let alreadyRunning = synchronized { processes[taskId] != nil }
         if alreadyRunning { await send(taskId: taskId, kind: "error", text: "Codex 正在执行当前任务", status: "failed"); return }
-        guard let executable = codexExecutable() else {
+        guard let executable = codexExecutable(credentialUrl: credentialUrl) else {
             await send(taskId: taskId, kind: "error", text: "本机没有可用的 Codex Runtime，请更新 ONE 后重试", status: "failed")
             return
         }
@@ -298,7 +349,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
 }
 
 func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: String) async throws {
-    let execution = CodexExecutionRunner(socket: task, deviceId: deviceId)
+    let execution = CodexExecutionRunner(socket: task, deviceId: deviceId, credentialUrl: credentialUrl)
     while true {
         let message = try JSONDecoder().decode(SocketMessage.self, from: Data(try await receiveText(task).utf8))
         if message.type == "request_challenge", let challengeId = message.challengeId, let nonce = message.nonce {
@@ -342,6 +393,8 @@ func openLoginPage(base: String, credentialUrl: URL, deviceId: String) async thr
 
 @MainActor
 final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
+    private let residentMode: Bool
+    private let expectedDeviceId: String?
     private var credentialUrl: URL?
     private var credential: DeviceCredential?
     private var base = ""
@@ -353,7 +406,24 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private var ready = false
     private var loginRequested = false
 
+    init(residentMode: Bool, expectedDeviceId: String?) {
+        self.residentMode = residentMode
+        self.expectedDeviceId = expectedDeviceId
+        super.init()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if !residentMode {
+            do {
+                try launchResidentCopy()
+                NSApplication.shared.terminate(nil)
+                return
+            } catch {
+                // If local installation is unavailable, retain the portable
+                // behavior so the Key remains usable after a manual launch.
+                NSLog("ONE resident installation failed: \(error.localizedDescription)")
+            }
+        }
         sessionTask = Task { await runSession() }
     }
 
@@ -375,7 +445,16 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         var failures = 0
         while !stopping {
         do {
-            guard let foundUrl = findCredentialUrl(expectedDeviceId: credential?.deviceId) else { throw LauncherError.message("没有找到 ONE Key，请插入后重试") }
+            let wantedDeviceId = credential?.deviceId ?? expectedDeviceId
+            guard let foundUrl = findCredentialUrl(expectedDeviceId: wantedDeviceId) else {
+                if residentMode {
+                    ready = false
+                    socket = nil
+                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                    continue
+                }
+                throw LauncherError.message("没有找到 ONE Key，请插入后重试")
+            }
             let foundCredential = try loadCredential(foundUrl)
             let foundBase = foundCredential.serverBaseUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             credentialUrl = foundUrl
@@ -394,16 +473,33 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             }
             failures = 0
             try await serveProofs(connectedSocket, credentialUrl: foundUrl, deviceId: foundCredential.deviceId)
-            if !stopping { throw LauncherError.message("ONE Key 连接已断开，请重新双击 ONE 图标") }
+            if !stopping { throw LauncherError.message("ONE Key 连接已断开") }
         } catch is CancellationError {
             return
         } catch {
             failures += 1
-            let terminalClose = [4003, 4009].contains(socket?.closeCode.rawValue ?? 0)
-            if !stopping, !terminalClose, openedLogin, let credentialUrl, FileManager.default.fileExists(atPath: credentialUrl.path) {
+            let closeCode = socket?.closeCode.rawValue ?? 0
+            socket?.cancel(with: .goingAway, reason: nil)
+            removalTask?.cancel()
+            ready = false
+            if closeCode == 4009 { return }
+            if closeCode == 4003 {
+                if !stopping { showFailure(LauncherError.message("ONE Key 已挂失或凭证无效")) }
+                return
+            }
+            if residentMode, !stopping {
+                let keyStillPresent = findCredentialUrl(expectedDeviceId: credential?.deviceId ?? expectedDeviceId) != nil
+                if !keyStillPresent {
+                    failures = 0
+                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                    continue
+                }
+                do { try await Task.sleep(for: .seconds(min(failures * 3, 15))) } catch { return }
+                failures = min(failures, 5)
+                continue
+            }
+            if !stopping, openedLogin, let credentialUrl, FileManager.default.fileExists(atPath: credentialUrl.path) {
                 socket?.cancel(with: .goingAway, reason: nil)
-                removalTask?.cancel()
-                ready = false
                 do { try await Task.sleep(for: .seconds(min(failures * 3, 15))) } catch { return }
                 failures = min(failures, 5)
             } else {
@@ -435,9 +531,11 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         while !Task.isCancelled {
             do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
             if !FileManager.default.fileExists(atPath: credentialUrl.path) {
-                stopping = true
                 socket?.cancel(with: .goingAway, reason: nil)
-                NSApplication.shared.terminate(nil)
+                if !residentMode {
+                    stopping = true
+                    NSApplication.shared.terminate(nil)
+                }
                 return
             }
         }
@@ -462,8 +560,9 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
 struct ONEKeyLauncher {
     @MainActor
     static func main() {
+        let residentMode = CommandLine.arguments.contains(residentArgument)
         let application = NSApplication.shared
-        let delegate = ONEKeyAppDelegate()
+        let delegate = ONEKeyAppDelegate(residentMode: residentMode, expectedDeviceId: commandLineValue(deviceArgument))
         application.delegate = delegate
         application.setActivationPolicy(.accessory)
         application.run()

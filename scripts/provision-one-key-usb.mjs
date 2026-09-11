@@ -51,7 +51,7 @@ try {
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "");
     const backupRoot = path.join(volumePath, `.one-backup-${stamp}`);
     fs.mkdirSync(backupRoot, { recursive: false });
-    if (fs.existsSync(appTarget)) fs.renameSync(appTarget, path.join(backupRoot, "ONE.app"));
+    if (fs.existsSync(appTarget)) fs.renameSync(appTarget, path.join(backupRoot, "ONE.app.bak"));
     if (fs.existsSync(hiddenTarget)) fs.renameSync(hiddenTarget, path.join(backupRoot, ".one"));
     console.log(`旧版已备份：${backupRoot}`);
   }
@@ -66,7 +66,7 @@ try {
   execFileSync("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", appTarget], { stdio: "inherit" });
   execFileSync("/usr/sbin/dot_clean", ["-m", appTarget], { stdio: "inherit" });
   execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", appTarget], { stdio: "inherit" });
-  console.log(`\n灌装完成\nU 盘：${volumePath}\n设备 ID：${credential.deviceId}\n服务：${credential.serverBaseUrl}\n\n现在可弹出 U 盘，重新插入后双击 ONE.app 验证。`);
+  console.log(`\n灌装完成\nU 盘：${volumePath}\n设备 ID：${credential.deviceId}\n服务：${credential.serverBaseUrl}\n\n首次双击 ONE.app 后，可直接拔出、重新插入并在原网页验证自动恢复。`);
 } finally {
   fs.rmSync(temporaryRoot, { recursive: true, force: true });
 }

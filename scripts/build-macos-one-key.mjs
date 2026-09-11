@@ -30,8 +30,8 @@ fs.writeFileSync(path.join(contents, "Info.plist"), `<?xml version="1.0" encodin
 <key>CFBundleIdentifier</key><string>one.theone.key</string>
 <key>CFBundleName</key><string>ONE</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.2.6</string>
-<key>CFBundleVersion</key><string>8</string>
+<key>CFBundleShortVersionString</key><string>0.2.7</string>
+<key>CFBundleVersion</key><string>9</string>
 <key>CFBundleIconFile</key><string>ONE.icns</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSUIElement</key><true/>
@@ -73,7 +73,7 @@ if (credentialData) {
   fs.mkdirSync(path.join(outputRoot, ".one"), { recursive: true });
   fs.writeFileSync(path.join(outputRoot, ".one/credential.json"), credentialData, { mode: 0o600 });
 }
-fs.writeFileSync(path.join(outputRoot, "使用 ONE.txt"), "插入 ONE Key 后，双击 ONE 图标即可打开已登录的 ONE。\n\nU 盘持续插着时，休眠、临时断网或服务重启会自动恢复；拔出后立即停用，重新插入需要再次双击。\n第一次从对话进入执行时，选择一次允许 Codex 工作的文件夹；后续不需要重复安装或选择。\n如果提示凭证不存在，请确认隐藏目录 .one 中存在 credential.json。\n普通 U 盘凭证可以被复制；遗失后请管理员立即在 ONE 超管后台挂失。\n");
+fs.writeFileSync(path.join(outputRoot, "使用 ONE.txt"), "首次在电脑上使用时，插入 ONE Key 并双击 ONE 图标。\n\nONE 会在当前用户目录安装一个不含私钥的在场检测器。此后 U 盘插着即可使用；拔出后新请求立即停用；重新插入或电脑休眠唤醒后会自动恢复，不需要刷新网页。电脑重启后请再双击一次。\n第一次从对话进入执行时，选择一次允许 Codex 工作的文件夹；后续不需要重复安装或选择。\n如果提示凭证不存在，请确认隐藏目录 .one 中存在 credential.json。\n普通 U 盘凭证可以被复制；遗失后请管理员立即在 ONE 超管后台挂失。\n");
 // Icon generation may leave Finder/resource-fork metadata that codesign rejects.
 execFileSync("/usr/bin/xattr", ["-cr", app], { stdio: "inherit" });
 execFileSync("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", app], { stdio: "inherit" });

@@ -5,7 +5,7 @@ import type { Store } from "./db.js";
 import { uid } from "./security.js";
 import { appendExecutionEvent } from "./executionService.js";
 
-const proofTimeoutMs = 5000;
+const proofTimeoutMs = 2000;
 const authTimeoutMs = 5000;
 
 type PendingProof = {
@@ -80,7 +80,7 @@ export class OneKeyPresence {
       throw new OneKeyPresenceError("ONE Key 已挂失或不属于当前账号");
     }
     const socket = this.sockets.get(device.id);
-    if (!socket || socket.readyState !== WebSocket.OPEN) throw new OneKeyPresenceError("请插入 ONE Key 并双击 ONE 图标");
+    if (!socket || socket.readyState !== WebSocket.OPEN) throw new OneKeyPresenceError("请插入 ONE Key");
 
     const challengeId = uid("prf");
     const nonce = crypto.randomBytes(32).toString("base64url");

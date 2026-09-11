@@ -27,7 +27,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const version = "0.2.2"
+const version = "0.2.3"
+const residentArgument = "--one-resident"
 
 type deviceCredential struct {
 	Version       int    `json:"version"`
@@ -78,25 +79,57 @@ type apiFailure struct {
 var httpClient = &http.Client{Timeout: 12 * time.Second}
 
 func main() {
-	if err := run(); err != nil {
+	if !hasArgument(residentArgument) {
+		credentialPath, err := findCredential()
+		if err == nil {
+			var credential deviceCredential
+			credential, err = loadCredential(credentialPath, "")
+			if err == nil {
+				err = launchResidentCopy(credential.DeviceID)
+			}
+		}
+		if err != nil {
+			showError("无法打开 ONE", err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+	if err := run(argumentValue("--device-id")); err != nil {
 		showError("无法打开 ONE", err.Error())
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	credentialPath, err := findCredential()
-	if err != nil {
-		return err
-	}
-	credential, err := loadCredential(credentialPath, "")
-	if err != nil {
-		return err
-	}
-	base := strings.TrimRight(credential.ServerBaseURL, "/")
+func run(expectedDeviceID string) error {
 	openedLogin := false
+	base := ""
+	credentialPath := ""
 
 	for failures := 0; ; {
+		if credentialPath == "" {
+			credentialPath = findCredentialForDevice(expectedDeviceID)
+			if credentialPath == "" {
+				time.Sleep(time.Second)
+				continue
+			}
+			credential, err := loadCredential(credentialPath, expectedDeviceID)
+			if err != nil {
+				credentialPath = ""
+				time.Sleep(time.Second)
+				continue
+			}
+			if expectedDeviceID == "" {
+				expectedDeviceID = credential.DeviceID
+			}
+			base = strings.TrimRight(credential.ServerBaseURL, "/")
+		}
+
+		credential, err := loadCredential(credentialPath, expectedDeviceID)
+		if err != nil {
+			credentialPath = ""
+			failures = 0
+			continue
+		}
 		connection, err := connectLauncher(base, credentialPath, credential.DeviceID)
 		if err == nil {
 			if !openedLogin {
@@ -119,13 +152,79 @@ func run() error {
 		if errors.As(err, &closeError) && closeError.Code == 4003 {
 			return fmt.Errorf("ONE Key 已挂失或凭证无效")
 		}
-		if !fileExists(credentialPath) {
-			return nil
+		if findCredentialForDevice(expectedDeviceID) == "" {
+			credentialPath = ""
+			failures = 0
+			continue
 		}
 		failures++
 		failures = min(failures, 5)
 		time.Sleep(time.Duration(min(failures*3, 15)) * time.Second)
 	}
+}
+
+func hasArgument(name string) bool {
+	for _, argument := range os.Args[1:] {
+		if argument == name {
+			return true
+		}
+	}
+	return false
+}
+
+func argumentValue(name string) string {
+	for index, argument := range os.Args[1:] {
+		if argument == name && index+2 < len(os.Args) {
+			return os.Args[index+2]
+		}
+	}
+	return ""
+}
+
+func launchResidentCopy(deviceID string) error {
+	source, err := os.Executable()
+	if err != nil {
+		return errors.New("无法定位 ONE.exe")
+	}
+	cacheRoot, err := os.UserCacheDir()
+	if err != nil {
+		return errors.New("无法访问当前用户目录")
+	}
+	installDirectory := filepath.Join(cacheRoot, "ONE")
+	if err := os.MkdirAll(installDirectory, 0700); err != nil {
+		return errors.New("无法安装 ONE 在场检测器")
+	}
+	target := filepath.Join(installDirectory, "ONEPresence-"+version+".exe")
+	if !fileExists(target) {
+		temporary := target + ".tmp"
+		_ = os.Remove(temporary)
+		input, openErr := os.Open(source)
+		if openErr != nil {
+			return errors.New("无法读取 ONE.exe")
+		}
+		output, createErr := os.OpenFile(temporary, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0700)
+		if createErr != nil {
+			input.Close()
+			return errors.New("无法安装 ONE 在场检测器")
+		}
+		_, copyErr := io.Copy(output, input)
+		closeOutputErr := output.Close()
+		closeInputErr := input.Close()
+		if copyErr != nil || closeOutputErr != nil || closeInputErr != nil {
+			_ = os.Remove(temporary)
+			return errors.New("无法复制 ONE 在场检测器")
+		}
+		if err := os.Rename(temporary, target); err != nil {
+			_ = os.Remove(temporary)
+			return errors.New("无法完成 ONE 在场检测器安装")
+		}
+	}
+	command := exec.Command(target, residentArgument, "--device-id", deviceID)
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x00000008}
+	if err := command.Start(); err != nil {
+		return errors.New("无法启动 ONE 在场检测器")
+	}
+	return command.Process.Release()
 }
 
 func findCredential() (string, error) {

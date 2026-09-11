@@ -235,28 +235,21 @@ class ApiError extends Error {
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const isFormData = options.body instanceof FormData;
-  const retryDelays = [500, 1_000, 2_000, 3_000, 5_000, 7_000];
-  for (let attempt = 0; ; attempt++) {
-    const response = await fetch(path, {
-      ...options,
-      credentials: "same-origin",
-      headers: {
-        ...(!isFormData ? { "Content-Type": "application/json" } : {}),
-        ...options.headers
-      }
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (response.status === 428 && payload.code === "ONE_KEY_REQUIRED" && attempt < retryDelays.length) {
-      await new Promise((resolve) => window.setTimeout(resolve, retryDelays[attempt]));
-      continue;
+  const response = await fetch(path, {
+    ...options,
+    credentials: "same-origin",
+    headers: {
+      ...(!isFormData ? { "Content-Type": "application/json" } : {}),
+      ...options.headers
     }
-    if (!response.ok) {
-      const requestId = payload.requestId || response.headers.get("x-request-id") || undefined;
-      const message = payload.error || (response.status === 504 ? "模型响应超时，请稍后重试" : `请求失败（${response.status}）`);
-      throw new ApiError(requestId ? `${message} · 编号 ${requestId}` : message, requestId, response.status);
-    }
-    return payload as T;
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const requestId = payload.requestId || response.headers.get("x-request-id") || undefined;
+    const message = payload.error || (response.status === 504 ? "模型响应超时，请稍后重试" : `请求失败（${response.status}）`);
+    throw new ApiError(requestId ? `${message} · 编号 ${requestId}` : message, requestId, response.status);
   }
+  return payload as T;
 }
 
 function dateTime(value: string) {

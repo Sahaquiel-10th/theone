@@ -28,7 +28,7 @@ if (fs.existsSync(target)) {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "");
   const backupRoot = path.join(volumePath, `.one-windows-backup-${stamp}`);
   fs.mkdirSync(backupRoot);
-  fs.renameSync(target, path.join(backupRoot, "ONE.exe"));
+  fs.renameSync(target, path.join(backupRoot, "ONE.exe.bak"));
 }
 
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "one-key-windows-"));
@@ -37,7 +37,7 @@ try {
   if (value("--go-bin")) buildArgs.push("--go-bin", path.resolve(value("--go-bin")));
   execFileSync(process.execPath, buildArgs, { stdio: "inherit" });
   fs.copyFileSync(path.join(temporaryRoot, "ONE.exe"), target);
-  fs.writeFileSync(path.join(volumePath, "使用 ONE.txt"), "macOS：双击 ONE.app\r\nWindows：双击 ONE.exe\r\n\r\n启动后会自动打开浏览器并登录 ONE。U 盘持续插着时，休眠、临时断网或服务重启会自动恢复；拔出后立即停用，重新插入需要再次双击。\r\n普通 U 盘凭证可以被复制；遗失后请管理员立即在 ONE 超管后台挂失。\r\n");
+  fs.writeFileSync(path.join(volumePath, "使用 ONE.txt"), "macOS：双击 ONE.app\r\nWindows：双击 ONE.exe\r\n\r\n首次双击会在当前用户目录安装一个不含私钥的在场检测器。此后 U 盘插着即可使用；拔出后新请求立即停用；重新插入或电脑休眠唤醒后会自动恢复，不需要刷新网页。电脑重启后请再双击一次。\r\n普通 U 盘凭证可以被复制；遗失后请管理员立即在 ONE 超管后台挂失。\r\n");
   console.log(`\nWindows 灌装完成\nU 盘：${volumePath}\n设备 ID：${credential.deviceId}\n服务：${credential.serverBaseUrl}`);
 } finally {
   fs.rmSync(temporaryRoot, { recursive: true, force: true });
