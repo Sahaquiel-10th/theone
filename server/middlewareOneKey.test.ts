@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { NextFunction, Request, Response } from "express";
-import { requireOneKeySession } from "./middleware.js";
+
+process.env.ADMIN_INITIAL_PASSWORD ||= "one-key-middleware-test-password";
+const { requireOneKeySession } = await import("./middleware.js");
 
 function responseRecorder() {
   const recorded: { status?: number; payload?: unknown } = {};
