@@ -70,14 +70,6 @@ func findCredentialUrl(expectedDeviceId: String? = nil) -> URL? {
         }
 }
 
-func waitForCredentialUrl(deviceId: String) async -> URL? {
-    while !Task.isCancelled {
-        if let url = findCredentialUrl(expectedDeviceId: deviceId) { return url }
-        do { try await Task.sleep(for: .milliseconds(750)) } catch { return nil }
-    }
-    return nil
-}
-
 func signNonce(_ nonce: String, credentialUrl: URL, deviceId: String) throws -> String {
     let credential = try loadCredential(credentialUrl, expectedDeviceId: deviceId)
     guard let privateData = base64UrlDecode(credential.privateKeyRaw), let nonceData = base64UrlDecode(nonce) else {
@@ -408,12 +400,10 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             failures += 1
             let terminalClose = [4003, 4009].contains(socket?.closeCode.rawValue ?? 0)
-            if !stopping, !terminalClose, let expectedDeviceId = credential?.deviceId {
+            if !stopping, !terminalClose, openedLogin, let credentialUrl, FileManager.default.fileExists(atPath: credentialUrl.path) {
                 socket?.cancel(with: .goingAway, reason: nil)
                 removalTask?.cancel()
                 ready = false
-                guard let recoveredUrl = await waitForCredentialUrl(deviceId: expectedDeviceId) else { return }
-                credentialUrl = recoveredUrl
                 do { try await Task.sleep(for: .seconds(min(failures * 3, 15))) } catch { return }
                 failures = min(failures, 5)
             } else {
@@ -445,7 +435,9 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         while !Task.isCancelled {
             do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
             if !FileManager.default.fileExists(atPath: credentialUrl.path) {
+                stopping = true
                 socket?.cancel(with: .goingAway, reason: nil)
+                NSApplication.shared.terminate(nil)
                 return
             }
         }

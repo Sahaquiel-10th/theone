@@ -27,7 +27,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const version = "0.2.1"
+const version = "0.2.2"
 
 type deviceCredential struct {
 	Version       int    `json:"version"`
@@ -97,9 +97,6 @@ func run() error {
 	openedLogin := false
 
 	for failures := 0; ; {
-		if !fileExists(credentialPath) {
-			credentialPath = waitForCredential(credential.DeviceID)
-		}
 		connection, err := connectLauncher(base, credentialPath, credential.DeviceID)
 		if err == nil {
 			if !openedLogin {
@@ -121,6 +118,9 @@ func run() error {
 		}
 		if errors.As(err, &closeError) && closeError.Code == 4003 {
 			return fmt.Errorf("ONE Key 已挂失或凭证无效")
+		}
+		if !fileExists(credentialPath) {
+			return nil
 		}
 		failures++
 		failures = min(failures, 5)
@@ -150,15 +150,6 @@ func findCredentialForDevice(expectedDeviceID string) string {
 		}
 	}
 	return ""
-}
-
-func waitForCredential(deviceID string) string {
-	for {
-		if path := findCredentialForDevice(deviceID); path != "" {
-			return path
-		}
-		time.Sleep(750 * time.Millisecond)
-	}
 }
 
 func loadCredential(path string, expectedDeviceID string) (deviceCredential, error) {

@@ -56,6 +56,17 @@ export function requireRole(role: Role) {
   };
 }
 
+export function requireOneKeySession(req: Request, res: Response, next: NextFunction) {
+  if (!req.oneKeyDeviceId) {
+    return res.status(428).json({
+      error: "请插入 ONE Key，并双击 ONE 图标重新打开",
+      code: "ONE_KEY_LOGIN_REQUIRED",
+      requestId: res.locals.requestId
+    });
+  }
+  next();
+}
+
 export function asyncRoute(fn: (req: Request, res: Response) => Promise<unknown>) {
   return (req: Request, res: Response, next: NextFunction) => {
     fn(req, res).catch(next);

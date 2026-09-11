@@ -8,7 +8,7 @@ import multer from "multer";
 import { store } from "./db.js";
 import { hasImageGenerationIntent } from "./imageIntent.js";
 import { decodeGeneratedImageDataUrl } from "./generatedImage.js";
-import { asyncRoute, auth, requireRole } from "./middleware.js";
+import { asyncRoute, auth, requireOneKeySession, requireRole } from "./middleware.js";
 import { callModel } from "./modelGateway.js";
 import { appendOwnerContextTrace, buildContextTraceSections, ownerContextTraces } from "./contextTrace.js";
 import { isSupportedAttachment, parseAttachment, safeAttachmentExtension } from "./attachmentParser.js";
@@ -252,7 +252,7 @@ app.get("/api/conversations/:id", auth(jwtSecret), asyncRoute(async (req, res) =
 
 app.get("/api/agents", auth(jwtSecret), asyncRoute(async (req, res) => { const db = await store.read(); const agents = db.agents.filter((item) => item.workspaceId === req.workspaceId && (item.ownerId === req.user!.id || item.published)).map((item) => ({ ...item, prompt: item.ownerId === req.user!.id ? item.prompt : "", favoriteCount: item.favoriteUserIds.length, favorited: item.favoriteUserIds.includes(req.user!.id), authorName: db.users.find((user) => user.id === item.ownerId)?.username || "ONE", authorRole: db.users.find((user) => user.id === item.ownerId)?.role || "user" })); res.json({ agents }); }));
 
-app.post("/api/chat", auth(jwtSecret), asyncRoute(async (req, res) => {
+app.post("/api/chat", auth(jwtSecret), requireOneKeySession, asyncRoute(async (req, res) => {
   const attachmentIds = Array.isArray(req.body.attachmentIds) ? [...new Set(req.body.attachmentIds.filter((id: unknown): id is string => typeof id === "string"))].slice(0, attachmentMaxFiles) : [];
   const rawContent = typeof req.body.content === "string" ? req.body.content.trim() : ""; if (!rawContent && !attachmentIds.length) throw new Error("消息或附件不能为空");
   const modelId = requiredString(req.body.modelId, "模型"); const conversationId = typeof req.body.conversationId === "string" ? req.body.conversationId : ""; const wantsWebSearch = req.body.webSearch === true;

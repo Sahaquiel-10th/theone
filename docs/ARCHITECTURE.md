@@ -26,7 +26,7 @@ React Web ── HttpOnly Session ── Express API
 
 Windows 首版把 Local Agent 与 ONE Key Launcher 打包成一个原生程序。首次执行选择允许 ONE 操作的本地文件夹，此后在同一台电脑复用；写文件和运行命令在本机再次确认。旧版 macOS Launcher 继续使用随包 Codex Runtime，直至共用 Local Agent 内核适配完成。
 
-Launcher 把 ONE Key 建模为“可实时读取并签名”的在场状态，而不是一次启动事件。系统休眠、网络切换或服务重启只会使 WebSocket 暂时离线；Launcher 在同一枚凭证可读取时持续重连，页面对 `ONE_KEY_REQUIRED` 做有限退避重试。拔出 U 盘后挑战无法签名，服务端不会用历史在线状态放行请求。
+Launcher 把 ONE Key 建模为“可实时读取并签名”的在场状态，而不是一次启动事件。系统休眠、网络切换或服务重启只会使 WebSocket 暂时离线；Launcher 在同一枚凭证持续可读取时重连，页面对 `ONE_KEY_REQUIRED` 做有限退避重试。拔出 U 盘后 Launcher 立即退出，服务端挑战无法签名；重新插入后需再次双击。聊天还要求会话本身由 ONE Key 签发，账号密码会话不能绕过设备在场证明。
 
 ## ONE Key 登录
 
