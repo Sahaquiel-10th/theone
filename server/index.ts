@@ -47,7 +47,8 @@ const attachmentMaxFiles = 4;
 const attachmentMaxBytes = Math.max(1024 * 1024, Number(process.env.ATTACHMENT_MAX_BYTES ?? 10 * 1024 * 1024));
 const generatedImageMaxBytes = Math.max(attachmentMaxBytes, Number(process.env.GENERATED_IMAGE_MAX_BYTES ?? 25 * 1024 * 1024));
 const attachmentContextChars = Math.max(2000, Number(process.env.ATTACHMENT_CONTEXT_CHARS ?? 24000));
-const uploadDir = path.join(root, "data", "uploads");
+const uploadDir = process.env.UPLOAD_DIR?.trim()
+  || (process.env.NODE_ENV === "production" ? "/srv/theone/shared/data/uploads" : path.join(root, "data", "uploads"));
 fs.mkdirSync(uploadDir, { recursive: true });
 
 const attachmentUpload = multer({
