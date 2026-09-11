@@ -1,0 +1,134 @@
+/* A single foreground task. Everything else is progressively disclosed. */
+.attention-workspace .studio-task { animation: attention-arrive 320ms ease-out both; }
+.attention-workspace .studio-task-header { padding-block: 24px 22px; gap: 16px; }
+.attention-workspace .studio-task-header h1 { font-size: clamp(20px, 2vw, 26px); font-weight: 560; line-height: 1.5; margin-top: 9px; }
+.attention-workspace .task-current-state { display: flex; gap: 7px; align-items: center; color: var(--studio-muted); font-size: 10px; }
+.attention-workspace .task-current-state.is-active { color: var(--studio-ink); }
+.attention-workspace .task-indicator { position: relative; width: 14px; height: 14px; flex: 0 0 14px; display: inline-grid; place-items: center; border-radius: 50%; color: var(--studio-muted); }
+.attention-workspace .task-indicator:empty::after { content: ""; width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+.attention-workspace .task-indicator:is(.running,.thinking,.preparing) { color: #5a9677; }
+.attention-workspace .task-indicator:is(.running,.thinking,.preparing)::before { content: ""; position: absolute; inset: 0; border: 1px solid currentColor; border-radius: 50%; opacity: .22; animation: attention-pulse 2.4s ease-in-out infinite; }
+.attention-workspace .task-indicator.failed { color: #b5744f; }
+.attention-workspace .studio-task-controls { display: flex; flex: 0 0 auto; align-items: center; gap: 9px; }
+.attention-workspace .studio-task-controls button { height: 32px; min-width: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 0; border-radius: 7px; background: transparent; color: var(--studio-muted); padding: 6px; font-size: 11px; }
+.attention-workspace .studio-task-controls button:hover, .attention-workspace .studio-task-controls button[aria-pressed="true"] { background: var(--studio-paper); color: var(--studio-ink); }
+.attention-workspace .conversation-fold-toggle { display: inline-flex; align-items: center; align-self: flex-start; gap: 6px; padding: 5px 0; background: transparent; border: 0; color: var(--studio-muted); font-size: 11px; }
+.attention-workspace .conversation-fold-toggle svg { transition: transform 180ms ease; }
+.attention-workspace .conversation-fold-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+.attention-workspace .message[hidden] { display: none; }
+.attention-workspace .message.user .bubble { padding-bottom: 20px; }
+.attention-workspace .studio-message-author { font-size: 9px; margin-bottom: 10px; opacity: .85; }
+.attention-workspace .message.user pre { font-size: 15px; font-weight: 430; }
+.attention-workspace .message-actions { align-items: center; gap: 7px; margin-top: 18px; }
+.attention-workspace .message-actions button.execution-primary-action { width: auto; min-height: 34px; height: auto; display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border-color: var(--studio-line); color: var(--studio-ink); font-size: 11px; }
+.attention-workspace .message-actions button.execution-primary-action:hover:not(:disabled) { background: var(--studio-ink); color: var(--studio-paper); }
+.attention-workspace .message.user .message-actions { margin-top: 7px; }
+@media (hover: hover) and (pointer: fine) {
+  .attention-workspace .message.user .message-actions { opacity: .25; transition: opacity 160ms ease; }
+  .attention-workspace .message.user:hover .message-actions, .attention-workspace .message.user:focus-within .message-actions { opacity: 1; }
+}
+
+.attention-workspace .execution-disclosure { border: 1px solid var(--studio-line); border-radius: 12px; background: var(--studio-paper); scroll-margin-block: 145px 24px; transition: border-color 250ms ease; }
+.attention-workspace .execution-disclosure.is-expanded { border-color: color-mix(in srgb, var(--studio-muted) 65%, var(--studio-line)); }
+.attention-workspace .execution-disclosure-header { display: flex; gap: 12px; align-items: center; padding: 15px 18px; }
+.attention-workspace .execution-disclosure-toggle { display: flex; flex: 1; min-width: 0; align-items: center; gap: 10px; text-align: left; padding: 0; border: 0; color: var(--studio-ink); background: transparent; }
+.attention-workspace .execution-disclosure-toggle > span:nth-child(2) { min-width: 0; flex: 1; }
+.attention-workspace .execution-disclosure-toggle strong { display: block; font-size: 12px; font-weight: 550; line-height: 1.6; }
+.attention-workspace .execution-disclosure-toggle small { display: block; color: var(--studio-muted); font-size: 11px; line-height: 1.7; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.attention-workspace .execution-disclosure-toggle > svg { flex: 0 0 auto; color: var(--studio-muted); transition: transform 240ms ease; }
+.attention-workspace .execution-disclosure-toggle[aria-expanded="true"] > svg { transform: rotate(180deg); }
+.attention-workspace .execution-expand-label { font-size: 10px; color: var(--studio-muted); white-space: nowrap; }
+.attention-workspace .execution-stop { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 5px 8px; border: 1px solid var(--studio-line); border-radius: 7px; background: transparent; color: var(--studio-ink); font-size: 10px; }
+.attention-workspace .execution-stop:hover { border-color: var(--studio-muted); }
+.attention-workspace .execution-disclosure-grid { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 280ms cubic-bezier(.2,.8,.2,1); }
+.attention-workspace .execution-disclosure-grid[data-open="true"] { grid-template-rows: 1fr; }
+.attention-workspace .execution-disclosure-clip { min-height: 0; overflow: hidden; }
+.attention-workspace .execution-disclosure-body { margin: 0 18px; padding: 19px 0; border-top: 1px solid var(--studio-line); }
+.attention-workspace .execution-disclosure-body .markdown-body { font-size: 13px; }
+.attention-workspace .execution-current-step { margin: 0 0 16px; color: var(--studio-ink); font-size: 12px; line-height: 1.85; }
+.attention-workspace .execution-problem { margin: 0 0 16px; color: #b5744f; font-size: 12px; line-height: 1.85; }
+.attention-workspace details.execution-step-history { margin-top: 14px; padding: 0; border: 0; border-radius: 0; color: var(--studio-muted); background: transparent; box-shadow: none; backdrop-filter: none; }
+.attention-workspace .execution-step-history > summary { display: list-item; padding: 4px 0; color: var(--studio-muted); font-size: 10px; cursor: pointer; }
+.attention-workspace .execution-step-history ol { margin: 12px 0; padding-left: 19px; font-size: 11px; line-height: 1.85; }
+.attention-workspace .execution-step-history li { margin-bottom: 8px; overflow-wrap: anywhere; }
+.attention-workspace .execution-step-history pre { overflow: auto; max-height: 320px; margin: 10px 0; color: var(--studio-muted); font-size: 11px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.attention-workspace.studio-open .studio-presence { flex-direction: row; gap: 14px; align-items: center; }
+.attention-workspace.studio-open .studio-presence .one-presence { width: 54px; height: 54px; }
+.attention-workspace.studio-open .studio-presence-copy .studio-eyebrow { display: none; }
+.attention-workspace.studio-open .studio-presence-copy h2 { font-size: 18px; margin: 0; font-weight: 500; }
+.attention-workspace .studio-wait { min-height: 0; }
+.attention-workspace .studio-wait p { margin: 0; font-size: 12px; line-height: 1.95; }
+.attention-workspace .attention-activity { display: block; flex: 0 0 auto; border-top: 1px solid var(--studio-line); padding: 0; overflow: visible; }
+.attention-workspace .attention-activity-toggle { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 10px; padding: 17px 0; border: 0; background: transparent; color: var(--studio-muted); text-align: left; }
+.attention-workspace .attention-activity-toggle > span { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 11px; }
+.attention-workspace .attention-activity-toggle small { font-size: 10px; }
+.attention-workspace .attention-activity-toggle svg { transition: transform 200ms ease; }
+.attention-workspace .attention-activity-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+.attention-workspace .attention-unread-count { display: inline-block; padding: 3px 7px; border-radius: 5px; background: var(--studio-ink); color: var(--studio-paper); font-size: 9px; font-weight: 450; white-space: nowrap; }
+.attention-workspace .attention-task-list { max-height: 270px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; padding: 0 0 10px; animation: attention-arrive 230ms ease-out both; }
+.attention-workspace .attention-task-list[hidden] { display: none; }
+.attention-workspace .attention-task-list h3 { margin: 10px 0 4px; color: var(--studio-muted); font-size: 9px; letter-spacing: .06em; font-weight: 450; }
+.attention-workspace .attention-task-row { min-width: 0; }
+.attention-workspace .attention-task-row > button { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; background: transparent; border: 0; border-radius: 7px; padding: 9px 2px; color: var(--studio-ink); }
+.attention-workspace .attention-task-row > button:hover { background: color-mix(in srgb, var(--studio-ink) 4%, transparent); }
+.attention-workspace .attention-task-row > button > span:nth-child(2) { min-width: 0; flex: 1; }
+.attention-workspace .attention-task-row :is(strong,small) { display: block; font-size: 11px; font-weight: 450; line-height: 1.7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attention-workspace .attention-task-row small { font-size: 9px; color: var(--studio-muted); }
+.attention-workspace .attention-task-row svg { flex: 0 0 auto; color: var(--studio-muted); }
+.attention-workspace .unread-point { width: 5px; height: 5px; border-radius: 50%; background: var(--studio-ink); flex: 0 0 auto; }
+.attention-workspace .attention-all-tasks { width: 100%; display: flex; align-items: center; justify-content: space-between; font-size: 10px; color: var(--studio-muted); background: transparent; border: 0; border-top: 1px solid var(--studio-line); margin-top: 10px; padding: 13px 0 0; }
+.attention-workspace .attention-empty { font-size: 11px; color: var(--studio-muted); }
+.attention-workspace .attention-receipt-slot { flex: 0 0 auto; min-height: 34px; }
+.attention-workspace .attention-receipt { min-width: 0; display: flex; gap: 7px; align-items: center; padding: 8px 0; color: var(--studio-muted); animation: attention-arrive 250ms ease-out both; }
+.attention-workspace .attention-receipt > svg { flex: 0 0 auto; }
+.attention-workspace .attention-receipt > button { padding: 0; border: 0; background: transparent; color: inherit; }
+.attention-workspace .attention-receipt > button:first-of-type { display: flex; min-width: 0; align-items: center; gap: 7px; flex: 1; text-align: left; font-size: 10px; }
+.attention-workspace .attention-receipt strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; color: var(--studio-ink); font-size: 10px; font-weight: 450; }
+.attention-workspace .attention-receipt span { white-space: nowrap; }
+.attention-workspace .attention-receipt.failed { color: #b5744f; }
+.attention-workspace.studio-idle .attention-receipt-slot { order: 4; min-height: 0; }
+.attention-workspace.studio-idle .attention-activity { order: 4; padding-top: 0; }
+.attention-workspace.studio-focused .studio-layout { grid-template-columns: minmax(0, 1fr) 300px; }
+.attention-workspace.studio-focused .studio-assistant { padding: 30px 18px 12px; gap: 18px; }
+.attention-workspace.studio-focused .messages { max-width: 940px; }
+.attention-workspace.studio-focused .studio-presence-copy h2 { font-size: 15px; }
+.attention-workspace.studio-focused .studio-presence .one-presence { width: 42px; height: 42px; }
+.attention-workspace.studio-focused .studio-keyboard-hint { display: none; }
+.attention-workspace.studio-focused .studio-compose-context { flex-wrap: wrap; }
+
+@keyframes attention-arrive { from { opacity: .4; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+@keyframes attention-pulse { 0%,100% { opacity: .15; } 50% { opacity: .5; } }
+@media (max-width: 760px) {
+  .attention-workspace .studio-task-header { padding: 17px 18px; }
+  .attention-workspace .studio-task-header h1 { font-size: 19px; margin-top: 7px; }
+  .attention-workspace .studio-task-controls { gap: 4px; }
+  .attention-workspace .studio-task-controls button span { display: none; }
+  .attention-workspace.studio-open .studio-presence .one-presence { width: 36px; height: 36px; }
+  .attention-workspace.studio-open .studio-presence-copy h2 { font-size: 14px; }
+  .attention-workspace .studio-assistant { gap: 10px; }
+  .attention-workspace .attention-activity { border: 0; }
+  .attention-workspace .attention-activity-toggle { padding: 7px 0; }
+  .attention-workspace .attention-task-list { max-height: 130px; }
+  /* While choosing another task, spend the small screen on choices and input. */
+  .attention-workspace.studio-open .studio-assistant.activity-is-open { max-height: 56dvh; }
+  .attention-workspace.studio-open .activity-is-open .studio-presence,
+  .attention-workspace.studio-open .activity-is-open .studio-wait,
+  .attention-workspace.studio-open .activity-is-open .attention-receipt-slot { display: none; }
+  .attention-workspace.studio-open .activity-is-open .attention-task-list { max-height: min(150px, 18dvh); }
+  .attention-workspace .attention-receipt-slot { min-height: 0; }
+  .attention-workspace .attention-receipt { padding: 2px 0; }
+  .attention-workspace .execution-disclosure-header { padding: 13px 12px; gap: 8px; }
+  .attention-workspace .execution-expand-label { display: none; }
+  .attention-workspace .execution-disclosure-toggle { gap: 7px; }
+  .attention-workspace .execution-disclosure-body { margin-inline: 14px; }
+  .attention-workspace .execution-disclosure { scroll-margin-block: 118px 20px; }
+  .attention-workspace.studio-focused .studio-assistant { padding: 10px 6px; max-height: 34dvh; }
+  .attention-workspace.studio-focused .studio-presence,
+  .attention-workspace.studio-focused .studio-wait,
+  .attention-workspace.studio-focused .attention-activity { display: none; }
+  .attention-workspace.studio-focused .studio-task-controls { align-self: flex-start; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .attention-workspace *, .attention-workspace *::before { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}

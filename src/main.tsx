@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Archive,
+  Check,
   ArrowUp,
   ArrowUpRight,
   Bot,
@@ -27,6 +28,8 @@ import {
   Lock,
   LogOut,
   Menu,
+  Maximize2,
+  Minimize2,
   MessageSquare,
   Paperclip,
   Plus,
@@ -53,8 +56,11 @@ import "./one-refinements.css";
 import "./one-studio.css";
 import "./one-surfaces.css";
 import "./one-login.css";
+import "./one-attention.css";
 import { ONE_WAIT_INTERVAL_MS, ONE_WAIT_LINES } from "./oneVoice";
 import { mergeTaskSnapshots, recoverTaskDraft } from "./oneStudioState";
+import { buildTaskActivityRows, getSettledTaskTransitions, selectConversationExecution, shouldAutoReadTaskNotice, type TaskActivityRow } from "./oneTaskAttention";
+import { OneCompanionEye as OneHeroEye } from "./OneCompanionEye";
 
 type Role = "admin" | "user";
 
@@ -330,60 +336,6 @@ function OnePupilMark({ className = "" }: { className?: string }) {
   );
 }
 
-type HeroEyeState = "idle" | "tracking" | "blink" | "thinking" | "alert";
-
-function OneHeroEye({ mood }: { mood: OneEyeMood }) {
-  const [tracking, setTracking] = useState(false);
-  const [blinking, setBlinking] = useState(false);
-  const [look, setLook] = useState({ x: 0, y: 0 });
-
-  useEffect(() => {
-    if (!blinking) return;
-    const timer = window.setTimeout(() => setBlinking(false), 170);
-    return () => window.clearTimeout(timer);
-  }, [blinking]);
-
-  const state: HeroEyeState = blinking
-    ? "blink"
-    : (mood === "thinking"
-      ? "thinking"
-      : mood === "angry"
-        ? "alert"
-        : tracking
-          ? "tracking"
-          : "idle");
-
-  function trackPointer(event: React.PointerEvent<HTMLButtonElement>) {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const x = ((event.clientX - bounds.left) / bounds.width - .5) * 10;
-    const y = ((event.clientY - bounds.top) / bounds.height - .5) * 5;
-    setLook({ x, y });
-  }
-
-  return (
-    <button
-      className="one-presence"
-      type="button"
-      aria-label="逗一下 ONE"
-      data-eye-state={state}
-      onPointerEnter={() => setTracking(true)}
-      onPointerMove={trackPointer}
-      onPointerLeave={() => { setTracking(false); setLook({ x: 0, y: 0 }); }}
-      onClick={() => setBlinking(true)}
-    >
-      <svg className="one-hero-eye" viewBox="0 0 100 100" role="img" aria-label="ONE 猫眼">
-        <rect className="one-hero-eye-shell" x="2" y="2" width="96" height="96" rx="25" />
-        <g className="one-hero-expression">
-          <path className="one-hero-aperture aperture-a2" d="M13 50C15 31 32 22 50 22C70 22 85 32 88 49C89 64 72 74 50 75C29 75 12 65 13 50Z" />
-          <path className="one-hero-aperture aperture-a3" d="M14 52C20 40 37 36 54 37C72 38 84 45 87 52C83 62 67 66 49 66C31 66 17 61 14 52Z" />
-          <path className="one-hero-aperture aperture-a5" d="M13 51C17 33 34 25 52 25C72 26 86 37 88 51C85 65 69 72 49 72C29 72 13 63 13 51Z" />
-          <path className="one-hero-pupil" style={{ transform: `translate(${look.x}px, ${look.y}px)` }} d="M53 33C50.5 43.5 49.8 56.3 50.8 67" />
-        </g>
-      </svg>
-    </button>
-  );
-}
-
 function OneWorkingPresence({ message, expanded = false }: { message: string; expanded?: boolean }) {
   return (
     <div className={`one-working-presence ${expanded ? "expanded" : "compact"}`}>
@@ -516,6 +468,45 @@ function Login({ onDone }: { onDone: (user: User) => void }) {
   );
 }
 
+function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onStop }: {
+  task: ExecutionTask | null; events: ExecutionEvent[]; preparing: boolean; expanded: boolean;
+  onToggle: () => void; onStop: (source: HTMLElement) => void;
+}) {
+  const [trace, setTrace] = useState("");
+  const steps = events.filter(event => event.kind === "status" || event.kind === "error");
+  const latestStep = steps[steps.length - 1]?.text;
+  const status = preparing ? "preparing" : task?.status || "preparing";
+  const busy = preparing || isExecutionRunning(task);
+  return <section id="one-current-execution" className={`execution-disclosure ${status} ${expanded ? "is-expanded" : ""}`} aria-label="本机执行">
+    <div className="execution-disclosure-header">
+      <button className="execution-disclosure-toggle" type="button" aria-expanded={expanded} aria-controls="one-execution-content" onClick={onToggle}>
+        <span className={`task-indicator ${busy ? "running" : status}`} aria-hidden="true">{status === "completed" ? <Check size={12} /> : null}</span>
+        <span><strong>{executionStatusLabel(task, preparing)}</strong><small>{preparing ? "连接本机，准备开始" : task?.status === "completed" ? "结果已收好，点开查看" : task?.status === "failed" ? "需要你看一下，点开查看原因" : latestStep || "点开查看执行记录"}</small></span>
+        <span className="execution-expand-label">{expanded ? "收起" : "展开"}</span><ChevronDown size={15} />
+      </button>
+      {isExecutionRunning(task) ? <button className="execution-stop" type="button" onClick={event => onStop(event.currentTarget)}><Square size={10} />停止</button> : null}
+    </div>
+    <div className="execution-disclosure-grid" data-open={expanded}>
+      <div className="execution-disclosure-clip" inert={!expanded} aria-hidden={!expanded}>
+        <div id="one-execution-content" className="execution-disclosure-body">
+          {!busy && task?.status === "failed" ? <p className="execution-problem">{task.lastError || "这次执行没有完成，展开过程记录查看原因。"}</p> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{task.finalResponse}</ReactMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接本机，准备继续。" : task?.status === "cancelled" ? "本机操作已停止。准备好了，可以继续交代。" : latestStep || "正在等待本机反馈。你可以继续交代事情。"}</p>}
+          {steps.length > 0 ? <details className="execution-step-history"><summary>过程记录 · {steps.length} 条</summary><ol>{steps.slice(-30).map(event => <li key={event.id} className={event.kind}>{event.text}</li>)}</ol>{steps.length > 30 ? <small>这里展示最近 30 条记录。</small> : null}</details> : null}
+          {task ? <details className="execution-step-history" onToggle={async event => {
+            if (!event.currentTarget.open || trace) return;
+            setTrace("正在读取…");
+            try {
+              const result = await api<{ instruction: string }>(`/api/executions/${encodeURIComponent(task.id)}/trace`);
+              setTrace(result.instruction);
+            } catch (error) { setTrace(error instanceof Error ? error.message : "暂时无法读取"); }
+          }}><summary>交给本机的完整安排</summary><pre>{trace}</pre></details> : null}
+        </div>
+      </div>
+    </div>
+  </section>;
+}
+
+type TaskNotice = { id: string; conversationId: string; title: string; outcome: "reply" | "completed" | "failed" | "cancelled"; taskId?: string; read?: boolean };
+
 function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const conversationPageSize = 30;
   const [models, setModels] = useState<Model[]>([]);
@@ -560,7 +551,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [executionTasks, setExecutionTasks] = useState<ExecutionTask[]>([]);
   const [eventsByTask, setEventsByTask] = useState<Record<string, ExecutionEvent[]>>({});
   const [taskStatusUnavailable, setTaskStatusUnavailable] = useState(true);
-  const [executionTraceText, setExecutionTraceText] = useState("");
+  const [selectedExecutionId, setSelectedExecutionId] = useState("");
   const [executionMode, setExecutionMode] = useState(false);
   const [preparingExecution, setPreparingExecution] = useState(false);
   const [preparingConversationId, setPreparingConversationId] = useState("");
@@ -569,6 +560,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [composeNew, setComposeNew] = useState(false);
   const [composeMode, setComposeMode] = useState<"chat" | "execution">("chat");
   const [failedTaskIds, setFailedTaskIds] = useState<Set<string>>(() => new Set());
+  const [activityExpanded, setActivityExpanded] = useState(false);
+  const [expandedExecutionId, setExpandedExecutionId] = useState("");
+  const [expandedConversationId, setExpandedConversationId] = useState("");
+  const [focusedTask, setFocusedTask] = useState(false);
+  const [revealExecutionId, setRevealExecutionId] = useState("");
+  const [taskNotices, setTaskNotices] = useState<TaskNotice[]>([]);
+  const [visibleReceiptId, setVisibleReceiptId] = useState("");
+  const observedTasksRef = useRef<ExecutionTask[]>([]);
   const executionOriginRef = useRef<TransitionPoint>({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
   const draftsRef = useRef<Record<string, { content: string; attachments: AttachmentSummary[] }>>({});
   const draftAliasesRef = useRef<Record<string, string>>({});
@@ -576,15 +575,19 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   composeKeyRef.current = composeNew || !activeId ? "new" : activeId;
   const currentDraftRef = useRef({ content, attachments: pendingAttachments });
   currentDraftRef.current = { content, attachments: pendingAttachments };
+  const viewedConversationRef = useRef("");
+  viewedConversationRef.current = view === "chat" ? activeId : "";
 
   const active = useMemo(() => conversations.find((item) => item.id === activeId), [activeId, conversations]);
   const targetConversation = composeNew ? undefined : active;
   const activeModelId = targetConversation?.modelId || draftModelId;
   const activeLoadingKey = active?.id || "draft";
   const activeLoading = Boolean(loadingByConversation[activeLoadingKey]);
-  const executionTask = executionTasks.filter(task => task.conversationId === activeId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] || null;
+  const executionTask = selectConversationExecution(executionTasks, activeId, selectedExecutionId);
   const executionEvents = executionTask ? eventsByTask[executionTask.id] || [] : [];
   const runningExecutions = executionTasks.filter(isExecutionRunning);
+  const currentRunningExecution = runningExecutions.find(task => task.conversationId === activeId);
+  const executionShortcut = currentRunningExecution || executionTask;
   const executionBusy = runningExecutions.length > 0;
   const activeExecutionMode = executionMode;
   const targetLoading = !composeNew && activeLoading;
@@ -603,6 +606,42 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const ungroupedConversations = visibleConversations.filter((conversation) => !conversation.folderId);
   const isWaiting = Object.values(loadingByConversation).some(Boolean) || executionBusy || preparingExecution;
   const waitingAside = ONE_WAIT_LINES[waitIndex % ONE_WAIT_LINES.length];
+
+  function announceTask(item: TaskNotice) {
+    const read = shouldAutoReadTaskNotice(resolvedDraftKey(viewedConversationRef.current), item.conversationId, document.visibilityState === "visible");
+    setTaskNotices(items => [{ ...item, read }, ...items.filter(previous => previous.conversationId !== item.conversationId)].slice(0, 12));
+    setVisibleReceiptId(item.id);
+  }
+
+  function acknowledgeConversation(conversationId: string) {
+    setTaskNotices(items => items.filter(item => item.conversationId !== conversationId));
+  }
+
+  useEffect(() => {
+    const settled = getSettledTaskTransitions(observedTasksRef.current, executionTasks);
+    observedTasksRef.current = executionTasks;
+    for (const task of settled) announceTask({
+      id: `${task.id}:${task.updatedAt}`, conversationId: task.conversationId, taskId: task.id,
+      title: conversations.find(item => item.id === task.conversationId)?.title || "本机任务",
+      outcome: task.status as "completed" | "failed" | "cancelled"
+    });
+  }, [executionTasks]);
+
+  useEffect(() => {
+    if (!visibleReceiptId) return;
+    const timer = window.setTimeout(() => setVisibleReceiptId(""), 8000);
+    return () => window.clearTimeout(timer);
+  }, [visibleReceiptId]);
+
+  useEffect(() => {
+    if (!revealExecutionId || view !== "chat" || executionTask?.id !== revealExecutionId) return;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const timer = window.setTimeout(() => {
+      document.getElementById("one-current-execution")?.scrollIntoView({ behavior: reduced ? "instant" : "smooth", block: "nearest" });
+      setRevealExecutionId("");
+    }, reduced ? 0 : 340);
+    return () => window.clearTimeout(timer);
+  }, [revealExecutionId, executionTask?.id, view]);
 
   async function refresh() {
     const [modelResult, conversationResult, workspaceResult, agentResult, capabilityResult, knowledgeResult, notionResult] = await Promise.all([
@@ -700,14 +739,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     return () => window.clearTimeout(timer);
   }, [executionTasks, executionMode, takeoverTaskId, preparingExecution]);
 
-  async function loadLatestExecution(conversationId: string) {
+  async function loadLatestExecution(conversationId: string, selectedTaskId = "") {
     if (conversationId.startsWith("tmp_")) return;
     try {
       const result = await api<{ tasks: ExecutionTask[] }>(`/api/executions?conversationId=${encodeURIComponent(conversationId)}`);
-      const latest = result.tasks[0];
-      if (!latest) return;
+      const latest = selectConversationExecution(result.tasks, conversationId, selectedTaskId);
       result.tasks.forEach(task => rememberExecution(task));
-      const detail = await api<{ task: ExecutionTask; events: ExecutionEvent[] }>(`/api/executions/${encodeURIComponent(latest.id)}`);
+      const detailId = selectedTaskId || latest?.id;
+      if (!detailId) return;
+      const detail = await api<{ task: ExecutionTask; events: ExecutionEvent[] }>(`/api/executions/${encodeURIComponent(detailId)}`);
       rememberExecution(detail.task, detail.events);
     } catch { /* Execution history is an enhancement to the chat view. */ }
   }
@@ -832,17 +872,20 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     }
   }
 
-  async function openConversation(conversation: Conversation) {
+  async function openConversation(conversation: Conversation, selectedTaskId = "") {
     switchDraft(conversation.id);
+    acknowledgeConversation(conversation.id);
+    setActivityExpanded(false);
     transitionInterface(() => {
       setActiveId(conversation.id);
+      setSelectedExecutionId(selectedTaskId);
       setComposeNew(false);
       setView("chat");
       setError("");
       setSidebarOpen(false);
       setHistoryOpen(false);
     });
-    void loadLatestExecution(conversation.id);
+    void loadLatestExecution(conversation.id, selectedTaskId);
     if (conversation.messagesLoaded) return;
     setLoadingByConversation((items) => ({ ...items, [conversation.id]: true }));
     try {
@@ -860,13 +903,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   async function openExecution(task: ExecutionTask) {
+    setExpandedExecutionId(task.id);
+    setRevealExecutionId(task.id);
     const conversation = conversations.find(item => item.id === task.conversationId);
-    if (conversation) { await openConversation(conversation); return; }
+    if (conversation) { await openConversation(conversation, task.id); return; }
     try {
       const result = await api<{ conversation: Conversation }>(`/api/conversations/${encodeURIComponent(task.conversationId)}`);
       const loaded = { ...result.conversation, messagesLoaded: true };
       setConversations(items => [loaded, ...items.filter(item => item.id !== loaded.id)]);
-      await openConversation(loaded);
+      await openConversation(loaded, task.id);
     } catch (err) { setError(err instanceof Error ? err.message : "暂时无法打开这件事"); }
   }
 
@@ -1034,6 +1079,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         delete draftsRef.current[tempId];
       }
       setActiveId((current) => (current === tempId || current === target?.id ? result.conversation.id : current));
+      announceTask({ id: `reply:${result.conversation.id}:${result.conversation.updatedAt}`, conversationId: result.conversation.id, title: result.conversation.title, outcome: "reply" });
       setWebSearch(false);
       if (result.knowledgeWarning) {
         setNotice("知识来源暂时不可用，本次已使用 AI 直接回答。");
@@ -1170,7 +1216,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setTakeoverTaskId("");
     setExecutionSourceMessageId(message.id);
     transitionExecutionMode(true, origin);
-    setExecutionTraceText("");
+    setExpandedExecutionId("");
     setError("");
     try {
       const result = await api<{ task: ExecutionTask; events: ExecutionEvent[] }>("/api/executions/from-message", {
@@ -1178,6 +1224,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         body: JSON.stringify({ conversationId: active.id, sourceMessageId: message.id })
       });
       setTakeoverTaskId(result.task.id);
+      setSelectedExecutionId(result.task.id);
       rememberExecution(result.task, result.events);
     } catch (err) {
       transitionExecutionMode(false, origin);
@@ -1204,6 +1251,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       });
       setTakeoverTaskId(result.task.id);
       rememberExecution(result.task);
+      setEventsByTask(items => ({ ...items, [result.task.id]: [] }));
       setComposeMode("chat");
     } catch (err) {
       const key = resolvedDraftKey(originalDraftKey);
@@ -1228,9 +1276,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     } catch (err) { setError(err instanceof Error ? err.message : "无法停止执行"); }
   }
 
+  const visibleReceipt = taskNotices.find(item => item.id === visibleReceiptId);
   const heroMood: OneEyeMood = error
     ? "angry"
-    : notice
+    : notice || visibleReceipt?.outcome === "completed" || visibleReceipt?.outcome === "reply"
       ? "pleased"
       : isWaiting
         ? "thinking"
@@ -1239,18 +1288,53 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           : "idle";
 
   const thinkingConversations = conversations.filter(item => loadingByConversation[item.id]);
-  const recentTasks = conversations.filter(item => !item.archived && !loadingByConversation[item.id] && !runningExecutions.some(task => task.conversationId === item.id)).slice(0, 3);
-  const assistantStatus = preparingExecution ? "正在连接你的电脑" : executionBusy ? "我在执行，你可以继续说" : thinkingConversations.length ? "收到，我来想一想" : "我在，慢慢说。";
   const composerTarget = composeNew || !active ? "新事情" : active.title;
-  function taskActivityLabel(conversation: Conversation) {
-    if (failedTaskIds.has(conversation.id)) return "未发送成功 · 草稿已保留";
-    const task = executionTasks.find(item => item.conversationId === conversation.id);
-    if (task) return executionStatusLabel(task);
-    return conversation.id === activeId ? "正在查看" : "接着聊";
+  const unreadNotices = taskNotices.filter(item => !item.read);
+  const activityRows = buildTaskActivityRows(conversations, executionTasks, new Set(thinkingConversations.map(item => item.id)), failedTaskIds, new Set(unreadNotices.map(item => item.conversationId)));
+  const otherRows = activityRows.filter(item => view !== "chat" || item.conversationId !== activeId || item.unread);
+  const activeOthers = otherRows.filter(item => item.status === "running" || item.status === "thinking");
+  const settledOthers = otherRows.filter(item => item.status !== "running" && item.status !== "thinking");
+  const latestTurnStart = Math.max(0, (active?.messages || []).map(message => message.role).lastIndexOf("user"));
+  const showEarlier = expandedConversationId === activeId;
+  const currentStatus = activePreparing ? "正在连接" : currentRunningExecution ? "本机执行中" : activeLoading ? "准备回复中" : failedTaskIds.has(activeId) ? "待重试" : executionTask?.status === "completed" ? "本机已完成" : executionTask?.status === "cancelled" ? "本机已停止" : executionTask?.status === "failed" ? "执行需要看一下" : "当前事情";
+  const currentBusy = activePreparing || Boolean(currentRunningExecution) || activeLoading;
+
+  function activityLabel(row: TaskActivityRow) {
+    if (row.status !== "running" && row.status !== "thinking" && !failedTaskIds.has(row.conversationId) && row.unread && taskNotices.some(item => item.conversationId === row.conversationId && item.outcome === "reply")) return "有新回复";
+    return ({ running: "本机执行中", thinking: "准备回复中", failed: "需要看一下", completed: "已完成", cancelled: "已停止", recent: row.unread ? "有新回复" : "继续聊" })[row.status];
+  }
+
+  async function openActivity(row: TaskActivityRow) {
+    const task = row.taskId && executionTasks.find(item => item.id === row.taskId);
+    const hasNewReply = taskNotices.some(item => item.conversationId === row.conversationId && item.outcome === "reply");
+    if (task && row.status !== "thinking" && !failedTaskIds.has(row.conversationId) && (row.status === "running" || !hasNewReply)) await openExecution(task);
+    else {
+      const conversation = conversations.find(item => item.id === row.conversationId);
+      if (conversation) await openConversation(conversation);
+    }
+  }
+
+  async function openReceipt(receipt: TaskNotice) {
+    const task = receipt.taskId && executionTasks.find(item => item.id === receipt.taskId);
+    if (task) await openExecution(task);
+    else {
+      const conversation = conversations.find(item => item.id === receipt.conversationId);
+      if (conversation) await openConversation(conversation);
+    }
+  }
+
+  function renderActivityRow(row: TaskActivityRow) {
+    return <div className="attention-task-row" key={row.conversationId}>
+      <button type="button" onClick={() => openActivity(row)}>
+        <span className={`task-indicator ${row.status}`} aria-hidden="true">{row.status === "completed" ? <Check size={10} /> : null}</span>
+        <span><strong>{row.title}</strong><small>{activityLabel(row)}</small></span>
+        {row.unread ? <span className="unread-point" aria-label="未读更新" /> : <ChevronRight size={12} />}
+      </button>
+    </div>;
   }
 
   return (
-    <main className={`app-shell one-shell one-studio ${studioIdle ? "studio-idle" : "studio-open"} ${activeExecutionMode ? "execution-shell" : ""}`}>
+    <main className={`app-shell one-shell one-studio attention-workspace ${studioIdle ? "studio-idle" : "studio-open"} ${focusedTask && view === "chat" && !studioIdle ? "studio-focused" : ""} ${activeExecutionMode ? "execution-shell" : ""}`}>
       <header className="one-chrome">
         <button className="one-brand-button" type="button" onClick={startNewChat} title="回到 ONE">
           <OneWordmark inverse />
@@ -1315,16 +1399,20 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       ) : view === "account" ? (
         <AccountPage user={user} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setHistoryOpen(true)} />
       ) : (
-      <section className="studio-task">
+      <section className="studio-task" key={activeId}>
         <header className="studio-task-header">
-          <div><span className="studio-eyebrow">一起处理的事</span><h1>{active?.title || "从一个念头开始"}</h1></div>
-          <button type="button" onClick={beginNewTask} title="保留当前事情，交代一件新事情"><Plus size={15} /><span>新事情</span></button>
+          <div><div className={`task-current-state ${currentBusy ? "is-active" : ""}`}><span className={`task-indicator ${currentBusy ? "running" : executionTask?.status || "recent"}`} aria-hidden="true" />{currentStatus}</div><h1>{active?.title || "从一个念头开始"}</h1></div>
+          <div className="studio-task-controls">
+            {executionShortcut ? <button type="button" onClick={() => { setSelectedExecutionId(executionShortcut.id); setExpandedExecutionId(executionShortcut.id); setRevealExecutionId(executionShortcut.id); void loadLatestExecution(activeId, executionShortcut.id); }} aria-label="查看本机执行"><Zap size={14} /><span>{currentRunningExecution ? "执行中" : "执行"}</span></button> : null}
+            <button type="button" aria-label={focusedTask ? "还原布局" : "放大当前事情"} aria-pressed={focusedTask} onClick={() => transitionInterface(() => setFocusedTask(value => !value))}>{focusedTask ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
+          </div>
         </header>
         <div className="messages">
+          {latestTurnStart > 0 ? <button className="conversation-fold-toggle" type="button" aria-expanded={showEarlier} onClick={() => setExpandedConversationId(showEarlier ? "" : activeId)}><ChevronDown size={13} /><span>{showEarlier ? "收起之前的对话" : `之前的对话 · ${latestTurnStart} 条`}</span></button> : null}
           {(active?.messages ?? []).length ? (
             active!.messages.map((message, index) => (
               <React.Fragment key={`${message.createdAt}-${index}`}>
-                <article className={`message ${message.role} ${message.id && message.id === (executionTask?.sourceMessageId || executionSourceMessageId) && activeExecutionMode ? "execution-source" : ""}`}>
+                <article hidden={!showEarlier && index < latestTurnStart} className={`message ${message.role} ${message.id && message.id === (executionTask?.sourceMessageId || executionSourceMessageId) && activeExecutionMode ? "execution-source" : ""}`}>
                   <div className="bubble">
                     <div className="studio-message-author">{message.role === "assistant" ? "ONE" : "你"}</div>
                     {message.attachments?.length ? <AttachmentList attachments={message.attachments} /> : null}
@@ -1338,8 +1426,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                             <Copy size={14} />
                           </button>
                           {active && message.id ? (
-                            <button className="execution-trigger" title={taskStatusUnavailable ? "正在确认本机状态" : executionBusy ? "本机正在工作，完成后可执行下一件" : "交给 ONE 执行"} disabled={taskStatusUnavailable || preparingExecution || executionBusy || activeLoading || active.id.startsWith("tmp_")} onClick={(event) => executeFromMessage(message, event.currentTarget)}>
-                              <Zap size={14} />
+                            <button className={`execution-trigger ${index === active.messages.length - 1 && !executionTask ? "execution-primary-action" : ""}`} title={taskStatusUnavailable ? "正在确认本机状态" : executionBusy ? "本机正在工作，完成后可执行下一件" : "交给 ONE 执行"} disabled={taskStatusUnavailable || preparingExecution || executionBusy || activeLoading || active.id.startsWith("tmp_")} onClick={(event) => executeFromMessage(message, event.currentTarget)}>
+                              <Zap size={14} />{index === active.messages.length - 1 && !executionTask ? <span>交给 ONE 执行</span> : null}
                             </button>
                           ) : null}
                         </div>
@@ -1359,79 +1447,44 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                     <small className="message-time">{dateTime(message.createdAt)}</small>
                   </div>
                 </article>
-                {message.id && message.id === (activePreparing ? executionSourceMessageId : executionTask?.sourceMessageId) && (activePreparing || executionTask) ? (
-                  <aside className={`one-execution-presence ${executionTask?.status || "preparing"}`} aria-live="polite">
-                    <div className="one-execution-presence-head">
-                      <OneEye
-                        size="sm"
-                        mood={executionTask?.status === "completed" ? "pleased" : executionTask?.status === "failed" ? "angry" : "thinking"}
-                        decorative
-                      />
-                      <div>
-                        <small>本机任务</small>
-                        <strong>{executionStatusLabel(executionTask, activePreparing)}</strong>
-                      </div>
-                      {isExecutionRunning(executionTask) ? (
-                        <button type="button" onClick={(event) => cancelExecution(event.currentTarget)}><Square size={11} />停止</button>
-                      ) : null}
-                    </div>
-                    <div className="one-execution-stream">
-                      {activePreparing ? <div className="one-execution-step active"><span />正在整理上下文并连接你的电脑</div> : null}
-                      {executionEvents
-                        .filter((event) => event.kind === "status" || event.kind === "error")
-                        .slice(-5)
-                        .map((event) => (
-                          <div className={`one-execution-step ${event.kind}`} key={event.id}><span />{event.text}</div>
-                        ))}
-                    </div>
-                    {executionTask?.finalResponse ? (
-                      <div className="one-execution-result markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{executionTask.finalResponse}</ReactMarkdown></div>
-                    ) : executionTask?.status === "failed" && executionTask.lastError ? (
-                      <div className="one-execution-result error">{executionTask.lastError}</div>
-                    ) : null}
-                    {executionTask ? (
-                      <details className="one-execution-details" onToggle={async (event) => {
-                        if (!event.currentTarget.open) return;
-                        setExecutionTraceText("正在读取本次交接记录…");
-                        try {
-                          const trace = await api<{ instruction: string; messages: { role: string; content: string }[]; contextLimitChars: number }>(`/api/executions/${executionTask.id}/trace`);
-                          setExecutionTraceText(`发给本机执行器的实际指令\n\n${trace.instruction}\n\n截至所选消息的原对话\n\n${trace.messages.map((item) => `${item.role}: ${item.content}`).join("\n\n")}\n\n编译输入上限：${trace.contextLimitChars} 字符；超出时当前实现保留尾部。`);
-                        } catch (error) { setExecutionTraceText(error instanceof Error ? error.message : "读取失败"); }
-                      }}>
-                        <summary>执行细节</summary>
-                        <pre>{executionTraceText}</pre>
-                      </details>
-                    ) : null}
-                  </aside>
-                ) : null}
               </React.Fragment>
             ))
           ) : <div className="studio-empty">{activeLoading ? "正在打开这件事…" : failedTaskIds.has(activeId) ? "刚才没发出去，草稿还在。准备好了可以再试一次。" : "这里会留下我们的想法和结果。"}</div>}
-          {activeLoading && active?.messages.length ? <div className="studio-response-pending" role="status"><span />ONE 正在想，回复会留在这里。</div> : null}
+          {activePreparing || executionTask ? <ExecutionDisclosure key={executionTask?.id || "preparing"} task={executionTask} events={executionEvents} preparing={activePreparing} expanded={Boolean(executionTask && expandedExecutionId === executionTask.id)} onToggle={() => setExpandedExecutionId(expandedExecutionId === executionTask?.id ? "" : executionTask?.id || "")} onStop={source => cancelExecution(source)} /> : null}
         </div>
       </section>
       )}
       </section>
 
-      <aside className="studio-assistant" aria-label="ONE 助手">
+      <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 助手">
         <div className="studio-presence">
           <OneHeroEye mood={heroMood} />
           <div className="studio-presence-copy"><span className="studio-eyebrow">ONE IS WITH YOU</span>
-          <h2>{activeAgent?.name || assistantStatus}</h2>
-          <p>{studioIdle ? "一个念头，一件小事。我们从这里开始。" : executionBusy ? "手上的事继续做，新的想法也接得住。" : "事情在旁边展开，我一直在这里。"}</p></div>
+          <h2>{activeAgent?.name || (studioIdle ? "我在，慢慢说。" : "我在，随时说。")}</h2>
+          {studioIdle ? <p>一个念头，一件小事。我们从这里开始。</p> : null}</div>
         </div>
-        {(thinkingConversations.length > 0 || executionBusy || preparingExecution) ? <div className="studio-wait" aria-live="off"><p key={waitingAside}>{waitingAside}</p><small>{executionBusy ? "执行进度会持续更新" : "回复准备好后，会留在对应的事情里"}</small></div> : null}
+        {(thinkingConversations.length > 0 || executionBusy || preparingExecution) ? <div className="studio-wait" aria-live="off"><p key={waitingAside}>{waitingAside}</p></div> : null}
 
-        {!studioIdle || conversations.length > 0 || executionBusy ? <section className="studio-activity" aria-label="任务动态">
-          <header><span>{executionBusy || thinkingConversations.length ? "正在发生" : "最近的事"}</span><button type="button" onClick={() => setHistoryOpen(true)}>全部 <ArrowUpRight size={12} /></button></header>
-          {runningExecutions.map(task => <div className="studio-activity-row" key={task.id}>
-            <button type="button" onClick={() => openExecution(task)}><span className="studio-status-dot executing" /><span><strong>{conversations.find(item => item.id === task.conversationId)?.title || "本机任务"}</strong><small>{taskStatusUnavailable ? "连接中断，进度待确认" : executionStatusLabel(task)}</small></span></button>
-            <button className="studio-stop" type="button" aria-label="停止本机任务" onClick={event => cancelExecution(event.currentTarget, task)}><Square size={11} /></button>
-          </div>)}
-          {thinkingConversations.map(conversation => <div className="studio-activity-row" key={conversation.id}><button type="button" onClick={() => openConversation(conversation)}><span className="studio-status-dot thinking" /><span><strong>{conversation.title}</strong><small>正在准备回复</small></span></button></div>)}
-          {recentTasks.slice(0, executionBusy || thinkingConversations.length ? 1 : 3).map(conversation => <div className={`studio-activity-row ${conversation.id === activeId ? "selected" : ""}`} key={conversation.id}><button type="button" onClick={() => openConversation(conversation)}><span className="studio-status-dot" /><span><strong>{conversation.title}</strong><small>{taskActivityLabel(conversation)}</small></span><ArrowUpRight size={13} /></button></div>)}
-          {taskStatusUnavailable ? <button className="studio-status-retry" type="button" onClick={refreshExecutionTasks}>任务状态暂不可用 · 重新连接</button> : null}
+        {otherRows.length > 0 || unreadNotices.length > 0 || taskStatusUnavailable ? <section className="studio-activity attention-activity" aria-label="任务动态">
+          {otherRows.length > 0 || unreadNotices.length > 0 ? <button className="attention-activity-toggle" type="button" aria-expanded={activityExpanded} aria-controls="attention-task-list" onClick={() => setActivityExpanded(value => !value)}>
+            <span>{activeOthers.length ? <><span className="task-indicator running" aria-hidden="true" />另外 {activeOthers.length} 件正在进行</> : unreadNotices.length ? "有新的结果" : "其他事情"}</span>
+            <span>{unreadNotices.length > 0 ? <b className="attention-unread-count">{unreadNotices.length} 条更新</b> : <small>{otherRows.length}</small>}<ChevronDown size={14} /></span>
+          </button> : null}
+          <div id="attention-task-list" className="attention-task-list" hidden={!activityExpanded || otherRows.length === 0}>
+            {activeOthers.length > 0 ? <section><h3>进行中</h3>{activeOthers.map(renderActivityRow)}</section> : null}
+            {settledOthers.length > 0 ? <section><h3>{settledOthers.some(row => row.unread) ? "结果与最近" : "最近"}</h3>{settledOthers.slice(0, 5).map(renderActivityRow)}</section> : null}
+            {otherRows.length === 0 ? <p className="attention-empty">当前没有其他事情。</p> : null}
+            <button className="attention-all-tasks" type="button" onClick={() => setHistoryOpen(true)}>查看全部记录 <ArrowUpRight size={12} /></button>
+          </div>
+          {taskStatusUnavailable ? <button className="studio-status-retry" type="button" onClick={refreshExecutionTasks}>进度暂未连接 · 重试</button> : null}
         </section> : null}
+
+        <div className="attention-receipt-slot" aria-live="polite" aria-atomic="true">
+          {visibleReceipt ? <div className={`attention-receipt ${visibleReceipt.outcome}`} key={visibleReceipt.id}>
+            {visibleReceipt.outcome === "failed" ? <span aria-hidden="true">!</span> : visibleReceipt.outcome === "cancelled" ? <Square size={10} aria-hidden="true" /> : <Check size={12} aria-hidden="true" />}<button type="button" onClick={() => openReceipt(visibleReceipt)} title={visibleReceipt.title}><span>{visibleReceipt.outcome === "reply" ? "回复好了" : visibleReceipt.outcome === "completed" ? "做好了" : visibleReceipt.outcome === "failed" ? "需要看一下" : "已停止"}</span><strong>{visibleReceipt.title}</strong></button>
+            <button type="button" aria-label="收起这条提醒" onClick={() => acknowledgeConversation(visibleReceipt.conversationId)}><X size={12} /></button>
+          </div> : null}
+        </div>
 
         <form className="composer studio-composer" onSubmit={send}>
           {!studioIdle ? <div className="studio-compose-context">
