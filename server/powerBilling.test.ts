@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculateModelPower, chargePower, creditPower } from "./powerBilling.js";
+import { availablePowerMicros, calculateModelPower, chargePower, creditPower, releasePower, reservePower } from "./powerBilling.js";
 import { Database, ModelConfig } from "./types.js";
 
 function database(): Database {
@@ -32,4 +32,21 @@ test("credit and charge append immutable balance snapshots", () => {
   chargePower(db, { workspaceId: "workspace-a", userId: "user-a", amountMicros: 500_000, modelId: "m", usageRecordId: "u", title: "chat" });
   assert.equal(db.powerAccounts[0].balanceMicros, 6_500_000);
   assert.deepEqual(db.powerLedger.map((item) => [item.amountMicros, item.balanceBeforeMicros, item.balanceAfterMicros]), [[2_000_000, 5_000_000, 7_000_000], [-500_000, 7_000_000, 6_500_000]]);
+});
+
+test("concurrent calls cannot spend power reserved by an in-flight request", () => {
+  const db = database();
+  reservePower(db, { workspaceId: "workspace-a", userId: "user-a", amountMicros: 4_000_000 });
+  assert.equal(availablePowerMicros(db, "workspace-a", "user-a"), 1_000_000);
+  assert.throws(() => reservePower(db, { workspaceId: "workspace-a", userId: "user-a", amountMicros: 2_000_000 }), /电力不足/);
+  assert.equal(db.powerAccounts[1].reservedMicros, undefined);
+});
+
+test("failed calls release reservations without charging", () => {
+  const db = database();
+  reservePower(db, { workspaceId: "workspace-a", userId: "user-a", amountMicros: 2_000_000 });
+  releasePower(db, { workspaceId: "workspace-a", userId: "user-a", amountMicros: 2_000_000 });
+  assert.equal(db.powerAccounts[0].reservedMicros, 0);
+  assert.equal(db.powerAccounts[0].balanceMicros, 5_000_000);
+  assert.equal(db.powerLedger.length, 0);
 });

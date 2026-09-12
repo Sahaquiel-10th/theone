@@ -82,10 +82,13 @@
 ## 模型与电力
 
 - `models`：接口协议、Base URL、加密 API Key、模型 ID、公开展示名、默认状态，以及每百万输入/输出 Token 的对外电力价与采购成本；采购成本仅超管可见。
-- `power_accounts`：`workspace_id + user_id` 精确绑定的微电力余额。
+- `power_accounts`：`workspace_id + user_id` 精确绑定的微电力余额，reservedMicros 对应持久化的未决调用；重启不把未知用量当免费，而是转入待核对并重建预占。
 - `power_ledger`：充值、赠送、调用、调整和退款；每条保存变动前后余额，调用条目关联模型与 usage。
 - `recharge_orders`：申请电力、应付人民币、下单时汇率快照和订单状态。
 - `model_usage_records`：输入/输出 Token、实扣、成本、请求 ID 和状态。
+- 普通问答、执行指令整理和 Local Agent 每一步都先原子预占再结算，多个并发请求不能重复花同一份余额。使用记录以独立 ID 实现幂等结算，保存价格快照、用途、开始时间和耗时。状态为 pending/success/failed/needs_review/waived；source=provider/fixed/unknown（旧 estimated 仅兼容历史）。没有 usage 的文本调用不估算收费，等待人工核对；图片使用明确的固定单次售价与成本。
+- 模型成本是按管理员进价配置计算的估算，不等于中转站实际账单；缺失成本必须显示未确认，赠送电力的消耗不能作为现金收入或实际利润。
+- 当前 MySQL 存储仍由单进程加载业务状态并串行提交事务；部署必须保持 ONE 单实例。多进程/多机器扩容前必须改为数据库原子扣款/锁，不能直接增加实例。
 - `audit_logs`：登录、模型配置、知识故障、充值和聊天完成等非内容操作事件；不得保存聊天正文或凭据。
 
 ## V1 物理存储

@@ -1,9 +1,9 @@
 import { NextFunction, Request, Response } from "express";
-import { store } from "./db.js";
 import { verifyToken } from "./security.js";
 import { Role, User } from "./types.js";
 import { resolveWorkspaceAccess } from "./workspaceAccess.js";
-import { oneKeyPresence } from "./runtime.js";
+import type { Store } from "./db.js";
+import type { OneKeyPresence } from "./oneKeyPresence.js";
 
 declare global {
   namespace Express {
@@ -15,7 +15,9 @@ declare global {
   }
 }
 
-export function auth(secret: string) {
+type AuthDependencies = { store: Pick<Store, "read">; oneKeyPresence: Pick<OneKeyPresence, "requireProof"> };
+
+export function auth(secret: string, injected?: AuthDependencies) {
   return async (req: Request, res: Response, next: NextFunction) => {
     const header = req.headers.authorization;
     const cookieToken = req.headers.cookie
@@ -23,11 +25,17 @@ export function auth(secret: string) {
       .map((item) => item.trim())
       .find((item) => item.startsWith("one_session="))
       ?.slice("one_session=".length);
-    const token = header?.startsWith("Bearer ") ? header.slice(7) : decodeURIComponent(cookieToken || "");
-    const payload = token ? verifyToken(token, secret) : null;
+    let payload: ReturnType<typeof verifyToken> = null;
+    try {
+      const token = header?.startsWith("Bearer ") ? header.slice(7) : decodeURIComponent(cookieToken || "");
+      payload = token ? verifyToken(token, secret) : null;
+    } catch {
+      // Invalid signatures and malformed cookie encodings are failed authentication.
+    }
     if (!payload) return res.status(401).json({ error: "未登录或登录已过期" });
 
-    const db = await store.read();
+    const dependencies = injected ?? { store: (await import("./db.js")).store, oneKeyPresence: (await import("./runtime.js")).oneKeyPresence };
+    const db = await dependencies.store.read();
     const user = db.users.find((item) => item.id === payload.sub && item.enabled);
     if (!user) return res.status(401).json({ error: "账号不可用" });
 
@@ -40,7 +48,7 @@ export function auth(secret: string) {
     req.oneKeyDeviceId = payload.deviceId;
     if (payload.deviceId) {
       try {
-        await oneKeyPresence.requireProof({ deviceId: payload.deviceId, userId: user.id, workspaceId: access.workspaceId, method: req.method, path: req.originalUrl });
+        await dependencies.oneKeyPresence.requireProof({ deviceId: payload.deviceId, userId: user.id, workspaceId: access.workspaceId, method: req.method, path: req.originalUrl });
       } catch (error) {
         return res.status(428).json({ error: error instanceof Error ? error.message : "请插入 ONE Key", code: "ONE_KEY_REQUIRED", requestId: res.locals.requestId });
       }

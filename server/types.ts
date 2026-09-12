@@ -9,6 +9,7 @@ export type ModelConfig = {
   id: string; name: string; provider: string; kind: "chat" | "image"; protocol: "openai" | "anthropic";
   baseUrl: string; apiKey: string; encryptedApiKey?: string; model: string; systemPrompt: string; enabled: boolean; isDefault: boolean;
   inputPowerPerMillion: number; outputPowerPerMillion: number; costInputPowerPerMillion: number; costOutputPowerPerMillion: number;
+  imagePowerPerCall?: number; costImagePowerPerCall?: number;
   createdAt: string;
 };
 
@@ -66,13 +67,21 @@ export type ContextTrace = {
 
 export type ModelUsageRecord = {
   id: string; workspaceId: string; userId: string; conversationId: string; modelId: string; inputTokens: number;
-  outputTokens: number; totalTokens: number; source: "provider" | "estimated"; chargedMicros?: number; costMicros?: number;
+  outputTokens: number; totalTokens: number; source: "provider" | "estimated" | "fixed" | "unknown"; chargedMicros?: number; costMicros?: number;
   inputPowerPerMillionSnapshot?: number; outputPowerPerMillionSnapshot?: number;
   costInputPowerPerMillionSnapshot?: number; costOutputPowerPerMillionSnapshot?: number;
-  requestId?: string; status?: "success" | "failed"; createdAt: string;
+  imagePowerPerCallSnapshot?: number; costImagePowerPerCallSnapshot?: number;
+  reservedMicros?: number; calculatedChargeMicros?: number; billingCapped?: boolean;
+  activity?: string; durationMs?: number; completedAt?: string; reviewReason?: string;
+  requestId?: string; status?: "pending" | "success" | "failed" | "needs_review" | "waived"; createdAt: string;
 };
 
-export type PowerAccount = { id: string; workspaceId: string; userId: string; balanceMicros: number; createdAt: string; updatedAt: string };
+export type PowerAccount = {
+  id: string; workspaceId: string; userId: string; balanceMicros: number;
+  /** Funds held by pending calls and calls awaiting explicit billing review. */
+  reservedMicros?: number;
+  createdAt: string; updatedAt: string;
+};
 export type PowerLedgerEntry = {
   id: string; workspaceId: string; userId: string; type: "gift" | "recharge" | "usage" | "adjustment" | "refund";
   amountMicros: number; balanceBeforeMicros: number; balanceAfterMicros: number; title: string;
@@ -141,5 +150,5 @@ export type Database = {
 };
 
 export type PublicUser = Omit<User, "passwordHash">;
-export type PublicModel = Omit<ModelConfig, "apiKey" | "encryptedApiKey" | "systemPrompt" | "costInputPowerPerMillion" | "costOutputPowerPerMillion"> & { hasApiKey: boolean };
-export type AdminModel = PublicModel & { systemPrompt: string; costInputPowerPerMillion: number; costOutputPowerPerMillion: number };
+export type PublicModel = Pick<ModelConfig, "id" | "name" | "kind" | "isDefault">;
+export type AdminModel = Omit<ModelConfig, "apiKey" | "encryptedApiKey"> & { hasApiKey: boolean };

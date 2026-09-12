@@ -1,9 +1,9 @@
 import type { Store } from "./db.js";
 import { appendExecutionEvent, taskEvents } from "./executionService.js";
 import { callModelWithTools, type ModelToolDefinition, type ModelToolMessage } from "./modelGateway.js";
-import { calculateModelPower, chargePower, powerAccount } from "./powerBilling.js";
+import { runBilledModel } from "./modelBilling.js";
 import { uid } from "./security.js";
-import type { ExecutionTask, ModelConfig } from "./types.js";
+import type { ExecutionTask } from "./types.js";
 import { OneKeyPresence, type LocalToolName } from "./oneKeyPresence.js";
 
 const maxSteps = 24;
@@ -150,11 +150,13 @@ export class LocalAgentService {
 
       for (let step = 1; step <= maxSteps; step++) {
         if (this.cancelled.has(task.id)) return;
-        db = await this.store.read();
-        const account = powerAccount(db, task.workspaceId, task.userId);
-        if (!account || account.balanceMicros <= 0) throw new Error("电力不足，Local Agent 已停止");
-        const result = await callModelWithTools(model, messages, tools, `local-${task.id}-${step}`);
-        await this.recordUsage(task, model, result.usage, step);
+        // Every paid step needs a fresh physical-Key proof, not only file operations.
+        await this.presence.requireProof({ deviceId: task.deviceId, workspaceId: task.workspaceId, userId: task.userId, method: "POST", path: `/api/executions/${task.id}/steps/${step}` });
+        if (this.cancelled.has(task.id)) return;
+        const result = await runBilledModel(this.store, {
+          workspaceId: task.workspaceId, userId: task.userId, conversationId: task.conversationId,
+          model, input: { messages, tools }, activity: "local_agent", requestId: uid("req")
+        }, (snapshot) => callModelWithTools(snapshot, messages, tools, `local-${task!.id}-${step}`));
         messages.push({ role: "assistant", content: result.content || null, tool_calls: result.toolCalls.length ? result.toolCalls : undefined });
 
         if (!result.toolCalls.length) {
@@ -226,24 +228,7 @@ export class LocalAgentService {
       if (status === "completed") { target.finalResponse = text; target.lastError = undefined; }
       else if (status === "failed") target.lastError = text;
       appendExecutionEvent(db, { id: uid("exe"), workspaceId: target.workspaceId, userId: target.userId, taskId: target.id, kind: status === "completed" ? "message" : status === "failed" ? "error" : "status", text, createdAt: timestamp });
-    });
-  }
-
-  private async recordUsage(task: ExecutionTask, model: ModelConfig, usage: Awaited<ReturnType<typeof callModelWithTools>>["usage"], step: number) {
-    if (!usage) return;
-    const timestamp = new Date().toISOString();
-    await this.store.mutate((db) => {
-      const usageId = uid("use");
-      const billing = calculateModelPower(model, usage.inputTokens, usage.outputTokens);
-      chargePower(db, { workspaceId: task.workspaceId, userId: task.userId, amountMicros: billing.chargedMicros, modelId: model.id, usageRecordId: usageId, title: `ONE Local Agent 第 ${step} 步` });
-      db.modelUsageRecords.push({
-        id: usageId, workspaceId: task.workspaceId, userId: task.userId, conversationId: task.conversationId, modelId: model.id,
-        inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens, source: usage.source,
-        chargedMicros: billing.chargedMicros, costMicros: billing.costMicros,
-        inputPowerPerMillionSnapshot: model.inputPowerPerMillion, outputPowerPerMillionSnapshot: model.outputPowerPerMillion,
-        costInputPowerPerMillionSnapshot: model.costInputPowerPerMillion, costOutputPowerPerMillionSnapshot: model.costOutputPowerPerMillion,
-        requestId: `local-${task.id}-${step}`, status: "success", createdAt: timestamp
-      });
+      db.auditLogs.push({ id: uid("aud"), workspaceId: target.workspaceId, actorUserId: target.userId, action: `execution.${status}`, targetType: "execution_task", targetId: target.id, details: { provider: target.provider, durationMs: target.startedAt ? Math.max(0, Date.now() - Date.parse(target.startedAt)) : 0 }, createdAt: timestamp });
     });
   }
 }

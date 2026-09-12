@@ -9,6 +9,7 @@
 - Provider 凭据永不返回浏览器；
 - 错误响应包含稳定 `code` 和 `requestId`；
 - Challenge、登录码和授权流全部有 TTL、Workspace/Device 绑定与重放保护。
+- 除 `/api/me`、超管恢复登录和 OAuth 回调外，私人内容、知识连接、计费与管理接口都要求 ONE Key Session；超管接口同样要求超管自己的 Key 在场。
 
 ## ONE Key（当前）
 
@@ -95,21 +96,26 @@ ONE 通过官方托管 MCP 只调用 `notion-fetch`、`notion-search` 和 `notio
 
 ## 模型与电力（当前）
 
-- `GET /api/models`：只返回超管已开放的模型和对外价格，不返回 Key、系统提示词或采购成本；
+- `GET /api/models`：只返回已开放模型的 ID、展示名、类型和默认标记，不返回供应商配置、Key、系统提示词或采购成本；
 - `PATCH /api/me/model`：用户在设置深层选择自己的默认模型；
 - `GET /api/me/billing`：只返回当前 Workspace 用户的余额、账单、充值订单和用量；
 - `POST /api/me/recharge-orders`：创建充值订单。支付通道未接入前订单保持待处理；
 - `/api/admin/models*`：超管维护接口地址、API Key、模型 ID、售价和进价；
 - `/api/admin/operations`：超管读取经营总览、计量账单和非内容审计日志；
-- `GET /api/admin/context-traces`：超管读取最近 100 次成功问答的上下文摘要；
-- `GET /api/admin/context-traces/:id`：超管按次查看分区后的平台提示词、模型提示词、知识召回原文、附件、联网结果、历史对话和当前问题。该接口包含用户私密内容，只允许超管访问；不包含任何 Provider 或模型密钥；
+- `GET /api/admin/users/:id/usage?period=7d&offset=0&limit=20`：按用户读取分页模型用量（period 支持 all/7d/30d，每页上限 100），以及最近 100 条非内容活动；只允许在场超管 Key；不返回对话标题、正文、附件名称或知识原文；
+- `POST /api/admin/users/:id/usage/:usageId/resolve`：超管按上游实际 Token 核对（action=provider_usage），或明确免扣释放预占（action=waive）；绑定精确用户与 Workspace，重复结算不会再次扣款；
+- `DELETE /api/admin/users/:id`：拒绝物理删除；请通过 PATCH enabled=false 停用归档。不能停用当前超管或通过开户接口新增/提升超管；
+- `GET /api/admin/context-traces`：超管读取自己管理 Workspace 内、由自己发起的最近 100 次成功问答上下文摘要；
+- `GET /api/admin/context-traces/:id`：超管按次查看自己的平台提示词、模型提示词、知识召回原文、附件、联网结果、历史对话和当前问题；不允许借超管身份读取其他内测用户的聊天内容，也不包含任何 Provider 或模型密钥；
 - `POST /api/admin/users/:id/power`：赠送电力并原子写入账本；
 - `POST /api/admin/recharge-orders/:id/approve`：人工确认充值入账；
 - `PATCH /api/admin/settings/billing`：配置人民币购买电力的汇率。
 
-账本使用微电力：`1 电力 = 1,000,000 微电力`。每次模型调用按当时输入/输出售价结算，并保存售价、成本、Token、请求 ID 与余额快照。
+账本使用微电力：`1 电力 = 1,000,000 微电力`。每次调用先持久化独立 pending 记录并预占余额，按发起时价格快照和有效的上游 usage 结算，释放剩余预占。失败记录耗时但不扣用户电力。用量缺失/非法时保留 needs_review 与预占，不猜测 Token 收费；该用户暂停后续模型调用，等待超管核对或免扣。进程重启把未决 pending 转为待核对。若真实用量超过预占，零售扣费不超过本次预占，记录 billingCapped 和按配置计算的完整成本。图片模型必须配置 imagePowerPerCall/costImagePowerPerCall，按一次生成一张的固定价格结算，未配置不调用上游。
 
-上下文调试记录只保留最近 200 次成功问答；删除用户或对话时同步删除。它是经产品方明确批准的首版诊断能力，不属于一般用户功能。
+`/api/admin/operations` 同时返回数据库探测、磁盘可用比例、本地/异地备份成功标记；36 小时未成功为 stale，没有标记为 unverified。页面刷新检查，尚无主动通知。`/api/health` 探测数据库失败时返回 503。
+
+上下文调试按账号限额保存，仅供超管查看自己发起的问答；删除对话时同步清理。停用用户不删除账单、使用记录或用户资料。它不是查看内测用户私人内容的入口。
 
 ## 租户验收规则
 

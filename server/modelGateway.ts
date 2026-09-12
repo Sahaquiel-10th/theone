@@ -42,18 +42,47 @@ export type ToolChatResult = {
 
 const requestTimeoutMs = numberEnv("MODEL_REQUEST_TIMEOUT_MS", 150000);
 const imageRequestTimeoutMs = numberEnv("IMAGE_REQUEST_TIMEOUT_MS", 180000);
-const maxOutputTokens = numberEnv("MODEL_MAX_OUTPUT_TOKENS", 3000);
+export const MODEL_MAX_OUTPUT_TOKENS = numberEnv("MODEL_MAX_OUTPUT_TOKENS", 3000);
 
 function numberEnv(name: string, fallback: number) {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+export function parseProviderUsage(value: unknown): ChatResult["usage"] {
+  if (!value || typeof value !== "object") return undefined;
+  const usage = value as Record<string, unknown>;
+  const inputTokens = usage.prompt_tokens ?? usage.input_tokens;
+  const outputTokens = usage.completion_tokens ?? usage.output_tokens;
+  const valid = (token: unknown): token is number => typeof token === "number" && Number.isSafeInteger(token) && token >= 0;
+  if (!valid(inputTokens) || !valid(outputTokens) || !Number.isSafeInteger(inputTokens + outputTokens)) return undefined;
+  const totalTokens = usage.total_tokens === undefined ? inputTokens + outputTokens : usage.total_tokens;
+  if (!valid(totalTokens) || totalTokens < inputTokens + outputTokens) return undefined;
+  return { inputTokens, outputTokens, totalTokens, source: "provider" };
+}
+
+export async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    // These gateway paths are non-streaming. Keep the deadline active until the
+    // body finishes too; otherwise a stalled body can hold a user's funds forever.
+    const maxBytes = 64 * 1024 * 1024;
+    if (Number(response.headers.get("content-length")) > maxBytes) { controller.abort(); throw new Error("模型响应过大"); }
+    const reader = response.body?.getReader();
+    const chunks: Uint8Array[] = []; let length = 0;
+    if (reader) {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        length += value.byteLength;
+        if (length > maxBytes) { controller.abort(); throw new Error("模型响应过大"); }
+        chunks.push(value);
+      }
+    }
+    const bytes = Buffer.concat(chunks);
+    return new Response(bytes, { status: response.status, statusText: response.statusText, headers: response.headers });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error(`模型响应超时（已等待 ${Math.max(1, Math.round(timeoutMs / 1000))} 秒），请缩短问题或稍后重试`);
@@ -62,6 +91,13 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function safeGatewayHint(status: number) {
+  if (status === 401 || status === 403) return "模型授权配置异常，请联系管理员";
+  if (status === 429) return "模型服务繁忙或额度不足，请稍后重试或联系管理员";
+  if (status >= 500) return "模型服务暂时不可用，请稍后重试";
+  return "模型服务拒绝了请求，请联系管理员核对接口配置";
 }
 
 export async function callModel(
@@ -94,7 +130,7 @@ export async function callModel(
     model: model.model,
     inputMessages: messages.length,
     inputChars: messages.reduce((total, message) => total + message.content.length, 0),
-    maxOutputTokens
+    maxOutputTokens: MODEL_MAX_OUTPUT_TOKENS
   }));
   try {
     const response = await fetchWithTimeout(endpoint, {
@@ -115,13 +151,13 @@ export async function callModel(
             : message.content
         })),
         temperature: 0.7,
-        max_tokens: maxOutputTokens
+        max_tokens: MODEL_MAX_OUTPUT_TOKENS
       })
     }, requestTimeoutMs);
 
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const detail = typeof payload?.error?.message === "string" ? payload.error.message : response.statusText;
+      const detail = safeGatewayHint(response.status);
       console.error(JSON.stringify({
         event: "model_upstream_error",
         requestId,
@@ -130,18 +166,12 @@ export async function callModel(
         status: response.status,
         detail
       }));
-      const hint =
-        response.status === 503 || /temporarily unavailable/i.test(detail)
-          ? `供应商暂时无法提供模型 "${model.model}"，请在中转站确认该 Key 所属分组已包含此模型且模型 ID 完全一致`
-          : detail;
+      const hint = detail;
       throw new Error(`模型调用失败（上游 ${response.status}）：${hint}`);
     }
 
     const content = payload?.choices?.[0]?.message?.content;
     if (typeof content !== "string") throw new Error("模型响应格式不正确");
-    const providerInputTokens = Number(payload?.usage?.prompt_tokens ?? payload?.usage?.input_tokens);
-    const providerOutputTokens = Number(payload?.usage?.completion_tokens ?? payload?.usage?.output_tokens);
-    const hasProviderUsage = Number.isFinite(providerInputTokens) && Number.isFinite(providerOutputTokens);
     console.log(JSON.stringify({
       event: "model_request_completed",
       requestId,
@@ -151,14 +181,7 @@ export async function callModel(
     }));
     return {
       content,
-      usage: hasProviderUsage ? {
-        inputTokens: providerInputTokens,
-        outputTokens: providerOutputTokens,
-        totalTokens: Number.isFinite(Number(payload?.usage?.total_tokens))
-          ? Number(payload.usage.total_tokens)
-          : providerInputTokens + providerOutputTokens,
-        source: "provider"
-      } : undefined,
+      usage: parseProviderUsage(payload?.usage),
       raw: payload
     };
   } catch (error) {
@@ -207,12 +230,12 @@ export async function callModelWithTools(
         tools,
         tool_choice: "auto",
         temperature: 0.2,
-        max_tokens: maxOutputTokens
+        max_tokens: MODEL_MAX_OUTPUT_TOKENS
       })
     }, requestTimeoutMs);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const detail = typeof payload?.error?.message === "string" ? payload.error.message : response.statusText;
+      const detail = safeGatewayHint(response.status);
       throw new Error(`Local Agent 模型调用失败（上游 ${response.status}）：${detail}`);
     }
     const message = payload?.choices?.[0]?.message;
@@ -225,9 +248,6 @@ export async function callModelWithTools(
             typeof candidate.function?.name === "string" && typeof candidate.function.arguments === "string";
         })
       : [];
-    const providerInputTokens = Number(payload?.usage?.prompt_tokens ?? payload?.usage?.input_tokens);
-    const providerOutputTokens = Number(payload?.usage?.completion_tokens ?? payload?.usage?.output_tokens);
-    const hasProviderUsage = Number.isFinite(providerInputTokens) && Number.isFinite(providerOutputTokens);
     console.log(JSON.stringify({
       event: "local_agent_model_request_completed",
       requestId,
@@ -238,14 +258,7 @@ export async function callModelWithTools(
     return {
       content: typeof message.content === "string" ? message.content : "",
       toolCalls,
-      usage: hasProviderUsage ? {
-        inputTokens: providerInputTokens,
-        outputTokens: providerOutputTokens,
-        totalTokens: Number.isFinite(Number(payload?.usage?.total_tokens))
-          ? Number(payload.usage.total_tokens)
-          : providerInputTokens + providerOutputTokens,
-        source: "provider"
-      } : undefined
+      usage: parseProviderUsage(payload?.usage)
     };
   } catch (error) {
     console.error(JSON.stringify({
@@ -329,12 +342,12 @@ async function callAnthropicModelWithTools(
         })),
         tool_choice: { type: "auto" },
         temperature: 0.2,
-        max_tokens: maxOutputTokens
+        max_tokens: MODEL_MAX_OUTPUT_TOKENS
       })
     }, requestTimeoutMs);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const detail = typeof payload?.error?.message === "string" ? payload.error.message : response.statusText;
+      const detail = safeGatewayHint(response.status);
       throw new Error(`Local Agent 模型调用失败（上游 ${response.status}）：${detail}`);
     }
     const blocks = Array.isArray(payload?.content) ? payload.content : [];
@@ -350,9 +363,6 @@ async function callAnthropicModelWithTools(
         function: { name: item.name, arguments: JSON.stringify(item.input ?? {}) }
       }));
     if (!content && !toolCalls.length) throw new Error("Local Agent 模型响应格式不正确");
-    const inputTokens = Number(payload?.usage?.input_tokens);
-    const outputTokens = Number(payload?.usage?.output_tokens);
-    const hasProviderUsage = Number.isFinite(inputTokens) && Number.isFinite(outputTokens);
     console.log(JSON.stringify({
       event: "local_agent_model_request_completed",
       requestId,
@@ -364,12 +374,7 @@ async function callAnthropicModelWithTools(
     return {
       content,
       toolCalls,
-      usage: hasProviderUsage ? {
-        inputTokens,
-        outputTokens,
-        totalTokens: inputTokens + outputTokens,
-        source: "provider"
-      } : undefined
+      usage: parseProviderUsage(payload?.usage),
     };
   } catch (error) {
     console.error(JSON.stringify({
@@ -405,7 +410,7 @@ async function callAnthropicModel(
     protocol: "anthropic",
     inputMessages: messages.length,
     inputChars: messages.reduce((total, message) => total + message.content.length, 0),
-    maxOutputTokens
+    maxOutputTokens: MODEL_MAX_OUTPUT_TOKENS
   }));
   try {
     const response = await fetchWithTimeout(endpoint, {
@@ -422,12 +427,12 @@ async function callAnthropicModel(
           .filter((message) => message.role === "user" || message.role === "assistant")
           .map((message) => ({ role: message.role, content: message.content })),
         temperature: 0.7,
-        max_tokens: maxOutputTokens
+        max_tokens: MODEL_MAX_OUTPUT_TOKENS
       })
     }, requestTimeoutMs);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const detail = typeof payload?.error?.message === "string" ? payload.error.message : response.statusText;
+      const detail = safeGatewayHint(response.status);
       console.error(JSON.stringify({
         event: "model_upstream_error",
         requestId,
@@ -437,19 +442,13 @@ async function callAnthropicModel(
         status: response.status,
         detail
       }));
-      const hint =
-        response.status === 503 || /temporarily unavailable/i.test(detail)
-          ? `供应商暂时无法提供模型 "${model.model}"，请在中转站确认该 Key 所属分组已包含此模型且模型 ID 完全一致`
-          : detail;
+      const hint = detail;
       throw new Error(`模型调用失败（上游 ${response.status}）：${hint}`);
     }
     const content = Array.isArray(payload?.content)
       ? payload.content.filter((item: { type?: string; text?: unknown }) => item?.type === "text" && typeof item.text === "string").map((item: { text: string }) => item.text).join("\n")
       : "";
     if (!content) throw new Error("模型响应格式不正确");
-    const inputTokens = Number(payload?.usage?.input_tokens);
-    const outputTokens = Number(payload?.usage?.output_tokens);
-    const hasProviderUsage = Number.isFinite(inputTokens) && Number.isFinite(outputTokens);
     console.log(JSON.stringify({
       event: "model_request_completed",
       requestId,
@@ -460,12 +459,7 @@ async function callAnthropicModel(
     }));
     return {
       content,
-      usage: hasProviderUsage ? {
-        inputTokens,
-        outputTokens,
-        totalTokens: inputTokens + outputTokens,
-        source: "provider"
-      } : undefined,
+      usage: parseProviderUsage(payload?.usage),
       raw: payload
     };
   } catch (error) {
@@ -515,13 +509,8 @@ async function callImageModel(
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const detail = typeof payload?.error?.message === "string" ? payload.error.message : response.statusText;
-    const hint = /requires an image model/i.test(detail)
-      ? `当前模型 ID "${model.model}" 不是供应商认可的图片模型。请在后台确认模型 ID，yylx 的内置图片模型已改为 gpt-image-2。`
-      : inputImages.length && response.status === 404
-        ? `当前供应商没有提供 /images/edits 图生图接口，请确认模型和中转站支持图片编辑`
-      : detail;
-    throw new Error(`图片模型调用失败：${hint}`);
+    const detail = safeGatewayHint(response.status);
+    throw new Error(`图片模型调用失败（上游 ${response.status}）：${detail}`);
   }
 
   const first = payload?.data?.[0];
@@ -542,20 +531,10 @@ async function callImageModel(
     modelId: model.id,
     durationMs: Date.now() - startedAt
   }));
-  const providerInputTokens = Number(payload?.usage?.prompt_tokens ?? payload?.usage?.input_tokens);
-  const providerOutputTokens = Number(payload?.usage?.completion_tokens ?? payload?.usage?.output_tokens);
-  const hasProviderUsage = Number.isFinite(providerInputTokens) && Number.isFinite(providerOutputTokens);
   return {
     content: "图片已生成",
     imageUrl,
-    usage: hasProviderUsage ? {
-      inputTokens: providerInputTokens,
-      outputTokens: providerOutputTokens,
-      totalTokens: Number.isFinite(Number(payload?.usage?.total_tokens))
-        ? Number(payload.usage.total_tokens)
-        : providerInputTokens + providerOutputTokens,
-      source: "provider"
-    } : undefined,
+    usage: parseProviderUsage(payload?.usage),
     raw: payload
   };
 }

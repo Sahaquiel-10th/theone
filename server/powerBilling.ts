@@ -20,13 +20,45 @@ export function powerAccount(db: Database, workspaceId: string, userId: string) 
   return db.powerAccounts.find((item) => item.workspaceId === workspaceId && item.userId === userId);
 }
 
+export function availablePowerMicros(db: Database, workspaceId: string, userId: string) {
+  const account = powerAccount(db, workspaceId, userId);
+  return account ? Math.max(0, account.balanceMicros - (account.reservedMicros ?? 0)) : 0;
+}
+
+export function estimateTokenCeiling(value: unknown) {
+  // Conservative text-only reservation estimate, not a promise about provider billing.
+  // Vision/hidden-token overruns are handled by the durable settlement's retail cap.
+  return Math.max(1, Buffer.byteLength(typeof value === "string" ? value : JSON.stringify(value), "utf8"));
+}
+
+export function reservePower(db: Database, params: {
+  workspaceId: string; userId: string; amountMicros: number;
+}) {
+  const account = powerAccount(db, params.workspaceId, params.userId);
+  if (!account) throw new Error("电力账户不存在");
+  if (!Number.isSafeInteger(params.amountMicros) || params.amountMicros < 0) throw new Error("预占电力必须是非负整数");
+  if (availablePowerMicros(db, params.workspaceId, params.userId) < params.amountMicros) throw new Error("电力不足，请先充值");
+  account.reservedMicros = (account.reservedMicros ?? 0) + params.amountMicros;
+  account.updatedAt = new Date().toISOString();
+  return params.amountMicros;
+}
+
+export function releasePower(db: Database, params: {
+  workspaceId: string; userId: string; amountMicros: number;
+}) {
+  const account = powerAccount(db, params.workspaceId, params.userId);
+  if (!account) throw new Error("电力账户不存在");
+  account.reservedMicros = Math.max(0, (account.reservedMicros ?? 0) - Math.max(0, params.amountMicros));
+  account.updatedAt = new Date().toISOString();
+}
+
 export function creditPower(db: Database, params: {
   workspaceId: string; userId: string; amountMicros: number; type: "gift" | "recharge" | "adjustment" | "refund";
   title: string; createdByUserId?: string;
 }) {
   const account = powerAccount(db, params.workspaceId, params.userId);
   if (!account) throw new Error("电力账户不存在");
-  if (!Number.isInteger(params.amountMicros) || params.amountMicros <= 0) throw new Error("电力数量必须大于 0");
+  if (!Number.isSafeInteger(params.amountMicros) || params.amountMicros <= 0 || !Number.isSafeInteger(account.balanceMicros + params.amountMicros)) throw new Error("电力数量必须为有效正数");
   const before = account.balanceMicros;
   account.balanceMicros += params.amountMicros;
   account.updatedAt = new Date().toISOString();
@@ -40,7 +72,8 @@ export function chargePower(db: Database, params: {
 }) {
   const account = powerAccount(db, params.workspaceId, params.userId);
   if (!account) throw new Error("电力账户不存在");
-  if (account.balanceMicros < params.amountMicros) throw new Error("电力不足，请先充值");
+  if (!Number.isSafeInteger(params.amountMicros) || params.amountMicros < 0) throw new Error("扣费必须是有效的非负整数");
+  if (availablePowerMicros(db, params.workspaceId, params.userId) < params.amountMicros) throw new Error("电力不足，请先充值");
   const before = account.balanceMicros;
   account.balanceMicros -= params.amountMicros;
   account.updatedAt = new Date().toISOString();
