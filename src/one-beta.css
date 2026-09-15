@@ -1,0 +1,18 @@
+.one-answer-sources { margin: 16px 0 8px; border-top: 1px solid #dcd9d1; padding-top: 12px; color: #555349; font-size: 13px; }
+.one-answer-sources summary { cursor: pointer; color: #494b40; line-height: 1.7; }
+.one-answer-sources section { margin: 14px 0; padding: 12px 14px; background: #f1f0e9; border-radius: 12px; }
+.one-answer-sources a { color: #38483b; font-weight: 600; }
+.one-answer-sources p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; margin: 8px 0 0; }
+.one-answer-sources .one-source-warning { color: #89532d; }
+.one-key-welcome { width: min(560px, calc(100% - 48px)); margin: 10vh auto; text-align: center; color: #30332b; }
+.one-key-welcome h1 { font-size: clamp(24px, 4vw, 36px); letter-spacing: -.05em; margin-top: 24px; }
+.one-key-welcome p { line-height: 1.8; overflow-wrap: anywhere; color: #66675e; margin: 20px 0; }
+.one-key-welcome details { margin: 32px 0; font-size: 14px; }
+.one-key-welcome summary { cursor: pointer; }
+.one-login-back { display: block; margin: 0 auto 30px; }
+.one-pending-answers { background: #f4eddd; color: #675131; border-radius: 12px; padding: 10px 14px; font-size: 13px; margin-bottom: 12px; }
+.one-pending-answers summary { cursor: pointer; }
+.one-pending-answers button { display: block; padding: 6px 0; color: inherit; text-decoration: underline; background: transparent; }
+.studio-assistant:has(.one-onboarding) .studio-presence { display: none; }
+.studio-assistant:has(.one-onboarding) { overflow-y: auto; }
+.one-onboarding { margin-bottom: 20px; }

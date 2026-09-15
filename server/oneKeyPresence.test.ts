@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import test from "node:test";
 import { WebSocket } from "ws";
 import { OneKeyPresence } from "./oneKeyPresence.js";
+const installationId = "a".repeat(32);
 
 function sign(privateKey: crypto.KeyObject, nonce: string) {
   return crypto.sign(null, Buffer.from(nonce, "base64url"), privateKey).toString("base64url");
@@ -25,21 +26,21 @@ test("requires a fresh ONE Key signature for a protected request", async () => {
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("测试服务未启动");
 
-  const socket = new WebSocket(`ws://127.0.0.1:${address.port}/api/one-key/launcher?deviceId=device-a`);
+  const socket = new WebSocket(`ws://127.0.0.1:${address.port}/api/one-key/launcher?deviceId=device-a&installationId=${installationId}`);
   const [authRaw] = await once(socket, "message");
   const auth = JSON.parse(authRaw.toString());
   socket.send(JSON.stringify({ type: "auth_response", challengeId: auth.challengeId, signature: sign(pair.privateKey, auth.nonce) }));
   const [readyRaw] = await once(socket, "message");
   assert.equal(JSON.parse(readyRaw.toString()).type, "ready");
 
-  const proof = presence.requireProof({ deviceId: device.id, userId: device.userId, workspaceId: device.workspaceId, method: "POST", path: "/api/chat" });
+  const proof = presence.requireProof({ deviceId: device.id, installationId, userId: device.userId, workspaceId: device.workspaceId, method: "POST", path: "/api/chat" });
   const [proofRaw] = await once(socket, "message");
   const challenge = JSON.parse(proofRaw.toString());
   socket.send(JSON.stringify({ type: "proof_response", challengeId: challenge.challengeId, signature: sign(pair.privateKey, challenge.nonce) }));
   await proof;
 
   await assert.rejects(
-    () => presence.requireProof({ deviceId: device.id, userId: device.userId, workspaceId: "workspace-b", method: "POST", path: "/api/chat" }),
+    () => presence.requireProof({ deviceId: device.id, installationId, userId: device.userId, workspaceId: "workspace-b", method: "POST", path: "/api/chat" }),
     /不属于当前账号/
   );
 
@@ -59,8 +60,8 @@ test("accepts execution events only for the authenticated device workspace", asy
   const database = {
     oneKeyDevices: [device], auditLogs: [], executionEvents: [],
     executionTasks: [
-      { id: "task-a", workspaceId: "workspace-a", userId: "user-a", conversationId: "conversation-a", sourceMessageId: "message-a", provider: "codex", status: "queued", instruction: "safe", deviceId: "device-a", createdAt: timestamp, updatedAt: timestamp },
-      { id: "task-b", workspaceId: "workspace-b", userId: "user-b", conversationId: "conversation-b", sourceMessageId: "message-b", provider: "codex", status: "queued", instruction: "foreign", deviceId: "device-a", createdAt: timestamp, updatedAt: timestamp }
+      { id: "task-a", workspaceId: "workspace-a", userId: "user-a", conversationId: "conversation-a", sourceMessageId: "message-a", provider: "codex", status: "queued", instruction: "safe", deviceId: "device-a", installationId, createdAt: timestamp, updatedAt: timestamp },
+      { id: "task-b", workspaceId: "workspace-b", userId: "user-b", conversationId: "conversation-b", sourceMessageId: "message-b", provider: "codex", status: "queued", instruction: "foreign", deviceId: "device-a", installationId, createdAt: timestamp, updatedAt: timestamp }
     ]
   } as any;
   let resolveMutation: (() => void) | undefined;
@@ -81,14 +82,14 @@ test("accepts execution events only for the authenticated device workspace", asy
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("测试服务未启动");
 
-  const socket = new WebSocket(`ws://127.0.0.1:${address.port}/api/one-key/launcher?deviceId=device-a`);
+  const socket = new WebSocket(`ws://127.0.0.1:${address.port}/api/one-key/launcher?deviceId=device-a&installationId=${installationId}`);
   const [authRaw] = await once(socket, "message");
   const auth = JSON.parse(authRaw.toString());
   socket.send(JSON.stringify({ type: "auth_response", challengeId: auth.challengeId, signature: sign(pair.privateKey, auth.nonce) }));
   await once(socket, "message");
 
   const startMessage = once(socket, "message");
-  await presence.startExecution("device-a", "task-a", "safe");
+  await presence.startExecution("device-a", "task-a", "safe", installationId);
   assert.deepEqual(JSON.parse((await startMessage)[0].toString()), { type: "execution_start", taskId: "task-a", instruction: "safe" });
 
   let mutated = nextMutation();
@@ -114,7 +115,7 @@ test("negotiates local tools and isolates request responses to the authenticated
   const pair = crypto.generateKeyPairSync("ed25519");
   const timestamp = new Date().toISOString();
   const device = { id: "device-a", serialNumber: "ONE-A", workspaceId: "workspace-a", userId: "user-a", status: "active", publicKey: pair.publicKey.export({ type: "spki", format: "pem" }).toString(), createdAt: timestamp };
-  const store = { read: async () => ({ oneKeyDevices: [device] }) } as any;
+  const store = { read: async () => ({ oneKeyDevices: [device], executionTasks: [{ id: "task-a", deviceId: "device-a", installationId, workspaceId: "workspace-a", userId: "user-a" }] }) } as any;
   const presence = new OneKeyPresence(store);
   const server = createServer();
   presence.attach(server);
@@ -122,21 +123,21 @@ test("negotiates local tools and isolates request responses to the authenticated
   await once(server, "listening");
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("测试服务未启动");
-  const socket = new WebSocket(`ws://127.0.0.1:${address.port}/api/one-key/launcher?deviceId=device-a`);
+  const socket = new WebSocket(`ws://127.0.0.1:${address.port}/api/one-key/launcher?deviceId=device-a&installationId=${installationId}`);
   const [authRaw] = await once(socket, "message");
   const auth = JSON.parse(authRaw.toString());
   socket.send(JSON.stringify({ type: "auth_response", challengeId: auth.challengeId, signature: sign(pair.privateKey, auth.nonce), capabilities: ["local_tools_v1"] }));
   await once(socket, "message");
-  assert.equal(presence.supportsLocalAgent("device-a"), true);
+  assert.equal(presence.supportsLocalAgent("device-a", installationId), true);
 
-  const preparing = presence.prepareLocalExecution("device-a", "task-a");
+  const preparing = presence.prepareLocalExecution("device-a", "task-a", installationId);
   const [prepareRaw] = await once(socket, "message");
   const prepare = JSON.parse(prepareRaw.toString());
   assert.equal(prepare.type, "local_prepare");
   socket.send(JSON.stringify({ type: "local_ready", taskId: "task-a", requestId: prepare.requestId, targetName: "project-a" }));
   assert.deepEqual(await preparing, { targetName: "project-a", output: "" });
 
-  const running = presence.executeLocalTool("device-a", "task-a", "read_file", { path: "README.md" });
+  const running = presence.executeLocalTool("device-a", "task-a", "read_file", { path: "README.md" }, installationId);
   const [toolRaw] = await once(socket, "message");
   const tool = JSON.parse(toolRaw.toString());
   assert.equal(tool.tool, "read_file");

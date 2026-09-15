@@ -17,12 +17,12 @@ npm run provision:one-key:mac -- --credential ~/Downloads/ONE-序列号.one-key.
 5. 需要兼容 Windows 时，在同一只已经写入凭证的 U 盘上继续执行：
 
 ```bash
-npm run provision:one-key:windows -- --volume /Volumes/U盘名称
+npm run provision:one-key:windows -- --volume /Volumes/U盘名称 --tidy-root
 ```
 
-Windows 构建需要 Go 1.23 或更高版本。可用 `--go-bin /完整路径/go` 指定不安装到系统的 Go 工具链。重复灌装时增加 `--replace`。
+Windows 构建需要 Go 1.23 或更高版本。可用 `--go-bin /完整路径/go` 指定不安装到系统的 Go 工具链。重复灌装时增加 `--replace`。如需让 U 盘根目录只显示两个启动入口，增加 `--tidy-root`；脚本会把其他可见内容移到隐藏的 `.one-files/原有文件`，不会删除。
 
-6. 首次在每台电脑使用时：macOS 双击 `ONE.app`，Windows 双击 `ONE.exe`。两端共用 `.one/credential.json`，因此对应同一个 ONE Key、账号和 Workspace。
+6. 首次在每台电脑使用时：macOS 双击 `ONE for Mac.app`，Windows 双击 `ONE for Windows.exe`。两端共用隐藏的 `.one/credential.json`，因此对应同一个 ONE Key、账号和 Workspace。
 7. 保持网页打开，拔出 U 盘后发起请求，应立即提示插入；重新插入后等待约 1～2 秒，同一网页无需刷新即可继续使用。
 8. 在超管后台核对序列号、绑定用户和最后使用时间，再贴标并交付。新用户余额为 0，交付前在“电力”中赠送体验额度。
 

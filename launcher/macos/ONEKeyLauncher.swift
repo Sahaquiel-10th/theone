@@ -2,12 +2,23 @@ import AppKit
 import CryptoKit
 import Foundation
 import CFNetwork
+import Network
 
-let launcherVersion = "0.2.7"
+let launcherVersion = "0.2.8"
 let residentArgument = "--one-resident"
 let deviceArgument = "--device-id"
 
 func oneDefaults() -> UserDefaults { UserDefaults(suiteName: "one.theone.key") ?? .standard }
+
+// Stored only on this computer, never in the portable credential or app bundle.
+func installationId() -> String {
+    let defaults = oneDefaults()
+    if let saved = defaults.string(forKey: "one.installation.id"), saved.count == 32 { return saved }
+    let generated = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    defaults.set(generated, forKey: "one.installation.id")
+    defaults.synchronize()
+    return generated
+}
 
 struct DeviceCredential: Decodable {
     let version: Int
@@ -16,7 +27,7 @@ struct DeviceCredential: Decodable {
     let serverBaseUrl: String
 }
 
-struct ChallengeRequest: Encodable { let deviceId: String }
+struct ChallengeRequest: Encodable { let deviceId: String; let installationId: String }
 struct ChallengeResponse: Decodable { let challengeId: String; let nonce: String }
 struct VerifyRequest: Encodable { let signature: String }
 struct VerifyResponse: Decodable { let loginCode: String }
@@ -82,6 +93,7 @@ func commandLineValue(_ name: String) -> String? {
 }
 
 func launchResidentCopy() throws {
+    _ = installationId()
     guard let credentialUrl = findCredentialUrl(), let source = Bundle.main.executableURL else {
         throw LauncherError.message("没有找到 ONE Key，请确认 U 盘已插入")
     }
@@ -132,7 +144,7 @@ func socketUrl(base: String, deviceId: String) throws -> URL {
     guard var components = URLComponents(string: base) else { throw LauncherError.message("ONE 服务地址无效") }
     components.scheme = components.scheme == "https" ? "wss" : "ws"
     components.path = "/api/one-key/launcher"
-    components.queryItems = [URLQueryItem(name: "deviceId", value: deviceId)]
+    components.queryItems = [URLQueryItem(name: "deviceId", value: deviceId), URLQueryItem(name: "installationId", value: installationId())]
     guard let url = components.url else { throw LauncherError.message("ONE 在线验证地址无效") }
     return url
 }
@@ -176,6 +188,7 @@ func codexExecutable(credentialUrl: URL) -> String? {
         candidates.append(bundled)
     }
     candidates.append(contentsOf: [
+        volumeRoot.appendingPathComponent("ONE for Mac.app/Contents/Resources/codex").path,
         volumeRoot.appendingPathComponent("ONE.app/Contents/Resources/codex").path,
         "/Applications/ChatGPT.app/Contents/Resources/codex",
         "/opt/homebrew/bin/codex",
@@ -381,7 +394,7 @@ func post<Request: Encodable, Response: Decodable>(_ url: URL, body: Request) as
 
 func openLoginPage(base: String, credentialUrl: URL, deviceId: String) async throws {
     guard let challengeUrl = URL(string: "\(base)/api/one-key/challenge") else { throw LauncherError.message("ONE 服务地址无效") }
-    let challenge: ChallengeResponse = try await post(challengeUrl, body: ChallengeRequest(deviceId: deviceId))
+    let challenge: ChallengeResponse = try await post(challengeUrl, body: ChallengeRequest(deviceId: deviceId, installationId: installationId()))
     guard let verifyUrl = URL(string: "\(base)/api/one-key/challenge/\(challenge.challengeId)/verify") else { throw LauncherError.message("ONE 验证地址无效") }
     let signature = try signNonce(challenge.nonce, credentialUrl: credentialUrl, deviceId: deviceId)
     let verified: VerifyResponse = try await post(verifyUrl, body: VerifyRequest(signature: signature))
@@ -405,6 +418,8 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private var stopping = false
     private var ready = false
     private var loginRequested = false
+    private let networkMonitor = NWPathMonitor()
+    private var receivedInitialPath = false
 
     init(residentMode: Bool, expectedDeviceId: String?) {
         self.residentMode = residentMode
@@ -424,7 +439,21 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 NSLog("ONE resident installation failed: \(error.localizedDescription)")
             }
         }
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(resumeConnection), name: NSWorkspace.didWakeNotification, object: nil)
+        networkMonitor.pathUpdateHandler = { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.receivedInitialPath { self.resumeConnection() }
+                self.receivedInitialPath = true
+            }
+        }
+        networkMonitor.start(queue: DispatchQueue(label: "one.network-state"))
         sessionTask = Task { await runSession() }
+    }
+
+    @objc private func resumeConnection() {
+        // Wake/network changes invalidate a half-open transport, not the login.
+        socket?.cancel(with: .goingAway, reason: nil)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -434,6 +463,8 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         stopping = true
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        networkMonitor.cancel()
         loginTask?.cancel()
         removalTask?.cancel()
         sessionTask?.cancel()
@@ -485,6 +516,10 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             if closeCode == 4009 { return }
             if closeCode == 4003 {
                 if !stopping { showFailure(LauncherError.message("ONE Key 已挂失或凭证无效")) }
+                return
+            }
+            if closeCode == 4006 {
+                if !stopping { showFailure(LauncherError.message("请更新 U 盘中的 ONE 启动器")) }
                 return
             }
             if residentMode, !stopping {

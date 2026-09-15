@@ -5,6 +5,7 @@ import { runBilledModel } from "./modelBilling.js";
 import { uid } from "./security.js";
 import type { ExecutionTask } from "./types.js";
 import { OneKeyPresence, type LocalToolName } from "./oneKeyPresence.js";
+import { requireInstallationId } from "./oneKeyInstallation.js";
 
 const maxSteps = 24;
 const allowedTools = new Set<LocalToolName>(["list_files", "read_file", "search_text", "write_file", "replace_in_file", "run_command"]);
@@ -114,11 +115,12 @@ export class LocalAgentService {
   }
 
   async cancel(taskId: string) {
-    this.cancelled.add(taskId);
     const db = await this.store.read();
     const task = db.executionTasks.find((item) => item.id === taskId);
     if (!task) throw new Error("执行任务不存在");
-    await this.presence.cancelExecution(task.deviceId, task.id).catch(() => undefined);
+    requireInstallationId(task.installationId);
+    this.cancelled.add(taskId);
+    await this.presence.cancelExecution(task.deviceId, task.id, task.installationId).catch(() => undefined);
     await this.finish(task, "cancelled", "执行已由用户停止");
   }
 
@@ -128,12 +130,13 @@ export class LocalAgentService {
       let db = await this.store.read();
       task = db.executionTasks.find((item) => item.id === taskId);
       if (!task) throw new Error("执行任务不存在");
+      requireInstallationId(task.installationId);
       const conversation = db.conversations.find((item) => item.id === task!.conversationId && item.workspaceId === task!.workspaceId && item.userId === task!.userId);
       const model = conversation ? db.models.find((item) => item.id === conversation.modelId && item.enabled && item.kind === "chat") : undefined;
       if (!model) throw new Error("当前对话没有可供 Local Agent 使用的模型");
 
       await this.update(task, "selecting_target", task.targetName ? "正在确认本机授权文件夹" : "请在电脑上选择 ONE 可以操作的文件夹");
-      const prepared = await this.presence.prepareLocalExecution(task.deviceId, task.id);
+      const prepared = await this.presence.prepareLocalExecution(task.deviceId, task.id, task.installationId);
       if (this.cancelled.has(task.id)) return;
       task = { ...task, targetName: prepared.targetName || task.targetName || "已授权文件夹" };
       await this.update(task, "running", `ONE Local Agent 已连接：${task.targetName}`);
@@ -151,7 +154,7 @@ export class LocalAgentService {
       for (let step = 1; step <= maxSteps; step++) {
         if (this.cancelled.has(task.id)) return;
         // Every paid step needs a fresh physical-Key proof, not only file operations.
-        await this.presence.requireProof({ deviceId: task.deviceId, workspaceId: task.workspaceId, userId: task.userId, method: "POST", path: `/api/executions/${task.id}/steps/${step}` });
+        await this.presence.requireProof({ deviceId: task.deviceId, installationId: task.installationId, workspaceId: task.workspaceId, userId: task.userId, method: "POST", path: `/api/executions/${task.id}/steps/${step}` });
         if (this.cancelled.has(task.id)) return;
         const result = await runBilledModel(this.store, {
           workspaceId: task.workspaceId, userId: task.userId, conversationId: task.conversationId,
@@ -182,7 +185,7 @@ export class LocalAgentService {
             }
             await this.event(task, toolEventKind(tool), toolEventText(tool, args));
             try {
-              const local = await this.presence.executeLocalTool(task.deviceId, task.id, tool, args);
+              const local = await this.presence.executeLocalTool(task.deviceId, task.id, tool, args, task.installationId);
               output = local.output || "完成";
             } catch (error) {
               output = `错误：${error instanceof Error ? error.message : "本机工具执行失败"}`;

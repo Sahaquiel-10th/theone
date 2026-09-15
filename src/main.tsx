@@ -1,4 +1,4 @@
-import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import React, { FormEvent, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import ReactMarkdown from "react-markdown";
@@ -58,12 +58,19 @@ import "./one-studio.css";
 import "./one-surfaces.css";
 import "./one-login.css";
 import "./one-attention.css";
-import { ONE_WAIT_INTERVAL_MS, ONE_WAIT_LINES } from "./oneVoice";
+import "./one-beta.css";
+import "./one-onboarding.css";
+import { BetaUserInsights } from "./BetaUserInsights";
 import { mergeTaskSnapshots, recoverTaskDraft } from "./oneStudioState";
 import { buildTaskActivityRows, getSettledTaskTransitions, selectConversationExecution, shouldAutoReadTaskNotice, type TaskActivityRow } from "./oneTaskAttention";
 import { OneCompanionEye as OneHeroEye } from "./OneCompanionEye";
+import { api, apiForUser, ApiError, expectUser, announceSessionChange, SESSION_EVENT, SESSION_STORAGE_KEY } from "./oneApi";
+import { chatSubmission, forgetChatSubmission, pendingChatSubmissions } from "./chatSubmission";
+import { Onboarding, ProfileNameEditor, BetaFeedbackControls, type AccountProfile, type ProfilePatch } from "./Onboarding";
+import { getNotePollFailureAction, prepareGetNoteAuthorizationWindow } from "./getNoteAuthorization";
 
 type Role = "admin" | "user";
+const PrivateApiContext = createContext<typeof api>(api);
 
 type User = {
   id: string;
@@ -75,6 +82,7 @@ type User = {
   preferredModelId?: string;
   balanceMicros?: number;
   totalChargedMicros?: number;
+  profile?: AccountProfile;
 };
 
 type Model = {
@@ -108,6 +116,9 @@ type Message = {
   sources?: SearchSource[];
   createdAt: string;
   modelId?: string;
+  requestId?: string;
+  knowledgeDiagnostics?: { status: "used" | "no_match" | "not_connected" | "partial" | "failed"; failures: { message: string }[] };
+  attachmentWarning?: string;
 };
 
 type AttachmentSummary = {
@@ -238,31 +249,6 @@ type ContextTraceSummary = { id: string; workspaceId: string; userId: string; us
 type ContextTraceDetail = ContextTraceSummary & { assistantMessageId: string; modelId: string; sections: { key: string; title: string; content: string }[] };
 type OneKeyCredential = { version: 1; deviceId: string; privateKeyRaw: string; publicKeyRaw: string; serverBaseUrl?: string };
 
-class ApiError extends Error {
-  constructor(message: string, readonly requestId?: string, readonly status?: number) {
-    super(message);
-  }
-}
-
-async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const isFormData = options.body instanceof FormData;
-  const response = await fetch(path, {
-    ...options,
-    credentials: "same-origin",
-    headers: {
-      ...(!isFormData ? { "Content-Type": "application/json" } : {}),
-      ...options.headers
-    }
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const requestId = payload.requestId || response.headers.get("x-request-id") || undefined;
-    const message = payload.error || (response.status === 504 ? "模型响应超时，请稍后重试" : `请求失败（${response.status}）`);
-    throw new ApiError(requestId ? `${message} · 编号 ${requestId}` : message, requestId, response.status);
-  }
-  return payload as T;
-}
-
 function dateTime(value: string) {
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
@@ -348,7 +334,7 @@ function OneWorkingPresence({ message, expanded = false }: { message: string; ex
       </div>
       <div className="one-working-copy">
         <small>ONE · THINKING</small>
-        <strong role="status">{expanded ? "让我认真想想。" : "正在认真想"}</strong>
+        <strong role="status">正在想…</strong>
         <span className="one-wait-line" key={message} aria-live="off">{message}</span>
       </div>
     </div>
@@ -396,19 +382,16 @@ function AttachmentList({ attachments, removable, onRemove }: {
   );
 }
 
-function MessageSources({ sources }: { sources?: SearchSource[] }) {
-  if (!sources?.length) return null;
+function MessageSources({ message }: { message: Message }) {
+  const { sources, knowledgeDiagnostics: knowledge } = message;
+  if (!sources?.length && !knowledge && !message.attachmentWarning) return null;
   return (
-    <div className="message-sources">
-      <span><Globe2 size={13} />参考来源</span>
-      <div>
-        {sources.map((source, index) => (
-          <a key={`${source.url}-${index}`} href={source.url} target="_blank" rel="noreferrer" title={source.snippet}>
-            <strong>{index + 1}</strong>{source.title}
-          </a>
-        ))}
-      </div>
-    </div>
+    <details className="one-answer-sources">
+      <summary>{knowledge ? ({ used: "已参考你的知识", no_match: "没有找到相关知识", not_connected: "未连接知识来源", partial: "已参考部分知识", failed: "知识读取失败 · 本次仅由模型回答" })[knowledge.status] : "查看参考资料"}{sources?.length ? ` · ${sources.length} 条来源` : ""}</summary>
+      {knowledge?.failures.map((failure, index) => <p className="one-source-warning" key={index}>{failure.message}</p>)}
+      {message.attachmentWarning ? <p className="one-source-warning">{message.attachmentWarning}</p> : null}
+      {sources?.map((source, index) => <section key={`${source.url}-${index}`}><a href={/^https?:\/\//i.test(source.url) ? source.url : undefined} target="_blank" rel="noreferrer">{index + 1}. {source.title}</a><p>{source.snippet}</p></section>)}
+    </details>
   );
 }
 
@@ -438,11 +421,10 @@ function Login({ onDone }: { onDone: (user: User) => void }) {
           <OneWordmark />
           <div className="login-divider" />
           <div>
-            <h1>ONE 在这里。</h1>
-            <p>带上你的想法，从一件小事开始。</p>
+            <h1>超管登录</h1>
           </div>
         </div>
-        <div className="notice">普通用户请插入 ONE Key，双击 U 盘中的 ONE 图标即可进入。下方仅供超管恢复登录。</div>
+        <div className="notice">普通用户请从 U 盘打开 ONE。</div>
         <label>
           账号
           <input
@@ -480,13 +462,14 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
   const [trace, setTrace] = useState("");
   const steps = events.filter(event => event.kind === "status" || event.kind === "error");
   const latestStep = steps[steps.length - 1]?.text;
+  const api = useContext(PrivateApiContext);
   const status = preparing ? "preparing" : task?.status || "preparing";
   const busy = preparing || isExecutionRunning(task);
   return <section id="one-current-execution" className={`execution-disclosure ${status} ${expanded ? "is-expanded" : ""}`} aria-label="本机执行">
     <div className="execution-disclosure-header">
       <button className="execution-disclosure-toggle" type="button" aria-expanded={expanded} aria-controls="one-execution-content" onClick={onToggle}>
         <span className={`task-indicator ${busy ? "running" : status}`} aria-hidden="true">{status === "completed" ? <Check size={12} /> : null}</span>
-        <span><strong>{executionStatusLabel(task, preparing)}</strong><small>{preparing ? "连接本机，准备开始" : task?.status === "completed" ? "结果已收好，点开查看" : task?.status === "failed" ? "需要你看一下，点开查看原因" : latestStep || "点开查看执行记录"}</small></span>
+        <span><strong>{executionStatusLabel(task, preparing)}</strong><small>{preparing ? "正在连接本机…" : task?.status === "completed" ? "查看结果" : task?.status === "failed" ? "查看问题" : latestStep || "查看过程"}</small></span>
         <span className="execution-expand-label">{expanded ? "收起" : "展开"}</span><ChevronDown size={15} />
       </button>
       {isExecutionRunning(task) ? <button className="execution-stop" type="button" onClick={event => onStop(event.currentTarget)}><Square size={10} />停止</button> : null}
@@ -494,8 +477,8 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
     <div className="execution-disclosure-grid" data-open={expanded}>
       <div className="execution-disclosure-clip" inert={!expanded} aria-hidden={!expanded}>
         <div id="one-execution-content" className="execution-disclosure-body">
-          {!busy && task?.status === "failed" ? <p className="execution-problem">{task.lastError || "这次执行没有完成，展开过程记录查看原因。"}</p> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{task.finalResponse}</ReactMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接本机，准备继续。" : task?.status === "cancelled" ? "本机操作已停止。准备好了，可以继续交代。" : latestStep || "正在等待本机反馈。你可以继续交代事情。"}</p>}
-          {steps.length > 0 ? <details className="execution-step-history"><summary>过程记录 · {steps.length} 条</summary><ol>{steps.slice(-30).map(event => <li key={event.id} className={event.kind}>{event.text}</li>)}</ol>{steps.length > 30 ? <small>这里展示最近 30 条记录。</small> : null}</details> : null}
+          {!busy && task?.status === "failed" ? <p className="execution-problem">{task.lastError || "执行未完成。"}</p> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{task.finalResponse}</ReactMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接本机…" : task?.status === "cancelled" ? "已停止。" : latestStep || "等待本机反馈…"}</p>}
+          {steps.length > 0 ? <details className="execution-step-history"><summary>过程记录 · {steps.length} 条</summary><ol>{steps.slice(-30).map(event => <li key={event.id} className={event.kind}>{event.text}</li>)}</ol>{steps.length > 30 ? <small>最近 30 条</small> : null}</details> : null}
           {task ? <details className="execution-step-history" onToggle={async event => {
             if (!event.currentTarget.open || trace) return;
             setTrace("正在读取…");
@@ -513,6 +496,33 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
 type TaskNotice = { id: string; conversationId: string; title: string; outcome: "reply" | "completed" | "failed" | "cancelled"; taskId?: string; read?: boolean };
 
 function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
+  const api = useContext(PrivateApiContext);
+  const [profile, setProfile] = useState<AccountProfile>(user.profile || { workspaceId: user.defaultWorkspaceId, displayName: "", onboarding: { knowledgeChoice: "pending" }, updatedAt: user.createdAt });
+  const [pendingRequests, setPendingRequests] = useState(() => pendingChatSubmissions(user.id));
+  const failedSubmissions = useRef(new Map<string, { content: string; attachmentIds: string[]; draftKey: string }>());
+  async function saveProfile(patch: ProfilePatch) { const result = await api<{ profile: AccountProfile }>("/api/me/profile", { method: "PATCH", body: JSON.stringify(patch) }); setProfile(result.profile); return result.profile; }
+  async function recoverAnswer(operationId: string) {
+    try {
+      const result = await api<{ conversation: Conversation }>(`/api/chat/operations/${encodeURIComponent(operationId)}`);
+      const latest = await api<{ conversation: Conversation }>(`/api/conversations/${encodeURIComponent(result.conversation.id)}`).catch(() => result);
+      result.conversation = latest.conversation;
+      const failedDraft = failedSubmissions.current.get(operationId);
+      if (failedDraft && resolvedDraftKey(composeKeyRef.current) === resolvedDraftKey(failedDraft.draftKey)
+        && currentDraftRef.current.content === failedDraft.content
+        && JSON.stringify(currentDraftRef.current.attachments.map(item => item.id)) === JSON.stringify(failedDraft.attachmentIds)) {
+        setContent(""); setPendingAttachments([]); delete draftsRef.current[resolvedDraftKey(failedDraft.draftKey)];
+      }
+      failedSubmissions.current.delete(operationId);
+      setConversations(items => [{ ...result.conversation, messagesLoaded: true }, ...items.filter(item => item.id !== result.conversation.id)]);
+      setActiveId(result.conversation.id); setComposeNew(false); setView("chat"); setError(""); setFailedMessage("");
+      forgetChatSubmission(user.id, operationId); setPendingRequests(pendingChatSubmissions(user.id));
+    } catch (error) {
+      // A 404 can race an earlier request still entering the server. Keep its ID
+      // so a user retry remains idempotent; only an explicit safe failure resets it.
+      if (error instanceof ApiError && error.retryable === true) { forgetChatSubmission(user.id, operationId); setPendingRequests(pendingChatSubmissions(user.id)); }
+      setError(error instanceof Error ? error.message : "暂时无法确认，请稍后查看");
+    }
+  }
   const conversationPageSize = 30;
   const [models, setModels] = useState<Model[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -535,7 +545,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [showArchived, setShowArchived] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [webSearch, setWebSearch] = useState(false);
-  const [waitIndex, setWaitIndex] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [failedMessage, setFailedMessage] = useState("");
   const [workspaceSectionOpen, setWorkspaceSectionOpen] = useState(true);
@@ -610,7 +619,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const visibleConversations = conversations.filter((conversation) => conversation.archived === showArchived);
   const ungroupedConversations = visibleConversations.filter((conversation) => !conversation.folderId);
   const isWaiting = Object.values(loadingByConversation).some(Boolean) || executionBusy || preparingExecution;
-  const waitingAside = ONE_WAIT_LINES[waitIndex % ONE_WAIT_LINES.length];
 
   function announceTask(item: TaskNotice) {
     const read = shouldAutoReadTaskNotice(resolvedDraftKey(viewedConversationRef.current), item.conversationId, document.visibilityState === "visible");
@@ -649,16 +657,17 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }, [revealExecutionId, executionTask?.id, view]);
 
   async function refresh() {
+    const keep = <T,>(fallback: T) => (error: Error) => { setError(error.message); return fallback; };
     const [modelResult, conversationResult, workspaceResult, agentResult, capabilityResult, knowledgeResult, notionResult] = await Promise.all([
-      api<{ models: Model[]; defaultModelId: string }>("/api/models"),
+      api<{ models: Model[]; defaultModelId: string }>("/api/models").catch(keep({ models, defaultModelId })),
       api<{ conversations: Conversation[]; pagination: { page: number; hasMore: boolean } }>(
         `/api/conversations?summary=1&page=1&pageSize=${conversationPageSize}&archived=${showArchived}`
-      ),
-      api<{ folders: ConversationFolder[] }>("/api/folders"),
-      api<{ agents: Agent[] }>("/api/agents"),
-      api<AppCapabilities>("/api/capabilities"),
-      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/getnote"),
-      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/notion")
+      ).catch(keep({ conversations, pagination: { page: conversationPage, hasMore: hasMoreConversations } })),
+      api<{ folders: ConversationFolder[] }>("/api/folders").catch(keep({ folders })),
+      api<{ agents: Agent[] }>("/api/agents").catch(keep({ agents })),
+      api<AppCapabilities>("/api/capabilities").catch(keep(capabilities)),
+      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/getnote").catch(keep({ connection: knowledgeConnection, configured: false })),
+      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/notion").catch(keep({ connection: notionConnection, configured: false }))
     ]);
     setModels(modelResult.models);
     setDefaultModelId(modelResult.defaultModelId);
@@ -920,15 +929,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     } catch (err) { setError(err instanceof Error ? err.message : "暂时无法打开这件事"); }
   }
 
-  useEffect(() => {
-    if (!isWaiting) return;
-    setWaitIndex(0);
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") setWaitIndex((index) => index + 1);
-    }, ONE_WAIT_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [isWaiting]);
-
   function startNewChat() {
     switchDraft("new");
     transitionInterface(() => {
@@ -1006,6 +1006,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   async function sendMessage(rawText: string) {
+    let operationId = "";
     const target = targetConversation;
     const modelId = target?.modelId || draftModelId;
     const text = rawText.trim();
@@ -1062,18 +1063,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       );
     }
     try {
+      const payload = { content: text, modelId, conversationId: isNewConversation ? "" : target?.id,
+        folderId: draftWorkspaceId, agentId: isNewConversation ? draftAgentId : target?.agentId,
+        attachmentIds: attachments.map(attachment => attachment.id), webSearch: useWebSearch };
+      operationId = await chatSubmission(user.id, payload);
       const result = await api<{ conversation: Conversation; knowledgeWarning?: string }>("/api/chat", {
         method: "POST",
-        body: JSON.stringify({
-          content: text,
-          modelId,
-          conversationId: isNewConversation ? "" : target?.id,
-          folderId: draftWorkspaceId,
-          agentId: isNewConversation ? draftAgentId : target?.agentId,
-          attachmentIds: attachments.map((attachment) => attachment.id),
-          webSearch: useWebSearch
-        })
+        body: JSON.stringify({ ...payload, operationId })
       });
+      forgetChatSubmission(user.id, operationId); setPendingRequests(pendingChatSubmissions(user.id));
       setConversations((items) => {
         const rest = items.filter((item) => item.id !== result.conversation.id && item.id !== tempId);
         return [{ ...result.conversation, messagesLoaded: true }, ...rest];
@@ -1086,11 +1084,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       setActiveId((current) => (current === tempId || current === target?.id ? result.conversation.id : current));
       announceTask({ id: `reply:${result.conversation.id}:${result.conversation.updatedAt}`, conversationId: result.conversation.id, title: result.conversation.title, outcome: "reply" });
       setWebSearch(false);
-      if (result.knowledgeWarning) {
-        setNotice("知识来源暂时不可用，本次已使用 AI 直接回答。");
-        window.setTimeout(() => setNotice(""), 4200);
-      }
     } catch (err) {
+      if (operationId && err instanceof ApiError && err.retryable === true) forgetChatSubmission(user.id, operationId);
+      if (operationId) failedSubmissions.current.set(operationId, { content: text, attachmentIds: attachments.map(item => item.id), draftKey: loadingKey });
+      setPendingRequests(pendingChatSubmissions(user.id));
       const draftKey = resolvedDraftKey(loadingKey);
       const stillComposing = resolvedDraftKey(composeKeyRef.current) === draftKey;
       const existingDraft = stillComposing ? currentDraftRef.current : draftsRef.current[draftKey];
@@ -1112,7 +1109,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                 : item
             )
       );
-      setError(stillComposing ? (err instanceof Error ? err.message : "发送失败") : `「${titleFrom(text)}」发送失败，回到这件事即可重试，草稿已保留。`);
+      setError(stillComposing ? (err instanceof Error ? err.message : "发送失败") : `「${titleFrom(text)}」发送失败，草稿已保留。`);
     } finally {
       setLoadingByConversation((items) => ({ ...items, [loadingKey]: false }));
     }
@@ -1359,7 +1356,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             <Archive size={16} />
           </button>
           <button className="one-user-button" type="button" title="账号" onClick={() => openSurface("account")}>
-            {user.username.slice(0, 1).toUpperCase()}
+            {(profile.displayName || user.username).slice(0, 1).toUpperCase()}
           </button>
         </div>
       </header>
@@ -1381,7 +1378,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                   </button>
                   <button type="button" title={conversation.archived ? "取消归档" : "归档"} disabled={conversation.id.startsWith("tmp_") || Boolean(loadingByConversation[conversation.id]) || runningExecutions.some(task => task.conversationId === conversation.id)} onClick={() => archiveConversation(conversation)}><Archive size={14} /></button>
                 </div>
-              )) : <div className="one-popover-empty">这里还没有任务。<br />问 ONE 一个问题，就从这里开始。</div>}
+              )) : <div className="one-popover-empty">问我一件事。</div>}
             </div>
             {hasMoreConversations ? <button className="one-load-more" type="button" disabled={loadingMoreConversations} onClick={loadMoreConversations}>{loadingMoreConversations ? "加载中…" : "加载更多"}</button> : null}
             <footer className="one-popover-footer">
@@ -1402,7 +1399,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : setKnowledgeConnection(next)}
         />
       ) : view === "account" ? (
-        <AccountPage user={user} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setHistoryOpen(true)} />
+        <AccountPage user={user} profile={profile} onSaveProfile={saveProfile} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setHistoryOpen(true)} />
       ) : (
       <section className="studio-task" key={activeId}>
         <header className="studio-task-header">
@@ -1436,7 +1433,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                             </button>
                           ) : null}
                         </div>
-                        <MessageSources sources={message.sources} />
+                        <MessageSources message={message} />
+                        {message.id && active && !active.id.startsWith("tmp_") ? <BetaFeedbackControls key={message.id} messageId={message.id} requestId={message.requestId} onSave={async input => (await api<{ feedback: import("./Onboarding").OwnBetaFeedback }>("/api/me/feedback", { method: "POST", body: JSON.stringify(input) })).feedback} /> : null}
                       </>
                     ) : (
                       <>
@@ -1454,7 +1452,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                 </article>
               </React.Fragment>
             ))
-          ) : <div className="studio-empty">{activeLoading ? "正在打开这件事…" : failedTaskIds.has(activeId) ? "刚才没发出去，草稿还在。准备好了可以再试一次。" : "这里会留下我们的想法和结果。"}</div>}
+          ) : <div className="studio-empty">{activeLoading ? "正在打开…" : failedTaskIds.has(activeId) ? "发送失败，草稿已保留。" : "发一条消息。"}</div>}
           {activePreparing || executionTask ? <ExecutionDisclosure key={executionTask?.id || "preparing"} task={executionTask} events={executionEvents} preparing={activePreparing} expanded={Boolean(executionTask && expandedExecutionId === executionTask.id)} onToggle={() => setExpandedExecutionId(expandedExecutionId === executionTask?.id ? "" : executionTask?.id || "")} onStop={source => cancelExecution(source)} /> : null}
         </div>
       </section>
@@ -1462,13 +1460,13 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       </section>
 
       <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 助手">
+        {view === "chat" && !profile.onboarding.completedAt ? <Onboarding profile={profile} knowledgeConnected={knowledgeConnection.status === "connected" || notionConnection.status === "connected"} onSave={saveProfile} onOpenKnowledge={() => openSurface("knowledge")} onStartQuestion={suggestion => { setContent(suggestion); setComposeNew(true); setView("chat"); }} /> : null}
         <div className="studio-presence">
           <OneHeroEye mood={heroMood} />
           <div className="studio-presence-copy"><span className="studio-eyebrow">ONE IS WITH YOU</span>
-          <h2>{activeAgent?.name || (studioIdle ? "我在，慢慢说。" : "我在，随时说。")}</h2>
-          {studioIdle ? <p>一个念头，一件小事。我们从这里开始。</p> : null}</div>
+          <h2>{activeAgent?.name || (studioIdle ? `${profile.displayName ? `${profile.displayName}，` : ""}我在。` : "我在。")}</h2></div>
         </div>
-        {(thinkingConversations.length > 0 || executionBusy || preparingExecution) ? <div className="studio-wait" aria-live="off"><p key={waitingAside}>{waitingAside}</p></div> : null}
+        {(thinkingConversations.length > 0 || executionBusy || preparingExecution) ? <div className="studio-wait" aria-live="off"><p>正在想…</p></div> : null}
 
         {otherRows.length > 0 || unreadNotices.length > 0 || taskStatusUnavailable ? <section className="studio-activity attention-activity" aria-label="任务动态">
           {otherRows.length > 0 || unreadNotices.length > 0 ? <button className="attention-activity-toggle" type="button" aria-expanded={activityExpanded} aria-controls="attention-task-list" onClick={() => setActivityExpanded(value => !value)}>
@@ -1492,8 +1490,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </div>
 
         <form className="composer studio-composer" onSubmit={send}>
+          {!models.length ? <div className="chat-error"><span>模型未就绪，请联系管理员。</span><button type="button" onClick={() => void refresh()}>重试</button></div> : null}
+          {pendingRequests.length ? <details className="one-pending-answers"><summary>有 {pendingRequests.length} 条消息待确认 · 查看原结果，不重复扣费</summary>{pendingRequests.map(item => <button type="button" key={item.operationId} onClick={() => void recoverAnswer(item.operationId)}>查看 {dateTime(item.createdAt)} 的结果</button>)}</details> : null}
           {!studioIdle ? <div className="studio-compose-context">
-            <span title={composerTarget}>{composeMode === "execution" ? "继续执行" : composeNew || !active ? "新事情" : "继续聊"}{active && !composeNew ? ` · ${active.title}` : " · 不打断手上的事"}</span>
+            <span title={composerTarget}>{composeMode === "execution" ? "继续执行" : composeNew || !active ? "新事情" : "继续聊"}{active && !composeNew ? ` · ${active.title}` : ""}</span>
             {active && composeNew ? <button type="button" onClick={() => { switchDraft(active.id); setComposeNew(false); }}>回到这件事</button> : active ? <button type="button" onClick={beginNewTask}><Plus size={12} />新事情</button> : null}
           </div> : null}
           {notice ? <div className="notice">{notice}</div> : null}
@@ -1523,7 +1523,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               onCompositionEnd={() => setIsComposing(false)}
               onKeyDown={handleComposerKeyDown}
               onPaste={handleComposerPaste}
-              placeholder={composeMode === "execution" ? "补充要求，继续在电脑上执行…" : currentModel?.kind === "image" ? "想怎么改？也可以直接粘贴图片" : targetLoading ? "还想到什么？可以先记在这里…" : composeNew || !active ? "想找点什么，或把一件事交给我…" : "接着说，我在听…"}
+              placeholder={composeMode === "execution" ? "补充要求" : currentModel?.kind === "image" ? "描述你想怎么改" : "告诉我，你想做什么"}
               rows={3}
             />
             <button id="one-studio-send" className="primary send" type="submit" aria-label={composeMode === "execution" ? "发送并继续执行" : "发送消息"} title={targetLoading ? "这件事正在回复，可以新开一件事" : "发送消息"} disabled={uploadingAttachments || (composeMode === "execution" ? taskStatusUnavailable || preparingExecution || executionBusy || !content.trim() || pendingAttachments.length > 0 : !activeModelId || targetLoading || (!content.trim() && !pendingAttachments.length))}>
@@ -1535,18 +1535,18 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             <span className="studio-keyboard-hint">Enter 发送 · ⇧ Enter 换行</span>
           </div>
           <div className="studio-composer-status">
-            {active && !composeNew && executionTask && !isExecutionRunning(executionTask) ? <button type="button" className="studio-mode-switch" onClick={() => setComposeMode(mode => mode === "chat" ? "execution" : "chat")}>{composeMode === "execution" ? "只想聊聊？切回对话" : "需要继续操作电脑？切换到执行"}</button> : executionBusy && composeMode === "chat" ? <p className="studio-context-hint">聊天不会改变正在执行的步骤。</p> : null}
+            {active && !composeNew && executionTask && !isExecutionRunning(executionTask) ? <button type="button" className="studio-mode-switch" onClick={() => setComposeMode(mode => mode === "chat" ? "execution" : "chat")}>{composeMode === "execution" ? "切回对话" : "切换到执行"}</button> : executionBusy && composeMode === "chat" ? <p className="studio-context-hint">本机任务仍在执行。</p> : null}
           </div>
         </form>
           {studioIdle ? (
             <div className="studio-suggestions">
-              <span>或者，从这里开始</span>
+              <span>试试这些</span>
               <button type="button" onClick={() => setContent("帮我回想最近反复提到的重要想法")}><span>我最近在反复想什么？</span><i aria-hidden="true">↗</i></button>
               <button type="button" onClick={() => setContent("结合我的知识，把现在最重要的事情整理成一个行动方案")}><span>把一个想法变成行动</span><i aria-hidden="true">↗</i></button>
               <button type="button" onClick={() => setContent("从我的个人知识中，找出现在最值得重新关注的内容")}><span>找找被我忘掉的好东西</span><i aria-hidden="true">↗</i></button>
             </div>
           ) : null}
-        <footer className="studio-assistant-footer"><span className={`connection-dot ${knowledgeConnection.status === "connected" || notionConnection.status === "connected" ? "connected" : "disconnected"}`} /><button type="button" onClick={() => openSurface("knowledge")}>{knowledgeConnection.status === "connected" || notionConnection.status === "connected" ? "你的知识，随时在身边" : "连接知识，让 ONE 更懂你"}</button></footer>
+        <footer className="studio-assistant-footer"><span className={`connection-dot ${knowledgeConnection.status === "connected" || notionConnection.status === "connected" ? "connected" : "disconnected"}`} /><button type="button" onClick={() => openSurface("knowledge")}>{knowledgeConnection.status === "connected" || notionConnection.status === "connected" ? "知识已连接" : "连接知识"}</button></footer>
       </aside>
       </div>
     </main>
@@ -1614,6 +1614,7 @@ function AgentsPage({
   onEdit: (id: string | "new") => void;
   onOpenSidebar: () => void;
 }) {
+  const api = useContext(PrivateApiContext);
   const [query, setQuery] = useState("");
   const [activeGroup, setActiveGroup] = useState("全部");
   const [notice, setNotice] = useState("");
@@ -1674,10 +1675,7 @@ function AgentsPage({
     <section className="agents-page">
       <header className="admin-header">
         <button className="mobile-menu" title="打开导航" onClick={onOpenSidebar}><Menu size={20} /></button>
-        <div>
-          <h2>智能体</h2>
-          <p>把常用任务封装成固定角色、流程和输出风格</p>
-        </div>
+        <div><h2>智能体</h2></div>
       </header>
       <div className="agent-toolbar">
         <label className="agent-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索智能体、描述或分组" /></label>
@@ -1706,7 +1704,7 @@ function AgentsPage({
               <button className="agent-card create-card" onClick={startCreate}>
                 <Plus size={24} />
                 <strong>创建官方智能体</strong>
-                <span>发布后所有员工可见，并自动生成分享链接</span>
+                <span>所有用户可见 · 自动生成分享链接</span>
               </button>
             ) : null}
             {!officialAgents.length && user.role !== "admin" ? <div className="agent-empty">暂无官方智能体</div> : null}
@@ -1730,7 +1728,6 @@ function AgentsPage({
             <button className="agent-card create-card" onClick={startCreate}>
               <Plus size={24} />
               <strong>创建智能体</strong>
-              <span>保存一套常用提示词和使用入口</span>
             </button>
           </div>
         </section> : null}
@@ -1746,6 +1743,7 @@ function AgentEditorPage({ agent, agents, models, onCancel, onSaved }: {
   onCancel: () => void;
   onSaved: () => Promise<void>;
 }) {
+  const api = useContext(PrivateApiContext);
   const chatModels = models.filter((model) => model.kind === "chat");
   const [draft, setDraft] = useState({
     name: agent?.name || "",
@@ -1804,14 +1802,14 @@ function AgentEditorPage({ agent, agents, models, onCancel, onSaved }: {
   return <section className="agent-workbench">
     <header className="agent-workbench-header">
       <button className="secondary" type="button" onClick={onCancel}><ChevronLeft size={16} />返回</button>
-      <div><h2>{agent ? "编辑智能体" : "创建智能体"}</h2><p>配置和调试同步进行，保存后模型将对使用者锁定</p></div>
+      <div><h2>{agent ? "编辑智能体" : "创建智能体"}</h2></div>
       <div className="workbench-actions"><button className="secondary" type="button" onClick={onCancel}>取消</button><button className="primary" type="submit" form="agent-config" disabled={saving || !draft.name.trim() || !draft.description.trim() || !draft.modelId}><Save size={16} />{saving ? "保存中" : "保存智能体"}</button></div>
     </header>
     <div className="agent-workbench-body">
       <form id="agent-config" className="agent-config" onSubmit={save}>
         <section><h3>基本信息</h3><div className="agent-identity-preview"><span style={{ background: draft.color }}>{draft.avatar}</span><div><strong>{draft.name || "未命名智能体"}</strong><small>{draft.group || "未分组"}</small></div></div>
           <label>名称<input maxLength={40} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="例如：详情页策划助手" /></label>
-          <label>描述<textarea maxLength={220} rows={3} value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} placeholder="告诉使用者它擅长什么、该怎么用" /></label>
+          <label>描述<textarea maxLength={220} rows={3} value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} placeholder="一句话说明用途" /></label>
           <div className="agent-group-field">
             <label htmlFor="agent-group">分组</label>
             <div className="agent-group-combobox" onBlur={(event) => {
@@ -1841,21 +1839,21 @@ function AgentEditorPage({ agent, agents, models, onCancel, onSaved }: {
                 </div>
               ) : null}
             </div>
-            <small>可选择已有分组，也可直接输入新分组</small>
           </div>
           <label>固定模型<select value={draft.modelId} onChange={(e) => setDraft({ ...draft, modelId: e.target.value })}><option value="">请选择聊天模型</option>{chatModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select><small>保存后，使用者无法更改此智能体的模型</small></label>
         </section>
         <section><h3>外观</h3><div className="appearance-options"><div>{emojis.map((emoji) => <button type="button" key={emoji} className={draft.avatar === emoji ? "active" : ""} onClick={() => setDraft({ ...draft, avatar: emoji })}>{emoji}</button>)}</div><div>{colors.map((color) => <button type="button" aria-label={color} key={color} className={draft.color === color ? "active" : ""} style={{ background: color }} onClick={() => setDraft({ ...draft, color })} />)}</div></div></section>
-        <section><h3>指令</h3><label>系统提示词<textarea rows={10} maxLength={6000} value={draft.prompt} onChange={(e) => setDraft({ ...draft, prompt: e.target.value })} placeholder="定义角色、工作流程、边界和输出格式。右侧可随时调试。" /><small>{draft.prompt.length} / 6000</small></label></section>
+        <section><h3>指令</h3><label>系统提示词<textarea rows={10} maxLength={6000} value={draft.prompt} onChange={(e) => setDraft({ ...draft, prompt: e.target.value })} placeholder="角色、流程、边界、输出格式" /><small>{draft.prompt.length} / 6000</small></label></section>
         <fieldset className="agent-tool-settings"><legend>可用能力</legend><label><input type="checkbox" checked={draft.allowFileUpload} onChange={(e) => setDraft({ ...draft, allowFileUpload: e.target.checked, allowImageInput: e.target.checked ? draft.allowImageInput : false })} /><span><Paperclip size={16} />文件上传</span></label><label><input type="checkbox" checked={draft.allowImageInput} disabled={!draft.allowFileUpload} onChange={(e) => setDraft({ ...draft, allowImageInput: e.target.checked })} /><span><Image size={16} />图片理解</span></label><label><input type="checkbox" checked={draft.allowWebSearch} onChange={(e) => setDraft({ ...draft, allowWebSearch: e.target.checked })} /><span><Globe2 size={16} />联网搜索</span></label></fieldset>
         {error ? <div className="error">{error}</div> : null}
       </form>
-      <section className="agent-debug"><header><div><strong>预览与调试</strong><small>{chatModels.find((model) => model.id === draft.modelId)?.name || "尚未选择模型"}</small></div><button className="secondary" onClick={() => setDebugMessages([])}>清空</button></header><div className="debug-messages">{debugMessages.length ? debugMessages.map((message, index) => <div key={index} className={`debug-message ${message.role}`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>) : <div className="debug-empty"><span style={{ background: draft.color }}>{draft.avatar}</span><h3>{draft.name || "你的智能体"}</h3><p>{draft.description || "在左侧填写描述，然后发一条消息测试提示词和模型效果。"}</p></div>}{debugging ? <div className="typing">正在生成测试回答…</div> : null}</div><form className="debug-composer" onSubmit={debug}><textarea rows={2} value={debugInput} onChange={(e) => setDebugInput(e.target.value)} placeholder="输入一条测试消息" /><button className="primary send" disabled={!debugInput.trim() || !draft.modelId || debugging}><Send size={17} /></button></form></section>
+      <section className="agent-debug"><header><div><strong>预览与调试</strong><small>{chatModels.find((model) => model.id === draft.modelId)?.name || "尚未选择模型"}</small></div><button className="secondary" onClick={() => setDebugMessages([])}>清空</button></header><div className="debug-messages">{debugMessages.length ? debugMessages.map((message, index) => <div key={index} className={`debug-message ${message.role}`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>) : <div className="debug-empty"><span style={{ background: draft.color }}>{draft.avatar}</span><h3>{draft.name || "你的智能体"}</h3><p>{draft.description || "发一条消息测试"}</p></div>}{debugging ? <div className="typing">正在生成测试回答…</div> : null}</div><form className="debug-composer" onSubmit={debug}><textarea rows={2} value={debugInput} onChange={(e) => setDebugInput(e.target.value)} placeholder="输入一条测试消息" /><button className="primary send" disabled={!debugInput.trim() || !draft.modelId || debugging}><Send size={17} /></button></form></section>
     </div>
   </section>;
 }
 
-function AccountPage({ user, models, defaultModelId, onModelChange, onOpenSidebar }: { user: User; models: Model[]; defaultModelId: string; onModelChange: () => Promise<void>; onOpenSidebar: () => void }) {
+function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onModelChange, onOpenSidebar }: { user: User; profile: AccountProfile; onSaveProfile: (patch: ProfilePatch) => Promise<unknown>; models: Model[]; defaultModelId: string; onModelChange: () => Promise<void>; onOpenSidebar: () => void }) {
+  const api = useContext(PrivateApiContext);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -1907,25 +1905,24 @@ function AccountPage({ user, models, defaultModelId, onModelChange, onOpenSideba
         <button className="mobile-menu" title="打开导航" onClick={onOpenSidebar}><Menu size={20} /></button>
         <div>
           <h2>账号设置</h2>
-          <p>{user.username} · {user.role === "admin" ? "管理员" : "ONE 用户"}</p>
+          <p>{profile.displayName || user.username} · {user.role === "admin" ? "管理员" : "ONE 用户"}</p>
         </div>
       </header>
       <div className="account-body">
+        <section className="account-panel"><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
         <section className="account-panel account-balance-card">
           <div className="account-panel-title"><Wallet size={18} /><h3>我的电力</h3></div>
           <strong className="power-balance">{power(billing?.balanceMicros)} <small>电力</small></strong>
-          {billing?.reservedMicros ? <p className="hint">其中 {power(billing.reservedMicros, 6)} 电力正在预占，可用 {power(billing.availableMicros, 6)}。待核对的调用请联系管理员处理。</p> : null}
-          <p className="hint">按 AI 实际用量结算，每一笔都可以在账单里查看。</p>
+          {billing?.reservedMicros ? <p className="hint">预占 {power(billing.reservedMicros, 6)}，可用 {power(billing.availableMicros, 6)}；待核对调用请联系管理员。</p> : null}
           <form className="recharge-inline" onSubmit={recharge}>
             <select value={rechargePower} onChange={(event) => setRechargePower(event.target.value)}><option value="10">10 电力</option><option value="50">50 电力</option><option value="100">100 电力</option><option value="500">500 电力</option></select>
             <span>约 ¥{((Number(rechargePower) || 0) * (billing?.rechargeCnyPerPower || 0)).toFixed(2)}</span>
-            <button className="primary" type="submit">充值</button>
+            <button className="primary" type="submit">申请充值</button>
           </form>
-          <small className="hint">在线支付暂未开放。提交后会生成充值申请，请联系管理员完成充值。</small>
+          <small className="hint">在线支付未开放；提交后联系管理员充值。</small>
         </section>
         <section className="account-panel">
           <div className="account-panel-title"><Bot size={18} /><h3>默认模型</h3></div>
-          <p className="hint">ONE 已经替你选好默认模型。只有需要时，才在这里切换。</p>
           <select value={selectedModelId} onChange={(event) => chooseModel(event.target.value)}>{models.filter((model) => model.kind === "chat").map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select>
         </section>
         {user.role === "admin" ? <form className="account-panel" onSubmit={changePassword}>
@@ -1952,6 +1949,7 @@ function KnowledgePage({
   onOpenSidebar: () => void;
   onConnectionChange?: (connection: KnowledgeConnection) => void;
 }) {
+  const api = useContext(PrivateApiContext);
   const [connection, setConnection] = useState<KnowledgeConnection>({ provider: "getnote", status: "disconnected" });
   const [notionConnection, setNotionConnection] = useState<KnowledgeConnection>({ provider: "notion", status: "disconnected" });
   const [configured, setConfigured] = useState(false);
@@ -1963,23 +1961,32 @@ function KnowledgePage({
   const [notice, setNotice] = useState("");
 
   async function load() {
-    const [result, notion] = await Promise.all([
+    const [getNoteResult, notionResult] = await Promise.allSettled([
       api<{ connection: KnowledgeConnection; configured: boolean; testConnectAvailable?: boolean }>("/api/knowledge/connections/getnote"),
       api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/notion")
     ]);
-    setConnection(result.connection);
-    setConfigured(result.configured);
-    setTestConnectAvailable(Boolean(result.testConnectAvailable));
-    setNotionConnection(notion.connection);
-    setNotionConfigured(notion.configured);
-    onConnectionChange?.(result.connection);
-    onConnectionChange?.(notion.connection);
+    if (getNoteResult.status === "fulfilled") {
+      setConnection(getNoteResult.value.connection);
+      setConfigured(getNoteResult.value.configured);
+      setTestConnectAvailable(Boolean(getNoteResult.value.testConnectAvailable));
+      onConnectionChange?.(getNoteResult.value.connection);
+    } else {
+      setConfigured(false);
+    }
+    if (notionResult.status === "fulfilled") {
+      setNotionConnection(notionResult.value.connection);
+      setNotionConfigured(notionResult.value.configured);
+      onConnectionChange?.(notionResult.value.connection);
+    } else {
+      setNotionConfigured(false);
+    }
+    if (getNoteResult.status === "rejected") throw getNoteResult.reason;
   }
 
   useEffect(() => {
     const outcome = new URLSearchParams(window.location.search).get("notion");
     if (outcome) {
-      setNotice(outcome === "connected" ? "Notion 连接成功，聊天时会自动读取相关页面。" : outcome === "cancelled" ? "已取消 Notion 授权。" : "Notion 授权没有完成，请重试。");
+      setNotice(outcome === "connected" ? "Notion 已连接" : outcome === "cancelled" ? "Notion 授权已取消" : "Notion 授权未完成，请重试。");
       const url = new URL(window.location.href);
       url.searchParams.delete("notion");
       window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
@@ -1998,24 +2005,33 @@ function KnowledgePage({
       if (cancelled) return;
       if (Date.now() >= expiresAt) { setFlow(null); setPolling(false); setNotice("授权已过期，请重新连接。"); return; }
       try {
-        const result = await api<{ status?: "pending"; retryAfterSeconds?: number; connection?: KnowledgeConnection }>(`/api/knowledge/connections/getnote/device-flow/${encodeURIComponent(flow!.flowId)}/poll`, { method: "POST" });
+        const result = await api<{ status?: "pending"; phase?: "provider_retry" | "verifying"; retryAfterSeconds?: number; connection?: KnowledgeConnection }>(`/api/knowledge/connections/getnote/device-flow/${encodeURIComponent(flow!.flowId)}/poll`, { method: "POST" });
         if (cancelled) return;
         if (result.connection) {
           setConnection(result.connection);
           onConnectionChange?.(result.connection);
           setFlow(null);
           setPolling(false);
-          setNotice("连接成功，ONE 现在可以读取你的得到大脑知识。");
+          setNotice("得到大脑已连接");
         } else {
           retries = 0;
+          if (result.phase === "verifying") setNotice("正在确认知识权限…");
+          else if (result.phase === "provider_retry") setNotice("连接不稳定，正在重试…");
           timer = window.setTimeout(poll, Math.max(delay, (result.retryAfterSeconds || 0) * 1000));
         }
       } catch (err) {
         if (cancelled) return;
-        if (err instanceof ApiError && [400, 401, 403, 404, 410, 428].includes(err.status || 0)) {
+        const action = getNotePollFailureAction(err);
+        if (action === "retry_key") {
+          setNotice("请插入 ONE Key。插入后会继续。");
+          timer = window.setTimeout(poll, delay);
+        } else if (action === "retry_provider") {
+          setNotice("连接不稳定，正在重试…");
+          timer = window.setTimeout(poll, Math.min(30000, delay * 2 ** ++retries));
+        } else if (err instanceof ApiError && [400, 401, 403, 404, 410, 502, 503].includes(err.status || 0)) {
           setFlow(null); setPolling(false); setNotice(err.message);
         } else {
-          setNotice("连接暂时不稳定，正在自动重试；你可以继续完成官方授权。");
+          setNotice("连接不稳定，正在重试…");
           timer = window.setTimeout(poll, Math.min(30000, delay * 2 ** ++retries));
         }
       }
@@ -2026,29 +2042,49 @@ function KnowledgePage({
 
   async function connect() {
     setNotice("");
+    let authorizationWindow = null as ReturnType<typeof prepareGetNoteAuthorizationWindow>;
+    if (!testConnectAvailable) {
+      authorizationWindow = prepareGetNoteAuthorizationWindow((url, target) => window.open(url, target) as ReturnType<typeof prepareGetNoteAuthorizationWindow>);
+    }
     try {
       if (testConnectAvailable) {
         const result = await api<{ connection: KnowledgeConnection }>("/api/knowledge/connections/getnote/test-connect", { method: "POST" });
         setConnection(result.connection);
         onConnectionChange?.(result.connection);
-        setNotice("测试知识已连接，现在可以直接提问。");
+        setNotice("测试知识已连接");
         return;
       }
       const result = await api<GetNoteDeviceFlow>("/api/knowledge/connections/getnote/device-flow", { method: "POST" });
       setFlow(result);
       setPolling(true);
-      window.open(result.verificationUri, "_blank", "noopener,noreferrer");
+      if (authorizationWindow && !authorizationWindow.closed) authorizationWindow.location.replace(result.verificationUri);
+      else setNotice("点击“打开得到大脑”完成授权。");
     } catch (err) {
+      authorizationWindow?.close();
       setNotice(err instanceof Error ? err.message : "无法发起授权");
     }
   }
 
   async function disconnect() {
-    if (!confirm("确认断开当前工作区与得到大脑的连接？")) return;
+    if (!confirm("断开得到大脑？")) return;
     await api("/api/knowledge/connections/getnote", { method: "DELETE" });
     setFlow(null);
     setPolling(false);
     await load();
+  }
+
+  async function cancelGetNoteFlow() {
+    const current = flow;
+    setFlow(null);
+    setPolling(false);
+    setNotice("");
+    if (!current) return;
+    try {
+      await api(`/api/knowledge/connections/getnote/device-flow/${encodeURIComponent(current.flowId)}`, { method: "DELETE" });
+      await load();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "无法取消授权");
+    }
   }
 
   async function connectNotion() {
@@ -2064,43 +2100,43 @@ function KnowledgePage({
   }
 
   async function disconnectNotion() {
-    if (!confirm("确认断开当前工作区与 Notion 的连接？")) return;
+    if (!confirm("断开 Notion？")) return;
     await api("/api/knowledge/connections/notion", { method: "DELETE" });
     await load();
-    setNotice("已断开 Notion。你仍可随时重新连接。");
+    setNotice("Notion 已断开");
   }
 
   return (
     <section className="account-page">
       <header className="admin-header">
         <button className="mobile-menu" title="打开导航" onClick={onOpenSidebar}><Menu size={20} /></button>
-        <div><h2>知识来源</h2><p>授权一次，之后由 ONE 自动读取并交给 AI</p></div>
+        <div><h2>知识来源</h2></div>
       </header>
       <div className="account-body">
-        {notice ? <div className={`${/失败|无法|过期|不稳定|尚未配置/.test(notice) ? "error" : "notice"} account-wide-notice`}>{notice}</div> : null}
+        {notice ? <div className={`${/失败|无法|过期|不稳定|尚未配置|未完成|还没有会员|请联系/.test(notice) ? "error" : "notice"} account-wide-notice`} role="status">{notice}</div> : null}
         <section className="account-panel knowledge-panel">
           <div className="knowledge-provider-head">
             <div className="provider-icon"><Database size={19} /></div>
-            <div><h3>得到大脑</h3><p>首个支持的个人知识来源</p></div>
-            <span className={`provider-status ${connection.status}`}>{connection.status === "connected" ? "已连接" : "未连接"}</span>
+            <div><h3>得到大脑</h3></div>
+            <span className={`provider-status ${connection.status}`}>{connection.status === "connected" ? "已连接" : connection.status === "pending" ? "授权中" : connection.status === "error" ? "需重连" : "未连接"}</span>
           </div>
           {connection.status === "connected" ? (
             <>
-              <div className="notice">已连接得到大脑</div>
-              <p className="hint">聊天时会自动检索你账号下的相关知识，用来帮助 AI 回答。</p>
               <button className="danger" type="button" onClick={disconnect}>断开连接</button>
             </>
           ) : (
             <>
-              <p className="hint">连接前请先注册得到大脑并开通会员。首次连接会打开官方授权页；确认一次后，ONE 即可在后台调用你的知识。</p>
+              {connection.status === "error" && connection.lastError ? <p className="error" role="alert">{connection.lastError}</p> : null}
+              <p className="hint">请先开通得到大脑会员，再完成官方授权。</p>
               <button className="primary" type="button" disabled={!configured || Boolean(flow)} onClick={connect}>{testConnectAvailable ? "一键连接测试知识" : "连接得到大脑"}</button>
-              {testConnectAvailable ? <div className="notice">测试模式：将连接管理员预置的 Get 笔记账号，仅用于当前 MVP 验证。</div> : null}
+              {testConnectAvailable ? <div className="notice">测试连接 · 使用管理员预置账号</div> : null}
               {!configured ? <p className="hint">此知识连接暂未开通，请联系管理员。</p> : null}
               {flow ? (
                 <div className="notice">
-                  授权码：<strong>{flow.userCode}</strong>。授权页已打开，系统正在自动确认…
-                  <a href={flow.verificationUri} target="_blank" rel="noreferrer">重新打开授权页</a>
-                  <button type="button" onClick={() => { setFlow(null); setPolling(false); setNotice(""); }}>取消等待 / 重新开始</button>
+                  授权码：<strong>{flow.userCode}</strong>
+                  <span>{Math.max(1, Math.ceil(flow.expiresIn / 60))} 分钟内完成</span>
+                  <a href={flow.verificationUri} target="_blank" rel="noreferrer">打开得到大脑</a>
+                  <button type="button" onClick={() => void cancelGetNoteFlow()}>取消</button>
                 </div>
               ) : null}
             </>
@@ -2109,18 +2145,17 @@ function KnowledgePage({
         <section className="account-panel knowledge-panel">
           <div className="knowledge-provider-head">
             <div className="provider-icon"><FileText size={19} /></div>
-            <div><h3>Notion</h3><p>搜索并读取你授权的页面</p></div>
+            <div><h3>Notion</h3></div>
             <span className={`provider-status ${notionConnection.status}`}>{notionConnection.status === "connected" ? "已连接" : notionConnection.status === "pending" ? "授权中" : "未连接"}</span>
           </div>
           {notionConnection.status === "connected" ? (
             <>
-              <div className="notice">已连接{notionConnection.providerSpaceName ? `：${notionConnection.providerSpaceName}` : " Notion"}</div>
-              <p className="hint">聊天时 ONE 会按需搜索并读取相关页面。首版严格只读，不会创建、修改或删除任何 Notion 内容。</p>
+              <div className="notice">工作区：{notionConnection.providerSpaceName || "Notion"}</div>
+              <p className="hint">只读：ONE 会按需搜索相关页面，不会修改或删除内容。</p>
               <button className="danger" type="button" onClick={disconnectNotion}>断开连接</button>
             </>
           ) : (
             <>
-              <p className="hint">点击一次后会前往 Notion 官方授权页；确认后自动回到 ONE。无需复制令牌，也不需要安装插件。</p>
               <button className="primary" type="button" disabled={!notionConfigured || notionBusy} onClick={connectNotion}>{notionBusy ? "正在打开 Notion…" : "连接 Notion"}</button>
               {!notionConfigured ? <p className="hint">Notion 连接暂未开通，请联系管理员。</p> : null}
             </>
@@ -2132,6 +2167,7 @@ function KnowledgePage({
 }
 
 function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Promise<void>; onOpenSidebar: () => void }) {
+  const api = useContext(PrivateApiContext);
   const [tab, setTab] = useState<"overview" | "users" | "keys" | "models" | "billing" | "usage" | "contexts" | "logs">("overview");
   const [users, setUsers] = useState<User[]>([]);
   const [models, setModels] = useState<Model[]>([]);
@@ -2165,10 +2201,7 @@ function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Pro
           <button className="mobile-menu" title="打开导航" onClick={onOpenSidebar}>
             <Menu size={20} />
           </button>
-          <div>
-            <h2>ONE 超管</h2>
-            <p>模型、用户、电力与运行状态</p>
-          </div>
+          <div><h2>ONE 超管</h2></div>
         </header>
         <nav className="tabs">
           <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}><ShieldCheck size={16} />总览</button>
@@ -2205,12 +2238,13 @@ function AdminOverview({ operations }: { operations: { health?: OperationsHealth
     <section className="ops-metric"><small>POWER</small><strong>{power(summary?.balanceMicros)}</strong><span>用户余额</span></section>
     <section className="ops-metric"><small>USAGE</small><strong>{power(summary?.chargedMicros)}</strong><span>累计消耗电力</span></section>
     <section className="ops-metric"><small>COST</small><strong>{power(summary?.costMicros)}</strong><span>按配置进价计算的已知成本{summary?.unknownCostCalls ? `（另 ${summary.unknownCostCalls} 次未确认）` : ""}</span></section>
-    <section className="ops-panel span-all"><h3>待处理</h3><p>{operations?.pendingOrders.length || 0} 笔充值订单等待入账；{summary?.reviewCalls || 0} 笔模型用量待核对。用量核对请到“用户用量”展开对应账号。</p></section>
-    {health ? <section className="ops-panel span-all"><h3>运行检查</h3><div className="mini-ledger"><div><span>数据库连通</span><b>{health.database === "ok" ? "正常" : "异常，请检查服务"}</b></div><div><span>磁盘可用空间</span><b>{health.diskFreePercent === undefined ? "未能读取" : `${health.diskFreePercent}%${health.diskFreePercent < 20 ? " · 空间不足预警" : ""}`}</b></div><div><span>数据库本地备份</span><b>{backupLabel(health.localBackup)}</b></div><div><span>异地上传验证</span><b>{backupLabel(health.offsiteBackup)}</b></div></div><p className="hint">检查时间：{dateTime(health.checkedAt)}。页面刷新时检查，不包含主动告警；备份成功不等于已完成恢复演练。</p></section> : null}
+    <section className="ops-panel span-all"><h3>待处理</h3><p>{operations?.pendingOrders.length || 0} 笔充值待入账 · {summary?.reviewCalls || 0} 笔用量待核对</p></section>
+    {health ? <section className="ops-panel span-all"><h3>运行检查</h3><div className="mini-ledger"><div><span>数据库连通</span><b>{health.database === "ok" ? "正常" : "异常，请检查服务"}</b></div><div><span>磁盘可用空间</span><b>{health.diskFreePercent === undefined ? "未能读取" : `${health.diskFreePercent}%${health.diskFreePercent < 20 ? " · 空间不足预警" : ""}`}</b></div><div><span>数据库本地备份</span><b>{backupLabel(health.localBackup)}</b></div><div><span>异地上传验证</span><b>{backupLabel(health.offsiteBackup)}</b></div></div><p className="hint">检查于 {dateTime(health.checkedAt)} · 无主动告警 · 尚未验证恢复</p></section> : null}
   </div>;
 }
 
 function AdminBilling({ users, operations, reload }: { users: User[]; operations: { pendingOrders: RechargeOrder[]; ledger: PowerLedgerEntry[]; settings: { rechargeCnyPerPower: number } } | null; reload: () => Promise<void> }) {
+  const api = useContext(PrivateApiContext);
   const [userId, setUserId] = useState(users[0]?.id || ""); const [gift, setGift] = useState("10"); const [rate, setRate] = useState(String(operations?.settings.rechargeCnyPerPower || 7)); const [notice, setNotice] = useState("");
   useEffect(() => { if (!userId && users[0]) setUserId(users[0].id); }, [users]);
   async function give(event: FormEvent) { event.preventDefault(); try { await api(`/api/admin/users/${userId}/power`, { method: "POST", body: JSON.stringify({ power: Number(gift) }) }); setNotice("电力已到账"); await reload(); } catch (error) { setNotice(error instanceof Error ? error.message : "赠送失败"); } }
@@ -2248,6 +2282,7 @@ function usageStatusLabel(usage: UsageRecord) {
 }
 
 function UsageReconcileForm({ userId, usage, onResolved }: { userId: string; usage: UsageRecord; onResolved: () => void }) {
+  const api = useContext(PrivateApiContext);
   const [inputTokens, setInputTokens] = useState("");
   const [outputTokens, setOutputTokens] = useState("");
   const [busy, setBusy] = useState(false);
@@ -2261,10 +2296,11 @@ function UsageReconcileForm({ userId, usage, onResolved }: { userId: string; usa
     } catch (err) { setError(err instanceof Error ? err.message : "核对失败"); }
     finally { setBusy(false); }
   }
-  return <details className="usage-reconcile"><summary>核对这次调用</summary><p className="hint">先用请求编号核对中转站账单，再填写实际 Token。暂时无法确认时可保持待核对；免扣只表示不向用户收费，上游成本仍待确认。</p><div className="ops-list-toolbar"><label>实际输入 Token<input type="number" min="0" step="1" value={inputTokens} onChange={(event) => setInputTokens(event.target.value)} /></label><label>实际输出 Token<input type="number" min="0" step="1" value={outputTokens} onChange={(event) => setOutputTokens(event.target.value)} /></label><button className="primary" type="button" disabled={busy || inputTokens === "" || outputTokens === "" || !Number.isSafeInteger(Number(inputTokens)) || Number(inputTokens) < 0 || !Number.isSafeInteger(Number(outputTokens)) || Number(outputTokens) < 0} onClick={() => void resolve("provider_usage")}>按实际用量结算</button><button className="secondary" type="button" disabled={busy} onClick={() => void resolve("waive")}>免扣并释放预占</button></div>{error ? <div className="error">{error}</div> : null}</details>;
+  return <details className="usage-reconcile"><summary>核对这次调用</summary><p className="hint">按请求编号核对中转站账单。无法确认可暂存；免扣不代表上游免费。</p><div className="ops-list-toolbar"><label>实际输入 Token<input type="number" min="0" step="1" value={inputTokens} onChange={(event) => setInputTokens(event.target.value)} /></label><label>实际输出 Token<input type="number" min="0" step="1" value={outputTokens} onChange={(event) => setOutputTokens(event.target.value)} /></label><button className="primary" type="button" disabled={busy || inputTokens === "" || outputTokens === "" || !Number.isSafeInteger(Number(inputTokens)) || Number(inputTokens) < 0 || !Number.isSafeInteger(Number(outputTokens)) || Number(outputTokens) < 0} onClick={() => void resolve("provider_usage")}>按实际用量结算</button><button className="secondary" type="button" disabled={busy} onClick={() => void resolve("waive")}>免扣并释放预占</button></div>{error ? <div className="error">{error}</div> : null}</details>;
 }
 
 function AdminUsage({ summaries, reload }: { summaries: UserUsageSummary[]; reload: () => Promise<void> }) {
+  const api = useContext(PrivateApiContext);
   const [selectedUserId, setSelectedUserId] = useState("");
   const [detail, setDetail] = useState<UserUsageDetail | null>(null);
   const [error, setError] = useState("");
@@ -2296,7 +2332,7 @@ function AdminUsage({ summaries, reload }: { summaries: UserUsageSummary[]; relo
   if (!summaries.length) return <div className="empty-state compact">还没有内测用户</div>;
   return <div className="usage-user-list">
     <div className="ops-list-toolbar"><label>搜索用户<input type="search" placeholder="输入用户名" value={search} onChange={(event) => setSearch(event.target.value)} /></label><label>账号状态<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="active">正常账号</option><option value="archived">已停用 / 归档</option><option value="all">全部账号</option></select></label><span>{visible.length} 位用户 · 电力为计费单位</span></div>
-    <p className="hint">点击用户展开用量和时间日志。这里仅显示使用情况，不展示聊天、知识或附件内容。</p>
+    <p className="hint">点击用户查看明细 · 不展示聊天、知识或附件内容</p>
     {!visible.length ? <div className="empty-state compact">没有符合条件的用户</div> : null}
     {visible.map((item) => {
       const expanded = selectedUserId === item.userId;
@@ -2310,6 +2346,7 @@ function AdminUsage({ summaries, reload }: { summaries: UserUsageSummary[]; relo
           {expanded ? <ChevronUp size={17} /> : <ChevronDown size={17} />}
         </button>
         {expanded ? <div className="usage-user-detail" id={`usage-detail-${item.userId}`}>
+          <BetaUserInsights key={item.userId} userId={item.userId} api={api} />
           <div className="usage-detail-metrics">
             <span><small>累计输入 / 输出 Token</small><strong>{item.total.inputTokens.toLocaleString()} / {item.total.outputTokens.toLocaleString()}</strong></span>
             <span><small>累计消耗 / 上游成本（电力）</small><strong>{power(item.total.chargedMicros, 4)} / {power(item.total.costMicros, 4)}</strong>{item.total.unknownCostCalls ? <small>{item.total.unknownCostCalls} 次成本未确认，合计仅含已知成本</small> : null}</span>
@@ -2338,6 +2375,7 @@ function AdminUsage({ summaries, reload }: { summaries: UserUsageSummary[]; relo
   </div>;
 }
 function AdminContexts({ traces }: { traces: ContextTraceSummary[] }) {
+  const api = useContext(PrivateApiContext);
   const [selectedId, setSelectedId] = useState(traces[0]?.id || "");
   const [detail, setDetail] = useState<ContextTraceDetail | null>(null);
   const [error, setError] = useState("");
@@ -2354,7 +2392,7 @@ function AdminContexts({ traces }: { traces: ContextTraceSummary[] }) {
       .catch((err) => setError(err.message));
   }, [selectedId]);
 
-  if (!traces.length) return <div className="empty-state compact"><Eye size={36} /><h2>还没有上下文记录</h2><p>部署后完成一次新问答，这里就会出现。</p></div>;
+  if (!traces.length) return <div className="empty-state compact"><Eye size={36} /><h2>还没有上下文记录</h2><p>完成一次问答后显示。</p></div>;
   return <div className="context-debugger">
     <aside className="context-trace-list">
       <div className="context-private-note"><LockKeyhole size={15} /><span>仅当前账号可见，其他用户和超管都不能读取。</span></div>
@@ -2376,6 +2414,7 @@ function AdminContexts({ traces }: { traces: ContextTraceSummary[] }) {
 function AdminLogs({ logs }: { logs: AuditItem[] }) { return <div className="ops-table"><div className="ops-table-head"><span>操作人</span><span>事件</span><span>对象</span><span>时间 / 请求</span></div>{logs.map((item) => <div className="ops-table-row" key={item.id}><span>{item.actorName}</span><span>{item.action}</span><span>{item.targetType}</span><span>{dateTime(item.createdAt)}<small>{item.requestId || "-"}</small></span></div>)}</div>; }
 
 function OneKeysTab({ users, devices, reload }: { users: User[]; devices: OneKeyDevice[]; reload: () => Promise<void> }) {
+  const api = useContext(PrivateApiContext);
   const [userId, setUserId] = useState(users.find((user) => user.role === "user")?.id || users[0]?.id || "");
   const [serialNumber, setSerialNumber] = useState(`ONE-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-001`);
   const [notice, setNotice] = useState("");
@@ -2399,7 +2438,7 @@ function OneKeysTab({ users, devices, reload }: { users: User[]; devices: OneKey
     try {
       const result = await api<{ device: OneKeyDevice; deviceConfig: OneKeyCredential }>("/api/admin/one-keys", { method: "POST", body: JSON.stringify({ workspaceId: user.defaultWorkspaceId, userId: user.id, serialNumber }) });
       downloadCredential(result.deviceConfig, serialNumber);
-      setNotice("设备已初始化，私钥配置已下载且不会再次显示。请把文件放入 U 盘 .one 文件夹。");
+      setNotice("凭证已下载，仅此一次。请放入 U 盘 .one 文件夹。");
       await reload();
     } catch (error) { setNotice(error instanceof Error ? error.message : "初始化失败"); }
   }
@@ -2407,12 +2446,13 @@ function OneKeysTab({ users, devices, reload }: { users: User[]; devices: OneKey
   async function revoke(device: OneKeyDevice) { if (!confirm(`确认挂失 ${device.serialNumber}？`)) return; await api(`/api/admin/one-keys/${device.id}/revoke`, { method: "POST" }); await reload(); }
 
   return <div className="admin-grid">
-    <form className="admin-form" onSubmit={provision}><h3><Usb size={17} />初始化 ONE Key</h3><label>绑定用户<select value={userId} onChange={(event) => setUserId(event.target.value)}>{users.map((user) => <option key={user.id} value={user.id}>{user.username}</option>)}</select></label><label>设备序列号<input value={serialNumber} onChange={(event) => setSerialNumber(event.target.value)} /></label><p className="hint">创建后只下载一次私钥。服务端仅保存公钥；普通 U 盘凭证可以被复制，首版不宣传为安全芯片。</p><button className="primary" disabled={!userId || !serialNumber.trim()}>生成并下载凭证</button>{notice ? <div className="notice">{notice}</div> : null}</form>
+    <form className="admin-form" onSubmit={provision}><h3><Usb size={17} />初始化 ONE Key</h3><label>绑定用户<select value={userId} onChange={(event) => setUserId(event.target.value)}>{users.map((user) => <option key={user.id} value={user.id}>{user.username}</option>)}</select></label><label>设备序列号<input value={serialNumber} onChange={(event) => setSerialNumber(event.target.value)} /></label><p className="hint">私钥仅下载一次；服务端仅存公钥。普通 U 盘可复制，不等同安全芯片。</p><button className="primary" disabled={!userId || !serialNumber.trim()}>生成并下载凭证</button>{notice ? <div className="notice">{notice}</div> : null}</form>
     <div className="table"><div className="ops-list-toolbar"><label>搜索用户或序列号<input type="search" value={search} onChange={(event) => setSearch(event.target.value)} /></label><label>Key 状态<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="active">正常使用</option><option value="revoked">已挂失 / 归档</option><option value="all">全部</option></select></label></div>{matching.slice(0, limit).map((device) => <div className="table-row" key={device.id}><span><strong>{device.serialNumber}</strong><small>{device.username} · {device.lastUsedAt ? `最近使用 ${dateTime(device.lastUsedAt)}` : "尚未使用"}</small></span><span>{device.status === "active" ? "正常" : "已挂失 / 归档"}</span>{device.status === "active" ? <button className="danger" onClick={() => revoke(device)}>挂失</button> : <span />}</div>)}{matching.length > limit ? <button type="button" className="secondary" onClick={() => setLimit((value) => value + 20)}>再显示 20 枚</button> : null}{!matching.length ? <p className="hint">没有符合条件的 Key</p> : null}</div>
   </div>;
 }
 
 function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void> }) {
+  const api = useContext(PrivateApiContext);
   const [username, setUsername] = useState("");
   const [editing, setEditing] = useState<Record<string, { username: string; enabled: boolean }>>({});
   const [creating, setCreating] = useState(false);
@@ -2459,7 +2499,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
         <form className="admin-form" onSubmit={createUser}>
           <h3><UserPlus size={17} />开通账号</h3>
           <input placeholder="用户名" value={username} onChange={(event) => setUsername(event.target.value)} />
-          <p className="hint">普通用户不设置密码，交付已绑定的 ONE Key 后即可使用。</p>
+          <p className="hint">普通用户仅凭已绑定的 ONE Key 登录。</p>
           {createNotice ? <div className={createNotice === "账号已开通" ? "notice import-notice" : "error import-notice"}>{createNotice}</div> : null}
           <button className="primary" type="submit" disabled={!username.trim() || creating}>
             <Plus size={16} />{creating ? "正在创建" : "创建"}
@@ -2491,10 +2531,11 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
 }
 
 function ImageCallPricing({ price, cost, onChange }: { price: number; cost: number; onChange: (values: { imagePowerPerCall?: number; costImagePowerPerCall?: number }) => void }) {
-  return <div className="price-fields"><label>图片售价<small>电力 / 次，必须大于 0</small><input type="number" min="0.000001" step="0.000001" value={price || ""} onChange={(event) => onChange({ imagePowerPerCall: Number(event.target.value) })} /></label><label>图片进价<small>电力 / 次，按上游报价配置</small><input type="number" min="0" step="0.000001" value={cost} onChange={(event) => onChange({ costImagePowerPerCall: Number(event.target.value) })} /></label><p className="hint">首版每次请求生成一张，按固定价格结算。未配置售价不会调用上游，不默认免费。</p></div>;
+  return <div className="price-fields"><label>图片售价<small>电力 / 次，必须大于 0</small><input type="number" min="0.000001" step="0.000001" value={price || ""} onChange={(event) => onChange({ imagePowerPerCall: Number(event.target.value) })} /></label><label>图片进价<small>电力 / 次，按上游报价配置</small><input type="number" min="0" step="0.000001" value={cost} onChange={(event) => onChange({ costImagePowerPerCall: Number(event.target.value) })} /></label><p className="hint">每次生成 1 张 · 按次结算 · 未配置售价时禁用</p></div>;
 }
 
 function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<void> }) {
+  const api = useContext(PrivateApiContext);
   const [form, setForm] = useState({
     name: "",
     kind: "chat" as "chat" | "image",
@@ -2615,31 +2656,59 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
 
 function App() {
   const [user, setUser] = useState<User | null>(null);
+  const privateApi = useMemo(() => user ? apiForUser(user.id) : api, [user?.id]);
   const [booting, setBooting] = useState(true);
-  const [bootMessage, setBootMessage] = useState("加载中...");
-
-  useEffect(() => {
+  const [bootMessage, setBootMessage] = useState("加载中…");
+  const [bootError, setBootError] = useState("");
+  const [recoveryLogin, setRecoveryLogin] = useState(false);
+  const bootGeneration = useRef(0);
+  const currentUser = useRef<User | null>(null);
+  currentUser.current = user;
+  async function boot() {
+    const generation = ++bootGeneration.current;
+    expectUser(""); setBooting(true); setBootError(""); setUser(null);
     const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     const loginCode = fragment.get("one-key");
-    const request = loginCode
-      ? (setBootMessage("正在验证 ONE Key..."), api<{ user: User }>("/api/auth/one-key/redeem", { method: "POST", body: JSON.stringify({ loginCode }) }))
-      : api<{ user: User }>("/api/me");
-    request
-      .then((result) => { setUser(result.user); if (loginCode) window.history.replaceState({}, "", "/"); })
-      .catch(() => { if (loginCode) window.history.replaceState({}, "", "/"); })
-      .finally(() => setBooting(false));
+    if (loginCode) window.history.replaceState({}, "", `${window.location.pathname}${window.location.search}`);
+    try {
+      setBootMessage(loginCode ? "正在验证 ONE Key…" : "正在连接…");
+      const result = loginCode ? await api<{ user: User }>("/api/auth/one-key/redeem", { method: "POST", body: JSON.stringify({ loginCode }) }) : await api<{ user: User }>("/api/me");
+      if (generation !== bootGeneration.current) return;
+      expectUser(result.user.id); setUser(result.user); setRecoveryLogin(false);
+      if (loginCode) announceSessionChange();
+    } catch (error) {
+      if (generation !== bootGeneration.current) return;
+      setBootError(error instanceof ApiError && error.status === 401 ? "请插入 ONE Key。首次使用请从 U 盘打开 ONE。" : error instanceof Error ? error.message : "暂时连不上 ONE，请检查网络后重试。");
+    } finally { if (generation === bootGeneration.current) setBooting(false); }
+  }
+  useEffect(() => {
+    void boot();
+    const changed = () => { void boot(); };
+    const storage = (event: StorageEvent) => { if (event.key === SESSION_STORAGE_KEY) changed(); };
+    const checkIdentity = () => {
+      if (document.visibilityState !== "visible") return;
+      if (!currentUser.current) { void boot(); return; }
+      void api<{ user: User }>("/api/me").then(result => { if (result.user.id !== currentUser.current?.id) void boot(); }).catch(error => {
+        if (error instanceof ApiError && error.status === 401) void boot();
+      });
+    };
+    window.addEventListener(SESSION_EVENT, changed);
+    window.addEventListener("storage", storage);
+    window.addEventListener("online", checkIdentity);
+    document.addEventListener("visibilitychange", checkIdentity);
+    return () => { bootGeneration.current++; window.removeEventListener(SESSION_EVENT, changed); window.removeEventListener("storage", storage); window.removeEventListener("online", checkIdentity); document.removeEventListener("visibilitychange", checkIdentity); };
   }, []);
 
   if (booting) return <div className="boot">{bootMessage}</div>;
-  if (!user) return <Login onDone={setUser} />;
+  if (!user) return recoveryLogin ? <><Login onDone={next => { expectUser(next.id); setUser(next); announceSessionChange(); }} /><button className="one-login-back" onClick={() => setRecoveryLogin(false)}>返回 ONE Key 登录</button></> : <main className="one-key-welcome"><OneEye size="hero" /><h1>插入 ONE Key</h1><p role="status">{bootError}</p><button className="primary" onClick={() => void boot()}>重新连接</button><details><summary>连接帮助</summary><p>检查 ONE Key、网络和启动器版本。Key 已挂失请联系管理员。</p><button className="secondary" onClick={() => setRecoveryLogin(true)}>超管登录</button></details></main>;
   return (
-    <ChatApp
+    <PrivateApiContext.Provider value={privateApi}><ChatApp
+      key={user.id}
       user={user}
       onLogout={() => {
-        api("/api/auth/logout", { method: "POST" }).catch(() => undefined);
-        setUser(null);
+        void privateApi("/api/auth/logout", { method: "POST" }).then(() => { expectUser(""); setUser(null); setBootError("已退出。插入 Key 后可以重新打开 ONE。"); announceSessionChange(); }).catch(error => setBootError(error.message));
       }}
-    />
+    /></PrivateApiContext.Provider>
   );
 }
 

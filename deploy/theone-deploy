@@ -37,6 +37,10 @@ runuser -u theone-deploy -- env HOME=/home/theone-deploy npm --prefix "$staging"
 runuser -u theone-deploy -- env HOME=/home/theone-deploy npm --prefix "$staging" test
 runuser -u theone-deploy -- env HOME=/home/theone-deploy npm --prefix "$staging" run build
 
+# Read-only gate before switching releases. Apply additive migrations separately
+# as the database administrator; the application/deploy account never gets DDL.
+node "$staging/deploy/check-mysql-schema.mjs" --env "$shared/.env"
+
 install -d -m 0750 -o theone -g theone "$shared/data" "$shared/data/uploads"
 ln -s "$shared/data" "$staging/data"
 # The deploy user owns immutable release files; the app user may only read and

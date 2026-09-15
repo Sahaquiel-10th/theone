@@ -106,6 +106,48 @@ export class AuthorizationSessions {
     });
   }
 
+  async replacePendingPayload(params: {
+    id: string;
+    workspaceId: string;
+    userId: string;
+    connectorId: ConnectorAuthorizationSession["connectorId"];
+    payload: AuthorizationPayload;
+    retryAfterMs?: number;
+  }) {
+    await this.store.mutate(db => {
+      const target = db.knowledgeConnections.find(item => item.workspaceId === params.workspaceId && item.provider === params.connectorId)?.authorizationSession;
+      if (target?.id !== params.id || target.userId !== params.userId || target.status !== "pending") {
+        throw new AuthorizationSessionError("NOT_FOUND", "授权流程不存在或已经结束");
+      }
+      if (!Number.isFinite(Date.parse(target.expiresAt)) || Date.parse(target.expiresAt) <= Date.now()) {
+        throw new AuthorizationSessionError("EXPIRED", "授权已过期，请重新连接");
+      }
+      target.encryptedPayload = encryptCredential(JSON.stringify(params.payload), authorizationSessionContext(target.id, target.workspaceId, target.connectorId));
+      target.nextAttemptAt = params.retryAfterMs ? new Date(Date.now() + params.retryAfterMs).toISOString() : undefined;
+      target.updatedAt = new Date().toISOString();
+    });
+  }
+
+  async cancelPending(params: {
+    id: string;
+    workspaceId: string;
+    userId: string;
+    connectorId: ConnectorAuthorizationSession["connectorId"];
+  }) {
+    return this.store.mutate(db => {
+      const connection = db.knowledgeConnections.find(item => item.workspaceId === params.workspaceId && item.provider === params.connectorId);
+      const target = connection?.authorizationSession;
+      if (!connection || target?.id !== params.id || target.userId !== params.userId || target.status !== "pending") {
+        throw new AuthorizationSessionError("NOT_FOUND", "授权流程不存在或已经结束");
+      }
+      connection.authorizationSession = undefined;
+      connection.status = connection.encryptedApiKey ? "connected" : "revoked";
+      connection.lastError = undefined;
+      connection.updatedAt = new Date().toISOString();
+      return structuredClone(connection);
+    });
+  }
+
   async claimState(connectorId: ConnectorAuthorizationSession["connectorId"], state: string) {
     if (!state) throw new AuthorizationSessionError("INVALID_STATE", "授权状态无效，请返回 ONE 重试");
     const wanted = stateHash(state);

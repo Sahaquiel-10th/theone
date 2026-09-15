@@ -36,10 +36,12 @@ if (has("--dry-run")) {
   process.exit(0);
 }
 
-const appTarget = path.join(volumePath, "ONE.app");
+const appName = "ONE for Mac.app";
+const legacyAppTarget = path.join(volumePath, "ONE.app");
+const appTarget = path.join(volumePath, appName);
 const hiddenTarget = path.join(volumePath, ".one");
-if ((fs.existsSync(appTarget) || fs.existsSync(hiddenTarget)) && !has("--replace")) {
-  throw new Error("该 U 盘已经存在 ONE.app 或 .one；确认替换时请增加 --replace，脚本会先备份旧版本");
+if ((fs.existsSync(appTarget) || fs.existsSync(legacyAppTarget) || fs.existsSync(hiddenTarget)) && !has("--replace")) {
+  throw new Error(`该 U 盘已经存在 ${appName}、旧版 ONE.app 或 .one；确认替换时请增加 --replace，脚本会先备份旧版本`);
 }
 
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "one-key-usb-"));
@@ -47,17 +49,18 @@ const buildOutput = path.join(temporaryRoot, "payload");
 try {
   const runtimeArgs = value("--codex-bin") ? ["--codex-bin", path.resolve(value("--codex-bin"))] : [];
   execFileSync(process.execPath, [path.join(projectRoot, "scripts/build-macos-one-key.mjs"), "--credential", credentialPath, "--output", buildOutput, ...runtimeArgs], { stdio: "inherit" });
-  if (fs.existsSync(appTarget) || fs.existsSync(hiddenTarget)) {
+  if (fs.existsSync(appTarget) || fs.existsSync(legacyAppTarget) || fs.existsSync(hiddenTarget)) {
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "");
     const backupRoot = path.join(volumePath, `.one-backup-${stamp}`);
     fs.mkdirSync(backupRoot, { recursive: false });
-    if (fs.existsSync(appTarget)) fs.renameSync(appTarget, path.join(backupRoot, "ONE.app.bak"));
+    if (fs.existsSync(appTarget)) fs.renameSync(appTarget, path.join(backupRoot, `${appName}.bak`));
+    if (fs.existsSync(legacyAppTarget)) fs.renameSync(legacyAppTarget, path.join(backupRoot, "ONE.app.bak"));
     if (fs.existsSync(hiddenTarget)) fs.renameSync(hiddenTarget, path.join(backupRoot, ".one"));
     console.log(`旧版已备份：${backupRoot}`);
   }
   fs.cpSync(path.join(buildOutput, "ONE.app"), appTarget, { recursive: true, errorOnExist: true });
   fs.cpSync(path.join(buildOutput, ".one"), hiddenTarget, { recursive: true, errorOnExist: true });
-  fs.copyFileSync(path.join(buildOutput, "使用 ONE.txt"), path.join(volumePath, "使用 ONE.txt"));
+  fs.copyFileSync(path.join(buildOutput, "使用 ONE.txt"), path.join(hiddenTarget, "使用说明.txt"));
   // FAT volumes represent macOS metadata as AppleDouble `._*` files. Clean only
   // the freshly copied ONE payload so xattr/codesign do not fail on those files.
   execFileSync("/usr/sbin/dot_clean", ["-m", appTarget], { stdio: "inherit" });
@@ -66,7 +69,8 @@ try {
   execFileSync("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", appTarget], { stdio: "inherit" });
   execFileSync("/usr/sbin/dot_clean", ["-m", appTarget], { stdio: "inherit" });
   execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", appTarget], { stdio: "inherit" });
-  console.log(`\n灌装完成\nU 盘：${volumePath}\n设备 ID：${credential.deviceId}\n服务：${credential.serverBaseUrl}\n\n首次双击 ONE.app 后，可直接拔出、重新插入并在原网页验证自动恢复。`);
+  hidePath(hiddenTarget);
+  console.log(`\n灌装完成\nU 盘：${volumePath}\n设备 ID：${credential.deviceId}\n服务：${credential.serverBaseUrl}\n\nmacOS 请双击 ${appName}。`);
 } finally {
   fs.rmSync(temporaryRoot, { recursive: true, force: true });
 }
@@ -80,4 +84,10 @@ function usage() {
 
 脚本不会格式化 U 盘，也不会删除与 ONE 无关的文件。`);
   process.exit(1);
+}
+
+function hidePath(target) {
+  execFileSync("/usr/bin/SetFile", ["-a", "V", target], { stdio: "inherit" });
+  const appleDouble = path.join(path.dirname(target), `._${path.basename(target)}`);
+  if (fs.existsSync(appleDouble)) fs.unlinkSync(appleDouble);
 }

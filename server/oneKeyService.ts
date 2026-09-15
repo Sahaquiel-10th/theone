@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { Store } from "./db.js";
 import { uid } from "./security.js";
+import { requireInstallationId } from "./oneKeyInstallation.js";
 
 const challengeTtlMs = 2 * 60 * 1000;
 const loginCodeTtlMs = 60 * 1000;
@@ -32,13 +33,14 @@ export class OneKeyService {
     };
   }
 
-  async challenge(deviceId: string) {
+  async challenge(deviceId: string, installationId: string) {
+    requireInstallationId(installationId);
     const nonce = crypto.randomBytes(32).toString("base64url");
     return this.store.mutate((db) => {
       const device = db.oneKeyDevices.find((item) => item.id === deviceId && item.status === "active");
       if (!device) throw new Error("ONE Key 不存在或已挂失");
       const createdAt = now();
-      const challenge = { id: uid("chl"), deviceId, nonce, attempts: 0, createdAt, expiresAt: new Date(Date.now() + challengeTtlMs).toISOString() };
+      const challenge = { id: uid("chl"), deviceId, installationId, nonce, attempts: 0, createdAt, expiresAt: new Date(Date.now() + challengeTtlMs).toISOString() };
       db.deviceChallenges.push(challenge);
       return { challengeId: challenge.id, nonce, expiresAt: challenge.expiresAt };
     });
@@ -49,6 +51,7 @@ export class OneKeyService {
     const outcome = await this.store.mutate((db) => {
       const challenge = db.deviceChallenges.find((item) => item.id === challengeId);
       if (!challenge || challenge.usedAt || Date.parse(challenge.expiresAt) <= Date.now()) return { error: "设备验证已过期或不可用" } as const;
+      const installationId = requireInstallationId(challenge.installationId);
       const device = db.oneKeyDevices.find((item) => item.id === challenge.deviceId && item.status === "active");
       if (!device) return { error: "ONE Key 不存在或已挂失" } as const;
       let valid = false;
@@ -65,7 +68,7 @@ export class OneKeyService {
       challenge.usedAt = now();
       device.lastUsedAt = challenge.usedAt;
       const createdAt = now();
-      const code = { id: uid("otc"), tokenHash: tokenHash(loginCode), deviceId: device.id, workspaceId: device.workspaceId, userId: device.userId, createdAt, expiresAt: new Date(Date.now() + loginCodeTtlMs).toISOString() };
+      const code = { id: uid("otc"), tokenHash: tokenHash(loginCode), deviceId: device.id, installationId, workspaceId: device.workspaceId, userId: device.userId, createdAt, expiresAt: new Date(Date.now() + loginCodeTtlMs).toISOString() };
       db.oneTimeLoginCodes.push(code);
       return { loginCode, expiresAt: code.expiresAt } as const;
     });
@@ -77,12 +80,13 @@ export class OneKeyService {
     const outcome = await this.store.mutate((db) => {
       const code = db.oneTimeLoginCodes.find((item) => item.tokenHash === tokenHash(loginCode));
       if (!code || code.usedAt || Date.parse(code.expiresAt) <= Date.now()) return { error: "一次性登录码已过期或已使用" } as const;
+      const installationId = requireInstallationId(code.installationId);
       const device = db.oneKeyDevices.find((item) => item.id === code.deviceId && item.status === "active");
       const user = db.users.find((item) => item.id === code.userId && item.enabled);
       const member = db.workspaceMembers.find((item) => item.workspaceId === code.workspaceId && item.userId === code.userId);
       if (!device || !user || !member) return { error: "ONE Key 绑定已失效" } as const;
       code.usedAt = now();
-      return { userId: user.id, role: user.role, workspaceId: code.workspaceId, deviceId: device.id } as const;
+      return { userId: user.id, role: user.role, workspaceId: code.workspaceId, deviceId: device.id, installationId } as const;
     });
     if ("error" in outcome) throw new Error(outcome.error);
     return outcome;

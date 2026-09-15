@@ -116,3 +116,13 @@ test("malformed login credentials return 401 without throwing or checking USB pr
   }
   assert.equal(proofs.length, 0);
 });
+
+test("old tabs cannot use a changed login cookie as another user", async () => {
+  const { dependencies, proofs } = authFixture();
+  const { recorded, response } = responseRecorder();
+  const token = signToken({ sub: "user", deviceId: "user-key", installationId: "a".repeat(32) }, "test-secret");
+  await auth("test-secret", dependencies)({ headers: { authorization: `Bearer ${token}`, "x-one-user": "admin" }, method: "POST", originalUrl: "/api/chat" } as unknown as Request, response, (() => { throw new Error("must not reach chat or billing"); }) as NextFunction);
+  assert.equal(recorded.status, 409);
+  assert.equal((recorded.payload as any).code, "SESSION_CHANGED");
+  assert.equal(proofs.length, 0);
+});

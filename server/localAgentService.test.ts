@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import test from "node:test";
 import { LocalAgentService } from "./localAgentService.js";
 import type { Database, ModelConfig } from "./types.js";
+const installationId = "a".repeat(32);
 
 for (const unplugAfterFirstTool of [false, true]) test(unplugAfterFirstTool ? "unplugging stops Local Agent before the next paid model step" : "runs a model tool loop through the workspace-bound local device", async () => {
   let modelCalls = 0;
@@ -35,7 +36,7 @@ for (const unplugAfterFirstTool of [false, true]) test(unplugAfterFirstTool ? "u
   const database = {
     users: [{ id: "user-a", enabled: true }], workspaces: [{ id: "workspace-a", status: "active" }], workspaceMembers: [{ userId: "user-a", workspaceId: "workspace-a" }], auditLogs: [],
     models: [model], conversations: [{ id: "conversation-a", workspaceId: "workspace-a", userId: "user-a", modelId: model.id }],
-    executionTasks: [{ id: "task-a", workspaceId: "workspace-a", userId: "user-a", conversationId: "conversation-a", sourceMessageId: "message-a", provider: "local_agent", status: "queued", instruction: "查看文件", deviceId: "device-a", createdAt: timestamp, updatedAt: timestamp }],
+    executionTasks: [{ id: "task-a", workspaceId: "workspace-a", userId: "user-a", conversationId: "conversation-a", sourceMessageId: "message-a", provider: "local_agent", status: "queued", instruction: "查看文件", deviceId: "device-a", installationId, createdAt: timestamp, updatedAt: timestamp }],
     executionEvents: [], powerAccounts: [{ id: "power-a", workspaceId: "workspace-a", userId: "user-a", balanceMicros: 10_000_000, createdAt: timestamp, updatedAt: timestamp }],
     powerLedger: [], modelUsageRecords: []
   } as unknown as Database;
@@ -44,9 +45,9 @@ for (const unplugAfterFirstTool of [false, true]) test(unplugAfterFirstTool ? "u
   let present = true;
   let proofCount = 0;
   const presence = {
-    requireProof: async (scope: { userId: string; workspaceId: string }) => { proofCount++; assert.equal(scope.userId, "user-a"); assert.equal(scope.workspaceId, "workspace-a"); if (!present) throw new Error("请插入 ONE Key"); },
-    prepareLocalExecution: async () => ({ targetName: "project-a" }),
-    executeLocalTool: async (_deviceId: string, _taskId: string, tool: string, args: unknown) => { toolRequests.push({ tool, args }); if (unplugAfterFirstTool) present = false; return { output: "README.md" }; },
+    requireProof: async (scope: { userId: string; workspaceId: string; installationId: string }) => { proofCount++; assert.equal(scope.userId, "user-a"); assert.equal(scope.workspaceId, "workspace-a"); assert.equal(scope.installationId, installationId); if (!present) throw new Error("请插入 ONE Key"); },
+    prepareLocalExecution: async (_deviceId: string, _taskId: string, computer: string) => { assert.equal(computer, installationId); return { targetName: "project-a" }; },
+    executeLocalTool: async (_deviceId: string, _taskId: string, tool: string, args: unknown, computer: string) => { assert.equal(computer, installationId); toolRequests.push({ tool, args }); if (unplugAfterFirstTool) present = false; return { output: "README.md" }; },
     cancelExecution: async () => undefined
   } as any;
   const service = new LocalAgentService(store, presence);

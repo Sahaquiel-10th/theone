@@ -22,13 +22,16 @@ for (const field of ["deviceId", "privateKeyRaw", "serverBaseUrl"]) {
   if (typeof credential[field] !== "string" || !credential[field].trim()) throw new Error(`凭证缺少字段：${field}`);
 }
 
-const target = path.join(volumePath, "ONE.exe");
-if (fs.existsSync(target) && !has("--replace")) throw new Error("U 盘已经存在 ONE.exe；确认替换时请增加 --replace");
-if (fs.existsSync(target)) {
+const executableName = "ONE for Windows.exe";
+const target = path.join(volumePath, executableName);
+const legacyTarget = path.join(volumePath, "ONE.exe");
+if ((fs.existsSync(target) || fs.existsSync(legacyTarget)) && !has("--replace")) throw new Error(`U 盘已经存在 ${executableName} 或旧版 ONE.exe；确认替换时请增加 --replace`);
+if (fs.existsSync(target) || fs.existsSync(legacyTarget)) {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "");
   const backupRoot = path.join(volumePath, `.one-windows-backup-${stamp}`);
   fs.mkdirSync(backupRoot);
-  fs.renameSync(target, path.join(backupRoot, "ONE.exe.bak"));
+  if (fs.existsSync(target)) fs.renameSync(target, path.join(backupRoot, `${executableName}.bak`));
+  if (fs.existsSync(legacyTarget)) fs.renameSync(legacyTarget, path.join(backupRoot, "ONE.exe.bak"));
 }
 
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "one-key-windows-"));
@@ -37,13 +40,39 @@ try {
   if (value("--go-bin")) buildArgs.push("--go-bin", path.resolve(value("--go-bin")));
   execFileSync(process.execPath, buildArgs, { stdio: "inherit" });
   fs.copyFileSync(path.join(temporaryRoot, "ONE.exe"), target);
-  fs.writeFileSync(path.join(volumePath, "使用 ONE.txt"), "macOS：双击 ONE.app\r\nWindows：双击 ONE.exe\r\n\r\n首次双击会在当前用户目录安装一个不含私钥的在场检测器。此后 U 盘插着即可使用；拔出后新请求立即停用；重新插入或电脑休眠唤醒后会自动恢复，不需要刷新网页。电脑重启后请再双击一次。\r\n普通 U 盘凭证可以被复制；遗失后请管理员立即在 ONE 超管后台挂失。\r\n");
+  fs.writeFileSync(path.join(volumePath, ".one", "使用说明.txt"), `macOS：双击 ONE for Mac.app\r\nWindows：双击 ${executableName}\r\n\r\n首次双击会在当前用户目录安装一个不含私钥的在场检测器。此后 U 盘插着即可使用；拔出后新请求立即停用；重新插入或电脑休眠唤醒后会自动恢复，不需要刷新网页。电脑重启后请再双击一次。\r\n普通 U 盘凭证可以被复制；遗失后请管理员立即在 ONE 超管后台挂失。\r\n`);
+  if (has("--tidy-root")) tidyRoot(volumePath, new Set(["ONE for Mac.app", executableName]));
+  else hidePath(path.join(volumePath, ".one"));
   console.log(`\nWindows 灌装完成\nU 盘：${volumePath}\n设备 ID：${credential.deviceId}\n服务：${credential.serverBaseUrl}`);
 } finally {
   fs.rmSync(temporaryRoot, { recursive: true, force: true });
 }
 
 function usage() {
-  console.log("用法：npm run provision:one-key:windows -- --volume /Volumes/U盘名称 [--replace] [--go-bin /路径/go]");
+  console.log("用法：npm run provision:one-key:windows -- --volume /Volumes/U盘名称 [--replace] [--tidy-root] [--go-bin /路径/go]");
   process.exit(1);
+}
+
+function tidyRoot(root, keepNames) {
+  const storageRoot = path.join(root, ".one-files");
+  const originalRoot = path.join(storageRoot, "原有文件");
+  const systemNames = new Set(["System Volume Information", "$RECYCLE.BIN"]);
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (entry.name.startsWith(".") || keepNames.has(entry.name) || systemNames.has(entry.name)) continue;
+    fs.mkdirSync(originalRoot, { recursive: true });
+    const destination = path.join(originalRoot, entry.name);
+    if (fs.existsSync(destination)) throw new Error(`无法整理根目录，收纳位置已存在同名项：${destination}`);
+    fs.renameSync(path.join(root, entry.name), destination);
+  }
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (entry.name.startsWith(".") || systemNames.has(entry.name)) {
+      try { hidePath(path.join(root, entry.name)); } catch {}
+    }
+  }
+}
+
+function hidePath(target) {
+  execFileSync("/usr/bin/SetFile", ["-a", "V", target], { stdio: "ignore" });
+  const appleDouble = path.join(path.dirname(target), `._${path.basename(target)}`);
+  if (fs.existsSync(appleDouble)) fs.unlinkSync(appleDouble);
 }

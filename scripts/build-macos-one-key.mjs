@@ -30,15 +30,21 @@ fs.writeFileSync(path.join(contents, "Info.plist"), `<?xml version="1.0" encodin
 <key>CFBundleIdentifier</key><string>one.theone.key</string>
 <key>CFBundleName</key><string>ONE</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.2.7</string>
-<key>CFBundleVersion</key><string>9</string>
+<key>CFBundleShortVersionString</key><string>0.2.8</string>
+<key>CFBundleVersion</key><string>10</string>
 <key>CFBundleIconFile</key><string>ONE.icns</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>`);
 
-execFileSync("/usr/bin/swiftc", ["-parse-as-library", "-O", path.join(root, "launcher/macos/ONEKeyLauncher.swift"), "-o", path.join(macos, "ONE")], { stdio: "inherit" });
+const slices = ["arm64", "x86_64"].map((architecture) => {
+  const slice = path.join(outputRoot, `ONE-${architecture}`);
+  execFileSync("/usr/bin/swiftc", ["-target", `${architecture}-apple-macosx13.0`, "-parse-as-library", "-O", path.join(root, "launcher/macos/ONEKeyLauncher.swift"), "-o", slice], { stdio: "inherit" });
+  return slice;
+});
+execFileSync("/usr/bin/lipo", ["-create", ...slices, "-output", path.join(macos, "ONE")], { stdio: "inherit" });
+for (const slice of slices) fs.unlinkSync(slice);
 if (codexBinary) {
   if (!fs.existsSync(codexBinary)) throw new Error(`Codex Runtime 不存在：${codexBinary}`);
   fs.copyFileSync(codexBinary, path.join(resources, "codex"));
@@ -77,4 +83,8 @@ fs.writeFileSync(path.join(outputRoot, "使用 ONE.txt"), "首次在电脑上使
 // Icon generation may leave Finder/resource-fork metadata that codesign rejects.
 execFileSync("/usr/bin/xattr", ["-cr", app], { stdio: "inherit" });
 execFileSync("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", app], { stdio: "inherit" });
+// Desktop/File Provider volumes can add Finder metadata while codesign writes
+// its bundle. Clear it once more so strict verification and USB copying remain
+// deterministic; this does not change signed file contents.
+execFileSync("/usr/bin/xattr", ["-cr", app], { stdio: "inherit" });
 console.log(`macOS ONE Key 已生成：${outputRoot}`);

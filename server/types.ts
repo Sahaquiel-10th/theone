@@ -1,6 +1,6 @@
 export type Role = "admin" | "user";
 
-export type User = { id: string; username: string; passwordHash: string; role: Role; defaultWorkspaceId: string; preferredModelId?: string; enabled: boolean; createdAt: string };
+export type User = { id: string; username: string; passwordHash: string; role: Role; defaultWorkspaceId: string; profile?: import("./betaProfile.js").AccountProfile; preferredModelId?: string; enabled: boolean; createdAt: string };
 export type Workspace = { id: string; name: string; slug: string; status: "active" | "suspended"; createdAt: string; updatedAt: string };
 export type WorkspaceMember = { id: string; workspaceId: string; userId: string; role: "owner" | "member"; createdAt: string };
 export type ConversationFolder = { id: string; workspaceId: string; userId: string; name: string; createdAt: string };
@@ -16,11 +16,13 @@ export type ModelConfig = {
 export type Message = {
   id?: string; role: "user" | "assistant" | "system"; content: string; imageUrl?: string;
   attachments?: AttachmentSummary[]; sources?: SearchSource[]; inputImageDataUrls?: string[]; createdAt: string; modelId?: string;
+  requestId?: string; knowledgeDiagnostics?: Omit<import("./knowledge/knowledgeService.js").KnowledgeRecallResult, "chunks">; attachmentWarning?: string;
 };
 
 export type MessageRecord = Required<Pick<Message, "id" | "role" | "content" | "createdAt">> & {
   workspaceId: string; userId: string; conversationId: string; modelId?: string; imageUrl?: string;
   attachmentIds?: string[]; sources?: SearchSource[]; tokenCount?: number;
+  requestId?: string; knowledgeDiagnostics?: Message["knowledgeDiagnostics"]; attachmentWarning?: string;
 };
 
 export type Conversation = {
@@ -117,7 +119,7 @@ export type ExecutionTaskStatus = "queued" | "selecting_target" | "running" | "c
 export type ExecutionTask = {
   id: string; workspaceId: string; userId: string; conversationId: string; sourceMessageId: string;
   provider: "codex" | "local_agent"; status: ExecutionTaskStatus; instruction: string; deviceId: string;
-  targetName?: string; providerThreadId?: string; finalResponse?: string; lastError?: string;
+  installationId?: string; targetName?: string; providerThreadId?: string; finalResponse?: string; lastError?: string;
   createdAt: string; updatedAt: string; startedAt?: string; completedAt?: string;
 };
 export type ExecutionEvent = {
@@ -132,15 +134,16 @@ export type OneKeyDevice = {
 };
 
 export type DeviceChallenge = {
-  id: string; deviceId: string; nonce: string; expiresAt: string; attempts: number; createdAt: string; usedAt?: string;
+  id: string; deviceId: string; installationId?: string; nonce: string; expiresAt: string; attempts: number; createdAt: string; usedAt?: string;
 };
 
 export type OneTimeLoginCode = {
-  id: string; tokenHash: string; deviceId: string; workspaceId: string; userId: string;
+  id: string; tokenHash: string; deviceId: string; installationId?: string; workspaceId: string; userId: string;
   expiresAt: string; createdAt: string; usedAt?: string;
 };
 
 export type Database = {
+  chatOperations?: import("./chatOperations.js").ChatOperation[];
   users: User[]; workspaces: Workspace[]; workspaceMembers: WorkspaceMember[]; conversationFolders: ConversationFolder[];
   models: ModelConfig[]; conversations: Conversation[]; messages: MessageRecord[]; userSavedMemories: UserSavedMemory[];
   retrievalLogs: RetrievalLog[]; contextTraces: ContextTrace[]; modelUsageRecords: ModelUsageRecord[]; knowledgeConnections: KnowledgeConnection[];

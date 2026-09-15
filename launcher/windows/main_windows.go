@@ -27,7 +27,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const version = "0.2.3"
+const version = "0.2.4"
 const residentArgument = "--one-resident"
 
 type deviceCredential struct {
@@ -152,6 +152,9 @@ func run(expectedDeviceID string) error {
 		if errors.As(err, &closeError) && closeError.Code == 4003 {
 			return fmt.Errorf("ONE Key 已挂失或凭证无效")
 		}
+		if errors.As(err, &closeError) && closeError.Code == 4006 {
+			return errors.New("请更新 U 盘中的 ONE 启动器")
+		}
 		if findCredentialForDevice(expectedDeviceID) == "" {
 			credentialPath = ""
 			failures = 0
@@ -182,6 +185,9 @@ func argumentValue(name string) string {
 }
 
 func launchResidentCopy(deviceID string) error {
+	if _, err := installationID(); err != nil {
+		return err
+	}
 	source, err := os.Executable()
 	if err != nil {
 		return errors.New("无法定位 ONE.exe")
@@ -231,7 +237,7 @@ func findCredential() (string, error) {
 	if path := findCredentialForDevice(""); path != "" {
 		return path, nil
 	}
-	return "", errors.New("没有找到 ONE Key，请确认 U 盘已插入，并且 ONE.exe 位于 U 盘根目录")
+	return "", errors.New("没有找到 ONE Key，请确认 U 盘已插入，并且 Windows 版 ONE 位于 U 盘根目录")
 }
 
 func findCredentialForDevice(expectedDeviceID string) string {
@@ -291,6 +297,10 @@ func signNonce(nonce, credentialPath, deviceID string) (string, error) {
 }
 
 func connectLauncher(base, credentialPath, deviceID string) (*websocket.Conn, error) {
+	computerID, err := installationID()
+	if err != nil {
+		return nil, err
+	}
 	endpoint, err := url.Parse(base)
 	if err != nil {
 		return nil, errors.New("ONE 服务地址无效")
@@ -303,6 +313,7 @@ func connectLauncher(base, credentialPath, deviceID string) (*websocket.Conn, er
 	endpoint.Path = "/api/one-key/launcher"
 	query := endpoint.Query()
 	query.Set("deviceId", deviceID)
+	query.Set("installationId", computerID)
 	endpoint.RawQuery = query.Encode()
 
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
@@ -338,7 +349,11 @@ func connectLauncher(base, credentialPath, deviceID string) (*websocket.Conn, er
 		connection.Close()
 		return nil, errors.New("ONE Key 在线验证失败")
 	}
-	connection.SetReadDeadline(time.Time{})
+	connection.SetReadDeadline(time.Now().Add(100 * time.Second))
+	connection.SetPingHandler(func(data string) error {
+		connection.SetReadDeadline(time.Now().Add(100 * time.Second))
+		return connection.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(5*time.Second))
+	})
 	return connection, nil
 }
 
@@ -352,11 +367,18 @@ func serveProofs(connection *websocket.Conn, credentialPath, deviceID string) er
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
+		lastTick := time.Now().UnixMilli()
 		for {
 			select {
 			case <-stopMonitor:
 				return
 			case <-ticker.C:
+				now := time.Now().UnixMilli()
+				if now-lastTick > 5000 {
+					connection.Close()
+					return
+				}
+				lastTick = now
 				if !fileExists(credentialPath) {
 					connection.Close()
 					close(removed)
@@ -886,9 +908,14 @@ func approve(title, message string) bool {
 }
 
 func openLoginPage(base, credentialPath, deviceID string) error {
+	computerID, err := installationID()
+	if err != nil {
+		return err
+	}
 	challengeBody := struct {
-		DeviceID string `json:"deviceId"`
-	}{deviceID}
+		DeviceID       string `json:"deviceId"`
+		InstallationID string `json:"installationId"`
+	}{deviceID, computerID}
 	var challenge struct {
 		ChallengeID string `json:"challengeId"`
 		Nonce       string `json:"nonce"`

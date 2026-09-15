@@ -12,7 +12,8 @@ import { executionConnectors, type ExecutionPresence } from "./connectors/execut
 import { encryptCredential } from "./knowledge/credentialCipher.js";
 import { KnowledgeService } from "./knowledge/knowledgeService.js";
 
-const scope = { workspaceId: "a", userId: "ua", deviceId: "da" };
+const installationId = "a".repeat(32);
+const scope = { workspaceId: "a", userId: "ua", deviceId: "da", installationId };
 function fixture(disabled: string[] = []) {
   const db = {
     users: ["a", "b"].map(id => ({ id: `u${id}`, defaultWorkspaceId: id, enabled: true })),
@@ -20,16 +21,16 @@ function fixture(disabled: string[] = []) {
     workspaceMembers: ["a", "b"].map(id => ({ workspaceId: id, userId: `u${id}`, role: "owner" })),
     oneKeyDevices: ["a", "b"].map(id => ({ id: `d${id}`, workspaceId: id, userId: `u${id}`, status: "active" })),
     knowledgeConnections: [{ id: "ka", workspaceId: "a", provider: "getnote", status: "connected", clientId: "private-client", encryptedApiKey: encryptCredential("private-key"), lastError: "private-provider-error" }],
-    executionTasks: [{ id: "ta", workspaceId: "a", userId: "ua", deviceId: "da", provider: "codex", status: "queued", instruction: "private-instruction" }]
+    executionTasks: [{ id: "ta", workspaceId: "a", userId: "ua", deviceId: "da", installationId, provider: "codex", status: "queued", instruction: "private-instruction" }]
   } as unknown as Database;
   const calls: string[] = [];
   let online = true, localEnabled = false;
   const presence: ExecutionPresence = {
-    isConnected: () => online,
-    supportsLocalAgent: () => localEnabled,
-    async startExecution(device, task) { calls.push(`start:${device}:${task}`); },
-    async continueExecution(device, task) { calls.push(`continue:${device}:${task}`); },
-    async cancelExecution(device, task) { calls.push(`cancel:${device}:${task}`); }
+    isConnected: (_device, computer) => online && computer === installationId,
+    supportsLocalAgent: (_device, computer) => localEnabled && computer === installationId,
+    async startExecution(device, task, _instruction, computer) { assert.equal(computer, installationId); calls.push(`start:${device}:${task}`); },
+    async continueExecution(device, task, _instruction, computer) { assert.equal(computer, installationId); calls.push(`continue:${device}:${task}`); },
+    async cancelExecution(device, task, computer) { assert.equal(computer, installationId); calls.push(`cancel:${device}:${task}`); }
   };
   const store = { async read() { return db; }, async mutate<T>(fn: (db: Database) => T) { return fn(db); } } as Store;
   const registry = new ConnectorRegistry([getnoteConnector, ...executionConnectors(presence, { start(id) { calls.push(`local:${id}`); }, async cancel(id) { calls.push(`local-cancel:${id}`); } })], disabled);
@@ -65,7 +66,8 @@ test("connector status distinguishes pending, revoked, expired, missing credenti
   const connection = db.knowledgeConnections[0];
   for (const [stored, expected] of [["pending", "pending"], ["revoked", "not_connected"], ["error", "error"]] as const) {
     connection.status = stored;
-    assert.equal((await service.check(scope, "getnote")).health.state, expected);
+    // Status is local-only; `check` intentionally retries stored errors now.
+    assert.equal((await service.list(scope))[0].health.state, expected);
   }
   connection.status = "connected";
   connection.credentialExpiresAt = "2000-01-01";
@@ -83,7 +85,7 @@ test("explicit knowledge check uses only authorized credentials and sanitizes fa
   let requests = 0;
   globalThis.fetch = (async (_url, init) => {
     requests++;
-    assert.equal(new Headers(init?.headers).get("Authorization"), "private-key");
+    assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer private-key");
     return new Response(JSON.stringify({ success: true, data: { results: [] } }));
   }) as typeof fetch;
   try {
@@ -99,10 +101,40 @@ test("explicit knowledge check uses only authorized credentials and sanitizes fa
   } finally { globalThis.fetch = original; }
 });
 
+test("an explicit successful check clears an old failure without changing another workspace", async () => {
+  const { db, service } = fixture();
+  db.knowledgeConnections[0].status = "error";
+  const other = { ...structuredClone(db.knowledgeConnections[0]), id: "kb", workspaceId: "b" };
+  db.knowledgeConnections.push(other);
+  const originalOther = structuredClone(other);
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => Response.json({ data: { results: [] } })) as typeof fetch;
+  try {
+    assert.equal((await service.check(scope, "getnote")).health.state, "verified");
+    assert.equal(db.knowledgeConnections[0].status, "connected");
+    assert.equal(db.knowledgeConnections[0].lastError, undefined);
+    assert.equal((await service.list(scope))[0].health.state, "configured");
+    assert.deepEqual(db.knowledgeConnections[1], originalOther);
+  } finally { globalThis.fetch = original; }
+});
+
+test("an in-flight connection check cannot revive a revoked connection", async () => {
+  const { db, service } = fixture();
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    db.knowledgeConnections[0].status = "revoked";
+    return Response.json({ data: { results: [] } });
+  }) as typeof fetch;
+  try {
+    await service.check(scope, "getnote");
+    assert.equal(db.knowledgeConnections[0].status, "revoked");
+  } finally { globalThis.fetch = original; }
+});
+
 test("execution dispatch enforces membership, owner, device and original runtime", async () => {
   const f = fixture();
   assert.equal(await f.service.selectExecution(scope), "codex");
-  for (const wrong of [{ ...scope, workspaceId: "b" }, { ...scope, userId: "ub" }, { ...scope, deviceId: "db" }, { ...scope, deviceId: undefined }]) {
+  for (const wrong of [{ ...scope, workspaceId: "b" }, { ...scope, userId: "ub" }, { ...scope, deviceId: "db" }, { ...scope, deviceId: undefined }, { ...scope, installationId: "b".repeat(32) }, { ...scope, installationId: undefined }]) {
     for (const action of ["start", "continue", "cancel"] as const) await assert.rejects(f.service.dispatch(wrong, "ta", action, "test"));
   }
   assert.deepEqual(f.calls, []);
@@ -138,7 +170,7 @@ test("connector HTTP routes reject anonymous access and ignore client identity o
   app.use(express.json());
   // Test-only stand-in for the production auth + live device proof middleware.
   app.use((req, _res, next) => {
-    if (req.headers.authorization === "test-identity") { req.user = f.db.users[0]; req.workspaceId = "a"; req.oneKeyDeviceId = "da"; }
+    if (req.headers.authorization === "test-identity") { req.user = f.db.users[0]; req.workspaceId = "a"; req.oneKeyDeviceId = "da"; req.oneKeyInstallationId = installationId; }
     next();
   });
   app.use("/api/connectors", connectorRoutes(f.service));

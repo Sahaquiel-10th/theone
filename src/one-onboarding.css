@@ -1,0 +1,67 @@
+.one-onboarding {
+  width: min(100%, 680px);
+  margin: 20px auto 28px;
+  padding: clamp(24px, 5vw, 42px);
+  color: #24251f;
+  background: #eeeee6;
+  border: 1px solid #d9dccf;
+  border-radius: 26px;
+  text-align: left;
+}
+.one-onboarding-top { display: flex; justify-content: space-between; gap: 20px; color: #5e6657; font-size: 12px; letter-spacing: .05em; }
+.one-onboarding h2 { margin: 25px 0 14px; font-size: clamp(24px, 3.2vw, 32px); font-weight: 560; line-height: 1.35; letter-spacing: -.04em; overflow-wrap: anywhere; }
+.one-onboarding p { margin: 0 0 22px; color: #53584c; line-height: 1.8; font-size: 14px; }
+.one-onboarding small, .one-profile-name small { display: block; color: #606655; font-size: 12px; line-height: 1.8; }
+.one-onboarding form { display: grid; gap: 12px; }
+.one-onboarding-label { font-size: 12px; color: #53584c; }
+.one-onboarding input, .one-profile-name input { width: 100%; min-width: 0; padding: 13px 15px; background: #fbfbf7; color: #24251f; border: 1px solid #bfc5b5; border-radius: 10px; font: inherit; }
+.one-onboarding button, .one-profile-name button { display: inline-flex; align-items: center; justify-content: center; gap: 10px; width: fit-content; min-height: 43px; padding: 11px 18px; border: 1px solid #30382b; border-radius: 10px; background: #30382b; color: #fff; font: inherit; font-size: 13px; cursor: pointer; }
+.one-onboarding button:disabled, .one-profile-name button:disabled { cursor: default; opacity: .55; }
+.one-onboarding .one-onboarding-quiet { background: transparent; border-color: transparent; color: #434b3d; }
+.one-onboarding-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 22px 0; }
+.one-onboarding p.one-onboarding-error { margin: 16px 0 0; color: #922d32; font-size: 13px; }
+.one-profile-name { display: grid; gap: 12px; margin: 0; }
+.one-profile-name > label { color: #24251f; font-size: 15px; font-weight: 560; }
+.one-profile-name-row { display: flex; align-items: center; gap: 10px; }
+.one-profile-name-row button { flex-shrink: 0; }
+.one-profile-name > p { margin: 0; font-size: 12px; line-height: 1.7; color: #495e37; }
+.one-beta-feedback { margin-top: 16px; color: #52564c; font-size: 12px; }
+.one-beta-feedback-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.one-beta-feedback-actions button { display: inline-flex; align-items: center; gap: 5px; padding: 5px 7px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: #575d50; font: inherit; font-size: 11px; cursor: pointer; }
+.one-beta-feedback-actions button:hover, .one-beta-feedback-actions button[aria-pressed="true"] { color: #303b26; border-color: #c5cbbd; background: #e8ecdf; }
+.one-beta-feedback-actions button:disabled { opacity: .6; cursor: default; }
+.one-beta-feedback-note { display: grid; gap: 10px; margin-top: 12px; padding: 15px; border: 1px solid #d2d7c8; border-radius: 12px; background: #f5f6ef; color: #454e3c; }
+.one-beta-feedback-note textarea { width: 100%; padding: 10px; resize: vertical; background: #fff; border: 1px solid #bfc5b5; border-radius: 8px; color: #24251f; font: inherit; line-height: 1.7; }
+.one-beta-feedback .one-beta-feedback-consent { display: flex; align-items: flex-start; gap: 9px; line-height: 1.7; color: #545e49; font-size: 11px; }
+.one-beta-feedback-consent input { flex-shrink: 0; width: 14px; height: 14px; margin: 2px 0 0; accent-color: #48593a; }
+.one-beta-feedback > p { margin: 9px 0 0; color: #526044; font-size: 11px; line-height: 1.7; }
+.one-beta-insights { margin-block: 20px; padding-block: 16px; border-top: 1px solid #daddd1; color: #30372b; }
+.one-beta-insights > summary, .one-beta-insights-feedback > summary { cursor: pointer; font-size: 13px; font-weight: 600; line-height: 1.8; }
+.one-beta-insights-body { margin-top: 16px; font-size: 12px; }
+.one-beta-insights .one-beta-insights-explanation { max-width: 760px; color: #5b6353; line-height: 1.9; font-size: 12px; margin-block: 12px 18px; }
+.one-beta-insights-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; margin-block: 18px 26px; }
+.one-beta-insights-grid > div { display: grid; align-content: start; gap: 8px; }
+.one-beta-insights-grid strong { font-size: 24px; font-weight: 550; color: #2b3325; }
+.one-beta-insights-grid :is(span, small) { color: #58634e; font-size: 11px; line-height: 1.7; }
+.one-beta-insights-milestones { display: grid; gap: 10px; margin-block: 0 24px; }
+.one-beta-insights-milestones > div { display: flex; flex-wrap: wrap; gap: 8px 24px; }
+.one-beta-insights-milestones dt { color: #646a5a; min-width: 140px; }
+.one-beta-insights-milestones dd { color: #363e2e; margin: 0; }
+.one-beta-insights-feedback { border-top: 1px solid #daddd1; padding-top: 17px; }
+.one-beta-insights-feedback ul { list-style: none; padding: 0; margin: 10px 0; }
+.one-beta-insights-feedback li { padding: 15px 0; border-bottom: 1px solid #e0e3d9; }
+.one-beta-insights-feedback li > div { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.one-beta-insights-feedback li time, .one-beta-insights-feedback li small { color: #626b57; font-size: 11px; }
+.one-beta-insights-feedback li > p { color: #666e5c; font-size: 12px; line-height: 1.8; }
+.one-beta-insights-feedback li > p.one-beta-insights-comment { white-space: pre-wrap; overflow-wrap: anywhere; color: #303b26; }
+.one-beta-insights-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 14px; margin-top: 16px; }
+.one-beta-insights button { padding: 7px 12px; border: 1px solid #bdc6b2; border-radius: 7px; background: #f1f4eb; color: #3c4b30; font: inherit; cursor: pointer; }
+.one-beta-insights button:disabled { opacity: .5; cursor: default; }
+.one-beta-insights-error { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; color: #922d32; }
+.one-onboarding :is(input, button):focus-visible, .one-profile-name :is(input, button):focus-visible, .one-beta-feedback :is(textarea, input, button):focus-visible { outline: 2px solid #637c47; outline-offset: 3px; }
+@media (max-width: 900px) { .one-beta-insights-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 540px) {
+  .one-onboarding { margin-block: 10px 20px; border-radius: 19px; }
+  .one-profile-name-row { align-items: stretch; flex-direction: column; }
+  .one-profile-name-row button { width: 100%; }
+}

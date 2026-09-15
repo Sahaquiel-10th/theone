@@ -1,7 +1,7 @@
 import type { Database, ExecutionTask } from "../types.js";
 import type { KnowledgeChunk } from "../knowledge/provider.js";
 
-export type ConnectorScope = { workspaceId: string; userId: string; deviceId?: string };
+export type ConnectorScope = { workspaceId: string; userId: string; deviceId?: string; installationId?: string };
 export type ConnectorState = "not_connected" | "pending" | "configured" | "expired" | "error" | "offline" | "transport_ready" | "unavailable" | "disabled" | "verified";
 export type ConnectorHealth = { state: ConnectorState; code: string; message: string; evidence: "stored" | "transport" | "remote" };
 export type ConnectorManifest = {

@@ -4,6 +4,7 @@ import test from "node:test";
 import type { Store } from "./db.js";
 import type { Database } from "./types.js";
 import { OneKeyService } from "./oneKeyService.js";
+const installationId = "computer-a-" + "1".repeat(32);
 
 function testStore(): Store {
   const database = {
@@ -24,12 +25,12 @@ test("provisions a key and redeems a signed challenge exactly once", async () =>
   const service = new OneKeyService(testStore());
   const provisioned = await service.provision({ workspaceId: "workspace-a", userId: "user-a", serialNumber: "ONE-0001" });
   assert.match(provisioned.deviceConfig.privateKeyRaw, /^[A-Za-z0-9_-]+$/);
-  const challenge = await service.challenge(provisioned.device.id);
+  const challenge = await service.challenge(provisioned.device.id, installationId);
   const privateKey = crypto.createPrivateKey({ key: { kty: "OKP", crv: "Ed25519", d: provisioned.deviceConfig.privateKeyRaw, x: provisioned.deviceConfig.publicKeyRaw }, format: "jwk" });
   const signature = crypto.sign(null, Buffer.from(challenge.nonce, "base64url"), privateKey).toString("base64url");
   const verified = await service.verify(challenge.challengeId, signature);
   const binding = await service.redeem(verified.loginCode);
-  assert.deepEqual(binding, { userId: "user-a", role: "user", workspaceId: "workspace-a", deviceId: provisioned.device.id });
+  assert.deepEqual(binding, { userId: "user-a", role: "user", workspaceId: "workspace-a", deviceId: provisioned.device.id, installationId });
   await assert.rejects(() => service.redeem(verified.loginCode), /已过期或已使用/);
   await assert.rejects(() => service.verify(challenge.challengeId, signature), /已过期或不可用/);
 });
@@ -37,10 +38,10 @@ test("provisions a key and redeems a signed challenge exactly once", async () =>
 test("rejects invalid signatures and revoked keys", async () => {
   const service = new OneKeyService(testStore());
   const provisioned = await service.provision({ workspaceId: "workspace-a", userId: "user-a", serialNumber: "ONE-0002" });
-  const challenge = await service.challenge(provisioned.device.id);
+  const challenge = await service.challenge(provisioned.device.id, installationId);
   await assert.rejects(() => service.verify(challenge.challengeId, crypto.randomBytes(64).toString("base64url")), /验证失败/);
   await service.revoke(provisioned.device.id);
-  await assert.rejects(() => service.challenge(provisioned.device.id), /不存在或已挂失/);
+  await assert.rejects(() => service.challenge(provisioned.device.id, installationId), /不存在或已挂失/);
 });
 
 test("does not provision a key across workspace membership boundaries", async () => {

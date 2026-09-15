@@ -34,7 +34,7 @@ function recordUserId(collection: CollectionName, item: StoredRecord): string | 
 }
 
 function recordParentId(collection: CollectionName, item: StoredRecord): string | null {
-  const fields = collection === "messages" || collection === "retrievalLogs" || collection === "contextTraces" || collection === "modelUsageRecords" || collection === "attachments"
+  const fields = collection === "messages" || collection === "retrievalLogs" || collection === "contextTraces" || collection === "modelUsageRecords" || collection === "attachments" || collection === "chatOperations"
     ? ["conversationId"]
     : collection === "deviceChallenges" || collection === "oneTimeLoginCodes" ? ["deviceId"]
     : collection === "executionEvents" ? ["taskId"] : [];
@@ -43,6 +43,7 @@ function recordParentId(collection: CollectionName, item: StoredRecord): string 
 }
 
 function recordLookupKey(collection: CollectionName, item: StoredRecord): string | null {
+  if (collection === "chatOperations") return item.id;
   if (collection === "users" && typeof item.username === "string") return item.username.trim().toLowerCase();
   if (collection === "workspaces" && typeof item.slug === "string") return item.slug.trim().toLowerCase();
   if (collection === "workspaceMembers" && typeof item.workspaceId === "string" && typeof item.userId === "string") return `${item.workspaceId}:${item.userId}`;

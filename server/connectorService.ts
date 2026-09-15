@@ -2,6 +2,7 @@ import type { Store } from "./db.js";
 import type { Database } from "./types.js";
 import { resolveWorkspaceAccess } from "./workspaceAccess.js";
 import { ConnectorRegistry, type ConnectorScope, type ConnectorHealth } from "./connectors/registry.js";
+import { validInstallationId } from "./oneKeyInstallation.js";
 
 export class ConnectorAccessError extends Error {}
 
@@ -29,8 +30,21 @@ export class ConnectorService {
     const db = await this.authorized(scope);
     const adapter = this.registry.get(id);
     if (!adapter) throw new ConnectorAccessError("连接器不存在或无权访问");
+    const startedAt = new Date().toISOString();
+    const connection = adapter.kind === "knowledge" ? db.knowledgeConnections.find(item => item.workspaceId === scope.workspaceId && item.provider === id) : undefined;
+    const snapshot = connection ? structuredClone(connection) : undefined;
     // Explicit POST only. No hidden provider calls or file writes on list.
     const health = this.registry.enabled(id) && adapter.check ? await adapter.check(db, scope) : this.health(id, db, scope);
+    if (snapshot && health.evidence === "remote" && (health.state === "verified" || health.state === "error" || health.state === "expired")) await this.store.mutate(mutable => {
+      const target = mutable.knowledgeConnections.find(item => item.id === snapshot.id && item.workspaceId === scope.workspaceId && item.provider === id);
+      if (!target || target.status === "revoked" || target.status === "pending" || target.clientId !== snapshot.clientId || target.encryptedApiKey !== snapshot.encryptedApiKey || target.encryptedAccessToken !== snapshot.encryptedAccessToken || (target.lastCheckedAt && target.lastCheckedAt > startedAt)) return;
+      target.status = health.state === "verified" ? "connected" : "error";
+      // Connector health is a reviewed, sanitized surface; never persist the
+      // raw thrown provider error in a browser-visible connection field.
+      target.lastError = health.state === "verified" ? undefined : health.message;
+      target.lastCheckedAt = new Date().toISOString();
+      target.updatedAt = target.lastCheckedAt;
+    });
     return { connectorId: id, version: adapter.manifest.version, checkedAt: new Date().toISOString(), health };
   }
 
@@ -43,7 +57,8 @@ export class ConnectorService {
 
   async dispatch(scope: ConnectorScope, taskId: string, action: "start" | "continue" | "cancel", instruction?: string) {
     const db = await this.authorized(scope);
-    const task = db.executionTasks.find(item => item.id === taskId && item.workspaceId === scope.workspaceId && item.userId === scope.userId && item.deviceId === scope.deviceId);
+    if (!validInstallationId(scope.installationId)) throw new ConnectorAccessError("请更新 ONE Key 并在原电脑创建新的执行任务");
+    const task = db.executionTasks.find(item => item.id === taskId && item.workspaceId === scope.workspaceId && item.userId === scope.userId && item.deviceId === scope.deviceId && item.installationId === scope.installationId);
     if (!task) throw new ConnectorAccessError("执行任务不存在或无权访问");
     const adapter = this.registry.execution(task.provider);
     // Never silently move an existing task to another runtime or device.

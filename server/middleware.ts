@@ -11,6 +11,7 @@ declare global {
       user?: User;
       workspaceId?: string;
       oneKeyDeviceId?: string;
+      oneKeyInstallationId?: string;
     }
   }
 }
@@ -38,6 +39,10 @@ export function auth(secret: string, injected?: AuthDependencies) {
     const db = await dependencies.store.read();
     const user = db.users.find((item) => item.id === payload.sub && item.enabled);
     if (!user) return res.status(401).json({ error: "账号不可用" });
+    // A login in another tab changes the cookie. Never silently execute an old
+    // tab's request under the newly logged-in person's account.
+    const expectedUser = req.headers["x-one-user"];
+    if (expectedUser && expectedUser !== user.id) return res.status(409).json({ error: "登录账号已切换，请重新确认当前页面", code: "SESSION_CHANGED" });
 
     const requestedWorkspace = payload.workspaceId || req.headers["x-workspace-id"]?.toString();
     const access = resolveWorkspaceAccess(db, user, requestedWorkspace);
@@ -46,11 +51,12 @@ export function auth(secret: string, injected?: AuthDependencies) {
     req.user = user;
     req.workspaceId = access.workspaceId;
     req.oneKeyDeviceId = payload.deviceId;
+    req.oneKeyInstallationId = payload.installationId;
     if (payload.deviceId) {
       try {
-        await dependencies.oneKeyPresence.requireProof({ deviceId: payload.deviceId, userId: user.id, workspaceId: access.workspaceId, method: req.method, path: req.originalUrl });
+        await dependencies.oneKeyPresence.requireProof({ deviceId: payload.deviceId, installationId: payload.installationId, userId: user.id, workspaceId: access.workspaceId, method: req.method, path: req.originalUrl });
       } catch (error) {
-        return res.status(428).json({ error: error instanceof Error ? error.message : "请插入 ONE Key", code: "ONE_KEY_REQUIRED", requestId: res.locals.requestId });
+        return res.status(428).json({ error: error instanceof Error ? error.message : "请插入 ONE Key", code: error && typeof error === "object" && "code" in error ? error.code : "ONE_KEY_REQUIRED", requestId: res.locals.requestId });
       }
     }
     next();

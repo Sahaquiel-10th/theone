@@ -12,13 +12,13 @@ export function connectorRoutes(service: ConnectorService) {
   });
   router.get("/", async (req, res, next) => {
     try {
-      const scope: ConnectorScope = { userId: req.user!.id, workspaceId: req.workspaceId!, deviceId: req.oneKeyDeviceId };
+      const scope: ConnectorScope = { userId: req.user!.id, workspaceId: req.workspaceId!, deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId };
       res.json({ connectors: await service.list(scope) });
     } catch (error) { next(error); }
   });
   router.post("/:id/check", async (req, res, next) => {
     try {
-      const scope: ConnectorScope = { userId: req.user!.id, workspaceId: req.workspaceId!, deviceId: req.oneKeyDeviceId };
+      const scope: ConnectorScope = { userId: req.user!.id, workspaceId: req.workspaceId!, deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId };
       res.json(await service.check(scope, String(req.params.id)));
     } catch (error) { next(error); }
   });

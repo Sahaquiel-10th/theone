@@ -13,8 +13,8 @@ function status(db: Database, workspaceId: string): ConnectorHealth {
   if (!connection || connection.status === "revoked") return health("not_connected", "AUTHORIZATION_REQUIRED", "请连接知识来源");
   if (connection.status === "pending") return health("pending", "AUTHORIZATION_PENDING", "等待完成授权");
   if (connection.credentialExpiresAt && (!Number.isFinite(Date.parse(connection.credentialExpiresAt)) || Date.parse(connection.credentialExpiresAt) <= Date.now())) return health("expired", "AUTHORIZATION_EXPIRED", "授权已过期，请重新连接");
-  if (connection.status === "error") return health("error", "CONNECTION_ERROR", "上次检索失败，请检查连接");
   if (!connection.clientId || !connection.encryptedApiKey) return health("not_connected", "CREDENTIAL_UNAVAILABLE", "授权资料不完整，请重新连接");
+  if (connection.status === "error") return health("error", "CONNECTION_RETRY_AVAILABLE", "上次检索失败；下次提问或检查连接时会重新尝试");
   return health("configured", "CREDENTIAL_STORED", "已保存授权，尚未进行本次远端检查");
 }
 
@@ -27,7 +27,9 @@ export const getnoteConnector: KnowledgeAdapter = {
   status: (db, scope) => status(db, scope.workspaceId),
   async check(db, scope) {
     const current = status(db, scope.workspaceId);
-    if (current.state !== "configured") return current;
+    // A transient provider/network failure is not a revocation. In particular,
+    // the stored `error` state must not permanently disable future attempts.
+    if (current.state !== "configured" && current.state !== "error") return current;
     const connection = connectionFor(db, scope.workspaceId)!;
     try {
       await getNoteProvider.verify({ clientId: connection.clientId, apiKey: decryptCredential(connection.encryptedApiKey!, knowledgeCredentialContext(connection.workspaceId, "getnote", "api_key")) });
@@ -41,7 +43,7 @@ export const getnoteConnector: KnowledgeAdapter = {
   async recall(db, workspaceId, query, topK) {
     const current = status(db, workspaceId);
     if (current.state === "expired") throw new Error("知识来源授权已过期，请重新连接");
-    if (current.state !== "configured") return [];
+    if (current.state !== "configured" && current.state !== "error") return [];
     const connection = connectionFor(db, workspaceId)!;
     return (await getNoteProvider.search({ clientId: connection.clientId, apiKey: decryptCredential(connection.encryptedApiKey!, knowledgeCredentialContext(connection.workspaceId, "getnote", "api_key")) }, query, topK))
       .map(chunk => ({ ...chunk, provider: "getnote" as const }));
