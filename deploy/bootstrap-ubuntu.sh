@@ -13,6 +13,7 @@ id -u theone-deploy >/dev/null 2>&1 || useradd --create-home --shell /bin/bash t
 
 install -d -m 0755 /srv/theone /srv/theone/releases /srv/theone/incoming
 install -d -m 0750 -o theone -g theone /srv/theone/shared /srv/theone/shared/data /srv/theone/shared/data/uploads
+install -d -m 0750 -o root -g theone /srv/theone/shared/runtime-updates
 chown theone-deploy:theone-deploy /srv/theone/incoming
 
 install -m 0755 "$repo_dir/deploy/theone-deploy" /usr/local/sbin/theone-deploy

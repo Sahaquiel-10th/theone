@@ -4,7 +4,8 @@ import Foundation
 import CFNetwork
 import Network
 
-let launcherVersion = "0.2.8"
+let launcherVersion = "__ONE_RUNTIME_VERSION__"
+let updatePublicKeyRaw = "__ONE_UPDATE_PUBLIC_KEY__"
 let residentArgument = "--one-resident"
 let deviceArgument = "--device-id"
 
@@ -39,8 +40,20 @@ struct SocketMessage: Decodable {
     let deviceId: String?
     let taskId: String?
     let instruction: String?
+    let requestId: String?
+    let envelope: SignedRuntimeUpdate?
 }
 struct SocketResponse: Encodable { let type: String; let challengeId: String; let signature: String }
+struct SocketAuthResponse: Encodable {
+    let type: String
+    let challengeId: String
+    let signature: String
+    let capabilities = ["runtime_update_v1"]
+    let platform = "macos"
+    let architecture: String
+    let launcherVersion: String
+    let updateProtocol = 1
+}
 struct ExecutionEventResponse: Encodable {
     let type = "execution_event"
     let taskId: String
@@ -49,6 +62,26 @@ struct ExecutionEventResponse: Encodable {
     let providerThreadId: String?
     let targetName: String?
     let status: String?
+}
+struct SignedRuntimeUpdate: Codable { let payload: String; let signature: String }
+struct RuntimeUpdatePayload: Decodable {
+    let schemaVersion: Int
+    let channel: String
+    let artifacts: [RuntimeUpdateArtifact]
+}
+struct RuntimeUpdateArtifact: Decodable {
+    let platform: String
+    let architecture: String
+    let version: String
+    let url: String
+    let sha256: String
+    let size: Int64
+}
+struct UpdateEventResponse: Encodable {
+    let type = "update_event"
+    let requestId: String
+    let status: String
+    let error: String?
 }
 
 enum LauncherError: LocalizedError {
@@ -157,11 +190,141 @@ func connectLauncher(base: String, credentialUrl: URL, deviceId: String) async t
         throw LauncherError.message("ONE 在线验证握手失败")
     }
     let signature = try signNonce(nonce, credentialUrl: credentialUrl, deviceId: deviceId)
-    let response = SocketResponse(type: "auth_response", challengeId: challengeId, signature: signature)
+    #if arch(arm64)
+    let architecture = "arm64"
+    #else
+    let architecture = "x86_64"
+    #endif
+    let response = SocketAuthResponse(type: "auth_response", challengeId: challengeId, signature: signature, architecture: architecture, launcherVersion: launcherVersion)
     try await task.send(.string(String(decoding: try JSONEncoder().encode(response), as: UTF8.self)))
     let ready = try JSONDecoder().decode(SocketMessage.self, from: Data(try await receiveText(task).utf8))
     guard ready.type == "ready", ready.deviceId == deviceId else { throw LauncherError.message("ONE Key 在线验证失败") }
     return task
+}
+
+func compareVersions(_ left: String, _ right: String) throws -> Int {
+    func parse(_ value: String) throws -> [Int] {
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard (2...4).contains(parts.count) else { throw LauncherError.message("更新版本格式无效") }
+        return try parts.map { part in
+            guard !part.isEmpty, !(part.count > 1 && part.first == "0"), part.allSatisfy(\.isNumber), let number = Int(part) else {
+                throw LauncherError.message("更新版本格式无效")
+            }
+            return number
+        }
+    }
+    let a = try parse(left), b = try parse(right)
+    for index in 0..<max(a.count, b.count) {
+        let difference = (index < a.count ? a[index] : 0) - (index < b.count ? b[index] : 0)
+        if difference != 0 { return difference < 0 ? -1 : 1 }
+    }
+    return 0
+}
+
+func verifyRuntimeUpdate(_ envelope: SignedRuntimeUpdate) throws -> RuntimeUpdateArtifact {
+    guard let publicKeyBytes = base64UrlDecode(updatePublicKeyRaw), publicKeyBytes.count == 32,
+          let payloadBytes = base64UrlDecode(envelope.payload), !payloadBytes.isEmpty, payloadBytes.count <= 128 * 1024,
+          let signature = base64UrlDecode(envelope.signature), signature.count == 64 else {
+        throw LauncherError.message("ONE 更新清单无效")
+    }
+    let publicKey = try Curve25519.Signing.PublicKey(rawRepresentation: publicKeyBytes)
+    guard publicKey.isValidSignature(signature, for: payloadBytes) else { throw LauncherError.message("ONE 更新签名无效") }
+    let payload = try JSONDecoder().decode(RuntimeUpdatePayload.self, from: payloadBytes)
+    guard payload.schemaVersion == 1, payload.channel == "stable", (1...12).contains(payload.artifacts.count) else {
+        throw LauncherError.message("ONE 更新清单无效")
+    }
+    #if arch(arm64)
+    let architecture = "arm64"
+    #else
+    let architecture = "x86_64"
+    #endif
+    let candidates = try payload.artifacts.filter { item in
+        guard item.platform == "macos", item.architecture == architecture || item.architecture == "universal" else { return false }
+        guard let downloadUrl = URL(string: item.url), downloadUrl.scheme == "https", downloadUrl.user == nil, downloadUrl.password == nil,
+              downloadUrl.fragment == nil, item.size > 0, item.size <= Int64(512 * 1024 * 1024),
+              item.sha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
+            throw LauncherError.message("ONE 更新制品无效")
+        }
+        return try compareVersions(item.version, launcherVersion) > 0
+    }
+    guard let selected = try candidates.sorted(by: { try compareVersions($0.version, $1.version) > 0 }).first else {
+        throw LauncherError.message("没有适用于这台电脑的新版 ONE")
+    }
+    return selected
+}
+
+func sha256File(_ url: URL) throws -> String {
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
+    var digest = SHA256()
+    while let data = try handle.read(upToCount: 1024 * 1024), !data.isEmpty { digest.update(data: data) }
+    return digest.finalize().map { String(format: "%02x", $0) }.joined()
+}
+
+func runProcess(_ executable: String, _ arguments: [String]) throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else { throw LauncherError.message("ONE 更新安装校验失败") }
+}
+
+func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL, progress: (String) async -> Void) async throws {
+    let credentialBefore = try Data(contentsOf: credentialUrl)
+    guard let downloadUrl = URL(string: artifact.url) else { throw LauncherError.message("ONE 更新地址无效") }
+    let (downloaded, response) = try await URLSession.shared.download(from: downloadUrl)
+    guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw LauncherError.message("下载 ONE 更新失败") }
+    await progress("verifying")
+    let attributes = try FileManager.default.attributesOfItem(atPath: downloaded.path)
+    guard (attributes[.size] as? NSNumber)?.int64Value == artifact.size,
+          try sha256File(downloaded) == artifact.sha256 else { throw LauncherError.message("ONE 更新文件校验失败") }
+
+    let oneDirectory = credentialUrl.deletingLastPathComponent()
+    let volumeRoot = oneDirectory.deletingLastPathComponent()
+    let target = volumeRoot.appendingPathComponent("ONE for Mac.app", isDirectory: true)
+    guard FileManager.default.fileExists(atPath: target.path) else { throw LauncherError.message("U 盘中没有找到 Mac 启动器") }
+    let updateDirectory = oneDirectory.appendingPathComponent(".updates", isDirectory: true)
+    try FileManager.default.createDirectory(at: updateDirectory, withIntermediateDirectories: true)
+    let staging = updateDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: staging) }
+    try runProcess("/usr/bin/ditto", ["-x", "-k", downloaded.path, staging.path])
+    let candidates = [staging.appendingPathComponent("ONE.app"), staging.appendingPathComponent("ONE for Mac.app")]
+    guard let stagedApp = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) else {
+        throw LauncherError.message("Mac 更新包不完整")
+    }
+    try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", stagedApp.path])
+    // The package is authenticated by ONE's Ed25519 release signature before
+    // extraction. Remove download quarantine only from that verified staged app,
+    // then verify its code signature again before it can replace the USB copy.
+    try runProcess("/usr/bin/xattr", ["-cr", stagedApp.path])
+    try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", stagedApp.path])
+    guard try Data(contentsOf: credentialUrl) == credentialBefore else { throw LauncherError.message("ONE Key 凭证状态发生变化，更新已停止") }
+
+    await progress("installing")
+    let backupDirectory = oneDirectory.appendingPathComponent("update-backups", isDirectory: true)
+    try FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
+    let backup = backupDirectory.appendingPathComponent("ONE-for-Mac-\(launcherVersion).app", isDirectory: true)
+    if FileManager.default.fileExists(atPath: backup.path) { try FileManager.default.removeItem(at: backup) }
+    try FileManager.default.moveItem(at: target, to: backup)
+    do {
+        try FileManager.default.moveItem(at: stagedApp, to: target)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-n", target.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw LauncherError.message("新版 Mac 启动器无法启动") }
+    } catch {
+        try? FileManager.default.removeItem(at: target)
+        try? FileManager.default.moveItem(at: backup, to: target)
+        throw LauncherError.message("新版 Mac 启动器无法启动，已恢复旧版")
+    }
 }
 
 @MainActor
@@ -375,6 +538,19 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
             execution.start(taskId: taskId, instruction: instruction, resume: true)
         } else if message.type == "execution_cancel", let taskId = message.taskId {
             execution.cancel(taskId: taskId)
+        } else if message.type == "update_install", let requestId = message.requestId, let envelope = message.envelope {
+            do {
+                let artifact = try verifyRuntimeUpdate(envelope)
+                try await task.send(.string(String(decoding: try JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: "downloading", error: nil)), as: UTF8.self)))
+                try await installRuntimeUpdate(artifact, credentialUrl: credentialUrl) { status in
+                    if let data = try? JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: status, error: nil)) {
+                        try? await task.send(.string(String(decoding: data, as: UTF8.self)))
+                    }
+                }
+                try await task.send(.string(String(decoding: try JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: "completed", error: nil)), as: UTF8.self)))
+            } catch {
+                try? await task.send(.string(String(decoding: (try? JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: "failed", error: error.localizedDescription))) ?? Data(), as: UTF8.self)))
+            }
         }
     }
 }

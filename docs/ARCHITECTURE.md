@@ -39,7 +39,7 @@ Launcher 把 ONE Key 建模为“可实时读取并签名”的在场状态，�
 5. 打开 ONE 浏览器地址；
 6. 浏览器兑换带相同绑定的 Session，一次性码立即失效。无安装身份的旧版启动器/Session 需要更新启动器并重新双击登录，不兼容降级绕过。
 
-本輪 macOS Launcher 版本为 0.2.8，显式分别以 `arm64-apple-macosx13.0` 与 `x86_64-apple-macosx13.0` 编译后合并为 Universal；Windows x64 为 0.2.4。版本递增用于更新本机驻留程序；构建目标不是已经在 macOS 13/Intel/Windows 真人系统上全部验证的承诺。
+本轮 macOS 与 Windows Launcher 均为 0.3.0：macOS 显式分别以 `arm64-apple-macosx13.0` 与 `x86_64-apple-macosx13.0` 编译后合并为 Universal，Windows 为 x64。两端内置相同的 Ed25519 发布公钥，运行时向已认证 WebSocket 上报平台、架构、版本和更新协议。服务端只转发由离线发布私钥签名的稳定版清单；Bridge 校验清单签名、平台、版本、大小和 SHA-256 后，才在 U 盘同卷暂存、备份并替换本平台 Launcher。`.one/credential.json` 不属于更新制品。版本递增用于更新本机驻留程序；构建通过不等于已经完成 macOS 13/Intel/Windows 真人系统验收。
 
 V0.1 普通 U 盘凭证可能被复制，必须诚实记录这一安全边界。后续可替换为安全芯片或 FIDO2，服务端协议尽量保持不变。
 

@@ -10,6 +10,7 @@ const productionOrigin = "https://theone.aiarrival.cn";
 const macAppName = "ONE for Mac.app";
 const windowsAppName = "ONE for Windows.exe";
 const credentialDirectoryName = ".one";
+const volumeIconName = ".VolumeIcon.icns";
 const knownSystemEntries = new Set([
   ".DS_Store",
   ".Spotlight-V100",
@@ -20,6 +21,7 @@ const knownSystemEntries = new Set([
 ]);
 const knownOneEntries = new Set([
   credentialDirectoryName,
+  volumeIconName,
   macAppName,
   windowsAppName,
   "ONE.app",
@@ -72,6 +74,20 @@ export function sha256(target: string) {
   return crypto.createHash("sha256").update(fs.readFileSync(target)).digest("hex");
 }
 
+export function readRuntimeBuildMetadata(target: string, expectedPlatform: "macos" | "windows") {
+  let value: unknown;
+  try { value = JSON.parse(fs.readFileSync(target, "utf8")); }
+  catch { throw new Error(`${expectedPlatform} 启动器缺少在线更新构建信息`); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${expectedPlatform} 在线更新构建信息无效`);
+  const metadata = value as Record<string, unknown>;
+  if (metadata.platform !== expectedPlatform || metadata.updateProtocol !== 1
+    || typeof metadata.version !== "string" || !/^\d+(?:\.\d+){1,3}$/.test(metadata.version)
+    || typeof metadata.publicKeySha256 !== "string" || !/^[a-f0-9]{64}$/.test(metadata.publicKeySha256)) {
+    throw new Error(`${expectedPlatform} 启动器不支持要求的在线更新协议`);
+  }
+  return metadata as { platform: "macos" | "windows"; version: string; updateProtocol: 1; publicKeySha256: string };
+}
+
 function argumentValue(args: string[], name: string) {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] ?? "" : "";
@@ -83,7 +99,7 @@ function hasArgument(args: string[], name: string) {
 
 function assertKnownArguments(args: string[]) {
   const flags = new Set(["--list-volumes", "--dry-run"]);
-  const valued = new Set(["--credential", "--volume", "--go-bin", "--codex-bin", "--expected-origin"]);
+  const valued = new Set(["--credential", "--volume", "--go-bin", "--swiftc-bin", "--swift-sdk", "--codex-bin", "--expected-origin"]);
   for (let index = 0; index < args.length; index++) {
     const argument = args[index];
     if (flags.has(argument)) continue;
@@ -173,6 +189,10 @@ async function provision(args = process.argv.slice(2)) {
 
   try {
     const macBuildArgs = [path.join(projectRoot, "scripts/build-macos-one-key.mjs"), "--output", macOutput];
+    const swiftcBinary = argumentValue(args, "--swiftc-bin");
+    if (swiftcBinary) macBuildArgs.push("--swiftc-bin", path.resolve(swiftcBinary));
+    const swiftSdk = argumentValue(args, "--swift-sdk");
+    if (swiftSdk) macBuildArgs.push("--swift-sdk", path.resolve(swiftSdk));
     const codexBinary = argumentValue(args, "--codex-bin");
     if (codexBinary) macBuildArgs.push("--codex-bin", path.resolve(codexBinary));
     run(process.execPath, macBuildArgs);
@@ -184,13 +204,19 @@ async function provision(args = process.argv.slice(2)) {
 
     const builtMac = path.join(macOutput, "ONE.app");
     const builtWindows = path.join(windowsOutput, "ONE.exe");
+    const macRuntime = readRuntimeBuildMetadata(path.join(macOutput, "runtime-update.json"), "macos");
+    const windowsRuntime = readRuntimeBuildMetadata(path.join(windowsOutput, "runtime-update.json"), "windows");
+    if (macRuntime.publicKeySha256 !== windowsRuntime.publicKeySha256) throw new Error("Mac 与 Windows 启动器的更新发布公钥不一致");
     run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", builtMac]);
-    const architectures = execFileSync("/usr/bin/lipo", ["-archs", path.join(builtMac, "Contents/MacOS/ONE")], { encoding: "utf8" }).trim().split(/\s+/);
+    const lipoBinary = fs.existsSync("/Library/Developer/CommandLineTools/usr/bin/lipo") ? "/Library/Developer/CommandLineTools/usr/bin/lipo" : "/usr/bin/lipo";
+    const architectures = execFileSync(lipoBinary, ["-archs", path.join(builtMac, "Contents/MacOS/ONE")], { encoding: "utf8" }).trim().split(/\s+/);
     if (!architectures.includes("arm64") || !architectures.includes("x86_64")) throw new Error("Mac 启动器不是 arm64 + x86_64 通用版本");
     const fileDescription = execFileSync("/usr/bin/file", [builtWindows], { encoding: "utf8" });
     if (!/PE32\+ executable.*x86-64/i.test(fileDescription)) throw new Error("Windows 启动器不是 x64 PE32+ 程序");
 
-    const requiredBytes = directorySize(builtMac) + fs.statSync(builtWindows).size + Buffer.byteLength(credentialRaw) + 16 * 1024 * 1024;
+    const builtVolumeIcon = path.join(builtMac, "Contents", "Resources", "ONE.icns");
+    if (!fs.existsSync(builtVolumeIcon)) throw new Error("Mac 启动器缺少 ONE 图标资源");
+    const requiredBytes = directorySize(builtMac) + fs.statSync(builtWindows).size + fs.statSync(builtVolumeIcon).size + Buffer.byteLength(credentialRaw) + 16 * 1024 * 1024;
     const volumeStats = fs.statfsSync(volumePath);
     const availableBytes = Number(volumeStats.bavail) * Number(volumeStats.bsize);
     if (availableBytes < requiredBytes) throw new Error(`U 盘空间不足，至少还需要 ${Math.ceil(requiredBytes / 1024 / 1024)} MB`);
@@ -198,6 +224,7 @@ async function provision(args = process.argv.slice(2)) {
     fs.mkdirSync(staging, { mode: 0o700 });
     fs.cpSync(builtMac, path.join(staging, macAppName), { recursive: true, errorOnExist: true });
     fs.copyFileSync(builtWindows, path.join(staging, windowsAppName));
+    fs.copyFileSync(builtVolumeIcon, path.join(staging, volumeIconName));
     fs.mkdirSync(path.join(staging, credentialDirectoryName), { mode: 0o700 });
     fs.writeFileSync(path.join(staging, credentialDirectoryName, "credential.json"), credentialRaw, { mode: 0o600 });
     writeInstructions(path.join(staging, credentialDirectoryName, "使用说明.txt"));
@@ -210,6 +237,7 @@ async function provision(args = process.argv.slice(2)) {
     run("/usr/sbin/dot_clean", ["-m", stagedMac]);
     run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", stagedMac]);
     if (sha256(stagedWindows) !== sha256(builtWindows)) throw new Error("Windows 启动器写入校验失败");
+    if (sha256(path.join(staging, volumeIconName)) !== sha256(builtVolumeIcon)) throw new Error("U 盘图标写入校验失败");
     const writtenCredential = readCredential(fs.readFileSync(path.join(staging, credentialDirectoryName, "credential.json"), "utf8"), expectedOrigin);
     if (writtenCredential.deviceId !== credential.deviceId || writtenCredential.privateKeyRaw !== credential.privateKeyRaw || writtenCredential.publicKeyRaw !== credential.publicKeyRaw) {
       throw new Error("写入后的 ONE Key 凭证不一致");
@@ -217,18 +245,28 @@ async function provision(args = process.argv.slice(2)) {
 
     const finalMac = path.join(volumePath, macAppName);
     const finalWindows = path.join(volumePath, windowsAppName);
+    const finalVolumeIcon = path.join(volumePath, volumeIconName);
     const finalCredentialDirectory = path.join(volumePath, credentialDirectoryName);
     fs.renameSync(stagedMac, finalMac);
     promotedPaths.push(finalMac);
     fs.renameSync(stagedWindows, finalWindows);
     promotedPaths.push(finalWindows);
+    fs.renameSync(path.join(staging, volumeIconName), finalVolumeIcon);
+    promotedPaths.push(finalVolumeIcon);
     fs.renameSync(path.join(staging, credentialDirectoryName), finalCredentialDirectory);
     promotedPaths.push(finalCredentialDirectory);
     fs.rmdirSync(staging);
     run("/usr/bin/SetFile", ["-a", "V", finalCredentialDirectory]);
+    run("/usr/bin/SetFile", ["-a", "V", finalVolumeIcon]);
     run("/usr/sbin/dot_clean", ["-m", volumePath]);
+    // FAT32 stores the root directory's custom-icon flag in a hidden `._.`
+    // AppleDouble record. Set it after dot_clean so the cleanup cannot erase it.
+    run("/usr/bin/SetFile", ["-a", "C", volumePath]);
     run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", finalMac]);
     if (sha256(finalWindows) !== sha256(builtWindows)) throw new Error("Windows 启动器最终校验失败");
+    if (sha256(finalVolumeIcon) !== sha256(builtVolumeIcon)) throw new Error("U 盘图标最终校验失败");
+    const volumeAttributes = execFileSync("/usr/bin/GetFileInfo", ["-a", volumePath], { encoding: "utf8" }).trim();
+    if (!volumeAttributes.includes("C")) throw new Error("U 盘自定义图标标记写入失败");
     const finalCredential = readCredential(fs.readFileSync(path.join(finalCredentialDirectory, "credential.json"), "utf8"), expectedOrigin);
     if (finalCredential.deviceId !== credential.deviceId || finalCredential.privateKeyRaw !== credential.privateKeyRaw) throw new Error("ONE Key 最终凭证校验失败");
     execFileSync("/bin/sync", []);
@@ -240,8 +278,8 @@ async function provision(args = process.argv.slice(2)) {
       `U 盘：${volumePath}`,
       `设备 ID：${credential.deviceId}`,
       `服务：${credential.serverBaseUrl}`,
-      "Mac：0.2.8 · arm64 + x86_64",
-      `Windows：0.2.4 · x64 · SHA-256 ${sha256(finalWindows)}`,
+      `Mac：${macRuntime.version} · arm64 + x86_64 · 在线更新 V1`,
+      `Windows：${windowsRuntime.version} · x64 · 在线更新 V1 · SHA-256 ${sha256(finalWindows)}`,
       "请在访达中安全推出 U 盘。"
     ].join("\n"));
   } finally {
@@ -266,6 +304,8 @@ function usage(): never {
 
 可选：
   --go-bin /完整路径/go
+  --swiftc-bin /完整路径/swiftc
+  --swift-sdk /完整路径/MacOSX.sdk
   --codex-bin /完整路径/codex
 
 当前命令只灌装空白新盘，不覆盖旧 ONE Key，也不格式化 U 盘。`);

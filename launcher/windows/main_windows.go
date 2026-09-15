@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"net/http"
@@ -27,8 +30,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const version = "0.2.4"
 const residentArgument = "--one-resident"
+
+var version = "0.0.0"
+var updatePublicKeyRaw = ""
 
 type deviceCredential struct {
 	Version       int    `json:"version"`
@@ -38,21 +43,46 @@ type deviceCredential struct {
 }
 
 type socketMessage struct {
-	Type        string         `json:"type"`
-	ChallengeID string         `json:"challengeId,omitempty"`
-	Nonce       string         `json:"nonce,omitempty"`
-	DeviceID    string         `json:"deviceId,omitempty"`
-	TaskID      string         `json:"taskId,omitempty"`
-	RequestID   string         `json:"requestId,omitempty"`
-	Tool        string         `json:"tool,omitempty"`
-	Arguments   map[string]any `json:"arguments,omitempty"`
+	Type        string              `json:"type"`
+	ChallengeID string              `json:"challengeId,omitempty"`
+	Nonce       string              `json:"nonce,omitempty"`
+	DeviceID    string              `json:"deviceId,omitempty"`
+	TaskID      string              `json:"taskId,omitempty"`
+	RequestID   string              `json:"requestId,omitempty"`
+	Tool        string              `json:"tool,omitempty"`
+	Arguments   map[string]any      `json:"arguments,omitempty"`
+	Envelope    signedRuntimeUpdate `json:"envelope,omitempty"`
+}
+
+type signedRuntimeUpdate struct {
+	Payload   string `json:"payload"`
+	Signature string `json:"signature"`
+}
+
+type runtimeUpdatePayload struct {
+	SchemaVersion int                     `json:"schemaVersion"`
+	Channel       string                  `json:"channel"`
+	Artifacts     []runtimeUpdateArtifact `json:"artifacts"`
+}
+
+type runtimeUpdateArtifact struct {
+	Platform     string `json:"platform"`
+	Architecture string `json:"architecture"`
+	Version      string `json:"version"`
+	URL          string `json:"url"`
+	SHA256       string `json:"sha256"`
+	Size         int64  `json:"size"`
 }
 
 type socketResponse struct {
-	Type         string   `json:"type"`
-	ChallengeID  string   `json:"challengeId"`
-	Signature    string   `json:"signature"`
-	Capabilities []string `json:"capabilities,omitempty"`
+	Type           string   `json:"type"`
+	ChallengeID    string   `json:"challengeId"`
+	Signature      string   `json:"signature"`
+	Capabilities   []string `json:"capabilities,omitempty"`
+	Platform       string   `json:"platform,omitempty"`
+	Architecture   string   `json:"architecture,omitempty"`
+	Version        string   `json:"launcherVersion,omitempty"`
+	UpdateProtocol int      `json:"updateProtocol,omitempty"`
 }
 
 type socketWriter struct {
@@ -336,7 +366,7 @@ func connectLauncher(base, credentialPath, deviceID string) (*websocket.Conn, er
 		connection.Close()
 		return nil, err
 	}
-	if err := connection.WriteJSON(socketResponse{Type: "auth_response", ChallengeID: challenge.ChallengeID, Signature: signature, Capabilities: []string{"local_tools_v1"}}); err != nil {
+	if err := connection.WriteJSON(socketResponse{Type: "auth_response", ChallengeID: challenge.ChallengeID, Signature: signature, Capabilities: []string{"local_tools_v1", "runtime_update_v1"}, Platform: "windows", Architecture: "amd64", Version: version, UpdateProtocol: 1}); err != nil {
 		connection.Close()
 		return nil, errors.New("ONE 在线验证发送失败")
 	}
@@ -423,6 +453,22 @@ func serveProofs(connection *websocket.Conn, credentialPath, deviceID string) er
 				}
 				_ = writer.json(response)
 			}(message)
+		case "update_install":
+			if message.RequestID == "" {
+				continue
+			}
+			artifact, err := verifyRuntimeUpdate(message.Envelope)
+			if err == nil {
+				_ = writer.json(map[string]any{"type": "update_event", "requestId": message.RequestID, "status": "downloading"})
+				err = installRuntimeUpdate(artifact, credentialPath, func(status string) {
+					_ = writer.json(map[string]any{"type": "update_event", "requestId": message.RequestID, "status": status})
+				})
+			}
+			if err != nil {
+				_ = writer.json(map[string]any{"type": "update_event", "requestId": message.RequestID, "status": "failed", "error": err.Error()})
+				continue
+			}
+			_ = writer.json(map[string]any{"type": "update_event", "requestId": message.RequestID, "status": "completed"})
 		case "execution_cancel":
 			executor.cancel(message.TaskID)
 		case "execution_start", "execution_continue":
@@ -435,6 +481,191 @@ func serveProofs(connection *websocket.Conn, credentialPath, deviceID string) er
 			})
 		}
 	}
+}
+
+func compareVersions(left, right string) (int, error) {
+	parse := func(value string) ([]int, error) {
+		parts := strings.Split(value, ".")
+		if len(parts) < 2 || len(parts) > 4 {
+			return nil, errors.New("更新版本格式无效")
+		}
+		result := make([]int, len(parts))
+		for index, part := range parts {
+			if part == "" || (len(part) > 1 && part[0] == '0') {
+				return nil, errors.New("更新版本格式无效")
+			}
+			parsed, err := strconv.Atoi(part)
+			if err != nil || parsed < 0 {
+				return nil, errors.New("更新版本格式无效")
+			}
+			result[index] = parsed
+		}
+		return result, nil
+	}
+	a, err := parse(left)
+	if err != nil {
+		return 0, err
+	}
+	b, err := parse(right)
+	if err != nil {
+		return 0, err
+	}
+	for index := 0; index < max(len(a), len(b)); index++ {
+		av, bv := 0, 0
+		if index < len(a) {
+			av = a[index]
+		}
+		if index < len(b) {
+			bv = b[index]
+		}
+		if av < bv {
+			return -1, nil
+		}
+		if av > bv {
+			return 1, nil
+		}
+	}
+	return 0, nil
+}
+
+func verifyRuntimeUpdate(envelope signedRuntimeUpdate) (runtimeUpdateArtifact, error) {
+	publicKey, err := base64.RawURLEncoding.DecodeString(updatePublicKeyRaw)
+	if err != nil || len(publicKey) != ed25519.PublicKeySize {
+		return runtimeUpdateArtifact{}, errors.New("ONE 更新公钥无效")
+	}
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(envelope.Payload)
+	if err != nil || len(payloadBytes) == 0 || len(payloadBytes) > 128*1024 {
+		return runtimeUpdateArtifact{}, errors.New("ONE 更新清单无效")
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(envelope.Signature)
+	if err != nil || !ed25519.Verify(ed25519.PublicKey(publicKey), payloadBytes, signature) {
+		return runtimeUpdateArtifact{}, errors.New("ONE 更新签名无效")
+	}
+	var payload runtimeUpdatePayload
+	if json.Unmarshal(payloadBytes, &payload) != nil || payload.SchemaVersion != 1 || payload.Channel != "stable" || len(payload.Artifacts) == 0 || len(payload.Artifacts) > 12 {
+		return runtimeUpdateArtifact{}, errors.New("ONE 更新清单无效")
+	}
+	var selected runtimeUpdateArtifact
+	for _, item := range payload.Artifacts {
+		if item.Platform != "windows" || item.Architecture != "amd64" {
+			continue
+		}
+		parsedURL, urlErr := url.Parse(item.URL)
+		if urlErr != nil || parsedURL.Scheme != "https" || parsedURL.User != nil || parsedURL.Fragment != "" || item.Size <= 0 || item.Size > 512*1024*1024 || len(item.SHA256) != 64 {
+			return runtimeUpdateArtifact{}, errors.New("ONE 更新制品无效")
+		}
+		hashBytes, hashErr := hex.DecodeString(item.SHA256)
+		if hashErr != nil || len(hashBytes) != sha256.Size {
+			return runtimeUpdateArtifact{}, errors.New("ONE 更新制品无效")
+		}
+		comparison, versionErr := compareVersions(item.Version, version)
+		if versionErr != nil {
+			return runtimeUpdateArtifact{}, versionErr
+		}
+		if comparison <= 0 {
+			continue
+		}
+		if selected.Version == "" {
+			selected = item
+			continue
+		}
+		newer, _ := compareVersions(item.Version, selected.Version)
+		if newer > 0 {
+			selected = item
+		}
+	}
+	if selected.Version == "" {
+		return runtimeUpdateArtifact{}, errors.New("没有适用于这台电脑的新版 ONE")
+	}
+	return selected, nil
+}
+
+func copyAndHash(destination string, source io.Reader, maximum int64) (int64, string, error) {
+	output, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0700)
+	if err != nil {
+		return 0, "", err
+	}
+	var digest hash.Hash = sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(output, digest), io.LimitReader(source, maximum+1))
+	closeErr := output.Close()
+	if copyErr != nil {
+		return written, "", copyErr
+	}
+	if closeErr != nil {
+		return written, "", closeErr
+	}
+	return written, fmt.Sprintf("%x", digest.Sum(nil)), nil
+}
+
+func installRuntimeUpdate(artifact runtimeUpdateArtifact, credentialPath string, progress func(string)) error {
+	credentialBefore, err := os.ReadFile(credentialPath)
+	if err != nil {
+		return errors.New("请确认 ONE Key 仍然插着")
+	}
+	request, err := http.NewRequest(http.MethodGet, artifact.URL, nil)
+	if err != nil {
+		return errors.New("ONE 更新地址无效")
+	}
+	client := &http.Client{Timeout: 4 * time.Minute}
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("下载 ONE 更新失败：%w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("下载 ONE 更新失败（%d）", response.StatusCode)
+	}
+	volumeRoot := filepath.Dir(filepath.Dir(credentialPath))
+	target := filepath.Join(volumeRoot, "ONE for Windows.exe")
+	if !fileExists(target) {
+		return errors.New("U 盘中没有找到 Windows 启动器")
+	}
+	updateDirectory := filepath.Join(filepath.Dir(credentialPath), ".updates")
+	if err := os.MkdirAll(updateDirectory, 0700); err != nil {
+		return errors.New("无法在 ONE Key 中准备更新")
+	}
+	staging := filepath.Join(updateDirectory, "ONE-for-Windows.next")
+	_ = os.Remove(staging)
+	written, checksum, err := copyAndHash(staging, response.Body, artifact.Size)
+	if err != nil {
+		_ = os.Remove(staging)
+		return errors.New("无法写入 ONE 更新")
+	}
+	progress("verifying")
+	if written != artifact.Size || !strings.EqualFold(checksum, artifact.SHA256) {
+		_ = os.Remove(staging)
+		return errors.New("ONE 更新文件校验失败")
+	}
+	credentialAfter, err := os.ReadFile(credentialPath)
+	if err != nil || !bytes.Equal(credentialBefore, credentialAfter) {
+		_ = os.Remove(staging)
+		return errors.New("ONE Key 凭证状态发生变化，更新已停止")
+	}
+	backupDirectory := filepath.Join(filepath.Dir(credentialPath), "update-backups")
+	if err := os.MkdirAll(backupDirectory, 0700); err != nil {
+		_ = os.Remove(staging)
+		return errors.New("无法准备 ONE 更新备份")
+	}
+	backup := filepath.Join(backupDirectory, "ONE-for-Windows-"+version+".exe")
+	_ = os.Remove(backup)
+	progress("installing")
+	if err := os.Rename(target, backup); err != nil {
+		_ = os.Remove(staging)
+		return errors.New("无法备份当前 Windows 启动器")
+	}
+	if err := os.Rename(staging, target); err != nil {
+		_ = os.Rename(backup, target)
+		return errors.New("无法安装新版 Windows 启动器，已恢复旧版")
+	}
+	command := exec.Command(target)
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x00000008}
+	if err := command.Start(); err != nil {
+		_ = os.Remove(target)
+		_ = os.Rename(backup, target)
+		return errors.New("新版 Windows 启动器无法启动，已恢复旧版")
+	}
+	_ = command.Process.Release()
+	return nil
 }
 
 func (executor *localExecutor) prepare(deviceID string) (string, error) {

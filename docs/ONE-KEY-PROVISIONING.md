@@ -81,9 +81,13 @@ npm run provision:one-key -- --credential ~/Downloads/ONE-序列号.one-key.json
 - `ONE for Windows.exe`
 - 隐藏目录 `.one`，其中保存唯一凭证和简短说明
 
+灌装器同时会把 ONE logo 写入隐藏的 `.VolumeIcon.icns`，并给卷设置 macOS 自定义图标。如 Finder 仍显示旧图标，安全推出并重新插入即可刷新。
+
 Windows 构建需要 Go 1.23 或更高版本。可用 `--go-bin /完整路径/go` 指定不安装到系统的 Go 工具链。当前内测不使用旧盘覆盖模式；旧盘应由运营确认并清空后按新盘重新灌装，避免凭证串号。
 
 6. 首次在每台电脑使用时：macOS 双击 `ONE for Mac.app`，Windows 双击 `ONE for Windows.exe`。两端共用隐藏的 `.one/credential.json`，因此对应同一个 ONE Key、账号和 Workspace。
+
+当前出厂基线是 Mac/Windows 0.3.0，两个启动器都必须声明在线更新协议 V1 并内置同一发布公钥；灌装器会核对构建元数据，不接受缺少协议或公钥不一致的旧制品。以后页面提示新版时，用户只更新当前系统的 Launcher；更新器不得修改 `.one/credential.json`。另一系统会在下次使用该 Key 时单独更新。
 7. 保持网页打开，拔出 U 盘后发起请求，应立即提示插入；重新插入后等待约 1～2 秒，同一网页无需刷新即可继续使用。
 8. 在超管后台核对序列号、绑定用户和最后使用时间，再贴标并交付。新用户余额为 0，交付前在“电力”中赠送体验额度。
 

@@ -149,3 +149,51 @@ test("negotiates local tools and isolates request responses to the authenticated
   await presence.close();
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 });
+
+test("binds runtime update status and dispatch to the authenticated workspace and computer", async () => {
+  const pair = crypto.generateKeyPairSync("ed25519");
+  const timestamp = new Date().toISOString();
+  const device = { id: "device-a", serialNumber: "ONE-A", workspaceId: "workspace-a", userId: "user-a", status: "active", publicKey: pair.publicKey.export({ type: "spki", format: "pem" }).toString(), createdAt: timestamp };
+  const database = { oneKeyDevices: [device], auditLogs: [] } as any;
+  const store = { read: async () => database, mutate: async (change: (value: typeof database) => unknown) => change(database) } as any;
+  const presence = new OneKeyPresence(store);
+  const server = createServer();
+  presence.attach(server);
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("测试服务未启动");
+
+  const socket = new WebSocket(`ws://127.0.0.1:${address.port}/api/one-key/launcher?deviceId=device-a&installationId=${installationId}`);
+  const [authRaw] = await once(socket, "message");
+  const auth = JSON.parse(authRaw.toString());
+  socket.send(JSON.stringify({
+    type: "auth_response", challengeId: auth.challengeId, signature: sign(pair.privateKey, auth.nonce),
+    capabilities: ["runtime_update_v1"], platform: "windows", architecture: "amd64", launcherVersion: "0.2.4", updateProtocol: 1
+  }));
+  await once(socket, "message");
+
+  const status = await presence.runtimeStatus({ deviceId: "device-a", installationId, userId: "user-a", workspaceId: "workspace-a" });
+  assert.deepEqual(status.runtime, { platform: "windows", architecture: "amd64", version: "0.2.4", updateProtocol: 1 });
+  await assert.rejects(() => presence.runtimeStatus({ deviceId: "device-a", installationId, userId: "user-b", workspaceId: "workspace-b" }), /不属于当前账号/);
+  await assert.rejects(() => presence.runtimeStatus({ deviceId: "device-a", installationId: "b".repeat(32), userId: "user-a", workspaceId: "workspace-a" }), /当前这台电脑/);
+
+  const updateMessage = once(socket, "message");
+  const progress = await presence.requestRuntimeUpdate({
+    deviceId: "device-a", installationId, userId: "user-a", workspaceId: "workspace-a", version: "0.3.0",
+    envelope: { payload: "payload", signature: "signature" }
+  });
+  const command = JSON.parse((await updateMessage)[0].toString());
+  assert.equal(command.type, "update_install");
+  assert.equal(command.requestId, progress.requestId);
+  assert.deepEqual(command.envelope, { payload: "payload", signature: "signature" });
+
+  socket.send(JSON.stringify({ type: "update_event", requestId: progress.requestId, status: "verifying" }));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal((await presence.runtimeStatus({ deviceId: "device-a", installationId, userId: "user-a", workspaceId: "workspace-a" })).update?.status, "verifying");
+
+  socket.close();
+  await once(socket, "close");
+  await presence.close();
+  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+});

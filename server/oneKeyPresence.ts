@@ -5,9 +5,11 @@ import type { Store } from "./db.js";
 import { uid } from "./security.js";
 import { appendExecutionEvent } from "./executionService.js";
 import { validInstallationId } from "./oneKeyInstallation.js";
+import { validRuntimeVersion, type RuntimeArchitecture, type RuntimeIdentity, type RuntimePlatform, type SignedRuntimeUpdate } from "./runtimeUpdate.js";
 
 const proofTimeoutMs = 2000;
 const authTimeoutMs = 5000;
+const updateHeartbeatGraceMs = 30 * 60 * 1000;
 
 type PendingProof = {
   deviceId: string;
@@ -27,6 +29,14 @@ type PendingLocalRequest = {
   timeout: NodeJS.Timeout;
 };
 
+export type RuntimeUpdateProgress = {
+  requestId: string;
+  status: "requested" | "downloading" | "verifying" | "installing" | "completed" | "failed";
+  version: string;
+  message?: string;
+  updatedAt: string;
+};
+
 export type LocalToolName = "list_files" | "read_file" | "search_text" | "write_file" | "replace_in_file" | "run_command";
 
 type SocketState = {
@@ -38,6 +48,8 @@ type SocketState = {
   authTimeout: NodeJS.Timeout;
   alive: boolean;
   capabilities: Set<string>;
+  runtime?: RuntimeIdentity;
+  update?: RuntimeUpdateProgress;
 };
 
 function verifySignature(publicKey: string, nonce: string, signature: string) {
@@ -69,7 +81,13 @@ export class OneKeyPresence {
       for (const socket of this.wss?.clients ?? []) {
         const state = this.states.get(socket);
         if (!state) continue;
-        if (!state.alive) { socket.terminate(); continue; }
+        const updateInProgress = state.update
+          && !["completed", "failed"].includes(state.update.status)
+          && Date.now() - Date.parse(state.update.updatedAt) < updateHeartbeatGraceMs;
+        // Some launchers install synchronously and cannot consume WebSocket pong frames
+        // while replacing themselves. Keep only an explicitly requested update alive for
+        // a bounded window; ordinary unplug detection still uses the normal heartbeat.
+        if (!state.alive && !updateInProgress) { socket.terminate(); continue; }
         state.alive = false;
         socket.ping();
       }
@@ -115,6 +133,22 @@ export class OneKeyPresence {
     const socket = this.sockets.get(deviceId);
     const state = socket ? this.states.get(socket) : undefined;
     return Boolean(this.isConnected(deviceId, installationId) && state?.capabilities.has("local_tools_v1"));
+  }
+
+  async runtimeStatus(params: { deviceId: string; installationId?: string; userId: string; workspaceId: string }) {
+    const socket = await this.ownedSocket(params);
+    const state = this.states.get(socket)!;
+    return { runtime: state.runtime, update: state.update };
+  }
+
+  async requestRuntimeUpdate(params: { deviceId: string; installationId?: string; userId: string; workspaceId: string; version: string; envelope: SignedRuntimeUpdate }) {
+    const socket = await this.ownedSocket(params);
+    const state = this.states.get(socket)!;
+    if (!state.runtime || state.runtime.updateProtocol !== 1 || !state.capabilities.has("runtime_update_v1")) throw new OneKeyPresenceError("当前 ONE 启动器不支持在线更新", "ONE_RUNTIME_UPDATE_UNSUPPORTED");
+    const requestId = uid("upd");
+    state.update = { requestId, status: "requested", version: params.version, updatedAt: new Date().toISOString() };
+    await new Promise<void>((resolve, reject) => socket.send(JSON.stringify({ type: "update_install", requestId, envelope: params.envelope }), error => error ? reject(new OneKeyPresenceError("ONE 更新连接已断开")) : resolve()));
+    return state.update;
   }
 
   async prepareLocalExecution(deviceId: string, taskId: string, installationId?: string) {
@@ -187,6 +221,7 @@ export class OneKeyPresence {
       type?: string; challengeId?: string; signature?: string; taskId?: string;
       kind?: string; text?: string; providerThreadId?: string; targetName?: string; status?: string;
       requestId?: string; ok?: boolean; output?: string; error?: string; capabilities?: unknown;
+      platform?: unknown; architecture?: unknown; launcherVersion?: unknown; updateProtocol?: unknown; version?: unknown;
     };
     try { message = JSON.parse(raw); } catch { socket.close(4000, "Invalid message"); return; }
     if (message.type === "auth_response" && !state.authenticated && message.challengeId === state.authChallengeId && message.signature) {
@@ -196,6 +231,12 @@ export class OneKeyPresence {
       clearTimeout(state.authTimeout);
       state.authenticated = true;
       state.capabilities = new Set(Array.isArray(message.capabilities) ? message.capabilities.filter((item): item is string => typeof item === "string").slice(0, 20) : []);
+      if ((message.platform === "macos" || message.platform === "windows")
+        && (["arm64", "x86_64", "amd64"] as unknown[]).includes(message.architecture)
+        && validRuntimeVersion(message.launcherVersion)
+        && message.updateProtocol === 1) {
+        state.runtime = { platform: message.platform as RuntimePlatform, architecture: message.architecture as RuntimeArchitecture, version: message.launcherVersion, updateProtocol: 1 };
+      }
       const previous = this.sockets.get(state.deviceId);
       if (previous && previous !== socket) {
         const previousState = this.states.get(previous);
@@ -212,6 +253,31 @@ export class OneKeyPresence {
       }
       this.sockets.set(state.deviceId, socket);
       socket.send(JSON.stringify({ type: "ready", deviceId: state.deviceId }));
+      return;
+    }
+    if (message.type === "update_event" && state.authenticated && message.requestId && state.update?.requestId === message.requestId) {
+      const allowed = new Set(["downloading", "verifying", "installing", "completed", "failed"]);
+      if (!allowed.has(String(message.status))) return;
+      state.update = {
+        ...state.update,
+        status: message.status as RuntimeUpdateProgress["status"],
+        message: typeof message.error === "string" ? message.error.slice(0, 500) : undefined,
+        updatedAt: new Date().toISOString()
+      };
+      if (state.update.status === "completed" || state.update.status === "failed") {
+        const terminal = state.update;
+        await this.store.mutate(database => {
+          if (!state.authenticated || this.sockets.get(state.deviceId) !== socket) return;
+          const device = database.oneKeyDevices.find(item => item.id === state.deviceId && item.status === "active");
+          if (!device) return;
+          database.auditLogs.push({
+            id: uid("aud"), workspaceId: device.workspaceId, actorUserId: device.userId,
+            action: terminal.status === "completed" ? "one_runtime.update.completed" : "one_runtime.update.failed",
+            targetType: "one_key_device", targetId: device.id,
+            details: { version: terminal.version }, createdAt: terminal.updatedAt
+          });
+        });
+      }
       return;
     }
     if ((message.type === "local_ready" || message.type === "local_error" || message.type === "tool_result") && state.authenticated && message.requestId) {
@@ -252,6 +318,16 @@ export class OneKeyPresence {
     if (!device || !task || task.workspaceId !== device.workspaceId || task.userId !== device.userId) throw new OneKeyPresenceError("执行任务不属于当前 ONE Key 或这台电脑");
     const socket = this.sockets.get(deviceId);
     if (!socket || !this.isConnected(deviceId, installationId)) throw new OneKeyPresenceError("请将 ONE Key 插入任务原来的电脑");
+    return socket;
+  }
+
+  private async ownedSocket(params: { deviceId: string; installationId?: string; userId: string; workspaceId: string }) {
+    if (!validInstallationId(params.installationId)) throw new OneKeyPresenceError("请更新 ONE Key 启动器", "ONE_KEY_UPGRADE_REQUIRED");
+    const database = await this.store.read();
+    const device = database.oneKeyDevices.find(item => item.id === params.deviceId && item.status === "active");
+    if (!device || device.userId !== params.userId || device.workspaceId !== params.workspaceId) throw new OneKeyPresenceError("ONE Key 已挂失或不属于当前账号");
+    const socket = this.sockets.get(params.deviceId);
+    if (!socket || !this.isConnected(params.deviceId, params.installationId)) throw new OneKeyPresenceError("请将 ONE Key 插入当前这台电脑");
     return socket;
   }
 

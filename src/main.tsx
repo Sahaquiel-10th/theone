@@ -15,6 +15,7 @@ import {
   ChevronRight,
   Copy,
   Database,
+  Download,
   Edit3,
   Eye,
   EyeOff,
@@ -248,6 +249,14 @@ type OneKeyDevice = { id: string; serialNumber: string; workspaceId: string; use
 type ContextTraceSummary = { id: string; workspaceId: string; userId: string; username: string; conversationId: string; conversationTitle: string; modelName: string; requestId?: string; query: string; responsePreview: string; createdAt: string };
 type ContextTraceDetail = ContextTraceSummary & { assistantMessageId: string; modelId: string; sections: { key: string; title: string; content: string }[] };
 type OneKeyCredential = { version: 1; deviceId: string; privateKeyRaw: string; publicKeyRaw: string; serverBaseUrl?: string };
+type RuntimeUpdateStatus = {
+  configured: boolean;
+  supported: boolean;
+  current?: { platform: "macos" | "windows"; architecture: string; version: string; updateProtocol: number };
+  latestVersion?: string;
+  available: boolean;
+  progress?: { requestId: string; status: "requested" | "downloading" | "verifying" | "installing" | "completed" | "failed"; version: string; message?: string; updatedAt: string };
+};
 
 function dateTime(value: string) {
   return new Intl.DateTimeFormat("zh-CN", {
@@ -562,6 +571,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     status: "disconnected"
   });
   const [notionConnection, setNotionConnection] = useState<KnowledgeConnection>({ provider: "notion", status: "disconnected" });
+  const [runtimeUpdate, setRuntimeUpdate] = useState<RuntimeUpdateStatus | null>(null);
+  const [runtimeUpdating, setRuntimeUpdating] = useState(false);
   const [executionTasks, setExecutionTasks] = useState<ExecutionTask[]>([]);
   const [eventsByTask, setEventsByTask] = useState<Record<string, ExecutionEvent[]>>({});
   const [taskStatusUnavailable, setTaskStatusUnavailable] = useState(true);
@@ -609,6 +620,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const activePreparing = preparingExecution && preparingConversationId === activeId;
   const liveTaskIds = runningExecutions.map(task => task.id).sort().join("|");
   const currentModel = models.find((model) => model.id === activeModelId);
+  const runtimeUpdateFailed = runtimeUpdate?.progress?.status === "failed";
   const activeAgentId = targetConversation?.agentId || draftAgentId;
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
   const canAttach = Boolean(currentModel) && (!activeAgent || activeAgent.allowFileUpload);
@@ -697,10 +709,40 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     ));
   }
 
+  async function refreshRuntimeUpdate() {
+    try {
+      const result = await api<RuntimeUpdateStatus>("/api/runtime/update");
+      setRuntimeUpdate(result);
+      if (!result.available || result.progress?.status === "failed") setRuntimeUpdating(false);
+    } catch {
+      // Runtime update availability is optional and must never block the workspace.
+      if (!runtimeUpdating) setRuntimeUpdate(null);
+    }
+  }
+
+  async function installRuntimeUpdate() {
+    setRuntimeUpdating(true);
+    setError("");
+    try {
+      const result = await api<{ progress: NonNullable<RuntimeUpdateStatus["progress"]> }>("/api/runtime/update", { method: "POST" });
+      setRuntimeUpdate(current => current ? { ...current, progress: result.progress } : current);
+    } catch (updateError) {
+      setRuntimeUpdating(false);
+      setError(updateError instanceof Error ? updateError.message : "更新没有开始，请重试");
+    }
+  }
+
   useEffect(() => {
     refresh().catch((err) => setError(err.message));
     void refreshExecutionTasks();
+    void refreshRuntimeUpdate();
   }, [showArchived]);
+
+  useEffect(() => {
+    if (!runtimeUpdating) return;
+    const timer = window.setInterval(() => void refreshRuntimeUpdate(), 2500);
+    return () => window.clearInterval(timer);
+  }, [runtimeUpdating]);
 
   useEffect(() => {
     function refreshWhenVisible() {
@@ -1360,6 +1402,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           </button>
         </div>
       </header>
+
+      {runtimeUpdate?.available ? <section className={`one-runtime-update ${runtimeUpdate.progress?.status || "available"}`} aria-live="polite">
+        <span className="one-runtime-update-icon"><Download size={16} /></span>
+        <span><strong>{runtimeUpdating ? "正在更新 ONE" : runtimeUpdateFailed ? "更新没有完成" : "ONE 可以更新"}</strong><small>{runtimeUpdating ? ({ requested: "准备下载…", downloading: "正在下载…", verifying: "正在验证…", installing: "正在安装…", completed: "正在重新连接…", failed: runtimeUpdate.progress?.message || "更新失败" }[runtimeUpdate.progress?.status || "requested"]) : runtimeUpdateFailed ? runtimeUpdate.progress?.message || "请保持 ONE Key 插入并重试" : `${runtimeUpdate.current?.version || "当前版本"} → ${runtimeUpdate.latestVersion}`}</small></span>
+        <button type="button" disabled={runtimeUpdating} onClick={() => void installRuntimeUpdate()}>{runtimeUpdating ? "请稍候" : runtimeUpdateFailed ? "重试" : "更新"}</button>
+      </section> : null}
 
       {historyOpen ? (
         <>

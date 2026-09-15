@@ -36,6 +36,52 @@ Each deployment is built and tested in a new release directory. The `current`
 symlink changes atomically. A failed health check restores the previous release,
 and only the five latest releases are retained.
 
+## Launcher / Bridge updates
+
+Launcher updates use a signing key that is independent from login credentials.
+The public key is committed at `config/runtime-update-public-key.txt`; the only
+private key is stored outside the repository at:
+
+```text
+~/Library/Application Support/ONE Release/runtime-update-private.pem
+```
+
+Back that private key up to the operator's encrypted offline storage before the
+first batch ships. Never copy it to the server, GitHub Actions, a ONE Key, or
+the application `.env`. Losing it means already shipped launchers cannot trust
+new releases; leaking it requires an emergency launcher replacement.
+
+Build both launchers, then create a signed immutable release directory:
+
+```bash
+npm run release:one-runtime -- \
+  --private-key "$HOME/Library/Application Support/ONE Release/runtime-update-private.pem" \
+  --mac-app /path/to/ONE.app \
+  --windows-exe /path/to/ONE.exe \
+  --version 0.3.1 \
+  --output /path/to/one-runtime-0.3.1
+```
+
+Copy that complete directory to a temporary server path, verify it again and
+atomically publish it:
+
+```bash
+sudo bash /srv/theone/current/deploy/install-runtime-update.sh /tmp/one-runtime-0.3.1
+```
+
+Production must have these non-secret settings in `/srv/theone/shared/.env`:
+
+```text
+ONE_UPDATE_DIRECTORY=/srv/theone/shared/runtime-updates
+ONE_UPDATE_MANIFEST_PATH=/srv/theone/shared/runtime-updates/stable.json
+ONE_UPDATE_PUBLIC_KEY=ck7I5vQpOjJ-b6axzxhQJAb6-ACoV_y6hJ_DUB4MAMs
+```
+
+The server receives only signed artifacts and keeps the previous published
+directory at `/srv/theone/shared/runtime-updates.previous`. To roll back the
+offered release, move that directory back into place; do not re-sign or edit a
+published `stable.json`.
+
 ## First local MySQL cutover
 
 The server's existing databases are not reused. After deploying the release that

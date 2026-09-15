@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +10,20 @@ const value = (name) => { const index = args.indexOf(name); return index >= 0 ? 
 const outputRoot = path.resolve(root, value("--output") || "output/ONE-Key-macOS");
 const credentialPath = value("--credential") ? path.resolve(value("--credential")) : "";
 const codexBinary = value("--codex-bin") ? path.resolve(value("--codex-bin")) : "";
+const publicKeyPath = path.resolve(root, value("--update-public-key") || "config/runtime-update-public-key.txt");
+const versionPath = path.resolve(root, value("--runtime-version") || "config/runtime-version.txt");
+if (!fs.existsSync(publicKeyPath)) throw new Error(`更新发布公钥不存在：${publicKeyPath}`);
+if (!fs.existsSync(versionPath)) throw new Error(`启动器版本文件不存在：${versionPath}`);
+const updatePublicKey = fs.readFileSync(publicKeyPath, "utf8").trim();
+const runtimeVersion = fs.readFileSync(versionPath, "utf8").trim();
+const commandLineSwiftc = "/Library/Developer/CommandLineTools/usr/bin/swiftc";
+const commandLineLipo = "/Library/Developer/CommandLineTools/usr/bin/lipo";
+const swiftcBinary = value("--swiftc-bin") || (fs.existsSync(commandLineSwiftc) ? commandLineSwiftc : "/usr/bin/swiftc");
+const lipoBinary = fs.existsSync(commandLineLipo) ? commandLineLipo : "/usr/bin/lipo";
+const commandLineSdk = "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk";
+const swiftSdk = value("--swift-sdk") || (swiftcBinary === commandLineSwiftc && fs.existsSync(commandLineSdk) ? commandLineSdk : "");
+if (!/^[A-Za-z0-9_-]{43}$/.test(updatePublicKey)) throw new Error("更新发布公钥格式无效");
+if (!/^\d+(?:\.\d+){1,3}$/.test(runtimeVersion)) throw new Error("启动器版本格式无效");
 const credentialData = credentialPath
   ? fs.existsSync(credentialPath)
     ? fs.readFileSync(credentialPath)
@@ -30,20 +45,28 @@ fs.writeFileSync(path.join(contents, "Info.plist"), `<?xml version="1.0" encodin
 <key>CFBundleIdentifier</key><string>one.theone.key</string>
 <key>CFBundleName</key><string>ONE</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.2.8</string>
-<key>CFBundleVersion</key><string>10</string>
+<key>CFBundleShortVersionString</key><string>${runtimeVersion}</string>
+<key>CFBundleVersion</key><string>11</string>
 <key>CFBundleIconFile</key><string>ONE.icns</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>`);
 
+const generatedSource = path.join(outputRoot, ".ONEKeyLauncher.swift");
+const moduleCache = path.join(outputRoot, ".module-cache");
+fs.mkdirSync(moduleCache, { recursive: true });
+const source = fs.readFileSync(path.join(root, "launcher/macos/ONEKeyLauncher.swift"), "utf8");
+if (!source.includes("__ONE_UPDATE_PUBLIC_KEY__") || !source.includes("__ONE_RUNTIME_VERSION__")) throw new Error("Mac 启动器缺少版本或更新公钥占位符");
+fs.writeFileSync(generatedSource, source.replaceAll("__ONE_UPDATE_PUBLIC_KEY__", updatePublicKey).replaceAll("__ONE_RUNTIME_VERSION__", runtimeVersion));
 const slices = ["arm64", "x86_64"].map((architecture) => {
   const slice = path.join(outputRoot, `ONE-${architecture}`);
-  execFileSync("/usr/bin/swiftc", ["-target", `${architecture}-apple-macosx13.0`, "-parse-as-library", "-O", path.join(root, "launcher/macos/ONEKeyLauncher.swift"), "-o", slice], { stdio: "inherit" });
+  const compileArgs = ["-target", `${architecture}-apple-macosx13.0`, "-parse-as-library", "-O", generatedSource, "-o", slice];
+  if (swiftSdk) compileArgs.unshift("-sdk", swiftSdk);
+  execFileSync(swiftcBinary, compileArgs, { env: { ...process.env, CLANG_MODULE_CACHE_PATH: moduleCache, SWIFT_MODULE_CACHE_PATH: moduleCache }, stdio: "inherit" });
   return slice;
 });
-execFileSync("/usr/bin/lipo", ["-create", ...slices, "-output", path.join(macos, "ONE")], { stdio: "inherit" });
+execFileSync(lipoBinary, ["-create", ...slices, "-output", path.join(macos, "ONE")], { stdio: "inherit" });
 for (const slice of slices) fs.unlinkSync(slice);
 if (codexBinary) {
   if (!fs.existsSync(codexBinary)) throw new Error(`Codex Runtime 不存在：${codexBinary}`);
@@ -87,4 +110,10 @@ execFileSync("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", app], { s
 // its bundle. Clear it once more so strict verification and USB copying remain
 // deterministic; this does not change signed file contents.
 execFileSync("/usr/bin/xattr", ["-cr", app], { stdio: "inherit" });
+fs.writeFileSync(path.join(outputRoot, "runtime-update.json"), `${JSON.stringify({
+  platform: "macos",
+  version: runtimeVersion,
+  updateProtocol: 1,
+  publicKeySha256: crypto.createHash("sha256").update(Buffer.from(updatePublicKey, "base64url")).digest("hex")
+}, null, 2)}\n`);
 console.log(`macOS ONE Key 已生成：${outputRoot}`);

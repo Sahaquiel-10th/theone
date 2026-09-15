@@ -7,8 +7,10 @@ import { executionConnectors } from "./connectors/execution.js";
 import { ConnectorService } from "./connectorService.js";
 import { NotionMcpService } from "./knowledge/notionMcpService.js";
 import { notionConnector } from "./connectors/notion.js";
+import { RuntimeUpdateCatalog } from "./runtimeUpdate.js";
 
 export const oneKeyPresence = new OneKeyPresence(store);
+export const runtimeUpdateCatalog = new RuntimeUpdateCatalog();
 export const localAgentService = new LocalAgentService(store, oneKeyPresence);
 export const notionMcpService = new NotionMcpService(store);
 export const connectorRegistry = new ConnectorRegistry(

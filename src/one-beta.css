@@ -16,3 +16,43 @@
 .studio-assistant:has(.one-onboarding) .studio-presence { display: none; }
 .studio-assistant:has(.one-onboarding) { overflow-y: auto; }
 .one-onboarding { margin-bottom: 20px; }
+.one-runtime-update {
+  position: fixed;
+  z-index: 48;
+  top: 76px;
+  left: 50%;
+  width: min(420px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  color: #24231f;
+  background: color-mix(in srgb, #f7f5ef 94%, transparent);
+  border: 1px solid rgba(38, 37, 33, .12);
+  border-radius: 16px;
+  box-shadow: 0 16px 45px rgba(33, 31, 27, .14);
+  backdrop-filter: blur(18px);
+}
+
+.one-runtime-update-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 11px;
+  background: #24231f;
+  color: white;
+}
+
+.one-runtime-update > span:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
+.one-runtime-update strong { font-size: 13px; }
+.one-runtime-update small { overflow: hidden; color: #77736b; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.one-runtime-update button { border: 0; border-radius: 10px; padding: 8px 13px; color: white; background: #2b63d9; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+.one-runtime-update button:disabled { cursor: wait; opacity: .62; }
+.one-runtime-update.failed button { background: #a43c38; }
+
+@media (max-width: 720px) {
+  .one-runtime-update { top: 68px; }
+}

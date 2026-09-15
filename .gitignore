@@ -7,6 +7,7 @@ dist
 data/*.json
 data/uploads/
 *.log
+*.pem
 output/
 /记忆功能需求.rtf
 /凭证汇总/

@@ -28,7 +28,7 @@ import { betaEngagementSummary } from "./betaEngagement.js";
 import { OneKeyService } from "./oneKeyService.js";
 import { availablePowerMicros, creditPower, MICROS_PER_POWER, powerAccount } from "./powerBilling.js";
 import { runBilledModel, resolveBillingReview } from "./modelBilling.js";
-import { connectorRegistry, connectorService, notionMcpService, oneKeyPresence } from "./runtime.js";
+import { connectorRegistry, connectorService, notionMcpService, oneKeyPresence, runtimeUpdateCatalog } from "./runtime.js";
 import { connectorRoutes } from "./connectorRoutes.js";
 import { AuthorizationSessionError, AuthorizationSessions } from "./connectors/authorizationSessions.js";
 import { appendExecutionEvent, buildExecutionCompilerMessages, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
@@ -221,6 +221,27 @@ app.get("/api/me", auth(jwtSecret), asyncRoute(async (req, res) => {
   const db = await store.read();
   const workspace = db.workspaces.find((item) => item.id === req.workspaceId)!;
   res.json({ user: publicUser(req.user!), workspace });
+}));
+app.get("/api/runtime/update", ...keyAuth, asyncRoute(async (req, res) => {
+  const connected = await oneKeyPresence.runtimeStatus({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, userId: req.user!.id, workspaceId: req.workspaceId! });
+  const candidate = connected.runtime ? runtimeUpdateCatalog.updateFor(connected.runtime) : undefined;
+  res.json({
+    configured: runtimeUpdateCatalog.configured(),
+    supported: Boolean(connected.runtime?.updateProtocol === 1),
+    current: connected.runtime,
+    latestVersion: candidate?.artifact.version,
+    available: Boolean(candidate),
+    progress: connected.update
+  });
+}));
+app.post("/api/runtime/update", ...keyAuth, asyncRoute(async (req, res) => {
+  const connected = await oneKeyPresence.runtimeStatus({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, userId: req.user!.id, workspaceId: req.workspaceId! });
+  if (!connected.runtime) return res.status(409).json({ error: "当前 ONE 启动器不支持在线更新", code: "ONE_RUNTIME_UPDATE_UNSUPPORTED" });
+  const candidate = runtimeUpdateCatalog.updateFor(connected.runtime);
+  if (!candidate) return res.status(409).json({ error: "当前已经是最新版", code: "ONE_RUNTIME_ALREADY_CURRENT" });
+  const progress = await oneKeyPresence.requestRuntimeUpdate({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, userId: req.user!.id, workspaceId: req.workspaceId!, version: candidate.artifact.version, envelope: candidate.envelope });
+  await store.mutate(database => database.auditLogs.push({ id: uid("aud"), workspaceId: req.workspaceId!, actorUserId: req.user!.id, action: "one_runtime.update.requested", targetType: "one_key_device", targetId: req.oneKeyDeviceId, details: { platform: connected.runtime!.platform, fromVersion: connected.runtime!.version, toVersion: candidate.artifact.version }, requestId: res.locals.requestId, createdAt: now() }));
+  res.status(202).json({ progress });
 }));
 app.get("/api/me/profile", ...keyAuth, asyncRoute(async (req, res) => res.json({ profile: accountProfile(await store.read(), { userId: req.user!.id, workspaceId: req.workspaceId! }) })));
 app.patch("/api/me/profile", ...keyAuth, asyncRoute(async (req, res) => {
@@ -873,6 +894,19 @@ app.get("/api/admin/models", ...admin, asyncRoute(async (_req, res) => { const d
 app.post("/api/admin/models", ...admin, asyncRoute(async (req, res) => { const apiKey = requiredString(req.body.apiKey, "API Key"); const model: ModelConfig = { id: uid("mdl"), name: requiredString(req.body.name, "展示名称"), provider: "gateway", kind: req.body.kind === "image" ? "image" : "chat", protocol: req.body.protocol === "anthropic" ? "anthropic" : "openai", baseUrl: requiredString(req.body.baseUrl, "接口地址"), apiKey, encryptedApiKey: encryptCredential(apiKey), model: requiredString(req.body.model, "模型 ID"), systemPrompt: typeof req.body.systemPrompt === "string" ? req.body.systemPrompt : "", enabled: Boolean(req.body.enabled), isDefault: Boolean(req.body.isDefault), inputPowerPerMillion: nonNegativeNumber(req.body.inputPowerPerMillion, "输入售价"), outputPowerPerMillion: nonNegativeNumber(req.body.outputPowerPerMillion, "输出售价"), costInputPowerPerMillion: nonNegativeNumber(req.body.costInputPowerPerMillion, "输入成本"), costOutputPowerPerMillion: nonNegativeNumber(req.body.costOutputPowerPerMillion, "输出成本"), imagePowerPerCall: req.body.imagePowerPerCall === undefined || req.body.imagePowerPerCall === "" ? undefined : nonNegativeNumber(req.body.imagePowerPerCall, "图片单次售价"), costImagePowerPerCall: req.body.costImagePowerPerCall === undefined || req.body.costImagePowerPerCall === "" ? undefined : nonNegativeNumber(req.body.costImagePowerPerCall, "图片单次成本"), createdAt: now() }; await store.mutate((db) => { if (model.isDefault) for (const item of db.models) item.isDefault = false; db.models.push(model); db.auditLogs.push({ id: uid("aud"), actorUserId: req.user!.id, action: "admin.model.created", targetType: "model", targetId: model.id, details: { name: model.name, model: model.model }, requestId: res.locals.requestId, createdAt: now() }); }); res.json({ model: adminModel(model) }); }));
 app.patch("/api/admin/models/:id", ...admin, asyncRoute(async (req, res) => { const model = await store.mutate((db) => { const target = db.models.find((item) => item.id === req.params.id); if (!target) throw new Error("模型不存在"); for (const field of ["name", "baseUrl", "model", "systemPrompt"] as const) if (typeof req.body[field] === "string") target[field] = req.body[field].trim(); if (typeof req.body.apiKey === "string" && req.body.apiKey.trim()) { target.apiKey = req.body.apiKey.trim(); target.encryptedApiKey = encryptCredential(target.apiKey); } for (const field of ["inputPowerPerMillion", "outputPowerPerMillion", "costInputPowerPerMillion", "costOutputPowerPerMillion", "imagePowerPerCall", "costImagePowerPerCall"] as const) if (req.body[field] !== undefined) target[field] = nonNegativeNumber(req.body[field], field, target[field]); if (req.body.protocol === "openai" || req.body.protocol === "anthropic") target.protocol = req.body.protocol; if (req.body.kind === "chat" || req.body.kind === "image") target.kind = req.body.kind; if (typeof req.body.enabled === "boolean") target.enabled = req.body.enabled; if (req.body.isDefault === true) for (const item of db.models) item.isDefault = item.id === target.id; db.auditLogs.push({ id: uid("aud"), actorUserId: req.user!.id, action: "admin.model.updated", targetType: "model", targetId: target.id, details: { name: target.name }, requestId: res.locals.requestId, createdAt: now() }); return target; }); res.json({ model: adminModel(model) }); }));
 app.delete("/api/admin/models/:id", ...admin, asyncRoute(async (req, res) => { await store.mutate((db) => { const index = db.models.findIndex((item) => item.id === req.params.id); if (index === -1) throw new Error("模型不存在"); db.models.splice(index, 1); }); res.json({ ok: true }); }));
+
+const runtimeUpdateDirectory = process.env.ONE_UPDATE_DIRECTORY?.trim();
+if (runtimeUpdateDirectory) {
+  app.use("/runtime-updates", express.static(runtimeUpdateDirectory, {
+    dotfiles: "deny",
+    fallthrough: false,
+    index: false,
+    setHeaders(response, filePath) {
+      response.setHeader("X-Content-Type-Options", "nosniff");
+      response.setHeader("Cache-Control", filePath.endsWith("stable.json") ? "no-store" : "public, max-age=31536000, immutable");
+    }
+  }));
+}
 
 app.use((err: Error, req: Request, res: Response, _next: unknown) => {
   const uploadTooLarge = err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE"; const uploadTooMany = err instanceof multer.MulterError && err.code === "LIMIT_FILE_COUNT";
