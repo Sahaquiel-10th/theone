@@ -5,22 +5,23 @@
 1. 超管先在“账号”中创建 Key-only 普通用户；系统不要求给普通用户设置或交付密码。
 2. 在“ONE Key”中选中该用户，填写印在 U 盘标签上的唯一序列号。
 3. 点击“生成并下载凭证”。私钥只会下载这一次，服务端只保存公钥。
-4. 把 U 盘插入用于灌装的 Mac，执行：
+4. 使用一只空白 U 盘；统一灌装命令不会格式化磁盘、不会覆盖旧 ONE Key，也不会移动其他用户文件。把 U 盘插入用于灌装的 Mac，执行：
 
 ```bash
-npm run provision:one-key:mac -- --list-volumes
-npm run provision:one-key:mac -- --credential ~/Downloads/ONE-序列号.one-key.json --volume /Volumes/U盘名称
+npm run provision:one-key -- --list-volumes
+npm run provision:one-key -- --credential ~/Downloads/ONE-序列号.one-key.json --dry-run
+npm run provision:one-key -- --credential ~/Downloads/ONE-序列号.one-key.json --volume /Volumes/U盘名称
 ```
 
-如果这只 U 盘以前灌装过，确认需要替换后增加 `--replace`。脚本会先把旧的 `ONE.app` 和 `.one` 目录移动到带时间戳的备份目录，不会格式化 U 盘，也不会修改其他文件。
+命令先在电脑上构建并校验 Mac 通用版和 Windows x64 版，再暂存到 U 盘；只有两个启动器、凭证和签名/哈希全部通过后才完成灌装。目标不是外置卷、存在旧 ONE 文件、包含其他可见文件、生产地址不符或空间不足时会停止，不做覆盖。
 
-5. 需要兼容 Windows 时，在同一只已经写入凭证的 U 盘上继续执行：
+5. 灌装完成后，U 盘根目录统一为：
 
-```bash
-npm run provision:one-key:windows -- --volume /Volumes/U盘名称 --tidy-root
-```
+- `ONE for Mac.app`
+- `ONE for Windows.exe`
+- 隐藏目录 `.one`，其中保存唯一凭证和简短说明
 
-Windows 构建需要 Go 1.23 或更高版本。可用 `--go-bin /完整路径/go` 指定不安装到系统的 Go 工具链。重复灌装时增加 `--replace`。如需让 U 盘根目录只显示两个启动入口，增加 `--tidy-root`；脚本会把其他可见内容移到隐藏的 `.one-files/原有文件`，不会删除。
+Windows 构建需要 Go 1.23 或更高版本。可用 `--go-bin /完整路径/go` 指定不安装到系统的 Go 工具链。当前内测不使用旧盘覆盖模式；旧盘应由运营确认并清空后按新盘重新灌装，避免凭证串号。
 
 6. 首次在每台电脑使用时：macOS 双击 `ONE for Mac.app`，Windows 双击 `ONE for Windows.exe`。两端共用隐藏的 `.one/credential.json`，因此对应同一个 ONE Key、账号和 Workspace。
 7. 保持网页打开，拔出 U 盘后发起请求，应立即提示插入；重新插入后等待约 1～2 秒，同一网页无需刷新即可继续使用。
