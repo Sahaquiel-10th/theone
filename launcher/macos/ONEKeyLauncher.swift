@@ -9,6 +9,7 @@ let launcherVersion = "__ONE_RUNTIME_VERSION__"
 let updatePublicKeyRaw = "__ONE_UPDATE_PUBLIC_KEY__"
 let residentArgument = "--one-resident"
 let deviceArgument = "--device-id"
+let credentialArgument = "--credential-path"
 
 func oneDefaults() -> UserDefaults { UserDefaults(suiteName: "one.theone.key") ?? .standard }
 
@@ -173,6 +174,7 @@ func commandLineValue(_ name: String) -> String? {
 func launchResidentCopy() throws {
     _ = installationId()
     guard let source = Bundle.main.executableURL else { throw LauncherError.message("ONE 启动器不完整") }
+    let portableCredential = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent(".one/credential.json")
     let applicationSupport = try FileManager.default.url(
         for: .applicationSupportDirectory,
         in: .userDomainMask,
@@ -194,7 +196,7 @@ func launchResidentCopy() throws {
     // The portable app must not read the credential itself. The installed
     // resident is the single process that receives removable-volume access,
     // discovers the Key and keeps proving its presence.
-    process.arguments = [residentArgument]
+    process.arguments = [residentArgument, credentialArgument, portableCredential.path]
     process.standardInput = FileHandle.nullDevice
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
@@ -635,6 +637,7 @@ func openLoginPage(base: String, credentialUrl: URL, deviceId: String) async thr
 final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private let residentMode: Bool
     private var expectedDeviceId: String?
+    private let initialCredentialUrl: URL?
     private var credentialUrl: URL?
     private var credential: DeviceCredential?
     private var base = ""
@@ -649,9 +652,10 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private let networkMonitor = NWPathMonitor()
     private var receivedInitialPath = false
 
-    init(residentMode: Bool, expectedDeviceId: String?) {
+    init(residentMode: Bool, expectedDeviceId: String?, initialCredentialUrl: URL?) {
         self.residentMode = residentMode
         self.expectedDeviceId = expectedDeviceId
+        self.initialCredentialUrl = initialCredentialUrl
         super.init()
     }
 
@@ -673,7 +677,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 if let expectedDeviceId {
                     resolvedDeviceId = expectedDeviceId
                 } else {
-                    guard let foundUrl = findCredentialUrl() else { throw LauncherError.message("没有找到 ONE Key，请插入后重试") }
+                    guard let foundUrl = findCredentialUrl(preferred: initialCredentialUrl) else { throw LauncherError.message("没有找到 ONE Key，请插入后重试") }
                     let foundCredential = try loadCredential(foundUrl)
                     credentialUrl = foundUrl
                     credential = foundCredential
@@ -681,7 +685,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                     self.expectedDeviceId = resolvedDeviceId
                 }
                 guard let lock = try acquireResidentLock(deviceId: resolvedDeviceId) else {
-                    sessionTask = Task { await openLoginThroughExistingResident(deviceId: resolvedDeviceId) }
+                    sessionTask = Task { await openLoginThroughExistingResident(deviceId: resolvedDeviceId, preferred: initialCredentialUrl) }
                     return
                 }
                 residentLock = lock
@@ -856,9 +860,9 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func openLoginThroughExistingResident(deviceId: String) async {
+    private func openLoginThroughExistingResident(deviceId: String, preferred: URL? = nil) async {
         do {
-            guard let credentialUrl = findCredentialUrl(expectedDeviceId: deviceId) else {
+            guard let credentialUrl = findCredentialUrl(expectedDeviceId: deviceId, preferred: preferred) else {
                 throw LauncherError.message("没有找到 ONE Key，请插入后重试")
             }
             let credential = try loadCredential(credentialUrl, expectedDeviceId: deviceId)
@@ -905,7 +909,8 @@ struct ONEKeyLauncher {
     static func main() {
         let residentMode = CommandLine.arguments.contains(residentArgument)
         let application = NSApplication.shared
-        let delegate = ONEKeyAppDelegate(residentMode: residentMode, expectedDeviceId: commandLineValue(deviceArgument))
+        let credentialPath = commandLineValue(credentialArgument).map { URL(fileURLWithPath: $0) }
+        let delegate = ONEKeyAppDelegate(residentMode: residentMode, expectedDeviceId: commandLineValue(deviceArgument), initialCredentialUrl: credentialPath)
         application.delegate = delegate
         application.setActivationPolicy(.accessory)
         application.run()
