@@ -11,6 +11,13 @@ const macAppName = "ONE for Mac.app";
 const windowsAppName = "ONE for Windows.exe";
 const credentialDirectoryName = ".one";
 const volumeIconName = ".VolumeIcon.icns";
+const developerTool = (name: string) => [
+  `/Library/Developer/CommandLineTools/usr/bin/${name}`,
+  `/Applications/Xcode.app/Contents/Developer/usr/bin/${name}`,
+  `/usr/bin/${name}`
+].find((candidate) => fs.existsSync(candidate)) ?? `/usr/bin/${name}`;
+const setFileBinary = developerTool("SetFile");
+const getFileInfoBinary = developerTool("GetFileInfo");
 const knownSystemEntries = new Set([
   ".DS_Store",
   ".Spotlight-V100",
@@ -256,20 +263,33 @@ async function provision(args = process.argv.slice(2)) {
     fs.renameSync(path.join(staging, credentialDirectoryName), finalCredentialDirectory);
     promotedPaths.push(finalCredentialDirectory);
     fs.rmdirSync(staging);
-    run("/usr/bin/SetFile", ["-a", "V", finalCredentialDirectory]);
-    run("/usr/bin/SetFile", ["-a", "V", finalVolumeIcon]);
+    run(setFileBinary, ["-a", "V", finalCredentialDirectory]);
+    run(setFileBinary, ["-a", "V", finalVolumeIcon]);
     run("/usr/sbin/dot_clean", ["-m", volumePath]);
     // FAT32 stores the root directory's custom-icon flag in a hidden `._.`
     // AppleDouble record. Set it after dot_clean so the cleanup cannot erase it.
-    run("/usr/bin/SetFile", ["-a", "C", volumePath]);
+    run(setFileBinary, ["-a", "C", volumePath]);
     run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", finalMac]);
     if (sha256(finalWindows) !== sha256(builtWindows)) throw new Error("Windows 启动器最终校验失败");
     if (sha256(finalVolumeIcon) !== sha256(builtVolumeIcon)) throw new Error("U 盘图标最终校验失败");
-    const volumeAttributes = execFileSync("/usr/bin/GetFileInfo", ["-a", volumePath], { encoding: "utf8" }).trim();
+    const volumeAttributes = execFileSync(getFileInfoBinary, ["-a", volumePath], { encoding: "utf8" }).trim();
     if (!volumeAttributes.includes("C")) throw new Error("U 盘自定义图标标记写入失败");
     const finalCredential = readCredential(fs.readFileSync(path.join(finalCredentialDirectory, "credential.json"), "utf8"), expectedOrigin);
     if (finalCredential.deviceId !== credential.deviceId || finalCredential.privateKeyRaw !== credential.privateKeyRaw) throw new Error("ONE Key 最终凭证校验失败");
     execFileSync("/bin/sync", []);
+
+    // A freshly written FAT volume can appear readable from cache even when
+    // its directory or cluster chain is already damaged. Force macOS to
+    // unmount, verify and remount the exact volume, then repeat the artifact
+    // checks before declaring a factory unit shippable.
+    run("/usr/sbin/diskutil", ["verifyVolume", volumePath]);
+    run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", finalMac]);
+    if (sha256(finalWindows) !== sha256(builtWindows)) throw new Error("Windows 启动器重挂载校验失败");
+    const remountedCredential = readCredential(fs.readFileSync(path.join(finalCredentialDirectory, "credential.json"), "utf8"), expectedOrigin);
+    if (remountedCredential.deviceId !== credential.deviceId || remountedCredential.privateKeyRaw !== credential.privateKeyRaw
+      || remountedCredential.publicKeyRaw !== credential.publicKeyRaw) {
+      throw new Error("ONE Key 凭证重挂载校验失败");
+    }
     completed = true;
 
     console.log([

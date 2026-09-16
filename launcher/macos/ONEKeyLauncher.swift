@@ -645,8 +645,10 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private var sessionTask: Task<Void, Never>?
     private var removalTask: Task<Void, Never>?
     private var loginTask: Task<Void, Never>?
+    private var sessionGeneration = UUID()
     private var stopping = false
     private var ready = false
+    private var openedLogin = false
     private var loginRequested = false
     private var residentLock: ResidentLock?
     private let networkMonitor = NWPathMonitor()
@@ -699,17 +701,16 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         networkMonitor.pathUpdateHandler = { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                if self.receivedInitialPath { self.resumeConnection() }
+                if self.receivedInitialPath, !self.ready { self.restartSession() }
                 self.receivedInitialPath = true
             }
         }
         networkMonitor.start(queue: DispatchQueue(label: "one.network-state"))
-        sessionTask = Task { await runSession() }
+        restartSession()
     }
 
     @objc private func resumeConnection() {
-        // Wake/network changes invalidate a half-open transport, not the login.
-        socket?.cancel(with: .goingAway, reason: nil)
+        restartSession()
     }
 
     @objc private func volumeDidMount(_ notification: Notification) {
@@ -719,7 +720,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         guard let mountedCredential = try? loadCredential(candidate), wantedDeviceId == nil || mountedCredential.deviceId == wantedDeviceId else { return }
         credentialUrl = candidate
         credential = mountedCredential
-        socket?.cancel(with: .goingAway, reason: nil)
+        restartSession()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -737,10 +738,20 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         socket?.cancel(with: .goingAway, reason: nil)
     }
 
-    private func runSession() async {
-        var openedLogin = false
+    private func restartSession() {
+        guard residentMode, !stopping else { return }
+        let generation = UUID()
+        sessionGeneration = generation
+        socket?.cancel(with: .goingAway, reason: nil)
+        removalTask?.cancel()
+        sessionTask?.cancel()
+        ready = false
+        sessionTask = Task { await runSession(generation: generation) }
+    }
+
+    private func runSession(generation: UUID) async {
         var failures = 0
-        while !stopping {
+        while !stopping, generation == sessionGeneration {
         do {
             let wantedDeviceId = credential?.deviceId ?? expectedDeviceId
             guard let foundUrl = findCredentialUrl(expectedDeviceId: wantedDeviceId, preferred: credentialUrl) else {
@@ -758,6 +769,10 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             credential = foundCredential
             base = foundBase
             let connectedSocket = try await connectLauncher(base: foundBase, credentialUrl: foundUrl, deviceId: foundCredential.deviceId)
+            guard generation == sessionGeneration, !stopping else {
+                connectedSocket.cancel(with: .goingAway, reason: nil)
+                return
+            }
 
             socket = connectedSocket
             ready = true
@@ -789,16 +804,20 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             }
             if !stopping { throw LauncherError.message("ONE Key 连接已断开") }
         } catch is CancellationError {
-            // Cancelling a WebSocket on wake, network change or Key mount is
-            // a reconnect signal. Only application shutdown cancels the
-            // session itself permanently.
-            if stopping { return }
+            // A mount, wake or network change starts a fresh generation. The
+            // cancelled generation must exit instead of silently killing the
+            // only resident connection loop.
+            if stopping || generation != sessionGeneration { return }
             socket = nil
             removalTask?.cancel()
             ready = false
-            do { try await Task.sleep(for: .seconds(1)) } catch { return }
-            continue
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                guard let self, !self.stopping, generation == self.sessionGeneration else { return }
+                self.restartSession()
+            }
+            return
         } catch {
+            if stopping || generation != sessionGeneration { return }
             failures += 1
             let closeCode = socket?.closeCode.rawValue ?? 0
             socket?.cancel(with: .goingAway, reason: nil)
