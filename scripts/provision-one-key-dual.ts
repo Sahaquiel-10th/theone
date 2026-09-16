@@ -20,6 +20,7 @@ const setFileBinary = developerTool("SetFile");
 const getFileInfoBinary = developerTool("GetFileInfo");
 const knownSystemEntries = new Set([
   ".DS_Store",
+  "._.",
   ".Spotlight-V100",
   ".Trashes",
   ".fseventsd",
@@ -157,6 +158,22 @@ function run(command: string, args: string[], options: Parameters<typeof execFil
   return execFileSync(command, args, { stdio: "inherit", ...options });
 }
 
+function verifyVolumeWithRetry(volumePath: string) {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      run("/usr/sbin/diskutil", ["verifyVolume", volumePath]);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt === 3) break;
+      execFileSync("/bin/sync", []);
+      execFileSync("/bin/sleep", ["2"]);
+    }
+  }
+  throw lastError;
+}
+
 async function provision(args = process.argv.slice(2)) {
   assertKnownArguments(args);
   if (hasArgument(args, "--list-volumes")) {
@@ -190,7 +207,16 @@ async function provision(args = process.argv.slice(2)) {
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "one-key-dual-build-"));
   const macOutput = path.join(temporaryRoot, "mac");
   const windowsOutput = path.join(temporaryRoot, "windows");
-  const staging = path.join(volumePath, `.one-provisioning-${crypto.randomBytes(6).toString("hex")}`);
+  const stagingToken = crypto.randomBytes(6).toString("hex");
+  // FAT stores an explicit `..` cluster inside every directory. Moving a
+  // directory from a nested staging folder into the volume root can leave
+  // that entry pointing at the deleted staging folder on macOS. Stage every
+  // item as a direct child of the root so final renames never change parents.
+  const stagedMac = path.join(volumePath, `.one-macos-provisioning-${stagingToken}.app`);
+  const stagedWindows = path.join(volumePath, `.one-windows-provisioning-${stagingToken}.exe`);
+  const stagedVolumeIcon = path.join(volumePath, `.one-icon-provisioning-${stagingToken}.icns`);
+  const stagedCredentialDirectory = path.join(volumePath, `.one-provisioning-${stagingToken}`);
+  const stagingPaths = [stagedMac, stagedWindows, stagedVolumeIcon, stagedCredentialDirectory];
   const promotedPaths: string[] = [];
   let completed = false;
 
@@ -228,24 +254,21 @@ async function provision(args = process.argv.slice(2)) {
     const availableBytes = Number(volumeStats.bavail) * Number(volumeStats.bsize);
     if (availableBytes < requiredBytes) throw new Error(`U 盘空间不足，至少还需要 ${Math.ceil(requiredBytes / 1024 / 1024)} MB`);
 
-    fs.mkdirSync(staging, { mode: 0o700 });
-    fs.cpSync(builtMac, path.join(staging, macAppName), { recursive: true, errorOnExist: true });
-    fs.copyFileSync(builtWindows, path.join(staging, windowsAppName));
-    fs.copyFileSync(builtVolumeIcon, path.join(staging, volumeIconName));
-    fs.mkdirSync(path.join(staging, credentialDirectoryName), { mode: 0o700 });
-    fs.writeFileSync(path.join(staging, credentialDirectoryName, "credential.json"), credentialRaw, { mode: 0o600 });
-    writeInstructions(path.join(staging, credentialDirectoryName, "使用说明.txt"));
+    fs.cpSync(builtMac, stagedMac, { recursive: true, errorOnExist: true });
+    fs.copyFileSync(builtWindows, stagedWindows);
+    fs.copyFileSync(builtVolumeIcon, stagedVolumeIcon);
+    fs.mkdirSync(stagedCredentialDirectory, { mode: 0o700 });
+    fs.writeFileSync(path.join(stagedCredentialDirectory, "credential.json"), credentialRaw, { mode: 0o600 });
+    writeInstructions(path.join(stagedCredentialDirectory, "使用说明.txt"));
 
-    const stagedMac = path.join(staging, macAppName);
-    const stagedWindows = path.join(staging, windowsAppName);
     run("/usr/sbin/dot_clean", ["-m", stagedMac]);
     run("/usr/bin/xattr", ["-cr", stagedMac]);
     run("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", stagedMac]);
     run("/usr/sbin/dot_clean", ["-m", stagedMac]);
     run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", stagedMac]);
     if (sha256(stagedWindows) !== sha256(builtWindows)) throw new Error("Windows 启动器写入校验失败");
-    if (sha256(path.join(staging, volumeIconName)) !== sha256(builtVolumeIcon)) throw new Error("U 盘图标写入校验失败");
-    const writtenCredential = readCredential(fs.readFileSync(path.join(staging, credentialDirectoryName, "credential.json"), "utf8"), expectedOrigin);
+    if (sha256(stagedVolumeIcon) !== sha256(builtVolumeIcon)) throw new Error("U 盘图标写入校验失败");
+    const writtenCredential = readCredential(fs.readFileSync(path.join(stagedCredentialDirectory, "credential.json"), "utf8"), expectedOrigin);
     if (writtenCredential.deviceId !== credential.deviceId || writtenCredential.privateKeyRaw !== credential.privateKeyRaw || writtenCredential.publicKeyRaw !== credential.publicKeyRaw) {
       throw new Error("写入后的 ONE Key 凭证不一致");
     }
@@ -258,11 +281,10 @@ async function provision(args = process.argv.slice(2)) {
     promotedPaths.push(finalMac);
     fs.renameSync(stagedWindows, finalWindows);
     promotedPaths.push(finalWindows);
-    fs.renameSync(path.join(staging, volumeIconName), finalVolumeIcon);
+    fs.renameSync(stagedVolumeIcon, finalVolumeIcon);
     promotedPaths.push(finalVolumeIcon);
-    fs.renameSync(path.join(staging, credentialDirectoryName), finalCredentialDirectory);
+    fs.renameSync(stagedCredentialDirectory, finalCredentialDirectory);
     promotedPaths.push(finalCredentialDirectory);
-    fs.rmdirSync(staging);
     run(setFileBinary, ["-a", "V", finalCredentialDirectory]);
     run(setFileBinary, ["-a", "V", finalVolumeIcon]);
     run("/usr/sbin/dot_clean", ["-m", volumePath]);
@@ -282,7 +304,7 @@ async function provision(args = process.argv.slice(2)) {
     // its directory or cluster chain is already damaged. Force macOS to
     // unmount, verify and remount the exact volume, then repeat the artifact
     // checks before declaring a factory unit shippable.
-    run("/usr/sbin/diskutil", ["verifyVolume", volumePath]);
+    verifyVolumeWithRetry(volumePath);
     run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", finalMac]);
     if (sha256(finalWindows) !== sha256(builtWindows)) throw new Error("Windows 启动器重挂载校验失败");
     const remountedCredential = readCredential(fs.readFileSync(path.join(finalCredentialDirectory, "credential.json"), "utf8"), expectedOrigin);
@@ -303,7 +325,9 @@ async function provision(args = process.argv.slice(2)) {
       "请在访达中安全推出 U 盘。"
     ].join("\n"));
   } finally {
-    if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true });
+    for (const target of stagingPaths) {
+      if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
+    }
     if (!completed) {
       // The volume was verified as blank before this run, so these exact paths
       // can only be payloads promoted by this invocation. Never leave a partial

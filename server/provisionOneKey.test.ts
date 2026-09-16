@@ -26,7 +26,7 @@ test("factory provisioning refuses old ONE payloads and unrelated user files", (
   assert.equal(containsExistingOnePayload(["ONE for Windows.exe"]), true);
   assert.equal(containsExistingOnePayload([".VolumeIcon.icns"]), true);
   assert.equal(containsExistingOnePayload(["System Volume Information"]), false);
-  assert.deepEqual(unexpectedFactoryEntries([".Trashes", "$RECYCLE.BIN", "System Volume Information"]), []);
+  assert.deepEqual(unexpectedFactoryEntries(["._.", ".Trashes", "$RECYCLE.BIN", "System Volume Information"]), []);
   assert.deepEqual(unexpectedFactoryEntries(["客户资料.docx", ".secret"]), ["客户资料.docx", ".secret"]);
 });
 
