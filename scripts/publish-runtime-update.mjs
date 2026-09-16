@@ -33,6 +33,16 @@ const readMetadata = (target, platform) => {
 const macMetadata = readMetadata(macApp, "macos");
 const windowsMetadata = readMetadata(windowsExe, "windows");
 if (macMetadata.publicKeySha256 !== windowsMetadata.publicKeySha256) throw new Error("双平台制品信任的发布公钥不一致");
+const appleDouble = [];
+const inspectMacBundle = directory => {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.name.startsWith("._")) appleDouble.push(target);
+    else if (entry.isDirectory()) inspectMacBundle(target);
+  }
+};
+inspectMacBundle(macApp);
+if (appleDouble.length) throw new Error("Mac 制品包含 AppleDouble 元数据，拒绝发布");
 execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", macApp], { stdio: "inherit" });
 const commandLineLipo = "/Library/Developer/CommandLineTools/usr/bin/lipo";
 const lipoBinary = fs.existsSync(commandLineLipo) ? commandLineLipo : "/usr/bin/lipo";
@@ -45,7 +55,7 @@ const macName = `one-macos-${version}.zip`;
 const windowsName = `one-windows-${version}.exe`;
 const macTarget = path.join(output, macName);
 const windowsTarget = path.join(output, windowsName);
-execFileSync("/usr/bin/ditto", ["-c", "-k", "--keepParent", macApp, macTarget], { stdio: "inherit" });
+execFileSync("/usr/bin/ditto", ["-c", "-k", "--keepParent", "--norsrc", "--noextattr", macApp, macTarget], { stdio: "inherit" });
 fs.copyFileSync(windowsExe, windowsTarget, fs.constants.COPYFILE_EXCL);
 const digest = target => crypto.createHash("sha256").update(fs.readFileSync(target)).digest("hex");
 const artifact = (platform, architecture, name, target) => ({

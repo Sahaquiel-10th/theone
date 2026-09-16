@@ -34,6 +34,17 @@ const contents = path.join(app, "Contents");
 const macos = path.join(contents, "MacOS");
 const resources = path.join(contents, "Resources");
 
+function removeAppleDouble(directory) {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.name.startsWith("._")) {
+      fs.rmSync(target, { recursive: entry.isDirectory(), force: true });
+    } else if (entry.isDirectory()) {
+      removeAppleDouble(target);
+    }
+  }
+}
+
 fs.rmSync(outputRoot, { recursive: true, force: true });
 fs.mkdirSync(macos, { recursive: true });
 fs.mkdirSync(resources, { recursive: true });
@@ -105,11 +116,16 @@ if (credentialData) {
 fs.writeFileSync(path.join(outputRoot, "使用 ONE.txt"), "首次在电脑上使用时，插入 ONE Key 并双击 ONE 图标。\n\nONE 会在当前用户目录安装一个不含私钥的在场检测器。此后 U 盘插着即可使用；拔出后新请求立即停用；重新插入或电脑休眠唤醒后会自动恢复，不需要刷新网页。电脑重启后请再双击一次。\n第一次从对话进入执行时，选择一次允许 Codex 工作的文件夹；后续不需要重复安装或选择。\n如果提示凭证不存在，请确认隐藏目录 .one 中存在 credential.json。\n普通 U 盘凭证可以被复制；遗失后请管理员立即在 ONE 超管后台挂失。\n");
 // Icon generation may leave Finder/resource-fork metadata that codesign rejects.
 execFileSync("/usr/bin/xattr", ["-cr", app], { stdio: "inherit" });
+// AppleDouble sidecars become ordinary files when a zip is expanded onto a
+// FAT32 ONE Key. They then invalidate the sealed app bundle, so the signed
+// build must never contain them.
+removeAppleDouble(app);
 execFileSync("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", app], { stdio: "inherit" });
 // Desktop/File Provider volumes can add Finder metadata while codesign writes
 // its bundle. Clear it once more so strict verification and USB copying remain
 // deterministic; this does not change signed file contents.
 execFileSync("/usr/bin/xattr", ["-cr", app], { stdio: "inherit" });
+removeAppleDouble(app);
 fs.writeFileSync(path.join(outputRoot, "runtime-update.json"), `${JSON.stringify({
   platform: "macos",
   version: runtimeVersion,

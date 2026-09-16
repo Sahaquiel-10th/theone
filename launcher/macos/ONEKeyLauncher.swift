@@ -327,17 +327,15 @@ func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL,
     guard (attributes[.size] as? NSNumber)?.int64Value == artifact.size,
           try sha256File(downloaded) == artifact.sha256 else { throw LauncherError.message("ONE 更新文件校验失败") }
 
-    let oneDirectory = credentialUrl.deletingLastPathComponent()
-    let volumeRoot = oneDirectory.deletingLastPathComponent()
-    let target = volumeRoot.appendingPathComponent("ONE for Mac.app", isDirectory: true)
-    guard FileManager.default.fileExists(atPath: target.path) else { throw LauncherError.message("U 盘中没有找到 Mac 启动器") }
-    let updateDirectory = oneDirectory.appendingPathComponent(".updates", isDirectory: true)
-    try FileManager.default.createDirectory(at: updateDirectory, withIntermediateDirectories: true)
-    let staging = updateDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: staging) }
-    try runProcess("/usr/bin/ditto", ["-x", "-k", downloaded.path, staging.path])
-    let candidates = [staging.appendingPathComponent("ONE.app"), staging.appendingPathComponent("ONE for Mac.app")]
+    // FAT32 cannot store macOS extended attributes. Expanding and clearing
+    // quarantine directly on the Key creates AppleDouble sidecars and makes
+    // `xattr -cr` fail. Validate and de-quarantine on the local APFS volume,
+    // then copy the already verified bundle to a same-volume USB staging area.
+    let localStaging = FileManager.default.temporaryDirectory.appendingPathComponent("ONE-update-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: localStaging, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: localStaging) }
+    try runProcess("/usr/bin/ditto", ["-x", "-k", "--norsrc", "--noextattr", downloaded.path, localStaging.path])
+    let candidates = [localStaging.appendingPathComponent("ONE.app"), localStaging.appendingPathComponent("ONE for Mac.app")]
     guard let stagedApp = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) else {
         throw LauncherError.message("Mac 更新包不完整")
     }
@@ -347,6 +345,19 @@ func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL,
     // then verify its code signature again before it can replace the USB copy.
     try runProcess("/usr/bin/xattr", ["-cr", stagedApp.path])
     try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", stagedApp.path])
+
+    let oneDirectory = credentialUrl.deletingLastPathComponent()
+    let volumeRoot = oneDirectory.deletingLastPathComponent()
+    let target = volumeRoot.appendingPathComponent("ONE for Mac.app", isDirectory: true)
+    guard FileManager.default.fileExists(atPath: target.path) else { throw LauncherError.message("U 盘中没有找到 Mac 启动器") }
+    let updateDirectory = oneDirectory.appendingPathComponent(".updates", isDirectory: true)
+    try FileManager.default.createDirectory(at: updateDirectory, withIntermediateDirectories: true)
+    let usbStaging = updateDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: usbStaging, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: usbStaging) }
+    let usbStagedApp = usbStaging.appendingPathComponent("ONE for Mac.app", isDirectory: true)
+    try runProcess("/usr/bin/ditto", ["--norsrc", "--noextattr", stagedApp.path, usbStagedApp.path])
+    try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", usbStagedApp.path])
     guard try Data(contentsOf: credentialUrl) == credentialBefore else { throw LauncherError.message("ONE Key 凭证状态发生变化，更新已停止") }
 
     await progress("installing")
@@ -356,7 +367,8 @@ func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL,
     if FileManager.default.fileExists(atPath: backup.path) { try FileManager.default.removeItem(at: backup) }
     try FileManager.default.moveItem(at: target, to: backup)
     do {
-        try FileManager.default.moveItem(at: stagedApp, to: target)
+        try FileManager.default.moveItem(at: usbStagedApp, to: target)
+        try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", target.path])
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         process.arguments = ["-n", target.path]
