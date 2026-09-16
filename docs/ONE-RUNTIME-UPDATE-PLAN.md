@@ -8,6 +8,7 @@
 
 ## 1. 不变的产品结论
 
+- 在线更新必须完整通过 [ONE Key 在场体验硬约束](./ONE-KEY-PRESENCE-INVARIANT.md)；不能为了更新牺牲拔插自动恢复或制造重复 Bridge。
 - ONE Key、Launcher、Bridge、灌装器是四个不同组件。
 - Key 保存身份凭证；Launcher 是用户双击的入口；Bridge 是驻留在当前电脑、证明 Key 在场并承接本机能力的进程；灌装器只负责出厂写盘。
 - 更新以操作系统为单位进行：Mac 更新 Mac 启动器，Windows 更新 Windows 启动器。另一端会在该系统下次使用时更新。

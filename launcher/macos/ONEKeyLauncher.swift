@@ -3,6 +3,7 @@ import CryptoKit
 import Foundation
 import CFNetwork
 import Network
+import Darwin
 
 let launcherVersion = "__ONE_RUNTIME_VERSION__"
 let updatePublicKeyRaw = "__ONE_UPDATE_PUBLIC_KEY__"
@@ -110,14 +111,58 @@ func loadCredential(_ credentialUrl: URL, expectedDeviceId: String? = nil) throw
     return credential
 }
 
-func findCredentialUrl(expectedDeviceId: String? = nil) -> URL? {
+func findCredentialUrl(expectedDeviceId: String? = nil, preferred: URL? = nil) -> URL? {
     let portable = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent(".one/credential.json")
-    let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? []
-    return ([portable] + volumes.map { $0.appendingPathComponent(".one/credential.json") })
+    var candidates = [URL]()
+    if let preferred { candidates.append(preferred) }
+    candidates.append(portable)
+    // Once a Key has been found, keep checking its exact path. A mount
+    // notification updates that path if macOS gives the volume a new suffix.
+    // This avoids repeatedly enumerating every removable volume while absent.
+    if preferred == nil {
+        let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? []
+        candidates.append(contentsOf: volumes.map { $0.appendingPathComponent(".one/credential.json") })
+    }
+    var seen = Set<String>()
+    return candidates
+        .filter { seen.insert($0.standardizedFileURL.path).inserted }
         .first { url in
             guard FileManager.default.fileExists(atPath: url.path), let credential = try? loadCredential(url) else { return false }
             return expectedDeviceId == nil || credential.deviceId == expectedDeviceId
         }
+}
+
+final class ResidentLock {
+    private let descriptor: Int32
+
+    init(descriptor: Int32) { self.descriptor = descriptor }
+
+    deinit {
+        flock(descriptor, LOCK_UN)
+        close(descriptor)
+    }
+}
+
+func acquireResidentLock(deviceId: String) throws -> ResidentLock? {
+    let applicationSupport = try FileManager.default.url(
+        for: .applicationSupportDirectory,
+        in: .userDomainMask,
+        appropriateFor: nil,
+        create: true
+    )
+    let directory = applicationSupport.appendingPathComponent("ONE", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let digest = SHA256.hash(data: Data(deviceId.utf8)).map { String(format: "%02x", $0) }.joined()
+    let target = directory.appendingPathComponent("presence-\(digest).lock")
+    let descriptor = open(target.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+    guard descriptor >= 0 else { throw LauncherError.message("无法创建 ONE 驻留锁") }
+    if flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+        let lockError = errno
+        close(descriptor)
+        if lockError == EWOULDBLOCK { return nil }
+        throw LauncherError.message("无法锁定 ONE 驻留进程")
+    }
+    return ResidentLock(descriptor: descriptor)
 }
 
 func commandLineValue(_ name: String) -> String? {
@@ -594,6 +639,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private var stopping = false
     private var ready = false
     private var loginRequested = false
+    private var residentLock: ResidentLock?
     private let networkMonitor = NWPathMonitor()
     private var receivedInitialPath = false
 
@@ -615,7 +661,20 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 NSLog("ONE resident installation failed: \(error.localizedDescription)")
             }
         }
+        if residentMode, let expectedDeviceId {
+            do {
+                guard let lock = try acquireResidentLock(deviceId: expectedDeviceId) else {
+                    sessionTask = Task { await openLoginThroughExistingResident(deviceId: expectedDeviceId) }
+                    return
+                }
+                residentLock = lock
+            } catch {
+                showFailure(error)
+                return
+            }
+        }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(resumeConnection), name: NSWorkspace.didWakeNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(volumeDidMount(_:)), name: NSWorkspace.didMountNotification, object: nil)
         networkMonitor.pathUpdateHandler = { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -629,6 +688,16 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func resumeConnection() {
         // Wake/network changes invalidate a half-open transport, not the login.
+        socket?.cancel(with: .goingAway, reason: nil)
+    }
+
+    @objc private func volumeDidMount(_ notification: Notification) {
+        guard let volume = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL else { return }
+        let candidate = volume.appendingPathComponent(".one/credential.json")
+        let wantedDeviceId = credential?.deviceId ?? expectedDeviceId
+        guard let mountedCredential = try? loadCredential(candidate), wantedDeviceId == nil || mountedCredential.deviceId == wantedDeviceId else { return }
+        credentialUrl = candidate
+        credential = mountedCredential
         socket?.cancel(with: .goingAway, reason: nil)
     }
 
@@ -653,7 +722,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         while !stopping {
         do {
             let wantedDeviceId = credential?.deviceId ?? expectedDeviceId
-            guard let foundUrl = findCredentialUrl(expectedDeviceId: wantedDeviceId) else {
+            guard let foundUrl = findCredentialUrl(expectedDeviceId: wantedDeviceId, preferred: credentialUrl) else {
                 if residentMode {
                     ready = false
                     socket = nil
@@ -699,7 +768,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             if residentMode, !stopping {
-                let keyStillPresent = findCredentialUrl(expectedDeviceId: credential?.deviceId ?? expectedDeviceId) != nil
+                let keyStillPresent = findCredentialUrl(expectedDeviceId: credential?.deviceId ?? expectedDeviceId, preferred: credentialUrl) != nil
                 if !keyStillPresent {
                     failures = 0
                     do { try await Task.sleep(for: .seconds(1)) } catch { return }
@@ -736,6 +805,20 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             }
             loginTask = nil
         }
+    }
+
+    private func openLoginThroughExistingResident(deviceId: String) async {
+        do {
+            guard let credentialUrl = findCredentialUrl(expectedDeviceId: deviceId) else {
+                throw LauncherError.message("没有找到 ONE Key，请插入后重试")
+            }
+            let credential = try loadCredential(credentialUrl, expectedDeviceId: deviceId)
+            try await openLoginPage(base: credential.serverBaseUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/")), credentialUrl: credentialUrl, deviceId: deviceId)
+        } catch {
+            if !stopping { showFailure(error, terminateAfterDismissal: false) }
+        }
+        stopping = true
+        NSApplication.shared.terminate(nil)
     }
 
     private func monitorRemoval(of credentialUrl: URL) async {

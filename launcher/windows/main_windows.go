@@ -90,6 +90,17 @@ type socketWriter struct {
 	mutex      sync.Mutex
 }
 
+type residentLock struct {
+	handle syscall.Handle
+}
+
+func (lock *residentLock) close() {
+	if lock != nil && lock.handle != 0 {
+		_ = syscall.CloseHandle(lock.handle)
+		lock.handle = 0
+	}
+}
+
 func (writer *socketWriter) json(value any) error {
 	writer.mutex.Lock()
 	defer writer.mutex.Unlock()
@@ -131,6 +142,23 @@ func main() {
 }
 
 func run(expectedDeviceID string) error {
+	lock, acquired, err := acquireResidentLock(expectedDeviceID)
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		credentialPath := findCredentialForDevice(expectedDeviceID)
+		if credentialPath == "" {
+			return errors.New("没有找到 ONE Key，请插入后重试")
+		}
+		credential, loadErr := loadCredential(credentialPath, expectedDeviceID)
+		if loadErr != nil {
+			return loadErr
+		}
+		return openLoginPage(strings.TrimRight(credential.ServerBaseURL, "/"), credentialPath, credential.DeviceID)
+	}
+	defer lock.close()
+
 	openedLogin := false
 	base := ""
 	credentialPath := ""
@@ -194,6 +222,28 @@ func run(expectedDeviceID string) error {
 		failures = min(failures, 5)
 		time.Sleep(time.Duration(min(failures*3, 15)) * time.Second)
 	}
+}
+
+func acquireResidentLock(deviceID string) (*residentLock, bool, error) {
+	if deviceID == "" {
+		return nil, false, errors.New("ONE Key 设备编号无效")
+	}
+	digest := sha256.Sum256([]byte(deviceID))
+	name, err := syscall.UTF16PtrFromString("Local\\ONEPresence-" + hex.EncodeToString(digest[:]))
+	if err != nil {
+		return nil, false, errors.New("无法创建 ONE 驻留锁")
+	}
+	createMutex := syscall.NewLazyDLL("kernel32.dll").NewProc("CreateMutexW")
+	handle, _, callErr := createMutex.Call(0, 0, uintptr(unsafe.Pointer(name)))
+	if handle == 0 {
+		return nil, false, fmt.Errorf("无法创建 ONE 驻留锁：%w", callErr)
+	}
+	lock := &residentLock{handle: syscall.Handle(handle)}
+	if callErr == syscall.Errno(183) {
+		lock.close()
+		return nil, false, nil
+	}
+	return lock, true, nil
 }
 
 func hasArgument(name string) bool {

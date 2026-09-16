@@ -197,3 +197,49 @@ test("binds runtime update status and dispatch to the authenticated workspace an
   await presence.close();
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
 });
+
+test("keeps one resident per Key and computer while allowing a newer runtime to take over", async () => {
+  const pair = crypto.generateKeyPairSync("ed25519");
+  const device = {
+    id: "device-a", serialNumber: "ONE-A", workspaceId: "workspace-a", userId: "user-a", status: "active",
+    publicKey: pair.publicKey.export({ type: "spki", format: "pem" }).toString(), createdAt: new Date().toISOString()
+  };
+  const store = { read: async () => ({ oneKeyDevices: [device] }), mutate: async () => undefined } as any;
+  const presence = new OneKeyPresence(store);
+  const server = createServer();
+  presence.attach(server);
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("测试服务未启动");
+
+  const authenticate = async (version: string, expectReady: boolean) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${address.port}/api/one-key/launcher?deviceId=device-a&installationId=${installationId}`);
+    const [authRaw] = await once(socket, "message");
+    const auth = JSON.parse(authRaw.toString());
+    const outcome = expectReady ? once(socket, "message") : once(socket, "close");
+    socket.send(JSON.stringify({
+      type: "auth_response", challengeId: auth.challengeId, signature: sign(pair.privateKey, auth.nonce),
+      capabilities: ["runtime_update_v1"], platform: "macos", architecture: "arm64", launcherVersion: version, updateProtocol: 1
+    }));
+    const result = await outcome;
+    if (expectReady) assert.equal(JSON.parse(result[0].toString()).type, "ready");
+    else assert.equal(result[0], 4009);
+    return socket;
+  };
+
+  const original = await authenticate("0.3.1", true);
+  const duplicate = await authenticate("0.3.1", false);
+  assert.equal(duplicate.readyState, WebSocket.CLOSED);
+  assert.equal((await presence.runtimeStatus({ deviceId: "device-a", installationId, userId: "user-a", workspaceId: "workspace-a" })).runtime?.version, "0.3.1");
+
+  const originalClosed = once(original, "close");
+  const upgraded = await authenticate("0.3.2", true);
+  assert.equal((await originalClosed)[0], 4009);
+  assert.equal((await presence.runtimeStatus({ deviceId: "device-a", installationId, userId: "user-a", workspaceId: "workspace-a" })).runtime?.version, "0.3.2");
+
+  upgraded.close();
+  await once(upgraded, "close");
+  await presence.close();
+  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+});

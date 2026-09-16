@@ -5,7 +5,7 @@ import type { Store } from "./db.js";
 import { uid } from "./security.js";
 import { appendExecutionEvent } from "./executionService.js";
 import { validInstallationId } from "./oneKeyInstallation.js";
-import { validRuntimeVersion, type RuntimeArchitecture, type RuntimeIdentity, type RuntimePlatform, type SignedRuntimeUpdate } from "./runtimeUpdate.js";
+import { compareRuntimeVersions, validRuntimeVersion, type RuntimeArchitecture, type RuntimeIdentity, type RuntimePlatform, type SignedRuntimeUpdate } from "./runtimeUpdate.js";
 
 const proofTimeoutMs = 2000;
 const authTimeoutMs = 5000;
@@ -240,6 +240,17 @@ export class OneKeyPresence {
       const previous = this.sockets.get(state.deviceId);
       if (previous && previous !== socket) {
         const previousState = this.states.get(previous);
+        const sameComputer = previousState?.installationId === state.installationId;
+        const keepPrevious = Boolean(sameComputer && previousState?.authenticated && (
+          previousState.runtime && state.runtime
+            ? compareRuntimeVersions(previousState.runtime.version, state.runtime.version) >= 0
+            : Boolean(previousState.runtime) || !state.runtime
+        ));
+        if (keepPrevious) {
+          state.authenticated = false;
+          socket.close(4009, "ONE is already connected on this computer");
+          return;
+        }
         if (previousState) previousState.authenticated = false;
         this.remove(previous);
         // Another launch on this same installation supersedes the old process.
