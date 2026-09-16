@@ -172,10 +172,7 @@ func commandLineValue(_ name: String) -> String? {
 
 func launchResidentCopy() throws {
     _ = installationId()
-    guard let credentialUrl = findCredentialUrl(), let source = Bundle.main.executableURL else {
-        throw LauncherError.message("没有找到 ONE Key，请确认 U 盘已插入")
-    }
-    let credential = try loadCredential(credentialUrl)
+    guard let source = Bundle.main.executableURL else { throw LauncherError.message("ONE 启动器不完整") }
     let applicationSupport = try FileManager.default.url(
         for: .applicationSupportDirectory,
         in: .userDomainMask,
@@ -194,7 +191,10 @@ func launchResidentCopy() throws {
 
     let process = Process()
     process.executableURL = target
-    process.arguments = [residentArgument, deviceArgument, credential.deviceId]
+    // The portable app must not read the credential itself. The installed
+    // resident is the single process that receives removable-volume access,
+    // discovers the Key and keeps proving its presence.
+    process.arguments = [residentArgument]
     process.standardInput = FileHandle.nullDevice
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
@@ -317,7 +317,7 @@ func runProcess(_ executable: String, _ arguments: [String]) throws {
     guard process.terminationStatus == 0 else { throw LauncherError.message("ONE 更新安装校验失败") }
 }
 
-func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL, progress: (String) async -> Void) async throws {
+func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL, progress: (String) async -> Void) async throws -> URL {
     let credentialBefore = try Data(contentsOf: credentialUrl)
     guard let downloadUrl = URL(string: artifact.url) else { throw LauncherError.message("ONE 更新地址无效") }
     let (downloaded, response) = try await URLSession.shared.download(from: downloadUrl)
@@ -369,19 +369,12 @@ func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL,
     do {
         try FileManager.default.moveItem(at: usbStagedApp, to: target)
         try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", target.path])
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = ["-n", target.path]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { throw LauncherError.message("新版 Mac 启动器无法启动") }
     } catch {
         try? FileManager.default.removeItem(at: target)
         try? FileManager.default.moveItem(at: backup, to: target)
-        throw LauncherError.message("新版 Mac 启动器无法启动，已恢复旧版")
+        throw LauncherError.message("新版 Mac 启动器无法安装，已恢复旧版")
     }
+    return target
 }
 
 @MainActor
@@ -581,7 +574,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
     }
 }
 
-func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: String) async throws {
+func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: String) async throws -> URL? {
     let execution = CodexExecutionRunner(socket: task, deviceId: deviceId, credentialUrl: credentialUrl)
     while true {
         let message = try JSONDecoder().decode(SocketMessage.self, from: Data(try await receiveText(task).utf8))
@@ -599,12 +592,13 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
             do {
                 let artifact = try verifyRuntimeUpdate(envelope)
                 try await task.send(.string(String(decoding: try JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: "downloading", error: nil)), as: UTF8.self)))
-                try await installRuntimeUpdate(artifact, credentialUrl: credentialUrl) { status in
+                let installedApp = try await installRuntimeUpdate(artifact, credentialUrl: credentialUrl) { status in
                     if let data = try? JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: status, error: nil)) {
                         try? await task.send(.string(String(decoding: data, as: UTF8.self)))
                     }
                 }
                 try await task.send(.string(String(decoding: try JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: "completed", error: nil)), as: UTF8.self)))
+                return installedApp
             } catch {
                 try? await task.send(.string(String(decoding: (try? JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: "failed", error: error.localizedDescription))) ?? Data(), as: UTF8.self)))
             }
@@ -640,7 +634,7 @@ func openLoginPage(base: String, credentialUrl: URL, deviceId: String) async thr
 @MainActor
 final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private let residentMode: Bool
-    private let expectedDeviceId: String?
+    private var expectedDeviceId: String?
     private var credentialUrl: URL?
     private var credential: DeviceCredential?
     private var base = ""
@@ -673,10 +667,21 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 NSLog("ONE resident installation failed: \(error.localizedDescription)")
             }
         }
-        if residentMode, let expectedDeviceId {
+        if residentMode {
             do {
-                guard let lock = try acquireResidentLock(deviceId: expectedDeviceId) else {
-                    sessionTask = Task { await openLoginThroughExistingResident(deviceId: expectedDeviceId) }
+                let resolvedDeviceId: String
+                if let expectedDeviceId {
+                    resolvedDeviceId = expectedDeviceId
+                } else {
+                    guard let foundUrl = findCredentialUrl() else { throw LauncherError.message("没有找到 ONE Key，请插入后重试") }
+                    let foundCredential = try loadCredential(foundUrl)
+                    credentialUrl = foundUrl
+                    credential = foundCredential
+                    resolvedDeviceId = foundCredential.deviceId
+                    self.expectedDeviceId = resolvedDeviceId
+                }
+                guard let lock = try acquireResidentLock(deviceId: resolvedDeviceId) else {
+                    sessionTask = Task { await openLoginThroughExistingResident(deviceId: resolvedDeviceId) }
                     return
                 }
                 residentLock = lock
@@ -760,17 +765,49 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 openedLogin = true
             }
             failures = 0
-            try await serveProofs(connectedSocket, credentialUrl: foundUrl, deviceId: foundCredential.deviceId)
+            if let installedApp = try await serveProofs(connectedSocket, credentialUrl: foundUrl, deviceId: foundCredential.deviceId) {
+                // Release the per-Key lock before starting the new portable
+                // app so its updated resident can take over immediately.
+                socket?.cancel(with: .goingAway, reason: nil)
+                ready = false
+                residentLock = nil
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                process.arguments = ["-n", installedApp.path]
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+                try process.run()
+                process.waitUntilExit()
+                guard process.terminationStatus == 0 else { throw LauncherError.message("新版 Mac 启动器无法启动") }
+                stopping = true
+                NSApplication.shared.terminate(nil)
+                return
+            }
             if !stopping { throw LauncherError.message("ONE Key 连接已断开") }
         } catch is CancellationError {
-            return
+            // Cancelling a WebSocket on wake, network change or Key mount is
+            // a reconnect signal. Only application shutdown cancels the
+            // session itself permanently.
+            if stopping { return }
+            socket = nil
+            removalTask?.cancel()
+            ready = false
+            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            continue
         } catch {
             failures += 1
             let closeCode = socket?.closeCode.rawValue ?? 0
             socket?.cancel(with: .goingAway, reason: nil)
             removalTask?.cancel()
             ready = false
-            if closeCode == 4009 { return }
+            if closeCode == 4009 {
+                // A newer resident already owns this computer. Exit fully so
+                // the stale process cannot keep the local singleton lock.
+                stopping = true
+                residentLock = nil
+                NSApplication.shared.terminate(nil)
+                return
+            }
             if closeCode == 4003 {
                 if !stopping { showFailure(LauncherError.message("ONE Key 已挂失或凭证无效")) }
                 return

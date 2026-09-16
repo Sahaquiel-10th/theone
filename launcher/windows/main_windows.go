@@ -74,6 +74,13 @@ type runtimeUpdateArtifact struct {
 	Size         int64  `json:"size"`
 }
 
+type runtimeUpdateInstalled struct {
+	target string
+	backup string
+}
+
+func (installed *runtimeUpdateInstalled) Error() string { return "ONE runtime update installed" }
+
 type socketResponse struct {
 	Type           string   `json:"type"`
 	ChallengeID    string   `json:"challengeId"`
@@ -199,6 +206,22 @@ func run(expectedDeviceID string) error {
 			}
 			failures = 0
 			err = serveProofs(connection, credentialPath, credential.DeviceID)
+		}
+
+		var installed *runtimeUpdateInstalled
+		if errors.As(err, &installed) {
+			// Release the singleton before the new portable executable starts;
+			// otherwise its updated resident would see the old lock and exit.
+			lock.close()
+			command := exec.Command(installed.target)
+			command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x00000008}
+			if startErr := command.Start(); startErr != nil {
+				_ = os.Remove(installed.target)
+				_ = os.Rename(installed.backup, installed.target)
+				return errors.New("新版 Windows 启动器无法启动，已恢复旧版")
+			}
+			_ = command.Process.Release()
+			return nil
 		}
 
 		var closeError *websocket.CloseError
@@ -514,6 +537,11 @@ func serveProofs(connection *websocket.Conn, credentialPath, deviceID string) er
 					_ = writer.json(map[string]any{"type": "update_event", "requestId": message.RequestID, "status": status})
 				})
 			}
+			var installed *runtimeUpdateInstalled
+			if errors.As(err, &installed) {
+				_ = writer.json(map[string]any{"type": "update_event", "requestId": message.RequestID, "status": "completed"})
+				return installed
+			}
 			if err != nil {
 				_ = writer.json(map[string]any{"type": "update_event", "requestId": message.RequestID, "status": "failed", "error": err.Error()})
 				continue
@@ -707,15 +735,7 @@ func installRuntimeUpdate(artifact runtimeUpdateArtifact, credentialPath string,
 		_ = os.Rename(backup, target)
 		return errors.New("无法安装新版 Windows 启动器，已恢复旧版")
 	}
-	command := exec.Command(target)
-	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x00000008}
-	if err := command.Start(); err != nil {
-		_ = os.Remove(target)
-		_ = os.Rename(backup, target)
-		return errors.New("新版 Windows 启动器无法启动，已恢复旧版")
-	}
-	_ = command.Process.Release()
-	return nil
+	return &runtimeUpdateInstalled{target: target, backup: backup}
 }
 
 func (executor *localExecutor) prepare(deviceID string) (string, error) {
