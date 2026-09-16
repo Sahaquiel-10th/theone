@@ -749,6 +749,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       if (document.visibilityState === "visible") {
         refresh().catch(() => undefined);
         void refreshExecutionTasks();
+        void refreshRuntimeUpdate();
       }
     }
     document.addEventListener("visibilitychange", refreshWhenVisible);

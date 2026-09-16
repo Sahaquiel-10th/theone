@@ -15,6 +15,7 @@ env_file="$app_root/shared/.env"
 env_next="$app_root/shared/.env.runtime-update.$$.next"
 env_backup="$app_root/shared/.env.runtime-update.$$.backup"
 activated=false
+restart_required=false
 
 if [[ -z "$source_directory" || ! -d "$source_directory" || ! -f "$source_directory/stable.json" ]]; then
   echo "Usage: sudo bash deploy/install-runtime-update.sh /path/to/signed-release-directory" >&2
@@ -33,7 +34,7 @@ cleanup() {
     rm -rf -- "$target"
     if [[ -d "$previous" ]]; then mv -- "$previous" "$target"; fi
     if [[ -f "$env_backup" ]]; then mv -- "$env_backup" "$env_file"; fi
-    systemctl restart theone.service >/dev/null 2>&1 || true
+    if [[ "$restart_required" == true ]]; then systemctl restart theone.service >/dev/null 2>&1 || true; fi
   fi
   exit "$status"
 }
@@ -58,6 +59,7 @@ printf '%s\n' \
 chown theone:theone "$env_next"
 chmod 0600 "$env_next"
 cp -p -- "$env_file" "$env_backup"
+if ! cmp --silent "$env_file" "$env_next"; then restart_required=true; fi
 
 if [[ -d "$previous" ]]; then rm -rf -- "$previous"; fi
 if [[ -d "$target" ]]; then mv -- "$target" "$previous"; fi
@@ -65,7 +67,7 @@ activated=true
 mv -- "$staging" "$target"
 mv -- "$env_next" "$env_file"
 
-systemctl restart theone.service
+if [[ "$restart_required" == true ]]; then systemctl restart theone.service; fi
 healthy=false
 for _ in $(seq 1 30); do
   if curl --fail --silent --show-error --max-time 2 http://127.0.0.1:3091/api/health >/dev/null; then
@@ -82,3 +84,8 @@ rm -f -- "$env_backup"
 activated=false
 trap - EXIT
 echo "ONE runtime update published. Previous release: $previous"
+if [[ "$restart_required" == true ]]; then
+  echo "ONE service restarted once to enable the runtime update channel."
+else
+  echo "ONE service kept running; the signed manifest is read on demand."
+fi

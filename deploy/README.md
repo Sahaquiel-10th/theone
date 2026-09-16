@@ -69,9 +69,12 @@ atomically publish it:
 sudo bash /srv/theone/current/deploy/install-runtime-update.sh /tmp/one-runtime-0.3.1
 ```
 
-The installer verifies the package again, atomically publishes it, adds these
-non-secret settings to `/srv/theone/shared/.env`, restarts only `theone.service`
-and rolls both the release and environment back if health checking fails:
+The installer verifies the package again, atomically publishes it and adds
+these non-secret settings to `/srv/theone/shared/.env`. The first publication
+restarts only `theone.service` so it can load the channel configuration. Later
+launcher-only publications keep the service running: the manifest is loaded on
+demand from the same stable path. A failed health check rolls the release and
+environment back:
 
 ```text
 ONE_UPDATE_DIRECTORY=/srv/theone/shared/runtime-updates
