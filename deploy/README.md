@@ -69,7 +69,9 @@ atomically publish it:
 sudo bash /srv/theone/current/deploy/install-runtime-update.sh /tmp/one-runtime-0.3.1
 ```
 
-Production must have these non-secret settings in `/srv/theone/shared/.env`:
+The installer verifies the package again, atomically publishes it, adds these
+non-secret settings to `/srv/theone/shared/.env`, restarts only `theone.service`
+and rolls both the release and environment back if health checking fails:
 
 ```text
 ONE_UPDATE_DIRECTORY=/srv/theone/shared/runtime-updates
