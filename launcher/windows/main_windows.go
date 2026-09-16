@@ -217,7 +217,7 @@ func run(expectedDeviceID string) error {
 			command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x00000008}
 			if startErr := command.Start(); startErr != nil {
 				_ = os.Remove(installed.target)
-				_ = os.Rename(installed.backup, installed.target)
+				_ = copyFile(installed.backup, installed.target)
 				return errors.New("新版 Windows 启动器无法启动，已恢复旧版")
 			}
 			_ = command.Process.Release()
@@ -675,6 +675,24 @@ func copyAndHash(destination string, source io.Reader, maximum int64) (int64, st
 	return written, fmt.Sprintf("%x", digest.Sum(nil)), nil
 }
 
+func copyFile(source string, destination string) error {
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	output, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0700)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(output, input)
+	closeErr := output.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
+}
+
 func installRuntimeUpdate(artifact runtimeUpdateArtifact, credentialPath string, progress func(string)) error {
 	credentialBefore, err := os.ReadFile(credentialPath)
 	if err != nil {
@@ -698,11 +716,10 @@ func installRuntimeUpdate(artifact runtimeUpdateArtifact, credentialPath string,
 	if !fileExists(target) {
 		return errors.New("U 盘中没有找到 Windows 启动器")
 	}
-	updateDirectory := filepath.Join(filepath.Dir(credentialPath), ".updates")
-	if err := os.MkdirAll(updateDirectory, 0700); err != nil {
-		return errors.New("无法在 ONE Key 中准备更新")
-	}
-	staging := filepath.Join(updateDirectory, "ONE-for-Windows.next")
+	// Keep the install rename inside the volume root. Cross-parent directory
+	// moves can damage FAT32 parent metadata, so the verified temporary file is
+	// a hidden sibling of the public launcher.
+	staging := filepath.Join(volumeRoot, ".one-windows-update.exe")
 	_ = os.Remove(staging)
 	written, checksum, err := copyAndHash(staging, response.Body, artifact.Size)
 	if err != nil {
@@ -727,12 +744,16 @@ func installRuntimeUpdate(artifact runtimeUpdateArtifact, credentialPath string,
 	backup := filepath.Join(backupDirectory, "ONE-for-Windows-"+version+".exe")
 	_ = os.Remove(backup)
 	progress("installing")
-	if err := os.Rename(target, backup); err != nil {
+	if err := copyFile(target, backup); err != nil {
 		_ = os.Remove(staging)
 		return errors.New("无法备份当前 Windows 启动器")
 	}
+	if err := os.Remove(target); err != nil {
+		_ = os.Remove(staging)
+		return errors.New("无法替换当前 Windows 启动器")
+	}
 	if err := os.Rename(staging, target); err != nil {
-		_ = os.Rename(backup, target)
+		_ = copyFile(backup, target)
 		return errors.New("无法安装新版 Windows 启动器，已恢复旧版")
 	}
 	return &runtimeUpdateInstalled{target: target, backup: backup}

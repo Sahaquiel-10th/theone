@@ -352,12 +352,12 @@ func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL,
     let volumeRoot = oneDirectory.deletingLastPathComponent()
     let target = volumeRoot.appendingPathComponent("ONE for Mac.app", isDirectory: true)
     guard FileManager.default.fileExists(atPath: target.path) else { throw LauncherError.message("U 盘中没有找到 Mac 启动器") }
-    let updateDirectory = oneDirectory.appendingPathComponent(".updates", isDirectory: true)
-    try FileManager.default.createDirectory(at: updateDirectory, withIntermediateDirectories: true)
-    let usbStaging = updateDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-    try FileManager.default.createDirectory(at: usbStaging, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: usbStaging) }
-    let usbStagedApp = usbStaging.appendingPathComponent("ONE for Mac.app", isDirectory: true)
+    // Keep the install rename inside the volume root. Moving a directory from a
+    // nested staging directory into the root can leave an invalid `..` cluster
+    // on FAT32. The hidden sibling is fully copied and verified before the
+    // current launcher is touched.
+    let usbStagedApp = volumeRoot.appendingPathComponent(".one-macos-update-\(UUID().uuidString).app", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: usbStagedApp) }
     try runProcess("/usr/bin/ditto", ["--norsrc", "--noextattr", stagedApp.path, usbStagedApp.path])
     try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", usbStagedApp.path])
     guard try Data(contentsOf: credentialUrl) == credentialBefore else { throw LauncherError.message("ONE Key 凭证状态发生变化，更新已停止") }
@@ -367,13 +367,17 @@ func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL,
     try FileManager.default.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
     let backup = backupDirectory.appendingPathComponent("ONE-for-Mac-\(launcherVersion).app", isDirectory: true)
     if FileManager.default.fileExists(atPath: backup.path) { try FileManager.default.removeItem(at: backup) }
-    try FileManager.default.moveItem(at: target, to: backup)
+    // Backups may live below `.one`, but they must be copied rather than
+    // renamed across FAT32 parents. Only the final staged -> target rename is
+    // used, and both paths share the volume-root parent.
+    try runProcess("/usr/bin/ditto", ["--norsrc", "--noextattr", target.path, backup.path])
     do {
+        try FileManager.default.removeItem(at: target)
         try FileManager.default.moveItem(at: usbStagedApp, to: target)
         try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", target.path])
     } catch {
         try? FileManager.default.removeItem(at: target)
-        try? FileManager.default.moveItem(at: backup, to: target)
+        try? runProcess("/usr/bin/ditto", ["--norsrc", "--noextattr", backup.path, target.path])
         throw LauncherError.message("新版 Mac 启动器无法安装，已恢复旧版")
     }
     return target
