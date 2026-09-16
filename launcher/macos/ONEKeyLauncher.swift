@@ -319,6 +319,32 @@ func runProcess(_ executable: String, _ arguments: [String]) throws {
     guard process.terminationStatus == 0 else { throw LauncherError.message("ONE 更新安装校验失败") }
 }
 
+func normalizeMacBundleOnFAT(_ bundle: URL) throws {
+    try runProcess("/usr/sbin/dot_clean", ["-m", bundle.path])
+    try runProcess("/usr/bin/xattr", ["-cr", bundle.path])
+    try runProcess("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", bundle.path])
+    try runProcess("/usr/sbin/dot_clean", ["-m", bundle.path])
+    try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", bundle.path])
+}
+
+func verifyFATVolumeAfterUpdate(_ volumeRoot: URL) throws {
+    var lastError: Error?
+    for attempt in 1...3 {
+        do {
+            try runProcess("/bin/sync", [])
+            // Resolve by mounted volume path, never by a cached disk number:
+            // macOS can renumber removable devices while test images or other
+            // Keys are attached.
+            try runProcess("/usr/sbin/diskutil", ["verifyVolume", volumeRoot.path])
+            return
+        } catch {
+            lastError = error
+            if attempt < 3 { Thread.sleep(forTimeInterval: 2) }
+        }
+    }
+    throw lastError ?? LauncherError.message("ONE Key 文件系统校验失败")
+}
+
 func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL, progress: (String) async -> Void) async throws -> URL {
     let credentialBefore = try Data(contentsOf: credentialUrl)
     guard let downloadUrl = URL(string: artifact.url) else { throw LauncherError.message("ONE 更新地址无效") }
@@ -358,8 +384,11 @@ func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL,
     // current launcher is touched.
     let usbStagedApp = volumeRoot.appendingPathComponent(".one-macos-update-\(UUID().uuidString).app", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: usbStagedApp) }
-    try runProcess("/usr/bin/ditto", ["--norsrc", "--noextattr", stagedApp.path, usbStagedApp.path])
-    try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", usbStagedApp.path])
+    try FATSafeFileOperations.copyTree(from: stagedApp, to: usbStagedApp)
+    // Match the factory writer: FAT32 stores macOS metadata in AppleDouble
+    // files, so normalize and ad-hoc sign the already release-authenticated
+    // bundle on the target volume before it is allowed to replace the launcher.
+    try normalizeMacBundleOnFAT(usbStagedApp)
     guard try Data(contentsOf: credentialUrl) == credentialBefore else { throw LauncherError.message("ONE Key 凭证状态发生变化，更新已停止") }
 
     await progress("installing")
@@ -370,14 +399,21 @@ func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL,
     // Backups may live below `.one`, but they must be copied rather than
     // renamed across FAT32 parents. Only the final staged -> target rename is
     // used, and both paths share the volume-root parent.
-    try runProcess("/usr/bin/ditto", ["--norsrc", "--noextattr", target.path, backup.path])
+    try FATSafeFileOperations.copyTree(from: target, to: backup)
+    try normalizeMacBundleOnFAT(backup)
     do {
         try FileManager.default.removeItem(at: target)
         try FileManager.default.moveItem(at: usbStagedApp, to: target)
         try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", target.path])
+        try verifyFATVolumeAfterUpdate(volumeRoot)
     } catch {
         try? FileManager.default.removeItem(at: target)
-        try? runProcess("/usr/bin/ditto", ["--norsrc", "--noextattr", backup.path, target.path])
+        do {
+            try FATSafeFileOperations.copyTree(from: backup, to: target)
+            try normalizeMacBundleOnFAT(target)
+        } catch {
+            throw LauncherError.message("ONE 更新失败，旧版启动器也未能自动恢复，请联系管理员")
+        }
         throw LauncherError.message("新版 Mac 启动器无法安装，已恢复旧版")
     }
     return target

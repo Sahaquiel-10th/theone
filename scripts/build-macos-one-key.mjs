@@ -65,6 +65,7 @@ fs.writeFileSync(path.join(contents, "Info.plist"), `<?xml version="1.0" encodin
 </dict></plist>`);
 
 const generatedSource = path.join(outputRoot, ".ONEKeyLauncher.swift");
+const fatSafeOperationsSource = path.join(root, "launcher/macos/FATSafeFileOperations.swift");
 const moduleCache = path.join(outputRoot, ".module-cache");
 fs.mkdirSync(moduleCache, { recursive: true });
 const source = fs.readFileSync(path.join(root, "launcher/macos/ONEKeyLauncher.swift"), "utf8");
@@ -72,7 +73,7 @@ if (!source.includes("__ONE_UPDATE_PUBLIC_KEY__") || !source.includes("__ONE_RUN
 fs.writeFileSync(generatedSource, source.replaceAll("__ONE_UPDATE_PUBLIC_KEY__", updatePublicKey).replaceAll("__ONE_RUNTIME_VERSION__", runtimeVersion));
 const slices = ["arm64", "x86_64"].map((architecture) => {
   const slice = path.join(outputRoot, `ONE-${architecture}`);
-  const compileArgs = ["-target", `${architecture}-apple-macosx13.0`, "-parse-as-library", "-O", generatedSource, "-o", slice];
+  const compileArgs = ["-target", `${architecture}-apple-macosx13.0`, "-parse-as-library", "-O", generatedSource, fatSafeOperationsSource, "-o", slice];
   if (swiftSdk) compileArgs.unshift("-sdk", swiftSdk);
   execFileSync(swiftcBinary, compileArgs, { env: { ...process.env, CLANG_MODULE_CACHE_PATH: moduleCache, SWIFT_MODULE_CACHE_PATH: moduleCache }, stdio: "inherit" });
   return slice;

@@ -133,6 +133,19 @@ function assertExternalVolume(volumePath: string) {
   const plist = execFileSync("/usr/sbin/diskutil", ["info", "-plist", volumePath]);
   const internal = execFileSync("/usr/bin/plutil", ["-extract", "Internal", "raw", "-o", "-", "-"], { input: plist, encoding: "utf8" }).trim();
   if (internal !== "false") throw new Error("目标不是 macOS 识别的外置磁盘，已停止灌装");
+  const filesystem = execFileSync("/usr/bin/plutil", ["-extract", "FilesystemType", "raw", "-o", "-", "-"], { input: plist, encoding: "utf8" }).trim();
+  if (filesystem !== "msdos") throw new Error("目标不是 FAT32；请先按 FAT32 + MBR 重新格式化");
+  const parentDisk = execFileSync("/usr/bin/plutil", ["-extract", "ParentWholeDisk", "raw", "-o", "-", "-"], { input: plist, encoding: "utf8" }).trim();
+  if (!/^disk\d+$/.test(parentDisk)) throw new Error("无法确认 U 盘的整盘设备，已停止灌装");
+  const wholeDiskPlist = execFileSync("/usr/sbin/diskutil", ["info", "-plist", `/dev/${parentDisk}`]);
+  const partitionScheme = execFileSync("/usr/bin/plutil", ["-extract", "Content", "raw", "-o", "-", "-"], { input: wholeDiskPlist, encoding: "utf8" }).trim();
+  if (partitionScheme !== "FDisk_partition_scheme") throw new Error("目标不是 MBR 分区表；请先按 FAT32 + MBR 重新格式化");
+}
+
+function appleDoubleFiles(target: string): string[] {
+  const stat = fs.statSync(target);
+  if (!stat.isDirectory()) return path.basename(target).startsWith("._") ? [target] : [];
+  return fs.readdirSync(target).flatMap((name) => appleDoubleFiles(path.join(target, name)));
 }
 
 function directorySize(target: string): number {
@@ -292,6 +305,7 @@ async function provision(args = process.argv.slice(2)) {
     // AppleDouble record. Set it after dot_clean so the cleanup cannot erase it.
     run(setFileBinary, ["-a", "C", volumePath]);
     run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", finalMac]);
+    if (appleDoubleFiles(finalMac).length) throw new Error("Mac 启动器仍包含 AppleDouble 文件，拒绝出厂");
     if (sha256(finalWindows) !== sha256(builtWindows)) throw new Error("Windows 启动器最终校验失败");
     if (sha256(finalVolumeIcon) !== sha256(builtVolumeIcon)) throw new Error("U 盘图标最终校验失败");
     const volumeAttributes = execFileSync(getFileInfoBinary, ["-a", volumePath], { encoding: "utf8" }).trim();

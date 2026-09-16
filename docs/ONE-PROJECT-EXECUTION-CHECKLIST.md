@@ -91,7 +91,7 @@
 - [ ] 更新超管及试用 Key 的启动器，重新双击一次建立新 Session；保持原用户/Workspace，不重建真实用户数据。
 - [ ] 3 位独立普通用户按交付清单验收，通过后再扩到 10–20 人。
 
-最终验证记录写入 [ONE-BETA-READINESS.md](ONE-BETA-READINESS.md)。这里不沿用旧轮次测试数量，也不把构建成功标成 Windows/Intel Mac 实测成功。
+最终验证记录写入 [ONE-BETA-READINESS.md](ONE-BETA-READINESS.md)；逐盘灌装和启动器更新必须同时满足 [ONE-KEY-MASS-PRODUCTION-GATE.md](ONE-KEY-MASS-PRODUCTION-GATE.md)。这里不沿用旧轮次测试数量，也不把构建成功标成 Windows/Intel Mac 实测成功。
 
 ## 5. 接下来严格按此顺序
 
