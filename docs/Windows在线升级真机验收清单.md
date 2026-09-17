@@ -1,5 +1,11 @@
 # Windows 在线升级真机验收清单
 
+## 2026-09-17 实测记录
+
+用户确认在 Windows 网页点击更新成功。TOMATO ONE 返回 Mac 后复核：Windows EXE SHA-256 与 0.3.8 发布包完全一致；小星凭证和 Mac 主程序的 SHA-256 均与升级前相同；存在 `ONE-for-Windows-0.3.6.exe` 备份；Mac 签名有效；按实时卷路径执行 `diskutil verifyVolume`，`fsck_msdos` 返回 0。双系统更新的文件完整性检查通过。
+
+Windows 更新后的拔插恢复、休眠唤醒、重启尚待测试人明确确认，不据上述结果自动勾选。
+
 测试对象：`TOMATO ONE`（小星）
 
 升级路径：Windows `0.3.6 → 0.3.8`
