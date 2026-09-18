@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import multer from "multer";
 import { store } from "./db.js";
+import { getNoteOAuthClientId } from "./knowledge/getnoteOAuth.js";
 import { hasImageGenerationIntent } from "./imageIntent.js";
 import { decodeGeneratedImageDataUrl } from "./generatedImage.js";
 import { asyncRoute, auth, requireOneKeySession, requireRole } from "./middleware.js";
@@ -453,7 +454,7 @@ app.get("/api/knowledge/connections/getnote", ...keyAuth, asyncRoute(async (req,
     && Boolean(process.env.GETNOTE_CLIENT_ID?.trim() && process.env.GETNOTE_TEST_API_KEY?.trim());
   res.json({
     connection: publicConnection(db.knowledgeConnections.find((item) => item.workspaceId === req.workspaceId && item.provider === "getnote" && item.status !== "revoked")),
-    configured: Boolean(process.env.GETNOTE_CLIENT_ID?.trim()),
+    configured: Boolean(getNoteOAuthClientId()),
     testConnectAvailable
   });
 }));
@@ -482,7 +483,7 @@ app.post("/api/knowledge/connections/getnote/test-connect", ...keyAuth, requireR
   res.json({ connection: publicConnection(connection) });
 }));
 app.post("/api/knowledge/connections/getnote/device-flow", ...keyAuth, requireWorkspaceOwner, asyncRoute(async (req, res) => {
-  const clientId = process.env.GETNOTE_CLIENT_ID?.trim(); if (!clientId) return res.status(503).json({ error: "ONE 尚未配置得到大脑 Client ID", code: "GETNOTE_NOT_CONFIGURED" });
+  const clientId = getNoteOAuthClientId();
   const device = await getNoteProvider.startDeviceFlow(clientId);
   const current = Date.now();
   const session = await connectorAuthorizationSessions.create({

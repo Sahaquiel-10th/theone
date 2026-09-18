@@ -115,10 +115,10 @@ function providerFailure(payload: GetNoteEnvelope<unknown>, responseStatus: numb
     return new GetNoteProviderError("GETNOTE_UNAVAILABLE", "得到大脑暂时无法连接，ONE 会自动重试。", phase, 503, true, providerCode, requestId);
   }
   return new GetNoteProviderError(
-    phase === "authorization_poll" ? "GETNOTE_AUTHORIZATION_REJECTED" : "GETNOTE_RESPONSE_INVALID",
-    phase === "authorization_poll" ? "得到大脑授权未完成，请重新连接。" : "得到大脑返回异常，请稍后重试。",
+    "GETNOTE_RESPONSE_INVALID",
+    "得到大脑返回异常，请稍后重试。",
     phase,
-    phase === "authorization_poll" ? 403 : 502,
+    502,
     false,
     providerCode,
     requestId
@@ -183,6 +183,7 @@ export class GetNoteProvider implements KnowledgeProvider {
       const status = String(data.msg ?? "").trim().toLowerCase();
       if (status === "authorization_pending") return { status: "pending" };
       if (status === "slow_down") return { status: "pending", retryAfterSeconds: 10 };
+      if (status === "server_error") throw new GetNoteProviderError("GETNOTE_UNAVAILABLE", "得到大脑暂时无法连接，ONE 会自动重试。", "authorization_poll", 503, true);
       if (status === "access_denied" || status === "rejected") return { status: "ended", reason: "denied" };
       if (status === "expired_token") return { status: "ended", reason: "expired" };
       if (status === "already_consumed") return { status: "ended", reason: "consumed" };
@@ -197,9 +198,8 @@ export class GetNoteProvider implements KnowledgeProvider {
       if (error instanceof GetNoteProviderError) {
         if (error.code === "GETNOTE_AUTHORIZATION_PENDING") return { status: "pending" };
         if (error.code === "GETNOTE_AUTHORIZATION_SLOW_DOWN") return { status: "pending", retryAfterSeconds: 10 };
-        if (error.code === "GETNOTE_AUTHORIZATION_REJECTED") return { status: "ended", reason: "denied" };
-        if (error.code === "GETNOTE_AUTHORIZATION_EXPIRED") return { status: "ended", reason: "expired" };
-        if (error.code === "GETNOTE_AUTHORIZATION_CONSUMED") return { status: "ended", reason: "consumed" };
+        // Preserve structured provider diagnostics for the route's failure audit.
+        // Converting these errors to an ended reason loses code and request ID.
         throw error;
       }
       const message = error instanceof Error ? error.message : String(error);

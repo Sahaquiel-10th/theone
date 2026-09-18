@@ -13,6 +13,27 @@ function database(patch: Partial<KnowledgeConnection> = {}) {
   return { knowledgeConnections: [connection] } as Database;
 }
 
+test("shared OAuth application still uses each workspace's own credential", async () => {
+  const db = database({ clientId: "shared-official-app" });
+  db.knowledgeConnections.push({ ...db.knowledgeConnections[0], id: "connection-b", workspaceId: "workspace-b", encryptedApiKey: encryptCredential("mock-token-b", knowledgeCredentialContext("workspace-b", "getnote", "api_key")) });
+  const originalFetch = globalThis.fetch;
+  const seen: string[] = [];
+  globalThis.fetch = (async (input, init) => {
+    assert.equal(new URL(String(input)).pathname, "/open/api/v1/resource/recall");
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get("X-Client-ID"), "shared-official-app");
+    const token = headers.get("Authorization")!;
+    seen.push(token);
+    return Response.json({ data: { results: [{ title: "test", content: token === "Bearer mock-token-a" ? "workspace-a-only" : "workspace-b-only" }] } });
+  }) as typeof fetch;
+  try {
+    assert.equal((await getnoteConnector.recall(db, "workspace-a", "test", 1))[0].content, "workspace-a-only");
+    assert.equal((await getnoteConnector.recall(db, "workspace-b", "test", 1))[0].content, "workspace-b-only");
+    assert.deepEqual(await getnoteConnector.recall(db, "workspace-c", "test", 1), []);
+    assert.deepEqual(seen, ["Bearer mock-token-a", "Bearer mock-token-b"]);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("a stored transient GetNote error permits recall and an explicit connection check", async () => {
   const db = database({ status: "error", lastError: "得到大脑响应超时，请稍后重试" });
   const originalFetch = globalThis.fetch;

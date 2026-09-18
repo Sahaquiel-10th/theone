@@ -164,3 +164,42 @@ test("marks provider outages retryable without exposing a response body", async 
     });
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test("unknown token errors are not reported as user rejection", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ success: false, request_id: "req_unknown", error: { code: -1, message: "PRIVATE_UNKNOWN_DETAIL" } }))) as typeof fetch;
+  try {
+    await assert.rejects(new GetNoteProvider().pollDeviceFlow("one", "code"), error => {
+      assert.ok(error instanceof GetNoteProviderError);
+      assert.equal(error.code, "GETNOTE_RESPONSE_INVALID");
+      assert.equal(error.providerCode, -1);
+      assert.equal(error.providerRequestId, "req_unknown");
+      assert.ok(!error.message.includes("PRIVATE_UNKNOWN_DETAIL"));
+      return true;
+    });
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("terminal token errors retain upstream diagnostics for authorization audits", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const [reason, expected] of [["access_denied", "GETNOTE_AUTHORIZATION_REJECTED"], ["expired_token", "GETNOTE_AUTHORIZATION_EXPIRED"], ["already_consumed", "GETNOTE_AUTHORIZATION_CONSUMED"]]) {
+      globalThis.fetch = (async () => new Response(JSON.stringify({ success: false, request_id: "req_terminal", error: { code: 10000, reason } }), { status: 400 })) as typeof fetch;
+      await assert.rejects(new GetNoteProvider().pollDeviceFlow("one", "code"), error => {
+        assert.ok(error instanceof GetNoteProviderError);
+        assert.equal(error.code, expected);
+        assert.equal(error.providerCode, 10000);
+        assert.equal(error.providerRequestId, "req_terminal");
+        return true;
+      });
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("HTTP 200 server_error token state remains retryable", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ success: true, data: { msg: "server_error" } }))) as typeof fetch;
+  try {
+    await assert.rejects(new GetNoteProvider().pollDeviceFlow("one", "code"), error => error instanceof GetNoteProviderError && error.code === "GETNOTE_UNAVAILABLE" && error.retryable);
+  } finally { globalThis.fetch = originalFetch; }
+});
