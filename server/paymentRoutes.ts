@@ -20,7 +20,9 @@ export function installPaymentRoutes(app: Express, keyAuth: readonly RequestHand
     try {
       if (!wechatReady()) return res.status(503).json({ error: "微信支付尚未配置" });
       const scope = { workspaceId: req.workspaceId!, userId: req.user!.id }, c = wechatConfig();
-      const prepared = await store.mutate(db => preparePayment(db, scope, String(req.body.operationId ?? ""), Number(req.body.power), c));
+      if (req.body.amountFen !== undefined && req.body.power !== undefined) throw new Error("请只选择一种充值方式");
+      const intent = req.body.amountFen !== undefined ? { amountFen: req.body.amountFen } : req.body.power;
+      const prepared = await store.mutate(db => preparePayment(db, scope, String(req.body.operationId ?? ""), intent, c));
       const order = prepared.order, p = order.payment!;
       if (prepared.created) {
         try {

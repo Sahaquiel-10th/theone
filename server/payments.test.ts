@@ -27,6 +27,32 @@ test("payment replay freezes recharge exchange rate and settlement credits only 
   const second = preparePayment(db, { userId: "v", workspaceId: "x" }, "operation-123456789", 100, config);
   assert.throws(() => settlePayment(db, { ...remote, out_trade_no: second.order.id, amount: { total: 80000, currency: "CNY" } }), /已入账/);
 });
+test("custom yuan recharge freezes fen and micro-power, isolates owners, and settles once", () => {
+  const db = fixture(), scope = { userId: "u", workspaceId: "w" }, config = { appId: "app", mchId: "merchant" };
+  const op = "custom-operation-12345";
+  const first = preparePayment(db, scope, op, { amountFen: 1 }, config).order;
+  assert.equal(first.amountCny, 0.01); assert.equal(first.requestedMicros, 1428);
+  db.settings.rechargeCnyPerPower = 8;
+  assert.deepEqual(preparePayment(db, scope, op, { amountFen: 1 }, config).order, first);
+  assert.throws(() => preparePayment(db, scope, op, { amountFen: 2 }, config));
+  assert.throws(() => preparePayment(db, scope, op, 1, config));
+  assert.throws(() => preparePayment(db, { userId: "u", workspaceId: "x" }, op, { amountFen: 1 }, config));
+  const other = preparePayment(db, { userId: "v", workspaceId: "x" }, op, { amountFen: 1 }, config).order;
+  assert.notEqual(first.id, other.id);
+  const remote = { out_trade_no: first.id, appid: "app", mchid: "merchant", trade_state: "SUCCESS", amount: { total: 1, currency: "CNY" }, transaction_id: "wx-custom" };
+  settlePayment(db, remote); settlePayment(db, remote);
+  assert.deepEqual(db.powerAccounts.map(a => a.balanceMicros), [1428, 0]);
+  assert.equal(db.powerLedger.length, 1);
+});
+test("custom recharge rejects malformed, out-of-range and zero-credit amounts", () => {
+  const db = fixture(), scope = { userId: "u", workspaceId: "w" }, config = { appId: "app", mchId: "merchant" };
+  for (const amountFen of [0, -1, 0.5, 1000001, NaN, Infinity, "1", true, null, undefined]) {
+    assert.throws(() => preparePayment(db, scope, "invalid-operation-123", { amountFen: amountFen as number }, config));
+  }
+  db.settings.rechargeCnyPerPower = 100000;
+  assert.throws(() => preparePayment(db, scope, "invalid-operation-123", { amountFen: 1 }, config));
+  assert.equal(db.rechargeOrders.length, 0);
+});
 test("legacy ONE payment retries keep their merchant order number and do not create a second order", () => {
   const db = fixture(), scope = { userId: "u", workspaceId: "w" }, config = { appId: "app", mchId: "merchant" };
   const operationId = "operation-123456789";

@@ -3,12 +3,14 @@ import type { api as apiType } from "./oneApi";
 type Order = { id: string; status: string; requestedMicros: number; amountCny: number; createdAt: string; expiresAt?: string };
 const power = (n: number = 0) => (n / 1e6).toLocaleString("zh-CN", { maximumFractionDigits: 6 });
 export function PaymentPanel({ api, rate, onPaid }: { api: typeof apiType; rate: number; onPaid: () => Promise<void> }) {
-  const [amount, setAmount] = useState("10"), [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const [amount, setAmount] = useState("custom"), [yuan, setYuan] = useState("1"), [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [payment, setPayment] = useState<{ order: Order; qrCode: string | null } | null>(null);
-  const pending = useRef<{ operationId: string; power: number } | null>(null);
+  const pending = useRef<({ operationId: string } & ({ power: number } | { amountFen: number })) | null>(null);
   async function create() {
-    if (busy) return; setBusy(true); setError("");
-    pending.current ??= { operationId: crypto.randomUUID(), power: Number(amount) };
+    if (busy) return;
+    if (!pending.current && amount === "custom" && (!/^\d+(\.\d{1,2})?$/.test(yuan) || Number(yuan) < 0.01 || Number(yuan) > 10000)) { setError("请输入 ¥0.01 至 ¥10000，最多两位小数"); return; }
+    setBusy(true); setError("");
+    pending.current ??= { operationId: crypto.randomUUID(), ...(amount === "custom" ? { amountFen: Math.round(Number(yuan) * 100) } : { power: Number(amount) }) };
     try { setPayment(await api("/api/me/payments/wechat", { method: "POST", body: JSON.stringify(pending.current) })); }
     catch (e) { setError(e instanceof Error ? e.message : "支付创建失败"); } finally { setBusy(false); }
   }
@@ -19,9 +21,9 @@ export function PaymentPanel({ api, rate, onPaid }: { api: typeof apiType; rate:
       setError(r.order.status === "paid" ? "电力已到账" : "暂未收到付款，请稍后核对"); await onPaid();
     } catch (e) { setError(e instanceof Error ? e.message : "核对失败"); } finally { setBusy(false); }
   }
-  return <><div className="recharge-inline"><select value={amount} disabled={!!pending.current} onChange={e => setAmount(e.target.value)}>{[10, 50, 100, 500].map(n => <option key={n} value={n}>{n} 电力</option>)}</select><span>¥{(Number(amount) * rate).toFixed(2)}</span><button className="primary" disabled={busy} onClick={() => void create()}>微信充值</button></div>
+  return <><div className="recharge-inline"><select aria-label="充值方式" value={amount} disabled={!!pending.current} onChange={e => setAmount(e.target.value)}><option value="custom">自定义金额（元）</option>{[1, 10, 50, 100, 500].map(n => <option key={n} value={n}>{n} 电力</option>)}</select>{amount === "custom" ? <><input aria-label="充值金额（元）" type="number" min="0.01" max="10000" step="0.01" value={yuan} disabled={!!pending.current} onChange={e => setYuan(e.target.value)} /><span>预计到账 {power(Number(yuan) > 0 && rate > 0 ? Math.floor(Math.round(Number(yuan) * 100) * 10000 / rate) : 0)} 电力</span></> : <span>¥{(Number(amount) * rate).toFixed(2)}</span>}<button className="primary" disabled={busy} onClick={() => void create()}>微信充值</button></div>
     <p>充值 100 电力，到账 100 电力。优惠或服务费按使用时公布的价格计算。</p><CurrentPrices api={api} />
-    {payment ? <div>{payment.order.status === "paid" ? <p>电力已到账</p> : payment.qrCode ? <img src={payment.qrCode} width={200} height={200} alt="微信扫码支付" /> : <p>订单已保留，请核对付款状态</p>}<p>订单 {payment.order.id}</p><button className="secondary" disabled={busy} onClick={() => void check(payment.order.id)}>核对支付结果</button><button className="secondary" disabled={busy} onClick={() => { pending.current = null; setPayment(null); }}>返回</button></div> : null}
+    {payment ? <div><p>支付 ¥{payment.order.amountCny.toFixed(2)} · 到账 {power(payment.order.requestedMicros)} 电力</p>{payment.order.status === "paid" ? <p>电力已到账</p> : payment.qrCode ? <img src={payment.qrCode} width={200} height={200} alt="微信扫码支付" /> : <p>订单已保留，请核对付款状态</p>}<p>订单 {payment.order.id}</p><button className="secondary" disabled={busy} onClick={() => void check(payment.order.id)}>核对支付结果</button><button className="secondary" disabled={busy} onClick={() => { pending.current = null; setPayment(null); }}>返回</button></div> : null}
     {error ? <p role="status">{error}</p> : null}
     <BillingHistory api={api} kind="orders" title="充值记录" onCheck={check} />
     <BillingHistory api={api} kind="usage" title="消耗明细" />

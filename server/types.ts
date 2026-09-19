@@ -96,7 +96,7 @@ export type PowerLedgerEntry = {
 export type RechargeOrder = {
   id: string; workspaceId: string; userId: string; requestedMicros: number; amountCny: number; cnyPerPowerSnapshot: number;
   status: "pending" | "paid" | "cancelled"; createdAt: string; paidAt?: string;
-  payment?: { channel: "wechat"; appId: string; mchId: string; amountFen: number; expiresAt: string; codeUrl?: string; transactionId?: string; state: "creating" | "pending" | "uncertain" | "paid" };
+  payment?: { channel: "wechat"; amountMode?: "cny" | "power"; appId: string; mchId: string; amountFen: number; expiresAt: string; codeUrl?: string; transactionId?: string; state: "creating" | "pending" | "uncertain" | "paid" };
 };
 export type ModelPricing = { version: number; label: string; multiplier: number; referenceInput: number; referenceOutput: number; publishedAt: string };
 export type AuditLog = {
