@@ -16,6 +16,12 @@ export function installPaymentCallback(app: Express, store: Store) {
   });
 }
 export function installPaymentRoutes(app: Express, keyAuth: readonly RequestHandler[], store: Store) {
+  app.get("/api/me/billing/summary", ...keyAuth, async (req, res) => {
+    const db = await store.read();
+    const spentMicros = db.powerLedger.filter(row => row.workspaceId === req.workspaceId && row.userId === req.user!.id && row.type === "usage")
+      .reduce((sum, row) => sum + Math.max(0, -row.amountMicros), 0);
+    res.json({ spentMicros });
+  });
   app.post("/api/me/payments/wechat", ...keyAuth, async (req, res) => {
     try {
       if (!wechatReady()) return res.status(503).json({ error: "微信支付尚未配置" });

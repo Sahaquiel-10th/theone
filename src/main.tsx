@@ -61,6 +61,8 @@ import "./one-login.css";
 import "./one-attention.css";
 import "./one-beta.css";
 import "./one-onboarding.css";
+import "./one-settings.css";
+import { SearchPicker, SettingsDialog } from "./SettingsControls";
 import { BetaUserInsights } from "./BetaUserInsights";
 import { mergeTaskSnapshots, recoverTaskDraft } from "./oneStudioState";
 import { buildTaskActivityRows, getSettledTaskTransitions, selectConversationExecution, shouldAutoReadTaskNotice, type TaskActivityRow } from "./oneTaskAttention";
@@ -1900,7 +1902,7 @@ function AgentEditorPage({ agent, agents, models, onCancel, onSaved }: {
               ) : null}
             </div>
           </div>
-          <label>固定模型<select value={draft.modelId} onChange={(e) => setDraft({ ...draft, modelId: e.target.value })}><option value="">请选择聊天模型</option>{chatModels.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select><small>保存后，使用者无法更改此智能体的模型</small></label>
+          <label>固定模型<SearchPicker label="固定模型" value={draft.modelId} onChange={modelId => setDraft({ ...draft, modelId })} options={chatModels.map(model => ({ value: model.id, label: model.name }))} /><small>保存后，使用者无法更改此智能体的模型</small></label>
         </section>
         <section><h3>外观</h3><div className="appearance-options"><div>{emojis.map((emoji) => <button type="button" key={emoji} className={draft.avatar === emoji ? "active" : ""} onClick={() => setDraft({ ...draft, avatar: emoji })}>{emoji}</button>)}</div><div>{colors.map((color) => <button type="button" aria-label={color} key={color} className={draft.color === color ? "active" : ""} style={{ background: color }} onClick={() => setDraft({ ...draft, color })} />)}</div></div></section>
         <section><h3>指令</h3><label>系统提示词<textarea rows={10} maxLength={6000} value={draft.prompt} onChange={(e) => setDraft({ ...draft, prompt: e.target.value })} placeholder="角色、流程、边界、输出格式" /><small>{draft.prompt.length} / 6000</small></label></section>
@@ -1914,6 +1916,7 @@ function AgentEditorPage({ agent, agents, models, onCancel, onSaved }: {
 
 function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onModelChange, onOpenSidebar }: { user: User; profile: AccountProfile; onSaveProfile: (patch: ProfilePatch) => Promise<unknown>; models: Model[]; defaultModelId: string; onModelChange: () => Promise<void>; onOpenSidebar: () => void }) {
   const api = useContext(PrivateApiContext);
+  const [section, setSection] = useState("profile");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -1962,17 +1965,13 @@ function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onM
           <p>{profile.displayName || user.username} · {user.role === "admin" ? "管理员" : "ONE 用户"}</p>
         </div>
       </header>
-      <div className="account-body">
+      <nav className="settings-tabs account-settings-tabs" aria-label="设置栏目">{[["profile", "个人设置"], ["power", "电力与账单"]].map(([id, label]) => <button type="button" key={id} aria-pressed={section === id} onClick={() => setSection(id)}>{label}</button>)}</nav>
+      <div className="account-body settings-account-body">
+        {section === "power" ? billing ? <PaymentPanel api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载电力账户…</p> : <>
         <section className="account-panel"><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
-        <section className="account-panel account-balance-card">
-          <div className="account-panel-title"><Wallet size={18} /><h3>我的电力</h3></div>
-          <strong className="power-balance">{power(billing?.balanceMicros)} <small>电力</small></strong>
-          {billing?.reservedMicros ? <p className="hint">预占 {power(billing.reservedMicros, 6)}，可用 {power(billing.availableMicros, 6)}；待核对调用请联系管理员。</p> : null}
-          <PaymentPanel api={api} rate={billing?.rechargeCnyPerPower || 0} onPaid={loadBilling} />
-        </section>
         <section className="account-panel">
           <div className="account-panel-title"><Bot size={18} /><h3>默认模型</h3></div>
-          <select value={selectedModelId} onChange={(event) => chooseModel(event.target.value)}>{models.filter((model) => model.kind === "chat").map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}</select>
+          <SearchPicker label="默认模型" value={selectedModelId} onChange={chooseModel} options={models.filter(model => model.kind === "chat").map(model => ({ value: model.id, label: model.name }))} />
         </section>
         {user.role === "admin" ? <form className="account-panel" onSubmit={changePassword}>
           <div className="account-panel-title"><LockKeyhole size={18} /><h3>修改密码</h3></div>
@@ -1981,6 +1980,7 @@ function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onM
           <label>确认新密码<input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label>
           <button className="primary" type="submit" disabled={!currentPassword || newPassword.length < 8 || !confirmPassword}>更新密码</button>
         </form> : null}
+        </>}
         {notice ? <div className="notice account-wide-notice">{notice}</div> : null}
       </div>
     </section>
@@ -1995,6 +1995,9 @@ function KnowledgePage({
   onConnectionChange?: (connection: KnowledgeConnection) => void;
 }) {
   const api = useContext(PrivateApiContext);
+  const [selectedProvider, setSelectedProvider] = useState("");
+  const [providerQuery, setProviderQuery] = useState("");
+  const [providerFilter, setProviderFilter] = useState("all");
   const [connection, setConnection] = useState<KnowledgeConnection>({ provider: "getnote", status: "disconnected" });
   const [remoteConnections, setRemoteConnections] = useState<Record<"notion" | "yinxiang" | "flowus", KnowledgeConnection>>({
     notion: { provider: "notion", status: "disconnected" }, yinxiang: { provider: "yinxiang", status: "disconnected" }, flowus: { provider: "flowus", status: "disconnected" }
@@ -2170,9 +2173,11 @@ function KnowledgePage({
         <button className="mobile-menu" title="打开导航" onClick={onOpenSidebar}><Menu size={20} /></button>
         <div><h2>知识来源</h2></div>
       </header>
-      <div className="account-body">
+      <div className="account-body knowledge-catalog-body">
         {notice ? <div className={`${/失败|无法|过期|不稳定|尚未配置|未完成|还没有会员|请联系/.test(notice) ? "error" : "notice"} account-wide-notice`} role="status">{notice}</div> : null}
-        <section className="account-panel knowledge-panel">
+        <div className="knowledge-catalog-toolbar"><div className="settings-search"><Search size={17} /><input type="search" aria-label="搜索知识来源" placeholder="搜索知识来源" value={providerQuery} onChange={e => setProviderQuery(e.target.value)} /></div><div className="settings-tabs" aria-label="连接状态">{[["all", "全部"], ["connected", "已连接"], ["disconnected", "未连接"]].map(([id, label]) => <button type="button" key={id} aria-pressed={providerFilter === id} onClick={() => setProviderFilter(id)}>{label}</button>)}</div></div>
+        <div className="knowledge-catalog">{([{ id: "getnote", label: "得到大脑", note: "笔记与语义搜索", item: connection }, { id: "notion", label: "Notion", note: "页面与工作区", item: remoteConnections.notion }, { id: "yinxiang", label: "印象笔记", note: "笔记与笔记本", item: remoteConnections.yinxiang }, { id: "flowus", label: "息流 FlowUs", note: "页面与知识空间", item: remoteConnections.flowus }]).filter(p => `${p.label} ${p.id}`.toLowerCase().includes(providerQuery.trim().toLowerCase()) && (providerFilter === "all" || (providerFilter === "connected" ? p.item.status === "connected" : p.item.status !== "connected"))).map(p => <button type="button" className="knowledge-source-card" key={p.id} onClick={() => setSelectedProvider(p.id)}><span className={`knowledge-source-mark ${p.id}`}>{p.label.slice(0, 1)}</span><span><strong>{p.label}</strong><small>{p.note}</small></span><span className={`knowledge-source-status ${p.item.status}`}>{p.item.status === "connected" ? "已连接" : p.item.status === "pending" ? "授权中" : p.item.status === "error" ? "需重连" : "连接"}<ChevronRight size={14} /></span></button>)}</div>
+        {selectedProvider === "getnote" ? <SettingsDialog title="得到大脑" onClose={() => setSelectedProvider("")}><section className="knowledge-connection-detail">
           <div className="knowledge-provider-head">
             <div className="provider-icon"><Database size={19} /></div>
             <div><h3>得到大脑</h3></div>
@@ -2199,16 +2204,16 @@ function KnowledgePage({
               ) : null}
             </>
           )}
-        </section>
+        </section>{notice ? <p role="status">{notice}</p> : null}</SettingsDialog> : null}
         {([
           { id: "notion", label: "Notion" }, { id: "yinxiang", label: "印象笔记" }, { id: "flowus", label: "息流 FlowUs" }
-        ] as const).map(provider => {
+        ] as const).filter(provider => provider.id === selectedProvider).map(provider => {
           const item = remoteConnections[provider.id];
-          return <section className="account-panel knowledge-panel" key={provider.id}>
+          return <SettingsDialog key={provider.id} title={provider.label} onClose={() => setSelectedProvider("")}><section className="knowledge-connection-detail">
             <div className="knowledge-provider-head"><div className="provider-icon"><FileText size={19} /></div><div><h3>{provider.label}</h3></div><span className={`provider-status ${item.status}`}>{item.status === "connected" ? "已连接" : item.status === "pending" ? "授权中" : item.status === "error" ? "需重连" : "未连接"}</span></div>
             {item.status === "connected" ? <><div className="notice">工作区：{item.providerSpaceName || provider.label}</div><p className="hint">只读：ONE 会按需搜索相关内容，不会修改或删除内容。</p><button className="danger" type="button" onClick={() => void disconnectRemote(provider.id, provider.label)}>断开连接</button></>
               : <><button className="primary" type="button" disabled={!remoteConfigured[provider.id] || Boolean(remoteBusy)} onClick={() => void connectRemote(provider.id)}>{remoteBusy === provider.id ? `正在打开 ${provider.label}…` : `连接 ${provider.label}`}</button>{!remoteConfigured[provider.id] ? <p className="hint">{provider.label} 连接暂未开通，请联系管理员。</p> : null}</>}
-          </section>;
+          </section>{notice ? <p role="status">{notice}</p> : null}</SettingsDialog>;
         })}
       </div>
     </section>
@@ -2324,7 +2329,7 @@ function AdminBilling({ actorId, users, operations, reload }: { actorId: string;
   async function approve(order: RechargeOrder) { await api(`/api/admin/recharge-orders/${order.id}/approve`, { method: "POST" }); setNotice("充值已入账"); await reload(); }
   return <div className="admin-grid">
     <GiftBatchHistory api={api} revision={notice} />
-    <div className="admin-form-stack"><form className="admin-form" onSubmit={give}><h3><Wallet size={17} />赠送电力</h3><select value={userId} onChange={(event) => setUserId(event.target.value)}>{users.map((user) => <option key={user.id} value={user.id}>{user.username} · {power(user.balanceMicros)} 电力</option>)}</select><input type="number" min="0.000001" step="0.000001" value={gift} onChange={(event) => setGift(event.target.value)} /><button className="primary">确认赠送</button></form><form className="admin-form" onSubmit={giveBatch}><h3>批量赠送</h3><label>每位启用成员赠送<input type="number" min="0.000001" step="0.000001" value={batchGift} onChange={(event) => setBatchGift(event.target.value)} /></label><label>批次说明<input value={batchTitle} onChange={(event) => setBatchTitle(event.target.value)} maxLength={80} /></label><button className="secondary">给全部启用成员赠送</button><small className="hint">管理员也包含在启用成员内；每位成员都会留下独立电力账本记录。</small></form><form className="admin-form" onSubmit={saveRate}><h3>充值汇率</h3><label>1 电力 = 人民币<input type="number" min="0.01" step="0.01" value={rate} onChange={(event) => setRate(event.target.value)} /></label><button className="secondary">保存汇率</button></form>{notice ? <div className="notice">{notice}</div> : null}</div>
+    <div className="admin-form-stack"><form className="admin-form" onSubmit={give}><h3><Wallet size={17} />赠送电力</h3><SearchPicker label="赠送用户" value={userId} onChange={setUserId} options={users.map(user => ({ value: user.id, label: user.profile?.displayName || user.username, hint: user.username + " · " + power(user.balanceMicros) + " 电力" }))} /><input type="number" min="0.000001" step="0.000001" value={gift} onChange={(event) => setGift(event.target.value)} /><button className="primary">确认赠送</button></form><form className="admin-form" onSubmit={giveBatch}><h3>批量赠送</h3><label>每位启用成员赠送<input type="number" min="0.000001" step="0.000001" value={batchGift} onChange={(event) => setBatchGift(event.target.value)} /></label><label>批次说明<input value={batchTitle} onChange={(event) => setBatchTitle(event.target.value)} maxLength={80} /></label><button className="secondary">给全部启用成员赠送</button><small className="hint">管理员也包含在启用成员内；每位成员都会留下独立电力账本记录。</small></form><form className="admin-form" onSubmit={saveRate}><h3>充值汇率</h3><label>1 电力 = 人民币<input type="number" min="0.01" step="0.01" value={rate} onChange={(event) => setRate(event.target.value)} /></label><button className="secondary">保存汇率</button></form>{notice ? <div className="notice">{notice}</div> : null}</div>
     <div className="table"><h3>待入账充值</h3>{operations?.pendingOrders.length ? operations.pendingOrders.map((order) => <div className="table-row" key={order.id}><span>{order.username}<small>{dateTime(order.createdAt)}</small></span><span>{power(order.requestedMicros)} 电力 · ¥{order.amountCny.toFixed(2)}</span><button className="primary" onClick={() => approve(order)}>确认入账</button></div>) : <div className="empty-state compact">暂无待处理充值</div>}</div>
   </div>;
 }
@@ -2519,7 +2524,7 @@ function OneKeysTab({ users, devices, reload }: { users: User[]; devices: OneKey
   async function revoke(device: OneKeyDevice) { if (!confirm(`确认挂失 ${device.serialNumber}？`)) return; await api(`/api/admin/one-keys/${device.id}/revoke`, { method: "POST" }); await reload(); }
 
   return <div className="admin-grid">
-    <form className="admin-form" onSubmit={provision}><h3><Usb size={17} />初始化 ONE Key</h3><label>绑定用户<select value={userId} onChange={(event) => setUserId(event.target.value)}>{users.map((user) => <option key={user.id} value={user.id}>{user.username}</option>)}</select></label><label>设备序列号<input value={serialNumber} onChange={(event) => setSerialNumber(event.target.value)} /></label><p className="hint">私钥仅下载一次；服务端仅存公钥。普通 U 盘可复制，不等同安全芯片。</p><button className="primary" disabled={!userId || !serialNumber.trim()}>生成并下载凭证</button>{notice ? <div className="notice">{notice}</div> : null}</form>
+    <form className="admin-form" onSubmit={provision}><h3><Usb size={17} />初始化 ONE Key</h3><label>绑定用户<SearchPicker label="绑定用户" value={userId} onChange={setUserId} options={users.map(user => ({ value: user.id, label: user.profile?.displayName || user.username, hint: user.username }))} /></label><label>设备序列号<input value={serialNumber} onChange={(event) => setSerialNumber(event.target.value)} /></label><p className="hint">私钥仅下载一次；服务端仅存公钥。普通 U 盘可复制，不等同安全芯片。</p><button className="primary" disabled={!userId || !serialNumber.trim()}>生成并下载凭证</button>{notice ? <div className="notice">{notice}</div> : null}</form>
     <div className="table"><div className="ops-list-toolbar"><label>搜索用户或序列号<input type="search" value={search} onChange={(event) => setSearch(event.target.value)} /></label><label>Key 状态<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="active">正常使用</option><option value="revoked">已挂失 / 归档</option><option value="all">全部</option></select></label></div>{matching.slice(0, limit).map((device) => <div className="table-row" key={device.id}><span><strong>{device.serialNumber}</strong><small>{device.username} · {device.lastUsedAt ? `最近使用 ${dateTime(device.lastUsedAt)}` : "尚未使用"}</small></span><span>{device.status === "active" ? "正常" : "已挂失 / 归档"}</span>{device.status === "active" ? <button className="danger" onClick={() => revoke(device)}>挂失</button> : <span />}</div>)}{matching.length > limit ? <button type="button" className="secondary" onClick={() => setLimit((value) => value + 20)}>再显示 20 枚</button> : null}{!matching.length ? <p className="hint">没有符合条件的 Key</p> : null}</div>
   </div>;
 }
