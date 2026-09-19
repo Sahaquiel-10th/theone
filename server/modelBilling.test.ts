@@ -3,6 +3,7 @@ import test from "node:test";
 import type { Database, ModelConfig } from "./types.js";
 import type { Store } from "./db.js";
 import { modelReservationMicros, reconcileInterruptedBilling, resolveBillingReview, runBilledModel, settleBillingRecord } from "./modelBilling.js";
+import { publicUsageRecord } from "./serializers.js";
 
 function fixture() {
   const model = { id: "model", kind: "chat", name: "Test", enabled: true, systemPrompt: "rule", inputPowerPerMillion: 2, outputPowerPerMillion: 4, costInputPowerPerMillion: 1, costOutputPowerPerMillion: 2 } as ModelConfig;
@@ -17,6 +18,34 @@ function fixture() {
 }
 const usage = { inputTokens: 10, outputTokens: 5, totalTokens: 15, source: "provider" };
 const scope = (id: string) => ({ usageId: id, workspaceId: "wa", userId: "a" });
+
+test("cache buckets bill separately, freeze costs, isolate owners and survive replay", async () => {
+  const f = fixture();
+  Object.assign(f.model, { inputPowerPerMillion: 5, outputPowerPerMillion: 25, costInputPowerPerMillion: 1, costOutputPowerPerMillion: 5, cachePrices: { read: 0.5, write: 6.25, write1h: 10 }, cacheCostPrices: { read: 0.1, write: 1.25, write1h: 2 } });
+  const cached = { inputTokens: 100, outputTokens: 20, totalTokens: 420, cacheUsage: { read: 200, write: 100, write5m: 80, write1h: 20 }, source: "provider" };
+  await runBilledModel(f.store, f.params, async () => { f.model.cachePrices!.read = 99; return { usage: cached }; });
+  const row = f.db().modelUsageRecords[0];
+  assert.equal(row.chargedMicros, 1800); assert.equal(row.costMicros, 360);
+  assert.equal(row.cachePricesSnapshot?.read, .5);
+  const visible = publicUsageRecord(row);
+  assert.deepEqual(visible.cacheUsage, cached.cacheUsage);
+  assert.ok(!("cacheCostPricesSnapshot" in visible));
+  assert.equal(f.db().powerAccounts[1].balanceMicros, 1000000);
+  assert.throws(() => settleBillingRecord(f.db(), { ...scope(row.id), userId: "b", workspaceId: "wb" }, cached, 1), /不属于/);
+  const restored = JSON.parse(JSON.stringify(f.db()));
+  settleBillingRecord(restored, scope(row.id), cached, 1);
+  assert.equal(restored.powerLedger.length, 1);
+});
+test("missing cache prices retain usage and a review hold, never charge standard input", async () => {
+  const f = fixture();
+  await runBilledModel(f.store, f.params, async () => ({ usage: { inputTokens: 10, outputTokens: 5, totalTokens: 115, source: "provider", cacheUsage: { read: 100, write: 0, write5m: 0, write1h: 0 } } }));
+  const row = f.db().modelUsageRecords[0];
+  assert.equal(row.status, "needs_review"); assert.equal(row.reviewReason, "cache_pricing_missing");
+  assert.equal(row.cacheUsage?.read, 100); assert.equal(row.chargedMicros, 0);
+  assert.throws(() => resolveBillingReview(f.db(), { ...scope(row.id), action: "provider_usage", inputTokens: 10, outputTokens: 5 }), /快照/);
+  resolveBillingReview(f.db(), { ...scope(row.id), action: "waive" });
+  assert.equal(f.db().powerAccounts[0].reservedMicros, 0);
+});
 
 test("durable billing charges once and freezes prices while the model runs", async () => {
   const f = fixture();

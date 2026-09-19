@@ -1,4 +1,4 @@
-import { Database, ModelConfig } from "./types.js";
+import { CachePrices, CacheUsage, Database, ModelConfig } from "./types.js";
 import { uid } from "./security.js";
 
 export const MICROS_PER_POWER = 1_000_000;
@@ -8,11 +8,20 @@ function micros(value: number) {
   return Math.max(1, Math.ceil(value * MICROS_PER_POWER - 1e-7));
 }
 
-export function calculateModelPower(model: ModelConfig, inputTokens: number, outputTokens: number) {
+export function calculateModelPower(model: ModelConfig, inputTokens: number, outputTokens: number, cache?: CacheUsage) {
+  const cachePower = (prices?: CachePrices) => {
+    if (!cache || cache.read + cache.write === 0) return 0;
+    const buckets = [[cache.read, prices?.read], [cache.write - cache.write1h, prices?.write], [cache.write1h, prices?.write1h]];
+    return buckets.reduce((sum, [tokens, price]) => {
+      if (!tokens) return sum;
+      if (price === undefined || !Number.isFinite(price) || price < 0) throw new Error("缓存价格未配置");
+      return sum + tokens / 1_000_000 * price;
+    }, 0);
+  };
   const chargedPower = inputTokens / 1_000_000 * model.inputPowerPerMillion
-    + outputTokens / 1_000_000 * model.outputPowerPerMillion;
+    + outputTokens / 1_000_000 * model.outputPowerPerMillion + cachePower(model.cachePrices);
   const costPower = inputTokens / 1_000_000 * model.costInputPowerPerMillion
-    + outputTokens / 1_000_000 * model.costOutputPowerPerMillion;
+    + outputTokens / 1_000_000 * model.costOutputPowerPerMillion + cachePower(model.cacheCostPrices);
   return { chargedMicros: micros(chargedPower), costMicros: micros(costPower) };
 }
 

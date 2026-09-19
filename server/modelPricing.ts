@@ -3,9 +3,9 @@ import { uid } from "./security.js";
 export function effectiveModel(model: ModelConfig, at = Date.now()): ModelConfig {
   const due = model.pricingHistory?.filter(row => !row.cancelledAt && Date.parse(row.pricing.effectiveAt || row.pricing.publishedAt) <= at)
     .sort((a, b) => b.pricing.version - a.pricing.version)[0];
-  if (due) model = { ...model, pricing: due.pricing, costInputPowerPerMillion: due.costInput, costOutputPowerPerMillion: due.costOutput };
+  if (due) model = { ...model, pricing: due.pricing, costInputPowerPerMillion: due.costInput, costOutputPowerPerMillion: due.costOutput, cacheCostPrices: due.cacheCostPrices };
   if (!model.pricing || model.kind !== "chat") return structuredClone(model);
-  return { ...structuredClone(model), inputPowerPerMillion: model.pricing.referenceInput * model.pricing.multiplier,
+  return { ...structuredClone(model), cachePrices: model.pricing.referenceCache ? { read: model.pricing.referenceCache.read * model.pricing.multiplier, write: model.pricing.referenceCache.write * model.pricing.multiplier, write1h: model.pricing.referenceCache.write1h * model.pricing.multiplier } : undefined, inputPowerPerMillion: model.pricing.referenceInput * model.pricing.multiplier,
     outputPowerPerMillion: model.pricing.referenceOutput * model.pricing.multiplier };
 }
 export function publishPricing(db: Database, modelId: string, actorUserId: string, body: Record<string, unknown>) {
@@ -15,6 +15,14 @@ export function publishPricing(db: Database, modelId: string, actorUserId: strin
   const multiplier = read("multiplier", 0.001); if (multiplier > 100) throw new Error("倍率不能超过 100");
   const referenceInput = read("referenceInput", 0), referenceOutput = read("referenceOutput", 0);
   const costInput = read("costInput", 0), costOutput = read("costOutput", 0);
+  const cache = (field: string) => {
+    if (body[field] === undefined) return undefined;
+    const v = body[field] as Record<string, unknown>;
+    if (!v || typeof v !== "object" || ["read", "write", "write1h"].some(k => typeof v[k] !== "number" || !Number.isFinite(v[k]) || (v[k] as number) < 0 || (v[k] as number) > 1e6)) throw new Error("请完整填写缓存读取、写入和 1 小时写入价格");
+    return { read: v.read as number, write: v.write as number, write1h: v.write1h as number };
+  };
+  const referenceCache = cache("referenceCache"), cacheCostPrices = cache("cacheCostPrices");
+  if (!!referenceCache !== !!cacheCostPrices) throw new Error("请同时填写缓存官方价与采购价");
   const publishedAt = new Date().toISOString();
   const effectiveAt = body.effectiveAt ? String(body.effectiveAt) : publishedAt;
   if (!Number.isFinite(Date.parse(effectiveAt)) || Date.parse(effectiveAt) < Date.parse(publishedAt) - 60000) throw new Error("生效时间不能早于当前时间");
@@ -22,14 +30,15 @@ export function publishPricing(db: Database, modelId: string, actorUserId: strin
   if (explanation.length > 1000 || (body.explanation !== undefined && !explanation)) throw new Error("请填写 1 至 1000 字的调价说明");
   if (model.pricingHistory?.some(row => !row.cancelledAt && Date.parse(row.pricing.effectiveAt || row.pricing.publishedAt) > Date.now())) throw new Error("请先撤回尚未生效的调价，再发布新价格");
   const pricing = { version: Math.max(model.pricing?.version ?? 0, ...(model.pricingHistory || []).map(row => row.pricing.version)) + 1, multiplier, referenceInput, referenceOutput,
-    label: multiplier < 1 ? "优惠期" : multiplier > 1 ? `含 ${Number(((multiplier - 1) * 100).toFixed(2))}% 服务费` : "标准价格", publishedAt, effectiveAt: new Date(effectiveAt).toISOString(), explanation: explanation || "模型计费价格更新" };
+    label: multiplier < 1 ? "优惠期" : multiplier > 1 ? `含 ${Number(((multiplier - 1) * 100).toFixed(2))}% 服务费` : "标准价格", referenceCache, publishedAt, effectiveAt: new Date(effectiveAt).toISOString(), explanation: explanation || "模型计费价格更新" };
   db.auditLogs.push({ id: uid("aud"), actorUserId, action: "admin.pricing.published", targetType: "model", targetId: model.id,
-    details: { previous: model.pricing ?? null, pricing, previousCostInput: model.costInputPowerPerMillion, previousCostOutput: model.costOutputPowerPerMillion, costInput, costOutput }, createdAt: publishedAt });
+    details: { previous: model.pricing ?? null, pricing, previousCostInput: model.costInputPowerPerMillion, previousCostOutput: model.costOutputPowerPerMillion, costInput, costOutput, cacheCostPrices, previousCacheCostPrices: model.cacheCostPrices }, createdAt: publishedAt });
   if (!model.pricingHistory?.length) model.pricingHistory = [{ pricing: model.pricing || { version: 0, label: "原价格", multiplier: 1, referenceInput: model.inputPowerPerMillion, referenceOutput: model.outputPowerPerMillion, publishedAt: "1970-01-01T00:00:00.000Z" }, costInput: model.costInputPowerPerMillion, costOutput: model.costOutputPowerPerMillion }];
-  model.pricingHistory.push({ pricing, costInput, costOutput });
+  model.pricingHistory.push({ pricing, costInput, costOutput, cacheCostPrices });
   const active = effectiveModel(model);
   model.pricing = active.pricing; model.inputPowerPerMillion = active.inputPowerPerMillion; model.outputPowerPerMillion = active.outputPowerPerMillion;
   model.costInputPowerPerMillion = active.costInputPowerPerMillion; model.costOutputPowerPerMillion = active.costOutputPowerPerMillion;
+  model.cachePrices = active.cachePrices; model.cacheCostPrices = active.cacheCostPrices;
   return pricing;
 }
 
@@ -45,7 +54,7 @@ export function cancelScheduledPricing(db: Database, modelId: string, actorUserI
 export function publicPrices(models: ModelConfig[], at = Date.now()) {
   return models.filter(m => m.enabled && m.apiKey).map(raw => {
     const m = effectiveModel(raw, at);
-    return { id: m.id, name: m.name, pricing: m.pricing, input: m.inputPowerPerMillion, output: m.outputPowerPerMillion, image: m.imagePowerPerCall,
+    return { id: m.id, name: m.name, pricing: m.pricing, input: m.inputPowerPerMillion, output: m.outputPowerPerMillion, cachePrices: m.cachePrices, image: m.imagePowerPerCall,
       notices: (raw.pricingHistory || []).filter(r => r.pricing.version > 0).map(r => {
         const previous = raw.pricingHistory?.filter(p => !p.cancelledAt && p.pricing.version < r.pricing.version).sort((a, b) => b.pricing.version - a.pricing.version)[0]?.pricing;
         return { ...r.pricing, previousInput: previous ? previous.referenceInput * previous.multiplier : undefined, previousOutput: previous ? previous.referenceOutput * previous.multiplier : undefined, cancelledAt: r.cancelledAt, status: r.cancelledAt ? "cancelled" : Date.parse(r.pricing.effectiveAt || r.pricing.publishedAt) > at ? "scheduled" : r.pricing.version === m.pricing?.version ? "active" : "past" };

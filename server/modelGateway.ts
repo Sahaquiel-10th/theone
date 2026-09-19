@@ -1,4 +1,4 @@
-import { Message, ModelConfig } from "./types.js";
+import { Message, ModelConfig, CacheUsage } from "./types.js";
 
 type ChatResult = {
   content: string;
@@ -7,6 +7,7 @@ type ChatResult = {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
+    cacheUsage?: CacheUsage;
     source: "provider";
   };
   raw?: unknown;
@@ -52,13 +53,32 @@ function numberEnv(name: string, fallback: number) {
 export function parseProviderUsage(value: unknown): ChatResult["usage"] {
   if (!value || typeof value !== "object") return undefined;
   const usage = value as Record<string, unknown>;
-  const inputTokens = usage.prompt_tokens ?? usage.input_tokens;
+  const reportedInput = usage.prompt_tokens ?? usage.input_tokens;
   const outputTokens = usage.completion_tokens ?? usage.output_tokens;
   const valid = (token: unknown): token is number => typeof token === "number" && Number.isSafeInteger(token) && token >= 0;
-  if (!valid(inputTokens) || !valid(outputTokens) || !Number.isSafeInteger(inputTokens + outputTokens)) return undefined;
-  const totalTokens = usage.total_tokens === undefined ? inputTokens + outputTokens : usage.total_tokens;
-  if (!valid(totalTokens) || totalTokens < inputTokens + outputTokens) return undefined;
-  return { inputTokens, outputTokens, totalTokens, source: "provider" };
+  if (!valid(reportedInput) || !valid(outputTokens)) return undefined;
+  const object = (value: unknown): Record<string, unknown> | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  for (const field of ["prompt_tokens_details", "input_tokens_details", "cache_creation"]) {
+    if (usage[field] !== undefined && !object(usage[field])) return undefined;
+  }
+  const promptDetails = object(usage.prompt_tokens_details), inputDetails = object(usage.input_tokens_details), creation = object(usage.cache_creation);
+  const reads = [promptDetails?.cached_tokens, inputDetails?.cached_tokens, usage.cache_read_input_tokens].filter(v => v !== undefined);
+  if (reads.some(v => !valid(v)) || reads.some(v => v !== reads[0])) return undefined;
+  const read = (reads[0] ?? 0) as number;
+  const write5m = creation?.ephemeral_5m_input_tokens ?? 0, write1h = creation?.ephemeral_1h_input_tokens ?? 0;
+  if (!valid(write5m) || !valid(write1h) || !Number.isSafeInteger(write5m + write1h)) return undefined;
+  const write = usage.cache_creation_input_tokens ?? write5m + write1h;
+  if (!valid(write) || write < write5m + write1h) return undefined;
+  // OpenAI prompt/input totals include cached reads. Anthropic input_tokens excludes both cache buckets.
+  // An OpenAI-shaped response with writes is ambiguous: retain it as unbillable, never guess.
+  const includesCache = usage.prompt_tokens !== undefined || promptDetails?.cached_tokens !== undefined || inputDetails?.cached_tokens !== undefined;
+  if (includesCache && (read > reportedInput || write > 0)) return undefined;
+  const inputTokens = includesCache ? reportedInput - read : reportedInput;
+  const computedTotal = inputTokens + read + write + outputTokens;
+  const totalTokens = usage.total_tokens === undefined ? computedTotal : usage.total_tokens;
+  if (!Number.isSafeInteger(computedTotal) || !valid(totalTokens) || totalTokens < computedTotal) return undefined;
+  const hasCache = reads.length > 0 || usage.cache_creation_input_tokens !== undefined || creation !== undefined;
+  return { inputTokens, outputTokens, totalTokens, ...(hasCache ? { cacheUsage: { read, write, write5m, write1h } } : {}), source: "provider" };
 }
 
 export async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {

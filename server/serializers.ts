@@ -20,10 +20,10 @@ export function adminModel(model: ModelConfig): AdminModel {
 export function publicUsageRecord(record: ModelUsageRecord) {
   const { id, workspaceId, userId, conversationId, modelId, inputTokens, outputTokens, totalTokens,
     source, chargedMicros, inputPowerPerMillionSnapshot, outputPowerPerMillionSnapshot, requestId, status, createdAt,
-    reservedMicros, activity, durationMs, completedAt, billingCapped, imagePowerPerCallSnapshot, pricingSnapshot, modelNameSnapshot } = record;
+    reservedMicros, activity, durationMs, completedAt, billingCapped, imagePowerPerCallSnapshot, pricingSnapshot, modelNameSnapshot, cacheUsage, cachePricesSnapshot } = record;
   return { id, workspaceId, userId, conversationId, modelId, inputTokens, outputTokens, totalTokens,
     source, chargedMicros, inputPowerPerMillionSnapshot, outputPowerPerMillionSnapshot, requestId, status, createdAt,
-    reservedMicros, activity, durationMs, completedAt, billingCapped, imagePowerPerCallSnapshot, pricingSnapshot, modelNameSnapshot };
+    reservedMicros, activity, durationMs, completedAt, billingCapped, imagePowerPerCallSnapshot, pricingSnapshot, modelNameSnapshot, cacheUsage, cachePricesSnapshot };
 }
 
 /** Operational telemetry is deliberately content-free, including third-party error details. */

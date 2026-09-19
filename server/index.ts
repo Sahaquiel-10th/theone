@@ -911,7 +911,7 @@ app.post("/api/admin/users/:id/usage/:usageId/resolve", ...admin, asyncRoute(asy
   const usage = await store.mutate((db) => {
     const user = db.users.find((item) => item.id === req.params.id);
     if (!user) throw new Error("用户不存在");
-    const record = resolveBillingReview(db, { usageId: String(req.params.usageId), workspaceId: user.defaultWorkspaceId, userId: user.id, action: req.body.action, inputTokens: req.body.inputTokens, outputTokens: req.body.outputTokens });
+    const record = resolveBillingReview(db, { usageId: String(req.params.usageId), workspaceId: user.defaultWorkspaceId, userId: user.id, action: req.body.action, inputTokens: req.body.inputTokens, outputTokens: req.body.outputTokens, cacheUsage: req.body.cacheUsage });
     db.auditLogs.push({ id: uid("aud"), workspaceId: user.defaultWorkspaceId, actorUserId: req.user!.id, action: "admin.billing.reviewed", targetType: "model_usage", targetId: record.id, details: { action: req.body.action }, requestId: res.locals.requestId, createdAt: now() });
     return publicUsageRecord(record);
   });

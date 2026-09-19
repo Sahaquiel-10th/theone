@@ -4,6 +4,14 @@ import { publishPricing, effectiveModel, publicPrices, cancelScheduledPricing } 
 import type { Database } from "./types.js";
 const fixture = () => ({ users: [{ id: "admin", enabled: true, role: "admin" }, { id: "u", enabled: true, role: "user" }], models: [{ id: "m", kind: "chat", name: "Test", apiKey: "secret", enabled: true, inputPowerPerMillion: 10, outputPowerPerMillion: 20, costInputPowerPerMillion: 2, costOutputPowerPerMillion: 4 }], auditLogs: [] }) as unknown as Database;
 const draft = { referenceInput: 10, referenceOutput: 20, multiplier: 0.8, costInput: 1, costOutput: 2, explanation: "内测优惠八折" };
+test("cache price publication applies retail multiplier but keeps costs private and scheduled", () => {
+  const db = fixture(), when = Date.now() + 3600000;
+  publishPricing(db, "m", "admin", { ...draft, effectiveAt: new Date(when).toISOString(), referenceCache: { read: .5, write: 6.25, write1h: 10 }, cacheCostPrices: { read: .1, write: 1.25, write1h: 2 } });
+  assert.equal(effectiveModel(db.models[0], when - 1).cachePrices, undefined);
+  assert.deepEqual(effectiveModel(db.models[0], when).cachePrices, { read: .4, write: 5, write1h: 8 });
+  assert.deepEqual(effectiveModel(db.models[0], when).cacheCostPrices, { read: .1, write: 1.25, write1h: 2 });
+  assert.ok(!JSON.stringify(publicPrices(db.models, when)).includes("cacheCostPrices"));
+});
 test("scheduled pricing, procurement and notice share the exact effective boundary after restart", () => {
   const db = fixture(), when = Date.now() + 3600000;
   publishPricing(db, "m", "admin", { ...draft, effectiveAt: new Date(when).toISOString() });

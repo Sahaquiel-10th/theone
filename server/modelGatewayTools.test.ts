@@ -130,6 +130,25 @@ test("invalid and partial provider usage cannot become billable zero or negative
   assert.deepEqual(parseProviderUsage({ input_tokens: 0, output_tokens: 0 }), { inputTokens: 0, outputTokens: 0, totalTokens: 0, source: "provider" });
 });
 
+test("OpenAI cache reads are a subset, while Anthropic cache counters are independent", () => {
+  assert.deepEqual(parseProviderUsage({ prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200, prompt_tokens_details: { cached_tokens: 600 } }), { inputTokens: 400, outputTokens: 200, totalTokens: 1200, cacheUsage: { read: 600, write: 0, write5m: 0, write1h: 0 }, source: "provider" });
+  assert.deepEqual(parseProviderUsage({ input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 200, cache_creation_input_tokens: 100, cache_creation: { ephemeral_5m_input_tokens: 80, ephemeral_1h_input_tokens: 20 } }), { inputTokens: 100, outputTokens: 20, totalTokens: 420, cacheUsage: { read: 200, write: 100, write5m: 80, write1h: 20 }, source: "provider" });
+  const aggregate = parseProviderUsage({ input_tokens: 100, output_tokens: 20, cache_creation_input_tokens: 50 });
+  assert.deepEqual(aggregate?.cacheUsage, { read: 0, write: 50, write5m: 0, write1h: 0 });
+  assert.equal(parseProviderUsage({ input_tokens: 100, output_tokens: 20, input_tokens_details: { cached_tokens: 60 } })?.inputTokens, 40);
+});
+test("malformed or contradictory cache counters cannot enter billing", () => {
+  for (const usage of [
+    { prompt_tokens: 10, completion_tokens: 1, prompt_tokens_details: { cached_tokens: 11 } },
+    { input_tokens: 10, output_tokens: 1, cache_read_input_tokens: -1 },
+    { input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: 2, cache_creation: { ephemeral_1h_input_tokens: 3 } },
+    { input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: "2" },
+    { input_tokens: 10, output_tokens: 1, cache_read_input_tokens: 10, total_tokens: 11 },
+    { prompt_tokens: 10, completion_tokens: 1, cache_creation_input_tokens: 2 },
+    { prompt_tokens: 10, completion_tokens: 1, prompt_tokens_details: { cached_tokens: 1 }, cache_read_input_tokens: 2 }
+  ]) assert.equal(parseProviderUsage(usage), undefined);
+});
+
 test("the gateway deadline also covers a stalled response body", async () => {
   const server = createServer((_req, res) => { res.writeHead(200, { "Content-Type": "application/json" }); res.write("{"); });
   server.listen(0, "127.0.0.1"); await once(server, "listening");

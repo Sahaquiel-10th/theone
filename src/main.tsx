@@ -72,6 +72,7 @@ import { chatSubmission, forgetChatSubmission, pendingChatSubmissions } from "./
 import { Onboarding, ProfileNameEditor, BetaFeedbackControls, type AccountProfile, type ProfilePatch } from "./Onboarding";
 import { getNotePollFailureAction, prepareGetNoteAuthorizationWindow } from "./getNoteAuthorization";
 import { PaymentPanel } from "./PaymentPanel";
+import { CacheUsageDetails } from "./CacheUsageDetails";
 import { PricingPanel, PricingCatalog } from "./PricingPanel";
 import { GiftBatchHistory } from "./GiftBatchHistory";
 
@@ -92,7 +93,8 @@ type User = {
 };
 
 type Model = {
-  pricing?: { referenceInput: number; referenceOutput: number; multiplier: number; version: number; label: string; effectiveAt?: string; publishedAt?: string; explanation?: string };
+  pricing?: { referenceInput: number; referenceOutput: number; referenceCache?: { read: number; write: number; write1h: number }; multiplier: number; version: number; label: string; effectiveAt?: string; publishedAt?: string; explanation?: string };
+  cacheCostPrices?: { read: number; write: number; write1h: number };
   pricingHistory?: { pricing: NonNullable<Model["pricing"]>; cancelledAt?: string }[];
   id: string;
   name: string;
@@ -243,7 +245,7 @@ type Agent = {
 
 type PowerLedgerEntry = { id: string; type: "gift" | "recharge" | "usage" | "adjustment" | "refund"; amountMicros: number; balanceAfterMicros: number; title: string; createdAt: string; username?: string };
 type RechargeOrder = { id: string; userId: string; requestedMicros: number; amountCny: number; status: "pending" | "paid" | "cancelled"; createdAt: string; username?: string };
-type UsageRecord = { id: string; userId: string; modelId: string; inputTokens: number; outputTokens: number; totalTokens: number; chargedMicros?: number; costMicros?: number; requestId?: string; createdAt: string; username?: string; modelName?: string; source?: "provider" | "estimated" | "unknown" | "fixed"; status?: "pending" | "success" | "failed" | "needs_review" | "waived"; activity?: "chat" | "execution_compile" | "local_agent"; durationMs?: number };
+type UsageRecord = { cacheUsage?: { read: number; write: number; write5m: number; write1h: number }; cachePricesSnapshot?: { read: number; write: number; write1h: number }; id: string; userId: string; modelId: string; inputTokens: number; outputTokens: number; totalTokens: number; chargedMicros?: number; costMicros?: number; requestId?: string; createdAt: string; username?: string; modelName?: string; source?: "provider" | "estimated" | "unknown" | "fixed"; status?: "pending" | "success" | "failed" | "needs_review" | "waived"; activity?: "chat" | "execution_compile" | "local_agent"; durationMs?: number };
 type UsageTotals = { calls: number; inputTokens: number; outputTokens: number; chargedMicros: number; costMicros: number; unknownCostCalls?: number; reviewCalls?: number; failedCalls?: number };
 type UserUsageSummary = {
   userId: string; workspaceId: string; username: string; role?: Role; enabled: boolean; balanceMicros: number; reservedMicros?: number;
@@ -2365,18 +2367,19 @@ function UsageReconcileForm({ userId, usage, onResolved }: { userId: string; usa
   const api = useContext(PrivateApiContext);
   const [inputTokens, setInputTokens] = useState("");
   const [outputTokens, setOutputTokens] = useState("");
+  const [cacheUsage, setCacheUsage] = useState(usage.cacheUsage || { read: 0, write: 0, write5m: 0, write1h: 0 });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   async function resolve(action: "waive" | "provider_usage") {
     if (!confirm(action === "waive" ? "确认不向该用户扣费并释放这次预占电力？此操作会留下核对记录。" : "确认输入的是中转站实际返回的 Token 用量？将按本次调用的价格结算。")) return;
     setBusy(true); setError("");
     try {
-      await api(`/api/admin/users/${encodeURIComponent(userId)}/usage/${encodeURIComponent(usage.id)}/resolve`, { method: "POST", body: JSON.stringify(action === "waive" ? { action } : { action, inputTokens: Number(inputTokens), outputTokens: Number(outputTokens) }) });
+      await api(`/api/admin/users/${encodeURIComponent(userId)}/usage/${encodeURIComponent(usage.id)}/resolve`, { method: "POST", body: JSON.stringify(action === "waive" ? { action } : { action, inputTokens: Number(inputTokens), outputTokens: Number(outputTokens), cacheUsage }) });
       onResolved();
     } catch (err) { setError(err instanceof Error ? err.message : "核对失败"); }
     finally { setBusy(false); }
   }
-  return <details className="usage-reconcile"><summary>核对这次调用</summary><p className="hint">按请求编号核对中转站账单。无法确认可暂存；免扣不代表上游免费。</p><div className="ops-list-toolbar"><label>实际输入 Token<input type="number" min="0" step="1" value={inputTokens} onChange={(event) => setInputTokens(event.target.value)} /></label><label>实际输出 Token<input type="number" min="0" step="1" value={outputTokens} onChange={(event) => setOutputTokens(event.target.value)} /></label><button className="primary" type="button" disabled={busy || inputTokens === "" || outputTokens === "" || !Number.isSafeInteger(Number(inputTokens)) || Number(inputTokens) < 0 || !Number.isSafeInteger(Number(outputTokens)) || Number(outputTokens) < 0} onClick={() => void resolve("provider_usage")}>按实际用量结算</button><button className="secondary" type="button" disabled={busy} onClick={() => void resolve("waive")}>免扣并释放预占</button></div>{error ? <div className="error">{error}</div> : null}</details>;
+  return <details className="usage-reconcile"><summary>核对这次调用</summary><p className="hint">按请求编号核对中转站账单。无法确认可暂存；免扣不代表上游免费。</p><div className="ops-list-toolbar"><label>普通输入 Token（不含缓存）<input type="number" min="0" step="1" value={inputTokens} onChange={(event) => setInputTokens(event.target.value)} /></label><label>实际输出 Token<input type="number" min="0" step="1" value={outputTokens} onChange={(event) => setOutputTokens(event.target.value)} /></label><button className="primary" type="button" disabled={busy || inputTokens === "" || outputTokens === "" || !Number.isSafeInteger(Number(inputTokens)) || Number(inputTokens) < 0 || !Number.isSafeInteger(Number(outputTokens)) || Number(outputTokens) < 0} onClick={() => void resolve("provider_usage")}>按实际用量结算</button><button className="secondary" type="button" disabled={busy} onClick={() => void resolve("waive")}>免扣并释放预占</button></div><details><summary>缓存用量（Token）</summary><div className="pricing-field-grid">{(["read", "write", "write5m", "write1h"] as const).map(key => <label key={key}>{({read:"缓存读取",write:"写入总量",write5m:"其中 5 分钟写入",write1h:"其中 1 小时写入"})[key]}<input type="number" min="0" step="1" value={cacheUsage[key]} onChange={e => setCacheUsage({ ...cacheUsage, [key]: Number(e.target.value) })} /></label>)}</div></details>{usage.cacheUsage && !usage.cachePricesSnapshot ? <p className="hint">该次调用缺少缓存价格快照，请免扣释放预占；先配置缓存价再继续调用。</p> : null}{error ? <div className="error">{error}</div> : null}</details>;
 }
 
 function AdminUsage({ summaries, reload }: { summaries: UserUsageSummary[]; reload: () => Promise<void> }) {
@@ -2439,7 +2442,7 @@ function AdminUsage({ summaries, reload }: { summaries: UserUsageSummary[]; relo
               <summary>逐次模型调用（共 {currentDetail.pagination.total} 次）</summary>
               {currentDetail.usage.length ? <div className="ops-table"><div className="ops-table-head"><span>用途 / 模型 / 状态</span><span>输入 / 输出 Token</span><span>消耗 / 上游成本（电力）</span><span>时间 / 耗时 / 请求</span></div>{currentDetail.usage.map((usage) => {
                 const costUnknown = usage.costMicros === undefined;
-                return <React.Fragment key={usage.id}><div className="ops-table-row"><span><strong>{usageActivityLabel(usage.activity)}</strong><small>{usage.modelName || "模型已移除"}</small><small className={costUnknown ? "usage-review-status" : ""}>{usageStatusLabel(usage)}</small></span><span>{usage.source === "fixed" ? "按次计费" : usage.source === "unknown" ? "待核对" : <>{usage.inputTokens.toLocaleString()} / {usage.outputTokens.toLocaleString()}</>}</span><span>{power(usage.chargedMicros, 6)} / {costUnknown ? "待核对" : power(usage.costMicros, 6)}</span><span>{dateTime(usage.createdAt)}{usage.durationMs !== undefined ? <small>耗时 {(usage.durationMs / 1000).toFixed(1)} 秒</small> : null}<small>{usage.requestId || "-"}</small></span></div>{usage.status === "needs_review" ? <UsageReconcileForm userId={item.userId} usage={usage} onResolved={() => { setRetry((value) => value + 1); void reload(); }} /> : null}</React.Fragment>;
+                return <React.Fragment key={usage.id}><div className="ops-table-row"><span><strong>{usageActivityLabel(usage.activity)}</strong><small>{usage.modelName || "模型已移除"}</small><small className={costUnknown ? "usage-review-status" : ""}>{usageStatusLabel(usage)}</small></span><span>{usage.source === "fixed" ? "按次计费" : usage.source === "unknown" ? "待核对" : <>{usage.cacheUsage ? "普通 " : ""}{usage.inputTokens.toLocaleString()} / {usage.outputTokens.toLocaleString()}<CacheUsageDetails row={usage} /></>}</span><span>{power(usage.chargedMicros, 6)} / {costUnknown ? "待核对" : power(usage.costMicros, 6)}</span><span>{dateTime(usage.createdAt)}{usage.durationMs !== undefined ? <small>耗时 {(usage.durationMs / 1000).toFixed(1)} 秒</small> : null}<small>{usage.requestId || "-"}</small></span></div>{usage.status === "needs_review" ? <UsageReconcileForm userId={item.userId} usage={usage} onResolved={() => { setRetry((value) => value + 1); void reload(); }} /> : null}</React.Fragment>;
               })}</div> : <div className="empty-state compact">该时间范围内没有模型调用</div>}
               {currentDetail.pagination.total > currentDetail.pagination.limit ? <div className="ops-pagination"><button className="secondary" type="button" disabled={offset === 0} onClick={() => { setDetail(null); setOffset(Math.max(0, offset - 20)); }}><ChevronLeft size={14} />上一页</button><span>第 {Math.floor(offset / 20) + 1} / {Math.ceil(currentDetail.pagination.total / 20)} 页</span><button className="secondary" type="button" disabled={!currentDetail.pagination.hasMore} onClick={() => { setDetail(null); setOffset(offset + 20); }}>下一页<ChevronRight size={14} /></button></div> : null}
             </details>

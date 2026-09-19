@@ -6,8 +6,10 @@ export type WorkspaceMember = { id: string; workspaceId: string; userId: string;
 export type ConversationFolder = { id: string; workspaceId: string; userId: string; name: string; createdAt: string };
 
 export type ModelConfig = {
+  cachePrices?: CachePrices;
+  cacheCostPrices?: CachePrices;
   pricing?: ModelPricing;
-  pricingHistory?: { pricing: ModelPricing; costInput: number; costOutput: number; cancelledAt?: string }[];
+  pricingHistory?: { pricing: ModelPricing; costInput: number; costOutput: number; cacheCostPrices?: CachePrices; cancelledAt?: string }[];
   id: string; name: string; provider: string; kind: "chat" | "image"; protocol: "openai" | "anthropic";
   baseUrl: string; apiKey: string; encryptedApiKey?: string; model: string; systemPrompt: string; enabled: boolean; isDefault: boolean;
   inputPowerPerMillion: number; outputPowerPerMillion: number; costInputPowerPerMillion: number; costOutputPowerPerMillion: number;
@@ -71,6 +73,9 @@ export type ContextTrace = {
 };
 
 export type ModelUsageRecord = {
+  cacheUsage?: CacheUsage;
+  cachePricesSnapshot?: CachePrices;
+  cacheCostPricesSnapshot?: CachePrices;
   pricingSnapshot?: ModelPricing;
   modelNameSnapshot?: string;
   id: string; workspaceId: string; userId: string; conversationId: string; modelId: string; inputTokens: number;
@@ -99,7 +104,10 @@ export type RechargeOrder = {
   status: "pending" | "paid" | "cancelled"; createdAt: string; paidAt?: string;
   payment?: { channel: "wechat"; amountMode?: "cny" | "power"; appId: string; mchId: string; amountFen: number; expiresAt: string; codeUrl?: string; transactionId?: string; state: "creating" | "pending" | "uncertain" | "paid" };
 };
-export type ModelPricing = { version: number; label: string; multiplier: number; referenceInput: number; referenceOutput: number; publishedAt: string; effectiveAt?: string; explanation?: string };
+export type CachePrices = { read: number; write: number; write1h: number };
+/** inputTokens excludes these buckets. write is aggregate writes; write1h is a subset. */
+export type CacheUsage = { read: number; write: number; write5m: number; write1h: number };
+export type ModelPricing = { version: number; label: string; multiplier: number; referenceInput: number; referenceOutput: number; referenceCache?: CachePrices; publishedAt: string; effectiveAt?: string; explanation?: string };
 export type AuditLog = {
   id: string; workspaceId?: string; actorUserId?: string; action: string; targetType: string; targetId?: string;
   details?: Record<string, unknown>; requestId?: string; createdAt: string;
