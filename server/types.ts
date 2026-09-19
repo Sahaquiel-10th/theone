@@ -6,6 +6,7 @@ export type WorkspaceMember = { id: string; workspaceId: string; userId: string;
 export type ConversationFolder = { id: string; workspaceId: string; userId: string; name: string; createdAt: string };
 
 export type ModelConfig = {
+  pricing?: ModelPricing;
   id: string; name: string; provider: string; kind: "chat" | "image"; protocol: "openai" | "anthropic";
   baseUrl: string; apiKey: string; encryptedApiKey?: string; model: string; systemPrompt: string; enabled: boolean; isDefault: boolean;
   inputPowerPerMillion: number; outputPowerPerMillion: number; costInputPowerPerMillion: number; costOutputPowerPerMillion: number;
@@ -50,8 +51,9 @@ export type UserSavedMemory = {
   content: string; status: "active" | "deleted"; createdAt: string; updatedAt: string;
 };
 
+export type KnowledgeProviderId = "getnote" | "notion" | "yinxiang" | "flowus";
 export type RetrievalLog = {
-  id: string; workspaceId: string; userId: string; conversationId: string; query: string; provider: "getnote" | "notion" | "multiple";
+  id: string; workspaceId: string; userId: string; conversationId: string; query: string; provider: KnowledgeProviderId | "multiple";
   matchedItemsJson: unknown; injectedContext: string; createdAt: string;
 };
 
@@ -68,6 +70,8 @@ export type ContextTrace = {
 };
 
 export type ModelUsageRecord = {
+  pricingSnapshot?: ModelPricing;
+  modelNameSnapshot?: string;
   id: string; workspaceId: string; userId: string; conversationId: string; modelId: string; inputTokens: number;
   outputTokens: number; totalTokens: number; source: "provider" | "estimated" | "fixed" | "unknown"; chargedMicros?: number; costMicros?: number;
   inputPowerPerMillionSnapshot?: number; outputPowerPerMillionSnapshot?: number;
@@ -86,20 +90,22 @@ export type PowerAccount = {
 };
 export type PowerLedgerEntry = {
   id: string; workspaceId: string; userId: string; type: "gift" | "recharge" | "usage" | "adjustment" | "refund";
-  amountMicros: number; balanceBeforeMicros: number; balanceAfterMicros: number; title: string;
+  amountMicros: number; balanceBeforeMicros: number; balanceAfterMicros: number; title: string; batchId?: string;
   modelId?: string; usageRecordId?: string; createdByUserId?: string; createdAt: string;
 };
 export type RechargeOrder = {
   id: string; workspaceId: string; userId: string; requestedMicros: number; amountCny: number; cnyPerPowerSnapshot: number;
   status: "pending" | "paid" | "cancelled"; createdAt: string; paidAt?: string;
+  payment?: { channel: "wechat"; appId: string; mchId: string; amountFen: number; expiresAt: string; codeUrl?: string; transactionId?: string; state: "creating" | "pending" | "uncertain" | "paid" };
 };
+export type ModelPricing = { version: number; label: string; multiplier: number; referenceInput: number; referenceOutput: number; publishedAt: string };
 export type AuditLog = {
   id: string; workspaceId?: string; actorUserId?: string; action: string; targetType: string; targetId?: string;
   details?: Record<string, unknown>; requestId?: string; createdAt: string;
 };
 
 export type KnowledgeConnection = {
-  id: string; workspaceId: string; provider: "getnote" | "notion"; status: "pending" | "connected" | "error" | "revoked";
+  id: string; workspaceId: string; provider: KnowledgeProviderId; status: "pending" | "connected" | "error" | "revoked";
   clientId: string; encryptedApiKey?: string; encryptedAccessToken?: string; encryptedRefreshToken?: string; encryptedClientSecret?: string;
   oauthTokenAuthMethod?: "none" | "client_secret_post";
   authorizationSession?: ConnectorAuthorizationSession;
@@ -108,8 +114,8 @@ export type KnowledgeConnection = {
 };
 
 export type ConnectorAuthorizationSession = {
-  id: string; workspaceId: string; userId: string; connectorId: "getnote" | "notion";
-  protocol: "device_authorization" | "oauth_pkce";
+  id: string; workspaceId: string; userId: string; connectorId: KnowledgeProviderId;
+  protocol: "device_authorization" | "oauth_pkce" | "oauth1";
   status: "pending" | "exchanging" | "verifying" | "failed";
   stateHash?: string; encryptedPayload: string; expiresAt: string; nextAttemptAt?: string;
   createdAt: string; updatedAt: string;

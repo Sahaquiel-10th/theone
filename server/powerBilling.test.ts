@@ -34,6 +34,13 @@ test("credit and charge append immutable balance snapshots", () => {
   assert.deepEqual(db.powerLedger.map((item) => [item.amountMicros, item.balanceBeforeMicros, item.balanceAfterMicros]), [[2_000_000, 5_000_000, 7_000_000], [-500_000, 7_000_000, 6_500_000]]);
 });
 
+test("gift entries can be grouped by a durable batch id", () => {
+  const db = database();
+  creditPower(db, { workspaceId: "workspace-a", userId: "user-a", amountMicros: 2_000_000, type: "gift", title: "内测统一赠送", batchId: "giftbatch-test" });
+  assert.equal(db.powerLedger[0].batchId, "giftbatch-test");
+  assert.equal(db.powerLedger[0].amountMicros, 2_000_000);
+});
+
 test("concurrent calls cannot spend power reserved by an in-flight request", () => {
   const db = database();
   reservePower(db, { workspaceId: "workspace-a", userId: "user-a", amountMicros: 4_000_000 });

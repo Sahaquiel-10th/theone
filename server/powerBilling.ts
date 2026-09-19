@@ -54,7 +54,7 @@ export function releasePower(db: Database, params: {
 
 export function creditPower(db: Database, params: {
   workspaceId: string; userId: string; amountMicros: number; type: "gift" | "recharge" | "adjustment" | "refund";
-  title: string; createdByUserId?: string;
+  title: string; createdByUserId?: string; batchId?: string;
 }) {
   const account = powerAccount(db, params.workspaceId, params.userId);
   if (!account) throw new Error("电力账户不存在");
@@ -62,7 +62,7 @@ export function creditPower(db: Database, params: {
   const before = account.balanceMicros;
   account.balanceMicros += params.amountMicros;
   account.updatedAt = new Date().toISOString();
-  const entry = { id: uid("pwl"), workspaceId: params.workspaceId, userId: params.userId, type: params.type, amountMicros: params.amountMicros, balanceBeforeMicros: before, balanceAfterMicros: account.balanceMicros, title: params.title, createdByUserId: params.createdByUserId, createdAt: account.updatedAt } as const;
+  const entry = { id: uid("pwl"), workspaceId: params.workspaceId, userId: params.userId, type: params.type, amountMicros: params.amountMicros, balanceBeforeMicros: before, balanceAfterMicros: account.balanceMicros, title: params.title, batchId: params.batchId, createdByUserId: params.createdByUserId, createdAt: account.updatedAt } as const;
   db.powerLedger.push(entry);
   return entry;
 }

@@ -3,6 +3,7 @@ import type { Database, ModelConfig, ModelUsageRecord } from "./types.js";
 import { MODEL_MAX_OUTPUT_TOKENS } from "./modelGateway.js";
 import { calculateModelPower, chargePower, estimateTokenCeiling, MICROS_PER_POWER, powerAccount, releasePower, reservePower } from "./powerBilling.js";
 import { uid } from "./security.js";
+import { effectiveModel } from "./modelPricing.js";
 
 export type ModelUsage = { inputTokens: number; outputTokens: number; totalTokens: number; source: string };
 type BillingParams = { workspaceId: string; userId: string; conversationId?: string; model: ModelConfig; input: unknown; activity: string; requestId: string };
@@ -96,11 +97,12 @@ export function settleBillingRecord(db: Database, scope: BillingScope, usage: Mo
 }
 
 export async function runBilledModel<T extends { usage?: ModelUsage }>(store: Store, params: BillingParams, call: (modelSnapshot: ModelConfig) => Promise<T>): Promise<T> {
-  const model = structuredClone(params.model);
+  const model = effectiveModel(params.model);
   const amountMicros = modelReservationMicros(model, params.input);
   const timestamp = new Date().toISOString();
   const row: ModelUsageRecord = {
     id: uid("use"), workspaceId: params.workspaceId, userId: params.userId, conversationId: params.conversationId ?? "",
+    pricingSnapshot: model.pricing, modelNameSnapshot: model.name,
     modelId: model.id, inputTokens: 0, outputTokens: 0, totalTokens: 0, source: "unknown", status: "pending",
     chargedMicros: 0, reservedMicros: amountMicros, activity: params.activity, requestId: params.requestId, createdAt: timestamp,
     inputPowerPerMillionSnapshot: model.inputPowerPerMillion, outputPowerPerMillionSnapshot: model.outputPowerPerMillion,

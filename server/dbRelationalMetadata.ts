@@ -43,6 +43,11 @@ function recordParentId(collection: CollectionName, item: StoredRecord): string 
 }
 
 function recordLookupKey(collection: CollectionName, item: StoredRecord): string | null {
+  if (collection === "powerLedger" && typeof item.batchId === "string") return `${item.batchId}:${item.workspaceId}:${item.userId}`;
+  if (collection === "rechargeOrders") {
+    const payment = item.payment as { transactionId?: string } | undefined;
+    if (payment?.transactionId) return `wechat:${payment.transactionId}`;
+  }
   if (collection === "chatOperations") return item.id;
   if (collection === "users" && typeof item.username === "string") return item.username.trim().toLowerCase();
   if (collection === "workspaces" && typeof item.slug === "string") return item.slug.trim().toLowerCase();

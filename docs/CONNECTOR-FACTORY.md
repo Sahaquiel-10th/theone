@@ -7,7 +7,7 @@
 3. **平台配置**：经过代码审核的端点域名、能力、授权方式、读写级别和平台差异；不能通过浏览器或 AI 输出注册。
 4. **连接认证**：模拟协议、真实账号、取消/过期/刷新/中断、跨 Workspace、恶意响应和生产构建测试。
 
-得到大脑与 Notion 是前两份黄金样本：得到覆盖设备授权轮询，Notion 覆盖 OAuth + PKCE 与官方托管 MCP。只有重复出现且已经通过真实连接验证的机制才进入公共模板。
+得到大脑与 Notion 是前两份黄金样本：得到覆盖设备授权轮询，Notion 覆盖 OAuth + PKCE 与官方托管 MCP。FlowUs 复用审核后的远程 MCP OAuth 模板；国内印象笔记使用独立 OAuth 1.0 + Cloud API 适配器（不是国际版 Evernote MCP）。只有重复出现且已经通过真实连接验证的机制才进入公共模板。
 
 ## 验收前提
 
@@ -19,7 +19,8 @@
 - 新写入的知识凭据使用 AES-GCM 附加认证数据绑定 Workspace、平台和字段用途。把密文复制到另一 Workspace 或把 refresh token 当 access token 使用都会解密失败；旧 V1 密文继续兼容，刷新或重新授权后升级。
 - 每个连接器必须声明安全策略。知识连接器只能是 `untrusted_reference + fixed_https + read_only`；本机执行只能是 `local_execution + local_transport + user_confirmed_execution`。
 - 远端地址使用服务端精确 HTTPS 域名允许列表，不接受浏览器提供的 URL，不跟随重定向；普通 JSON 响应限制大小。
-- Notion 只接受代码内允许的读取工具，限制 MCP 调用时间、返回文本、遍历深度和结果数量，并过滤不可信来源链接。
+- Notion 与 FlowUs 只接受代码内允许的读取工具，限制 MCP 调用时间、返回文本、遍历深度和结果数量，并过滤不可信来源链接。FlowUs 即使授权层返回 `scope=all`，适配器也不调用任何写工具。
+- 印象笔记仅调用 Cloud API 的用户校验、搜索元数据和正文读取方法；动态 NoteStore 地址必须仍是 `https://app.yinxiang.com`，拒绝平台返回的其他主机。
 - 授权换取凭据后必须完成一次真实只读检查，才显示连接成功。
 - 平台原始错误不能写入用户提示、连接状态或审计日志，避免恶意上游回显 Token 或后台信息。
 - 上下文调试只允许记录所有者本人读取；管理员身份不赋予查看其他用户对话与知识原文的权限。
@@ -29,7 +30,7 @@
 ## 0.1 实现
 
 - 服务端维护经过审核的连接器登记表，描述 ID、版本、知识/执行分类、能力与授权方式。
-- 当前连接器为得到大脑、只读 Notion MCP、Codex，以及保留现有 Windows 路径的 ONE Local Agent。
+- 当前连接器为得到大脑、只读 Notion MCP、只读 FlowUs MCP、只读印象笔记 Cloud API、Codex，以及保留现有 Windows 路径的 ONE Local Agent。
 - KnowledgeService 通过登记表调用知识适配器；执行启动/继续/取消通过 ConnectorService 分发。
 - 连接器内部保留各平台的实现：得到设备授权、知识凭据加解密、本机通道与 Runtime 均不替换。
 - 统一状态查询和显式检查接口，不把“存有凭据”“通道在线”伪装成“已成功执行”。
@@ -49,7 +50,7 @@
 | verified | 本次显式远端检索接口检查成功，不代表一定命中知识 |
 
 `GET /api/connectors` 只读取当前租户的状态和本机通道，不触发远端请求。
-`POST /api/connectors/:id/check` 对正常已配置的得到或 Notion 授权发起只读远端检查；其他状态返回对应修复提示。Codex/Local Agent 只检查通道，不启动模型、不读写文件、不隐式申请权限。
+`POST /api/connectors/:id/check` 对正常已配置的知识授权发起只读远端检查；其他状态返回对应修复提示。Codex/Local Agent 只检查通道，不启动模型、不读写文件、不隐式申请权限。
 检查结果附版本、时间和证据类型，不修改原连接状态，也不自动重新授权。已有 error 状态目前仍需沿原连接流程恢复。
 
 ## 安全边界

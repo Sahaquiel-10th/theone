@@ -24,7 +24,7 @@ function safeFailure(provider: string, cause: unknown): KnowledgeFailure {
   const status = typeof cause === "object" && cause !== null && "status" in cause ? Number(cause.status) : undefined;
   const code = typeof cause === "object" && cause !== null && "code" in cause ? String(cause.code) : "";
   const providerCode = provider === "getnote" && typeof cause === "object" && cause !== null && "providerCode" in cause ? Number(cause.providerCode) : undefined;
-  const label = provider === "notion" ? "Notion" : provider === "getnote" ? "得到大脑" : "知识来源";
+  const label = provider === "notion" ? "Notion" : provider === "getnote" ? "得到大脑" : provider === "yinxiang" ? "印象笔记" : provider === "flowus" ? "息流 FlowUs" : "知识来源";
   const failure = (code: KnowledgeFailure["code"], message: string, retryable: boolean): KnowledgeFailure => ({ provider, code, message, retryable });
   if (code === "GETNOTE_CREDENTIAL_EXPIRED" || status === 401 || providerCode === 10001 || /授权.*(?:失效|过期)|未授权|unauthori[sz]ed|invalid[_ -]?token|expired[_ -]?token|\b401\b/i.test(value)) return failure("AUTHORIZATION_REQUIRED", `${label}授权已失效，请重新连接`, false);
   if (["GETNOTE_MEMBER_REQUIRED", "GETNOTE_SCOPE_REQUIRED"].includes(code) || status === 403 || providerCode === 10201 || /会员|权限不足|forbidden|\b403\b/i.test(value)) return failure("PERMISSION_REQUIRED", `${label}当前账号权限不足，请检查会员和授权范围`, false);

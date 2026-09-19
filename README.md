@@ -26,6 +26,12 @@ npm run dev
 
 登录 ONE 后进入“知识来源”，点击“连接 Notion”，在 Notion 官方页面确认一次即可。服务端默认通过 Notion 官方 MCP 的动态客户端注册完成初始化；生产环境也可预置 `NOTION_MCP_CLIENT_ID` 和 `NOTION_MCP_CLIENT_SECRET`。Notion 首版只允许搜索和读取，不开放任何创建、更新、评论或删除工具。
 
+## 印象笔记与 FlowUs
+
+国内印象笔记与国际版 Evernote 是不同服务。ONE 使用 `app.yinxiang.com` 的官方 OAuth 1.0 与 Cloud API；运营方先申请只读应用并配置 `YINXIANG_CONSUMER_KEY`、`YINXIANG_CONSUMER_SECRET`，用户只需点击连接并在印象笔记页面授权。ONE 只调用搜索与读取方法，不同步笔记正文。
+
+FlowUs 使用官方 `https://mcp.flowus.cn/message` 与 OAuth PKCE。用户点击后在 FlowUs 页面授权；尽管 FlowUs 当前 OAuth scope 为 `all`，ONE 仍只允许代码内审核过的搜索、读取工具，拒绝写工具和自定义 MCP 地址。
+
 ## macOS ONE Key 原型
 
 超管在运营后台的“ONE Key”页为用户签发凭证并下载 JSON。开发环境可运行：

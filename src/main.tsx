@@ -69,6 +69,9 @@ import { api, apiForUser, ApiError, expectUser, announceSessionChange, SESSION_E
 import { chatSubmission, forgetChatSubmission, pendingChatSubmissions } from "./chatSubmission";
 import { Onboarding, ProfileNameEditor, BetaFeedbackControls, type AccountProfile, type ProfilePatch } from "./Onboarding";
 import { getNotePollFailureAction, prepareGetNoteAuthorizationWindow } from "./getNoteAuthorization";
+import { PaymentPanel } from "./PaymentPanel";
+import { PricingPanel } from "./PricingPanel";
+import { GiftBatchHistory } from "./GiftBatchHistory";
 
 type Role = "admin" | "user";
 const PrivateApiContext = createContext<typeof api>(api);
@@ -87,6 +90,7 @@ type User = {
 };
 
 type Model = {
+  pricing?: { referenceInput: number; referenceOutput: number; multiplier: number; version: number; label: string };
   id: string;
   name: string;
   provider: string;
@@ -139,10 +143,11 @@ type SearchSource = {
 type AppCapabilities = {
   attachments: { enabled: boolean; maxFiles: number; maxBytes: number; extensions: string[] };
   webSearch: { enabled: boolean; provider: string };
+  knowledge?: { providers: KnowledgeConnection["provider"][] };
 };
 
 type KnowledgeConnection = {
-  provider: "getnote" | "notion";
+  provider: "getnote" | "notion" | "yinxiang" | "flowus";
   status: "disconnected" | "pending" | "connected" | "error" | "revoked";
   providerSpaceName?: string;
   credentialExpiresAt?: string;
@@ -549,7 +554,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [view, setView] = useState<"chat" | "admin" | "knowledge" | "account" | "agents" | "agentEditor">(() => new URLSearchParams(window.location.search).has("notion") ? "knowledge" : "chat");
+  const [view, setView] = useState<"chat" | "admin" | "knowledge" | "account" | "agents" | "agentEditor">(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "knowledge" : "chat"; });
   const [editingAgentId, setEditingAgentId] = useState<string | "new">("new");
   const [showArchived, setShowArchived] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
@@ -571,6 +576,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     status: "disconnected"
   });
   const [notionConnection, setNotionConnection] = useState<KnowledgeConnection>({ provider: "notion", status: "disconnected" });
+  const [yinxiangConnection, setYinxiangConnection] = useState<KnowledgeConnection>({ provider: "yinxiang", status: "disconnected" });
+  const [flowusConnection, setFlowusConnection] = useState<KnowledgeConnection>({ provider: "flowus", status: "disconnected" });
   const [runtimeUpdate, setRuntimeUpdate] = useState<RuntimeUpdateStatus | null>(null);
   const [runtimeUpdating, setRuntimeUpdating] = useState(false);
   const [executionTasks, setExecutionTasks] = useState<ExecutionTask[]>([]);
@@ -670,7 +677,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   async function refresh() {
     const keep = <T,>(fallback: T) => (error: Error) => { setError(error.message); return fallback; };
-    const [modelResult, conversationResult, workspaceResult, agentResult, capabilityResult, knowledgeResult, notionResult] = await Promise.all([
+    const [modelResult, conversationResult, workspaceResult, agentResult, capabilityResult, knowledgeResult, notionResult, yinxiangResult, flowusResult] = await Promise.all([
       api<{ models: Model[]; defaultModelId: string }>("/api/models").catch(keep({ models, defaultModelId })),
       api<{ conversations: Conversation[]; pagination: { page: number; hasMore: boolean } }>(
         `/api/conversations?summary=1&page=1&pageSize=${conversationPageSize}&archived=${showArchived}`
@@ -679,7 +686,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       api<{ agents: Agent[] }>("/api/agents").catch(keep({ agents })),
       api<AppCapabilities>("/api/capabilities").catch(keep(capabilities)),
       api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/getnote").catch(keep({ connection: knowledgeConnection, configured: false })),
-      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/notion").catch(keep({ connection: notionConnection, configured: false }))
+      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/notion").catch(keep({ connection: notionConnection, configured: false })),
+      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/yinxiang").catch(keep({ connection: yinxiangConnection, configured: false })),
+      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/flowus").catch(keep({ connection: flowusConnection, configured: false }))
     ]);
     setModels(modelResult.models);
     setDefaultModelId(modelResult.defaultModelId);
@@ -702,6 +711,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setCapabilities(capabilityResult);
     setKnowledgeConnection(knowledgeResult.connection);
     setNotionConnection(notionResult.connection);
+    setYinxiangConnection(yinxiangResult.connection);
+    setFlowusConnection(flowusResult.connection);
     setDraftModelId((current) => (
       modelResult.models.some((model) => model.id === current)
         ? current
@@ -1392,8 +1403,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </nav>
         <div className="one-chrome-actions">
           <button className="one-chrome-button knowledge" type="button" title="知识来源" onClick={() => openSurface("knowledge")}>
-            <span className={`connection-dot ${knowledgeConnection.status === "connected" || notionConnection.status === "connected" ? "connected" : "disconnected"}`} />
-            <span>{knowledgeConnection.status === "connected" || notionConnection.status === "connected" ? "知识已连接" : "连接知识"}</span>
+            <span className={`connection-dot ${[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection].some(item => item.status === "connected") ? "connected" : "disconnected"}`} />
+            <span>{[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection].some(item => item.status === "connected") ? "知识已连接" : "连接知识"}</span>
           </button>
           <button className={`one-chrome-button icon-only ${historyOpen ? "active" : ""}`} type="button" title="最近任务" onClick={() => setHistoryOpen((open) => !open)}>
             <Archive size={16} />
@@ -1441,11 +1452,11 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       <div className="studio-layout">
       <section className="studio-surface" aria-label={view === "chat" ? "当前事情" : "工作区内容"} hidden={studioIdle}>
       {view === "admin" && user.role === "admin" ? (
-        <AdminPanel refreshModels={refresh} onOpenSidebar={() => setHistoryOpen(true)} />
+        <AdminPanel actorId={user.id} refreshModels={refresh} onOpenSidebar={() => setHistoryOpen(true)} />
       ) : view === "knowledge" ? (
         <KnowledgePage
           onOpenSidebar={() => setHistoryOpen(true)}
-          onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : setKnowledgeConnection(next)}
+          onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : setKnowledgeConnection(next)}
         />
       ) : view === "account" ? (
         <AccountPage user={user} profile={profile} onSaveProfile={saveProfile} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setHistoryOpen(true)} />
@@ -1509,7 +1520,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       </section>
 
       <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 助手">
-        {view === "chat" && !profile.onboarding.completedAt ? <Onboarding profile={profile} knowledgeConnected={knowledgeConnection.status === "connected" || notionConnection.status === "connected"} onSave={saveProfile} onOpenKnowledge={() => openSurface("knowledge")} onStartQuestion={suggestion => { setContent(suggestion); setComposeNew(true); setView("chat"); }} /> : null}
+        {view === "chat" && !profile.onboarding.completedAt ? <Onboarding profile={profile} knowledgeConnected={[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection].some(item => item.status === "connected")} onSave={saveProfile} onOpenKnowledge={() => openSurface("knowledge")} onStartQuestion={suggestion => { setContent(suggestion); setComposeNew(true); setView("chat"); }} /> : null}
         <div className="studio-presence">
           <OneHeroEye mood={heroMood} />
           <div className="studio-presence-copy"><span className="studio-eyebrow">ONE IS WITH YOU</span>
@@ -1595,7 +1606,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               <button type="button" onClick={() => setContent("从我的个人知识中，找出现在最值得重新关注的内容")}><span>找找被我忘掉的好东西</span><i aria-hidden="true">↗</i></button>
             </div>
           ) : null}
-        <footer className="studio-assistant-footer"><span className={`connection-dot ${knowledgeConnection.status === "connected" || notionConnection.status === "connected" ? "connected" : "disconnected"}`} /><button type="button" onClick={() => openSurface("knowledge")}>{knowledgeConnection.status === "connected" || notionConnection.status === "connected" ? "知识已连接" : "连接知识"}</button></footer>
+        <footer className="studio-assistant-footer"><span className={`connection-dot ${[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection].some(item => item.status === "connected") ? "connected" : "disconnected"}`} /><button type="button" onClick={() => openSurface("knowledge")}>{[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection].some(item => item.status === "connected") ? "知识已连接" : "连接知识"}</button></footer>
       </aside>
       </div>
     </main>
@@ -1909,7 +1920,6 @@ function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onM
   const [notice, setNotice] = useState("");
   const [billing, setBilling] = useState<{ balanceMicros: number; reservedMicros?: number; availableMicros?: number; ledger: PowerLedgerEntry[]; orders: RechargeOrder[]; usage: UsageRecord[]; rechargeCnyPerPower: number } | null>(null);
   const [selectedModelId, setSelectedModelId] = useState(defaultModelId);
-  const [rechargePower, setRechargePower] = useState("50");
 
   async function loadBilling() { setBilling(await api("/api/me/billing")); }
   useEffect(() => { loadBilling().catch((error) => setNotice(error.message)); }, []);
@@ -1921,11 +1931,6 @@ function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onM
     catch (error) { setNotice(error instanceof Error ? error.message : "模型更新失败"); }
   }
 
-  async function recharge(event: FormEvent) {
-    event.preventDefault(); setNotice("");
-    try { const result = await api<{ message: string }>("/api/me/recharge-orders", { method: "POST", body: JSON.stringify({ power: Number(rechargePower) }) }); setNotice(result.message); await loadBilling(); }
-    catch (error) { setNotice(error instanceof Error ? error.message : "充值申请失败"); }
-  }
 
   async function changePassword(event: FormEvent) {
     event.preventDefault();
@@ -1963,12 +1968,7 @@ function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onM
           <div className="account-panel-title"><Wallet size={18} /><h3>我的电力</h3></div>
           <strong className="power-balance">{power(billing?.balanceMicros)} <small>电力</small></strong>
           {billing?.reservedMicros ? <p className="hint">预占 {power(billing.reservedMicros, 6)}，可用 {power(billing.availableMicros, 6)}；待核对调用请联系管理员。</p> : null}
-          <form className="recharge-inline" onSubmit={recharge}>
-            <select value={rechargePower} onChange={(event) => setRechargePower(event.target.value)}><option value="10">10 电力</option><option value="50">50 电力</option><option value="100">100 电力</option><option value="500">500 电力</option></select>
-            <span>约 ¥{((Number(rechargePower) || 0) * (billing?.rechargeCnyPerPower || 0)).toFixed(2)}</span>
-            <button className="primary" type="submit">申请充值</button>
-          </form>
-          <small className="hint">在线支付未开放；提交后联系管理员充值。</small>
+          <PaymentPanel api={api} rate={billing?.rechargeCnyPerPower || 0} onPaid={loadBilling} />
         </section>
         <section className="account-panel">
           <div className="account-panel-title"><Bot size={18} /><h3>默认模型</h3></div>
@@ -1981,10 +1981,6 @@ function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onM
           <label>确认新密码<input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label>
           <button className="primary" type="submit" disabled={!currentPassword || newPassword.length < 8 || !confirmPassword}>更新密码</button>
         </form> : null}
-        <section className="account-panel account-ledger-panel">
-          <div className="account-panel-title"><ReceiptText size={18} /><h3>最近账单</h3></div>
-          <div className="mini-ledger">{billing?.ledger.length ? billing.ledger.slice(0, 12).map((entry) => <div key={entry.id}><span><strong>{entry.title}</strong><small>{dateTime(entry.createdAt)}</small></span><b className={entry.amountMicros >= 0 ? "positive" : "negative"}>{entry.amountMicros > 0 ? "+" : ""}{power(entry.amountMicros, 6)}</b></div>) : <p className="hint">还没有账单记录</p>}</div>
-        </section>
         {notice ? <div className="notice account-wide-notice">{notice}</div> : null}
       </div>
     </section>
@@ -2000,19 +1996,22 @@ function KnowledgePage({
 }) {
   const api = useContext(PrivateApiContext);
   const [connection, setConnection] = useState<KnowledgeConnection>({ provider: "getnote", status: "disconnected" });
-  const [notionConnection, setNotionConnection] = useState<KnowledgeConnection>({ provider: "notion", status: "disconnected" });
+  const [remoteConnections, setRemoteConnections] = useState<Record<"notion" | "yinxiang" | "flowus", KnowledgeConnection>>({
+    notion: { provider: "notion", status: "disconnected" }, yinxiang: { provider: "yinxiang", status: "disconnected" }, flowus: { provider: "flowus", status: "disconnected" }
+  });
   const [configured, setConfigured] = useState(false);
-  const [notionConfigured, setNotionConfigured] = useState(false);
-  const [notionBusy, setNotionBusy] = useState(false);
+  const [remoteConfigured, setRemoteConfigured] = useState<Record<"notion" | "yinxiang" | "flowus", boolean>>({ notion: false, yinxiang: false, flowus: false });
+  const [remoteBusy, setRemoteBusy] = useState<"notion" | "yinxiang" | "flowus" | "">("");
   const [testConnectAvailable, setTestConnectAvailable] = useState(false);
   const [flow, setFlow] = useState<GetNoteDeviceFlow | null>(null);
   const [polling, setPolling] = useState(false);
   const [notice, setNotice] = useState("");
 
   async function load() {
-    const [getNoteResult, notionResult] = await Promise.allSettled([
+    const providers = ["notion", "yinxiang", "flowus"] as const;
+    const [getNoteResult, ...remoteResults] = await Promise.allSettled([
       api<{ connection: KnowledgeConnection; configured: boolean; testConnectAvailable?: boolean }>("/api/knowledge/connections/getnote"),
-      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/notion")
+      ...providers.map(provider => api<{ connection: KnowledgeConnection; configured: boolean }>(`/api/knowledge/connections/${provider}`))
     ]);
     if (getNoteResult.status === "fulfilled") {
       setConnection(getNoteResult.value.connection);
@@ -2022,13 +2021,15 @@ function KnowledgePage({
     } else {
       setConfigured(false);
     }
-    if (notionResult.status === "fulfilled") {
-      setNotionConnection(notionResult.value.connection);
-      setNotionConfigured(notionResult.value.configured);
-      onConnectionChange?.(notionResult.value.connection);
-    } else {
-      setNotionConfigured(false);
-    }
+    const nextConnections = { ...remoteConnections };
+    const nextConfigured = { ...remoteConfigured };
+    providers.forEach((provider, index) => {
+      const result = remoteResults[index];
+      if (result.status === "fulfilled") { nextConnections[provider] = result.value.connection; nextConfigured[provider] = result.value.configured; onConnectionChange?.(result.value.connection); }
+      else nextConfigured[provider] = false;
+    });
+    setRemoteConnections(nextConnections);
+    setRemoteConfigured(nextConfigured);
     if (getNoteResult.status === "rejected") throw getNoteResult.reason;
   }
 
@@ -2039,6 +2040,14 @@ function KnowledgePage({
       const url = new URL(window.location.href);
       url.searchParams.delete("notion");
       window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+    const params = new URLSearchParams(window.location.search);
+    const provider = params.get("knowledge");
+    const status = params.get("status");
+    if ((provider === "yinxiang" || provider === "flowus") && status) {
+      const label = provider === "yinxiang" ? "印象笔记" : "息流 FlowUs";
+      setNotice(status === "connected" ? `${label} 已连接` : status === "cancelled" ? `${label} 授权已取消` : `${label} 授权未完成，请重试。`);
+      const url = new URL(window.location.href); url.searchParams.delete("knowledge"); url.searchParams.delete("status"); window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
     }
     load().catch((err) => setNotice(err.message));
   }, []);
@@ -2136,23 +2145,23 @@ function KnowledgePage({
     }
   }
 
-  async function connectNotion() {
+  async function connectRemote(provider: "notion" | "yinxiang" | "flowus") {
     setNotice("");
-    setNotionBusy(true);
+    setRemoteBusy(provider);
     try {
-      const result = await api<{ authorizationUrl: string }>("/api/knowledge/connections/notion/oauth/start", { method: "POST" });
+      const result = await api<{ authorizationUrl: string }>(`/api/knowledge/connections/${provider}/oauth/start`, { method: "POST" });
       window.location.assign(result.authorizationUrl);
     } catch (err) {
-      setNotionBusy(false);
-      setNotice(err instanceof Error ? err.message : "无法发起 Notion 授权");
+      setRemoteBusy("");
+      setNotice(err instanceof Error ? err.message : "无法发起授权");
     }
   }
 
-  async function disconnectNotion() {
-    if (!confirm("断开 Notion？")) return;
-    await api("/api/knowledge/connections/notion", { method: "DELETE" });
+  async function disconnectRemote(provider: "notion" | "yinxiang" | "flowus", label: string) {
+    if (!confirm(`断开 ${label}？`)) return;
+    await api(`/api/knowledge/connections/${provider}`, { method: "DELETE" });
     await load();
-    setNotice("Notion 已断开");
+    setNotice(`${label} 已断开`);
   }
 
   return (
@@ -2191,31 +2200,22 @@ function KnowledgePage({
             </>
           )}
         </section>
-        <section className="account-panel knowledge-panel">
-          <div className="knowledge-provider-head">
-            <div className="provider-icon"><FileText size={19} /></div>
-            <div><h3>Notion</h3></div>
-            <span className={`provider-status ${notionConnection.status}`}>{notionConnection.status === "connected" ? "已连接" : notionConnection.status === "pending" ? "授权中" : "未连接"}</span>
-          </div>
-          {notionConnection.status === "connected" ? (
-            <>
-              <div className="notice">工作区：{notionConnection.providerSpaceName || "Notion"}</div>
-              <p className="hint">只读：ONE 会按需搜索相关页面，不会修改或删除内容。</p>
-              <button className="danger" type="button" onClick={disconnectNotion}>断开连接</button>
-            </>
-          ) : (
-            <>
-              <button className="primary" type="button" disabled={!notionConfigured || notionBusy} onClick={connectNotion}>{notionBusy ? "正在打开 Notion…" : "连接 Notion"}</button>
-              {!notionConfigured ? <p className="hint">Notion 连接暂未开通，请联系管理员。</p> : null}
-            </>
-          )}
-        </section>
+        {([
+          { id: "notion", label: "Notion" }, { id: "yinxiang", label: "印象笔记" }, { id: "flowus", label: "息流 FlowUs" }
+        ] as const).map(provider => {
+          const item = remoteConnections[provider.id];
+          return <section className="account-panel knowledge-panel" key={provider.id}>
+            <div className="knowledge-provider-head"><div className="provider-icon"><FileText size={19} /></div><div><h3>{provider.label}</h3></div><span className={`provider-status ${item.status}`}>{item.status === "connected" ? "已连接" : item.status === "pending" ? "授权中" : item.status === "error" ? "需重连" : "未连接"}</span></div>
+            {item.status === "connected" ? <><div className="notice">工作区：{item.providerSpaceName || provider.label}</div><p className="hint">只读：ONE 会按需搜索相关内容，不会修改或删除内容。</p><button className="danger" type="button" onClick={() => void disconnectRemote(provider.id, provider.label)}>断开连接</button></>
+              : <><button className="primary" type="button" disabled={!remoteConfigured[provider.id] || Boolean(remoteBusy)} onClick={() => void connectRemote(provider.id)}>{remoteBusy === provider.id ? `正在打开 ${provider.label}…` : `连接 ${provider.label}`}</button>{!remoteConfigured[provider.id] ? <p className="hint">{provider.label} 连接暂未开通，请联系管理员。</p> : null}</>}
+          </section>;
+        })}
       </div>
     </section>
   );
 }
 
-function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Promise<void>; onOpenSidebar: () => void }) {
+function AdminPanel({ actorId, refreshModels, onOpenSidebar }: { actorId: string; refreshModels: () => Promise<void>; onOpenSidebar: () => void }) {
   const api = useContext(PrivateApiContext);
   const [tab, setTab] = useState<"overview" | "users" | "keys" | "models" | "billing" | "usage" | "contexts" | "logs">("overview");
   const [users, setUsers] = useState<User[]>([]);
@@ -2268,7 +2268,7 @@ function AdminPanel({ refreshModels, onOpenSidebar }: { refreshModels: () => Pro
           {tab === "users" ? <UsersTab users={users} reload={load} /> : null}
           {tab === "keys" ? <OneKeysTab users={users} devices={devices} reload={load} /> : null}
           {tab === "models" ? <ModelsTab models={models} reload={async () => { await load(); await refreshModels(); }} /> : null}
-          {tab === "billing" ? <AdminBilling users={users} operations={operations} reload={load} /> : null}
+          {tab === "billing" ? <AdminBilling actorId={actorId} users={users} operations={operations} reload={load} /> : null}
           {tab === "usage" ? <AdminUsage summaries={operations?.userUsage || []} reload={load} /> : null}
           {tab === "contexts" ? <AdminContexts traces={contextTraces} /> : null}
           {tab === "logs" ? <AdminLogs logs={operations?.logs || []} /> : null}
@@ -2292,15 +2292,39 @@ function AdminOverview({ operations }: { operations: { health?: OperationsHealth
   </div>;
 }
 
-function AdminBilling({ users, operations, reload }: { users: User[]; operations: { pendingOrders: RechargeOrder[]; ledger: PowerLedgerEntry[]; settings: { rechargeCnyPerPower: number } } | null; reload: () => Promise<void> }) {
+function AdminBilling({ actorId, users, operations, reload }: { actorId: string; users: User[]; operations: { pendingOrders: RechargeOrder[]; ledger: PowerLedgerEntry[]; settings: { rechargeCnyPerPower: number } } | null; reload: () => Promise<void> }) {
   const api = useContext(PrivateApiContext);
-  const [userId, setUserId] = useState(users[0]?.id || ""); const [gift, setGift] = useState("10"); const [rate, setRate] = useState(String(operations?.settings.rechargeCnyPerPower || 7)); const [notice, setNotice] = useState("");
+  const batchPending = useRef<{ operationId: string; power: number; title: string } | null>(null);
+  const batchBusy = useRef(false);
+  const [userId, setUserId] = useState(users[0]?.id || ""); const [gift, setGift] = useState("10"); const [batchGift, setBatchGift] = useState("10"); const [batchTitle, setBatchTitle] = useState("内测统一赠送"); const [rate, setRate] = useState(String(operations?.settings.rechargeCnyPerPower || 7)); const [notice, setNotice] = useState("");
   useEffect(() => { if (!userId && users[0]) setUserId(users[0].id); }, [users]);
   async function give(event: FormEvent) { event.preventDefault(); try { await api(`/api/admin/users/${userId}/power`, { method: "POST", body: JSON.stringify({ power: Number(gift) }) }); setNotice("电力已到账"); await reload(); } catch (error) { setNotice(error instanceof Error ? error.message : "赠送失败"); } }
+  async function giveBatch(event: FormEvent) {
+    event.preventDefault(); if (batchBusy.current) return;
+    const storageKey = `one-gift-pending:${actorId}`;
+    try { batchPending.current ??= JSON.parse(localStorage.getItem(storageKey) || "null"); }
+    catch { setNotice("无法读取原批次，请先核对赠送记录"); return; }
+    if (!batchPending.current && (!Number.isFinite(Number(batchGift)) || Number(batchGift) <= 0 || Number(batchGift) > 1000000 || !Number.isSafeInteger(Number(batchGift) * 1e6))) {
+      setNotice("请输入大于 0、不超过 1000000 的电力，最多 6 位小数"); return;
+    }
+    if (!batchPending.current && !confirm(`确认给全部启用成员（含管理员）各赠送 ${batchGift} 电力？`)) return;
+    batchBusy.current = true;
+    batchPending.current ??= { operationId: crypto.randomUUID(), power: Number(batchGift), title: batchTitle };
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(batchPending.current));
+      const result = await api<{ recipientCount: number; batchId: string }>("/api/admin/power/batch-gift", { method: "POST", body: JSON.stringify(batchPending.current) });
+      localStorage.removeItem(storageKey);
+      batchPending.current = null;
+      setNotice(`已给 ${result.recipientCount} 位成员赠送电力 · ${result.batchId}`);
+      await reload();
+    } catch (error) { setNotice(`${error instanceof Error ? error.message : "赠送失败"}；再次点击将核对原批次，不会重复赠送`); }
+    finally { batchBusy.current = false; }
+  }
   async function saveRate(event: FormEvent) { event.preventDefault(); try { await api("/api/admin/settings/billing", { method: "PATCH", body: JSON.stringify({ rechargeCnyPerPower: Number(rate) }) }); setNotice("充值汇率已更新"); await reload(); } catch (error) { setNotice(error instanceof Error ? error.message : "保存失败"); } }
   async function approve(order: RechargeOrder) { await api(`/api/admin/recharge-orders/${order.id}/approve`, { method: "POST" }); setNotice("充值已入账"); await reload(); }
   return <div className="admin-grid">
-    <div className="admin-form-stack"><form className="admin-form" onSubmit={give}><h3><Wallet size={17} />赠送电力</h3><select value={userId} onChange={(event) => setUserId(event.target.value)}>{users.map((user) => <option key={user.id} value={user.id}>{user.username} · {power(user.balanceMicros)} 电力</option>)}</select><input type="number" min="0.000001" step="0.000001" value={gift} onChange={(event) => setGift(event.target.value)} /><button className="primary">确认赠送</button></form><form className="admin-form" onSubmit={saveRate}><h3>充值汇率</h3><label>1 电力 = 人民币<input type="number" min="0.01" step="0.01" value={rate} onChange={(event) => setRate(event.target.value)} /></label><button className="secondary">保存汇率</button></form>{notice ? <div className="notice">{notice}</div> : null}</div>
+    <GiftBatchHistory api={api} revision={notice} />
+    <div className="admin-form-stack"><form className="admin-form" onSubmit={give}><h3><Wallet size={17} />赠送电力</h3><select value={userId} onChange={(event) => setUserId(event.target.value)}>{users.map((user) => <option key={user.id} value={user.id}>{user.username} · {power(user.balanceMicros)} 电力</option>)}</select><input type="number" min="0.000001" step="0.000001" value={gift} onChange={(event) => setGift(event.target.value)} /><button className="primary">确认赠送</button></form><form className="admin-form" onSubmit={giveBatch}><h3>批量赠送</h3><label>每位启用成员赠送<input type="number" min="0.000001" step="0.000001" value={batchGift} onChange={(event) => setBatchGift(event.target.value)} /></label><label>批次说明<input value={batchTitle} onChange={(event) => setBatchTitle(event.target.value)} maxLength={80} /></label><button className="secondary">给全部启用成员赠送</button><small className="hint">管理员也包含在启用成员内；每位成员都会留下独立电力账本记录。</small></form><form className="admin-form" onSubmit={saveRate}><h3>充值汇率</h3><label>1 电力 = 人民币<input type="number" min="0.01" step="0.01" value={rate} onChange={(event) => setRate(event.target.value)} /></label><button className="secondary">保存汇率</button></form>{notice ? <div className="notice">{notice}</div> : null}</div>
     <div className="table"><h3>待入账充值</h3>{operations?.pendingOrders.length ? operations.pendingOrders.map((order) => <div className="table-row" key={order.id}><span>{order.username}<small>{dateTime(order.createdAt)}</small></span><span>{power(order.requestedMicros)} 电力 · ¥{order.amountCny.toFixed(2)}</span><button className="primary" onClick={() => approve(order)}>确认入账</button></div>) : <div className="empty-state compact">暂无待处理充值</div>}</div>
   </div>;
 }
@@ -2312,7 +2336,7 @@ function usageActionLabel(action: string) {
     "knowledge.recall.succeeded": "知识召回完成", "recharge.requested": "申请充值", "execution.codex.created": "创建本机执行任务",
     "execution.local_agent.created": "创建 Local Agent 任务", "attachment.uploaded": "上传附件",
     "admin.one_key.provisioned": "初始化 ONE Key", "admin.one_key.revoked": "挂失 ONE Key", "admin.user.created": "开通账号",
-    "admin.user.updated": "更新账号", "admin.power.gifted": "赠送电力", "admin.recharge.approved": "确认充值入账",
+    "admin.user.updated": "更新账号", "admin.power.gifted": "赠送电力", "admin.power.batch_gifted": "批量赠送电力", "admin.recharge.approved": "确认充值入账",
     "admin.billing.rate.updated": "更新充值汇率", "admin.model.created": "添加模型", "admin.model.updated": "更新模型配置"
   };
   return labels[action] || "其他活动";
@@ -2691,6 +2715,7 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
               <>
                 <span>{model.name}<small>{model.kind === "image" ? "图片" : model.protocol === "anthropic" ? "聊天 · Anthropic" : "聊天 · OpenAI"} · {model.model}{model.isDefault ? " · 新聊天默认" : ""}</small></span>
                 <span>{model.hasApiKey ? "已配置 Key" : "缺少 Key"}<small>{model.kind === "image" ? `售价 ${model.imagePowerPerCall || "未配置"} 电力 / 次` : `售价 ${model.inputPowerPerMillion} / ${model.outputPowerPerMillion} 电力 / 百万 Token`}</small></span>
+                {model.kind === "chat" ? <PricingPanel key={`${model.id}-${model.pricing?.version}`} api={api} model={model} reload={reload} /> : null}
                 <button className="secondary" onClick={() => setEditing({ ...editing, [model.id]: { name: model.name, kind: model.kind, protocol: model.protocol, baseUrl: model.baseUrl, model: model.model, apiKey: "", systemPrompt: model.systemPrompt || "", inputPowerPerMillion: model.inputPowerPerMillion, outputPowerPerMillion: model.outputPowerPerMillion, costInputPowerPerMillion: model.costInputPowerPerMillion, costOutputPowerPerMillion: model.costOutputPowerPerMillion, imagePowerPerCall: model.imagePowerPerCall ?? 0, costImagePowerPerCall: model.costImagePowerPerCall ?? 0, enabled: model.enabled, isDefault: model.isDefault } })}><Edit3 size={15} />编辑</button>
                 <button className="secondary" onClick={() => toggle(model)}>{model.enabled ? "停用" : "启用"}</button>
                 <button className="danger" onClick={() => deleteModel(model)}><Trash2 size={15} />删除</button>
