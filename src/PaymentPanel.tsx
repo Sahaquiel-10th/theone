@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ChevronRight, Wallet, Zap } from "lucide-react";
 import type { api as apiType } from "./oneApi";
 import { SettingsDialog } from "./SettingsControls";
+import { PriceNotices } from "./PriceNotices";
 type Order = { id: string; status: string; requestedMicros: number; amountCny: number; createdAt: string; expiresAt?: string };
 const power = (n = 0) => (n / 1e6).toLocaleString("zh-CN", { maximumFractionDigits: 6 });
 const date = (s: string) => new Date(s).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
@@ -13,6 +14,7 @@ export function PaymentPanel({ api, rate, balance = 0, reserved = 0, onPaid }: {
   const refresh = useCallback(async () => { await onPaid(); setRevision(n => n + 1); }, [onPaid]);
   const percent = spent === null ? null : balance + spent > 0 ? Math.max(0, Math.min(100, balance / (balance + spent) * 100)) : 0;
   return <div className="power-dashboard">
+    <PriceNotices api={api} />
     <section className="power-overview"><div className="power-overview-top"><span><Zap size={17} />我的电力</span><button type="button" className="power-price-link" onClick={() => setPricesOpen(true)}>计费价格<ChevronRight size={14} /></button></div><div className="power-overview-main"><div><strong>{power(balance)}</strong><span>电力余额</span></div><button type="button" className="primary" onClick={() => setOpen(true)}><Wallet size={17} />充值</button></div>
       {percent !== null ? <><progress aria-label="电力余额占余额与累计消耗的比例" max={100} value={percent} /><div className="power-overview-foot"><span>累计消耗 {power(spent!)} 电力</span><span>剩余 {percent > 0 && percent < 0.1 ? "< 0.1" : percent.toFixed(1)}%</span></div></> : null}
       {reserved > 0 ? <p className="power-reserved">处理中 {power(reserved)} · 当前可用 {power(Math.max(0, balance - reserved))} 电力</p> : null}
@@ -52,6 +54,7 @@ function RechargeDialog({ api, rate, onPaid, onClose }: { api: typeof apiType; r
     return () => window.clearInterval(timer);
   }, [payment, check]);
   return <SettingsDialog title="充值电力" onClose={onClose}>
+    {!payment ? <PriceNotices api={api} /> : null}
     {!payment ? <><p className="settings-caption">选择充值金额（元）</p><div className="recharge-amount-grid">{["5", "10", "15", "20", "50", "100", "custom"].map(n => <button type="button" key={n} disabled={!!pending.current} aria-pressed={amount === n} onClick={() => setAmount(n)}>{n === "custom" ? "自定义" : <><small>¥</small>{n}</>}</button>)}</div>{amount === "custom" ? <label className="recharge-custom">充值金额<input autoFocus type="number" min="0.01" max="10000" step="0.01" placeholder="最低 ¥0.01" value={custom} disabled={!!pending.current} onChange={e => setCustom(e.target.value)} /></label> : null}<div className="recharge-preview"><span>预计到账</span><strong>{valid ? power(Math.floor(Math.round(Number(yuan) * 100) * 10000 / rate)) : "—"}<small> 电力</small></strong></div><p className="settings-caption">¥{rate} / 电力 · 优惠按实际消耗计费</p><button type="button" className="primary recharge-pay-button" disabled={busy || (!pending.current && !valid)} onClick={() => void create()}>{busy ? "正在生成付款码…" : pending.current ? "重试生成付款码" : "微信支付"}</button></>
       : payment.order.status === "paid" ? <div className="recharge-success"><span><Check size={30} /></span><h3>充值成功</h3><p>{power(payment.order.requestedMicros)} 电力已到账</p><button type="button" className="primary recharge-pay-button" onClick={onClose}>完成</button></div>
       : <div className="recharge-qr"><strong>¥{payment.order.amountCny.toFixed(2)}</strong><p>到账 {power(payment.order.requestedMicros)} 电力</p>{payment.qrCode ? <img src={payment.qrCode} width={208} height={208} alt="微信付款二维码" /> : <p className="settings-empty">付款码暂未生成，请核对订单状态</p>}<p className="settings-caption">打开微信扫一扫</p><button type="button" className="secondary" disabled={busy} onClick={() => void check(true)}>{busy ? "正在核对…" : "我已支付"}</button><p className="settings-caption">关闭后可在充值记录中核对订单</p></div>}

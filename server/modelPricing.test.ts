@@ -1,0 +1,37 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { publishPricing, effectiveModel, publicPrices, cancelScheduledPricing } from "./modelPricing.js";
+import type { Database } from "./types.js";
+const fixture = () => ({ users: [{ id: "admin", enabled: true, role: "admin" }, { id: "u", enabled: true, role: "user" }], models: [{ id: "m", kind: "chat", name: "Test", apiKey: "secret", enabled: true, inputPowerPerMillion: 10, outputPowerPerMillion: 20, costInputPowerPerMillion: 2, costOutputPowerPerMillion: 4 }], auditLogs: [] }) as unknown as Database;
+const draft = { referenceInput: 10, referenceOutput: 20, multiplier: 0.8, costInput: 1, costOutput: 2, explanation: "内测优惠八折" };
+test("scheduled pricing, procurement and notice share the exact effective boundary after restart", () => {
+  const db = fixture(), when = Date.now() + 3600000;
+  publishPricing(db, "m", "admin", { ...draft, effectiveAt: new Date(when).toISOString() });
+  const restored = JSON.parse(JSON.stringify(db)) as Database;
+  const before = effectiveModel(restored.models[0], when - 1), after = effectiveModel(restored.models[0], when);
+  assert.equal(before.inputPowerPerMillion, 10); assert.equal(before.costInputPowerPerMillion, 2);
+  assert.equal(after.inputPowerPerMillion, 8); assert.equal(after.costInputPowerPerMillion, 1);
+  assert.equal(after.pricing?.explanation, draft.explanation);
+  assert.equal(publicPrices(restored.models, when - 1)[0].notices[0].status, "scheduled");
+  assert.equal(publicPrices(restored.models, when)[0].input, 8);
+  assert.equal(publicPrices(restored.models, when)[0].notices[0].status, "active");
+  assert.equal(before.inputPowerPerMillion, 10);
+  const safe = JSON.stringify(publicPrices(restored.models));
+  assert.ok(!safe.includes("secret")); assert.ok(!safe.includes("costInput")); assert.ok(!safe.includes("costOutput"));
+});
+test("only admins publish/cancel, pending schedules block replacement, cancellation retains history", () => {
+  const db = fixture(), when = new Date(Date.now() + 3600000).toISOString();
+  assert.throws(() => publishPricing(db, "m", "u", draft), /超管/);
+  assert.throws(() => publishPricing(db, "m", "admin", { ...draft, effectiveAt: "invalid" }));
+  assert.throws(() => publishPricing(db, "m", "admin", { ...draft, effectiveAt: "2000-01-01" }));
+  publishPricing(db, "m", "admin", { ...draft, effectiveAt: when });
+  assert.throws(() => publishPricing(db, "m", "admin", draft), /撤回/);
+  assert.throws(() => cancelScheduledPricing(db, "m", "u"), /超管/);
+  cancelScheduledPricing(db, "m", "admin");
+  assert.equal(effectiveModel(db.models[0], Date.parse(when)).inputPowerPerMillion, 10);
+  assert.equal(publicPrices(db.models)[0].notices[0].status, "cancelled");
+  publishPricing(db, "m", "admin", draft);
+  assert.equal(db.models[0].pricing?.version, 2);
+  assert.equal(effectiveModel(db.models[0]).inputPowerPerMillion, 8);
+  assert.equal(db.models[0].pricingHistory?.length, 3);
+});

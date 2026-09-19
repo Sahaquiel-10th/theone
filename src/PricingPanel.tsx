@@ -1,16 +1,46 @@
 import { useState } from "react";
 import type { api as apiType } from "./oneApi";
-export function PricingPanel({ api, model, reload }: { api: typeof apiType; model: { id: string; inputPowerPerMillion: number; outputPowerPerMillion: number; costInputPowerPerMillion: number; costOutputPowerPerMillion: number; pricing?: { referenceInput: number; referenceOutput: number; multiplier: number; version: number; label: string } }; reload: () => Promise<void> }) {
+import { SettingsDialog } from "./SettingsControls";
+type Price = { referenceInput: number; referenceOutput: number; multiplier: number; version: number; label: string; effectiveAt?: string; publishedAt?: string; explanation?: string };
+type PricedModel = { id: string; name?: string; kind?: string; inputPowerPerMillion: number; outputPowerPerMillion: number; costInputPowerPerMillion: number; costOutputPowerPerMillion: number; pricing?: Price; pricingHistory?: { pricing: Price; cancelledAt?: string }[] };
+const time = (s?: string) => s ? new Date(s).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }) + "（北京时间）" : "立即生效";
+const fmt = (n: number) => Number(n.toFixed(6)).toLocaleString("zh-CN", { maximumFractionDigits: 6 });
+export function PricingPanel({ api, model, reload }: { api: typeof apiType; model: PricedModel; reload: () => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  return <><button type="button" className="secondary" onClick={() => setOpen(true)}>配置价格与通知</button>{open ? <SettingsDialog title={`${model.name || "模型"} · 定价`} onClose={() => setOpen(false)}><PriceEditor key={`${model.id}-${model.pricingHistory?.length}-${model.pricingHistory?.filter(p => p.cancelledAt).length}`} api={api} model={model} reload={reload} /></SettingsDialog> : null}</>;
+}
+function PriceEditor({ api, model, reload }: { api: typeof apiType; model: PricedModel; reload: () => Promise<void> }) {
   const [draft, setDraft] = useState({ referenceInput: model.pricing?.referenceInput ?? model.inputPowerPerMillion, referenceOutput: model.pricing?.referenceOutput ?? model.outputPowerPerMillion,
-    multiplier: model.pricing?.multiplier ?? 1, costInput: model.costInputPowerPerMillion, costOutput: model.costOutputPowerPerMillion });
+    multiplier: model.pricing?.multiplier ?? 0.8, costInput: model.costInputPowerPerMillion, costOutput: model.costOutputPowerPerMillion });
+  const [explanation, setExplanation] = useState(""), [schedule, setSchedule] = useState(false), [effectiveAt, setEffectiveAt] = useState("");
   const [busy, setBusy] = useState(false), [message, setMessage] = useState("");
+  const [historyPage, setHistoryPage] = useState(1);
+  const [step, setStep] = useState(0);
+  const pending = model.pricingHistory?.find(r => !r.cancelledAt && Date.parse(r.pricing.effectiveAt || "") > Date.now());
   async function publish() {
-    if (!confirm(`发布新价格？新请求按 ×${draft.multiplier} 结算，历史账单保持原价。`)) return;
-    setBusy(true); try { await api(`/api/admin/models/${model.id}/pricing`, { method: "POST", body: JSON.stringify(draft) }); setMessage("价格已发布"); await reload(); }
+    if (!explanation.trim() || schedule && (!effectiveAt || Date.parse(effectiveAt + "+08:00") <= Date.now())) { setMessage("请填写调价说明及有效的生效时间"); return; }
+    const date = schedule ? new Date(effectiveAt + "+08:00").toISOString() : undefined;
+    if (!confirm(`发布价格与通知？\n${time(date)}\n用户输入 / 输出价格：${fmt(draft.referenceInput * draft.multiplier)} / ${fmt(draft.referenceOutput * draft.multiplier)} 电力 / 百万 Token\n${explanation}`)) return;
+    setBusy(true); try { await api(`/api/admin/models/${model.id}/pricing`, { method: "POST", body: JSON.stringify({ ...draft, explanation, effectiveAt: date }) }); await reload(); setMessage("价格与通知已发布"); }
     catch (e) { setMessage(e instanceof Error ? e.message : "发布失败"); } finally { setBusy(false); }
   }
-  return <details><summary>计费价格 · {model.pricing ? `${model.pricing.label} ×${model.pricing.multiplier} / v${model.pricing.version}` : "待配置官方参考价"}</summary>
-    {(Object.keys(draft) as (keyof typeof draft)[]).map(key => <label key={key}>{({ referenceInput: "官方输入参考价", referenceOutput: "官方输出参考价", multiplier: "用户消费倍率", costInput: "供应商输入进价", costOutput: "供应商输出进价" })[key]}<input type="number" min={key === "multiplier" ? 0.001 : 0} step="0.000001" value={draft[key]} onChange={e => setDraft({ ...draft, [key]: Number(e.target.value) })} /></label>)}
-    <p>单位：电力 / 百万 Token。新售价 {draft.referenceInput * draft.multiplier} / {draft.referenceOutput * draft.multiplier}</p>
-    <button className="secondary" disabled={busy} onClick={() => void publish()}>发布价格</button>{message ? <p>{message}</p> : null}</details>;
+  async function cancel() {
+    if (!confirm("撤回尚未生效的调价？用户端会保留已撤回记录。")) return;
+    setBusy(true); try { await api(`/api/admin/models/${model.id}/pricing/scheduled`, { method: "DELETE" }); await reload(); } catch(e) { setMessage(e instanceof Error ? e.message : "撤回失败"); } finally { setBusy(false); }
+  }
+  const fields = (keys: (keyof typeof draft)[]) => <div className="pricing-field-grid">{keys.map(key => <label key={key}>{({ referenceInput: "输入", referenceOutput: "输出", multiplier: "消费倍率", costInput: "输入", costOutput: "输出" })[key]}<input type="number" min={key === "multiplier" ? 0.001 : 0} step="0.000001" value={draft[key]} onChange={e => setDraft({ ...draft, [key]: Number(e.target.value) })} /></label>)}</div>;
+  return <div className="pricing-editor"><p className="settings-caption">1 电力对应 1 美元计价单位。人民币充值汇率单独设置。</p>{pending ? <div className="pricing-preview"><strong>已有预约调价</strong><p>{time(pending.pricing.effectiveAt)}</p><p>{pending.pricing.explanation}</p><button type="button" className="secondary" disabled={busy} onClick={() => void cancel()}>撤回预约</button></div> : <>
+    <div className="settings-tabs"><button type="button" aria-pressed={step === 0} onClick={() => setStep(0)}>1 · 配置价格</button><button type="button" aria-pressed={step === 1} onClick={() => setStep(1)}>2 · 通知与发布</button></div><div hidden={step !== 0}><h3>官方参考价 <small>美元 / 百万 Token</small></h3>{fields(["referenceInput", "referenceOutput"])}
+    <h3>实际采购价 <small>美元 / 百万 Token · 仅超管可见</small></h3>{fields(["costInput", "costOutput"])}<p className="settings-caption">填写计入中转站充值折扣后的实际采购价。</p>
+    <h3>用户收费倍率</h3><div className="settings-tabs">{[0.8, 1, 1.2].map(n => <button type="button" key={n} aria-pressed={draft.multiplier === n} onClick={() => setDraft({ ...draft, multiplier: n })}>{n === 0.8 ? "优惠八折" : n === 1 ? "官方原价" : "服务费 20%"}</button>)}</div>{fields(["multiplier"])}
+    <div className="pricing-preview"><strong>用户输入 / 输出：{fmt(draft.referenceInput * draft.multiplier)} / {fmt(draft.referenceOutput * draft.multiplier)} 电力</strong><p>每百万 Token 预计毛利：${fmt(draft.referenceInput * draft.multiplier - draft.costInput)} / ${fmt(draft.referenceOutput * draft.multiplier - draft.costOutput)}</p></div>
+    <button type="button" className="primary recharge-pay-button" onClick={() => setStep(1)}>下一步：填写通知</button></div><div hidden={step !== 1}><h3>通知与生效时间</h3><label>给用户的调价说明<textarea rows={3} maxLength={1000} placeholder="例如：内测优惠期，按官方参考价八折计费。" value={explanation} onChange={e => setExplanation(e.target.value)} /></label><div className="settings-tabs"><button type="button" aria-pressed={!schedule} onClick={() => setSchedule(false)}>立即生效</button><button type="button" aria-pressed={schedule} onClick={() => setSchedule(true)}>预约生效</button></div>{schedule ? <label>生效时间（北京时间）<input type="datetime-local" value={effectiveAt} onChange={e => setEffectiveAt(e.target.value)} /></label> : null}<div className="pricing-preview">用户输入 / 输出：{fmt(draft.referenceInput * draft.multiplier)} / {fmt(draft.referenceOutput * draft.multiplier)} 电力 / 百万 Token</div><button type="button" className="primary recharge-pay-button" disabled={busy || !explanation.trim()} onClick={() => void publish()}>发布价格与通知</button></div></>}
+    {message ? <p role="status">{message}</p> : null}
+    <details className="pricing-history"><summary>历史价格与通知</summary>{[...(model.pricingHistory || [])].reverse().slice((historyPage - 1) * 5, historyPage * 5).map(r => <article key={r.pricing.version}><strong>v{r.pricing.version} · {r.cancelledAt ? "已撤回" : r.pricing.label}</strong><p>{time(r.pricing.effectiveAt || r.pricing.publishedAt)}</p><p>{r.pricing.explanation || "原计费价格"}</p></article>)}<div className="settings-pagination"><button type="button" disabled={historyPage <= 1} onClick={() => setHistoryPage(historyPage - 1)}>上一页</button><span>{historyPage}</span><button type="button" disabled={historyPage * 5 >= (model.pricingHistory?.length || 0)} onClick={() => setHistoryPage(historyPage + 1)}>下一页</button></div></details>
+  </div>;
+}
+export function PricingCatalog({ api, models, reload }: { api: typeof apiType; models: PricedModel[]; reload: () => Promise<void> }) {
+  const [query, setQuery] = useState(""), [page, setPage] = useState(1);
+  const filtered = models.filter(m => m.kind === "chat" && (m.name || "").toLowerCase().includes(query.trim().toLowerCase()));
+  return <section className="pricing-catalog"><h3>模型与定价</h3><p className="settings-caption">填美元参考价和实际采购价，选择收费倍率，再发布通知。</p><input type="search" aria-label="搜索定价模型" placeholder="搜索模型" value={query} onChange={e => { setQuery(e.target.value); setPage(1); }} />{filtered.slice((page - 1) * 8, page * 8).map(m => <article key={m.id}><div><strong>{m.name}</strong><small>{m.pricing?.label || "原计费价格"} · 输入 {fmt(m.inputPowerPerMillion)} / 输出 {fmt(m.outputPowerPerMillion)} 电力 / 百万 Token</small></div><PricingPanel api={api} model={m} reload={reload} /></article>)}{!filtered.length ? <p className="settings-empty">暂无匹配模型</p> : null}<div className="settings-pagination"><button disabled={page <= 1} onClick={() => setPage(page - 1)}>上一页</button><span>{page} / {Math.max(1, Math.ceil(filtered.length / 8))}</span><button disabled={page * 8 >= filtered.length} onClick={() => setPage(page + 1)}>下一页</button></div></section>;
 }

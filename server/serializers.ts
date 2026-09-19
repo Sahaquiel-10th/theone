@@ -1,4 +1,5 @@
 import { AdminModel, AuditLog, ModelConfig, ModelUsageRecord, PublicModel, PublicUser, User } from "./types.js";
+import { effectiveModel } from "./modelPricing.js";
 
 export function publicUser(user: User): PublicUser {
   const { passwordHash, ...safe } = user;
@@ -11,7 +12,7 @@ export function publicModel(model: ModelConfig): PublicModel {
 }
 
 export function adminModel(model: ModelConfig): AdminModel {
-  const { apiKey, encryptedApiKey, ...safe } = model;
+  const { apiKey, encryptedApiKey, ...safe } = effectiveModel(model);
   return { ...safe, hasApiKey: Boolean(apiKey || encryptedApiKey) };
 }
 

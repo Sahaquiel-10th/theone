@@ -72,7 +72,7 @@ import { chatSubmission, forgetChatSubmission, pendingChatSubmissions } from "./
 import { Onboarding, ProfileNameEditor, BetaFeedbackControls, type AccountProfile, type ProfilePatch } from "./Onboarding";
 import { getNotePollFailureAction, prepareGetNoteAuthorizationWindow } from "./getNoteAuthorization";
 import { PaymentPanel } from "./PaymentPanel";
-import { PricingPanel } from "./PricingPanel";
+import { PricingPanel, PricingCatalog } from "./PricingPanel";
 import { GiftBatchHistory } from "./GiftBatchHistory";
 
 type Role = "admin" | "user";
@@ -92,7 +92,8 @@ type User = {
 };
 
 type Model = {
-  pricing?: { referenceInput: number; referenceOutput: number; multiplier: number; version: number; label: string };
+  pricing?: { referenceInput: number; referenceOutput: number; multiplier: number; version: number; label: string; effectiveAt?: string; publishedAt?: string; explanation?: string };
+  pricingHistory?: { pricing: NonNullable<Model["pricing"]>; cancelledAt?: string }[];
   id: string;
   name: string;
   provider: string;
@@ -2222,6 +2223,7 @@ function KnowledgePage({
 
 function AdminPanel({ actorId, refreshModels, onOpenSidebar }: { actorId: string; refreshModels: () => Promise<void>; onOpenSidebar: () => void }) {
   const api = useContext(PrivateApiContext);
+  const [billingSection, setBillingSection] = useState("pricing");
   const [tab, setTab] = useState<"overview" | "users" | "keys" | "models" | "billing" | "usage" | "contexts" | "logs">("overview");
   const [users, setUsers] = useState<User[]>([]);
   const [models, setModels] = useState<Model[]>([]);
@@ -2262,7 +2264,7 @@ function AdminPanel({ actorId, refreshModels, onOpenSidebar }: { actorId: string
           <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={16} />账号</button>
           <button className={tab === "keys" ? "active" : ""} onClick={() => setTab("keys")}><Usb size={16} />ONE Key</button>
           <button className={tab === "models" ? "active" : ""} onClick={() => setTab("models")}><Bot size={16} />模型</button>
-          <button className={tab === "billing" ? "active" : ""} onClick={() => setTab("billing")}><Wallet size={16} />电力</button>
+          <button className={tab === "billing" ? "active" : ""} onClick={() => setTab("billing")}><Wallet size={16} />电力与收费</button>
           <button className={tab === "usage" ? "active" : ""} onClick={() => setTab("usage")}><ReceiptText size={16} />用户用量</button>
           <button className={tab === "contexts" ? "active" : ""} onClick={() => setTab("contexts")}><Eye size={16} />上下文</button>
           <button className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}><FileText size={16} />日志</button>
@@ -2273,7 +2275,7 @@ function AdminPanel({ actorId, refreshModels, onOpenSidebar }: { actorId: string
           {tab === "users" ? <UsersTab users={users} reload={load} /> : null}
           {tab === "keys" ? <OneKeysTab users={users} devices={devices} reload={load} /> : null}
           {tab === "models" ? <ModelsTab models={models} reload={async () => { await load(); await refreshModels(); }} /> : null}
-          {tab === "billing" ? <AdminBilling actorId={actorId} users={users} operations={operations} reload={load} /> : null}
+          {tab === "billing" ? <div className="admin-pricing-center"><nav className="settings-tabs"><button aria-pressed={billingSection === "pricing"} onClick={() => setBillingSection("pricing")}>模型与定价</button><button aria-pressed={billingSection === "accounts"} onClick={() => setBillingSection("accounts")}>充值、赠送与汇率</button></nav>{billingSection === "pricing" ? <PricingCatalog api={api} models={models} reload={load} /> : <AdminBilling actorId={actorId} users={users} operations={operations} reload={load} />}</div> : null}
           {tab === "usage" ? <AdminUsage summaries={operations?.userUsage || []} reload={load} /> : null}
           {tab === "contexts" ? <AdminContexts traces={contextTraces} /> : null}
           {tab === "logs" ? <AdminLogs logs={operations?.logs || []} /> : null}
@@ -2329,7 +2331,7 @@ function AdminBilling({ actorId, users, operations, reload }: { actorId: string;
   async function approve(order: RechargeOrder) { await api(`/api/admin/recharge-orders/${order.id}/approve`, { method: "POST" }); setNotice("充值已入账"); await reload(); }
   return <div className="admin-grid">
     <GiftBatchHistory api={api} revision={notice} />
-    <div className="admin-form-stack"><form className="admin-form" onSubmit={give}><h3><Wallet size={17} />赠送电力</h3><SearchPicker label="赠送用户" value={userId} onChange={setUserId} options={users.map(user => ({ value: user.id, label: user.profile?.displayName || user.username, hint: user.username + " · " + power(user.balanceMicros) + " 电力" }))} /><input type="number" min="0.000001" step="0.000001" value={gift} onChange={(event) => setGift(event.target.value)} /><button className="primary">确认赠送</button></form><form className="admin-form" onSubmit={giveBatch}><h3>批量赠送</h3><label>每位启用成员赠送<input type="number" min="0.000001" step="0.000001" value={batchGift} onChange={(event) => setBatchGift(event.target.value)} /></label><label>批次说明<input value={batchTitle} onChange={(event) => setBatchTitle(event.target.value)} maxLength={80} /></label><button className="secondary">给全部启用成员赠送</button><small className="hint">管理员也包含在启用成员内；每位成员都会留下独立电力账本记录。</small></form><form className="admin-form" onSubmit={saveRate}><h3>充值汇率</h3><label>1 电力 = 人民币<input type="number" min="0.01" step="0.01" value={rate} onChange={(event) => setRate(event.target.value)} /></label><button className="secondary">保存汇率</button></form>{notice ? <div className="notice">{notice}</div> : null}</div>
+    <div className="admin-form-stack"><form className="admin-form" onSubmit={give}><h3><Wallet size={17} />赠送电力</h3><SearchPicker label="赠送用户" value={userId} onChange={setUserId} options={users.map(user => ({ value: user.id, label: user.profile?.displayName || user.username, hint: user.username + " · " + power(user.balanceMicros) + " 电力" }))} /><input type="number" min="0.000001" step="0.000001" value={gift} onChange={(event) => setGift(event.target.value)} /><button className="primary">确认赠送</button></form><form className="admin-form" onSubmit={giveBatch}><h3>批量赠送</h3><label>每位启用成员赠送<input type="number" min="0.000001" step="0.000001" value={batchGift} onChange={(event) => setBatchGift(event.target.value)} /></label><label>批次说明<input value={batchTitle} onChange={(event) => setBatchTitle(event.target.value)} maxLength={80} /></label><button className="secondary">给全部启用成员赠送</button><small className="hint">管理员也包含在启用成员内；每位成员都会留下独立电力账本记录。</small></form><form className="admin-form" onSubmit={saveRate}><h3>人民币充值汇率</h3><p className="hint">1 电力对应 1 美元计价单位。这里仅决定人民币充值到账多少电力，不改变模型美元价格或已有余额。</p><label>1 电力 = 人民币<input type="number" min="0.01" step="0.01" value={rate} onChange={(event) => setRate(event.target.value)} /></label><button className="secondary">保存汇率</button></form>{notice ? <div className="notice">{notice}</div> : null}</div>
     <div className="table"><h3>待入账充值</h3>{operations?.pendingOrders.length ? operations.pendingOrders.map((order) => <div className="table-row" key={order.id}><span>{order.username}<small>{dateTime(order.createdAt)}</small></span><span>{power(order.requestedMicros)} 电力 · ¥{order.amountCny.toFixed(2)}</span><button className="primary" onClick={() => approve(order)}>确认入账</button></div>) : <div className="empty-state compact">暂无待处理充值</div>}</div>
   </div>;
 }
@@ -2648,9 +2650,11 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
   async function saveModel(model: Model) {
     const draft = editing[model.id];
     if (!draft) return;
+    const payload = { ...draft } as Record<string, unknown>;
+    if (model.pricing || model.pricingHistory?.length) for (const field of ["inputPowerPerMillion", "outputPowerPerMillion", "costInputPowerPerMillion", "costOutputPowerPerMillion"]) delete payload[field];
     await api(`/api/admin/models/${model.id}`, {
       method: "PATCH",
-      body: JSON.stringify(draft)
+      body: JSON.stringify(payload)
     });
     setEditing(({ [model.id]: _removed, ...rest }) => rest);
     await reload();
@@ -2705,7 +2709,7 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
                 <label className="field-label">Base URL<input value={editing[model.id].baseUrl} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], baseUrl: event.target.value } })} /></label>
                 <label className="field-label">模型 ID<input value={editing[model.id].model} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], model: event.target.value } })} /></label>
                 <label className="field-label">替换 API Key<input type="password" autoComplete="new-password" placeholder="留空则保持原 Key" value={editing[model.id].apiKey} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], apiKey: event.target.value } })} /></label>
-                {editing[model.id].kind === "chat" ? <>
+                {editing[model.id].kind === "chat" ? model.pricing || model.pricingHistory?.length ? <p className="hint">价格在「电力与收费 → 模型与定价」发布。</p> : <>
                 <label className="field-label">对外输入价<input type="number" min="0" step="0.000001" value={editing[model.id].inputPowerPerMillion} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], inputPowerPerMillion: Number(event.target.value) } })} /></label>
                 <label className="field-label">对外输出价<input type="number" min="0" step="0.000001" value={editing[model.id].outputPowerPerMillion} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], outputPowerPerMillion: Number(event.target.value) } })} /></label>
                 <label className="field-label">输入进价<input type="number" min="0" step="0.000001" value={editing[model.id].costInputPowerPerMillion} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], costInputPowerPerMillion: Number(event.target.value) } })} /></label>
