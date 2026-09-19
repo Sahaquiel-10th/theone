@@ -143,6 +143,8 @@ test("malformed or contradictory cache counters cannot enter billing", () => {
     { input_tokens: 10, output_tokens: 1, cache_read_input_tokens: -1 },
     { input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: 2, cache_creation: { ephemeral_1h_input_tokens: 3 } },
     { input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: "2" },
+    { input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: null },
+    { input_tokens: 10, output_tokens: 1, cache_creation: { ephemeral_1h_input_tokens: null } },
     { input_tokens: 10, output_tokens: 1, cache_read_input_tokens: 10, total_tokens: 11 },
     { prompt_tokens: 10, completion_tokens: 1, cache_creation_input_tokens: 2 },
     { prompt_tokens: 10, completion_tokens: 1, prompt_tokens_details: { cached_tokens: 1 }, cache_read_input_tokens: 2 }

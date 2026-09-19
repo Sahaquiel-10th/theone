@@ -62,6 +62,7 @@ export function parseProviderUsage(value: unknown): ChatResult["usage"] {
     if (usage[field] !== undefined && !object(usage[field])) return undefined;
   }
   const promptDetails = object(usage.prompt_tokens_details), inputDetails = object(usage.input_tokens_details), creation = object(usage.cache_creation);
+  if ([usage.cache_creation_input_tokens, creation?.ephemeral_5m_input_tokens, creation?.ephemeral_1h_input_tokens].some(v => v !== undefined && !valid(v))) return undefined;
   const reads = [promptDetails?.cached_tokens, inputDetails?.cached_tokens, usage.cache_read_input_tokens].filter(v => v !== undefined);
   if (reads.some(v => !valid(v)) || reads.some(v => v !== reads[0])) return undefined;
   const read = (reads[0] ?? 0) as number;
