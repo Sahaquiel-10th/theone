@@ -26,6 +26,11 @@
 .price-notice-banner strong { font-size: 12px; }
 .price-notice-banner span { font-size: 16px; font-weight: 550; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
 .price-notice-banner small { font-size: 10px; color: #7f8b75; }
+.price-notice-bell, .one-studio .studio-surface .price-notice-bell { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 6px; border: 0; border-radius: 50%; color: inherit; background: transparent; box-shadow: none; }
+.price-notice-bell:hover { background: #edf1e8; }
+.price-notice-bell i { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: #b65d38; }
+.cache-usage-details details { margin: 8px 0; }
+.cache-usage-details summary { cursor: pointer; font-size: 12px; }
 .price-notice-history article, .pricing-history article { padding: 14px 0; border-bottom: 1px solid #e0e7d9; overflow-wrap: anywhere; }
 .price-notice-history p, .pricing-history p { font-size: 12px; white-space: pre-wrap; }
 .price-notice-history small { font-size: 11px; color: #78886c; }

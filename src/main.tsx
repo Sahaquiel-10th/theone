@@ -2041,7 +2041,7 @@ function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onM
       </header>
       <nav className="settings-tabs account-settings-tabs" aria-label="设置栏目">{[["profile", "个人设置"], ["power", "电力与账单"]].map(([id, label]) => <button type="button" key={id} aria-pressed={section === id} onClick={() => setSection(id)}>{label}</button>)}</nav>
       <div className="account-body settings-account-body">
-        {section === "power" ? billing ? <PaymentPanel api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载电力账户…</p> : <>
+        {section === "power" ? billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载电力账户…</p> : <>
         <section className="account-panel"><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
         <section className="account-panel">
           <div className="account-panel-title"><Bot size={18} /><h3>默认模型</h3></div>
@@ -2517,7 +2517,7 @@ function AdminUsage({ summaries, reload }: { summaries: UserUsageSummary[]; relo
         {expanded ? <div className="usage-user-detail" id={`usage-detail-${item.userId}`}>
           <BetaUserInsights key={item.userId} userId={item.userId} api={api} />
           <div className="usage-detail-metrics">
-            <span><small>累计输入 / 输出 Token</small><strong>{item.total.inputTokens.toLocaleString()} / {item.total.outputTokens.toLocaleString()}</strong></span>
+            <span><small>累计消耗电力</small><strong>{power(item.total.chargedMicros, 6)}</strong></span>
             <span><small>累计消耗 / 上游成本（电力）</small><strong>{power(item.total.chargedMicros, 4)} / {power(item.total.costMicros, 4)}</strong>{item.total.unknownCostCalls ? <small>{item.total.unknownCostCalls} 次成本未确认，合计仅含已知成本</small> : null}</span>
             <span><small>已知计费差额（非现金利润）</small><strong>{item.total.unknownCostCalls ? "成本未齐，暂不计算" : power(item.total.chargedMicros - item.total.costMicros, 4)}</strong></span>
             <span><small>对话 / 知识召回 / 本机执行</small><strong>{item.conversationCount} / {item.knowledgeRecallCount} / {item.executionCount}</strong></span>
@@ -2526,9 +2526,9 @@ function AdminUsage({ summaries, reload }: { summaries: UserUsageSummary[]; relo
           {error ? <div className="error">{error}<button type="button" className="secondary" onClick={() => setRetry((value) => value + 1)}>重试</button></div> : !currentDetail ? <div className="empty-state compact" role="status">正在读取 {item.username} 的用量…</div> : <>
             <details className="usage-detail-section" open>
               <summary>逐次模型调用（共 {currentDetail.pagination.total} 次）</summary>
-              {currentDetail.usage.length ? <div className="ops-table"><div className="ops-table-head"><span>用途 / 模型 / 状态</span><span>输入 / 输出 Token</span><span>消耗 / 上游成本（电力）</span><span>时间 / 耗时 / 请求</span></div>{currentDetail.usage.map((usage) => {
+              {currentDetail.usage.length ? <div className="ops-table"><div className="ops-table-head"><span>用途 / 模型 / 状态</span><span>消耗明细（电力）</span><span>消耗 / 上游成本（电力）</span><span>时间 / 耗时 / 请求</span></div>{currentDetail.usage.map((usage) => {
                 const costUnknown = usage.costMicros === undefined;
-                return <React.Fragment key={usage.id}><div className="ops-table-row"><span><strong>{usageActivityLabel(usage.activity)}</strong><small>{usage.modelName || "模型已移除"}</small><small className={costUnknown ? "usage-review-status" : ""}>{usageStatusLabel(usage)}</small></span><span>{usage.source === "fixed" ? "按次计费" : usage.source === "unknown" ? "待核对" : <>{usage.cacheUsage ? "普通 " : ""}{usage.inputTokens.toLocaleString()} / {usage.outputTokens.toLocaleString()}<CacheUsageDetails row={usage} /></>}</span><span>{power(usage.chargedMicros, 6)} / {costUnknown ? "待核对" : power(usage.costMicros, 6)}</span><span>{dateTime(usage.createdAt)}{usage.durationMs !== undefined ? <small>耗时 {(usage.durationMs / 1000).toFixed(1)} 秒</small> : null}<small>{usage.requestId || "-"}</small></span></div>{usage.status === "needs_review" ? <UsageReconcileForm userId={item.userId} usage={usage} onResolved={() => { setRetry((value) => value + 1); void reload(); }} /> : null}</React.Fragment>;
+                return <React.Fragment key={usage.id}><div className="ops-table-row"><span><strong>{usageActivityLabel(usage.activity)}</strong><small>{usage.modelName || "模型已移除"}</small><small className={costUnknown ? "usage-review-status" : ""}>{usageStatusLabel(usage)}</small></span><span><CacheUsageDetails row={usage} /></span><span>{power(usage.chargedMicros, 6)} / {costUnknown ? "待核对" : power(usage.costMicros, 6)}</span><span>{dateTime(usage.createdAt)}{usage.durationMs !== undefined ? <small>耗时 {(usage.durationMs / 1000).toFixed(1)} 秒</small> : null}<small>{usage.requestId || "-"}</small></span></div>{usage.status === "needs_review" ? <UsageReconcileForm userId={item.userId} usage={usage} onResolved={() => { setRetry((value) => value + 1); void reload(); }} /> : null}</React.Fragment>;
               })}</div> : <div className="empty-state compact">该时间范围内没有模型调用</div>}
               {currentDetail.pagination.total > currentDetail.pagination.limit ? <div className="ops-pagination"><button className="secondary" type="button" disabled={offset === 0} onClick={() => { setDetail(null); setOffset(Math.max(0, offset - 20)); }}><ChevronLeft size={14} />上一页</button><span>第 {Math.floor(offset / 20) + 1} / {Math.ceil(currentDetail.pagination.total / 20)} 页</span><button className="secondary" type="button" disabled={!currentDetail.pagination.hasMore} onClick={() => { setDetail(null); setOffset(offset + 20); }}>下一页<ChevronRight size={14} /></button></div> : null}
             </details>
