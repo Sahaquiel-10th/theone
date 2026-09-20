@@ -15,6 +15,23 @@ export function installPaymentCallback(app: Express, store: Store) {
     } catch { res.status(400).json({ code: "FAIL", message: "支付通知未完成核验" }); }
   });
 }
+export function installAdminPaymentRoutes(app: Express, admin: readonly RequestHandler[], store: Store, request = wechatRequest) {
+  app.post("/api/admin/recharge-orders/:id/check", ...admin, async (req, res) => {
+    const order = (await store.read()).rechargeOrders.find(o => o.id === req.params.id);
+    if (!order?.payment) return res.status(404).json({ error: "微信订单不存在" });
+    try {
+      let state = order.status === "paid" ? "SUCCESS" : "NOTPAY";
+      if (order.status === "pending") {
+        const remote = await request("GET", `/v3/pay/transactions/out-trade-no/${encodeURIComponent(order.id)}?mchid=${encodeURIComponent(order.payment.mchId)}`);
+        if (remote.out_trade_no !== order.id) throw new Error("订单编号不匹配");
+        state = remote.trade_state;
+        if (state === "SUCCESS") await store.mutate(db => settlePayment(db, remote));
+      }
+      const saved = (await store.read()).rechargeOrders.find(o => o.id === order.id)!;
+      res.json({ order: publicPayment(saved), message: saved.status === "paid" ? "充值已入账" : state === "CLOSED" ? "微信订单已关闭，未入账" : "微信尚未确认支付，未入账" });
+    } catch { res.status(502).json({ error: "暂时无法核对微信订单，请稍后重试" }); }
+  });
+}
 export function installPaymentRoutes(app: Express, keyAuth: readonly RequestHandler[], store: Store) {
   app.get("/api/me/billing/summary", ...keyAuth, async (req, res) => {
     const db = await store.read();

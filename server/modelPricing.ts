@@ -14,15 +14,30 @@ export function publishPricing(db: Database, modelId: string, actorUserId: strin
   const read = (field: string, min: number) => { const value = body[field]; if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > 1e6) throw new Error("价格无效"); return value; };
   const multiplier = read("multiplier", 0.001); if (multiplier > 100) throw new Error("倍率不能超过 100");
   const referenceInput = read("referenceInput", 0), referenceOutput = read("referenceOutput", 0);
-  const costInput = read("costInput", 0), costOutput = read("costOutput", 0);
+  // New pricing publishes one supplier multiplier; keep accepting legacy
+  // explicit costs so existing records remain deployable.
+  const procurementMultiplier = body.procurementMultiplier === undefined
+    ? undefined
+    : read("procurementMultiplier", 0);
+  if (procurementMultiplier !== undefined && procurementMultiplier > 100) throw new Error("进货系数不能超过 100");
+  const legacyCostInput = body.costInput === undefined ? undefined : read("costInput", 0);
+  const legacyCostOutput = body.costOutput === undefined ? undefined : read("costOutput", 0);
+  const costInput = procurementMultiplier === undefined ? legacyCostInput : referenceInput * procurementMultiplier;
+  const costOutput = procurementMultiplier === undefined ? legacyCostOutput : referenceOutput * procurementMultiplier;
+  if (costInput === undefined || costOutput === undefined) throw new Error("请填写进货系数");
   const cache = (field: string) => {
     if (body[field] === undefined) return undefined;
     const v = body[field] as Record<string, unknown>;
     if (!v || typeof v !== "object" || ["read", "write", "write1h"].some(k => typeof v[k] !== "number" || !Number.isFinite(v[k]) || (v[k] as number) < 0 || (v[k] as number) > 1e6)) throw new Error("请完整填写缓存读取、写入和 1 小时写入价格");
     return { read: v.read as number, write: v.write as number, write1h: v.write1h as number };
   };
-  const referenceCache = cache("referenceCache"), cacheCostPrices = cache("cacheCostPrices");
+  const referenceCache = cache("referenceCache");
+  const explicitCacheCostPrices = cache("cacheCostPrices");
+  const cacheCostPrices = procurementMultiplier !== undefined && referenceCache
+    ? { read: referenceCache.read * procurementMultiplier, write: referenceCache.write * procurementMultiplier, write1h: referenceCache.write1h * procurementMultiplier }
+    : explicitCacheCostPrices;
   if (!!referenceCache !== !!cacheCostPrices) throw new Error("请同时填写缓存官方价与采购价");
+  if ([costInput, costOutput, ...Object.values(cacheCostPrices || {}), referenceInput * multiplier, referenceOutput * multiplier, ...Object.values(referenceCache || {}).map(n => n * multiplier)].some(n => !Number.isFinite(n) || n > 1e6)) throw new Error("折算后价格超出范围");
   const publishedAt = new Date().toISOString();
   const effectiveAt = body.effectiveAt ? String(body.effectiveAt) : publishedAt;
   if (!Number.isFinite(Date.parse(effectiveAt)) || Date.parse(effectiveAt) < Date.parse(publishedAt) - 60000) throw new Error("生效时间不能早于当前时间");
@@ -56,8 +71,8 @@ export function publicPrices(models: ModelConfig[], at = Date.now()) {
     const m = effectiveModel(raw, at);
     return { id: m.id, name: m.name, pricing: m.pricing, input: m.inputPowerPerMillion, output: m.outputPowerPerMillion, cachePrices: m.cachePrices, image: m.imagePowerPerCall,
       notices: (raw.pricingHistory || []).filter(r => r.pricing.version > 0).map(r => {
-        const previous = raw.pricingHistory?.filter(p => !p.cancelledAt && p.pricing.version < r.pricing.version).sort((a, b) => b.pricing.version - a.pricing.version)[0]?.pricing;
-        return { ...r.pricing, previousInput: previous ? previous.referenceInput * previous.multiplier : undefined, previousOutput: previous ? previous.referenceOutput * previous.multiplier : undefined, cancelledAt: r.cancelledAt, status: r.cancelledAt ? "cancelled" : Date.parse(r.pricing.effectiveAt || r.pricing.publishedAt) > at ? "scheduled" : r.pricing.version === m.pricing?.version ? "active" : "past" };
+
+        return { ...r.pricing, cancelledAt: r.cancelledAt, status: r.cancelledAt ? "cancelled" : Date.parse(r.pricing.effectiveAt || r.pricing.publishedAt) > at ? "scheduled" : r.pricing.version === m.pricing?.version ? "active" : "past" };
       }).reverse() };
   });
 }

@@ -1,4 +1,10 @@
 /* Settings use compact lists and focused dialogs; never inherit chat markdown cards. */
+.admin-page [hidden], .pricing-editor [hidden] { display: none !important; }
+.admin-billing-sections { width: 100%; max-width: 1000px; }
+.admin-billing-sections > nav { margin-bottom: 24px; flex-wrap: wrap; }
+.admin-billing-sections .admin-form { max-width: 580px; }
+.section-toggle { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 16px; background: transparent; border: 0; text-align: left; padding: 14px 0; }
+.price-notice-history .price-notice-message { font-size: 16px; font-weight: 550; line-height: 1.7; color: #254d43; }
 .pricing-editor h3 { font-size: 14px; margin: 24px 0 12px; }
 .pricing-editor h3 small { display: block; font-size: 11px; font-weight: 400; color: #7e887b; margin-top: 4px; }
 .pricing-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }
@@ -18,7 +24,7 @@
 .admin-pricing-center > nav { margin-bottom: 24px; }
 .price-notice-banner, .one-studio .studio-surface .price-notice-banner { display: grid; gap: 5px; width: 100%; padding: 14px 16px; margin: 0 0 18px; text-align: left; border: 1px solid #dce5d6; background: #f3f6ec; border-radius: 12px; color: #4c6345; box-shadow: none; }
 .price-notice-banner strong { font-size: 12px; }
-.price-notice-banner span { font-size: 12px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.price-notice-banner span { font-size: 16px; font-weight: 550; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
 .price-notice-banner small { font-size: 10px; color: #7f8b75; }
 .price-notice-history article, .pricing-history article { padding: 14px 0; border-bottom: 1px solid #e0e7d9; overflow-wrap: anywhere; }
 .price-notice-history p, .pricing-history p { font-size: 12px; white-space: pre-wrap; }

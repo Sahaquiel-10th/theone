@@ -3,7 +3,27 @@ import assert from "node:assert/strict";
 import express from "express";
 import { once } from "node:events";
 import type { Database } from "./types.js";
-import { installPaymentRoutes } from "./paymentRoutes.js";
+import { installAdminPaymentRoutes, installPaymentRoutes } from "./paymentRoutes.js";
+
+test("admin payment check verifies exact order and credits only its owner once", async t => {
+  const db = { rechargeOrders: [{ id: "one-a", workspaceId: "wa", userId: "a", status: "pending", requestedMicros: 1000000, payment: { mchId: "merchant", appId: "app", amountFen: 700 } }], powerAccounts: [{ userId: "a", workspaceId: "wa", balanceMicros: 0 }, { userId: "b", workspaceId: "wb", balanceMicros: 0 }], powerLedger: [], auditLogs: [] } as unknown as Database;
+  let calls = 0;
+  let remote: any = { out_trade_no: "one-a", trade_state: "NOTPAY" };
+  const app = express(); app.use(express.json());
+  installAdminPaymentRoutes(app, [(req, res, next) => { if (req.headers.authorization !== "admin-key") return res.sendStatus(403); next(); }], { read: async () => db, mutate: async f => f(db) }, async () => { calls++; return remote; });
+  const server = app.listen(0, "127.0.0.1"); await once(server, "listening"); t.after(() => { server.closeAllConnections(); server.close(); });
+  const url = `http://127.0.0.1:${(server.address() as any).port}/api/admin/recharge-orders/one-a/check`;
+  const check = (auth = "admin-key") => fetch(url, { method: "POST", headers: { authorization: auth } });
+  assert.equal((await check("user-key")).status, 403); assert.equal(calls, 0);
+  assert.equal((await check()).status, 200); assert.equal(db.powerLedger.length, 0);
+  remote = { out_trade_no: "other", trade_state: "SUCCESS", appid: "app", mchid: "merchant", amount: { total: 700, currency: "CNY" }, transaction_id: "transaction" };
+  assert.equal((await check()).status, 502); assert.equal(db.powerLedger.length, 0);
+  remote.out_trade_no = "one-a"; remote.amount.total = 1;
+  assert.equal((await check()).status, 502); assert.equal(db.powerLedger.length, 0);
+  remote.amount.total = 700;
+  assert.equal((await check()).status, 200); assert.equal((await check()).status, 200);
+  assert.deepEqual(db.powerAccounts.map(a => a.balanceMicros), [1000000, 0]); assert.equal(db.powerLedger.length, 1);
+});
 
 test("billing HTTP pagination is owner-scoped and rejects a foreign payment before contacting WeChat", async t => {
   const db = { rechargeOrders: [ { id: "foreign", workspaceId: "w2", userId: "b", payment: { channel: "wechat" } } ],

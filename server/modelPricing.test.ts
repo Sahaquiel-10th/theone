@@ -4,6 +4,21 @@ import { publishPricing, effectiveModel, publicPrices, cancelScheduledPricing } 
 import type { Database } from "./types.js";
 const fixture = () => ({ users: [{ id: "admin", enabled: true, role: "admin" }, { id: "u", enabled: true, role: "user" }], models: [{ id: "m", kind: "chat", name: "Test", apiKey: "secret", enabled: true, inputPowerPerMillion: 10, outputPowerPerMillion: 20, costInputPowerPerMillion: 2, costOutputPowerPerMillion: 4 }], auditLogs: [] }) as unknown as Database;
 const draft = { referenceInput: 10, referenceOutput: 20, multiplier: 0.8, costInput: 1, costOutput: 2, explanation: "内测优惠八折" };
+test("one supplier factor derives every cost privately without rewriting previous versions", () => {
+  const db = fixture();
+  const old = structuredClone(db.models[0]);
+  publishPricing(db, "m", "admin", { referenceInput: 10, referenceOutput: 20, referenceCache: { read: 1, write: 12.5, write1h: 20 }, multiplier: .8, procurementMultiplier: .2, explanation: "优惠继续" });
+  const active = effectiveModel(db.models[0]);
+  assert.equal(active.costInputPowerPerMillion, 2);
+  assert.equal(active.costOutputPowerPerMillion, 4);
+  assert.deepEqual(active.cacheCostPrices, { read: .2, write: 2.5, write1h: 4 });
+  assert.deepEqual(active.cachePrices, { read: .8, write: 10, write1h: 16 });
+  assert.equal(db.models[0].pricingHistory![0].pricing.referenceInput, old.inputPowerPerMillion);
+  const publicJson = JSON.stringify(publicPrices(db.models));
+  for (const privateField of ["procurementMultiplier", "cacheCostPrices", "costInput", "previousInput", "previousOutput"]) assert.ok(!publicJson.includes(privateField));
+  assert.throws(() => publishPricing(fixture(), "m", "u", { ...draft, procurementMultiplier: .2 }), /超管/);
+  for (const invalid of [-1, NaN, Infinity, 101, "0.2", null]) assert.throws(() => publishPricing(fixture(), "m", "admin", { ...draft, procurementMultiplier: invalid }));
+});
 test("cache price publication applies retail multiplier but keeps costs private and scheduled", () => {
   const db = fixture(), when = Date.now() + 3600000;
   publishPricing(db, "m", "admin", { ...draft, effectiveAt: new Date(when).toISOString(), referenceCache: { read: .5, write: 6.25, write1h: 10 }, cacheCostPrices: { read: .1, write: 1.25, write1h: 2 } });

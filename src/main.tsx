@@ -62,7 +62,7 @@ import "./one-attention.css";
 import "./one-beta.css";
 import "./one-onboarding.css";
 import "./one-settings.css";
-import { SearchPicker, SettingsDialog } from "./SettingsControls";
+import { Pagination, SearchPicker, SettingsDialog } from "./SettingsControls";
 import { BetaUserInsights } from "./BetaUserInsights";
 import { mergeTaskSnapshots, recoverTaskDraft } from "./oneStudioState";
 import { buildTaskActivityRows, getSettledTaskTransitions, selectConversationExecution, shouldAutoReadTaskNotice, type TaskActivityRow } from "./oneTaskAttention";
@@ -73,7 +73,7 @@ import { Onboarding, ProfileNameEditor, BetaFeedbackControls, type AccountProfil
 import { getNotePollFailureAction, prepareGetNoteAuthorizationWindow } from "./getNoteAuthorization";
 import { PaymentPanel } from "./PaymentPanel";
 import { CacheUsageDetails } from "./CacheUsageDetails";
-import { PricingPanel, PricingCatalog } from "./PricingPanel";
+import { PricingCatalog } from "./PricingPanel";
 import { GiftBatchHistory } from "./GiftBatchHistory";
 
 type Role = "admin" | "user";
@@ -244,7 +244,7 @@ type Agent = {
 };
 
 type PowerLedgerEntry = { id: string; type: "gift" | "recharge" | "usage" | "adjustment" | "refund"; amountMicros: number; balanceAfterMicros: number; title: string; createdAt: string; username?: string };
-type RechargeOrder = { id: string; userId: string; requestedMicros: number; amountCny: number; status: "pending" | "paid" | "cancelled"; createdAt: string; username?: string };
+type RechargeOrder = { id: string; userId: string; requestedMicros: number; amountCny: number; status: "pending" | "paid" | "cancelled"; createdAt: string; username?: string; payment?: { channel: string; expiresAt?: string } };
 type UsageRecord = { cacheUsage?: { read: number; write: number; write5m: number; write1h: number }; cachePricesSnapshot?: { read: number; write: number; write1h: number }; id: string; userId: string; modelId: string; inputTokens: number; outputTokens: number; totalTokens: number; chargedMicros?: number; costMicros?: number; requestId?: string; createdAt: string; username?: string; modelName?: string; source?: "provider" | "estimated" | "unknown" | "fixed"; status?: "pending" | "success" | "failed" | "needs_review" | "waived"; activity?: "chat" | "execution_compile" | "local_agent"; durationMs?: number };
 type UsageTotals = { calls: number; inputTokens: number; outputTokens: number; chargedMicros: number; costMicros: number; unknownCostCalls?: number; reviewCalls?: number; failedCalls?: number };
 type UserUsageSummary = {
@@ -2306,6 +2306,10 @@ function AdminBilling({ actorId, users, operations, reload }: { actorId: string;
   const batchPending = useRef<{ operationId: string; power: number; title: string } | null>(null);
   const batchBusy = useRef(false);
   const [userId, setUserId] = useState(users[0]?.id || ""); const [gift, setGift] = useState("10"); const [batchGift, setBatchGift] = useState("10"); const [batchTitle, setBatchTitle] = useState("内测统一赠送"); const [rate, setRate] = useState(String(operations?.settings.rechargeCnyPerPower || 7)); const [notice, setNotice] = useState("");
+  const [section, setSection] = useState("orders");
+  const [orderQuery, setOrderQuery] = useState("");
+  const orders = (operations?.pendingOrders || []).filter(o => `${o.username} ${o.id}`.toLowerCase().includes(orderQuery.trim().toLowerCase()));
+  const [ordersOpen, setOrdersOpen] = useState(true); const [orderPage, setOrderPage] = useState(1); const orderPageSize = 10;
   useEffect(() => { if (!userId && users[0]) setUserId(users[0].id); }, [users]);
   async function give(event: FormEvent) { event.preventDefault(); try { await api(`/api/admin/users/${userId}/power`, { method: "POST", body: JSON.stringify({ power: Number(gift) }) }); setNotice("电力已到账"); await reload(); } catch (error) { setNotice(error instanceof Error ? error.message : "赠送失败"); } }
   async function giveBatch(event: FormEvent) {
@@ -2330,11 +2334,20 @@ function AdminBilling({ actorId, users, operations, reload }: { actorId: string;
     finally { batchBusy.current = false; }
   }
   async function saveRate(event: FormEvent) { event.preventDefault(); try { await api("/api/admin/settings/billing", { method: "PATCH", body: JSON.stringify({ rechargeCnyPerPower: Number(rate) }) }); setNotice("充值汇率已更新"); await reload(); } catch (error) { setNotice(error instanceof Error ? error.message : "保存失败"); } }
-  async function approve(order: RechargeOrder) { await api(`/api/admin/recharge-orders/${order.id}/approve`, { method: "POST" }); setNotice("充值已入账"); await reload(); }
-  return <div className="admin-grid">
-    <GiftBatchHistory api={api} revision={notice} />
-    <div className="admin-form-stack"><form className="admin-form" onSubmit={give}><h3><Wallet size={17} />赠送电力</h3><SearchPicker label="赠送用户" value={userId} onChange={setUserId} options={users.map(user => ({ value: user.id, label: user.profile?.displayName || user.username, hint: user.username + " · " + power(user.balanceMicros) + " 电力" }))} /><input type="number" min="0.000001" step="0.000001" value={gift} onChange={(event) => setGift(event.target.value)} /><button className="primary">确认赠送</button></form><form className="admin-form" onSubmit={giveBatch}><h3>批量赠送</h3><label>每位启用成员赠送<input type="number" min="0.000001" step="0.000001" value={batchGift} onChange={(event) => setBatchGift(event.target.value)} /></label><label>批次说明<input value={batchTitle} onChange={(event) => setBatchTitle(event.target.value)} maxLength={80} /></label><button className="secondary">给全部启用成员赠送</button><small className="hint">管理员也包含在启用成员内；每位成员都会留下独立电力账本记录。</small></form><form className="admin-form" onSubmit={saveRate}><h3>人民币充值汇率</h3><p className="hint">1 电力对应 1 美元计价单位。这里仅决定人民币充值到账多少电力，不改变模型美元价格或已有余额。</p><label>1 电力 = 人民币<input type="number" min="0.01" step="0.01" value={rate} onChange={(event) => setRate(event.target.value)} /></label><button className="secondary">保存汇率</button></form>{notice ? <div className="notice">{notice}</div> : null}</div>
-    <div className="table"><h3>待入账充值</h3>{operations?.pendingOrders.length ? operations.pendingOrders.map((order) => <div className="table-row" key={order.id}><span>{order.username}<small>{dateTime(order.createdAt)}</small></span><span>{power(order.requestedMicros)} 电力 · ¥{order.amountCny.toFixed(2)}</span><button className="primary" onClick={() => approve(order)}>确认入账</button></div>) : <div className="empty-state compact">暂无待处理充值</div>}</div>
+  const [approving, setApproving] = useState("");
+  async function approve(order: RechargeOrder) {
+    if (approving || (!order.payment && !confirm(`确认已收到 ${order.username} 的 ¥${order.amountCny.toFixed(2)}？`))) return;
+    setApproving(order.id); setNotice("");
+    try { const result = await api<{ message?: string }>(`/api/admin/recharge-orders/${order.id}/${order.payment ? "check" : "approve"}`, { method: "POST" }); setNotice(result.message || "充值已入账"); await reload(); }
+    catch (error) { setNotice(error instanceof Error ? error.message : "核对失败"); }
+    finally { setApproving(""); }
+  }
+  return <div className="admin-billing-sections">
+    <nav className="settings-tabs">{[["orders", "充值核对"], ["gift", "单人赠送"], ["batch", "批量赠送"], ["history", "赠送记录"], ["rate", "充值汇率"]].map(([id, title]) => <button type="button" key={id} aria-pressed={section === id} onClick={() => { setSection(id); setNotice(""); }}>{title}</button>)}</nav>
+    {notice ? <p className="notice" role="status">{notice}</p> : null}
+    {section === "history" ? <GiftBatchHistory api={api} revision={notice} /> : null}
+    <div className="admin-form-stack"><form hidden={section !== "gift"} className="admin-form" onSubmit={give}><h3><Wallet size={17} />赠送电力</h3><SearchPicker label="赠送用户" value={userId} onChange={setUserId} options={users.map(user => ({ value: user.id, label: user.profile?.displayName || user.username, hint: user.username + " · " + power(user.balanceMicros) + " 电力" }))} /><input type="number" min="0.000001" step="0.000001" value={gift} onChange={(event) => setGift(event.target.value)} /><button className="primary">确认赠送</button></form><form hidden={section !== "batch"} className="admin-form" onSubmit={giveBatch}><h3>批量赠送</h3><label>每位启用成员赠送<input type="number" min="0.000001" step="0.000001" value={batchGift} onChange={(event) => setBatchGift(event.target.value)} /></label><label>批次说明<input value={batchTitle} onChange={(event) => setBatchTitle(event.target.value)} maxLength={80} /></label><button className="secondary">给全部启用成员赠送</button><small className="hint">管理员也包含在启用成员内；每位成员都会留下独立电力账本记录。</small></form><form hidden={section !== "rate"} className="admin-form" onSubmit={saveRate}><h3>人民币充值汇率</h3><p className="hint">1 电力对应 1 美元计价单位。这里仅决定人民币充值到账多少电力，不改变模型美元价格或已有余额。</p><label>1 电力 = 人民币<input type="number" min="0.01" step="0.01" value={rate} onChange={(event) => setRate(event.target.value)} /></label><button className="secondary">保存汇率</button></form></div>
+    <div className="table" hidden={section !== "orders"}><input type="search" aria-label="搜索充值订单" placeholder="搜索用户或订单号" value={orderQuery} onChange={e => { setOrderQuery(e.target.value); setOrderPage(1); }} /><button type="button" className="section-toggle" onClick={() => setOrdersOpen(open => !open)} aria-expanded={ordersOpen}><h3>待入账充值</h3><span>{orders.length || 0} 笔 · {ordersOpen ? "收起" : "展开"}</span></button>{ordersOpen ? orders.length ? <>{orders.slice((orderPage - 1) * orderPageSize, orderPage * orderPageSize).map((order) => <div className="table-row" key={order.id}><span>{order.username}<small>{dateTime(order.createdAt)}</small></span><span>{power(order.requestedMicros)} 电力 · ¥{order.amountCny.toFixed(2)}</span><button type="button" className="primary" disabled={!!approving} onClick={() => void approve(order)}>{approving === order.id ? "核对中…" : order.payment ? "核对微信支付" : "确认入账"}</button></div>)}<Pagination page={orderPage} total={orders.length} size={orderPageSize} onChange={setOrderPage} /></> : <div className="empty-state compact">暂无待处理充值</div> : null}</div>
   </div>;
 }
 
@@ -2393,6 +2406,8 @@ function AdminUsage({ summaries, reload }: { summaries: UserUsageSummary[]; relo
   const [offset, setOffset] = useState(0);
   const [activityLimit, setActivityLimit] = useState(20);
   const [retry, setRetry] = useState(0);
+  const [userPage, setUserPage] = useState(1);
+  useEffect(() => { setUserPage(1); setSelectedUserId(""); }, [search, status]);
 
   useEffect(() => {
     setDetail(null); setError(""); setActivityLimit(20);
@@ -2417,7 +2432,7 @@ function AdminUsage({ summaries, reload }: { summaries: UserUsageSummary[]; relo
     <div className="ops-list-toolbar"><label>搜索用户<input type="search" placeholder="输入用户名" value={search} onChange={(event) => setSearch(event.target.value)} /></label><label>账号状态<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="active">正常账号</option><option value="archived">已停用 / 归档</option><option value="all">全部账号</option></select></label><span>{visible.length} 位用户 · 电力为计费单位</span></div>
     <p className="hint">点击用户查看明细 · 不展示聊天、知识或附件内容</p>
     {!visible.length ? <div className="empty-state compact">没有符合条件的用户</div> : null}
-    {visible.map((item) => {
+    {visible.slice((userPage - 1) * 10, userPage * 10).map((item) => {
       const expanded = selectedUserId === item.userId;
       const currentDetail = detail?.user.id === item.userId ? detail : null;
       return <section className={`usage-user-card ${expanded ? "expanded" : ""}`} key={item.userId}>
@@ -2448,13 +2463,14 @@ function AdminUsage({ summaries, reload }: { summaries: UserUsageSummary[]; relo
             </details>
             <details className="usage-detail-section">
               <summary>使用活动日志（共 {currentDetail.activityTotal} 条{currentDetail.activityTotal > currentDetail.activity.length ? `，最近 ${currentDetail.activity.length} 条可见` : ""}）</summary>
-              {currentDetail.activity.length ? <div className="mini-ledger">{currentDetail.activity.slice(0, activityLimit).map((activity) => <div key={activity.id}><span><strong>{usageActionLabel(activity.action)}</strong><small>{activity.requestId || "无请求编号"}</small></span><b>{dateTime(activity.createdAt)}</b></div>)}</div> : <div className="empty-state compact">该时间范围内没有使用活动</div>}
-              {currentDetail.activity.length > activityLimit ? <button className="secondary" type="button" onClick={() => setActivityLimit((value) => value + 20)}>再显示 20 条活动</button> : null}
+              {currentDetail.activity.length ? <div className="mini-ledger">{currentDetail.activity.slice(activityLimit - 20, activityLimit).map((activity) => <div key={activity.id}><span><strong>{usageActionLabel(activity.action)}</strong><small>{activity.requestId || "无请求编号"}</small></span><b>{dateTime(activity.createdAt)}</b></div>)}</div> : <div className="empty-state compact">该时间范围内没有使用活动</div>}
+              <Pagination page={activityLimit / 20} size={20} total={currentDetail.activity.length} onChange={page => setActivityLimit(page * 20)} />
             </details>
           </>}
         </div> : null}
       </section>;
     })}
+    <Pagination page={userPage} total={visible.length} onChange={page => { setUserPage(page); setSelectedUserId(""); }} />
   </div>;
 }
 function AdminContexts({ traces }: { traces: ContextTraceSummary[] }) {
@@ -2530,7 +2546,7 @@ function OneKeysTab({ users, devices, reload }: { users: User[]; devices: OneKey
 
   return <div className="admin-grid">
     <form className="admin-form" onSubmit={provision}><h3><Usb size={17} />初始化 ONE Key</h3><label>绑定用户<SearchPicker label="绑定用户" value={userId} onChange={setUserId} options={users.map(user => ({ value: user.id, label: user.profile?.displayName || user.username, hint: user.username }))} /></label><label>设备序列号<input value={serialNumber} onChange={(event) => setSerialNumber(event.target.value)} /></label><p className="hint">私钥仅下载一次；服务端仅存公钥。普通 U 盘可复制，不等同安全芯片。</p><button className="primary" disabled={!userId || !serialNumber.trim()}>生成并下载凭证</button>{notice ? <div className="notice">{notice}</div> : null}</form>
-    <div className="table"><div className="ops-list-toolbar"><label>搜索用户或序列号<input type="search" value={search} onChange={(event) => setSearch(event.target.value)} /></label><label>Key 状态<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="active">正常使用</option><option value="revoked">已挂失 / 归档</option><option value="all">全部</option></select></label></div>{matching.slice(0, limit).map((device) => <div className="table-row" key={device.id}><span><strong>{device.serialNumber}</strong><small>{device.username} · {device.lastUsedAt ? `最近使用 ${dateTime(device.lastUsedAt)}` : "尚未使用"}</small></span><span>{device.status === "active" ? "正常" : "已挂失 / 归档"}</span>{device.status === "active" ? <button className="danger" onClick={() => revoke(device)}>挂失</button> : <span />}</div>)}{matching.length > limit ? <button type="button" className="secondary" onClick={() => setLimit((value) => value + 20)}>再显示 20 枚</button> : null}{!matching.length ? <p className="hint">没有符合条件的 Key</p> : null}</div>
+    <div className="table"><div className="ops-list-toolbar"><label>搜索用户或序列号<input type="search" value={search} onChange={(event) => setSearch(event.target.value)} /></label><label>Key 状态<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="active">正常使用</option><option value="revoked">已挂失 / 归档</option><option value="all">全部</option></select></label></div>{matching.slice(limit - 20, limit).map((device) => <div className="table-row" key={device.id}><span><strong>{device.serialNumber}</strong><small>{device.username} · {device.lastUsedAt ? `最近使用 ${dateTime(device.lastUsedAt)}` : "尚未使用"}</small></span><span>{device.status === "active" ? "正常" : "已挂失 / 归档"}</span>{device.status === "active" ? <button className="danger" onClick={() => revoke(device)}>挂失</button> : <span />}</div>)}<Pagination page={limit / 20} size={20} total={matching.length} onChange={page => setLimit(page * 20)} />{!matching.length ? <p className="hint">没有符合条件的 Key</p> : null}</div>
   </div>;
 }
 
@@ -2540,6 +2556,10 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
   const [editing, setEditing] = useState<Record<string, { username: string; enabled: boolean }>>({});
   const [creating, setCreating] = useState(false);
   const [createNotice, setCreateNotice] = useState("");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
+  const filteredUsers = users.filter(user => `${user.username} ${user.profile?.displayName || ""}`.toLowerCase().includes(search.trim().toLowerCase()));
 
   async function createUser(event: FormEvent) {
     event.preventDefault();
@@ -2558,8 +2578,8 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
   }
 
   async function toggle(user: User) {
-    await api(`/api/admin/users/${user.id}`, { method: "PATCH", body: JSON.stringify({ enabled: !user.enabled }) });
-    await reload();
+    try { await api(`/api/admin/users/${user.id}`, { method: "PATCH", body: JSON.stringify({ enabled: !user.enabled }) }); await reload(); }
+    catch(e) { setCreateNotice(e instanceof Error ? e.message : "更新失败"); }
   }
 
   async function saveUser(user: User) {
@@ -2590,7 +2610,8 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
         </form>
       </div>
       <div className="table">
-        {users.map((user) => (
+        <div className="ops-list-toolbar"><label>搜索账号<input type="search" placeholder="用户名或称呼" value={search} onChange={event => { setSearch(event.target.value); setPage(1); }} /></label><span>{filteredUsers.length} 个账号</span></div>
+        {filteredUsers.slice((page - 1) * pageSize, page * pageSize).map((user) => (
           <div className="table-row editable-row" key={user.id}>
             {editing[user.id] ? (
               <>
@@ -2608,17 +2629,19 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => Promise<void
             )}
           </div>
         ))}
+        {!filteredUsers.length ? <p className="empty-state compact">没有符合条件的账号</p> : null}
+        <Pagination page={page} total={filteredUsers.length} size={pageSize} onChange={setPage} />
       </div>
     </div>
   );
 }
 
-function ImageCallPricing({ price, cost, onChange }: { price: number; cost: number; onChange: (values: { imagePowerPerCall?: number; costImagePowerPerCall?: number }) => void }) {
-  return <div className="price-fields"><label>图片售价<small>电力 / 次，必须大于 0</small><input type="number" min="0.000001" step="0.000001" value={price || ""} onChange={(event) => onChange({ imagePowerPerCall: Number(event.target.value) })} /></label><label>图片进价<small>电力 / 次，按上游报价配置</small><input type="number" min="0" step="0.000001" value={cost} onChange={(event) => onChange({ costImagePowerPerCall: Number(event.target.value) })} /></label><p className="hint">每次生成 1 张 · 按次结算 · 未配置售价时禁用</p></div>;
-}
 
 function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<void> }) {
   const api = useContext(PrivateApiContext);
+  const [notice, setNotice] = useState("");
+  const [query, setQuery] = useState(""), [page, setPage] = useState(1);
+  const filtered = models.filter(m => `${m.name} ${m.model}`.toLowerCase().includes(query.trim().toLowerCase()));
   const [form, setForm] = useState({
     name: "",
     kind: "chat" as "chat" | "image",
@@ -2640,21 +2663,21 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
 
   async function createModel(event: FormEvent) {
     event.preventDefault();
-    await api("/api/admin/models", { method: "POST", body: JSON.stringify(form) });
+    await api("/api/admin/models", { method: "POST", body: JSON.stringify({ ...form, enabled: false, isDefault: false, inputPowerPerMillion: 0, outputPowerPerMillion: 0, costInputPowerPerMillion: 0, costOutputPowerPerMillion: 0, imagePowerPerCall: 0, costImagePowerPerCall: 0 }) });
     setForm({ name: "", kind: "chat", protocol: "openai", baseUrl: "https://app.yylx.io/v1", apiKey: "", model: "", systemPrompt: "", inputPowerPerMillion: 3, outputPowerPerMillion: 15, costInputPowerPerMillion: 2, costOutputPowerPerMillion: 10, imagePowerPerCall: 0, costImagePowerPerCall: 0, enabled: true, isDefault: false });
     await reload();
   }
 
   async function toggle(model: Model) {
-    await api(`/api/admin/models/${model.id}`, { method: "PATCH", body: JSON.stringify({ enabled: !model.enabled }) });
-    await reload();
+    try { await api(`/api/admin/models/${model.id}`, { method: "PATCH", body: JSON.stringify({ enabled: !model.enabled }) }); await reload(); setNotice(""); }
+    catch(e) { setNotice(e instanceof Error ? e.message : "更新失败"); }
   }
 
   async function saveModel(model: Model) {
     const draft = editing[model.id];
     if (!draft) return;
     const payload = { ...draft } as Record<string, unknown>;
-    if (model.pricing || model.pricingHistory?.length) for (const field of ["inputPowerPerMillion", "outputPowerPerMillion", "costInputPowerPerMillion", "costOutputPowerPerMillion"]) delete payload[field];
+    for (const field of ["inputPowerPerMillion", "outputPowerPerMillion", "costInputPowerPerMillion", "costOutputPowerPerMillion", "imagePowerPerCall", "costImagePowerPerCall"]) delete payload[field];
     await api(`/api/admin/models/${model.id}`, {
       method: "PATCH",
       body: JSON.stringify(payload)
@@ -2673,6 +2696,7 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
     <div className="admin-grid wide">
       <form className="admin-form" onSubmit={createModel}>
         <h3>接入模型</h3>
+        {notice ? <p role="status" className="notice">{notice}</p> : null}
         <input placeholder="展示名称，如 通义千问" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
         <select value={form.kind} onChange={(event) => setForm({ ...form, kind: event.target.value as "chat" | "image", protocol: event.target.value === "image" ? "openai" : form.protocol })}>
           <option value="chat">聊天模型</option>
@@ -2687,14 +2711,14 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
         <input placeholder="Base URL，如 https://dashscope.aliyuncs.com/compatible-mode/v1" value={form.baseUrl} onChange={(event) => setForm({ ...form, baseUrl: event.target.value })} />
         <input type="password" autoComplete="new-password" placeholder="API Key" value={form.apiKey} onChange={(event) => setForm({ ...form, apiKey: event.target.value })} />
         <input placeholder="模型 ID，如 qwen-plus / gpt-image-2" value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} />
-        {form.kind === "chat" ? (<div className="price-fields"><label>对外输入价<small>电力 / 百万 Token</small><input type="number" min="0" step="0.000001" value={form.inputPowerPerMillion} onChange={(event) => setForm({ ...form, inputPowerPerMillion: Number(event.target.value) })} /></label><label>对外输出价<small>电力 / 百万 Token</small><input type="number" min="0" step="0.000001" value={form.outputPowerPerMillion} onChange={(event) => setForm({ ...form, outputPowerPerMillion: Number(event.target.value) })} /></label><label>进价 · 输入<small>仅超管可见</small><input type="number" min="0" step="0.000001" value={form.costInputPowerPerMillion} onChange={(event) => setForm({ ...form, costInputPowerPerMillion: Number(event.target.value) })} /></label><label>进价 · 输出<small>仅超管可见</small><input type="number" min="0" step="0.000001" value={form.costOutputPowerPerMillion} onChange={(event) => setForm({ ...form, costOutputPowerPerMillion: Number(event.target.value) })} /></label></div>) : <ImageCallPricing price={form.imagePowerPerCall} cost={form.costImagePowerPerCall} onChange={(values) => setForm({ ...form, ...values })} />}
+        <p className="hint">保存后，在「电力与收费 → 模型与定价」配置价格，再启用。</p>
         <textarea placeholder="模型默认 System Prompt，可留空" value={form.systemPrompt} rows={4} onChange={(event) => setForm({ ...form, systemPrompt: event.target.value })} />
-        <label className="check"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />启用</label>
-        <label className="check"><input type="checkbox" checked={form.isDefault} disabled={form.kind !== "chat" || !form.enabled} onChange={(event) => setForm({ ...form, isDefault: event.target.checked })} />设为新聊天默认模型</label>
+
         <button className="primary"><Plus size={16} />保存模型</button>
       </form>
       <div className="table">
-        {models.map((model) => (
+        <input type="search" aria-label="搜索接入模型" placeholder="搜索模型" value={query} onChange={e => { setQuery(e.target.value); setPage(1); }} />
+        {filtered.slice((page - 1) * 8, page * 8).map((model) => (
           <div className="table-row model-row editable-row" key={model.id}>
             {editing[model.id] ? (
               <>
@@ -2712,12 +2736,7 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
                 <label className="field-label">Base URL<input value={editing[model.id].baseUrl} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], baseUrl: event.target.value } })} /></label>
                 <label className="field-label">模型 ID<input value={editing[model.id].model} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], model: event.target.value } })} /></label>
                 <label className="field-label">替换 API Key<input type="password" autoComplete="new-password" placeholder="留空则保持原 Key" value={editing[model.id].apiKey} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], apiKey: event.target.value } })} /></label>
-                {editing[model.id].kind === "chat" ? model.pricing || model.pricingHistory?.length ? <p className="hint">价格在「电力与收费 → 模型与定价」发布。</p> : <>
-                <label className="field-label">对外输入价<input type="number" min="0" step="0.000001" value={editing[model.id].inputPowerPerMillion} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], inputPowerPerMillion: Number(event.target.value) } })} /></label>
-                <label className="field-label">对外输出价<input type="number" min="0" step="0.000001" value={editing[model.id].outputPowerPerMillion} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], outputPowerPerMillion: Number(event.target.value) } })} /></label>
-                <label className="field-label">输入进价<input type="number" min="0" step="0.000001" value={editing[model.id].costInputPowerPerMillion} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], costInputPowerPerMillion: Number(event.target.value) } })} /></label>
-                <label className="field-label">输出进价<input type="number" min="0" step="0.000001" value={editing[model.id].costOutputPowerPerMillion} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], costOutputPowerPerMillion: Number(event.target.value) } })} /></label>
-                </> : <ImageCallPricing price={editing[model.id].imagePowerPerCall} cost={editing[model.id].costImagePowerPerCall} onChange={(values) => setEditing({ ...editing, [model.id]: { ...editing[model.id], ...values } })} />}
+                <p className="hint">价格在「电力与收费 → 模型与定价」配置。</p>
                 <label className="field-label model-prompt-field">System Prompt<textarea rows={4} value={editing[model.id].systemPrompt} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], systemPrompt: event.target.value } })} /></label>
                 <label className="inline-check"><input type="checkbox" checked={editing[model.id].enabled} onChange={(event) => setEditing({ ...editing, [model.id]: { ...editing[model.id], enabled: event.target.checked } })} />启用</label>
                 <label className="inline-check"><input type="radio" checked={editing[model.id].isDefault} disabled={editing[model.id].kind !== "chat" || !editing[model.id].enabled} onChange={() => setEditing({ ...editing, [model.id]: { ...editing[model.id], isDefault: true } })} />新聊天默认</label>
@@ -2727,7 +2746,7 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
               <>
                 <span>{model.name}<small>{model.kind === "image" ? "图片" : model.protocol === "anthropic" ? "聊天 · Anthropic" : "聊天 · OpenAI"} · {model.model}{model.isDefault ? " · 新聊天默认" : ""}</small></span>
                 <span>{model.hasApiKey ? "已配置 Key" : "缺少 Key"}<small>{model.kind === "image" ? `售价 ${model.imagePowerPerCall || "未配置"} 电力 / 次` : `售价 ${model.inputPowerPerMillion} / ${model.outputPowerPerMillion} 电力 / 百万 Token`}</small></span>
-                {model.kind === "chat" ? <PricingPanel key={`${model.id}-${model.pricing?.version}`} api={api} model={model} reload={reload} /> : null}
+                {model.kind === "chat" && !model.pricing ? <small>请前往「模型与定价」发布价格</small> : null}
                 <button className="secondary" onClick={() => setEditing({ ...editing, [model.id]: { name: model.name, kind: model.kind, protocol: model.protocol, baseUrl: model.baseUrl, model: model.model, apiKey: "", systemPrompt: model.systemPrompt || "", inputPowerPerMillion: model.inputPowerPerMillion, outputPowerPerMillion: model.outputPowerPerMillion, costInputPowerPerMillion: model.costInputPowerPerMillion, costOutputPowerPerMillion: model.costOutputPowerPerMillion, imagePowerPerCall: model.imagePowerPerCall ?? 0, costImagePowerPerCall: model.costImagePowerPerCall ?? 0, enabled: model.enabled, isDefault: model.isDefault } })}><Edit3 size={15} />编辑</button>
                 <button className="secondary" onClick={() => toggle(model)}>{model.enabled ? "停用" : "启用"}</button>
                 <button className="danger" onClick={() => deleteModel(model)}><Trash2 size={15} />删除</button>
@@ -2735,6 +2754,7 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
             )}
           </div>
         ))}
+        <Pagination page={page} total={filtered.length} size={8} onChange={setPage} />
       </div>
     </div>
   );

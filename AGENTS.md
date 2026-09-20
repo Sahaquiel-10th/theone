@@ -41,6 +41,8 @@ If global npm is unavailable in Codex Desktop, load the bundled workspace depend
 
 ## Required checks
 
+- 用户于 2026-09-20 授权：本项目完成验证的更新直接提交、推送并上线，继续检查自动部署与线上健康状态，无需逐次询问。此授权不包含自动调整生产价格、扣费或删除用户数据。
+
 - TypeScript type-check.
 - Unit and integration tests relevant to the change.
 - Cross-workspace isolation tests for every new data path.
