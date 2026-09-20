@@ -111,6 +111,7 @@
 - 后续问题从同一对话最近的用户附件中选择上下文；当前上传优先，数量/图片数/文字预算有上限。超限、部分未纳入会留下明确提示。
 - 知识诊断保留 used/no_match/not_connected/partial/failed 和脱敏原因；不把临时连接错误等同于永久撤销。知识连接的成功/失败更新须防止过时请求覆盖更新的授权或断开。
 - 附件原件仍在应用私有文件存储；数据库记录与 COS 数据库备份不包含这些原件的完整异地副本。本轮完整附件/密钥备份与恢复演练暂缓。
+- 新附件增加 `status`（uploading/queued/parsing/ready/failed）、`uploadedBytes`、`parseError`、`textChars`、`segmentCount`；沿用 JSON 记录存储，无表结构迁移。全文保存在原件旁的私有 `.segments`，`extractedText` 仅兼容旧记录。解析文件访问再次验证用户、Workspace 与对话。
 
 ### 内测有效使用统计
 

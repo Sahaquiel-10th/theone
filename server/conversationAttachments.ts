@@ -3,8 +3,8 @@ import type { Attachment, AttachmentSummary, Conversation, Database, Message, Me
 type AttachmentScope = { workspaceId: string; userId: string; conversationId?: string };
 
 export function publicAttachmentSummary(attachment: Attachment): AttachmentSummary {
-  const { id, originalName, mimeType, kind, size } = attachment;
-  return { id, originalName, mimeType, kind, size };
+  const { id, originalName, mimeType, kind, size, status, uploadedBytes, parseError, textChars, segmentCount } = attachment;
+  return { id, originalName, mimeType, kind, size, status, uploadedBytes, parseError, textChars, segmentCount };
 }
 
 /** Rebuild the browser-safe view from relational records after a restart. */
@@ -36,6 +36,7 @@ export function selectConversationAttachments(db: Pick<Database, "attachments" |
   const current = selected.map(id => {
     const attachment = owned.get(id);
     if (!attachment || (attachment.conversationId && attachment.conversationId !== scope.conversationId)) throw new Error("附件不存在、属于其他对话或无权访问");
+    if (attachment.status && attachment.status !== "ready") throw new Error(attachment.status === "failed" ? "附件解析失败，请重试或移除后发送" : "请等待附件上传并解析完成");
     return attachment;
   });
   if (current.filter(item => item.kind === "image").length > maxImages) throw new Error(`一次最多使用 ${maxImages} 张图片`);

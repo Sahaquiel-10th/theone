@@ -31,7 +31,7 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
   await fs.writeFile(path.join(directory, "db.json"), JSON.stringify({
     users, workspaces: users.map(user => ({ id: user.defaultWorkspaceId, name: user.id, slug: user.id, status: "active", createdAt: timestamp, updatedAt: timestamp })),
     workspaceMembers: users.map(user => ({ id: `member-${user.id}`, userId: user.id, workspaceId: user.defaultWorkspaceId, role: "owner", createdAt: timestamp })),
-    models: [model], oneKeyDevices: [{ id: "key", serialNumber: "fixture-key", workspaceId: "space-a", userId: "a", status: "active", publicKey: pair.publicKey.export({ type: "spki", format: "pem" }).toString(), createdAt: timestamp }],
+    models: [model], oneKeyDevices: ["a", "b"].map(userId => ({ id: userId === "a" ? "key" : "key-b", serialNumber: `fixture-key-${userId}`, workspaceId: `space-${userId}`, userId, status: "active", publicKey: pair.publicKey.export({ type: "spki", format: "pem" }).toString(), createdAt: timestamp })),
     conversations: [], messages: [], attachments: [], settings: { safetyRules: "Fixture safety", rechargeCnyPerPower: 7 }
   }));
   let app: ChildProcess | undefined;
@@ -55,8 +55,8 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
   }
   let base = await start();
   const signature = (nonce: string) => crypto.sign(null, Buffer.from(nonce, "base64url"), pair.privateKey).toString("base64url");
-  async function connect(computer: string) {
-    const socket = new WebSocket(`${base.replace("http", "ws")}/api/one-key/launcher?deviceId=key&installationId=${computer}`);
+  async function connect(computer: string, keyId = "key") {
+    const socket = new WebSocket(`${base.replace("http", "ws")}/api/one-key/launcher?deviceId=${keyId}&installationId=${computer}`);
     sockets.push(socket);
     const [raw] = await once(socket, "message"); const auth = JSON.parse(raw.toString());
     const ready = once(socket, "message"); socket.send(JSON.stringify({ type: "auth_response", challengeId: auth.challengeId, signature: signature(auth.nonce) })); await ready;
@@ -65,18 +65,33 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
   }
   const post = (endpoint: string, body: unknown, cookie = "") => fetch(`${base}${endpoint}`, { method: "POST", headers: { "Content-Type": "application/json", Cookie: cookie }, body: JSON.stringify(body) });
   const get = (endpoint: string, cookie: string) => fetch(`${base}${endpoint}`, { headers: { Cookie: cookie } });
-  async function login(computer: string) {
-    const challenge = await (await post("/api/one-key/challenge", { deviceId: "key", installationId: computer })).json() as any;
+  async function login(computer: string, keyId = "key") {
+    const challenge = await (await post("/api/one-key/challenge", { deviceId: keyId, installationId: computer })).json() as any;
     const verified = await (await post(`/api/one-key/challenge/${challenge.challengeId}/verify`, { signature: signature(challenge.nonce) })).json() as any;
     const response = await post("/api/auth/one-key/redeem", { loginCode: verified.loginCode });
     assert.equal(response.status, 200);
     return response.headers.get("set-cookie")!.split(";")[0];
   }
   const socketA = await connect(computerA), cookie = await login(computerA);
-  const form = new FormData(); form.append("files", new Blob(["PRIVATE_FIXTURE_DOCUMENT"], { type: "text/plain" }), "fixture.txt");
-  const upload = await fetch(`${base}/api/attachments`, { method: "POST", headers: { Cookie: cookie }, body: form });
+  const fileBody = "PRIVATE_FIXTURE_DOCUMENT";
+  const upload = await post("/api/attachments/uploads", { filename: "fixture.txt", size: fileBody.length, mimeType: "text/plain" }, cookie);
   assert.equal(upload.status, 200);
-  const attachmentId = ((await upload.json()) as any).attachments[0].id;
+  const attachmentId = ((await upload.json()) as any).attachment.id;
+  await connect(computerB, "key-b");
+  const otherCookie = await login(computerB, "key-b");
+  for (const [suffix, method] of [["", "GET"], ["/content", "GET"], ["/complete", "POST"], ["/retry", "POST"], ["", "DELETE"], ["/chunks?offset=0", "PUT"]]) {
+    const response = await fetch(`${base}/api/attachments/${attachmentId}${suffix}`, { method, headers: { Cookie: otherCookie, "Content-Type": "application/octet-stream" }, ...(method === "PUT" ? { body: "bad" } : {}) });
+    assert.ok(response.status >= 400);
+    assert.doesNotMatch(await response.text(), /fixture\.txt|storagePath|PRIVATE_FIXTURE_DOCUMENT/);
+  }
+  assert.equal((await fetch(`${base}/api/attachments/${attachmentId}/chunks?offset=0`, { method: "PUT", headers: { Cookie: cookie, "Content-Type": "application/octet-stream" }, body: fileBody })).status, 200);
+  assert.equal((await post(`/api/attachments/${attachmentId}/complete`, {}, cookie)).status, 200);
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const state = await (await get(`/api/attachments/${attachmentId}`, cookie)).json() as any;
+    assert.notEqual(state.attachment.status, "failed", state.attachment.parseError);
+    if (state.attachment.status === "ready") break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
   const input = { operationId: crypto.randomUUID(), content: "Summarize the attachment", modelId: "model", attachmentIds: [attachmentId], webSearch: false };
   const first = await post("/api/chat", input, cookie); assert.equal(first.status, 200);
   const answer = await first.json() as any;
@@ -102,4 +117,31 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
   assert.equal(restored.conversation.messages[1].knowledgeDiagnostics.status, "not_connected");
   const replay = await get(`/api/chat/operations/${input.operationId}`, cookie); assert.equal(replay.status, 200); assert.equal(modelCalls, 2);
   const missing = await get(`/api/chat/operations/${crypto.randomUUID()}`, cookie); assert.equal(missing.status, 404);
+  const longText = "Long document section. ".repeat(1600) + " TAIL_OF_FULL_DOCUMENT";
+  const longUpload = await post("/api/attachments/uploads", { filename: "long.txt", size: longText.length, mimeType: "text/plain" }, cookie);
+  const longId = ((await longUpload.json()) as any).attachment.id;
+  await fetch(`${base}/api/attachments/${longId}/chunks?offset=0`, { method: "PUT", headers: { Cookie: cookie, "Content-Type": "application/octet-stream" }, body: longText });
+  await post(`/api/attachments/${longId}/complete`, {}, cookie);
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const state = await (await get(`/api/attachments/${longId}`, cookie)).json() as any;
+    if (state.attachment.status === "ready") break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  const longOperation = crypto.randomUUID();
+  const longResponse = await post("/api/chat", { ...input, operationId: longOperation, content: "总结全文", attachmentIds: [longId] }, cookie);
+  assert.equal(longResponse.status, 202);
+  let done: Response | undefined;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    done = await get(`/api/chat/operations/${longOperation}`, cookie);
+    if (done.status === 200) break;
+    assert.equal(((await done.json()) as any).code, "CHAT_OPERATION_PENDING");
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.equal(done?.status, 200);
+  assert.ok(inputs.slice(2).some(text => text.includes("TAIL_OF_FULL_DOCUMENT")));
+  const longBilling = await (await get("/api/me/billing", cookie)).json() as any;
+  assert.ok(longBilling.usage.some((row: any) => row.activity === "attachment_summary"));
+  const callCount = modelCalls;
+  await get(`/api/chat/operations/${longOperation}`, cookie);
+  assert.equal(modelCalls, callCount);
 });

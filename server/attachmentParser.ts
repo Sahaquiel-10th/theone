@@ -8,7 +8,7 @@ import { AttachmentKind } from "./types.js";
 const require = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse/lib/pdf-parse.js") as (buffer: Buffer) => Promise<{ text: string }>;
 
-const maxExtractedChars = Math.max(1000, Number(process.env.ATTACHMENT_MAX_EXTRACTED_CHARS ?? 30000));
+const maxExtractedChars = 12_000_000;
 
 const supportedExtensions = new Set([
   ".png", ".jpg", ".jpeg", ".webp", ".gif",
@@ -64,7 +64,8 @@ export async function parseAttachment(buffer: Buffer, filename: string, mimeType
     throw new Error("暂不支持这个文件格式");
   }
 
-  const normalized = normalizeText(extractedText).slice(0, maxExtractedChars);
+  const normalized = normalizeText(extractedText);
+  if (normalized.length > maxExtractedChars) throw new Error("文件文字超过安全解析上限，请拆成几个文件后上传；未截断保存");
   if (kind !== "image" && !normalized) throw new Error("没有从文件中读取到可分析的文字");
   return { kind, extractedText: normalized, mimeType: normalizedMimeType(extension, mimeType) };
 }
@@ -109,7 +110,9 @@ async function validateOfficeArchive(buffer: Buffer) {
     const size = Number((entry as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize ?? 0);
     return total + (Number.isFinite(size) ? size : 0);
   }, 0);
-  if (uncompressedBytes > 60 * 1024 * 1024) throw new Error("Office 文件解压后过大");
+  if (uncompressedBytes > 512 * 1024 * 1024) throw new Error("Office 文件解压后过大");
+  const xmlBytes = entries.filter(entry => /\.(xml|rels)$/i.test(entry.name)).reduce((total, entry) => total + Number((entry as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize ?? 0), 0);
+  if (xmlBytes > 60 * 1024 * 1024) throw new Error("Office 文件文字结构过大，请拆分后上传");
 }
 
 function formatCell(value: unknown) {

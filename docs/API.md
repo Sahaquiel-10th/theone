@@ -1,5 +1,20 @@
 # ONE MVP API
 
+## 对话附件（2026-09-20）
+
+以下接口均强制登录、精确用户/Workspace 及在线 Key 证明：
+
+- `POST /api/attachments/uploads`：`filename,size,mimeType`，返回公开 attachment 摘要和 `chunkBytes`。
+- `PUT /api/attachments/:id/chunks?offset=N`：application/octet-stream，每片最多 4 MiB，返回已提交的 `uploadedBytes`；顺序写入，不接受跨账号 ID 或错误偏移。
+- `POST /api/attachments/:id/complete`：完整上传后进入后台解析队列。
+- `GET /api/attachments/:id`：只返回状态和公开元数据，不包含路径、全文或分段数据。
+- `POST /api/attachments/:id/retry`：仅重试解析失败的原件。
+- `GET /api/attachments/:id/content`、`DELETE /api/attachments/:id` 沿用权限约束；只有已就绪附件允许下载，已绑定对话的附件不能单独删除。
+- 旧 multipart `POST /api/attachments` 返回 409，请旧页面刷新。
+- 长附件全文总结的 `POST /api/chat` 可以返回 202 `{pending:true,operationId}`；继续查询现有操作结果接口。分段调用与最终回答分别留下用量记录，不能重发代替轮询。
+
+限制和维护说明见《对话附件升级计划》。
+
 > 状态：2026-09-15 本地实现契约；本轮修改尚未上线或灌装，新接口不能视为生产已经可用。
 
 ## 通用规则

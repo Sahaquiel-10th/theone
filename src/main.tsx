@@ -137,6 +137,9 @@ type AttachmentSummary = {
   mimeType: string;
   kind: "image" | "document" | "spreadsheet" | "presentation" | "text";
   size: number;
+  status?: "uploading" | "queued" | "parsing" | "ready" | "failed";
+  uploadedBytes?: number;
+  parseError?: string;
 };
 
 type SearchSource = {
@@ -146,7 +149,7 @@ type SearchSource = {
 };
 
 type AppCapabilities = {
-  attachments: { enabled: boolean; maxFiles: number; maxBytes: number; extensions: string[] };
+  attachments: { enabled: boolean; maxFiles: number; maxBytes: number; imageMaxBytes?: number; extensions: string[] };
   webSearch: { enabled: boolean; provider: string };
   knowledge?: { providers: KnowledgeConnection["provider"][] };
 };
@@ -245,7 +248,7 @@ type Agent = {
 
 type PowerLedgerEntry = { id: string; type: "gift" | "recharge" | "usage" | "adjustment" | "refund"; amountMicros: number; balanceAfterMicros: number; title: string; createdAt: string; username?: string };
 type RechargeOrder = { id: string; userId: string; requestedMicros: number; amountCny: number; status: "pending" | "paid" | "cancelled"; createdAt: string; username?: string; payment?: { channel: string; expiresAt?: string } };
-type UsageRecord = { cacheUsage?: { read: number; write: number; write5m: number; write1h: number }; cachePricesSnapshot?: { read: number; write: number; write1h: number }; id: string; userId: string; modelId: string; inputTokens: number; outputTokens: number; totalTokens: number; chargedMicros?: number; costMicros?: number; requestId?: string; createdAt: string; username?: string; modelName?: string; source?: "provider" | "estimated" | "unknown" | "fixed"; status?: "pending" | "success" | "failed" | "needs_review" | "waived"; activity?: "chat" | "execution_compile" | "local_agent"; durationMs?: number };
+type UsageRecord = { cacheUsage?: { read: number; write: number; write5m: number; write1h: number }; cachePricesSnapshot?: { read: number; write: number; write1h: number }; id: string; userId: string; modelId: string; inputTokens: number; outputTokens: number; totalTokens: number; chargedMicros?: number; costMicros?: number; requestId?: string; createdAt: string; username?: string; modelName?: string; source?: "provider" | "estimated" | "unknown" | "fixed"; status?: "pending" | "success" | "failed" | "needs_review" | "waived"; activity?: "attachment_summary" | "chat" | "execution_compile" | "local_agent"; durationMs?: number };
 type UsageTotals = { calls: number; inputTokens: number; outputTokens: number; chargedMicros: number; costMicros: number; unknownCostCalls?: number; reviewCalls?: number; failedCalls?: number };
 type UserUsageSummary = {
   userId: string; workspaceId: string; username: string; role?: Role; enabled: boolean; balanceMicros: number; reservedMicros?: number;
@@ -375,24 +378,26 @@ function AttachmentIcon({ kind, size = 15 }: { kind: AttachmentSummary["kind"]; 
   return <FileText size={size} />;
 }
 
-function AttachmentList({ attachments, removable, onRemove }: {
+function AttachmentList({ attachments, removable, onRemove, onRetry }: {
   attachments: AttachmentSummary[];
   removable?: boolean;
   onRemove?: (attachment: AttachmentSummary) => void;
+  onRetry?: (attachment: AttachmentSummary) => void;
 }) {
   if (!attachments.length) return null;
   return (
     <div className={`attachment-list ${removable ? "pending" : ""}`}>
       {attachments.map((attachment) => (
         <div className="attachment-chip" key={attachment.id}>
-          {attachment.kind === "image" ? (
+          {attachment.kind === "image" && (!attachment.status || attachment.status === "ready") ? (
             <img src={`/api/attachments/${encodeURIComponent(attachment.id)}/content`} alt="" />
           ) : <span className="attachment-file-icon"><AttachmentIcon kind={attachment.kind} /></span>}
           <span className="attachment-meta">
             <strong title={attachment.originalName}>{attachment.originalName}</strong>
-            <small>{readableFileSize(attachment.size)}</small>
+            <small title={attachment.parseError}>{attachment.status === "uploading" ? `上传 ${Math.floor((attachment.uploadedBytes || 0) / attachment.size * 100)}%` : attachment.status === "queued" ? "等待解析" : attachment.status === "parsing" ? "正在解析" : attachment.status === "failed" ? "解析失败" : readableFileSize(attachment.size)}</small>
           </span>
-          {removable ? (
+          {removable && attachment.status === "failed" && onRetry ? <button className="attachment-retry" type="button" title="重试解析" onClick={() => onRetry(attachment)}>重试</button> : null}
+          {removable && attachment.status !== "uploading" ? (
             <button type="button" title="移除附件" onClick={() => onRemove?.(attachment)}><X size={13} /></button>
           ) : null}
         </div>
@@ -1027,7 +1032,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       setError(`每次最多上传 ${capabilities.attachments.maxFiles} 个附件`);
       return;
     }
-    const selected = Array.from(files).slice(0, remaining);
+    if (files.length > remaining) { setError(`本条消息还可以添加 ${remaining} 个附件`); return; }
+    const selected = Array.from(files);
+    for (const file of selected) {
+      const limit = file.type.startsWith("image/") ? capabilities.attachments.imageMaxBytes || 20 * 1024 * 1024 : capabilities.attachments.maxBytes;
+      if (!file.size || file.size > limit) { setError(`${file.name}：请选择不超过 ${Math.round(limit / 1024 / 1024)} MB 的文件`); return; }
+    }
     if (currentModel?.kind === "image" && selected.some((file) => !["image/png", "image/jpeg", "image/webp"].includes(file.type))) {
       setError("图生图仅支持 PNG、JPG、JPEG 或 WebP 图片");
       return;
@@ -1040,18 +1050,47 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       setError("这个智能体没有开启图片理解");
       return;
     }
-    const form = new FormData();
-    selected.forEach((file) => form.append("files", file));
-    setUploadingAttachments(true);
-    setError("");
-    try {
-      const result = await api<{ attachments: AttachmentSummary[] }>("/api/attachments", { method: "POST", body: form });
+    const updateDraft = (attachment: AttachmentSummary, remove = false) => {
       const key = resolvedDraftKey(uploadDraftKey);
       const isCurrent = resolvedDraftKey(composeKeyRef.current) === key;
       const draft = isCurrent ? currentDraftRef.current : draftsRef.current[key] || { content: "", attachments: [] };
-      const attachments = [...draft.attachments, ...result.attachments].slice(0, capabilities.attachments.maxFiles);
+      const attachments = remove ? draft.attachments.filter(a => a.id !== attachment.id) : draft.attachments.some(a => a.id === attachment.id) ? draft.attachments.map(a => a.id === attachment.id ? attachment : a) : [...draft.attachments, attachment];
       draftsRef.current[key] = { ...draft, attachments };
-      if (isCurrent) setPendingAttachments(attachments);
+      if (isCurrent) { currentDraftRef.current = { ...draft, attachments }; setPendingAttachments(attachments); }
+    };
+    setUploadingAttachments(true);
+    setError("");
+    try {
+      for (const file of selected) {
+        const created = await api<{ attachment: AttachmentSummary; chunkBytes: number }>("/api/attachments/uploads", { method: "POST", body: JSON.stringify({ filename: file.name, size: file.size, mimeType: file.type }) });
+        let item = created.attachment;
+        updateDraft(item);
+        try {
+          let offset = item.uploadedBytes || 0;
+          while (offset < file.size) {
+            let completed = false;
+            for (let attempt = 0; attempt < 3 && !completed; attempt++) {
+              try {
+                const result = await api<{ uploadedBytes: number }>(`/api/attachments/${item.id}/chunks?offset=${offset}`, { method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body: file.slice(offset, offset + created.chunkBytes) });
+                offset = result.uploadedBytes; completed = true;
+              } catch (error) {
+                if (attempt === 2 || error instanceof ApiError && [401, 403, 409, 428].includes(error.status || 0)) throw error;
+                await new Promise(resolve => setTimeout(resolve, 700 * (attempt + 1)));
+                const current = await api<{ attachment: AttachmentSummary }>(`/api/attachments/${item.id}`);
+                offset = current.attachment.uploadedBytes || 0;
+                if (offset >= file.size) completed = true;
+              }
+            }
+            item = { ...item, uploadedBytes: offset }; updateDraft(item);
+          }
+          await api(`/api/attachments/${item.id}/complete`, { method: "POST" });
+          updateDraft({ ...item, status: "queued" });
+        } catch (error) {
+          updateDraft(item, true);
+          await api(`/api/attachments/${item.id}`, { method: "DELETE" }).catch(() => undefined);
+          throw error;
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "附件上传失败");
     } finally {
@@ -1064,7 +1103,34 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     await api(`/api/attachments/${encodeURIComponent(attachment.id)}`, { method: "DELETE" }).catch(() => undefined);
   }
 
+  async function retryAttachment(attachment: AttachmentSummary) {
+    try {
+      setError("");
+      await api(`/api/attachments/${attachment.id}/retry`, { method: "POST" });
+      setPendingAttachments(items => items.map(a => a.id === attachment.id ? { ...a, status: "queued", parseError: undefined } : a));
+    } catch (error) { setError(error instanceof Error ? error.message : "重试失败"); }
+  }
+
+  useEffect(() => {
+    const ids = pendingAttachments.filter(a => a.status === "queued" || a.status === "parsing").map(a => a.id);
+    if (!ids.length) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      const results = await Promise.allSettled(ids.map(id => api<{ attachment: AttachmentSummary }>(`/api/attachments/${id}`)));
+      if (cancelled) return;
+      const updated = new Map(results.flatMap(r => r.status === "fulfilled" ? [[r.value.attachment.id, r.value.attachment] as const] : []));
+      const failed = [...updated.values()].filter(a => a.status === "failed");
+      if (failed.length) setError(failed.map(a => `${a.originalName}：${a.parseError || "解析失败，请重试"}`).join("；"));
+      if (updated.size) setPendingAttachments(items => items.map(a => updated.get(a.id) || a));
+      else timer = setTimeout(() => { void poll(); }, 3000);
+    };
+    timer = setTimeout(() => { void poll(); }, 2000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [pendingAttachments, api]);
+
   async function sendMessage(rawText: string) {
+    if (uploadingAttachments || pendingAttachments.some(a => a.status && a.status !== "ready")) { setError("请等待附件解析完成，或移除失败的附件"); return; }
     let operationId = "";
     const target = targetConversation;
     const modelId = target?.modelId || draftModelId;
@@ -1126,10 +1192,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         folderId: draftWorkspaceId, agentId: isNewConversation ? draftAgentId : target?.agentId,
         attachmentIds: attachments.map(attachment => attachment.id), webSearch: useWebSearch };
       operationId = await chatSubmission(user.id, payload);
-      const result = await api<{ conversation: Conversation; knowledgeWarning?: string }>("/api/chat", {
+      let result = await api<{ conversation: Conversation; knowledgeWarning?: string; pending?: boolean }>("/api/chat", {
         method: "POST",
         body: JSON.stringify({ ...payload, operationId })
       });
+      while (result.pending) {
+        await new Promise(resolve => setTimeout(resolve, 2500));
+        try { result = await api<typeof result>(`/api/chat/operations/${encodeURIComponent(operationId)}`); }
+        catch (error) { if (!(error instanceof ApiError) || error.code !== "CHAT_OPERATION_PENDING") throw error; }
+      }
       forgetChatSubmission(user.id, operationId); setPendingRequests(pendingChatSubmissions(user.id));
       setConversations((items) => {
         const rest = items.filter((item) => item.id !== result.conversation.id && item.id !== tempId);
@@ -1575,7 +1646,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           ) : null}
           {pendingAttachments.length ? (
             <div className="composer-attachments">
-              <AttachmentList attachments={pendingAttachments} removable onRemove={removePendingAttachment} />
+              <AttachmentList attachments={pendingAttachments} removable onRemove={removePendingAttachment} onRetry={retryAttachment} />
             </div>
           ) : null}
           <div className="composer-row">
@@ -1591,7 +1662,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               placeholder={composeMode === "execution" ? "补充要求" : currentModel?.kind === "image" ? "描述你想怎么改" : "告诉我，你想做什么"}
               rows={3}
             />
-            <button id="one-studio-send" className="primary send" type="submit" aria-label={composeMode === "execution" ? "发送并继续执行" : "发送消息"} title={targetLoading ? "这件事正在回复，可以新开一件事" : "发送消息"} disabled={uploadingAttachments || (composeMode === "execution" ? taskStatusUnavailable || preparingExecution || executionBusy || !content.trim() || pendingAttachments.length > 0 : !activeModelId || targetLoading || (!content.trim() && !pendingAttachments.length))}>
+            <button id="one-studio-send" className="primary send" type="submit" aria-label={composeMode === "execution" ? "发送并继续执行" : "发送消息"} title={targetLoading ? "这件事正在回复，可以新开一件事" : "发送消息"} disabled={uploadingAttachments || pendingAttachments.some(a => a.status && a.status !== "ready") || (composeMode === "execution" ? taskStatusUnavailable || preparingExecution || executionBusy || !content.trim() || pendingAttachments.length > 0 : !activeModelId || targetLoading || (!content.trim() && !pendingAttachments.length))}>
               {composeMode === "execution" ? <Zap size={18} /> : <ArrowUp size={19} />}
             </button>
           </div>
@@ -2365,7 +2436,7 @@ function usageActionLabel(action: string) {
 }
 
 function usageActivityLabel(activity?: UsageRecord["activity"]) {
-  return activity === "execution_compile" ? "整理执行指令" : activity === "local_agent" ? "本机执行" : "AI 问答";
+  return activity === "attachment_summary" ? "附件分段总结" : activity === "execution_compile" ? "整理执行指令" : activity === "local_agent" ? "本机执行" : "AI 问答";
 }
 
 function usageStatusLabel(usage: UsageRecord) {

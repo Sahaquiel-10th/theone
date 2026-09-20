@@ -44,8 +44,10 @@ export type AttachmentKind = "image" | "document" | "spreadsheet" | "presentatio
 export type Attachment = {
   id: string; workspaceId: string; userId: string; originalName: string; mimeType: string; kind: AttachmentKind;
   size: number; storagePath: string; extractedText: string; conversationId?: string; messageId?: string; createdAt: string;
+  status?: "uploading" | "queued" | "parsing" | "ready" | "failed";
+  uploadedBytes?: number; parseError?: string; textChars?: number; segmentCount?: number;
 };
-export type AttachmentSummary = Pick<Attachment, "id" | "originalName" | "mimeType" | "kind" | "size">;
+export type AttachmentSummary = Pick<Attachment, "id" | "originalName" | "mimeType" | "kind" | "size" | "status" | "uploadedBytes" | "parseError" | "textChars" | "segmentCount">;
 export type SearchSource = { title: string; url: string; snippet: string };
 export type SystemSettings = { safetyRules: string; rechargeCnyPerPower: number };
 
