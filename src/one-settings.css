@@ -31,6 +31,9 @@
 .price-notice-bell i { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: #b65d38; }
 .cache-usage-details details { margin: 8px 0; }
 .cache-usage-details summary { cursor: pointer; font-size: 12px; }
+.usage-discount { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.usage-discount > span { color: #727c75; font-size: 12px; }
+.usage-discount > strong { color: #24564b; font-size: 13px; }
 .price-notice-history article, .pricing-history article { padding: 14px 0; border-bottom: 1px solid #e0e7d9; overflow-wrap: anywhere; }
 .price-notice-history p, .pricing-history p { font-size: 12px; white-space: pre-wrap; }
 .price-notice-history small { font-size: 11px; color: #78886c; }

@@ -2,9 +2,19 @@ export type PowerUsage = {
   inputTokens?: number; outputTokens?: number; chargedMicros?: number; status?: string; source?: string;
   inputPowerPerMillionSnapshot?: number; outputPowerPerMillionSnapshot?: number;
   imagePowerPerCallSnapshot?: number;
+  pricingSnapshot?: { multiplier: number; referenceInput: number; referenceOutput: number; referenceCache?: { read: number; write: number; write1h: number } };
   cacheUsage?: { read: number; write: number; write5m: number; write1h: number };
   cachePricesSnapshot?: { read: number; write: number; write1h: number };
 };
+export function usageDiscount(row: PowerUsage) {
+  const pricing = row.pricingSnapshot;
+  if (!pricing || !Number.isFinite(pricing.multiplier) || pricing.multiplier <= 0 || pricing.multiplier >= 1) return null;
+  const actual = usagePower(row);
+  const reference = usagePower({ ...row, inputPowerPerMillionSnapshot: pricing.referenceInput,
+    outputPowerPerMillionSnapshot: pricing.referenceOutput, cachePricesSnapshot: pricing.referenceCache });
+  if (!actual || !reference || reference.total <= actual.total) return null;
+  return { reference: reference.total, discounted: actual.total, multiplier: pricing.multiplier };
+}
 export const powerText = (micros: number) => (micros / 1e6).toLocaleString("zh-CN", { maximumFractionDigits: 6 });
 // Snapshot prices include the retail multiplier. Round once, as in settlement.
 export function usagePower(row: PowerUsage) {

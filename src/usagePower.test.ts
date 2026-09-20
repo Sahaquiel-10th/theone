@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { CacheUsageDetails } from "./CacheUsageDetails";
-import { usagePower, type PowerUsage } from "./usagePower";
+import { usagePower, usageDiscount, type PowerUsage } from "./usagePower";
 const row: PowerUsage = { inputTokens: 2, outputTokens: 171, inputPowerPerMillionSnapshot: 1.8, outputPowerPerMillionSnapshot: 9,
   cacheUsage: { read: 0, write: 6684, write5m: 6684, write1h: 0 }, cachePricesSnapshot: { read: .18, write: 2.25, write1h: 3.6 }, chargedMicros: 16582, status: "success" };
 test("discounted snapshot is applied once; components sum to settled charge", () => {
@@ -27,4 +27,17 @@ test("user detail uses power, collapsed cache and no multiplier or raw usage", (
   const html = renderToStaticMarkup(createElement(CacheUsageDetails, { row }));
   assert.match(html, /输入 .* 电力 · 输出 .* 电力/);
   assert.match(html, /<details>/); assert.doesNotMatch(html, /Token|6684|×0.6|<details open/);
+});
+test("discount compares the historical official snapshot including cache, not rounded charge divided by multiplier", () => {
+  const discounted = { ...row, pricingSnapshot: { multiplier: .6, referenceInput: 3, referenceOutput: 15, referenceCache: { read: .3, write: 3.75, write1h: 6 } } };
+  assert.deepEqual(usageDiscount(discounted), { reference: 27636, discounted: 16582, multiplier: .6 });
+  const html = renderToStaticMarkup(createElement(CacheUsageDetails, { row: discounted }));
+  assert.match(html, /<s>0.027636 电力<\/s>/);
+  assert.match(html, /优惠期 ×0.6 = 0.016582 电力/);
+  assert.equal(usageDiscount({ ...discounted, pricingSnapshot: { ...discounted.pricingSnapshot, multiplier: 1.2 } }), null);
+  assert.equal(usageDiscount({ ...discounted, pricingSnapshot: { ...discounted.pricingSnapshot, referenceCache: undefined } }), null);
+  assert.equal(usageDiscount({ ...discounted, status: "waived" }), null);
+  const capped = renderToStaticMarkup(createElement(CacheUsageDetails, { row: { ...discounted, chargedMicros: 100 } }));
+  assert.match(capped, /结算减免/);
+  assert.match(capped, /优惠期 ×0.6 = 0.016582 电力/);
 });
