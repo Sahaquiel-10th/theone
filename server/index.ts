@@ -29,7 +29,8 @@ import { betaEngagementSummary } from "./betaEngagement.js";
 import { OneKeyService } from "./oneKeyService.js";
 import { availablePowerMicros, creditPower, MICROS_PER_POWER, powerAccount } from "./powerBilling.js";
 import { runBilledModel, resolveBillingReview } from "./modelBilling.js";
-import { connectorRegistry, connectorService, notionMcpService, yinxiangService, flowusMcpService, oneKeyPresence, runtimeUpdateCatalog } from "./runtime.js";
+import { connectorRegistry, connectorService, notionMcpService, yinxiangService, flowusMcpService, feishuService, oneKeyPresence, runtimeUpdateCatalog } from "./runtime.js";
+import { installFeishuRoutes } from "./feishuRoutes.js";
 import { connectorRoutes } from "./connectorRoutes.js";
 import { AuthorizationSessionError, AuthorizationSessions } from "./connectors/authorizationSessions.js";
 import { appendExecutionEvent, buildExecutionCompilerMessages, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
@@ -175,6 +176,7 @@ async function persistGeneratedImage(params: { imageUrl?: string; workspaceId: s
 
 const keyAuth = [auth(jwtSecret), requireOneKeySession] as const;
 installPaymentRoutes(app, keyAuth, store);
+installFeishuRoutes(app, keyAuth, store, feishuService, () => connectorRegistry.enabled("feishu"));
 
 app.get("/api/health", asyncRoute(async (_req, res) => {
   try { if (store.health) await store.health(); res.json({ ok: true }); }

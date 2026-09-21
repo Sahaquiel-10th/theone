@@ -1,0 +1,21 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import express from "express";
+import { once } from "node:events";
+import { installFeishuRoutes } from "./feishuRoutes.js";
+import type { Store } from "./db.js";
+import type { FeishuService } from "./knowledge/feishuService.js";
+test("Feishu routes require Key middleware, bind server workspace and exclude credentials", async t => {
+  const app = express(); app.use(express.json()); let calls = 0, enabled = true;
+  const service = { setup: () => ({ configured: true }), configured: () => true, saveAnswer: async (scope: unknown) => { calls++; assert.deepEqual(scope, { workspaceId: "wa", userId: "a" }); return { status: "completed" }; } } as unknown as FeishuService;
+  const store = { read: async () => ({ knowledgeConnections: [{ provider: "feishu", workspaceId: "wa", status: "connected", encryptedAccessToken: "secret", providerUserId: "open_a" }, { provider: "feishu", workspaceId: "wb", providerSpaceName: "foreign" }] }) } as unknown as Store;
+  installFeishuRoutes(app, [(req, res, next) => { if (req.headers.authorization !== "key") return res.sendStatus(428); req.workspaceId = "wa"; req.user = { id: "a" } as any; next(); }], store, service, () => enabled);
+  const server = app.listen(0, "127.0.0.1"); await once(server, "listening"); t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = `http://127.0.0.1:${(server.address() as any).port}/api/knowledge/connections/feishu`;
+  assert.equal((await fetch(base)).status, 428);
+  const state = await (await fetch(base + "?workspaceId=wb", { headers: { authorization: "key" } })).text(); assert.doesNotMatch(state, /secret|foreign/);
+  const post = (confirmed: boolean) => fetch(base + "/documents", { method: "POST", headers: { authorization: "key", "Content-Type": "application/json" }, body: JSON.stringify({ confirmed, workspaceId: "wb", userId: "b", operationId: "op", sourceMessageId: "m", title: "t", expectedAccount: "a" }) });
+  assert.equal((await post(false)).status, 400); assert.equal(calls, 0);
+  assert.equal((await post(true)).status, 200); assert.equal(calls, 1);
+  enabled = false; assert.equal((await post(true)).status, 403); assert.equal(calls, 1);
+});

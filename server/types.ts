@@ -56,7 +56,7 @@ export type UserSavedMemory = {
   content: string; status: "active" | "deleted"; createdAt: string; updatedAt: string;
 };
 
-export type KnowledgeProviderId = "getnote" | "notion" | "yinxiang" | "flowus";
+export type KnowledgeProviderId = "getnote" | "notion" | "yinxiang" | "flowus" | "feishu";
 export type RetrievalLog = {
   id: string; workspaceId: string; userId: string; conversationId: string; query: string; provider: KnowledgeProviderId | "multiple";
   matchedItemsJson: unknown; injectedContext: string; createdAt: string;
@@ -119,6 +119,7 @@ export type KnowledgeConnection = {
   id: string; workspaceId: string; provider: KnowledgeProviderId; status: "pending" | "connected" | "error" | "revoked";
   clientId: string; encryptedApiKey?: string; encryptedAccessToken?: string; encryptedRefreshToken?: string; encryptedClientSecret?: string;
   oauthTokenAuthMethod?: "none" | "client_secret_post";
+  documentWrites?: { id: string; userId: string; sourceMessageId: string; title: string; status: "pending" | "completed" | "uncertain"; documentId?: string; url?: string; createdAt: string }[];
   authorizationSession?: ConnectorAuthorizationSession;
   providerSpaceId?: string; providerSpaceName?: string; providerUserId?: string;
   credentialExpiresAt?: string; lastCheckedAt?: string; lastError?: string; createdAt: string; updatedAt: string;

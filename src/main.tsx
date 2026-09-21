@@ -72,6 +72,7 @@ import { chatSubmission, forgetChatSubmission, pendingChatSubmissions } from "./
 import { Onboarding, ProfileNameEditor, BetaFeedbackControls, type AccountProfile, type ProfilePatch } from "./Onboarding";
 import { getNotePollFailureAction, prepareGetNoteAuthorizationWindow } from "./getNoteAuthorization";
 import { PaymentPanel } from "./PaymentPanel";
+import { FeishuConnection, SaveToFeishu } from "./FeishuConnection";
 import { CacheUsageDetails } from "./CacheUsageDetails";
 import { PricingCatalog } from "./PricingPanel";
 import { GiftBatchHistory } from "./GiftBatchHistory";
@@ -1560,6 +1561,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
                         </div>
                         <div className="message-actions">
+                          {message.id ? <SaveToFeishu key={message.id} api={api} messageId={message.id} content={message.content} /> : null}
                           <button title="复制" onClick={() => copyMarkdown(message.content)}>
                             <Copy size={14} />
                           </button>
@@ -2121,8 +2123,8 @@ function KnowledgePage({
     const params = new URLSearchParams(window.location.search);
     const provider = params.get("knowledge");
     const status = params.get("status");
-    if ((provider === "yinxiang" || provider === "flowus") && status) {
-      const label = provider === "yinxiang" ? "印象笔记" : "息流 FlowUs";
+    if ((provider === "yinxiang" || provider === "flowus" || provider === "feishu") && status) {
+      const label = provider === "yinxiang" ? "印象笔记" : provider === "feishu" ? "飞书" : "息流 FlowUs";
       setNotice(status === "connected" ? `${label} 已连接` : status === "cancelled" ? `${label} 授权已取消` : `${label} 授权未完成，请重试。`);
       const url = new URL(window.location.href); url.searchParams.delete("knowledge"); url.searchParams.delete("status"); window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
     }
@@ -2248,6 +2250,7 @@ function KnowledgePage({
         <div><h2>知识来源</h2></div>
       </header>
       <div className="account-body knowledge-catalog-body">
+        <FeishuConnection api={api} />
         {notice ? <div className={`${/失败|无法|过期|不稳定|尚未配置|未完成|还没有会员|请联系/.test(notice) ? "error" : "notice"} account-wide-notice`} role="status">{notice}</div> : null}
         <div className="knowledge-catalog-toolbar"><div className="settings-search"><Search size={17} /><input type="search" aria-label="搜索知识来源" placeholder="搜索知识来源" value={providerQuery} onChange={e => setProviderQuery(e.target.value)} /></div><div className="settings-tabs" aria-label="连接状态">{[["all", "全部"], ["connected", "已连接"], ["disconnected", "未连接"]].map(([id, label]) => <button type="button" key={id} aria-pressed={providerFilter === id} onClick={() => setProviderFilter(id)}>{label}</button>)}</div></div>
         <div className="knowledge-catalog">{([{ id: "getnote", label: "得到大脑", note: "笔记与语义搜索", item: connection }, { id: "notion", label: "Notion", note: "页面与工作区", item: remoteConnections.notion }, { id: "yinxiang", label: "印象笔记", note: "笔记与笔记本", item: remoteConnections.yinxiang }, { id: "flowus", label: "息流 FlowUs", note: "页面与知识空间", item: remoteConnections.flowus }]).filter(p => `${p.label} ${p.id}`.toLowerCase().includes(providerQuery.trim().toLowerCase()) && (providerFilter === "all" || (providerFilter === "connected" ? p.item.status === "connected" : p.item.status !== "connected"))).map(p => <button type="button" className="knowledge-source-card" key={p.id} onClick={() => setSelectedProvider(p.id)}><span className={`knowledge-source-mark ${p.id}`}>{p.label.slice(0, 1)}</span><span><strong>{p.label}</strong><small>{p.note}</small></span><span className={`knowledge-source-status ${p.item.status}`}>{p.item.status === "connected" ? "已连接" : p.item.status === "pending" ? "授权中" : p.item.status === "error" ? "需重连" : "连接"}<ChevronRight size={14} /></span></button>)}</div>
