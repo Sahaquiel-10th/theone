@@ -34,6 +34,7 @@ const residentArgument = "--one-resident"
 
 var version = "0.0.0"
 var updatePublicKeyRaw = ""
+var errPresenceResume = errors.New("presence monitor resumed")
 
 type deviceCredential struct {
 	Version       int    `json:"version"`
@@ -236,8 +237,14 @@ func run(expectedDeviceID string) error {
 		if errors.As(err, &closeError) && closeError.Code == 4006 {
 			return errors.New("请更新 U 盘中的 ONE 启动器")
 		}
-		if findCredentialForDevice(expectedDeviceID) == "" {
+		resolvedPath := findCredentialForDevice(expectedDeviceID)
+		if resolvedPath == "" {
 			credentialPath = ""
+			failures = 0
+			continue
+		}
+		if resolvedPath != credentialPath || errors.Is(err, errPresenceResume) {
+			credentialPath = resolvedPath
 			failures = 0
 			continue
 		}
@@ -465,6 +472,7 @@ func serveProofs(connection *websocket.Conn, credentialPath, deviceID string) er
 	writer := &socketWriter{connection: connection}
 	executor := &localExecutor{commands: make(map[string]*exec.Cmd)}
 	removed := make(chan struct{})
+	resumed := make(chan struct{})
 	stopMonitor := make(chan struct{})
 	defer close(stopMonitor)
 	go func() {
@@ -478,6 +486,7 @@ func serveProofs(connection *websocket.Conn, credentialPath, deviceID string) er
 			case <-ticker.C:
 				now := time.Now().UnixMilli()
 				if now-lastTick > 5000 {
+					close(resumed)
 					connection.Close()
 					return
 				}
@@ -495,6 +504,8 @@ func serveProofs(connection *websocket.Conn, credentialPath, deviceID string) er
 		var message socketMessage
 		if err := connection.ReadJSON(&message); err != nil {
 			select {
+			case <-resumed:
+				return errPresenceResume
 			case <-removed:
 				return nil
 			default:

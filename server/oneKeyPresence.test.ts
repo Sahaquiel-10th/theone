@@ -229,6 +229,11 @@ test("keeps one resident per Key and computer while allowing a newer runtime to 
   };
 
   const original = await authenticate("0.3.1", true);
+  const respond = (raw: Buffer) => {
+    const challenge = JSON.parse(raw.toString());
+    if (challenge.type === "request_challenge") original.send(JSON.stringify({ type: "proof_response", challengeId: challenge.challengeId, signature: sign(pair.privateKey, challenge.nonce) }));
+  };
+  original.on("message", respond);
   const duplicate = await authenticate("0.3.1", false);
   assert.equal(duplicate.readyState, WebSocket.CLOSED);
   assert.equal((await presence.runtimeStatus({ deviceId: "device-a", installationId, userId: "user-a", workspaceId: "workspace-a" })).runtime?.version, "0.3.1");
@@ -238,8 +243,14 @@ test("keeps one resident per Key and computer while allowing a newer runtime to 
   assert.equal((await originalClosed)[0], 4009);
   assert.equal((await presence.runtimeStatus({ deviceId: "device-a", installationId, userId: "user-a", workspaceId: "workspace-a" })).runtime?.version, "0.3.2");
 
-  upgraded.close();
-  await once(upgraded, "close");
+  // A sleep-broken connection still appears OPEN but cannot sign. A same
+  // version replacement must recover without waiting for the heartbeat.
+  const staleClosed = once(upgraded, "close");
+  const recovered = await authenticate("0.3.2", true);
+  await staleClosed;
+  assert.equal(presence.isConnected("device-a", installationId), true);
+  recovered.close();
+  await once(recovered, "close");
   await presence.close();
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
 });

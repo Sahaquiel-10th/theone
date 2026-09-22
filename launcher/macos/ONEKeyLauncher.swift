@@ -112,15 +112,19 @@ func loadCredential(_ credentialUrl: URL, expectedDeviceId: String? = nil) throw
     return credential
 }
 
+private var nextVolumeScan = Date.distantPast
 func findCredentialUrl(expectedDeviceId: String? = nil, preferred: URL? = nil) -> URL? {
     let portable = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent(".one/credential.json")
     var candidates = [URL]()
     if let preferred { candidates.append(preferred) }
     candidates.append(portable)
-    // Once a Key has been found, keep checking its exact path. A mount
-    // notification updates that path if macOS gives the volume a new suffix.
-    // This avoids repeatedly enumerating every removable volume while absent.
-    if preferred == nil {
+    // Fast path never enumerates other volumes. Validate identity too: another
+    // Key may now occupy the old mount path.
+    if let found = candidates.first(where: { (try? loadCredential($0, expectedDeviceId: expectedDeviceId)) != nil }) { return found }
+    // Event handlers give prompt recovery; this bounded fallback covers missed
+    // mount notifications without scanning all disks every 500 ms.
+    if Date() >= nextVolumeScan {
+        nextVolumeScan = Date().addingTimeInterval(10)
         let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? []
         candidates.append(contentsOf: volumes.map { $0.appendingPathComponent(".one/credential.json") })
     }
@@ -231,6 +235,17 @@ func socketUrl(base: String, deviceId: String) throws -> URL {
 
 func connectLauncher(base: String, credentialUrl: URL, deviceId: String) async throws -> URLSessionWebSocketTask {
     let task = URLSession.shared.webSocketTask(with: try socketUrl(base: base, deviceId: deviceId))
+    var connected = false
+    defer { if !connected { task.cancel(with: .goingAway, reason: nil) } }
+    // A wake/mount event can cancel this generation during the handshake.
+    let cancellationWatch = Task {
+        while !Task.isCancelled {
+            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+            task.cancel(with: .goingAway, reason: nil)
+            return
+        }
+    }
+    defer { cancellationWatch.cancel() }
     task.resume()
     let auth = try JSONDecoder().decode(SocketMessage.self, from: Data(try await receiveText(task).utf8))
     guard auth.type == "auth_challenge", let challengeId = auth.challengeId, let nonce = auth.nonce else {
@@ -246,6 +261,8 @@ func connectLauncher(base: String, credentialUrl: URL, deviceId: String) async t
     try await task.send(.string(String(decoding: try JSONEncoder().encode(response), as: UTF8.self)))
     let ready = try JSONDecoder().decode(SocketMessage.self, from: Data(try await receiveText(task).utf8))
     guard ready.type == "ready", ready.deviceId == deviceId else { throw LauncherError.message("ONE Key 在线验证失败") }
+    try Task.checkCancellation()
+    connected = true
     return task
 }
 
@@ -738,6 +755,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(resumeConnection), name: NSWorkspace.didWakeNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(volumeDidMount(_:)), name: NSWorkspace.didMountNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(volumeDidUnmount(_:)), name: NSWorkspace.didUnmountNotification, object: nil)
         networkMonitor.pathUpdateHandler = { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -750,16 +768,31 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func resumeConnection() {
+        nextVolumeScan = .distantPast
         restartSession()
     }
 
     @objc private func volumeDidMount(_ notification: Notification) {
+        nextVolumeScan = .distantPast
         guard let volume = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL else { return }
         let candidate = volume.appendingPathComponent(".one/credential.json")
         let wantedDeviceId = credential?.deviceId ?? expectedDeviceId
         guard let mountedCredential = try? loadCredential(candidate), wantedDeviceId == nil || mountedCredential.deviceId == wantedDeviceId else { return }
         credentialUrl = candidate
         credential = mountedCredential
+        restartSession()
+    }
+
+    @objc private func volumeDidUnmount(_ notification: Notification) {
+        guard let volume = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL,
+              let credentialUrl,
+              credentialUrl.path.hasPrefix(volume.path + "/") else { return }
+        // Drop the stale mount path immediately. The resident loop will wait
+        // for the same device to reappear and then rescan all mounted volumes.
+        socket?.cancel(with: .goingAway, reason: nil)
+        self.credentialUrl = nil
+        self.credential = nil
+        self.ready = false
         restartSession()
     }
 

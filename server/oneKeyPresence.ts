@@ -111,6 +111,10 @@ export class OneKeyPresence {
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(challengeId);
+        // A half-open socket after sleep must not block its replacement until
+        // the next 45-second heartbeat. Never accept the request without proof.
+        this.remove(socket);
+        socket.terminate();
         reject(new OneKeyPresenceError("ONE Key 未响应，请确认 U 盘仍然插着"));
       }, proofTimeoutMs);
       this.pending.set(challengeId, { deviceId: device.id, socket, nonce, resolve, reject, timeout });
@@ -247,10 +251,22 @@ export class OneKeyPresence {
             : Boolean(previousState.runtime) || !state.runtime
         ));
         if (keepPrevious) {
-          state.authenticated = false;
-          socket.close(4009, "ONE is already connected on this computer");
-          return;
+          try {
+            await this.requireProof({ deviceId: device.id, installationId: state.installationId, userId: device.userId, workspaceId: device.workspaceId, method: "GET", path: "/presence/reconnect" });
+            state.authenticated = false;
+            socket.close(4009, "ONE is already connected on this computer");
+            return;
+          } catch {
+            // Only replace the stale socket observed above; a concurrent
+            // authenticated replacement must not be overwritten by this one.
+            if (this.sockets.get(state.deviceId) && this.sockets.get(state.deviceId) !== previous) {
+              state.authenticated = false;
+              socket.close(4010, "Retry connection");
+              return;
+            }
+          }
         }
+        if (socket.readyState !== WebSocket.OPEN) return;
         if (previousState) previousState.authenticated = false;
         this.remove(previous);
         // Another launch on this same installation supersedes the old process.
