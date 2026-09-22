@@ -234,7 +234,7 @@ app.get("/api/me", auth(jwtSecret), asyncRoute(async (req, res) => {
   const workspace = db.workspaces.find((item) => item.id === req.workspaceId)!;
   res.json({ user: publicUser(req.user!), workspace });
 }));
-app.get("/api/runtime/update", ...keyAuth, asyncRoute(async (req, res) => {
+app.get("/api/runtime/update", auth(jwtSecret, undefined, { runtimeStatusOnly: true }), requireOneKeySession, asyncRoute(async (req, res) => {
   const connected = await oneKeyPresence.runtimeStatus({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, userId: req.user!.id, workspaceId: req.workspaceId! });
   const candidate = connected.runtime ? runtimeUpdateCatalog.updateFor(connected.runtime) : undefined;
   res.json({

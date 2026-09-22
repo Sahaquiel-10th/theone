@@ -188,9 +188,25 @@ test("binds runtime update status and dispatch to the authenticated workspace an
   assert.equal(command.requestId, progress.requestId);
   assert.deepEqual(command.envelope, { payload: "payload", signature: "signature" });
 
+  // Legacy Mac/Windows installers stop consuming challenges until installation
+  // finishes. A protected action must fail, without killing their update socket.
+  let duplicateCommands = 0;
+  socket.on("message", raw => { if (JSON.parse(raw.toString()).type === "update_install") duplicateCommands++; });
+  const repeated = await presence.requestRuntimeUpdate({ deviceId: "device-a", installationId, userId: "user-a", workspaceId: "workspace-a", version: "0.3.0", envelope: command.envelope });
+  assert.equal(repeated.requestId, progress.requestId);
+  await assert.rejects(() => presence.requireProof({ deviceId: "device-a", installationId, userId: "user-a", workspaceId: "workspace-a", method: "POST", path: "/api/chat" }), /未响应/);
+  assert.equal(presence.isConnected("device-a", installationId), true);
+  assert.equal(duplicateCommands, 0);
+
   socket.send(JSON.stringify({ type: "update_event", requestId: progress.requestId, status: "verifying" }));
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal((await presence.runtimeStatus({ deviceId: "device-a", installationId, userId: "user-a", workspaceId: "workspace-a" })).update?.status, "verifying");
+
+  socket.send(JSON.stringify({ type: "update_event", requestId: progress.requestId, status: "completed" }));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal((await presence.runtimeStatus({ deviceId: "device-a", installationId, userId: "user-a", workspaceId: "workspace-a" })).update?.status, "completed");
+  device.status = "revoked";
+  await assert.rejects(() => presence.runtimeStatus({ deviceId: "device-a", installationId, userId: "user-a", workspaceId: "workspace-a" }), /挂失/);
 
   socket.close();
   await once(socket, "close");

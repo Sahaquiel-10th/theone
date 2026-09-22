@@ -76,6 +76,7 @@ import { FeishuConnection, SaveToFeishu } from "./FeishuConnection";
 import { CacheUsageDetails } from "./CacheUsageDetails";
 import { PricingCatalog } from "./PricingPanel";
 import { GiftBatchHistory } from "./GiftBatchHistory";
+import { runtimeUpdateView, type RuntimeUpdateStatus } from "./runtimeUpdateState";
 
 type Role = "admin" | "user";
 const PrivateApiContext = createContext<typeof api>(api);
@@ -263,14 +264,6 @@ type OneKeyDevice = { id: string; serialNumber: string; workspaceId: string; use
 type ContextTraceSummary = { id: string; workspaceId: string; userId: string; username: string; conversationId: string; conversationTitle: string; modelName: string; requestId?: string; query: string; responsePreview: string; createdAt: string };
 type ContextTraceDetail = ContextTraceSummary & { assistantMessageId: string; modelId: string; sections: { key: string; title: string; content: string }[] };
 type OneKeyCredential = { version: 1; deviceId: string; privateKeyRaw: string; publicKeyRaw: string; serverBaseUrl?: string };
-type RuntimeUpdateStatus = {
-  configured: boolean;
-  supported: boolean;
-  current?: { platform: "macos" | "windows"; architecture: string; version: string; updateProtocol: number };
-  latestVersion?: string;
-  available: boolean;
-  progress?: { requestId: string; status: "requested" | "downloading" | "verifying" | "installing" | "completed" | "failed"; version: string; message?: string; updatedAt: string };
-};
 
 function dateTime(value: string) {
   return new Intl.DateTimeFormat("zh-CN", {
@@ -590,6 +583,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [yinxiangConnection, setYinxiangConnection] = useState<KnowledgeConnection>({ provider: "yinxiang", status: "disconnected" });
   const [flowusConnection, setFlowusConnection] = useState<KnowledgeConnection>({ provider: "flowus", status: "disconnected" });
   const [runtimeUpdate, setRuntimeUpdate] = useState<RuntimeUpdateStatus | null>(null);
+  const [runtimeUpdateIssue, setRuntimeUpdateIssue] = useState("");
+  const runtimeCheck = useRef({ pending: false, dispatching: false, lastSuccess: Date.now(), active: false });
   const [runtimeUpdating, setRuntimeUpdating] = useState(false);
   const [executionTasks, setExecutionTasks] = useState<ExecutionTask[]>([]);
   const [eventsByTask, setEventsByTask] = useState<Record<string, ExecutionEvent[]>>({});
@@ -732,25 +727,46 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   async function refreshRuntimeUpdate() {
+    if (runtimeCheck.current.pending || runtimeCheck.current.dispatching) return;
+    runtimeCheck.current.pending = true;
     try {
-      const result = await api<RuntimeUpdateStatus>("/api/runtime/update");
+      const result = await api<RuntimeUpdateStatus>("/api/runtime/update", { signal: AbortSignal.timeout(10_000) });
+      if (runtimeCheck.current.dispatching) return;
+      const view = runtimeUpdateView(result, runtimeCheck.current.active);
+      runtimeCheck.current.lastSuccess = Date.now();
+      runtimeCheck.current.active = view.busy;
       setRuntimeUpdate(result);
-      if (!result.available || result.progress?.status === "failed") setRuntimeUpdating(false);
+      setRuntimeUpdating(view.busy);
+      setRuntimeUpdateIssue(view.issue);
     } catch {
-      // Runtime update availability is optional and must never block the workspace.
-      if (!runtimeUpdating) setRuntimeUpdate(null);
+      // A lost connection is not evidence of a failed install. Offer a status
+      // check, never silently send a second install into an uncertain first one.
+      if (runtimeCheck.current.active && Date.now() - runtimeCheck.current.lastSuccess >= 30_000) {
+        setRuntimeUpdating(false);
+        setRuntimeUpdateIssue("更新连接暂时中断，请保持 ONE Key 插入并检查状态");
+      }
+    } finally {
+      runtimeCheck.current.pending = false;
     }
   }
 
   async function installRuntimeUpdate() {
+    if (runtimeCheck.current.dispatching) return;
+    runtimeCheck.current.dispatching = true;
     setRuntimeUpdating(true);
+    setRuntimeUpdateIssue("");
+    runtimeCheck.current.active = true;
+    runtimeCheck.current.lastSuccess = Date.now();
     setError("");
     try {
-      const result = await api<{ progress: NonNullable<RuntimeUpdateStatus["progress"]> }>("/api/runtime/update", { method: "POST" });
+      const result = await api<{ progress: NonNullable<RuntimeUpdateStatus["progress"]> }>("/api/runtime/update", { method: "POST", signal: AbortSignal.timeout(10_000) });
       setRuntimeUpdate(current => current ? { ...current, progress: result.progress } : current);
     } catch (updateError) {
       setRuntimeUpdating(false);
+      setRuntimeUpdateIssue("请检查更新状态后再试");
       setError(updateError instanceof Error ? updateError.message : "更新没有开始，请重试");
+    } finally {
+      runtimeCheck.current.dispatching = false;
     }
   }
 
@@ -761,10 +777,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }, [showArchived]);
 
   useEffect(() => {
-    if (!runtimeUpdating) return;
-    const timer = window.setInterval(() => void refreshRuntimeUpdate(), 2500);
+    if (!runtimeUpdating && !runtimeUpdateIssue) return;
+    const timer = window.setInterval(() => void refreshRuntimeUpdate(), runtimeUpdating ? 2500 : 10_000);
     return () => window.clearInterval(timer);
-  }, [runtimeUpdating]);
+  }, [runtimeUpdating, runtimeUpdateIssue]);
 
   useEffect(() => {
     function refreshWhenVisible() {
@@ -1494,8 +1510,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
       {runtimeUpdate?.available ? <section className={`one-runtime-update ${runtimeUpdate.progress?.status || "available"}`} aria-live="polite">
         <span className="one-runtime-update-icon"><Download size={16} /></span>
-        <span><strong>{runtimeUpdating ? "正在更新 ONE" : runtimeUpdateFailed ? "更新没有完成" : "ONE 可以更新"}</strong><small>{runtimeUpdating ? ({ requested: "准备下载…", downloading: "正在下载…", verifying: "正在验证…", installing: "正在安装…", completed: "正在重新连接…", failed: runtimeUpdate.progress?.message || "更新失败" }[runtimeUpdate.progress?.status || "requested"]) : runtimeUpdateFailed ? runtimeUpdate.progress?.message || "请保持 ONE Key 插入并重试" : `${runtimeUpdate.current?.version || "当前版本"} → ${runtimeUpdate.latestVersion}`}</small></span>
-        <button type="button" disabled={runtimeUpdating} onClick={() => void installRuntimeUpdate()}>{runtimeUpdating ? "请稍候" : runtimeUpdateFailed ? "重试" : "更新"}</button>
+        <span><strong>{runtimeUpdating ? "正在更新 ONE" : runtimeUpdateIssue ? "请检查 ONE 更新" : runtimeUpdateFailed ? "更新没有完成" : "ONE 可以更新"}</strong><small>{runtimeUpdateIssue || (runtimeUpdating ? ({ requested: "准备下载…", downloading: "正在下载…", verifying: "正在验证…", installing: "正在安装…", completed: "正在重新连接…", failed: runtimeUpdate.progress?.message || "更新失败" }[runtimeUpdate.progress?.status || "requested"]) : runtimeUpdateFailed ? runtimeUpdate.progress?.message || "请保持 ONE Key 插入并重试" : `${runtimeUpdate.current?.version || "当前版本"} → ${runtimeUpdate.latestVersion}`)}</small></span>
+        <button type="button" disabled={runtimeUpdating} onClick={() => void (runtimeUpdateIssue ? refreshRuntimeUpdate() : installRuntimeUpdate())}>{runtimeUpdating ? "请稍候" : runtimeUpdateIssue ? "检查状态" : runtimeUpdateFailed ? "重试" : "更新"}</button>
       </section> : null}
 
       {historyOpen ? (

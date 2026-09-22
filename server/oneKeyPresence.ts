@@ -50,6 +50,7 @@ type SocketState = {
   capabilities: Set<string>;
   runtime?: RuntimeIdentity;
   update?: RuntimeUpdateProgress;
+  updateStartedAt?: number;
 };
 
 function verifySignature(publicKey: string, nonce: string, signature: string) {
@@ -74,6 +75,11 @@ export class OneKeyPresence {
 
   constructor(private store: Store) {}
 
+  private updateInProgress(state?: SocketState) {
+    return Boolean(state?.update && !["completed", "failed"].includes(state.update.status)
+      && Date.now() - (state.updateStartedAt ?? 0) < updateHeartbeatGraceMs);
+  }
+
   attach(server: Server) {
     this.wss = new WebSocketServer({ server, path: "/api/one-key/launcher" });
     this.wss.on("connection", (socket, request) => void this.accept(socket, request.url || ""));
@@ -81,9 +87,7 @@ export class OneKeyPresence {
       for (const socket of this.wss?.clients ?? []) {
         const state = this.states.get(socket);
         if (!state) continue;
-        const updateInProgress = state.update
-          && !["completed", "failed"].includes(state.update.status)
-          && Date.now() - Date.parse(state.update.updatedAt) < updateHeartbeatGraceMs;
+        const updateInProgress = this.updateInProgress(state);
         // Some launchers install synchronously and cannot consume WebSocket pong frames
         // while replacing themselves. Keep only an explicitly requested update alive for
         // a bounded window; ordinary unplug detection still uses the normal heartbeat.
@@ -113,8 +117,12 @@ export class OneKeyPresence {
         this.pending.delete(challengeId);
         // A half-open socket after sleep must not block its replacement until
         // the next 45-second heartbeat. Never accept the request without proof.
-        this.remove(socket);
-        socket.terminate();
+        // Still reject the protected request. Do not destroy an install just
+        // because an older synchronous launcher cannot sign during replacement.
+        if (!this.updateInProgress(this.states.get(socket))) {
+          this.remove(socket);
+          socket.terminate();
+        }
         reject(new OneKeyPresenceError("ONE Key 未响应，请确认 U 盘仍然插着"));
       }, proofTimeoutMs);
       this.pending.set(challengeId, { deviceId: device.id, socket, nonce, resolve, reject, timeout });
@@ -142,6 +150,9 @@ export class OneKeyPresence {
   async runtimeStatus(params: { deviceId: string; installationId?: string; userId: string; workspaceId: string }) {
     const socket = await this.ownedSocket(params);
     const state = this.states.get(socket)!;
+    if (state.update && !["failed", "completed"].includes(state.update.status) && !this.updateInProgress(state)) {
+      state.update = { ...state.update, status: "failed", message: "更新状态已超时，请从 U 盘打开 ONE 后检查版本", updatedAt: new Date().toISOString() };
+    }
     return { runtime: state.runtime, update: state.update };
   }
 
@@ -149,9 +160,16 @@ export class OneKeyPresence {
     const socket = await this.ownedSocket(params);
     const state = this.states.get(socket)!;
     if (!state.runtime || state.runtime.updateProtocol !== 1 || !state.capabilities.has("runtime_update_v1")) throw new OneKeyPresenceError("当前 ONE 启动器不支持在线更新", "ONE_RUNTIME_UPDATE_UNSUPPORTED");
+    if (this.updateInProgress(state)) return state.update!;
     const requestId = uid("upd");
+    state.updateStartedAt = Date.now();
     state.update = { requestId, status: "requested", version: params.version, updatedAt: new Date().toISOString() };
-    await new Promise<void>((resolve, reject) => socket.send(JSON.stringify({ type: "update_install", requestId, envelope: params.envelope }), error => error ? reject(new OneKeyPresenceError("ONE 更新连接已断开")) : resolve()));
+    try {
+      await new Promise<void>((resolve, reject) => socket.send(JSON.stringify({ type: "update_install", requestId, envelope: params.envelope }), error => error ? reject(new OneKeyPresenceError("ONE 更新连接已断开")) : resolve()));
+    } catch (error) {
+      state.update = { ...state.update, status: "failed", message: "更新指令未能发送，请检查连接", updatedAt: new Date().toISOString() };
+      throw error;
+    }
     return state.update;
   }
 
@@ -251,6 +269,11 @@ export class OneKeyPresence {
             : Boolean(previousState.runtime) || !state.runtime
         ));
         if (keepPrevious) {
+          if (this.updateInProgress(previousState)) {
+            state.authenticated = false;
+            socket.close(4009, "ONE update is in progress on this computer");
+            return;
+          }
           try {
             await this.requireProof({ deviceId: device.id, installationId: state.installationId, userId: device.userId, workspaceId: device.workspaceId, method: "GET", path: "/presence/reconnect" });
             state.authenticated = false;

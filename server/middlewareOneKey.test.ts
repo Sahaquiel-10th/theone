@@ -50,7 +50,7 @@ function authFixture() {
   const proofs: Array<{ deviceId: string; userId: string; workspaceId: string }> = [];
   const dependencies = {
     store: { read: async () => db },
-    oneKeyPresence: { requireProof: async (params: { deviceId: string; userId: string; workspaceId: string }) => {
+    oneKeyPresence: { runtimeStatus: async () => ({ runtime: undefined, update: undefined }), requireProof: async (params: { deviceId: string; userId: string; workspaceId: string }) => {
       proofs.push(params);
       if (params.deviceId !== `${params.userId}-key`) throw new Error("ONE Key 已挂失或不属于当前账号");
     } }
@@ -78,6 +78,37 @@ test("admin routes require both the admin's own live Key and current database ro
     assert.equal(recorded.status, scenario.expectedStatus, JSON.stringify(scenario));
     assert.equal(continued, scenario.expectedStatus === undefined);
   }
+});
+
+test("only the dedicated GET update-status route can inspect metadata without a fresh proof", async () => {
+  for (const [method, path, metadataOnly] of [
+    ["GET", "/api/runtime/update", true],
+    ["POST", "/api/runtime/update", false],
+    ["POST", "/api/chat", false],
+    ["GET", "/api/conversations", false],
+    ["GET", "/api/knowledge/connections/getnote", false],
+    ["GET", "/api/runtime/update/other", false]
+  ] as const) {
+    const { dependencies, proofs } = authFixture();
+    let checkedOwner = false;
+    dependencies.oneKeyPresence.runtimeStatus = async () => { checkedOwner = true; return { runtime: undefined, update: undefined }; };
+    const { recorded, response } = responseRecorder();
+    const token = signToken({ sub: "user", deviceId: "user-key", installationId: "a".repeat(32) }, "test-secret");
+    const request = { headers: { authorization: `Bearer ${token}` }, method, path, originalUrl: path } as Request;
+    await auth("test-secret", dependencies, { runtimeStatusOnly: true })(request, response, (() => undefined) as NextFunction);
+    assert.equal(recorded.status, undefined);
+    assert.equal(checkedOwner, metadataOnly);
+    assert.equal(proofs.length, metadataOnly ? 0 : 1);
+  }
+});
+
+test("runtime metadata rejects invalid Key ownership and revoked or disconnected Keys", async () => {
+  const { dependencies } = authFixture();
+  dependencies.oneKeyPresence.runtimeStatus = async () => { throw new Error("ONE Key 已挂失或不属于当前账号"); };
+  const { recorded, response } = responseRecorder();
+  const token = signToken({ sub: "user", deviceId: "admin-key", installationId: "a".repeat(32) }, "test-secret");
+  await auth("test-secret", dependencies, { runtimeStatusOnly: true })({ headers: { authorization: `Bearer ${token}` }, method: "GET", path: "/api/runtime/update" } as Request, response, (() => { throw new Error("must not continue"); }) as NextFunction);
+  assert.equal(recorded.status, 428);
 });
 
 test("Key sessions cannot override their exact workspace binding with a browser header", async () => {

@@ -16,9 +16,9 @@ declare global {
   }
 }
 
-type AuthDependencies = { store: Pick<Store, "read">; oneKeyPresence: Pick<OneKeyPresence, "requireProof"> };
+type AuthDependencies = { store: Pick<Store, "read">; oneKeyPresence: Pick<OneKeyPresence, "requireProof" | "runtimeStatus"> };
 
-export function auth(secret: string, injected?: AuthDependencies) {
+export function auth(secret: string, injected?: AuthDependencies, options?: { runtimeStatusOnly: true }) {
   return async (req: Request, res: Response, next: NextFunction) => {
     const header = req.headers.authorization;
     const cookieToken = req.headers.cookie
@@ -54,7 +54,14 @@ export function auth(secret: string, injected?: AuthDependencies) {
     req.oneKeyInstallationId = payload.installationId;
     if (payload.deviceId) {
       try {
-        await dependencies.oneKeyPresence.requireProof({ deviceId: payload.deviceId, installationId: payload.installationId, userId: user.id, workspaceId: access.workspaceId, method: req.method, path: req.originalUrl });
+        const binding = { deviceId: payload.deviceId, installationId: payload.installationId, userId: user.id, workspaceId: access.workspaceId };
+        // Old launchers cannot answer challenges while installing. This one
+        // metadata-only route still checks the exact owner, Key and computer.
+        if (options?.runtimeStatusOnly && req.method === "GET" && req.path === "/api/runtime/update") {
+          await dependencies.oneKeyPresence.runtimeStatus(binding);
+        } else {
+          await dependencies.oneKeyPresence.requireProof({ ...binding, method: req.method, path: req.originalUrl });
+        }
       } catch (error) {
         return res.status(428).json({ error: error instanceof Error ? error.message : "请插入 ONE Key", code: error && typeof error === "object" && "code" in error ? error.code : "ONE_KEY_REQUIRED", requestId: res.locals.requestId });
       }
