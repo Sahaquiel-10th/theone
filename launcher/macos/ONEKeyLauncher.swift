@@ -651,15 +651,20 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
             do {
                 let artifact = try verifyRuntimeUpdate(envelope)
                 try await task.send(.string(String(decoding: try JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: "downloading", error: nil)), as: UTF8.self)))
-                let installedApp = try await installRuntimeUpdate(artifact, credentialUrl: credentialUrl) { status in
-                    if let data = try? JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: status, error: nil)) {
-                        try? await task.send(.string(String(decoding: data, as: UTF8.self)))
+                return try await committedRuntimeInstallation(install: {
+                    try await installRuntimeUpdate(artifact, credentialUrl: credentialUrl) { status in
+                        if let data = try? JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: status, error: nil)) {
+                            try? await task.send(.string(String(decoding: data, as: UTF8.self)))
+                        }
                     }
-                }
-                // Installation is committed. A lost progress socket must never
-                // prevent handing over to the already verified new launcher.
-                try? await task.send(.string(String(decoding: try JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: "completed", error: nil)), as: UTF8.self)))
-                return installedApp
+                }, reportCompletion: {
+                    let deadline = Task {
+                        do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                        task.cancel(with: .goingAway, reason: nil)
+                    }
+                    defer { deadline.cancel() }
+                    try await task.send(.string(String(decoding: try JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: "completed", error: nil)), as: UTF8.self)))
+                })
             } catch {
                 try? await task.send(.string(String(decoding: (try? JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: "failed", error: error.localizedDescription))) ?? Data(), as: UTF8.self)))
             }
@@ -706,6 +711,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private var loginTask: Task<Void, Never>?
     private var sessionGeneration = UUID()
     private var stopping = false
+    private var handingOff = false
     private var ready = false
     private var openedLogin = false
     private var loginRequested = false
@@ -814,7 +820,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func restartSession() {
-        guard residentMode, !stopping else { return }
+        guard residentMode, !stopping, !handingOff else { return }
         let generation = UUID()
         sessionGeneration = generation
         socket?.cancel(with: .goingAway, reason: nil)
@@ -860,6 +866,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             }
             failures = 0
             if let installedApp = try await serveProofs(connectedSocket, credentialUrl: foundUrl, deviceId: foundCredential.deviceId) {
+                handingOff = true
                 // Release the per-Key lock before starting the new portable
                 // app so its updated resident can take over immediately.
                 socket?.cancel(with: .goingAway, reason: nil)
@@ -872,9 +879,17 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 process.arguments = ["-n", installedApp.path]
                 process.standardOutput = FileHandle.nullDevice
                 process.standardError = FileHandle.nullDevice
-                try process.run()
+                do { try process.run() } catch {
+                    residentLock = try acquireResidentLock(deviceId: foundCredential.deviceId)
+                    handingOff = false
+                    throw error
+                }
                 process.waitUntilExit()
-                guard process.terminationStatus == 0 else { throw LauncherError.message("新版 Mac 启动器无法启动") }
+                guard process.terminationStatus == 0 else {
+                    residentLock = try acquireResidentLock(deviceId: foundCredential.deviceId)
+                    handingOff = false
+                    throw LauncherError.message("新版 Mac 启动器无法启动")
+                }
                 stopping = true
                 NSApplication.shared.terminate(nil)
                 return

@@ -6,6 +6,7 @@ import { uid } from "./security.js";
 import { appendExecutionEvent } from "./executionService.js";
 import { validInstallationId } from "./oneKeyInstallation.js";
 import { compareRuntimeVersions, validRuntimeVersion, type RuntimeArchitecture, type RuntimeIdentity, type RuntimePlatform, type SignedRuntimeUpdate } from "./runtimeUpdate.js";
+import { recoverRuntimeUpdate, type UpdateOwner } from './runtimeUpdateRecovery.js';
 
 const proofTimeoutMs = 2000;
 const authTimeoutMs = 5000;
@@ -35,6 +36,7 @@ export type RuntimeUpdateProgress = {
   version: string;
   message?: string;
   updatedAt: string;
+  recoveryRequired?: boolean;
 };
 
 export type LocalToolName = "list_files" | "read_file" | "search_text" | "write_file" | "replace_in_file" | "run_command";
@@ -51,6 +53,7 @@ type SocketState = {
   runtime?: RuntimeIdentity;
   update?: RuntimeUpdateProgress;
   updateStartedAt?: number;
+  updateLoaded?: boolean;
 };
 
 function verifySignature(publicKey: string, nonce: string, signature: string) {
@@ -76,7 +79,7 @@ export class OneKeyPresence {
   constructor(private store: Store) {}
 
   private updateInProgress(state?: SocketState) {
-    return Boolean(state?.update && !["completed", "failed"].includes(state.update.status)
+    return Boolean(state?.update && !state.update.recoveryRequired && !["completed", "failed"].includes(state.update.status)
       && Date.now() - (state.updateStartedAt ?? 0) < updateHeartbeatGraceMs);
   }
 
@@ -150,8 +153,10 @@ export class OneKeyPresence {
   async runtimeStatus(params: { deviceId: string; installationId?: string; userId: string; workspaceId: string }) {
     const socket = await this.ownedSocket(params);
     const state = this.states.get(socket)!;
+    await this.restoreUpdate(state, params);
+    if (this.sockets.get(params.deviceId) !== socket || !state.authenticated) throw new OneKeyPresenceError('ONE 更新连接已变更，请检查状态');
     if (state.update && !["failed", "completed"].includes(state.update.status) && !this.updateInProgress(state)) {
-      state.update = { ...state.update, status: "failed", message: "更新状态已超时，请从 U 盘打开 ONE 后检查版本", updatedAt: new Date().toISOString() };
+      state.update = { ...state.update, recoveryRequired: true };
     }
     return { runtime: state.runtime, update: state.update };
   }
@@ -159,18 +164,45 @@ export class OneKeyPresence {
   async requestRuntimeUpdate(params: { deviceId: string; installationId?: string; userId: string; workspaceId: string; version: string; envelope: SignedRuntimeUpdate }) {
     const socket = await this.ownedSocket(params);
     const state = this.states.get(socket)!;
+    await this.restoreUpdate(state, params);
+    if (this.sockets.get(params.deviceId) !== socket || !state.authenticated) throw new OneKeyPresenceError('ONE 更新连接已变更，请检查状态');
     if (!state.runtime || state.runtime.updateProtocol !== 1 || !state.capabilities.has("runtime_update_v1")) throw new OneKeyPresenceError("当前 ONE 启动器不支持在线更新", "ONE_RUNTIME_UPDATE_UNSUPPORTED");
-    if (this.updateInProgress(state)) return state.update!;
+    if (state.update && state.update.status !== 'failed') return state.update;
     const requestId = uid("upd");
     state.updateStartedAt = Date.now();
     state.update = { requestId, status: "requested", version: params.version, updatedAt: new Date().toISOString() };
     try {
+      // Commit before dispatch: losing the socket/server must not forget a write.
+      await this.checkpointUpdate(state);
+      if (this.sockets.get(params.deviceId) !== socket || !state.authenticated) throw new OneKeyPresenceError('ONE 更新连接已变更');
       await new Promise<void>((resolve, reject) => socket.send(JSON.stringify({ type: "update_install", requestId, envelope: params.envelope }), error => error ? reject(new OneKeyPresenceError("ONE 更新连接已断开")) : resolve()));
     } catch (error) {
-      state.update = { ...state.update, status: "failed", message: "更新指令未能发送，请检查连接", updatedAt: new Date().toISOString() };
+      state.update = { ...state.update, recoveryRequired: true, message: "更新指令状态未确认，请检查连接" };
       throw error;
     }
     return state.update;
+  }
+
+  private async restoreUpdate(state: SocketState, owner: UpdateOwner) {
+    if (state.updateLoaded || state.update || !state.runtime) return;
+    const db = await this.store.read();
+    if (!state.update) state.update = recoverRuntimeUpdate(db.auditLogs ?? [], owner, state.runtime);
+    state.updateLoaded = true;
+  }
+
+  private async checkpointUpdate(state: SocketState) {
+    const progress = state.update;
+    if (!progress || !state.runtime) return;
+    const platform = state.runtime.platform;
+    await this.store.mutate(db => {
+      const device = db.oneKeyDevices.find(item => item.id === state.deviceId && item.status === 'active');
+      if (!device) throw new OneKeyPresenceError('ONE Key 已挂失');
+      db.auditLogs.push({ id: uid('aud'), workspaceId: device.workspaceId, actorUserId: device.userId,
+        action: 'one_runtime.update.checkpoint', targetType: 'one_key_device', targetId: device.id,
+        requestId: progress.requestId, createdAt: progress.updatedAt,
+        details: { installationId: state.installationId, platform, version: progress.version,
+          status: progress.status, startedAt: state.updateStartedAt } });
+    });
   }
 
   async prepareLocalExecution(deviceId: string, taskId: string, installationId?: string) {
@@ -306,6 +338,7 @@ export class OneKeyPresence {
       return;
     }
     if (message.type === "update_event" && state.authenticated && message.requestId && state.update?.requestId === message.requestId) {
+      if (this.sockets.get(state.deviceId) !== socket || ['completed', 'failed'].includes(state.update.status)) return;
       const allowed = new Set(["downloading", "verifying", "installing", "completed", "failed"]);
       if (!allowed.has(String(message.status))) return;
       state.update = {
@@ -314,6 +347,10 @@ export class OneKeyPresence {
         message: typeof message.error === "string" ? message.error.slice(0, 500) : undefined,
         updatedAt: new Date().toISOString()
       };
+      try { await this.checkpointUpdate(state); } catch {
+        // Never turn missing durable confirmation into permission to reinstall.
+        state.update.recoveryRequired = true;
+      }
       if (state.update.status === "completed" || state.update.status === "failed") {
         const terminal = state.update;
         await this.store.mutate(database => {

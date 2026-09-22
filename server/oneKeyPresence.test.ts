@@ -205,11 +205,34 @@ test("binds runtime update status and dispatch to the authenticated workspace an
   socket.send(JSON.stringify({ type: "update_event", requestId: progress.requestId, status: "completed" }));
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal((await presence.runtimeStatus({ deviceId: "device-a", installationId, userId: "user-a", workspaceId: "workspace-a" })).update?.status, "completed");
+  socket.send(JSON.stringify({ type: 'update_event', requestId: progress.requestId, status: 'failed' }));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal((await presence.runtimeStatus({ deviceId: 'device-a', installationId, userId: 'user-a', workspaceId: 'workspace-a' })).update?.status, 'completed');
+  assert.equal((await presence.requestRuntimeUpdate({ deviceId: 'device-a', installationId, userId: 'user-a', workspaceId: 'workspace-a', version: '0.3.0', envelope: command.envelope })).requestId, progress.requestId);
+  assert.equal(database.auditLogs.filter((row: any) => row.action === 'one_runtime.update.checkpoint').length, 3);
+  // A new socket has no in-memory progress. Recover from the durable journal
+  // instead of sending the same installer to the old resident again.
+  socket.close();
+  await once(socket, 'close');
+  const reconnected = new WebSocket(`ws://127.0.0.1:${address.port}/api/one-key/launcher?deviceId=device-a&installationId=${installationId}`);
+  const [reAuthRaw] = await once(reconnected, 'message');
+  const reAuth = JSON.parse(reAuthRaw.toString());
+  reconnected.send(JSON.stringify({ type: 'auth_response', challengeId: reAuth.challengeId, signature: sign(pair.privateKey, reAuth.nonce),
+    capabilities: ['runtime_update_v1'], platform: 'windows', architecture: 'amd64', launcherVersion: '0.2.4', updateProtocol: 1 }));
+  await once(reconnected, 'message');
+  let redispatched = false;
+  reconnected.on('message', raw => { if (JSON.parse(raw.toString()).type === 'update_install') redispatched = true; });
+  const restored = await presence.runtimeStatus({ deviceId: 'device-a', installationId, userId: 'user-a', workspaceId: 'workspace-a' });
+  assert.equal(restored.update?.recoveryRequired, true);
+  assert.equal(restored.runtime?.version, '0.2.4');
+  assert.equal((await presence.requestRuntimeUpdate({ deviceId: 'device-a', installationId, userId: 'user-a', workspaceId: 'workspace-a', version: '0.3.0', envelope: command.envelope })).requestId, progress.requestId);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(redispatched, false);
   device.status = "revoked";
   await assert.rejects(() => presence.runtimeStatus({ deviceId: "device-a", installationId, userId: "user-a", workspaceId: "workspace-a" }), /挂失/);
 
-  socket.close();
-  await once(socket, "close");
+  reconnected.close();
+  await once(reconnected, "close");
   await presence.close();
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
 });

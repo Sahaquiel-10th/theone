@@ -24,3 +24,10 @@ test("current version and explicit failure clear the pending state", () => {
   assert.deepEqual(runtimeUpdateView({ ...status, available: false }, true), { busy: false, issue: "" });
   assert.deepEqual(runtimeUpdateView({ ...status, progress: { ...status.progress!, status: "failed" } }, true), { busy: false, issue: "" });
 });
+test('restored ambiguous updates never become an ordinary update button after refresh', () => {
+  const restored = { ...status, progress: { ...status.progress!, recoveryRequired: true } };
+  const view = runtimeUpdateView(restored, false, now);
+  assert.equal(view.busy, false);
+  assert.match(view.issue, /勿重复安装/);
+  assert.deepEqual(runtimeUpdateView({ ...restored, available: false }, true, now), { busy: false, issue: '' });
+});
