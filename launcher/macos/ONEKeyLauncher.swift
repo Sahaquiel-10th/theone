@@ -656,7 +656,9 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
                         try? await task.send(.string(String(decoding: data, as: UTF8.self)))
                     }
                 }
-                try await task.send(.string(String(decoding: try JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: "completed", error: nil)), as: UTF8.self)))
+                // Installation is committed. A lost progress socket must never
+                // prevent handing over to the already verified new launcher.
+                try? await task.send(.string(String(decoding: try JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: "completed", error: nil)), as: UTF8.self)))
                 return installedApp
             } catch {
                 try? await task.send(.string(String(decoding: (try? JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: "failed", error: error.localizedDescription))) ?? Data(), as: UTF8.self)))
@@ -862,6 +864,8 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 // app so its updated resident can take over immediately.
                 socket?.cancel(with: .goingAway, reason: nil)
                 ready = false
+                removalTask?.cancel()
+                loginTask?.cancel()
                 residentLock = nil
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
