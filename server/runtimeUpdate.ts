@@ -98,6 +98,19 @@ export function selectRuntimeUpdate(payload: RuntimeUpdatePayload, runtime: Runt
   return candidates.sort((left, right) => compareRuntimeVersions(right.version, left.version))[0];
 }
 
+// A launcher reports completion just before it replaces its resident process.
+// During that short hand-off window the old socket can still advertise the
+// previous version. Do not immediately offer the same package again while the
+// completed update is still attached to that socket.
+export function runtimeUpdateWasCompleted(progress: { status?: string; version?: string } | undefined, candidateVersion: string | undefined) {
+  return Boolean(
+    progress?.status === "completed"
+      && progress.version
+      && candidateVersion
+      && compareRuntimeVersions(progress.version, candidateVersion) >= 0
+  );
+}
+
 export class RuntimeUpdateCatalog {
   constructor(
     private manifestPath = process.env.ONE_UPDATE_MANIFEST_PATH?.trim()

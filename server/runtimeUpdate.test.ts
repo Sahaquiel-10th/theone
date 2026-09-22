@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
-import { compareRuntimeVersions, selectRuntimeUpdate, verifyRuntimeUpdateEnvelope, type RuntimeUpdatePayload } from "./runtimeUpdate.js";
+import { compareRuntimeVersions, runtimeUpdateWasCompleted, selectRuntimeUpdate, verifyRuntimeUpdateEnvelope, type RuntimeUpdatePayload } from "./runtimeUpdate.js";
 
 function signed(payload: RuntimeUpdatePayload) {
   const pair = crypto.generateKeyPairSync("ed25519");
@@ -41,4 +41,10 @@ test("selects only the current platform and compatible architecture", () => {
   assert.equal(selectRuntimeUpdate(payload, { platform: "macos", architecture: "arm64", version: "0.2.8", updateProtocol: 1 })?.version, "0.3.0");
   assert.equal(selectRuntimeUpdate(payload, { platform: "windows", architecture: "amd64", version: "0.2.4", updateProtocol: 1 })?.version, "0.3.1");
   assert.equal(selectRuntimeUpdate(payload, { platform: "windows", architecture: "x86_64", version: "0.2.4", updateProtocol: 1 }), undefined);
+});
+
+test("does not re-offer a package during the resident hand-off", () => {
+  assert.equal(runtimeUpdateWasCompleted({ status: "completed", version: "0.3.9" }, "0.3.9"), true);
+  assert.equal(runtimeUpdateWasCompleted({ status: "completed", version: "0.3.9" }, "0.3.10"), false);
+  assert.equal(runtimeUpdateWasCompleted({ status: "installing", version: "0.3.9" }, "0.3.9"), false);
 });

@@ -40,6 +40,7 @@ import { batchGift } from "./batchGift.js";
 import { installAdminPaymentRoutes, installPaymentCallback, installPaymentRoutes } from "./paymentRoutes.js";
 import { effectiveModel, publishPricing, cancelScheduledPricing, publicPrices } from "./modelPricing.js";
 import { publicPayment } from "./payments.js";
+import { runtimeUpdateWasCompleted } from "./runtimeUpdate.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -237,12 +238,17 @@ app.get("/api/me", auth(jwtSecret), asyncRoute(async (req, res) => {
 app.get("/api/runtime/update", auth(jwtSecret, undefined, { runtimeStatusOnly: true }), requireOneKeySession, asyncRoute(async (req, res) => {
   const connected = await oneKeyPresence.runtimeStatus({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, userId: req.user!.id, workspaceId: req.workspaceId! });
   const candidate = connected.runtime ? runtimeUpdateCatalog.updateFor(connected.runtime) : undefined;
+  const completed = runtimeUpdateWasCompleted(connected.update, candidate?.artifact.version);
   res.json({
     configured: runtimeUpdateCatalog.configured(),
     supported: Boolean(connected.runtime?.updateProtocol === 1),
     current: connected.runtime,
     latestVersion: candidate?.artifact.version,
-    available: Boolean(candidate),
+    // The launcher sends its terminal event before handing the socket to the
+    // freshly installed resident. Suppress a duplicate offer during that
+    // hand-off; a new socket has no completed progress and will be evaluated
+    // against its actual advertised version.
+    available: Boolean(candidate && !completed),
     progress: connected.update
   });
 }));
@@ -250,7 +256,7 @@ app.post("/api/runtime/update", ...keyAuth, asyncRoute(async (req, res) => {
   const connected = await oneKeyPresence.runtimeStatus({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, userId: req.user!.id, workspaceId: req.workspaceId! });
   if (!connected.runtime) return res.status(409).json({ error: "当前 ONE 启动器不支持在线更新", code: "ONE_RUNTIME_UPDATE_UNSUPPORTED" });
   const candidate = runtimeUpdateCatalog.updateFor(connected.runtime);
-  if (!candidate) return res.status(409).json({ error: "当前已经是最新版", code: "ONE_RUNTIME_ALREADY_CURRENT" });
+  if (!candidate || runtimeUpdateWasCompleted(connected.update, candidate.artifact.version)) return res.status(409).json({ error: "更新正在切换到新版，请稍候检查状态", code: "ONE_RUNTIME_UPDATE_HANDOFF" });
   const progress = await oneKeyPresence.requestRuntimeUpdate({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, userId: req.user!.id, workspaceId: req.workspaceId!, version: candidate.artifact.version, envelope: candidate.envelope });
   await store.mutate(database => database.auditLogs.push({ id: uid("aud"), workspaceId: req.workspaceId!, actorUserId: req.user!.id, action: "one_runtime.update.requested", targetType: "one_key_device", targetId: req.oneKeyDeviceId, details: { platform: connected.runtime!.platform, fromVersion: connected.runtime!.version, toVersion: candidate.artifact.version }, requestId: res.locals.requestId, createdAt: now() }));
   res.status(202).json({ progress });
