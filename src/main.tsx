@@ -584,7 +584,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [flowusConnection, setFlowusConnection] = useState<KnowledgeConnection>({ provider: "flowus", status: "disconnected" });
   const [runtimeUpdate, setRuntimeUpdate] = useState<RuntimeUpdateStatus | null>(null);
   const [runtimeUpdateIssue, setRuntimeUpdateIssue] = useState("");
-  const runtimeCheck = useRef({ pending: false, dispatching: false, lastSuccess: Date.now(), active: false });
+  const runtimeCheck = useRef({ pending: false, dispatching: false, generation: 0, lastSuccess: Date.now(), active: false });
   const [runtimeUpdating, setRuntimeUpdating] = useState(false);
   const [executionTasks, setExecutionTasks] = useState<ExecutionTask[]>([]);
   const [eventsByTask, setEventsByTask] = useState<Record<string, ExecutionEvent[]>>({});
@@ -729,9 +729,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   async function refreshRuntimeUpdate() {
     if (runtimeCheck.current.pending || runtimeCheck.current.dispatching) return;
     runtimeCheck.current.pending = true;
+    const generation = runtimeCheck.current.generation;
     try {
       const result = await api<RuntimeUpdateStatus>("/api/runtime/update", { signal: AbortSignal.timeout(10_000) });
-      if (runtimeCheck.current.dispatching) return;
+      if (runtimeCheck.current.dispatching || generation !== runtimeCheck.current.generation) return;
       const view = runtimeUpdateView(result, runtimeCheck.current.active);
       runtimeCheck.current.lastSuccess = Date.now();
       runtimeCheck.current.active = view.busy;
@@ -739,6 +740,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       setRuntimeUpdating(view.busy);
       setRuntimeUpdateIssue(view.issue);
     } catch {
+      if (generation !== runtimeCheck.current.generation) return;
       // A lost connection is not evidence of a failed install. Offer a status
       // check, never silently send a second install into an uncertain first one.
       if (runtimeCheck.current.active && Date.now() - runtimeCheck.current.lastSuccess >= 30_000) {
@@ -752,6 +754,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   async function installRuntimeUpdate() {
     if (runtimeCheck.current.dispatching) return;
+    runtimeCheck.current.generation++;
     runtimeCheck.current.dispatching = true;
     setRuntimeUpdating(true);
     setRuntimeUpdateIssue("");
