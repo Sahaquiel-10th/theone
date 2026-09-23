@@ -338,7 +338,7 @@ function migrateDatabase(raw: Record<string, any>): Database {
     executionTasks: collection("executionTasks"),
     executionEvents: collection("executionEvents"),
     chatOperations: collection("chatOperations"),
-    settings: { safetyRules: raw.settings?.safetyRules || "你是 ONE 个人 AI 助手。只使用当前 Workspace 已授权的数据，不得泄露其他 Workspace 信息。", rechargeCnyPerPower: Number(raw.settings?.rechargeCnyPerPower) > 0 ? Number(raw.settings.rechargeCnyPerPower) : 7 }
+    settings: { safetyRules: raw.settings?.safetyRules || "你是 ONE 个人 AI 助手。只使用当前 Workspace 已授权的数据，不得泄露其他 Workspace 信息。", rechargeCnyPerPower: Number(raw.settings?.rechargeCnyPerPower) > 0 ? Number(raw.settings.rechargeCnyPerPower) : 7, aiTasks: raw.settings?.aiTasks }
   };
   reconcileInterruptedBilling(database);
   reconcileInterruptedChatOperations(database);

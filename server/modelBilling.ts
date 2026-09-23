@@ -107,6 +107,7 @@ export async function runBilledModel<T extends { usage?: ModelUsage }>(store: St
   const amountMicros = modelReservationMicros(model, params.input);
   const timestamp = new Date().toISOString();
   const row: ModelUsageRecord = {
+    aiTaskVersion: params.input && typeof params.input === "object" && "taskVersion" in params.input && Number.isSafeInteger(params.input.taskVersion) ? Number(params.input.taskVersion) : undefined,
     id: uid("use"), workspaceId: params.workspaceId, userId: params.userId, conversationId: params.conversationId ?? "",
     pricingSnapshot: model.pricing, modelNameSnapshot: model.name, cachePricesSnapshot: model.cachePrices, cacheCostPricesSnapshot: model.cacheCostPrices,
     modelId: model.id, inputTokens: 0, outputTokens: 0, totalTokens: 0, source: "unknown", status: "pending",

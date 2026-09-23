@@ -6,8 +6,8 @@ import { uid } from "./security.js";
 import type { ExecutionTask } from "./types.js";
 import { OneKeyPresence, type LocalToolName } from "./oneKeyPresence.js";
 import { requireInstallationId } from "./oneKeyInstallation.js";
+import { resolveAiTask } from "./aiTaskConfig.js";
 
-const maxSteps = 24;
 const allowedTools = new Set<LocalToolName>(["list_files", "read_file", "search_text", "write_file", "replace_in_file", "run_command"]);
 
 const tools: ModelToolDefinition[] = [
@@ -134,6 +134,9 @@ export class LocalAgentService {
       const conversation = db.conversations.find((item) => item.id === task!.conversationId && item.workspaceId === task!.workspaceId && item.userId === task!.userId);
       const model = conversation ? db.models.find((item) => item.id === conversation.modelId && item.enabled && item.kind === "chat") : undefined;
       if (!model) throw new Error("当前对话没有可供 Local Agent 使用的模型");
+      const configuredTask = resolveAiTask(db.settings, db.models, "local_agent", model);
+      const taskTools = tools.filter(tool => configuredTask.values.tools.includes(tool.function.name));
+      const stepLimit = configuredTask.values.maxSteps;
 
       await this.update(task, "selecting_target", task.targetName ? "正在确认本机授权文件夹" : "请在电脑上选择 ONE 可以操作的文件夹");
       const prepared = await this.presence.prepareLocalExecution(task.deviceId, task.id, task.installationId);
@@ -142,7 +145,7 @@ export class LocalAgentService {
       await this.update(task, "running", `ONE Local Agent 已连接：${task.targetName}`);
 
       const messages: ModelToolMessage[] = [
-        { role: "system", content: systemPrompt },
+        { role: "system", content: [systemPrompt, configuredTask.values.prompt].filter(Boolean).join("\n\n") },
         { role: "user", content: task.instruction }
       ];
       if (followup) {
@@ -151,15 +154,15 @@ export class LocalAgentService {
         messages.push({ role: "user", content: followup });
       }
 
-      for (let step = 1; step <= maxSteps; step++) {
+      for (let step = 1; step <= stepLimit; step++) {
         if (this.cancelled.has(task.id)) return;
         // Every paid step needs a fresh physical-Key proof, not only file operations.
         await this.presence.requireProof({ deviceId: task.deviceId, installationId: task.installationId, workspaceId: task.workspaceId, userId: task.userId, method: "POST", path: `/api/executions/${task.id}/steps/${step}` });
         if (this.cancelled.has(task.id)) return;
         const result = await runBilledModel(this.store, {
           workspaceId: task.workspaceId, userId: task.userId, conversationId: task.conversationId,
-          model, input: { messages, tools }, activity: "local_agent", requestId: uid("req")
-        }, (snapshot) => callModelWithTools(snapshot, messages, tools, `local-${task!.id}-${step}`));
+          model: configuredTask.model, input: { messages, tools: taskTools, taskVersion: configuredTask.version }, activity: "local_agent", requestId: uid("req")
+        }, (snapshot) => callModelWithTools(snapshot, messages, taskTools, `local-${task!.id}-${step}`));
         messages.push({ role: "assistant", content: result.content || null, tool_calls: result.toolCalls.length ? result.toolCalls : undefined });
 
         if (!result.toolCalls.length) {
@@ -170,7 +173,7 @@ export class LocalAgentService {
           if (this.cancelled.has(task.id)) return;
           const tool = call.function.name as LocalToolName;
           let output: string;
-          if (!allowedTools.has(tool)) {
+          if (!allowedTools.has(tool) || !configuredTask.values.tools.includes(tool)) {
             output = `错误：不支持工具 ${call.function.name}`;
           } else {
             let args: Record<string, unknown>;
@@ -194,7 +197,7 @@ export class LocalAgentService {
           messages.push({ role: "tool", tool_call_id: call.id, content: output.slice(0, 120_000) });
         }
       }
-      throw new Error(`Local Agent 已达到 ${maxSteps} 步上限，请缩小任务后继续`);
+      throw new Error(`Local Agent 已达到 ${stepLimit} 步上限，请缩小任务后继续`);
     } catch (error) {
       if (task && !this.cancelled.has(task.id)) await this.finish(task, "failed", error instanceof Error ? error.message : "Local Agent 执行失败");
     }

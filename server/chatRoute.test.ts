@@ -32,7 +32,8 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
     users, workspaces: users.map(user => ({ id: user.defaultWorkspaceId, name: user.id, slug: user.id, status: "active", createdAt: timestamp, updatedAt: timestamp })),
     workspaceMembers: users.map(user => ({ id: `member-${user.id}`, userId: user.id, workspaceId: user.defaultWorkspaceId, role: "owner", createdAt: timestamp })),
     models: [model], oneKeyDevices: ["a", "b"].map(userId => ({ id: userId === "a" ? "key" : "key-b", serialNumber: `fixture-key-${userId}`, workspaceId: `space-${userId}`, userId, status: "active", publicKey: pair.publicKey.export({ type: "spki", format: "pem" }).toString(), createdAt: timestamp })),
-    conversations: [], messages: [], attachments: [], settings: { safetyRules: "Fixture safety", rechargeCnyPerPower: 7 }
+    conversations: [], messages: [], attachments: [], settings: { safetyRules: "Fixture safety", rechargeCnyPerPower: 7,
+      aiTasks: { chat: { revision: 1, draft: { modelId: "", prompt: "DRAFT_NOT_LIVE", tools: [], maxSteps: 1 }, history: [], published: { modelId: "", prompt: "PUBLISHED_TASK_INSTRUCTION", tools: [], maxSteps: 1, version: 1, publishedBy: "fixture-admin", publishedAt: timestamp } } } }
   }));
   let app: ChildProcess | undefined;
   const sockets: WebSocket[] = [];
@@ -73,6 +74,8 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
     return response.headers.get("set-cookie")!.split(";")[0];
   }
   const socketA = await connect(computerA), cookie = await login(computerA);
+  assert.equal((await get("/api/admin/ai-tasks?workspaceId=space-b", cookie)).status, 403);
+  assert.equal((await post("/api/admin/ai-tasks/chat", { action: "publish", revision: 1 }, cookie)).status, 403);
   const fileBody = "PRIVATE_FIXTURE_DOCUMENT";
   const upload = await post("/api/attachments/uploads", { filename: "fixture.txt", size: fileBody.length, mimeType: "text/plain" }, cookie);
   assert.equal(upload.status, 200);
@@ -97,6 +100,10 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
   const answer = await first.json() as any;
   assert.equal(answer.conversation.messages.length, 2);
   assert.equal(modelCalls, 1); assert.match(inputs[0], /PRIVATE_FIXTURE_DOCUMENT/);
+  assert.match(inputs[0], /PUBLISHED_TASK_INSTRUCTION/);
+  assert.doesNotMatch(inputs[0], /DRAFT_NOT_LIVE/);
+  const billed = JSON.parse(await fs.readFile(path.join(directory, "db.json"), "utf8"));
+  assert.equal(billed.modelUsageRecords[0].aiTaskVersion, 1);
   const duplicate = await post("/api/chat", input, cookie); assert.equal(duplicate.status, 200); assert.equal(modelCalls, 1);
   assert.equal(((await duplicate.json()) as any).message.id, answer.message.id);
   socketA.close(); await once(socketA, "close");

@@ -6,7 +6,8 @@ import { LocalAgentService } from "./localAgentService.js";
 import type { Database, ModelConfig } from "./types.js";
 const installationId = "a".repeat(32);
 
-for (const unplugAfterFirstTool of [false, true]) test(unplugAfterFirstTool ? "unplugging stops Local Agent before the next paid model step" : "runs a model tool loop through the workspace-bound local device", async () => {
+for (const scenario of ["normal", "unplug", "excluded"]) test(`Local Agent policy: ${scenario}`, async () => {
+  const unplugAfterFirstTool = scenario === "unplug";
   let modelCalls = 0;
   const modelServer = createServer((request, response) => {
     request.resume();
@@ -34,12 +35,14 @@ for (const unplugAfterFirstTool of [false, true]) test(unplugAfterFirstTool ? "u
     costInputPowerPerMillion: 0.5, costOutputPowerPerMillion: 0.5, createdAt: timestamp
   };
   const database = {
+    settings: { safetyRules: "", rechargeCnyPerPower: 7 },
     users: [{ id: "user-a", enabled: true }], workspaces: [{ id: "workspace-a", status: "active" }], workspaceMembers: [{ userId: "user-a", workspaceId: "workspace-a" }], auditLogs: [],
     models: [model], conversations: [{ id: "conversation-a", workspaceId: "workspace-a", userId: "user-a", modelId: model.id }],
     executionTasks: [{ id: "task-a", workspaceId: "workspace-a", userId: "user-a", conversationId: "conversation-a", sourceMessageId: "message-a", provider: "local_agent", status: "queued", instruction: "查看文件", deviceId: "device-a", installationId, createdAt: timestamp, updatedAt: timestamp }],
     executionEvents: [], powerAccounts: [{ id: "power-a", workspaceId: "workspace-a", userId: "user-a", balanceMicros: 10_000_000, createdAt: timestamp, updatedAt: timestamp }],
     powerLedger: [], modelUsageRecords: []
   } as unknown as Database;
+  if (scenario === "excluded") database.settings.aiTasks = { local_agent: { revision: 1, draft: { modelId: "", prompt: "", tools: [], maxSteps: 24 }, history: [], published: { modelId: "", prompt: "", tools: [], maxSteps: 24, version: 1, publishedAt: timestamp, publishedBy: "admin" } } };
   const store = { read: async () => database, mutate: async (change: (db: Database) => unknown) => change(database) } as any;
   const toolRequests: unknown[] = [];
   let present = true;
@@ -58,7 +61,7 @@ for (const unplugAfterFirstTool of [false, true]) test(unplugAfterFirstTool ? "u
     }
     assert.equal(database.executionTasks[0].status, unplugAfterFirstTool ? "failed" : "completed");
     assert.equal(database.executionTasks[0].targetName, "project-a");
-    assert.deepEqual(toolRequests, [{ tool: "list_files", args: { path: ".", maxDepth: 2 } }]);
+    assert.deepEqual(toolRequests, scenario === "excluded" ? [] : [{ tool: "list_files", args: { path: ".", maxDepth: 2 } }]);
     assert.equal(database.modelUsageRecords.length, unplugAfterFirstTool ? 1 : 2);
     assert.equal(modelCalls, unplugAfterFirstTool ? 1 : 2);
     assert.equal(proofCount, 2);
