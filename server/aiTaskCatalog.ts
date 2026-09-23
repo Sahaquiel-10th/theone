@@ -5,7 +5,7 @@ export const aiTaskCatalog = [
   { id: "execution_compile", name: "对话转执行指令", modelKind: "chat", toolCapable: false, implementation: "existing" },
   { id: "local_agent", name: "本地执行 Agent", modelKind: "chat", toolCapable: true, implementation: "existing" },
   { id: "image_generation", name: "图片生成", modelKind: "image", toolCapable: false, implementation: "existing" },
-  { id: "orchestrator", name: "核心调度 Agent", modelKind: "chat", toolCapable: true, implementation: "planned" }
+  { id: "orchestrator", name: "核心调度 Agent", modelKind: "chat", toolCapable: true, implementation: "existing" }
 ] as const;
 
 export type AiTaskKind = typeof aiTaskCatalog[number]["id"];

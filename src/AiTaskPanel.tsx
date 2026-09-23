@@ -2,10 +2,10 @@ import { useEffect, useState } from "react";
 import type { api as apiType } from "./oneApi";
 import { Pagination, SearchPicker, SettingsDialog } from "./SettingsControls";
 
-type Values = { modelId: string; prompt: string; tools: string[]; maxSteps: number };
+type Values = { modelId: string; prompt: string; tools: string[]; maxSteps: number; promptMode?: "replace"; toolDescriptions?: Record<string, string>; enabled?: boolean };
 type Version = Values & { version: number; publishedAt: string };
 type Summary = { id: string; name: string; modelKind: string; implementation: string; version: number };
-type Detail = { definition: Summary; revision: number; draft: Values; published?: Version; tools: string[]; history: Version[]; total: number };
+type Detail = { definition: Summary; revision: number; draft: Values; defaults: Values; published?: Version; tools: string[]; toolDefaults: Record<string, string>; history: Version[]; total: number };
 type Model = { id: string; name: string; kind: string; enabled: boolean };
 const toolNames: Record<string, string> = { list_files: "列出文件", read_file: "读取文件", search_text: "搜索文本", write_file: "写入文件", replace_in_file: "替换文本", run_command: "执行命令（仍需本机确认）" };
 
@@ -45,7 +45,12 @@ function TaskEditor({ api, task, models, onChanged }: { api: typeof apiType; tas
     if (!detail || !values) return;
     setBusy(true); setNotice("");
     try {
-      await api(`/api/admin/ai-tasks/${task.id}`, { method: "POST", body: JSON.stringify({ revision: detail.revision, action, values, version }) });
+      let expectedRevision = detail.revision;
+      if (action === "publish") {
+        await api(`/api/admin/ai-tasks/${task.id}`, { method: "POST", body: JSON.stringify({ revision: expectedRevision, action: "draft", values }) });
+        expectedRevision++;
+      }
+      await api(`/api/admin/ai-tasks/${task.id}`, { method: "POST", body: JSON.stringify({ revision: expectedRevision, action, values, version }) });
       const d = await api<Detail>(`/api/admin/ai-tasks/${task.id}`);
       setDetail(d); setValues(d.draft); setHistoryPage(1); setHistory(d.history); onChanged();
       setNotice(action === "draft" ? "草稿已保存，尚未影响线上" : "已发布，仅影响新任务");
@@ -58,11 +63,12 @@ function TaskEditor({ api, task, models, onChanged }: { api: typeof apiType; tas
   return <div className="ai-task-editor">
     <p>未指定模型时沿用原有选择。价格在“模型与定价”统一维护。</p>
     <fieldset disabled={busy}>
+      {task.id === "orchestrator" && <label><input type="checkbox" checked={values.enabled === true} onChange={e => setValues({ ...values, enabled: e.target.checked })} />启用纯文本聊天调度（附件和图片沿用现有流程）</label>}
       <label>任务模型</label>
       <SearchPicker label="模型" value={values.modelId} options={[{ value: "", label: "沿用原有模型" }, ...models.filter(m => m.enabled && m.kind === task.modelKind).map(m => ({ value: m.id, label: m.name }))]} onChange={modelId => setValues({ ...values, modelId })} />
-      <label>任务补充提示词<textarea style={{ width: "100%" }} rows={9} maxLength={12000} value={values.prompt} onChange={e => setValues({ ...values, prompt: e.target.value })} /></label>
-      <small>附加到原有指令；清空后恢复原有行为。权限与安全校验不会被替换。</small>
-      {detail.tools.length > 0 && <><h4>允许使用的工具</h4>{detail.tools.map(tool => <label key={tool} style={{ display: "block" }}><input type="checkbox" checked={values.tools.includes(tool)} onChange={e => setValues({ ...values, tools: e.target.checked ? [...values.tools, tool] : values.tools.filter(t => t !== tool) })} />{toolNames[tool] || tool}</label>)}<label>最大步骤<input type="number" min={1} max={24} value={values.maxSteps} onChange={e => setValues({ ...values, maxSteps: Number(e.target.value) })} /></label></>}
+      <label>任务提示词<textarea style={{ width: "100%" }} rows={9} maxLength={12000} value={values.prompt} onChange={e => setValues({ ...values, prompt: e.target.value, promptMode: "replace" })} /></label>
+      <button type="button" onClick={() => { if (confirm("用预制配置替换当前编辑内容？保存并发布后才生效。")) setValues(structuredClone(detail.defaults)); }}>恢复预制配置</button>
+      {detail.tools.length > 0 && <><h4>允许使用的工具</h4>{detail.tools.map(tool => <details key={tool}><summary>{toolNames[tool] || tool} · {values.tools.includes(tool) ? "已启用" : "未启用"}</summary><label><input type="checkbox" checked={values.tools.includes(tool)} onChange={e => setValues({ ...values, tools: e.target.checked ? [...values.tools, tool] : values.tools.filter(t => t !== tool) })} />允许调用</label><label>何时调用（提供给 AI）<textarea style={{ width: "100%" }} rows={4} maxLength={2000} value={values.toolDescriptions?.[tool] ?? detail.toolDefaults[tool] ?? ""} onChange={e => setValues({ ...values, toolDescriptions: { ...values.toolDescriptions, [tool]: e.target.value } })} /></label></details>)}<label>最大步骤<input type="number" min={1} max={task.id === "orchestrator" ? 4 : 24} value={values.maxSteps} onChange={e => setValues({ ...values, maxSteps: Number(e.target.value) })} /></label></>}
       <div className="settings-pagination"><button onClick={() => void save("draft")}>保存草稿</button><button disabled={dirty} onClick={() => { if (confirm("发布后，新任务将使用这份模型、提示词和工具配置。确认发布？")) void save("publish"); }}>发布配置</button></div>
       {dirty && <p>先保存草稿，再发布。</p>}
     </fieldset>

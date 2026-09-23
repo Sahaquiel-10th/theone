@@ -1,14 +1,23 @@
 import { aiTaskCatalog, findAiTaskDefinition, type AiTaskKind } from "./aiTaskCatalog.js";
 import type { ModelConfig, SystemSettings } from "./types.js";
+import { taskPrompts, taskToolDescriptions, taskToolNames } from "./aiTaskPresets.js";
 
 export const localTaskTools = ["list_files", "read_file", "search_text", "write_file", "replace_in_file", "run_command"] as const;
-export type AiTaskValues = { modelId: string; prompt: string; tools: string[]; maxSteps: number };
+export type AiTaskValues = { modelId: string; prompt: string; tools: string[]; maxSteps: number; promptMode?: "replace"; toolDescriptions?: Record<string, string>; enabled?: boolean };
 export type AiTaskVersion = AiTaskValues & { version: number; publishedAt: string; publishedBy: string };
 export type AiTaskRecord = { revision: number; draft: AiTaskValues; published?: AiTaskVersion; history: AiTaskVersion[] };
 export type AiTaskConfigs = Partial<Record<AiTaskKind, AiTaskRecord>>;
 
 export function defaultTaskValues(id: string): AiTaskValues {
-  return { modelId: "", prompt: "", tools: id === "local_agent" ? [...localTaskTools] : [], maxSteps: id === "local_agent" ? 24 : 1 };
+  const tools = taskToolNames(id);
+  return { modelId: "", prompt: taskPrompts[id] ?? "", promptMode: "replace", toolDescriptions: Object.fromEntries(tools.map(name => [name, taskToolDescriptions[name]])), tools, maxSteps: id === "local_agent" ? 24 : id === "orchestrator" ? 4 : 1, ...(id === "orchestrator" ? { enabled: false } : {}) };
+}
+
+/** Show legacy additive configurations faithfully; conversion is explicit on save. */
+export function editableTaskValues(id: string, values?: AiTaskValues): AiTaskValues {
+  const defaults = defaultTaskValues(id);
+  if (!values) return defaults;
+  return { ...defaults, ...values, promptMode: "replace", prompt: values.promptMode === "replace" ? values.prompt : [defaults.prompt, values.prompt].filter(Boolean).join("\n\n"), toolDescriptions: { ...defaults.toolDescriptions, ...values.toolDescriptions } };
 }
 
 export function validateTaskValues(id: string, value: unknown, models: ModelConfig[]): AiTaskValues {
@@ -18,10 +27,20 @@ export function validateTaskValues(id: string, value: unknown, models: ModelConf
   const input = value as Record<string, unknown>;
   if (typeof input.modelId !== "string" || typeof input.prompt !== "string" || input.prompt.length > 12000) throw new Error("模型或提示词无效，提示词最多 12000 字符");
   if (input.modelId && !models.some(model => model.id === input.modelId && model.enabled && model.kind === definition.modelKind)) throw new Error("请选择已启用且类型匹配的模型");
-  const allowed: readonly string[] = id === "local_agent" ? localTaskTools : [];
+  const allowed = taskToolNames(id);
   if (!Array.isArray(input.tools) || input.tools.some(tool => typeof tool !== "string" || !allowed.includes(tool))) throw new Error("存在不允许的工具");
-  if (!Number.isInteger(input.maxSteps) || Number(input.maxSteps) < 1 || Number(input.maxSteps) > (id === "local_agent" ? 24 : 1)) throw new Error("执行步数无效");
-  return { modelId: input.modelId, prompt: input.prompt.trim(), tools: [...new Set(input.tools as string[])], maxSteps: Number(input.maxSteps) };
+  if (!Number.isInteger(input.maxSteps) || Number(input.maxSteps) < 1 || Number(input.maxSteps) > (id === "local_agent" ? 24 : id === "orchestrator" ? 4 : 1)) throw new Error("执行步数无效");
+  const descriptions: Record<string, string> = {};
+  if (input.toolDescriptions !== undefined) {
+    if (!input.toolDescriptions || typeof input.toolDescriptions !== "object" || Array.isArray(input.toolDescriptions)) throw new Error("工具说明无效");
+    for (const [name, description] of Object.entries(input.toolDescriptions)) {
+      if (!allowed.includes(name) || typeof description !== "string" || !description.trim() || description.length > 2000) throw new Error("工具说明须为 1—2000 字符，且只能编辑已接入工具");
+      descriptions[name] = description.trim();
+    }
+  }
+  if (input.promptMode !== undefined && input.promptMode !== "replace") throw new Error("提示词模式无效");
+  if (input.enabled !== undefined && typeof input.enabled !== "boolean") throw new Error("启用状态无效");
+  return { modelId: input.modelId, prompt: input.prompt.trim(), tools: [...new Set(input.tools as string[])], maxSteps: Number(input.maxSteps), ...(id === "orchestrator" ? { enabled: input.enabled === true } : {}), ...(input.promptMode === "replace" ? { promptMode: "replace" as const } : {}), ...(input.toolDescriptions ? { toolDescriptions: descriptions } : {}) };
 }
 
 /** Global administrator-owned configuration, never a store for user context. */
@@ -57,7 +76,7 @@ export function resolveAiTask(settings: SystemSettings, models: ModelConfig[], i
   if (!selected?.enabled || selected.kind !== definition.modelKind) throw new Error(`${definition.name}配置的模型不可用，请联系管理员`);
   const model = structuredClone(selected);
   if (config?.prompt) model.systemPrompt = [model.systemPrompt, config.prompt].filter(Boolean).join("\n\n");
-  return { model, version: config?.version ?? 0, values: structuredClone(config ?? defaultTaskValues(id)) };
+  return { model, version: config?.version ?? 0, values: structuredClone(config ?? defaultTaskValues(id)), replacesPrompt: config?.promptMode === "replace" };
 }
 
 export function taskSummaries(settings: SystemSettings) {

@@ -3,7 +3,8 @@ import type { Store } from "./db.js";
 import { asyncRoute } from "./middleware.js";
 import { uid } from "./security.js";
 import { findAiTaskDefinition } from "./aiTaskCatalog.js";
-import { defaultTaskValues, localTaskTools, taskSummaries, updateTaskConfig } from "./aiTaskConfig.js";
+import { defaultTaskValues, editableTaskValues, taskSummaries, updateTaskConfig } from "./aiTaskConfig.js";
+import { taskToolDescriptions, taskToolNames } from "./aiTaskPresets.js";
 
 export function installAiTaskRoutes(app: Express, admin: readonly RequestHandler[], store: Store) {
   app.get("/api/admin/ai-tasks", ...admin, asyncRoute(async (_req, res) => {
@@ -17,8 +18,8 @@ export function installAiTaskRoutes(app: Express, admin: readonly RequestHandler
     const record = db.settings.aiTasks?.[definition.id];
     const page = Math.max(1, Math.floor(Number(req.query.page) || 1));
     res.setHeader("Cache-Control", "no-store");
-    res.json({ definition, revision: record?.revision ?? 0, draft: record?.draft ?? defaultTaskValues(definition.id), published: record?.published,
-      tools: definition.id === "local_agent" ? localTaskTools : [],
+    res.json({ definition, revision: record?.revision ?? 0, draft: editableTaskValues(definition.id, record?.draft), defaults: defaultTaskValues(definition.id), published: record?.published,
+      tools: taskToolNames(definition.id), toolDefaults: taskToolDescriptions,
       history: (record?.history ?? []).slice().reverse().slice((page - 1) * 5, page * 5), total: record?.history.length ?? 0 });
   }));
   app.post("/api/admin/ai-tasks/:id", ...admin, asyncRoute(async (req, res) => {

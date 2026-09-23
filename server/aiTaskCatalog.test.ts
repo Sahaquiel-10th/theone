@@ -7,7 +7,7 @@ test("AI inventory covers auxiliary calls, not just orchestration", () => {
   for (const kind of ["chat", "attachment_summary", "execution_compile", "local_agent", "image_generation", "orchestrator"]) {
     assert.ok(findAiTaskDefinition(kind));
   }
-  assert.equal(findAiTaskDefinition("orchestrator")?.implementation, "planned");
+  assert.equal(findAiTaskDefinition("orchestrator")?.implementation, "existing");
   assert.equal(findAiTaskDefinition("unknown"), undefined);
 });
 

@@ -1,11 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { defaultTaskValues, resolveAiTask, updateTaskConfig, validateTaskValues } from "./aiTaskConfig.js";
+import { defaultTaskValues, editableTaskValues, resolveAiTask, updateTaskConfig, validateTaskValues } from "./aiTaskConfig.js";
 import type { ModelConfig, SystemSettings } from "./types.js";
 
 const model = { id: "a", enabled: true, kind: "chat", systemPrompt: "base", apiKey: "not-for-client" } as ModelConfig;
 const second = { ...model, id: "b" };
 const settings = (): SystemSettings => ({ safetyRules: "immutable", rechargeCnyPerPower: 7 });
+test("presets are editable and legacy additive instructions survive conversion", () => {
+  const defaults = defaultTaskValues("local_agent");
+  assert.ok(defaults.prompt); assert.ok(defaults.toolDescriptions?.read_file);
+  const legacy = { modelId: "", prompt: "legacy instructions", tools: [], maxSteps: 1 };
+  assert.match(editableTaskValues("local_agent", legacy).prompt, /legacy instructions/);
+  assert.deepEqual(editableTaskValues("local_agent", legacy).tools, []);
+  assert.throws(() => validateTaskValues("local_agent", { ...defaults, toolDescriptions: { hacked_tool: "call me" } }, [model]));
+  assert.equal(defaultTaskValues("orchestrator").enabled, false);
+});
 test("draft, publish, immutable running snapshot, rollback and optimistic revision", () => {
   const s = settings(); const models = [model, second];
   const values = { ...defaultTaskValues("execution_compile"), modelId: "b", prompt: "new instruction" };
@@ -26,7 +35,7 @@ test("draft, publish, immutable running snapshot, rollback and optimistic revisi
   assert.throws(() => resolveAiTask(s, [model, { ...second, enabled: false }], "execution_compile", model));
 });
 test("unknown/planned tasks, wrong model kind and arbitrary tools fail closed", () => {
-  for (const id of ["__proto__", "orchestrator", "unknown"]) assert.throws(() => validateTaskValues(id, defaultTaskValues(id), [model]));
+  for (const id of ["__proto__", "unknown"]) assert.throws(() => validateTaskValues(id, defaultTaskValues(id), [model]));
   assert.throws(() => validateTaskValues("image_generation", { ...defaultTaskValues("image_generation"), modelId: "a" }, [model]));
   assert.throws(() => validateTaskValues("chat", { ...defaultTaskValues("chat"), tools: ["run_command"] }, [model]));
   assert.throws(() => validateTaskValues("local_agent", { ...defaultTaskValues("local_agent"), maxSteps: 999 }, [model]));
