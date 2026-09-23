@@ -48,7 +48,8 @@
 
 .one-runtime-update > span:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
 .one-runtime-update strong { font-size: 13px; }
-.one-runtime-update small { overflow: hidden; color: #77736b; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.one-runtime-update small { color: #77736b; font-size: 11px; white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
+.one-runtime-update-detail { grid-column: 1 / -1; display: grid; gap: 4px; font-size: 11px; line-height: 1.5; color: #625e57; overflow-wrap: anywhere; }
 .one-runtime-update button { border: 0; border-radius: 10px; padding: 8px 13px; color: white; background: #2b63d9; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
 .one-runtime-update button:disabled { cursor: wait; opacity: .62; }
 .one-runtime-update.failed button { background: #a43c38; }

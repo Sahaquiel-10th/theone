@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from 'node:fs';
 import { runtimeUpdateView, type RuntimeUpdateStatus } from "./runtimeUpdateState.js";
 
 const now = Date.now();
@@ -30,4 +31,18 @@ test('restored ambiguous updates never become an ordinary update button after re
   assert.equal(view.busy, false);
   assert.match(view.issue, /勿重复安装/);
   assert.deepEqual(runtimeUpdateView({ ...restored, available: false }, true, now), { busy: false, issue: '' });
+});
+test('manual update checks expose feedback and identity without dispatching installation', () => {
+  const source = fs.readFileSync(new URL('./main.tsx', import.meta.url), 'utf8');
+  const check = source.split('async function refreshRuntimeUpdate(manual = false)')[1].split('async function installRuntimeUpdate()')[0];
+  assert.ok(check.includes('setRuntimeChecking(true)'));
+  assert.ok(check.includes('setRuntimeChecking(false)'));
+  assert.match(check, /已检查/);
+  assert.ok(check.includes('catch (checkError)'));
+  assert.doesNotMatch(check, /method: "POST"/);
+  assert.match(source, /当前账号：{user.username}/);
+  const css = fs.readFileSync(new URL('./one-beta.css', import.meta.url), 'utf8');
+  const rule = css.match(/.one-runtime-update small {([^}]+)}/)![1];
+  assert.match(rule, /white-space: normal/);
+  assert.doesNotMatch(rule, /ellipsis/);
 });

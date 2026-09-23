@@ -584,6 +584,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [flowusConnection, setFlowusConnection] = useState<KnowledgeConnection>({ provider: "flowus", status: "disconnected" });
   const [runtimeUpdate, setRuntimeUpdate] = useState<RuntimeUpdateStatus | null>(null);
   const [runtimeUpdateIssue, setRuntimeUpdateIssue] = useState("");
+  const [runtimeChecking, setRuntimeChecking] = useState(false);
+  const [runtimeCheckFeedback, setRuntimeCheckFeedback] = useState("");
   const runtimeCheck = useRef({ pending: false, dispatching: false, generation: 0, lastSuccess: Date.now(), active: false });
   const [runtimeUpdating, setRuntimeUpdating] = useState(false);
   const [executionTasks, setExecutionTasks] = useState<ExecutionTask[]>([]);
@@ -726,8 +728,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     ));
   }
 
-  async function refreshRuntimeUpdate() {
-    if (runtimeCheck.current.pending || runtimeCheck.current.dispatching) return;
+  async function refreshRuntimeUpdate(manual = false) {
+    if (runtimeCheck.current.pending || runtimeCheck.current.dispatching) {
+      if (manual) setRuntimeCheckFeedback("正在查询，请稍候；不会重复安装");
+      return;
+    }
+    if (manual) { setRuntimeChecking(true); setRuntimeCheckFeedback("正在查询当前账号的启动器…"); }
     runtimeCheck.current.pending = true;
     const generation = runtimeCheck.current.generation;
     try {
@@ -739,8 +745,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       setRuntimeUpdate(result);
       setRuntimeUpdating(view.busy);
       setRuntimeUpdateIssue(view.issue);
-    } catch {
+      if (manual) setRuntimeCheckFeedback(`已检查 · ${new Date().toLocaleTimeString()} · ${result.available ? "运行版本尚未更新；本按钮只查询状态" : "已运行最新版"}`);
+    } catch (checkError) {
       if (generation !== runtimeCheck.current.generation) return;
+      if (manual) setRuntimeCheckFeedback(checkError instanceof Error ? checkError.message : "状态查询失败，请检查网络和 Key 连接");
       // A lost connection is not evidence of a failed install. Offer a status
       // check, never silently send a second install into an uncertain first one.
       if (runtimeCheck.current.active && Date.now() - runtimeCheck.current.lastSuccess >= 30_000) {
@@ -749,6 +757,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       }
     } finally {
       runtimeCheck.current.pending = false;
+      if (manual) setRuntimeChecking(false);
     }
   }
 
@@ -758,6 +767,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     runtimeCheck.current.dispatching = true;
     setRuntimeUpdating(true);
     setRuntimeUpdateIssue("");
+    setRuntimeCheckFeedback("");
     runtimeCheck.current.active = true;
     runtimeCheck.current.lastSuccess = Date.now();
     setError("");
@@ -1514,7 +1524,11 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       {runtimeUpdate?.available ? <section className={`one-runtime-update ${runtimeUpdate.progress?.status || "available"}`} aria-live="polite">
         <span className="one-runtime-update-icon"><Download size={16} /></span>
         <span><strong>{runtimeUpdating ? "正在更新 ONE" : runtimeUpdateIssue ? "请检查 ONE 更新" : runtimeUpdateFailed ? "更新没有完成" : "ONE 可以更新"}</strong><small>{runtimeUpdateIssue || (runtimeUpdating ? ({ requested: "准备下载…", downloading: "正在下载…", verifying: "正在验证…", installing: "正在安装…", completed: "正在重新连接…", failed: runtimeUpdate.progress?.message || "更新失败" }[runtimeUpdate.progress?.status || "requested"]) : runtimeUpdateFailed ? runtimeUpdate.progress?.message || "请保持 ONE Key 插入并重试" : `${runtimeUpdate.current?.version || "当前版本"} → ${runtimeUpdate.latestVersion}`)}</small></span>
-        <button type="button" disabled={runtimeUpdating} onClick={() => void (runtimeUpdateIssue ? refreshRuntimeUpdate() : installRuntimeUpdate())}>{runtimeUpdating ? "请稍候" : runtimeUpdateIssue ? "检查状态" : runtimeUpdateFailed ? "重试" : "更新"}</button>
+        <button type="button" disabled={runtimeUpdating || runtimeChecking} onClick={() => void (runtimeUpdateIssue ? refreshRuntimeUpdate(true) : installRuntimeUpdate())}>{runtimeChecking ? "查询中…" : runtimeUpdating ? "请稍候" : runtimeUpdateIssue ? "检查状态" : runtimeUpdateFailed ? "重试" : "更新"}</button>
+        {runtimeUpdateIssue ? <div className="one-runtime-update-detail">
+          <span>当前账号：{user.username} · 运行 {runtimeUpdate.current?.version || "未知"} · 目标 {runtimeUpdate.latestVersion || "未知"}</span>
+          {runtimeCheckFeedback ? <span role="status">{runtimeCheckFeedback}</span> : null}
+        </div> : null}
       </section> : null}
 
       {historyOpen ? (
