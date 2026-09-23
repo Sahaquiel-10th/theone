@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { recoverRuntimeUpdate } from './runtimeUpdateRecovery.js';
+import { recoverRuntimeUpdate, disconnectedRuntimeUpdate } from './runtimeUpdateRecovery.js';
 import type { AuditLog } from './types.js';
 
 const owner = { deviceId: 'key-a', installationId: 'computer-a', userId: 'user-a', workspaceId: 'workspace-a' };
@@ -32,4 +32,16 @@ test('latest attempt wins independent of SQL row order; completed beats delayed 
   const failed = { ...row, requestId: 'update-b', details: { ...row.details, status: 'failed', startedAt: 200 } };
   assert.equal(recoverRuntimeUpdate([failed, completed], owner, runtime)?.status, 'failed');
   assert.equal(recoverRuntimeUpdate([failed, completed], owner, runtime)?.recoveryRequired, false);
+});
+
+test('disconnected update metadata expires and never crosses an owner boundary', () => {
+  const checkpoint = { ...row, details: { ...row.details, fromVersion: '0.3.8', architecture: 'arm64' } };
+  const now = Date.parse(row.createdAt) + 1000;
+  assert.equal(disconnectedRuntimeUpdate([checkpoint], owner, now)?.runtime.version, '0.3.8');
+  assert.equal(disconnectedRuntimeUpdate([checkpoint], owner, now)?.update.recoveryRequired, true);
+  for (const field of ['workspaceId', 'userId', 'deviceId', 'installationId'] as const) {
+    assert.equal(disconnectedRuntimeUpdate([checkpoint], { ...owner, [field]: 'foreign' }, now), undefined);
+  }
+  assert.equal(disconnectedRuntimeUpdate([checkpoint], owner, now + 30 * 60_000), undefined);
+  assert.equal(disconnectedRuntimeUpdate([row], owner, now), undefined);
 });

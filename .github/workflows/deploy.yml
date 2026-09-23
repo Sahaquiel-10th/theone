@@ -26,9 +26,18 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  verify-windows-runtime:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Verify Windows runtime socket and installation hand-off
+        working-directory: launcher/windows
+        run: go test -race ./...
+
   deploy:
     if: vars.DEPLOY_ENABLED == 'true'
-    needs: verify
+    needs: [verify, verify-windows-runtime]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

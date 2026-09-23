@@ -112,6 +112,8 @@ func (lock *residentLock) close() {
 func (writer *socketWriter) json(value any) error {
 	writer.mutex.Lock()
 	defer writer.mutex.Unlock()
+	// A dead progress socket must not hold an installed update indefinitely.
+	_ = writer.connection.SetWriteDeadline(time.Now().Add(3 * time.Second))
 	return writer.connection.WriteJSON(value)
 }
 
@@ -129,12 +131,16 @@ var httpClient = &http.Client{Timeout: 12 * time.Second}
 
 func main() {
 	if !hasArgument(residentArgument) {
-		credentialPath, err := findCredential()
+		credentialPath := argumentValue("--credential-path")
+		var err error
+		if credentialPath == "" {
+			credentialPath, err = findCredential()
+		}
 		if err == nil {
 			var credential deviceCredential
-			credential, err = loadCredential(credentialPath, "")
+			credential, err = loadCredential(credentialPath, argumentValue("--device-id"))
 			if err == nil {
-				err = launchResidentCopy(credential.DeviceID)
+				err = launchResidentCopy(credential.DeviceID, credentialPath)
 			}
 		}
 		if err != nil {
@@ -167,9 +173,17 @@ func run(expectedDeviceID string) error {
 	}
 	defer lock.close()
 
-	openedLogin := false
+	openedLogin := hasArgument("--one-update-resume")
 	base := ""
-	credentialPath := ""
+	credentialPath := argumentValue("--credential-path")
+	if credentialPath != "" {
+		initial, loadErr := loadCredential(credentialPath, expectedDeviceID)
+		if loadErr != nil {
+			credentialPath = ""
+		} else {
+			base = strings.TrimRight(initial.ServerBaseURL, "/")
+		}
+	}
 
 	for failures := 0; ; {
 		if credentialPath == "" {
@@ -214,7 +228,7 @@ func run(expectedDeviceID string) error {
 			// Release the singleton before the new portable executable starts;
 			// otherwise its updated resident would see the old lock and exit.
 			lock.close()
-			command := exec.Command(installed.target)
+			command := exec.Command(installed.target, "--device-id", expectedDeviceID, "--credential-path", credentialPath, "--one-update-resume")
 			command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x00000008}
 			if startErr := command.Start(); startErr != nil {
 				_ = os.Remove(installed.target)
@@ -294,7 +308,7 @@ func argumentValue(name string) string {
 	return ""
 }
 
-func launchResidentCopy(deviceID string) error {
+func launchResidentCopy(deviceID, credentialPath string) error {
 	if _, err := installationID(); err != nil {
 		return err
 	}
@@ -335,7 +349,11 @@ func launchResidentCopy(deviceID string) error {
 			return errors.New("无法完成 ONE 在场检测器安装")
 		}
 	}
-	command := exec.Command(target, residentArgument, "--device-id", deviceID)
+	args := []string{residentArgument, "--device-id", deviceID, "--credential-path", credentialPath}
+	if hasArgument("--one-update-resume") {
+		args = append(args, "--one-update-resume")
+	}
+	command := exec.Command(target, args...)
 	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x00000008}
 	if err := command.Start(); err != nil {
 		return errors.New("无法启动 ONE 在场检测器")
@@ -467,7 +485,11 @@ func connectLauncher(base, credentialPath, deviceID string) (*websocket.Conn, er
 	return connection, nil
 }
 
-func serveProofs(connection *websocket.Conn, credentialPath, deviceID string) error {
+func serveProofs(connection *websocket.Conn, credentialPath, deviceID string) (result error) {
+	return serveProofsWithInstaller(connection, credentialPath, deviceID, installRuntimeUpdate)
+}
+
+func serveProofsWithInstaller(connection *websocket.Conn, credentialPath, deviceID string, install func(runtimeUpdateArtifact, string, func(string)) error) (result error) {
 	defer connection.Close()
 	writer := &socketWriter{connection: connection}
 	executor := &localExecutor{commands: make(map[string]*exec.Cmd)}
@@ -475,6 +497,13 @@ func serveProofs(connection *websocket.Conn, credentialPath, deviceID string) er
 	resumed := make(chan struct{})
 	stopMonitor := make(chan struct{})
 	defer close(stopMonitor)
+	var update *installJob
+	defer func() {
+		if update != nil {
+			_ = connection.Close()
+			result = update.wait()
+		}
+	}()
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
@@ -503,6 +532,11 @@ func serveProofs(connection *websocket.Conn, credentialPath, deviceID string) er
 	for {
 		var message socketMessage
 		if err := connection.ReadJSON(&message); err != nil {
+			// Join a committed/ongoing file operation even if the transport died.
+			// A reconnect must never start another writer over this installer.
+			if update != nil {
+				return update.wait()
+			}
 			select {
 			case <-resumed:
 				return errPresenceResume
@@ -538,26 +572,29 @@ func serveProofs(connection *websocket.Conn, credentialPath, deviceID string) er
 				_ = writer.json(response)
 			}(message)
 		case "update_install":
-			if message.RequestID == "" {
+			if message.RequestID == "" || update != nil {
 				continue
 			}
-			artifact, err := verifyRuntimeUpdate(message.Envelope)
-			if err == nil {
-				_ = writer.json(map[string]any{"type": "update_event", "requestId": message.RequestID, "status": "downloading"})
-				err = installRuntimeUpdate(artifact, credentialPath, func(status string) {
-					_ = writer.json(map[string]any{"type": "update_event", "requestId": message.RequestID, "status": status})
-				})
-			}
-			var installed *runtimeUpdateInstalled
-			if errors.As(err, &installed) {
-				_ = writer.json(map[string]any{"type": "update_event", "requestId": message.RequestID, "status": "completed"})
-				return installed
-			}
-			if err != nil {
-				_ = writer.json(map[string]any{"type": "update_event", "requestId": message.RequestID, "status": "failed", "error": err.Error()})
-				continue
-			}
-			_ = writer.json(map[string]any{"type": "update_event", "requestId": message.RequestID, "status": "completed"})
+			request := message
+			update = startInstallJob(func() error {
+				artifact, err := verifyRuntimeUpdate(request.Envelope)
+				if err == nil {
+					_ = writer.json(map[string]any{"type": "update_event", "requestId": request.RequestID, "status": "downloading"})
+					err = install(artifact, credentialPath, func(status string) {
+						_ = writer.json(map[string]any{"type": "update_event", "requestId": request.RequestID, "status": status})
+					})
+				}
+				var installed *runtimeUpdateInstalled
+				if errors.As(err, &installed) {
+					_ = writer.json(map[string]any{"type": "update_event", "requestId": request.RequestID, "status": "completed"})
+					return installed
+				}
+				if err != nil {
+					_ = writer.json(map[string]any{"type": "update_event", "requestId": request.RequestID, "status": "failed", "error": err.Error()})
+					return err
+				}
+				return nil
+			}, func() { _ = connection.Close() })
 		case "execution_cancel":
 			executor.cancel(message.TaskID)
 		case "execution_start", "execution_continue":

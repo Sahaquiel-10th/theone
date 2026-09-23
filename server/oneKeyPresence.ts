@@ -6,7 +6,7 @@ import { uid } from "./security.js";
 import { appendExecutionEvent } from "./executionService.js";
 import { validInstallationId } from "./oneKeyInstallation.js";
 import { compareRuntimeVersions, validRuntimeVersion, type RuntimeArchitecture, type RuntimeIdentity, type RuntimePlatform, type SignedRuntimeUpdate } from "./runtimeUpdate.js";
-import { recoverRuntimeUpdate, type UpdateOwner } from './runtimeUpdateRecovery.js';
+import { recoverRuntimeUpdate, disconnectedRuntimeUpdate, type UpdateOwner } from './runtimeUpdateRecovery.js';
 
 const proofTimeoutMs = 2000;
 const authTimeoutMs = 5000;
@@ -83,6 +83,11 @@ export class OneKeyPresence {
       && Date.now() - (state.updateStartedAt ?? 0) < updateHeartbeatGraceMs);
   }
 
+  private preserveUpdateTransport(state?: SocketState) {
+    return this.updateInProgress(state) || Boolean(state?.update?.status === 'completed'
+      && !state.update.recoveryRequired && Date.now() - Date.parse(state.update.updatedAt) < 30_000);
+  }
+
   attach(server: Server) {
     this.wss = new WebSocketServer({ server, path: "/api/one-key/launcher" });
     this.wss.on("connection", (socket, request) => void this.accept(socket, request.url || ""));
@@ -90,7 +95,7 @@ export class OneKeyPresence {
       for (const socket of this.wss?.clients ?? []) {
         const state = this.states.get(socket);
         if (!state) continue;
-        const updateInProgress = this.updateInProgress(state);
+        const updateInProgress = this.preserveUpdateTransport(state);
         // Some launchers install synchronously and cannot consume WebSocket pong frames
         // while replacing themselves. Keep only an explicitly requested update alive for
         // a bounded window; ordinary unplug detection still uses the normal heartbeat.
@@ -122,7 +127,7 @@ export class OneKeyPresence {
         // the next 45-second heartbeat. Never accept the request without proof.
         // Still reject the protected request. Do not destroy an install just
         // because an older synchronous launcher cannot sign during replacement.
-        if (!this.updateInProgress(this.states.get(socket))) {
+        if (!this.preserveUpdateTransport(this.states.get(socket))) {
           this.remove(socket);
           socket.terminate();
         }
@@ -151,6 +156,18 @@ export class OneKeyPresence {
   }
 
   async runtimeStatus(params: { deviceId: string; installationId?: string; userId: string; workspaceId: string }) {
+    // Metadata only: a short hand-off has no socket. Return this computer's
+    // journal as unconfirmed, never as proof of Key presence or completion.
+    if (!this.isConnected(params.deviceId, params.installationId)) {
+      if (!validInstallationId(params.installationId)) throw new OneKeyPresenceError('请更新 ONE Key 启动器');
+      const db = await this.store.read();
+      const device = db.oneKeyDevices.find(item => item.id === params.deviceId && item.status === 'active'
+        && item.userId === params.userId && item.workspaceId === params.workspaceId);
+      if (!device) throw new OneKeyPresenceError('ONE Key 已挂失或不属于当前账号');
+      const saved = disconnectedRuntimeUpdate(db.auditLogs ?? [], params);
+      if (saved) return { ...saved, connectionState: 'reconnecting' as const };
+      throw new OneKeyPresenceError('请将 ONE Key 插入当前这台电脑');
+    }
     const socket = await this.ownedSocket(params);
     const state = this.states.get(socket)!;
     await this.restoreUpdate(state, params);
@@ -158,7 +175,7 @@ export class OneKeyPresence {
     if (state.update && !["failed", "completed"].includes(state.update.status) && !this.updateInProgress(state)) {
       state.update = { ...state.update, recoveryRequired: true };
     }
-    return { runtime: state.runtime, update: state.update };
+    return { runtime: state.runtime, update: state.update, connectionState: 'connected' as const };
   }
 
   async requestRuntimeUpdate(params: { deviceId: string; installationId?: string; userId: string; workspaceId: string; version: string; envelope: SignedRuntimeUpdate }) {
@@ -200,7 +217,7 @@ export class OneKeyPresence {
       db.auditLogs.push({ id: uid('aud'), workspaceId: device.workspaceId, actorUserId: device.userId,
         action: 'one_runtime.update.checkpoint', targetType: 'one_key_device', targetId: device.id,
         requestId: progress.requestId, createdAt: progress.updatedAt,
-        details: { installationId: state.installationId, platform, version: progress.version,
+        details: { installationId: state.installationId, platform, architecture: state.runtime!.architecture, fromVersion: state.runtime!.version, version: progress.version,
           status: progress.status, startedAt: state.updateStartedAt } });
     });
   }

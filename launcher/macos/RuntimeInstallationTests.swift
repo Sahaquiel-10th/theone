@@ -5,6 +5,12 @@ enum FixtureError: Error { case offline, installFailed }
 @main
 struct RuntimeInstallationTests {
     static func main() async throws {
+        let activity = RuntimeInstallActivity()
+        precondition(!activity.active && activity.begin() && activity.active)
+        precondition(!activity.begin(), "cannot start two installers")
+        activity.end()
+        precondition(!activity.active && activity.begin(), "release after join")
+        activity.end()
         var installed = false
         let target = try await committedRuntimeInstallation(install: {
             installed = true

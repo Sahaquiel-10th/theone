@@ -242,6 +242,7 @@ app.get("/api/runtime/update", auth(jwtSecret, undefined, { runtimeStatusOnly: t
     configured: runtimeUpdateCatalog.configured(),
     supported: Boolean(connected.runtime?.updateProtocol === 1),
     current: connected.runtime,
+    connectionState: connected.connectionState,
     latestVersion: candidate?.artifact.version,
     // Installation completion is not proof that the new resident is running.
     // Keep the pending/recovery UI until an authenticated new version connects.

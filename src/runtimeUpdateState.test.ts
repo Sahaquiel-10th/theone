@@ -46,3 +46,10 @@ test('manual update checks expose feedback and identity without dispatching inst
   assert.match(rule, /white-space: normal/);
   assert.doesNotMatch(rule, /ellipsis/);
 });
+test('handoff polls without claiming success or asking for a new installation', () => {
+  const view = runtimeUpdateView({ ...status, connectionState: 'reconnecting' }, true, now);
+  assert.match(view.issue, /自动重新连接/);
+  assert.equal(view.busy, false);
+  assert.deepEqual(runtimeUpdateView({ ...status, available: false, connectionState: 'connected', progress: undefined }, true, now), { busy: false, issue: '' });
+  assert.match(runtimeUpdateView({ ...status, connectionState: 'reconnecting' }, true, now + 100_000).issue, /联系管理员/);
+});

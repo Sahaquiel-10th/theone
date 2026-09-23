@@ -57,6 +57,8 @@ export function auth(secret: string, injected?: AuthDependencies, options?: { ru
         const binding = { deviceId: payload.deviceId, installationId: payload.installationId, userId: user.id, workspaceId: access.workspaceId };
         // Old launchers cannot answer challenges while installing. This one
         // metadata-only route still checks the exact owner, Key and computer.
+        // During hand-off it may return a bounded, explicitly disconnected
+        // journal entry. That entry is never accepted as business-request proof.
         if (options?.runtimeStatusOnly && req.method === "GET" && req.path === "/api/runtime/update") {
           await dependencies.oneKeyPresence.runtimeStatus(binding);
         } else {

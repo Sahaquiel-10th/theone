@@ -50,7 +50,7 @@ function authFixture() {
   const proofs: Array<{ deviceId: string; userId: string; workspaceId: string }> = [];
   const dependencies = {
     store: { read: async () => db },
-    oneKeyPresence: { runtimeStatus: async () => ({ runtime: undefined, update: undefined }), requireProof: async (params: { deviceId: string; userId: string; workspaceId: string }) => {
+    oneKeyPresence: { runtimeStatus: async () => ({ runtime: undefined, update: undefined, connectionState: 'connected' as const }), requireProof: async (params: { deviceId: string; userId: string; workspaceId: string }) => {
       proofs.push(params);
       if (params.deviceId !== `${params.userId}-key`) throw new Error("ONE Key 已挂失或不属于当前账号");
     } }
@@ -91,7 +91,7 @@ test("only the dedicated GET update-status route can inspect metadata without a 
   ] as const) {
     const { dependencies, proofs } = authFixture();
     let checkedOwner = false;
-    dependencies.oneKeyPresence.runtimeStatus = async () => { checkedOwner = true; return { runtime: undefined, update: undefined }; };
+    dependencies.oneKeyPresence.runtimeStatus = async () => { checkedOwner = true; return { runtime: undefined, update: undefined, connectionState: 'connected' as const }; };
     const { recorded, response } = responseRecorder();
     const token = signToken({ sub: "user", deviceId: "user-key", installationId: "a".repeat(32) }, "test-secret");
     const request = { headers: { authorization: `Bearer ${token}` }, method, path, originalUrl: path } as Request;

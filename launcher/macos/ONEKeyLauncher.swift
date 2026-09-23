@@ -201,6 +201,7 @@ func launchResidentCopy() throws {
     // resident is the single process that receives removable-volume access,
     // discovers the Key and keeps proving its presence.
     process.arguments = [residentArgument, credentialArgument, portableCredential.path]
+    if CommandLine.arguments.contains("--one-update-resume") { process.arguments?.append("--one-update-resume") }
     process.standardInput = FileHandle.nullDevice
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
@@ -365,7 +366,12 @@ func verifyFATVolumeAfterUpdate(_ volumeRoot: URL) throws {
 func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL, progress: (String) async -> Void) async throws -> URL {
     let credentialBefore = try Data(contentsOf: credentialUrl)
     guard let downloadUrl = URL(string: artifact.url) else { throw LauncherError.message("ONE 更新地址无效") }
-    let (downloaded, response) = try await URLSession.shared.download(from: downloadUrl)
+    let downloadConfiguration = URLSessionConfiguration.ephemeral
+    downloadConfiguration.timeoutIntervalForRequest = 30
+    downloadConfiguration.timeoutIntervalForResource = 240
+    let downloadSession = URLSession(configuration: downloadConfiguration)
+    defer { downloadSession.invalidateAndCancel() }
+    let (downloaded, response) = try await downloadSession.download(from: downloadUrl)
     guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw LauncherError.message("下载 ONE 更新失败") }
     await progress("verifying")
     let attributes = try FileManager.default.attributesOfItem(atPath: downloaded.path)
@@ -635,6 +641,8 @@ final class CodexExecutionRunner: @unchecked Sendable {
 
 func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: String) async throws -> URL? {
     let execution = CodexExecutionRunner(socket: task, deviceId: deviceId, credentialUrl: credentialUrl)
+    var installJob: Task<URL, Error>?
+    do {
     while true {
         let message = try JSONDecoder().decode(SocketMessage.self, from: Data(try await receiveText(task).utf8))
         if message.type == "request_challenge", let challengeId = message.challengeId, let nonce = message.nonce {
@@ -648,27 +656,45 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
         } else if message.type == "execution_cancel", let taskId = message.taskId {
             execution.cancel(taskId: taskId)
         } else if message.type == "update_install", let requestId = message.requestId, let envelope = message.envelope {
-            do {
+            guard installJob == nil, runtimeInstallActivity.begin() else { continue }
+            installJob = Task.detached {
+              // Always wake the socket reader; it joins the result even after
+              // disconnection, so file commit cannot be abandoned by a restart.
+              defer { task.cancel(with: .goingAway, reason: nil) }
+              do {
                 let artifact = try verifyRuntimeUpdate(envelope)
-                try await task.send(.string(String(decoding: try JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: "downloading", error: nil)), as: UTF8.self)))
+                await reportRuntimeProgress(task, requestId: requestId, status: "downloading")
                 return try await committedRuntimeInstallation(install: {
                     try await installRuntimeUpdate(artifact, credentialUrl: credentialUrl) { status in
-                        if let data = try? JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: status, error: nil)) {
-                            try? await task.send(.string(String(decoding: data, as: UTF8.self)))
-                        }
+                        await reportRuntimeProgress(task, requestId: requestId, status: status)
                     }
                 }, reportCompletion: {
-                    let deadline = Task {
-                        do { try await Task.sleep(for: .seconds(2)) } catch { return }
-                        task.cancel(with: .goingAway, reason: nil)
-                    }
-                    defer { deadline.cancel() }
-                    try await task.send(.string(String(decoding: try JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: "completed", error: nil)), as: UTF8.self)))
+                    await reportRuntimeProgress(task, requestId: requestId, status: "completed")
                 })
             } catch {
-                try? await task.send(.string(String(decoding: (try? JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: "failed", error: error.localizedDescription))) ?? Data(), as: UTF8.self)))
+                await reportRuntimeProgress(task, requestId: requestId, status: "failed", error: error.localizedDescription)
+                throw error
+              }
             }
         }
+    }
+    } catch {
+        if let installJob {
+            defer { runtimeInstallActivity.end() }
+            return try await installJob.value
+        }
+        throw error
+    }
+}
+
+func reportRuntimeProgress(_ socket: URLSessionWebSocketTask, requestId: String, status: String, error: String? = nil) async {
+    let deadline = Task {
+        do { try await Task.sleep(for: .seconds(2)) } catch { return }
+        socket.cancel(with: .goingAway, reason: nil)
+    }
+    defer { deadline.cancel() }
+    if let data = try? JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: status, error: error)) {
+        try? await socket.send(.string(String(decoding: data, as: UTF8.self)))
     }
 }
 
@@ -713,7 +739,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private var stopping = false
     private var handingOff = false
     private var ready = false
-    private var openedLogin = false
+    private var openedLogin = CommandLine.arguments.contains("--one-update-resume")
     private var loginRequested = false
     private var residentLock: ResidentLock?
     private let networkMonitor = NWPathMonitor()
@@ -820,7 +846,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func restartSession() {
-        guard residentMode, !stopping, !handingOff else { return }
+        guard residentMode, !stopping, !handingOff, !runtimeInstallActivity.active else { return }
         let generation = UUID()
         sessionGeneration = generation
         socket?.cancel(with: .goingAway, reason: nil)
@@ -876,7 +902,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 residentLock = nil
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                process.arguments = ["-n", installedApp.path]
+                process.arguments = ["-n", installedApp.path, "--args", "--one-update-resume"]
                 process.standardOutput = FileHandle.nullDevice
                 process.standardError = FileHandle.nullDevice
                 do { try process.run() } catch {

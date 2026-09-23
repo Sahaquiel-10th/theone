@@ -210,10 +210,20 @@ test("binds runtime update status and dispatch to the authenticated workspace an
   assert.equal((await presence.runtimeStatus({ deviceId: 'device-a', installationId, userId: 'user-a', workspaceId: 'workspace-a' })).update?.status, 'completed');
   assert.equal((await presence.requestRuntimeUpdate({ deviceId: 'device-a', installationId, userId: 'user-a', workspaceId: 'workspace-a', version: '0.3.0', envelope: command.envelope })).requestId, progress.requestId);
   assert.equal(database.auditLogs.filter((row: any) => row.action === 'one_runtime.update.checkpoint').length, 3);
+  await assert.rejects(() => presence.requireProof({ deviceId: 'device-a', installationId, userId: 'user-a', workspaceId: 'workspace-a', method: 'POST', path: '/api/chat' }), /未响应/);
+  assert.equal(presence.isConnected('device-a', installationId), true, 'completed hand-off grace must not authorize chat or destroy hand-off');
   // A new socket has no in-memory progress. Recover from the durable journal
   // instead of sending the same installer to the old resident again.
   socket.close();
   await once(socket, 'close');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const disconnectedOwner = { deviceId: 'device-a', installationId, userId: 'user-a', workspaceId: 'workspace-a' };
+  assert.equal((await presence.runtimeStatus(disconnectedOwner)).connectionState, 'reconnecting');
+  assert.equal(presence.isConnected('device-a', installationId), false);
+  await assert.rejects(() => presence.requireProof({ ...disconnectedOwner, method: 'POST', path: '/api/chat' }), /插入/);
+  await assert.rejects(() => presence.requestRuntimeUpdate({ ...disconnectedOwner, version: '0.3.0', envelope: command.envelope }), /当前这台电脑/);
+  await assert.rejects(() => presence.runtimeStatus({ ...disconnectedOwner, userId: 'foreign' }), /不属于/);
+  await assert.rejects(() => presence.runtimeStatus({ ...disconnectedOwner, installationId: 'b'.repeat(32) }), /当前这台电脑/);
   const reconnected = new WebSocket(`ws://127.0.0.1:${address.port}/api/one-key/launcher?deviceId=device-a&installationId=${installationId}`);
   const [reAuthRaw] = await once(reconnected, 'message');
   const reAuth = JSON.parse(reAuthRaw.toString());

@@ -748,7 +748,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       if (manual) setRuntimeCheckFeedback(`已检查 · ${new Date().toLocaleTimeString()} · ${result.available ? "运行版本尚未更新；本按钮只查询状态" : "已运行最新版"}`);
     } catch (checkError) {
       if (generation !== runtimeCheck.current.generation) return;
-      if (manual) setRuntimeCheckFeedback(checkError instanceof Error ? checkError.message : "状态查询失败，请检查网络和 Key 连接");
+      if (manual) setRuntimeCheckFeedback(runtimeCheck.current.active ? "新版连接尚未确认，正在自动检查；请保持 Key 插入" : checkError instanceof Error ? checkError.message : "状态查询失败，请检查网络和 Key 连接");
       // A lost connection is not evidence of a failed install. Offer a status
       // check, never silently send a second install into an uncertain first one.
       if (runtimeCheck.current.active && Date.now() - runtimeCheck.current.lastSuccess >= 30_000) {
@@ -1528,6 +1528,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         {runtimeUpdateIssue ? <div className="one-runtime-update-detail">
           <span>当前账号：{user.username} · 运行 {runtimeUpdate.current?.version || "未知"} · 目标 {runtimeUpdate.latestVersion || "未知"}</span>
           {runtimeCheckFeedback ? <span role="status">{runtimeCheckFeedback}</span> : null}
+          <button type="button" onClick={() => window.location.reload()}>刷新页面</button>
         </div> : null}
       </section> : null}
 
