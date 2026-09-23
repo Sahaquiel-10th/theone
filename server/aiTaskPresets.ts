@@ -19,6 +19,17 @@ export const taskToolDescriptions: Record<string, string> = {
   web_search: "用户明确需要最新公开信息、公开事实核对或网页资料时使用。不要把私人资料、凭证或完整聊天发送到公网搜索。"
 };
 
+export const registeredToolCatalog = [
+  { name: "knowledge_search", label: "知识库检索", localOnly: false, readOnly: true },
+  { name: "web_search", label: "联网搜索", localOnly: false, readOnly: true },
+  { name: "list_files", label: "列出本地文件", localOnly: true, readOnly: true },
+  { name: "read_file", label: "读取本地文件", localOnly: true, readOnly: true },
+  { name: "search_text", label: "搜索本地文本", localOnly: true, readOnly: true },
+  { name: "write_file", label: "写入本地文件", localOnly: true, readOnly: false },
+  { name: "replace_in_file", label: "修改本地文件", localOnly: true, readOnly: false },
+  { name: "run_command", label: "执行本地命令", localOnly: true, readOnly: false }
+] as const;
+
 export function taskToolNames(id: string): string[] {
   return id === "local_agent" ? ["list_files", "read_file", "search_text", "write_file", "replace_in_file", "run_command"]
     : id === "orchestrator" ? ["knowledge_search", "web_search"] : [];

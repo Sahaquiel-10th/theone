@@ -262,8 +262,8 @@ type UsageActivity = { id: string; action: string; targetType: string; requestId
 type UserUsageDetail = { user: { id: string; username: string; enabled: boolean }; usage: UsageRecord[]; activity: UsageActivity[]; pagination: { offset: number; limit: number; total: number; hasMore: boolean }; activityTotal: number; period: string };
 type AuditItem = { id: string; actorName?: string; action: string; targetType: string; requestId?: string; createdAt: string };
 type OneKeyDevice = { id: string; serialNumber: string; workspaceId: string; userId: string; username: string; status: "active" | "revoked"; createdAt: string; lastUsedAt?: string; revokedAt?: string };
-type ContextTraceSummary = { id: string; workspaceId: string; userId: string; username: string; conversationId: string; conversationTitle: string; modelName: string; requestId?: string; query: string; responsePreview: string; createdAt: string };
-type ContextTraceDetail = ContextTraceSummary & { assistantMessageId: string; modelId: string; sections: { key: string; title: string; content: string }[] };
+type ContextTraceSummary = { id: string; workspaceId: string; userId: string; username: string; conversationId: string; conversationTitle: string; modelName: string; requestId?: string; query: string; responsePreview: string; executionStepCount?: number; createdAt: string };
+type ContextTraceDetail = ContextTraceSummary & { assistantMessageId: string; modelId: string; sections: { key: string; title: string; content: string }[]; executionSteps?: { step: number; tool: string; status: string; query?: string; resultPreview: string; durationMs: number }[] };
 type OneKeyCredential = { version: 1; deviceId: string; privateKeyRaw: string; publicKeyRaw: string; serverBaseUrl?: string };
 
 function dateTime(value: string) {
@@ -2608,7 +2608,7 @@ function AdminContexts({ traces }: { traces: ContextTraceSummary[] }) {
       <div className="context-private-note"><LockKeyhole size={15} /><span>仅当前账号可见，其他用户和超管都不能读取。</span></div>
       {traces.map((trace) => <button key={trace.id} className={selectedId === trace.id ? "active" : ""} onClick={() => setSelectedId(trace.id)}>
         <strong>{trace.query}</strong>
-        <span>{trace.username} · {trace.modelName}</span>
+        <span>{trace.username} · {trace.modelName}{trace.executionStepCount ? ` · ${trace.executionStepCount} 个工具步骤` : ""}</span>
         <small>{dateTime(trace.createdAt)}</small>
       </button>)}
     </aside>
@@ -2616,6 +2616,7 @@ function AdminContexts({ traces }: { traces: ContextTraceSummary[] }) {
       {error ? <div className="error">{error}</div> : null}
       {detail ? <>
         <header><div><small>{detail.username} · {detail.modelName}</small><h3>{detail.query}</h3></div><span>{dateTime(detail.createdAt)}<small>{detail.requestId || "-"}</small></span></header>
+        {detail.executionSteps?.length ? <article className="context-section"><h4>调度步骤（按需展开）</h4>{detail.executionSteps.map((step, index) => <details key={`${step.step}-${index}`}><summary>第 {step.step} 步 · {step.tool} · {step.status} · {step.durationMs} ms</summary><p>{step.query || "无查询参数"}</p><pre>{step.resultPreview}</pre></details>)}</article> : null}
         {detail.sections.map((section) => <article key={section.key} className="context-section"><h4>{section.title}</h4><pre>{section.content}</pre></article>)}
       </> : <div className="empty-state compact">正在读取…</div>}
     </section>

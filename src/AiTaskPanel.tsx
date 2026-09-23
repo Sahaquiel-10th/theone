@@ -5,7 +5,7 @@ import { Pagination, SearchPicker, SettingsDialog } from "./SettingsControls";
 type Values = { modelId: string; prompt: string; tools: string[]; maxSteps: number; promptMode?: "replace"; toolDescriptions?: Record<string, string>; enabled?: boolean };
 type Version = Values & { version: number; publishedAt: string };
 type Summary = { id: string; name: string; modelKind: string; implementation: string; version: number };
-type Detail = { definition: Summary; revision: number; draft: Values; defaults: Values; published?: Version; tools: string[]; toolDefaults: Record<string, string>; history: Version[]; total: number };
+type Detail = { definition: Summary; revision: number; draft: Values; defaults: Values; published?: Version; tools: string[]; toolDefaults: Record<string, string>; registeredTools?: { name: string; label: string; localOnly: boolean; readOnly: boolean }[]; history: Version[]; total: number };
 type Model = { id: string; name: string; kind: string; enabled: boolean };
 const toolNames: Record<string, string> = { list_files: "列出文件", read_file: "读取文件", search_text: "搜索文本", write_file: "写入文件", replace_in_file: "替换文本", run_command: "执行命令（仍需本机确认）" };
 
@@ -61,7 +61,7 @@ function TaskEditor({ api, task, models, onChanged }: { api: typeof apiType; tas
   if (task.implementation === "planned") return <p>核心调度执行器正在开发，暂不能发布配置。</p>;
   const dirty = JSON.stringify(values) !== JSON.stringify(detail.draft);
   return <div className="ai-task-editor">
-    <p>未指定模型时沿用原有选择。价格在“模型与定价”统一维护。</p>
+    <p>未指定模型时沿用原有选择。价格在“模型与定价”统一维护。工具只能从已接入目录中选择，不能在后台凭空创建函数。</p>
     <fieldset disabled={busy}>
       {task.id === "orchestrator" && <label><input type="checkbox" checked={values.enabled === true} onChange={e => setValues({ ...values, enabled: e.target.checked })} />启用纯文本聊天调度（附件和图片沿用现有流程）</label>}
       <label>任务模型</label>

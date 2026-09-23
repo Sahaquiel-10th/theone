@@ -1,4 +1,5 @@
 import type { ModelToolDefinition, ModelToolMessage, ToolChatResult } from "./modelGateway.js";
+import type { ExecutionTraceStep } from "./types.js";
 import { taskToolDescriptions } from "./aiTaskPresets.js";
 
 export type OrchestrationTool = { name: string; description?: string; run: (query: string) => Promise<unknown> };
@@ -16,7 +17,7 @@ export async function runTaskOrchestrator(input: {
     name: tool.name, description: tool.description ?? taskToolDescriptions[tool.name],
     parameters: { type: "object", additionalProperties: false, properties: { query: { type: "string", minLength: 1, maxLength: 1000 } }, required: ["query"] }
   } }));
-  const trace: { step: number; tool: string; status: string; durationMs: number }[] = [];
+  const trace: ExecutionTraceStep[] = [];
   const steps = Math.min(4, Math.max(1, Math.floor(input.maxSteps)));
   const cache = new Map<string, unknown>();
   for (let step = 1; step <= steps; step++) {
@@ -47,8 +48,8 @@ export async function runTaskOrchestrator(input: {
           output = await tool.run(query); cache.set(key, output); status = "returned";
         }
       }
-      trace.push({ step, tool: tool?.name ?? "unavailable", status, durationMs: Date.now() - started });
       const serialized = JSON.stringify(output);
+      trace.push({ step, tool: tool?.name ?? "unavailable", status: status as ExecutionTraceStep["status"], query, resultPreview: serialized.length > 12000 ? `${serialized.slice(0, 12000)}…` : serialized, durationMs: Date.now() - started });
       messages.push({ role: "tool", tool_call_id: call.id, content: serialized.length > 28000 ? JSON.stringify({ status: "truncated", excerpt: serialized.slice(0, 27000) }) : serialized });
     }
   }

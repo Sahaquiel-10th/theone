@@ -475,7 +475,6 @@ app.post("/api/chat", ...keyAuth, asyncRoute(async (req, res) => {
   const webSearchContext = buildSearchContext(searchSources);
   const modelMessages: Message[] = [knowledgeContext, attachmentContext, webSearchContext].filter(Boolean).map((text) => ({ role: "system", content: text, modelId: executionModel.id, createdAt: now() } as Message)).concat(history, [{ ...userMessage, inputImageDataUrls: await attachmentImageDataUrls(contextAttachments) }]);
   const contextTraceSections = buildContextTraceSections({ safetyRules: db.settings.safetyRules, modelPrompt: executionModel.systemPrompt, knowledgeContext, attachmentContext, webSearchContext, history, currentInput: content });
-  if (orchestrated) contextTraceSections.push({ key: "model_prompt", title: "调度执行记录（本人可见）", content: JSON.stringify({ messages: orchestrated.messages, steps: orchestrated.trace }) });
   let result: Awaited<ReturnType<typeof callModel>>;
   const assistantMessageId = uid("msg");
     await confirmKeyBeforeModel(req);
@@ -498,7 +497,7 @@ app.post("/api/chat", ...keyAuth, asyncRoute(async (req, res) => {
       const provider = providers.size === 1 ? [...providers][0]! : "multiple";
       mutable.retrievalLogs.push({ id: uid("ret"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: target.id, query: content, provider, matchedItemsJson: knowledge, injectedContext: knowledgeContext, createdAt: assistantMessage.createdAt });
     }
-    appendOwnerContextTrace(mutable, { id: uid("ctx"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: target.id, assistantMessageId, modelId: executionModel.id, requestId: res.locals.requestId, query: content, responsePreview: assistantMessage.content.slice(0, 240), sections: contextTraceSections, createdAt: assistantMessage.createdAt });
+    appendOwnerContextTrace(mutable, { id: uid("ctx"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: target.id, assistantMessageId, modelId: executionModel.id, requestId: res.locals.requestId, query: content, responsePreview: assistantMessage.content.slice(0, 240), sections: contextTraceSections, executionSteps: orchestrated?.trace, createdAt: assistantMessage.createdAt });
     mutable.auditLogs.push({ id: uid("aud"), workspaceId: req.workspaceId, actorUserId: req.user!.id, action: "chat.completed", targetType: "conversation", targetId: target.id, details: { modelId: executionModel.id, knowledgeUsed: knowledge.length > 0, webSearchUsed: searchSources.length > 0 }, requestId: res.locals.requestId, createdAt: assistantMessage.createdAt });
     return target;
   });
@@ -1007,6 +1006,7 @@ app.get("/api/admin/context-traces", ...admin, asyncRoute(async (req, res) => {
     requestId: item.requestId,
     query: item.query,
     responsePreview: item.responsePreview,
+    executionStepCount: item.executionSteps?.length ?? 0,
     createdAt: item.createdAt
   }));
   res.json({ traces });

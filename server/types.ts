@@ -71,7 +71,12 @@ export type ContextTraceSection = {
 export type ContextTrace = {
   id: string; workspaceId: string; userId: string; conversationId: string; assistantMessageId: string;
   modelId: string; requestId?: string; query: string; responsePreview: string;
-  sections: ContextTraceSection[]; createdAt: string;
+  sections: ContextTraceSection[]; executionSteps?: ExecutionTraceStep[]; createdAt: string;
+};
+
+export type ExecutionTraceStep = {
+  step: number; tool: string; status: "returned" | "reused" | "rejected"; query?: string;
+  resultPreview: string; durationMs: number;
 };
 
 export type ModelUsageRecord = {
