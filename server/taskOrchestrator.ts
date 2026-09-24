@@ -1,17 +1,23 @@
 import type { ModelToolDefinition, ModelToolMessage, ToolChatResult } from "./modelGateway.js";
 import type { ExecutionTraceStep } from "./types.js";
 import { taskToolDescriptions } from "./aiTaskPresets.js";
+import { entryAllowsTool, type TaskEntryPoint } from "./aiTaskCatalog.js";
 
 export type OrchestrationTool = { name: string; description?: string; run: (query: string) => Promise<unknown> };
 
 /** Sequential, bounded read-only execution. Handlers own scope and fresh authorization. */
 export async function runTaskOrchestrator(input: {
+  entryPoint: TaskEntryPoint;
   messages: ModelToolMessage[];
   tools: OrchestrationTool[];
   maxSteps: number;
   beforeStep: () => Promise<void>;
   call: (messages: ModelToolMessage[], tools: ModelToolDefinition[]) => Promise<ToolChatResult>;
 }) {
+  if (!["workspace", "published_web", "published_api"].includes(input.entryPoint)) throw new Error("执行入口无效");
+  // Reject miswiring before a model call can incur any charge. Descriptions and
+  // global configuration cannot lift the public question-answering ceiling.
+  if (input.tools.some(tool => !entryAllowsTool(input.entryPoint, tool.name))) throw new Error("分享分身仅允许读取授权知识并回答问题");
   const messages = structuredClone(input.messages);
   const tools: ModelToolDefinition[] = input.tools.map(tool => ({ type: "function", function: {
     name: tool.name, description: tool.description ?? taskToolDescriptions[tool.name],
@@ -33,7 +39,7 @@ export async function runTaskOrchestrator(input: {
     messages.push({ role: "assistant", content: result.content || null, tool_calls: result.toolCalls });
     for (const call of result.toolCalls) {
       await input.beforeStep();
-      const tool = input.tools.find(tool => tool.name === call.function.name);
+      const tool = entryAllowsTool(input.entryPoint, call.function.name) ? input.tools.find(tool => tool.name === call.function.name) : undefined;
       let query: string | undefined;
       try {
         const args = JSON.parse(call.function.arguments);

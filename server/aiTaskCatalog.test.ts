@@ -19,7 +19,18 @@ test("tool policy intersects all grants and rejects local tools for both publish
   };
   assert.deepEqual(intersectTaskTools({ ...policy, entryPoint: "workspace" }), ["search", "write_file"]);
   for (const entryPoint of ["published_web", "published_api"] as const) {
-    assert.deepEqual(intersectTaskTools({ ...policy, entryPoint }), ["search"]);
+    assert.deepEqual(intersectTaskTools({ ...policy, entryPoint }), []);
   }
   assert.deepEqual(intersectTaskTools({ ...policy, granted: [], entryPoint: "workspace" }), []);
+});
+
+test("public QA ceiling cannot be widened by grants, global configuration or localOnly labels", () => {
+  const names = ["knowledge_search", "web_search", "write_file", "read_file", "run_command", "save_note", "send_message", "publish", "image_generation", "attachment_summary", "execution_compile", "local_agent", "new_future_tool"];
+  for (const entryPoint of ["published_web", "published_api"] as const) {
+    const input = { entryPoint, configured: names, granted: names, available: names.map(name => ({ name, localOnly: false })) };
+    assert.deepEqual(intersectTaskTools(input), ["knowledge_search"]);
+    assert.deepEqual(intersectTaskTools({ ...input, granted: [] }), []);
+    assert.deepEqual(intersectTaskTools({ ...input, available: [{ name: "knowledge_search", localOnly: true }] }), []);
+    assert.deepEqual(intersectTaskTools({ ...input, entryPoint: "unknown" as never }), []);
+  }
 });

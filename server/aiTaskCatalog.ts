@@ -16,6 +16,16 @@ export function findAiTaskDefinition(id: string) {
 
 export type TaskEntryPoint = "workspace" | "published_web" | "published_api";
 
+/** Code-owned capability ceiling. Public assistants answer questions only;
+ * enabling a new/global tool must never implicitly grant it to a publication.
+ * knowledge_search handlers still require the publication's exact source grant.
+ */
+export function entryAllowsTool(entryPoint: TaskEntryPoint, name: string): boolean {
+  if (entryPoint === "workspace") return true;
+  if (entryPoint === "published_web" || entryPoint === "published_api") return name === "knowledge_search";
+  return false;
+}
+
 /** Caller must supply server-resolved grants, never client-supplied tool lists.
  * This pure intersection is only one gate; execution still requires current
  * ownership, connection, presence (workspace), budget and approval checks.
@@ -32,6 +42,6 @@ export function intersectTaskTools(input: {
   const available = new Map(input.available.map(tool => [tool.name, tool]));
   return [...new Set(input.configured)].filter(name => {
     const tool = available.get(name);
-    return Boolean(tool && granted.has(name) && (!tool.localOnly || input.entryPoint === "workspace"));
+    return Boolean(tool && granted.has(name) && entryAllowsTool(input.entryPoint, name) && (!tool.localOnly || input.entryPoint === "workspace"));
   });
 }
