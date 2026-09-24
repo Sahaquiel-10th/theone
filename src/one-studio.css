@@ -80,7 +80,7 @@
 .one-studio .markdown-body :is(th,td) { border-color: var(--studio-line); background: transparent; }
 .one-studio .markdown-body a, .one-studio .message-sources a { color: var(--studio-ink); text-decoration-color: var(--studio-muted); }
 .one-studio .message-actions { margin-top: 14px; display: flex; gap: 8px; opacity: 1; }
-.one-studio .message-actions button { width: 30px; height: 30px; min-height: 0; color: var(--studio-muted); background: transparent; border: 1px solid transparent; border-radius: 7px; }
+.one-studio .message-actions > button { width: 30px; height: 30px; min-height: 0; color: var(--studio-muted); background: transparent; border: 1px solid transparent; border-radius: 7px; }
 .one-studio .message-actions button:hover { background: var(--studio-paper); color: var(--studio-ink); border-color: var(--studio-line); }
 .one-studio .message-actions button:disabled { opacity: .3; cursor: not-allowed; }
 .one-studio .message-time { display: none; }

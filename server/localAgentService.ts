@@ -166,6 +166,7 @@ export class LocalAgentService {
           workspaceId: task.workspaceId, userId: task.userId, conversationId: task.conversationId,
           model: configuredTask.model, input: { messages, tools: taskTools, taskVersion: configuredTask.version }, activity: "local_agent", requestId: uid("req")
         }, (snapshot) => callModelWithTools(snapshot, messages, taskTools, `local-${task!.id}-${step}`));
+        if (result.finishReason === "length" || result.finishReason === "filtered") throw new Error("模型响应未完整返回，本地任务已停止，请缩小任务范围后再试");
         messages.push({ role: "assistant", content: result.content || null, tool_calls: result.toolCalls.length ? result.toolCalls : undefined });
 
         if (!result.toolCalls.length) {

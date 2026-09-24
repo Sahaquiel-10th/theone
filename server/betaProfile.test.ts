@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { accountProfile, BetaInputError, onboardingStep, updateAccountProfile } from "./betaProfile.js";
+import { accountProfile, BetaInputError, completeOnboardingOnChat, onboardingStep, updateAccountProfile } from "./betaProfile.js";
 import type { Database } from "./types.js";
 
 function database() {
@@ -13,6 +13,24 @@ function database() {
 }
 
 const a = { userId: "a", workspaceId: "wa" };
+
+test("sending skips every onboarding stage without inventing profile fields or touching other users", () => {
+  for (const stage of ["name", "knowledge", "ready"]) {
+    const db = database();
+    if (stage !== "name") updateAccountProfile(db, a, { displayName: "小马" });
+    if (stage === "ready") updateAccountProfile(db, a, { onboardingAction: "knowledge_skipped" });
+    const before = accountProfile(db, a);
+    completeOnboardingOnChat(db, a, "2026-09-24T00:00:00Z");
+    completeOnboardingOnChat(db, a, "2026-09-25T00:00:00Z");
+    const after = accountProfile(JSON.parse(JSON.stringify(db)), a);
+    assert.equal(onboardingStep(after), "complete");
+    assert.equal(after.displayName, before.displayName);
+    assert.equal(after.onboarding.knowledgeChoice, before.onboarding.knowledgeChoice);
+    assert.equal(after.onboarding.completedAt, "2026-09-24T00:00:00Z");
+    assert.equal(accountProfile(db, { userId: "b", workspaceId: "wb" }).onboarding.completedAt, undefined);
+    assert.throws(() => completeOnboardingOnChat(db, { userId: "a", workspaceId: "wb" }), BetaInputError);
+  }
+});
 
 test("a display name is independent of username and onboarding survives another device or later name change", () => {
   const db = database();

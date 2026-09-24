@@ -102,7 +102,7 @@ export function settleBillingRecord(db: Database, scope: BillingScope, usage: Mo
   return row;
 }
 
-export async function runBilledModel<T extends { usage?: ModelUsage }>(store: Store, params: BillingParams, call: (modelSnapshot: ModelConfig) => Promise<T>): Promise<T> {
+export async function runBilledModel<T extends { usage?: ModelUsage; finishReason?: import("./modelGateway.js").ModelFinishReason }>(store: Store, params: BillingParams, call: (modelSnapshot: ModelConfig) => Promise<T>): Promise<T> {
   const model = effectiveModel(params.model);
   const amountMicros = modelReservationMicros(model, params.input);
   const timestamp = new Date().toISOString();
@@ -153,7 +153,7 @@ export async function runBilledModel<T extends { usage?: ModelUsage }>(store: St
     }
     throw error;
   }
-  try { await store.mutate((db) => settleBillingRecord(db, scope, result.usage, Date.now() - startedAt)); }
+  try { await store.mutate((db) => { const record = settleBillingRecord(db, scope, result.usage, Date.now() - startedAt); record.finishReason = result.finishReason; }); }
   catch (error) {
     // The upstream may already have billed us. Never erase the durable pending row.
     await store.mutate((db) => {

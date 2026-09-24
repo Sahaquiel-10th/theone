@@ -22,7 +22,7 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
     let body = ""; for await (const chunk of req) body += chunk;
     inputs.push(body); modelCalls++;
     res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify({ choices: [{ message: { content: `Fixture answer ${modelCalls}` } }], usage: { prompt_tokens: 50, completion_tokens: 10, total_tokens: 60 } }));
+    res.end(JSON.stringify({ choices: [{ message: { content: `Fixture answer ${modelCalls}` }, finish_reason: modelCalls === 1 ? "length" : "stop" }], usage: { prompt_tokens: 50, completion_tokens: 10, total_tokens: 60 } }));
   });
   gateway.listen(0, "127.0.0.1"); await once(gateway, "listening");
   const gatewayPort = (gateway.address() as { port: number }).port;
@@ -99,11 +99,15 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
   const first = await post("/api/chat", input, cookie); assert.equal(first.status, 200);
   const answer = await first.json() as any;
   assert.equal(answer.conversation.messages.length, 2);
+  assert.equal(answer.message.finishReason, "length");
+  assert.ok(((await (await get("/api/me/profile", cookie)).json()) as any).profile.onboarding.completedAt);
   assert.equal(modelCalls, 1); assert.match(inputs[0], /PRIVATE_FIXTURE_DOCUMENT/);
   assert.match(inputs[0], /PUBLISHED_TASK_INSTRUCTION/);
   assert.doesNotMatch(inputs[0], /DRAFT_NOT_LIVE/);
   const billed = JSON.parse(await fs.readFile(path.join(directory, "db.json"), "utf8"));
   assert.equal(billed.modelUsageRecords[0].aiTaskVersion, 1);
+  assert.equal(billed.modelUsageRecords[0].finishReason, "length");
+  assert.equal(billed.users.find((u: any) => u.id === "b").profile?.onboarding.completedAt, undefined);
   const duplicate = await post("/api/chat", input, cookie); assert.equal(duplicate.status, 200); assert.equal(modelCalls, 1);
   assert.equal(((await duplicate.json()) as any).message.id, answer.message.id);
   socketA.close(); await once(socketA, "close");
@@ -122,6 +126,8 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
   const restored = await (await get(`/api/conversations/${answer.conversation.id}`, cookie)).json() as any;
   assert.equal(restored.conversation.messages[0].attachments[0].id, attachmentId);
   assert.equal(restored.conversation.messages[1].knowledgeDiagnostics.status, "not_connected");
+  assert.equal(restored.conversation.messages[1].finishReason, "length");
+  assert.ok(((await (await get("/api/me/profile", cookie)).json()) as any).profile.onboarding.completedAt);
   const replay = await get(`/api/chat/operations/${input.operationId}`, cookie); assert.equal(replay.status, 200); assert.equal(modelCalls, 2);
   const missing = await get(`/api/chat/operations/${crypto.randomUUID()}`, cookie); assert.equal(missing.status, 404);
   const longText = "Long document section. ".repeat(1600) + " TAIL_OF_FULL_DOCUMENT";

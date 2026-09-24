@@ -40,7 +40,7 @@ export function Onboarding({ profile, knowledgeConnected, onSave, onOpenKnowledg
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => { setName(profile.displayName); setError(""); }, [profile.workspaceId, profile.displayName]);
-  const step = !profile.displayName || !profile.onboarding.nameSetAt ? "name" : profile.onboarding.completedAt ? "complete" : profile.onboarding.knowledgeChoice === "pending" ? "knowledge" : "ready";
+  const step = profile.onboarding.completedAt ? "complete" : !profile.displayName || !profile.onboarding.nameSetAt ? "name" : profile.onboarding.knowledgeChoice === "pending" ? "knowledge" : "ready";
   if (step === "complete") return null;
   async function save(patch: ProfilePatch, after?: () => void) {
     setBusy(true); setError("");

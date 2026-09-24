@@ -38,10 +38,20 @@ export function accountProfile(db: Database, scope: AccountScope): AccountProfil
 }
 
 export function onboardingStep(profile: AccountProfile): "name" | "knowledge" | "ready" | "complete" {
-  if (!profile.displayName || !profile.onboarding.nameSetAt) return "name";
   if (profile.onboarding.completedAt) return "complete";
+  if (!profile.displayName || !profile.onboarding.nameSetAt) return "name";
   if (profile.onboarding.knowledgeChoice === "pending") return "knowledge";
   return "ready";
+}
+
+/** A submitted chat skips the welcome flow without inventing a name or a connection. */
+export function completeOnboardingOnChat(db: Database, scope: AccountScope, timestamp = new Date().toISOString()) {
+  const user = accountInScope(db, scope);
+  const profile = accountProfile(db, scope);
+  if (profile.onboarding.completedAt) return;
+  profile.onboarding.completedAt = timestamp;
+  profile.updatedAt = timestamp;
+  user.profile = profile;
 }
 
 export function updateAccountProfile(db: Database, scope: AccountScope, patch: ProfilePatch, currentTime = new Date().toISOString()) {

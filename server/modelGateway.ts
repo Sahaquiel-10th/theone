@@ -1,6 +1,7 @@
 import { Message, ModelConfig, CacheUsage } from "./types.js";
 
 type ChatResult = {
+  finishReason?: ModelFinishReason;
   content: string;
   imageUrl?: string;
   usage?: {
@@ -36,12 +37,21 @@ export type ModelToolMessage = {
 };
 
 export type ToolChatResult = {
+  finishReason?: ModelFinishReason;
   content: string;
   toolCalls: ModelToolCall[];
   usage?: ChatResult["usage"];
 };
 
 const requestTimeoutMs = numberEnv("MODEL_REQUEST_TIMEOUT_MS", 150000);
+export type ModelFinishReason = "stop" | "length" | "filtered" | "tool_calls" | "unknown";
+export function modelFinishReason(value: unknown): ModelFinishReason {
+  if (value === "length" || value === "max_tokens") return "length";
+  if (value === "content_filter" || value === "refusal") return "filtered";
+  if (value === "tool_calls" || value === "tool_use") return "tool_calls";
+  if (value === "stop" || value === "end_turn" || value === "stop_sequence") return "stop";
+  return "unknown";
+}
 const imageRequestTimeoutMs = numberEnv("IMAGE_REQUEST_TIMEOUT_MS", 180000);
 export const MODEL_MAX_OUTPUT_TOKENS = numberEnv("MODEL_MAX_OUTPUT_TOKENS", 3000);
 
@@ -203,6 +213,7 @@ export async function callModel(
     return {
       content,
       usage: parseProviderUsage(payload?.usage),
+      finishReason: modelFinishReason(payload?.choices?.[0]?.finish_reason),
       raw: payload
     };
   } catch (error) {
@@ -279,6 +290,7 @@ export async function callModelWithTools(
     return {
       content: typeof message.content === "string" ? message.content : "",
       toolCalls,
+      finishReason: modelFinishReason(payload?.choices?.[0]?.finish_reason),
       usage: parseProviderUsage(payload?.usage)
     };
   } catch (error) {
@@ -395,6 +407,7 @@ async function callAnthropicModelWithTools(
     return {
       content,
       toolCalls,
+      finishReason: modelFinishReason(payload?.stop_reason),
       usage: parseProviderUsage(payload?.usage),
     };
   } catch (error) {
@@ -481,6 +494,7 @@ async function callAnthropicModel(
     return {
       content,
       usage: parseProviderUsage(payload?.usage),
+      finishReason: modelFinishReason(payload?.stop_reason),
       raw: payload
     };
   } catch (error) {

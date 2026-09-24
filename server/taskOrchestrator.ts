@@ -23,9 +23,10 @@ export async function runTaskOrchestrator(input: {
   for (let step = 1; step <= steps; step++) {
     await input.beforeStep();
     const result = await input.call(messages, step === steps ? [] : tools);
+    if (result.toolCalls.length && (result.finishReason === "length" || result.finishReason === "filtered")) throw new Error("模型工具指令未完整返回，已停止执行；本次已产生的用量可在账单中查看");
     if (!result.toolCalls.length) {
       if (!result.content.trim()) throw new Error("调度模型没有返回结果");
-      return { content: result.content, messages, trace };
+      return { content: result.content, messages, trace, finishReason: result.finishReason };
     }
     if (step === steps) throw new Error("已达到调度步骤上限，未完成任务；请缩小问题范围");
     if (result.toolCalls.length > 2 || new Set(result.toolCalls.map(call => call.id)).size !== result.toolCalls.length) throw new Error("调度模型返回了过多或重复的工具调用，已停止");

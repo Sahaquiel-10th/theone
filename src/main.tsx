@@ -2,8 +2,8 @@ import React, { FormEvent, createContext, useContext, useEffect, useMemo, useRef
 import { AiTaskPanel } from "./AiTaskPanel";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { MessageMarkdown } from "./MessageMarkdown";
+import "katex/dist/katex.min.css";
 import {
   Archive,
   Check,
@@ -121,6 +121,7 @@ type Model = {
 };
 
 type Message = {
+  finishReason?: "stop" | "length" | "filtered" | "tool_calls" | "unknown";
   id?: string;
   role: "user" | "assistant" | "system";
   content: string;
@@ -496,7 +497,7 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
     <div className="execution-disclosure-grid" data-open={expanded}>
       <div className="execution-disclosure-clip" inert={!expanded} aria-hidden={!expanded}>
         <div id="one-execution-content" className="execution-disclosure-body">
-          {!busy && task?.status === "failed" ? <p className="execution-problem">{task.lastError || "执行未完成。"}</p> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{task.finalResponse}</ReactMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接本机…" : task?.status === "cancelled" ? "已停止。" : latestStep || "等待本机反馈…"}</p>}
+          {!busy && task?.status === "failed" ? <p className="execution-problem">{task.lastError || "执行未完成。"}</p> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><MessageMarkdown>{task.finalResponse}</MessageMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接本机…" : task?.status === "cancelled" ? "已停止。" : latestStep || "等待本机反馈…"}</p>}
           {steps.length > 0 ? <details className="execution-step-history"><summary>过程记录 · {steps.length} 条</summary><ol>{steps.slice(-30).map(event => <li key={event.id} className={event.kind}>{event.text}</li>)}</ol>{steps.length > 30 ? <small>最近 30 条</small> : null}</details> : null}
           {task ? <details className="execution-step-history" onToggle={async event => {
             if (!event.currentTarget.open || trace) return;
@@ -518,6 +519,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const api = useContext(PrivateApiContext);
   const [profile, setProfile] = useState<AccountProfile>(user.profile || { workspaceId: user.defaultWorkspaceId, displayName: "", onboarding: { knowledgeChoice: "pending" }, updatedAt: user.createdAt });
   const [pendingRequests, setPendingRequests] = useState(() => pendingChatSubmissions(user.id));
+  const [hasSubmittedChat, setHasSubmittedChat] = useState(false);
   const failedSubmissions = useRef(new Map<string, { content: string; attachmentIds: string[]; draftKey: string }>());
   async function saveProfile(patch: ProfilePatch) { const result = await api<{ profile: AccountProfile }>("/api/me/profile", { method: "PATCH", body: JSON.stringify(patch) }); setProfile(result.profile); return result.profile; }
   async function recoverAnswer(operationId: string) {
@@ -1173,6 +1175,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const tempId = isNewConversation ? target?.id || localId("tmp") : "";
     const loadingKey = target?.id || tempId;
     if (loadingByConversation[loadingKey]) return;
+    setHasSubmittedChat(true);
     setLoadingByConversation((items) => ({ ...items, [loadingKey]: true }));
     setError("");
     setFailedMessage("");
@@ -1593,8 +1596,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                     {message.role === "assistant" ? (
                       <>
                         <div className="markdown-body">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                          <MessageMarkdown>{message.content}</MessageMarkdown>
                         </div>
+                        {message.finishReason === "length" ? <div className="message-completion-notice" role="status"><span>本次回答达到长度上限，尚未写完。</span>{index === active!.messages.length - 1 && !composeNew ? <button type="button" disabled={activeLoading || executionBusy || uploadingAttachments || !!pendingAttachments.length} onClick={() => { if (confirm("继续生成会产生新的电力消耗，是否继续？")) void sendMessage("请接着上一条未完成的回答继续，从中断处接上，不要重复前文。"); }}>继续生成</button> : null}</div> : message.finishReason === "filtered" ? <p className="message-completion-notice" role="status">模型服务未完整返回这次回答，请调整问题后再试。</p> : null}
                         <div className="message-actions">
                           {message.id ? <SaveToFeishu key={message.id} api={api} messageId={message.id} content={message.content} /> : null}
                           <button title="复制" onClick={() => copyMarkdown(message.content)}>
@@ -1633,7 +1637,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       </section>
 
       <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 助手">
-        {view === "chat" && !profile.onboarding.completedAt ? <Onboarding profile={profile} knowledgeConnected={[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection].some(item => item.status === "connected")} onSave={saveProfile} onOpenKnowledge={() => openSurface("knowledge")} onStartQuestion={suggestion => { setContent(suggestion); setComposeNew(true); setView("chat"); }} /> : null}
+        {view === "chat" && !hasSubmittedChat && !conversations.length && !profile.onboarding.completedAt ? <Onboarding profile={profile} knowledgeConnected={[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection].some(item => item.status === "connected")} onSave={saveProfile} onOpenKnowledge={() => openSurface("knowledge")} onStartQuestion={suggestion => { setContent(suggestion); setComposeNew(true); setView("chat"); }} /> : null}
         <div className="studio-presence">
           <OneHeroEye mood={heroMood} />
           <div className="studio-presence-copy"><span className="studio-eyebrow">ONE IS WITH YOU</span>
@@ -2020,7 +2024,7 @@ function AgentEditorPage({ agent, agents, models, onCancel, onSaved }: {
         <fieldset className="agent-tool-settings"><legend>可用能力</legend><label><input type="checkbox" checked={draft.allowFileUpload} onChange={(e) => setDraft({ ...draft, allowFileUpload: e.target.checked, allowImageInput: e.target.checked ? draft.allowImageInput : false })} /><span><Paperclip size={16} />文件上传</span></label><label><input type="checkbox" checked={draft.allowImageInput} disabled={!draft.allowFileUpload} onChange={(e) => setDraft({ ...draft, allowImageInput: e.target.checked })} /><span><Image size={16} />图片理解</span></label><label><input type="checkbox" checked={draft.allowWebSearch} onChange={(e) => setDraft({ ...draft, allowWebSearch: e.target.checked })} /><span><Globe2 size={16} />联网搜索</span></label></fieldset>
         {error ? <div className="error">{error}</div> : null}
       </form>
-      <section className="agent-debug"><header><div><strong>预览与调试</strong><small>{chatModels.find((model) => model.id === draft.modelId)?.name || "尚未选择模型"}</small></div><button className="secondary" onClick={() => setDebugMessages([])}>清空</button></header><div className="debug-messages">{debugMessages.length ? debugMessages.map((message, index) => <div key={index} className={`debug-message ${message.role}`}><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>) : <div className="debug-empty"><span style={{ background: draft.color }}>{draft.avatar}</span><h3>{draft.name || "你的智能体"}</h3><p>{draft.description || "发一条消息测试"}</p></div>}{debugging ? <div className="typing">正在生成测试回答…</div> : null}</div><form className="debug-composer" onSubmit={debug}><textarea rows={2} value={debugInput} onChange={(e) => setDebugInput(e.target.value)} placeholder="输入一条测试消息" /><button className="primary send" disabled={!debugInput.trim() || !draft.modelId || debugging}><Send size={17} /></button></form></section>
+      <section className="agent-debug"><header><div><strong>预览与调试</strong><small>{chatModels.find((model) => model.id === draft.modelId)?.name || "尚未选择模型"}</small></div><button className="secondary" onClick={() => setDebugMessages([])}>清空</button></header><div className="debug-messages">{debugMessages.length ? debugMessages.map((message, index) => <div key={index} className={`debug-message ${message.role}`}><MessageMarkdown>{message.content}</MessageMarkdown></div>) : <div className="debug-empty"><span style={{ background: draft.color }}>{draft.avatar}</span><h3>{draft.name || "你的智能体"}</h3><p>{draft.description || "发一条消息测试"}</p></div>}{debugging ? <div className="typing">正在生成测试回答…</div> : null}</div><form className="debug-composer" onSubmit={debug}><textarea rows={2} value={debugInput} onChange={(e) => setDebugInput(e.target.value)} placeholder="输入一条测试消息" /><button className="primary send" disabled={!debugInput.trim() || !draft.modelId || debugging}><Send size={17} /></button></form></section>
     </div>
   </section>;
 }

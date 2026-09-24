@@ -26,7 +26,7 @@ import { KnowledgeService } from "./knowledge/knowledgeService.js";
 import { selectConversationAttachments, publicAttachmentSummary } from "./conversationAttachments.js";
 import { prepareAttachmentContext, fullDocumentIntent } from "./attachmentRetrieval.js";
 import { beginChatOperation, bindChatOperationConversation, completeChatOperation, failChatOperationInMutation, getChatOperationResult, ChatOperationError } from "./chatOperations.js";
-import { accountProfile, updateAccountProfile, BetaInputError } from "./betaProfile.js";
+import { accountProfile, updateAccountProfile, completeOnboardingOnChat, BetaInputError } from "./betaProfile.js";
 import { ownBetaFeedback, saveBetaFeedback, adminBetaFeedback } from "./betaFeedback.js";
 import { betaEngagementSummary } from "./betaEngagement.js";
 import { OneKeyService } from "./oneKeyService.js";
@@ -119,7 +119,7 @@ async function confirmKeyBeforeModel(req: Request) {
 function titleFrom(content: string) { return content.replace(/\s+/g, " ").slice(0, 32) || "新对话"; }
 function attachmentSummary(attachment: Attachment): AttachmentSummary { return publicAttachmentSummary(attachment); }
 function messageRecord(message: Message, params: { workspaceId: string; userId: string; conversationId: string }): MessageRecord {
-  return { id: message.id || uid("msg"), workspaceId: params.workspaceId, userId: params.userId, conversationId: params.conversationId, role: message.role, content: message.content, imageUrl: message.imageUrl, attachmentIds: message.attachments?.map((item) => item.id), sources: message.sources, modelId: message.modelId, createdAt: message.createdAt, requestId: message.requestId, knowledgeDiagnostics: message.knowledgeDiagnostics, attachmentWarning: message.attachmentWarning };
+  return { id: message.id || uid("msg"), workspaceId: params.workspaceId, userId: params.userId, conversationId: params.conversationId, role: message.role, content: message.content, imageUrl: message.imageUrl, attachmentIds: message.attachments?.map((item) => item.id), sources: message.sources, modelId: message.modelId, createdAt: message.createdAt, requestId: message.requestId, knowledgeDiagnostics: message.knowledgeDiagnostics, attachmentWarning: message.attachmentWarning, finishReason: message.finishReason };
 }
 function requireWorkspaceOwner(req: Request, res: Response, next: () => void) {
   store.read().then((db) => {
@@ -407,6 +407,7 @@ app.post("/api/chat", ...keyAuth, asyncRoute(async (req, res) => {
     // simultaneously claim the same previously unbound upload.
     const current = selectConversationAttachments(mutable, { ...scope, conversationId: existing?.id }, attachmentIds, { maxImages: 5 }).current;
     const bind = (target: Conversation) => {
+      completeOnboardingOnChat(mutable, scope);
       bindChatOperationConversation(mutable, scope, target.id);
       for (const attachment of current) if (!attachment.messageId) { attachment.conversationId = target.id; attachment.messageId = userMessage.id; }
       return target;
@@ -478,14 +479,14 @@ app.post("/api/chat", ...keyAuth, asyncRoute(async (req, res) => {
   let result: Awaited<ReturnType<typeof callModel>>;
   const assistantMessageId = uid("msg");
     await confirmKeyBeforeModel(req);
-    result = orchestrated ? { content: orchestrated.content } : await runBilledModel(store, {
+    result = orchestrated ? { content: orchestrated.content, finishReason: orchestrated.finishReason } : await runBilledModel(store, {
       workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id,
       model: executionModel, input: { safetyRules: db.settings.safetyRules, messages: modelMessages, taskVersion: executionTaskConfig.version },
       activity: "chat", requestId: res.locals.requestId
     }, (snapshot) => callModel(snapshot, modelMessages, db.settings.safetyRules, res.locals.requestId));
     modelSucceeded = true;
   const generatedImage = await persistGeneratedImage({ imageUrl: result.imageUrl, workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id, messageId: assistantMessageId });
-  const assistantMessage: Message = { id: assistantMessageId, role: "assistant", content: autoRouteToImage ? `已生成图片` : result.content, imageUrl: generatedImage?.imageUrl ?? result.imageUrl, sources: allSources, modelId: executionModel.id, createdAt: now(), requestId: res.locals.requestId, knowledgeDiagnostics: recall ? { status: recall.status, failures: recall.failures } : undefined, attachmentWarning };
+  const assistantMessage: Message = { id: assistantMessageId, role: "assistant", content: autoRouteToImage ? `已生成图片` : result.content, imageUrl: generatedImage?.imageUrl ?? result.imageUrl, sources: allSources, modelId: executionModel.id, createdAt: now(), requestId: res.locals.requestId, knowledgeDiagnostics: recall ? { status: recall.status, failures: recall.failures } : undefined, attachmentWarning, finishReason: result.finishReason };
   const savedConversation = await store.mutate((mutable) => {
     const target = mutable.conversations.find((item) => item.id === conversation.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
     if (!target) return null;
@@ -843,6 +844,7 @@ app.post("/api/executions/from-message", ...keyAuth, asyncRoute(async (req, res)
     activity: "execution_compile", requestId: res.locals.requestId
   }, (snapshot) => callModel(snapshot, compilerMessages, compilerRules, res.locals.requestId));
   const timestamp = now();
+  if (compiled.finishReason === "length" || compiled.finishReason === "filtered") throw new Error("执行指令未完整生成，未发送到本机。请缩小任务范围后再试；本次模型用量已记录。");
   const useLocalAgent = executionProvider === "local_agent";
   const task: ExecutionTask = {
     id: uid("ext"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id,

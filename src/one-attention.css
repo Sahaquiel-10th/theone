@@ -19,7 +19,13 @@
 .attention-workspace .message.user .bubble { padding-bottom: 20px; }
 .attention-workspace .studio-message-author { font-size: 9px; margin-bottom: 10px; opacity: .85; }
 .attention-workspace .message.user pre { font-size: 15px; font-weight: 430; }
-.attention-workspace .message-actions { align-items: center; gap: 7px; margin-top: 18px; }
+.attention-workspace .message-actions { align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 18px; }
+.one-studio .message-actions > button { flex-shrink: 0; }
+.one-studio .message-actions > button.message-text-action { width: auto; height: auto; min-height: 34px; padding: 7px 11px; white-space: nowrap; }
+.markdown-body .katex-display { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding: .2em 0; }
+.message-completion-notice { margin-top: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--studio-muted); font-size: 13px; }
+.message-completion-notice > button { border: 1px solid currentColor; border-radius: 8px; background: transparent; color: inherit; padding: 6px 10px; font: inherit; white-space: nowrap; cursor: pointer; }
+.message-completion-notice > button:disabled { opacity: .5; cursor: default; }
 .attention-workspace .message-actions button.execution-primary-action { width: auto; min-height: 34px; height: auto; display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border-color: var(--studio-line); color: var(--studio-ink); font-size: 11px; }
 .attention-workspace .message-actions button.execution-primary-action:hover:not(:disabled) { background: var(--studio-ink); color: var(--studio-paper); }
 .attention-workspace .message.user .message-actions { margin-top: 7px; }

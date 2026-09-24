@@ -18,12 +18,14 @@ export type ModelConfig = {
 };
 
 export type Message = {
+  finishReason?: import("./modelGateway.js").ModelFinishReason;
   id?: string; role: "user" | "assistant" | "system"; content: string; imageUrl?: string;
   attachments?: AttachmentSummary[]; sources?: SearchSource[]; inputImageDataUrls?: string[]; createdAt: string; modelId?: string;
   requestId?: string; knowledgeDiagnostics?: Omit<import("./knowledge/knowledgeService.js").KnowledgeRecallResult, "chunks">; attachmentWarning?: string;
 };
 
 export type MessageRecord = Required<Pick<Message, "id" | "role" | "content" | "createdAt">> & {
+  finishReason?: Message["finishReason"];
   workspaceId: string; userId: string; conversationId: string; modelId?: string; imageUrl?: string;
   attachmentIds?: string[]; sources?: SearchSource[]; tokenCount?: number;
   requestId?: string; knowledgeDiagnostics?: Message["knowledgeDiagnostics"]; attachmentWarning?: string;
@@ -80,6 +82,7 @@ export type ExecutionTraceStep = {
 };
 
 export type ModelUsageRecord = {
+  finishReason?: import("./modelGateway.js").ModelFinishReason;
   aiTaskVersion?: number;
   cacheUsage?: CacheUsage;
   cachePricesSnapshot?: CachePrices;

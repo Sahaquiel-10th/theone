@@ -25,3 +25,11 @@ test("unavailable tools, invalid arguments and revoked authorization never execu
 test("step limit never reports false completion", async () => {
   await assert.rejects(runTaskOrchestrator({ messages: [], maxSteps: 1, tools: [], beforeStep: async () => {}, call: async () => ({ content: "done", toolCalls: [call("a")] }) }), /步骤上限/);
 });
+
+test("truncated answers stay visible but truncated tool instructions never execute", async () => {
+  const partial = await runTaskOrchestrator({ messages: [], maxSteps: 2, tools: [], beforeStep: async () => {}, call: async () => ({ content: "unfinished", toolCalls: [], finishReason: "length" }) });
+  assert.equal(partial.finishReason, "length");
+  let invoked = false;
+  await assert.rejects(runTaskOrchestrator({ messages: [], maxSteps: 2, tools: [{ name: "knowledge_search", run: async () => { invoked = true; return {}; } }], beforeStep: async () => {}, call: async () => ({ content: "", toolCalls: [call("a")], finishReason: "length" }) }), /未完整返回/);
+  assert.equal(invoked, false);
+});

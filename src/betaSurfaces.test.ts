@@ -16,6 +16,7 @@ test("onboarding starts with a nickname and completed accounts see no repeat wel
   assert.ok(!welcome.includes("不用设置一大堆东西"));
   assert.ok(!welcome.includes("很高兴认识你"));
   assert.equal(renderToStaticMarkup(createElement(Onboarding, { ...props, profile: { ...profile, displayName: "A", onboarding: { knowledgeChoice: "skipped", nameSetAt: "today", completedAt: "today" } } })), "");
+  assert.equal(renderToStaticMarkup(createElement(Onboarding, { ...props, profile: { ...profile, onboarding: { knowledgeChoice: "pending", completedAt: "today" } } })), "");
 });
 
 test("knowledge onboarding is action-first and keeps only the required disclosure", () => {
