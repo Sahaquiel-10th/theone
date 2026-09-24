@@ -73,7 +73,7 @@ import { chatSubmission, forgetChatSubmission, pendingChatSubmissions } from "./
 import { Onboarding, ProfileNameEditor, BetaFeedbackControls, type AccountProfile, type ProfilePatch } from "./Onboarding";
 import { getNotePollFailureAction, prepareGetNoteAuthorizationWindow } from "./getNoteAuthorization";
 import { PaymentPanel } from "./PaymentPanel";
-import { FeishuConnection, SaveToFeishu } from "./FeishuConnection";
+import { FeishuConnection } from "./FeishuConnection";
 import { CacheUsageDetails } from "./CacheUsageDetails";
 import { PricingCatalog } from "./PricingPanel";
 import { GiftBatchHistory } from "./GiftBatchHistory";
@@ -1600,7 +1600,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                         </div>
                         {message.finishReason === "length" ? <div className="message-completion-notice" role="status"><span>本次回答达到长度上限，尚未写完。</span>{index === active!.messages.length - 1 && !composeNew ? <button type="button" disabled={activeLoading || executionBusy || uploadingAttachments || !!pendingAttachments.length} onClick={() => { if (confirm("继续生成会产生新的电力消耗，是否继续？")) void sendMessage("请接着上一条未完成的回答继续，从中断处接上，不要重复前文。"); }}>继续生成</button> : null}</div> : message.finishReason === "filtered" ? <p className="message-completion-notice" role="status">模型服务未完整返回这次回答，请调整问题后再试。</p> : null}
                         <div className="message-actions">
-                          {message.id ? <SaveToFeishu key={message.id} api={api} messageId={message.id} content={message.content} /> : null}
                           <button title="复制" onClick={() => copyMarkdown(message.content)}>
                             <Copy size={14} />
                           </button>
