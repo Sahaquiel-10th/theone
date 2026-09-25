@@ -37,6 +37,12 @@ try {
     const reviews = Number(usage.find(row => row.state === "needs_review")?.total || 0);
     console.log(`ONE schema v2: ready; pending chat operations: ${pendingOperations}; pending model calls: ${pendingModels}; billing reviews: ${reviews}.`);
     if (pendingOperations > 0 || pendingModels > 0) throw new Error("ONE_ACTIVE_REQUESTS_WAIT_BEFORE_RESTART");
+    const [sharingSchema] = await connection.execute({ sql: "SELECT version FROM schema_migrations WHERE version = 3 LIMIT 1", timeout: 5000 });
+    if (sharingSchema.length) {
+      const [sharingRuns] = await connection.execute({ sql: "SELECT COUNT(*) AS pending FROM public_runs WHERE JSON_UNQUOTE(JSON_EXTRACT(record_json, '$.status')) = 'running'", timeout: 5000 });
+      if (Number(sharingRuns[0].pending)) throw new Error("ONE_PUBLIC_REQUESTS_WAIT_BEFORE_RESTART");
+      console.log("ONE sharing schema v3: ready; no running public questions.");
+    } else console.log("ONE sharing schema v3: not installed; public sharing stays unavailable. Private workspace is unaffected.");
     if (reviews > 0) console.log("Review unresolved billing records in the ONE admin usage panel; this gate does not modify them.");
     console.log("Read-only preflight passed. No database records or schema were changed.");
   }

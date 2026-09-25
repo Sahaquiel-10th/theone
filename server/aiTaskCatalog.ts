@@ -1,6 +1,7 @@
 /** Configuration inventory, not a claim that the unified runner is enabled. */
 export const aiTaskCatalog = [
   { id: "chat", name: "聊天回答", modelKind: "chat", toolCapable: false, implementation: "existing" },
+  { id: "shared_answer", name: "分享分身问答", modelKind: "chat", toolCapable: false, implementation: "existing" },
   { id: "attachment_summary", name: "附件整理", modelKind: "chat", toolCapable: false, implementation: "existing" },
   { id: "execution_compile", name: "对话转执行指令", modelKind: "chat", toolCapable: false, implementation: "existing" },
   { id: "local_agent", name: "本地执行 Agent", modelKind: "chat", toolCapable: true, implementation: "existing" },

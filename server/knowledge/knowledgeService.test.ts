@@ -141,6 +141,21 @@ function adapter(id: string, recall: KnowledgeAdapter["recall"], state: "configu
   };
 }
 
+test("explicit public source selection never widens to other connected sources or workspaces", async () => {
+  const store=storeWithConnection("workspace-a"), db=await store.read();
+  db.knowledgeConnections.push({...structuredClone(db.knowledgeConnections[0]),id:"notion-a",provider:"notion"},{...structuredClone(db.knowledgeConnections[0]),id:"other-workspace",workspaceId:"workspace-b"});
+  let getnoteCalls=0,notionCalls=0;
+  const service=new KnowledgeService(store,new ConnectorRegistry([adapter("getnote",async()=>{getnoteCalls++;return [{title:"getnote",content:"allowed"}];}),adapter("notion",async()=>{notionCalls++;return [{title:"notion",content:"unselected"}];})]));
+  assert.deepEqual((await service.recallWithDiagnostics("workspace-a","q",5,[])).chunks,[]);
+  assert.equal(getnoteCalls+notionCalls,0);
+  assert.equal((await service.recallWithDiagnostics("workspace-a","q",5,["connection-a"])).chunks[0].content,"allowed");
+  assert.equal(notionCalls,0);
+  await assert.rejects(service.recallWithDiagnostics("workspace-a","q",5,["other-workspace"]));
+  db.knowledgeConnections[0].status="revoked";
+  await assert.rejects(service.recallWithDiagnostics("workspace-a","q",5,["connection-a"]));
+  assert.equal(getnoteCalls,1);
+});
+
 test("partial provider failures remain visible alongside successful retrievals", async () => {
   const registry = new ConnectorRegistry([
     adapter("source_a", async () => [{ title: "A", content: "source A knowledge" }]),

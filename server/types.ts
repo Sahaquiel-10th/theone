@@ -170,6 +170,9 @@ export type OneTimeLoginCode = {
 };
 
 export type Database = {
+  publications?: import("./publicSharingTypes.js").Publication[];
+  publicSessions?: import("./publicSharingTypes.js").PublicSession[];
+  publicRuns?: import("./publicSharingTypes.js").PublicRun[];
   chatOperations?: import("./chatOperations.js").ChatOperation[];
   users: User[]; workspaces: Workspace[]; workspaceMembers: WorkspaceMember[]; conversationFolders: ConversationFolder[];
   models: ModelConfig[]; conversations: Conversation[]; messages: MessageRecord[]; userSavedMemories: UserSavedMemory[];

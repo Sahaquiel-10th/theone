@@ -66,12 +66,15 @@ export class KnowledgeService {
     return result.chunks;
   }
 
-  async recallWithDiagnostics(workspaceId: string, query: string, topK = 5): Promise<KnowledgeRecallResult> {
+  async recallWithDiagnostics(workspaceId: string, query: string, topK = 5, allowedConnectionIds?: readonly string[]): Promise<KnowledgeRecallResult> {
     topK = Number.isFinite(topK) ? Math.max(1, Math.min(10, Math.floor(topK))) : 5;
     const db = await this.store.read();
+    const selected = allowedConnectionIds === undefined ? undefined : db.knowledgeConnections.filter(c => c.workspaceId === workspaceId && allowedConnectionIds.includes(c.id) && ["connected", "error"].includes(c.status));
+    if (selected && (new Set(allowedConnectionIds).size !== selected.length)) throw new Error("授权知识来源已失效");
     // A reviewed adapter owns provider-specific credentials and authorization.
     // Missing/failing connections never fall back to another workspace.
-    const adapters = this.registry.list().filter(adapter => adapter.kind === "knowledge" && this.registry.enabled(adapter.manifest.id));
+    const adapters = this.registry.list().filter(adapter => adapter.kind === "knowledge" && this.registry.enabled(adapter.manifest.id) && (!selected || selected.some(c => c.provider === adapter.manifest.id)));
+    if (selected && adapters.length !== selected.length) throw new Error("授权知识来源暂不可用");
     const outcomes = await Promise.all(adapters.map(async adapter => {
       if (adapter.kind !== "knowledge") return { chunks: [], attempted: false };
       const health = adapter.status(db, { workspaceId, userId: "" });

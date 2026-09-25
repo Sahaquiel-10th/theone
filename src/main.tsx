@@ -3,6 +3,7 @@ import { AiTaskPanel } from "./AiTaskPanel";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { MessageMarkdown } from "./MessageMarkdown";
+import { SharingPanel, PublicSharingPage } from "./PublicSharing";
 import "katex/dist/katex.min.css";
 import {
   Archive,
@@ -2079,9 +2080,9 @@ function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onM
           <p>{profile.displayName || user.username} · {user.role === "admin" ? "管理员" : "ONE 用户"}</p>
         </div>
       </header>
-      <nav className="settings-tabs account-settings-tabs" aria-label="设置栏目">{[["profile", "个人设置"], ["power", "电力与账单"]].map(([id, label]) => <button type="button" key={id} aria-pressed={section === id} onClick={() => setSection(id)}>{label}</button>)}</nav>
+      <nav className="settings-tabs account-settings-tabs" aria-label="设置栏目">{[["profile", "个人设置"], ["power", "电力与账单"], ["sharing", "分享分身"]].map(([id, label]) => <button type="button" key={id} aria-pressed={section === id} onClick={() => setSection(id)}>{label}</button>)}</nav>
       <div className="account-body settings-account-body">
-        {section === "power" ? billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载电力账户…</p> : <>
+        {section === "sharing" ? <SharingPanel api={api} models={models}/> : section === "power" ? billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载电力账户…</p> : <>
         <section className="account-panel"><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
         <section className="account-panel">
           <div className="account-panel-title"><Bot size={18} /><h3>默认模型</h3></div>
@@ -2933,4 +2934,5 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+const sharedSlug = /^\/s\/([A-Za-z0-9_-]{24})\/?$/.exec(window.location.pathname)?.[1];
+createRoot(document.getElementById("root")!).render(sharedSlug ? <PublicSharingPage slug={sharedSlug}/> : <App />);

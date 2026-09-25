@@ -34,6 +34,7 @@ function recordUserId(collection: CollectionName, item: StoredRecord): string | 
 }
 
 function recordParentId(collection: CollectionName, item: StoredRecord): string | null {
+  if (collection === "publicSessions" || collection === "publicRuns") return typeof item.publicationId === "string" ? item.publicationId : null;
   const fields = collection === "messages" || collection === "retrievalLogs" || collection === "contextTraces" || collection === "modelUsageRecords" || collection === "attachments" || collection === "chatOperations"
     ? ["conversationId"]
     : collection === "deviceChallenges" || collection === "oneTimeLoginCodes" ? ["deviceId"]
@@ -43,6 +44,9 @@ function recordParentId(collection: CollectionName, item: StoredRecord): string 
 }
 
 function recordLookupKey(collection: CollectionName, item: StoredRecord): string | null {
+  if (collection === "publications") return typeof item.slug === "string" ? item.slug : null;
+  if (collection === "publicSessions") return typeof item.tokenHash === "string" ? item.tokenHash : null;
+  if (collection === "publicRuns") return `${item.sessionId}:${item.operationId}`;
   if (collection === "powerLedger" && typeof item.batchId === "string") return `${item.batchId}:${item.workspaceId}:${item.userId}`;
   if (collection === "rechargeOrders") {
     const payment = item.payment as { transactionId?: string } | undefined;

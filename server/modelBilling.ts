@@ -6,7 +6,7 @@ import { uid } from "./security.js";
 import { effectiveModel } from "./modelPricing.js";
 
 export type ModelUsage = { inputTokens: number; outputTokens: number; totalTokens: number; cacheUsage?: CacheUsage; source: string };
-type BillingParams = { workspaceId: string; userId: string; conversationId?: string; model: ModelConfig; input: unknown; activity: string; requestId: string };
+type BillingParams = { workspaceId: string; userId: string; conversationId?: string; model: ModelConfig; input: unknown; activity: string; requestId: string; beforeReserve?: (db: Database, amountMicros: number) => void };
 type BillingScope = { usageId: string; workspaceId: string; userId: string };
 
 export class BillingReviewRequiredError extends Error {
@@ -122,6 +122,7 @@ export async function runBilledModel<T extends { usage?: ModelUsage; finishReaso
       || !db.workspaces.some((item) => item.id === params.workspaceId && item.status === "active")) throw new Error("账号或个人空间不可用");
     if (!db.models.some((item) => item.id === model.id && item.enabled)) throw new Error("模型已停用，请重新选择");
     if (db.modelUsageRecords.some((item) => item.workspaceId === params.workspaceId && item.userId === params.userId && item.status === "needs_review")) throw new BillingReviewRequiredError();
+    params.beforeReserve?.(db, amountMicros);
     reservePower(db, { ...params, amountMicros });
     db.modelUsageRecords.push(row);
   });

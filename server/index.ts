@@ -14,6 +14,7 @@ import { callModel, callModelWithTools } from "./modelGateway.js";
 import { runTaskOrchestrator } from "./taskOrchestrator.js";
 import { resolveAiTask } from "./aiTaskConfig.js";
 import { installAiTaskRoutes } from "./aiTaskRoutes.js";
+import { installPublicSharingRoutes } from "./publicSharingRoutes.js";
 import { appendOwnerContextTrace, buildContextTraceSections, ownerContextTraces } from "./contextTrace.js";
 import { AttachmentService, ATTACHMENT_MAX_BYTES, ATTACHMENT_CHUNK_BYTES, ATTACHMENT_IMAGE_MAX_BYTES, ownedAttachment, removeAttachmentFiles } from "./attachmentService.js";
 import { hashPassword, signToken, uid, verifyPassword } from "./security.js";
@@ -179,6 +180,7 @@ async function persistGeneratedImage(params: { imageUrl?: string; workspaceId: s
 }
 
 const keyAuth = [auth(jwtSecret), requireOneKeySession] as const;
+installPublicSharingRoutes(app, keyAuth, store, knowledgeService, attachmentService);
 installPaymentRoutes(app, keyAuth, store);
 installFeishuRoutes(app, keyAuth, store, feishuService, () => connectorRegistry.enabled("feishu"));
 

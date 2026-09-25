@@ -5,6 +5,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MessageMarkdown } from "./MessageMarkdown.js";
 const render = (children: string) => renderToStaticMarkup(createElement(MessageMarkdown, { children }));
 
+test("public text answers cannot automatically load model-supplied remote images", () => {
+  const html = renderToStaticMarkup(createElement(MessageMarkdown, { children: "![tracking](https://example.com/private-query)\n\nAnswer", allowImages: false }));
+  assert.doesNotMatch(html, /<img|example.com/);
+  assert.match(html, /Answer/);
+});
+
 test("inline and block mathematics render, including the reported meeting probability notation", () => {
   const html = render("区间 $[0,T]$，时间 $t$，$0<t\\le T$\n\n$$|X-Y|\\le t$$\n\n$$\n\\Omega=\\{(x,y):0\\le x\\le T,0\\le y\\le T\\}\n$$");
   assert.match(html, /class="katex"/);
