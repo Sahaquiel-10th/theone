@@ -1,5 +1,6 @@
 import React, { FormEvent, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { AiTaskPanel } from "./AiTaskPanel";
+import { OfficialFeaturePanel } from "./OfficialFeaturePanel";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { MessageMarkdown } from "./MessageMarkdown";
@@ -2330,7 +2331,7 @@ function KnowledgePage({
 function AdminPanel({ actorId, refreshModels, onOpenSidebar }: { actorId: string; refreshModels: () => Promise<void>; onOpenSidebar: () => void }) {
   const api = useContext(PrivateApiContext);
   const [billingSection, setBillingSection] = useState("pricing");
-  const [tab, setTab] = useState<"overview" | "users" | "keys" | "models" | "billing" | "usage" | "contexts" | "logs" | "ai-tasks">("overview");
+  const [tab, setTab] = useState<"overview" | "users" | "keys" | "models" | "billing" | "usage" | "contexts" | "logs" | "ai-tasks" | "official-features">("overview");
   const [users, setUsers] = useState<User[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [devices, setDevices] = useState<OneKeyDevice[]>([]);
@@ -2371,6 +2372,7 @@ function AdminPanel({ actorId, refreshModels, onOpenSidebar }: { actorId: string
           <button className={tab === "keys" ? "active" : ""} onClick={() => setTab("keys")}><Usb size={16} />ONE Key</button>
           <button className={tab === "models" ? "active" : ""} onClick={() => setTab("models")}><Bot size={16} />模型</button>
           <button className={tab === "ai-tasks" ? "active" : ""} onClick={() => setTab("ai-tasks")}><Bot size={16} />AI 任务</button>
+          <button className={tab === "official-features" ? "active" : ""} onClick={() => setTab("official-features")}><Bot size={16} />官方功能</button>
           <button className={tab === "billing" ? "active" : ""} onClick={() => setTab("billing")}><Wallet size={16} />电力与收费</button>
           <button className={tab === "usage" ? "active" : ""} onClick={() => setTab("usage")}><ReceiptText size={16} />用户用量</button>
           <button className={tab === "contexts" ? "active" : ""} onClick={() => setTab("contexts")}><Eye size={16} />上下文</button>
@@ -2383,6 +2385,7 @@ function AdminPanel({ actorId, refreshModels, onOpenSidebar }: { actorId: string
           {tab === "keys" ? <OneKeysTab users={users} devices={devices} reload={load} /> : null}
           {tab === "models" ? <ModelsTab models={models} reload={async () => { await load(); await refreshModels(); }} /> : null}
           {tab === "ai-tasks" ? <AiTaskPanel api={api} models={models} /> : null}
+          {tab === "official-features" ? <OfficialFeaturePanel api={api} /> : null}
           {tab === "billing" ? <div className="admin-pricing-center"><nav className="settings-tabs"><button aria-pressed={billingSection === "pricing"} onClick={() => setBillingSection("pricing")}>模型与定价</button><button aria-pressed={billingSection === "accounts"} onClick={() => setBillingSection("accounts")}>充值、赠送与汇率</button></nav>{billingSection === "pricing" ? <PricingCatalog api={api} models={models} reload={load} /> : <AdminBilling actorId={actorId} users={users} operations={operations} reload={load} />}</div> : null}
           {tab === "usage" ? <AdminUsage summaries={operations?.userUsage || []} reload={load} /> : null}
           {tab === "contexts" ? <AdminContexts traces={contextTraces} /> : null}

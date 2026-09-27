@@ -11,6 +11,7 @@
 .sharing-form fieldset { border:1px solid #dce2de;border-radius:10px;padding:12px;display:grid;gap:8px; }
 .sharing-form .sharing-check { display:flex;align-items:flex-start;gap:9px;line-height:1.5; }
 .sharing-form .sharing-check input[type=checkbox] { width:16px;min-width:16px;height:16px;flex:0 0 16px;margin-top:4px; }
+.one-settings-dialog .sharing-form .sharing-check input[type=radio] { width:16px;min-width:16px;height:16px;flex:0 0 16px;margin:3px 0 0;padding:0; }
 .sharing-grid { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px; }
 .sharing-panel input:not([type=checkbox]),.sharing-form input:not([type=checkbox]),.sharing-form textarea,.public-composer textarea { width:100%;max-width:100%;box-sizing:border-box;border:1px solid #d1d9d3;border-radius:9px;background:transparent;color:inherit;padding:10px;font:inherit; }
 .sharing-receipt { display:grid;gap:10px;margin:16px 0; }

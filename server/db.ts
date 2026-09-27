@@ -353,7 +353,7 @@ function migrateDatabase(raw: Record<string, any>): Database {
     publications: Array.isArray(raw.publications) ? raw.publications : undefined,
     publicSessions: Array.isArray(raw.publicSessions) ? raw.publicSessions : undefined,
     publicRuns: Array.isArray(raw.publicRuns) ? raw.publicRuns : undefined,
-    settings: { safetyRules: raw.settings?.safetyRules || "你是 ONE 个人 AI 助手。只使用当前 Workspace 已授权的数据，不得泄露其他 Workspace 信息。", rechargeCnyPerPower: Number(raw.settings?.rechargeCnyPerPower) > 0 ? Number(raw.settings.rechargeCnyPerPower) : 7, aiTasks: raw.settings?.aiTasks }
+    settings: { safetyRules: raw.settings?.safetyRules || "你是 ONE 个人 AI 助手。只使用当前 Workspace 已授权的数据，不得泄露其他 Workspace 信息。", rechargeCnyPerPower: Number(raw.settings?.rechargeCnyPerPower) > 0 ? Number(raw.settings.rechargeCnyPerPower) : 7, aiTasks: raw.settings?.aiTasks, officialFeatures: raw.settings?.officialFeatures }
   };
   reconcileInterruptedBilling(database);
   reconcileInterruptedChatOperations(database);

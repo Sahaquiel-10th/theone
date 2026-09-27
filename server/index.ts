@@ -14,6 +14,7 @@ import { callModel, callModelWithTools } from "./modelGateway.js";
 import { runTaskOrchestrator } from "./taskOrchestrator.js";
 import { resolveAiTask } from "./aiTaskConfig.js";
 import { installAiTaskRoutes } from "./aiTaskRoutes.js";
+import { installOfficialFeatureRoutes } from "./officialFeatureRoutes.js";
 import { installPublicSharingRoutes } from "./publicSharingRoutes.js";
 import { appendOwnerContextTrace, buildContextTraceSections, ownerContextTraces } from "./contextTrace.js";
 import { AttachmentService, ATTACHMENT_MAX_BYTES, ATTACHMENT_CHUNK_BYTES, ATTACHMENT_IMAGE_MAX_BYTES, ownedAttachment, removeAttachmentFiles } from "./attachmentService.js";
@@ -906,6 +907,7 @@ app.post("/api/executions/:id/cancel", ...keyAuth, asyncRoute(async (req, res) =
 
 const admin = [...keyAuth, requireRole("admin")] as const;
 installAiTaskRoutes(app, admin, store);
+installOfficialFeatureRoutes(app, admin, store);
 installAdminPaymentRoutes(app, admin, store);
 app.post("/api/admin/models/:id/pricing", ...admin, asyncRoute(async (req, res) => {
   if (typeof req.body.explanation !== "string" || !req.body.explanation.trim()) throw new Error("请填写给用户的调价说明");

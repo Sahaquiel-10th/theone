@@ -51,7 +51,7 @@ export type Attachment = {
 };
 export type AttachmentSummary = Pick<Attachment, "id" | "originalName" | "mimeType" | "kind" | "size" | "status" | "uploadedBytes" | "parseError" | "textChars" | "segmentCount">;
 export type SearchSource = { title: string; url: string; snippet: string };
-export type SystemSettings = { safetyRules: string; rechargeCnyPerPower: number; aiTasks?: import("./aiTaskConfig.js").AiTaskConfigs };
+export type SystemSettings = { safetyRules: string; rechargeCnyPerPower: number; aiTasks?: import("./aiTaskConfig.js").AiTaskConfigs; officialFeatures?: import("./officialFeatures.js").OfficialFeatureRecord[] };
 
 export type UserSavedMemory = {
   id: string; workspaceId: string; userId: string; conversationId?: string; sourceMessageId?: string;
