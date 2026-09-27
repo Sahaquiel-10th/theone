@@ -167,8 +167,14 @@
 .one-studio .studio-surface .mobile-menu { display: none; }
 .one-studio :is(.notice,.chat-error) { margin: 0 0 12px; font-size: 12px; line-height: 1.75; }
 .one-studio.execution-shell :is(.notice,.chat-error) { background: var(--studio-surface); color: var(--studio-ink); border-color: var(--studio-line); }
-:root[data-one-transition="flow"] .studio-assistant { view-transition-name: one-assistant; }
-::view-transition-group(one-assistant) { animation-duration: 430ms; animation-timing-function: cubic-bezier(.2,.82,.2,1); }
+:root[data-one-transition="flow"] .studio-presence > .one-presence { view-transition-name: one-presence-logo; }
+:root[data-one-transition="flow"]::view-transition-old(root) { display: none; }
+:root[data-one-transition="flow"]::view-transition-new(root) { animation: studio-page-in 160ms ease-out both; }
+::view-transition-group(one-presence-logo) { animation-duration: 320ms; animation-timing-function: cubic-bezier(.2,.82,.2,1); }
+::view-transition-old(one-presence-logo) { display: none; }
+::view-transition-new(one-presence-logo) { animation: none; mix-blend-mode: normal; height: 100%; }
+@keyframes studio-page-in { from { opacity: .85; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { ::view-transition-group(one-presence-logo) { animation-duration: 0s; } }
 @keyframes studio-breathe { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
 @keyframes studio-arrive { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 @media (min-width: 1550px) { .one-studio .studio-assistant { padding-inline: 48px; } }

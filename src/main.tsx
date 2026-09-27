@@ -193,7 +193,7 @@ type ExecutionEvent = {
 };
 
 type TransitionPoint = { x: number; y: number };
-type OneViewTransition = { ready: Promise<void>; finished: Promise<void>; updateCallbackDone: Promise<void> };
+type OneViewTransition = { ready: Promise<void>; finished: Promise<void>; updateCallbackDone: Promise<void>; skipTransition: () => void };
 type ViewTransitionDocument = Document & {
   startViewTransition?: (update: () => void) => OneViewTransition;
 };
@@ -562,7 +562,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [view, setView] = useState<"chat" | "admin" | "knowledge" | "account" | "agents" | "agentEditor">(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "knowledge" : "chat"; });
+  const [view, setView] = useState<"chat" | "admin" | "account" | "features" | "agents" | "agentEditor">(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "account" : "chat"; });
+  const [accountSection, setAccountSection] = useState(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "knowledge" : "profile"; });
+  const interfaceTransition = useRef<OneViewTransition | null>(null);
   const [editingAgentId, setEditingAgentId] = useState<string | "new">("new");
   const [showArchived, setShowArchived] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
@@ -904,6 +906,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   function transitionInterface(update: () => void) {
+    interfaceTransition.current?.skipTransition();
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const transitionDocument = document as ViewTransitionDocument;
     if (!transitionDocument.startViewTransition || reducedMotion) {
@@ -913,20 +916,11 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
     document.documentElement.dataset.oneTransition = "flow";
     const transition = transitionDocument.startViewTransition(() => flushSync(update));
-    transition.finished.finally(() => { delete document.documentElement.dataset.oneTransition; }).catch(() => undefined);
-    transition.ready.then(() => {
-      document.documentElement.animate(
-        [
-          { opacity: .5, transform: "translateY(5px)" },
-          { opacity: 1, transform: "translateY(0)" }
-        ],
-        {
-          duration: 300,
-          easing: "cubic-bezier(.2,.82,.2,1)",
-          fill: "both",
-          pseudoElement: "::view-transition-new(root)"
-        } as KeyframeAnimationOptions & { pseudoElement: string }
-      );
+    interfaceTransition.current = transition;
+    transition.finished.finally(() => {
+      if (interfaceTransition.current !== transition) return;
+      interfaceTransition.current = null;
+      delete document.documentElement.dataset.oneTransition;
     }).catch(() => undefined);
     return transition.updateCallbackDone.catch(() => undefined);
   }
@@ -952,9 +946,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     requestAnimationFrame(() => document.getElementById("one-studio-input")?.focus());
   }
 
-  function openSurface(next: "chat" | "admin" | "knowledge" | "account") {
+  function openSurface(next: "chat" | "admin" | "knowledge" | "account" | "features") {
     transitionInterface(() => {
-      setView(next);
+      if (next === "knowledge") setAccountSection("knowledge");
+      setView(next === "knowledge" ? "account" : next);
       setHistoryOpen(false);
       setSidebarOpen(false);
     });
@@ -1508,7 +1503,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </button>
         <nav className="studio-navigation" aria-label="工作区导航">
           <button type="button" aria-current={view === "chat" ? "page" : undefined} onClick={() => openSurface("chat")}>工作台</button>
-          <button type="button" aria-current={view === "knowledge" ? "page" : undefined} onClick={() => openSurface("knowledge")}>知识</button>
+          <button type="button" aria-current={view === "features" ? "page" : undefined} onClick={() => openSurface("features")}>功能</button>
           <button type="button" aria-current={view === "account" ? "page" : undefined} onClick={() => openSurface("account")}>设置</button>
           {user.role === "admin" ? <button type="button" aria-current={view === "admin" ? "page" : undefined} onClick={() => openSurface("admin")}>管理</button> : null}
         </nav>
@@ -1569,13 +1564,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       <section className="studio-surface" aria-label={view === "chat" ? "当前事情" : "工作区内容"} hidden={studioIdle}>
       {view === "admin" && user.role === "admin" ? (
         <AdminPanel actorId={user.id} refreshModels={refresh} onOpenSidebar={() => setHistoryOpen(true)} />
-      ) : view === "knowledge" ? (
-        <KnowledgePage
-          onOpenSidebar={() => setHistoryOpen(true)}
-          onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : setKnowledgeConnection(next)}
-        />
+      ) : view === "features" ? (
+        <section className="account-page features-page"><header className="admin-header"><div><h2>功能</h2><p>让资料派上用场。</p></div></header><div className="account-body settings-account-body"><SharingPanel api={api} models={models}/></div></section>
       ) : view === "account" ? (
-        <AccountPage user={user} profile={profile} onSaveProfile={saveProfile} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setHistoryOpen(true)} />
+        <AccountPage user={user} profile={profile} onSaveProfile={saveProfile} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setHistoryOpen(true)} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgePage onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : setKnowledgeConnection(next)} />} />
       ) : (
       <section className="studio-task" key={activeId}>
         <header className="studio-task-header">
@@ -2029,9 +2021,8 @@ function AgentEditorPage({ agent, agents, models, onCancel, onSaved }: {
   </section>;
 }
 
-function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onModelChange, onOpenSidebar }: { user: User; profile: AccountProfile; onSaveProfile: (patch: ProfilePatch) => Promise<unknown>; models: Model[]; defaultModelId: string; onModelChange: () => Promise<void>; onOpenSidebar: () => void }) {
+function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onModelChange, onOpenSidebar, section, setSection, knowledge }: { user: User; profile: AccountProfile; onSaveProfile: (patch: ProfilePatch) => Promise<unknown>; models: Model[]; defaultModelId: string; onModelChange: () => Promise<void>; onOpenSidebar: () => void; section: string; setSection: (section: string) => void; knowledge: React.ReactNode }) {
   const api = useContext(PrivateApiContext);
-  const [section, setSection] = useState("profile");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -2076,13 +2067,13 @@ function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onM
       <header className="admin-header">
         <button className="mobile-menu" title="打开导航" onClick={onOpenSidebar}><Menu size={20} /></button>
         <div>
-          <h2>账号设置</h2>
+          <h2>设置</h2>
           <p>{profile.displayName || user.username} · {user.role === "admin" ? "管理员" : "ONE 用户"}</p>
         </div>
       </header>
-      <nav className="settings-tabs account-settings-tabs" aria-label="设置栏目">{[["profile", "个人设置"], ["power", "电力与账单"], ["sharing", "分享分身"]].map(([id, label]) => <button type="button" key={id} aria-pressed={section === id} onClick={() => setSection(id)}>{label}</button>)}</nav>
+      <nav className="settings-tabs account-settings-tabs" aria-label="设置栏目">{[["profile", "个人设置"], ["knowledge", "知识连接"], ["power", "电力与账单"]].map(([id, label]) => <button type="button" key={id} aria-pressed={section === id} onClick={() => setSection(id)}>{label}</button>)}</nav>
       <div className="account-body settings-account-body">
-        {section === "sharing" ? <SharingPanel api={api} models={models}/> : section === "power" ? billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载电力账户…</p> : <>
+        {section === "knowledge" ? knowledge : section === "power" ? billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载电力账户…</p> : <>
         <section className="account-panel"><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
         <section className="account-panel">
           <div className="account-panel-title"><Bot size={18} /><h3>默认模型</h3></div>
@@ -2283,7 +2274,7 @@ function KnowledgePage({
   }
 
   return (
-    <section className="account-page">
+    <section className="account-page knowledge-page">
       <header className="admin-header">
         <button className="mobile-menu" title="打开导航" onClick={onOpenSidebar}><Menu size={20} /></button>
         <div><h2>知识来源</h2></div>

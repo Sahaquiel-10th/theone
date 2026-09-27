@@ -27,3 +27,35 @@
 .sharing-file { display:flex;align-items:center;gap:12px;justify-content:space-between;overflow-wrap:anywhere;font-size:13px; }
 .public-sharing-page button:disabled { opacity:.5;cursor:default; }
 @media(max-width:540px){.sharing-grid{grid-template-columns:1fr}.public-sharing-page{padding:24px 16px}.sharing-file span{min-width:0}}
+
+/* Match the quiet workspace typography, including dialogs rendered in the top layer. */
+.one-studio .sharing-panel { max-width: 820px; margin-inline: auto; color: var(--studio-ink); font: inherit; font-size: 13px; }
+.one-studio .sharing-panel > header { margin-bottom: 20px; }
+.one-studio .sharing-panel h3 { font-size: 17px; font-weight: 550; }
+.one-studio .sharing-panel .sharing-subtitle, .sharing-empty { font-size: 12px; color: var(--studio-muted, #76786c); margin: 7px 0 0; }
+.one-studio .sharing-panel > input { margin: 0; font-size: 13px; }
+.one-studio .sharing-list article { background: var(--studio-surface); border-color: var(--studio-line); border-radius: 12px; padding: 18px; }
+.one-studio .sharing-list article strong { font-size: 14px; font-weight: 550; }
+.one-studio .sharing-list article p, .one-studio .sharing-list article summary, .one-studio .sharing-list article header > span { font-size: 12px; line-height: 1.7; }
+.one-studio .sharing-list article header > span { color: var(--studio-muted); }
+.one-studio .sharing-panel button { font-family: inherit; font-size: 12px; box-shadow: none; }
+.one-studio .sharing-panel .primary, .one-settings-dialog:has(.sharing-form) .primary { background: #292b25; color: #fdfdf9; border: 1px solid #292b25; border-radius: 9px; padding: 10px 15px; font-size: 12px; font-weight: 500; }
+.one-settings-dialog:has(.sharing-form) { width: min(560px, calc(100vw - 32px)); color: #24251f; background: #fdfdf9; font-family: inherit; font-size: 13px; border-radius: 18px; }
+.one-settings-dialog:has(.sharing-form) > header h2 { font-size: 18px; font-weight: 550; letter-spacing: 0; }
+.one-settings-dialog .sharing-form { gap: 20px; }
+.one-settings-dialog .sharing-form label, .sharing-model-field, .sharing-budget { font-size: 12px; font-weight: 400; color: #64665c; }
+.one-settings-dialog .sharing-form :is(input:not([type=checkbox]), textarea, .settings-picker-trigger) { font-family: inherit; font-size: 13px; line-height: 1.6; color: #24251f; background: #f6f6f0; border-color: #dddfd4; border-radius: 8px; box-shadow: none; padding: 9px 11px; }
+.sharing-model-field { display: grid; gap: 6px; }
+.sharing-form textarea { resize: vertical; min-height: 90px; }
+.sharing-form fieldset small { font-size: 11px; line-height: 1.65; color: #76786c; }
+.sharing-form .sharing-budget > header { display: flex; align-items: center; justify-content: flex-start; gap: 8px; margin-bottom: 12px; }
+.one-settings-dialog .sharing-cost-help { position: relative; font-size: 12px; margin: 0; padding: 0; border: 0; background: transparent; border-radius: 0; }
+.one-settings-dialog .sharing-cost-help > summary { display: grid; place-items: center; box-sizing: border-box; width: 18px; min-width: 18px; min-height: 18px; height: 18px; padding: 0; margin: 0; border: 1px solid #bfc2b5; border-radius: 50%; cursor: pointer; list-style: none; color: #76786c; font-size: 11px; }
+.sharing-cost-help > summary::-webkit-details-marker { display: none; }
+.sharing-cost-help > div { position: absolute; z-index: 2; bottom: 26px; left: -60px; box-sizing: border-box; width: min(290px, calc(100vw - 100px)); padding: 14px; border: 1px solid #dddfd4; border-radius: 10px; background: #fdfdf9; box-shadow: 0 6px 24px #24251f18; color: #64665c; line-height: 1.8; }
+.sharing-cost-help summary:focus-visible { outline: 2px solid #76786c; outline-offset: 3px; }
+.one-studio .settings-account-body > .knowledge-page { width: 100%; padding: 0; }
+.one-studio .settings-account-body > .knowledge-page > .admin-header { display: none; }
+.one-studio .settings-account-body > .knowledge-page > .account-body { padding: 0; }
+.one-studio .features-page .settings-account-body { display: block; }
+@media(max-width:540px) { .sharing-form .sharing-grid { grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; } .one-settings-dialog .sharing-form .sharing-grid input { padding-inline: 8px; } }
