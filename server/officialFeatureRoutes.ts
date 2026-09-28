@@ -3,11 +3,16 @@ import type { Store } from "./db.js";
 import { asyncRoute } from "./middleware.js";
 import { FeatureConfigError, updateOfficialFeature } from "./officialFeatures.js";
 import { uid } from "./security.js";
+import { featureToolPresets, featureAllowedEndpoints } from "./featureTools.js";
 
 export function installOfficialFeatureRoutes(app: Express, admin: readonly RequestHandler[], store: Store) {
   const router=express.Router();
   router.use(...admin);
   router.use((_req,res,next)=>{res.setHeader("Cache-Control","no-store");next();});
+  router.get("/options",asyncRoute(async(_req,res)=>{
+    const db=await store.read();
+    res.json({models:db.models.filter(m=>m.enabled&&m.kind==="chat").map(m=>({id:m.id,name:m.name})),tools:featureToolPresets,allowedEndpoints:featureAllowedEndpoints()});
+  }));
   router.get("/",asyncRoute(async(req,res)=>{
     const q=String(req.query.q||"").slice(0,100).toLowerCase(), page=Math.max(1,Math.min(1000,Math.floor(Number(req.query.page)||1)));
     const items=((await store.read()).settings.officialFeatures??[]).filter(f=>`${f.id} ${f.draft.name} ${f.draft.author}`.toLowerCase().includes(q)).slice().reverse();

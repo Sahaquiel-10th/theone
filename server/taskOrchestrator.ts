@@ -3,7 +3,8 @@ import type { ExecutionTraceStep } from "./types.js";
 import { taskToolDescriptions } from "./aiTaskPresets.js";
 import { entryAllowsTool, type TaskEntryPoint } from "./aiTaskCatalog.js";
 
-export type OrchestrationTool = { name: string; description?: string; run: (query: string) => Promise<unknown> };
+export type OrchestrationTool = { name: string; description?: string; run: (query: string) => Promise<unknown>;
+  structured?: { schema: Record<string, unknown>; validate: (input: unknown) => unknown; run: (input: unknown) => Promise<unknown> } };
 
 /** Sequential, bounded read-only execution. Handlers own scope and fresh authorization. */
 export async function runTaskOrchestrator(input: {
@@ -12,6 +13,7 @@ export async function runTaskOrchestrator(input: {
   tools: OrchestrationTool[];
   maxSteps: number;
   beforeStep: () => Promise<void>;
+  onTrace?: (steps: ExecutionTraceStep[]) => void;
   call: (messages: ModelToolMessage[], tools: ModelToolDefinition[]) => Promise<ToolChatResult>;
 }) {
   if (!["workspace", "published_web", "published_api"].includes(input.entryPoint)) throw new Error("执行入口无效");
@@ -21,7 +23,7 @@ export async function runTaskOrchestrator(input: {
   const messages = structuredClone(input.messages);
   const tools: ModelToolDefinition[] = input.tools.map(tool => ({ type: "function", function: {
     name: tool.name, description: tool.description ?? taskToolDescriptions[tool.name],
-    parameters: { type: "object", additionalProperties: false, properties: { query: { type: "string", minLength: 1, maxLength: 1000 } }, required: ["query"] }
+    parameters: tool.structured?.schema ?? { type: "object", additionalProperties: false, properties: { query: { type: "string", minLength: 1, maxLength: 1000 } }, required: ["query"] }
   } }));
   const trace: ExecutionTraceStep[] = [];
   const steps = Math.min(4, Math.max(1, Math.floor(input.maxSteps)));
@@ -41,9 +43,11 @@ export async function runTaskOrchestrator(input: {
       await input.beforeStep();
       const tool = entryAllowsTool(input.entryPoint, call.function.name) ? input.tools.find(tool => tool.name === call.function.name) : undefined;
       let query: string | undefined;
+      let structuredArgs: unknown;
       try {
         const args = JSON.parse(call.function.arguments);
-        if (args && Object.keys(args).length === 1 && typeof args.query === "string" && args.query.trim() && args.query.length <= 1000) query = args.query.trim();
+        if (tool?.structured) { structuredArgs = tool.structured.validate(args); query = JSON.stringify(structuredArgs); }
+        else if (args && Object.keys(args).length === 1 && typeof args.query === "string" && args.query.trim() && args.query.length <= 1000) query = args.query.trim();
       } catch { /* Invalid parameters are returned to the model, never executed. */ }
       let output: unknown; let status = "rejected"; const started = Date.now();
       if (!tool || !query) output = { status: "rejected", error: "工具未授权或参数无效" };
@@ -52,11 +56,12 @@ export async function runTaskOrchestrator(input: {
         if (cache.has(key)) { output = cache.get(key); status = "reused"; }
         else {
           // Handler errors propagate: do not disguise revoked authorization as no matches.
-          output = await tool.run(query); cache.set(key, output); status = "returned";
+          output = tool.structured ? await tool.structured.run(structuredArgs) : await tool.run(query); cache.set(key, output); status = "returned";
         }
       }
       const serialized = JSON.stringify(output);
       trace.push({ step, tool: tool?.name ?? "unavailable", status: status as ExecutionTraceStep["status"], query, resultPreview: serialized.length > 12000 ? `${serialized.slice(0, 12000)}…` : serialized, durationMs: Date.now() - started });
+      input.onTrace?.(structuredClone(trace));
       messages.push({ role: "tool", tool_call_id: call.id, content: serialized.length > 28000 ? JSON.stringify({ status: "truncated", excerpt: serialized.slice(0, 27000) }) : serialized });
     }
   }
