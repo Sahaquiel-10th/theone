@@ -16,6 +16,7 @@ import { resolveAiTask } from "./aiTaskConfig.js";
 import { installAiTaskRoutes } from "./aiTaskRoutes.js";
 import { installOfficialFeatureRoutes } from "./officialFeatureRoutes.js";
 import { installOfficialFeaturePilotRoutes } from "./officialFeaturePilotRoutes.js";
+import { installAdapterSandbox } from "./adapterSandbox.js";
 import { installPublicSharingRoutes } from "./publicSharingRoutes.js";
 import { appendOwnerContextTrace, buildContextTraceSections, ownerContextTraces } from "./contextTrace.js";
 import { AttachmentService, ATTACHMENT_MAX_BYTES, ATTACHMENT_CHUNK_BYTES, ATTACHMENT_IMAGE_MAX_BYTES, ownedAttachment, removeAttachmentFiles } from "./attachmentService.js";
@@ -99,6 +100,7 @@ app.use((req, res, next) => {
 });
 
 function now() { return new Date().toISOString(); }
+installAdapterSandbox(app, { enabled: process.env.ONE_ADAPTER_SANDBOX_ENABLED !== "false" });
 function safeAppOrigin(value: string) {
   try { return new URL(value).origin; } catch { return "http://127.0.0.1:3000"; }
 }
