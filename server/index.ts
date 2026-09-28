@@ -15,6 +15,7 @@ import { runTaskOrchestrator } from "./taskOrchestrator.js";
 import { resolveAiTask } from "./aiTaskConfig.js";
 import { installAiTaskRoutes } from "./aiTaskRoutes.js";
 import { installOfficialFeatureRoutes } from "./officialFeatureRoutes.js";
+import { installOfficialFeaturePilotRoutes } from "./officialFeaturePilotRoutes.js";
 import { installPublicSharingRoutes } from "./publicSharingRoutes.js";
 import { appendOwnerContextTrace, buildContextTraceSections, ownerContextTraces } from "./contextTrace.js";
 import { AttachmentService, ATTACHMENT_MAX_BYTES, ATTACHMENT_CHUNK_BYTES, ATTACHMENT_IMAGE_MAX_BYTES, ownedAttachment, removeAttachmentFiles } from "./attachmentService.js";
@@ -907,6 +908,7 @@ app.post("/api/executions/:id/cancel", ...keyAuth, asyncRoute(async (req, res) =
 
 const admin = [...keyAuth, requireRole("admin")] as const;
 installAiTaskRoutes(app, admin, store);
+installOfficialFeaturePilotRoutes(app, admin, store);
 installOfficialFeatureRoutes(app, admin, store);
 installAdminPaymentRoutes(app, admin, store);
 app.post("/api/admin/models/:id/pricing", ...admin, asyncRoute(async (req, res) => {
