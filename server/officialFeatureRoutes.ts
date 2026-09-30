@@ -3,7 +3,7 @@ import type { Store } from "./db.js";
 import { asyncRoute } from "./middleware.js";
 import { FeatureConfigError, updateOfficialFeature } from "./officialFeatures.js";
 import { uid } from "./security.js";
-import { featureToolPresets, featureAllowedEndpoints } from "./featureTools.js";
+import { featureToolPresets, featureAllowedEndpoints, featureMcpEndpoints } from "./featureTools.js";
 import { releaseFeature } from "./featureRuns.js";
 
 export function installOfficialFeatureRoutes(app: Express, admin: readonly RequestHandler[], store: Store) {
@@ -12,7 +12,7 @@ export function installOfficialFeatureRoutes(app: Express, admin: readonly Reque
   router.use((_req,res,next)=>{res.setHeader("Cache-Control","no-store");next();});
   router.get("/options",asyncRoute(async(_req,res)=>{
     const db=await store.read();
-    res.json({models:db.models.filter(m=>m.enabled&&m.kind==="chat").map(m=>({id:m.id,name:m.name})),tools:featureToolPresets,allowedEndpoints:featureAllowedEndpoints()});
+    res.json({models:db.models.filter(m=>m.enabled&&m.kind==="chat").map(m=>({id:m.id,name:m.name})),tools:featureToolPresets,allowedEndpoints:featureAllowedEndpoints(),mcpEndpoints:featureMcpEndpoints()});
   }));
   router.get("/recipients",asyncRoute(async(req,res)=>{
     const db=await store.read(), q=String(req.query.q??"").slice(0,100).toLowerCase(), page=Math.max(1,Math.floor(Number(req.query.page)||1));

@@ -8,7 +8,7 @@ export type ChatOperation = {
   payloadHash: string; requestId: string; status: "pending" | "completed" | "failed" | "interrupted";
   conversationId?: string; assistantMessageId?: string; knowledgeWarning?: string;
   retryable?: boolean; createdAt: string; updatedAt: string;
-  featureRun?: { featureId: string; name: string; version: number; releaseId: string; budget: number; sources: { id: string; binding: string }[] };
+  featureRun?: { featureId: string; name: string; version: number; releaseId: string; budget: number; sources: { id: string; binding: string }[]; credentials?: import('./featureCredentials.js').CredentialBinding[] };
 };
 export type ChatOperationScope = { workspaceId: string; userId: string; operationId: string };
 type ChatOperationDatabase = Database & { chatOperations?: ChatOperation[] };

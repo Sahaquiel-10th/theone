@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import type { api as Api } from "./oneApi";
 import { Pagination, SettingsDialog } from "./SettingsControls";
+import { ToolCredentialEditor, MyToolCredentials } from './FeatureConnections';
 
-type Feature={id:string;releaseId:string;version:number;name:string;description:string;author:string;limitations:string;knowledgeMode:string;destinations:string[];sources?:{id:string;name:string}[]};
+type Feature={id:string;releaseId:string;version:number;name:string;description:string;author:string;limitations:string;knowledgeMode:string;destinations:string[];credentials?:{endpoint:string;auth:'bearer'|'api_key'}[];sources?:{id:string;name:string}[]};
 type Run={operationId:string;name:string;version:number;status:string;createdAt:string;power:number;prompt?:string;content?:string;error?:string;finishReason?:string;trace?:{tool:string;query?:string;resultPreview:string;status:string}[];charges?:{model:string;power:number;status:string}[]};
 const status:Record<string,string>={pending:'执行中',completed:'已完成',failed:'未完成',interrupted:'已中断'};
 
@@ -12,6 +13,7 @@ export function FeatureCatalog({api}:{api:typeof Api}) {
   useEffect(()=>{let live=true;void api<typeof list>(`/api/features?q=${encodeURIComponent(q)}&page=${page}`).then(d=>{if(live)setList(d);}).catch(e=>{if(live)setError(e.message);});return()=>{live=false;};},[api,q,page,refresh]);
   useEffect(()=>{let live=true;void api<typeof runs>(`/api/features/runs?page=${runPage}`).then(d=>{if(live)setRuns(d);}).catch(e=>{if(live)setError(e.message);});return()=>{live=false;};},[api,runPage,refresh]);
   return <section><h3>官方精选</h3><p className="hint">结合你的资料完成任务。仅显示为你开放的功能。</p>
+    <MyToolCredentials api={api}/>
     <input type="search" aria-label="搜索精选功能" placeholder="搜索名称、用途或作者" value={q} onChange={e=>{setQ(e.target.value);setPage(1);}}/>
     <div className="settings-choice-list">{list.items.map(f=><button type="button" key={f.id} onClick={()=>setSelected(f.id)}><span><strong>{f.name}</strong><small>{f.description}</small><small>{f.author} · v{f.version}</small></span><span>使用</span></button>)}</div>
     {!list.total?<p className="hint">暂时没有为你开放的精选功能，个人分身仍可使用。</p>:null}<Pagination page={page} total={list.total} onChange={setPage}/>
@@ -34,6 +36,7 @@ function FeatureLaunch({api,id,onStarted}:{api:typeof Api;id:string;onStarted:(i
   }
   return <div className="sharing-form">{feature?<><h3>{feature.name}</h3><p>{feature.description}</p><p className="hint">{feature.limitations}</p>
     {feature.knowledgeMode!=='none'?<fieldset disabled={busy||!!attempt}><legend>使用我的知识{feature.knowledgeMode==='required'?'（必选）':'（可选）'}</legend><p className="hint">仅本次选中的连接。范围为该账号已授权的全部可搜索资料，不是单篇笔记。</p>{feature.sources?.map(s=><label className="sharing-check" key={s.id}><input type="checkbox" checked={sources.includes(s.id)} onChange={e=>setSources(e.target.checked?[...sources,s.id]:sources.filter(id=>id!==s.id))}/>{s.name}</label>)}{!feature.sources?.length?<p>暂无已连接来源，请先到设置连接知识平台。</p>:null}</fieldset>:null}
+    {feature.credentials?.filter((c,i,all)=>all.findIndex(x=>x.endpoint===c.endpoint&&x.auth===c.auth)===i).map(c=><ToolCredentialEditor key={`${c.endpoint}:${c.auth}`} api={api} endpoint={c.endpoint} auth={c.auth}/>)}
     <label>要完成的任务<textarea rows={4} maxLength={4000} value={prompt} disabled={busy||!!attempt} onChange={e=>setPrompt(e.target.value)}/></label>
     <label>本次电力上限<input type="number" min="0.001" max="10" step="0.001" disabled={busy||!!attempt} value={budget} onChange={e=>setBudget(e.target.value)}/></label>
     <p className="hint">按实际模型用量从你的余额扣除。失败或中断也可能已有用量。执行期间请保持 Key 插着。</p>

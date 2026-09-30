@@ -1,4 +1,5 @@
 import express, { type Express } from "express";
+import { installMcpSandbox } from './mcpSandbox.js';
 
 /** Public synthetic fixtures only. Deliberately no Store, credentials, filesystem,
  * model calls, arbitrary reflection, redirects or user-configurable delays.
@@ -31,6 +32,7 @@ export const sandboxEndpoints = Object.keys(sandboxDefinition.paths).map(path =>
 
 export function installAdapterSandbox(app: Express, options: { enabled?: boolean; now?: () => number; perMinute?: number } = {}) {
   if (options.enabled === false) return;
+  installMcpSandbox(app);
   const router = express.Router();
   const now = options.now ?? Date.now;
   let windowStarted = now(), requests = 0;

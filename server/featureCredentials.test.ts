@@ -1,0 +1,50 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import type {Database} from './types.js';
+import {setFeatureCredential,toolCredential,credentialStatuses,revokeFeatureCredential,verifyCredentialBindings,redactToolSecret} from './featureCredentials.js';
+import {publicUser} from './serializers.js';
+import {credentialEndpointAllowed} from './featureConnectionRoutes.js';
+import {sandboxMcpEndpoint} from './featureTools.js';
+import express from 'express';
+import {once} from 'node:events';
+import {installFeatureConnectionRoutes} from './featureConnectionRoutes.js';
+import type {Store} from './db.js';
+function fixture(){return {users:[{id:'a',enabled:true,role:'admin',passwordHash:'hidden'},{id:'b',enabled:true,role:'user'}],workspaces:[{id:'wa',status:'active'},{id:'wb',status:'active'}],workspaceMembers:[{workspaceId:'wa',userId:'a'},{workspaceId:'wb',userId:'b'}],settings:{}} as unknown as Database;}
+test('credentials are encrypted, scoped, omitted from public users and invalidated on rotation/revoke',()=>{
+  const db=fixture(),s={workspaceId:'wa',userId:'a'},secret='synthetic-secret-123';
+  setFeatureCredential(db,s,sandboxMcpEndpoint,'bearer',secret);
+  assert.doesNotMatch(JSON.stringify(db),/synthetic-secret-123/);
+  assert.equal(toolCredential(db,s,sandboxMcpEndpoint,'bearer').headers.Authorization,`Bearer ${secret}`);
+  assert.equal('featureCredentials' in publicUser(db.users[0]),false);
+  assert.equal(credentialStatuses(db,{workspaceId:'wb',userId:'b'}).length,0);
+  assert.throws(()=>toolCredential(db,{workspaceId:'wb',userId:'b'},sandboxMcpEndpoint,'bearer'));
+  assert.throws(()=>credentialStatuses(db,{workspaceId:'wb',userId:'a'}));
+  const binding=credentialStatuses(db,s);setFeatureCredential(db,s,sandboxMcpEndpoint,'bearer','replacement-secret');
+  assert.throws(()=>verifyCredentialBindings(db,s,binding));
+  const current=credentialStatuses(db,s);revokeFeatureCredential(db,s,sandboxMcpEndpoint,'bearer');assert.throws(()=>verifyCredentialBindings(db,s,current));
+});
+test('copied ciphertext cannot be moved between users or endpoints; no arbitrary credential destination',()=>{
+  const db=fixture(),s={workspaceId:'wa',userId:'a'};setFeatureCredential(db,s,sandboxMcpEndpoint,'api_key','synthetic-secret');
+  const c=db.users[0].featureCredentials![0];db.users[1].featureCredentials=[{...c,workspaceId:'wb',userId:'b'}];
+  assert.throws(()=>toolCredential(db,{workspaceId:'wb',userId:'b'},sandboxMcpEndpoint,'api_key'));
+  assert.equal(credentialEndpointAllowed(db,s,'https://unreviewed.example/api','bearer'),false);
+  assert.equal(credentialEndpointAllowed(db,{workspaceId:'wb',userId:'b'},sandboxMcpEndpoint,'bearer'),false);
+  assert.equal(credentialEndpointAllowed(db,s,sandboxMcpEndpoint,'bearer'),true);
+  assert.deepEqual(redactToolSecret({'abc-secret':['abc-secret','normal']},'abc-secret'),{'[redacted]':['[redacted]','normal']});
+});
+test('credential HTTP endpoints enforce Key, own workspace and reviewed destinations; discovery is admin only',async t=>{
+  const db=fixture(),store:Store={read:async()=>db,mutate:async fn=>fn(db)};
+  const app=express();app.use(express.json());
+  const key:express.RequestHandler=(req,res,next)=>{if(req.headers['x-key']!=='yes'){res.sendStatus(428);return;}const other=req.headers['x-user']==='b';req.user=db.users[other?1:0];req.workspaceId=other?'wb':'wa';next();};
+  const admin:express.RequestHandler=(req,res,next)=>{if(req.user?.role!=='admin'){res.sendStatus(403);return;}next();};
+  installFeatureConnectionRoutes(app,[key],[key,admin],store,async()=>{});
+  const server=app.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});
+  const url=`http://127.0.0.1:${(server.address() as any).port}`;
+  const headers={'content-type':'application/json','x-key':'yes'};
+  assert.equal((await fetch(url+'/api/feature-credentials')).status,428);
+  const save=await fetch(url+'/api/feature-credentials',{method:'POST',headers,body:JSON.stringify({endpoint:sandboxMcpEndpoint,auth:'bearer',secret:'synthetic-secret',userId:'b',workspaceId:'wb'})});assert.equal(save.status,200);assert.doesNotMatch(await save.text(),/synthetic-secret/);
+  const own=await (await fetch(url+'/api/feature-credentials',{headers})).json();assert.equal(own.items.length,1);assert.doesNotMatch(JSON.stringify(own),/encryptedSecret|synthetic-secret/);
+  const foreign=await (await fetch(url+'/api/feature-credentials',{headers:{...headers,'x-user':'b'}})).json();assert.equal(foreign.items.length,0);
+  assert.equal((await fetch(url+'/api/feature-credentials',{method:'POST',headers:{...headers,'x-user':'b'},body:JSON.stringify({endpoint:sandboxMcpEndpoint,auth:'bearer',secret:'synthetic-secret'})})).status,400);
+  assert.equal((await fetch(url+'/api/admin/official-features/mcp-discover',{method:'POST',headers:{...headers,'x-user':'b'},body:'{}'})).status,403);
+});

@@ -2,7 +2,7 @@ import { AdminModel, AuditLog, ModelConfig, ModelUsageRecord, PublicModel, Publi
 import { effectiveModel } from "./modelPricing.js";
 
 export function publicUser(user: User): PublicUser {
-  const { passwordHash, ...safe } = user;
+  const { passwordHash, featureCredentials, ...safe } = user;
   return safe;
 }
 

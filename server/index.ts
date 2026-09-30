@@ -15,6 +15,7 @@ import { runTaskOrchestrator } from "./taskOrchestrator.js";
 import { resolveAiTask } from "./aiTaskConfig.js";
 import { installAiTaskRoutes } from "./aiTaskRoutes.js";
 import { installOfficialFeatureRoutes } from "./officialFeatureRoutes.js";
+import { installFeatureConnectionRoutes } from "./featureConnectionRoutes.js";
 import { installOfficialFeaturePilotRoutes } from "./officialFeaturePilotRoutes.js";
 import { installAdapterSandbox } from "./adapterSandbox.js";
 import { installFeatureTrialRoutes } from "./featureTrialRoutes.js";
@@ -915,6 +916,7 @@ installAiTaskRoutes(app, admin, store);
 installOfficialFeaturePilotRoutes(app, admin, store);
 installFeatureTrialRoutes(app, admin, store, confirmKeyBeforeModel);
 installFeatureRunRoutes(app, keyAuth, store, confirmKeyBeforeModel, knowledgeService);
+installFeatureConnectionRoutes(app, keyAuth, admin, store, confirmKeyBeforeModel);
 installOfficialFeatureRoutes(app, admin, store);
 installAdminPaymentRoutes(app, admin, store);
 app.post("/api/admin/models/:id/pricing", ...admin, asyncRoute(async (req, res) => {

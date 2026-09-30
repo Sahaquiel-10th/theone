@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import type { api as Api } from "./oneApi";
 import type { OfficialFeatureValues } from "../server/officialFeatures";
 import { SearchPicker } from "./SettingsControls";
+import { McpToolPicker, ToolAuthPicker, ToolCredentialEditor } from './FeatureConnections';
 
-type Options = { models: { id: string; name: string }[]; tools: { id: string; name: string; description: string }[]; allowedEndpoints: string[] };
+type Options = { models: { id: string; name: string }[]; tools: { id: string; name: string; description: string }[]; allowedEndpoints: string[]; mcpEndpoints?:string[] };
 type Result = { content: string; finishReason?: string; trace: { step: number; tool: string; status: string; query?: string; resultPreview: string; durationMs: number }[]; charges: { model: string; power: number; status: string }[] };
 export function FeatureBuilder({ api, values, onChange, disabled }: { api: typeof Api; values: OfficialFeatureValues; onChange: (v: OfficialFeatureValues) => void; disabled: boolean }) {
   const [options, setOptions] = useState<Options>({ models: [], tools: [], allowedEndpoints: [] }), [error, setError] = useState("");
@@ -13,12 +14,14 @@ export function FeatureBuilder({ api, values, onChange, disabled }: { api: typeo
   return <fieldset disabled={disabled}><legend>模型与能力</legend>
     <SearchPicker label="模型" value={values.modelId ?? ""} options={options.models.map(m => ({ value: m.id, label: m.name }))} onChange={modelId => onChange({ ...values, modelId })}/>
     <p>使用者自己的知识</p><div className="settings-tabs">{([['none','不使用'],['optional','按需选择'],['required','必须选择']] as const).map(([mode,label])=><button type="button" key={mode} aria-pressed={(values.knowledgeMode??'none')===mode} onClick={()=>onChange({...values,knowledgeMode:mode})}>{label}</button>)}</div>
-    <p className="hint">只声明能力，使用时由每位用户选择自己的来源，不共享管理员知识。当前后台试运行仅验证 HTTP 工具；知识流程请上架给自己的账号后验证。</p>
+    <p className="hint">只声明能力，使用时由每位用户选择自己的来源，不共享管理员知识。后台试运行可验证外部工具；知识流程请上架给自己的账号后验证。</p>
     <p className="hint">按需添加工具。不添加工具时，按提示词回答。</p>
     {options.tools.map(tool => <label key={tool.id} className="sharing-check"><input type="checkbox" checked={tools.some(t => t.id === tool.id)} onChange={e => onChange({ ...values, tools: e.target.checked ? [...tools, { id: tool.id, description: tool.description }] : tools.filter(t => t.id !== tool.id) })}/>{tool.name}</label>)}
     {tools.map((tool, i) => <details key={tool.id} open><summary>{options.tools.find(t => t.id === tool.id)?.name ?? tool.id}</summary><label>什么时候调用、参数怎么填<textarea rows={3} maxLength={2000} value={tool.description} onChange={e => onChange({ ...values, tools: tools.map((t, n) => n === i ? { ...t, description: e.target.value } : t) })}/></label>{tool.document !== undefined ? <button type="button" onClick={() => onChange({ ...values, tools: tools.filter((_, n) => n !== i) })}>移除工具</button> : null}</details>)}
-    <details><summary>添加 HTTP / OpenAPI 工具</summary><p className="hint">仅支持已审核地址的无鉴权只读接口。不要粘贴密钥。MCP、写入和授权接口暂未开放。</p>
-      <details><summary>当前可用地址</summary>{options.allowedEndpoints.map(url => <p key={url} style={{ overflowWrap: "anywhere" }}>{url}</p>)}</details>
+    {tools.map((tool,i)=><div key={`auth-${tool.id}`}><p>{tool.id} · 接口鉴权</p><ToolAuthPicker value={tool.auth} onChange={auth=>onChange({...values,tools:tools.map((t,n)=>n===i?{...t,auth}:t)})}/>{tool.mcp&&tool.auth?<ToolCredentialEditor api={api} endpoint={tool.mcp.endpoint} auth={tool.auth}/>:null}{tool.mcp?<button type="button" onClick={()=>onChange({...values,tools:tools.filter((_,n)=>n!==i)})}>移除 MCP 工具</button>:null}</div>)}
+    <McpToolPicker api={api} endpoints={options.mcpEndpoints??[]} tools={tools} onAdd={tool=>onChange({...values,tools:[...tools,tool]})}/>
+    <details><summary>添加 HTTP / OpenAPI 工具</summary><p className="hint">仅支持已审核地址的只读 GET 接口。定义中不要粘贴密钥；接口凭证独立加密保存。写入和 OAuth 暂未开放。</p>
+      <details><summary>当前可用地址与本人凭证</summary>{options.allowedEndpoints.map(url => <details key={url}><summary style={{overflowWrap:'anywhere'}}>{url}</summary><ToolCredentialEditor api={api} endpoint={url} auth="bearer"/><ToolCredentialEditor api={api} endpoint={url} auth="api_key"/></details>)}</details>
       <label>接口定义（OpenAPI JSON）<textarea rows={6} value={document} maxLength={40000} onChange={e => setDocument(e.target.value)}/></label>
       <label>操作标识 operationId<input value={operationId} maxLength={64} onChange={e => setOperationId(e.target.value)}/></label>
       <button type="button" disabled={tools.length >= 6} onClick={() => { try { const parsed = JSON.parse(document); if (!/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(operationId) || tools.some(t => t.id === operationId)) throw new Error("操作标识无效或重复"); onChange({ ...values, tools: [...tools, { id: operationId, operationId, document: parsed, description: "请填写该工具适用任务和参数规则" }] }); setDocument(""); setOperationId(""); setError(""); } catch (e) { setError(e instanceof Error ? e.message : "接口定义无效"); } }}>添加到智能体</button>
