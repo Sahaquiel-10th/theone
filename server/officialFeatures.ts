@@ -2,13 +2,14 @@ import type { SystemSettings } from "./types.js";
 import { validateFeatureTools, type FeatureToolChoice } from "./featureTools.js";
 
 /** Official, global metadata only. Never store tenant knowledge or credentials here.
- * Approval is not runtime authorization: adapters and consumer entitlements are
- * deliberately not enabled by this first-stage configuration registry.
+ * Approval alone is not runtime authorization: explicit recipient releases are
+ * managed separately and every execution checks current entitlement and Key.
  */
 export type OfficialFeatureValues = {
   name: string; description: string; author: string; instructions: string;
   limitations: string; integration: "question_answer" | "mcp" | "openapi";
   modelId?: string; tools?: FeatureToolChoice[];
+  knowledgeMode?: "none" | "optional" | "required";
 };
 export type OfficialFeatureVersion = {
   version: number; values: OfficialFeatureValues; evidence: string;
@@ -18,6 +19,7 @@ export type OfficialFeatureRecord = {
   id: string; revision: number; draft: OfficialFeatureValues;
   status: "draft" | "approved" | "paused";
   current?: OfficialFeatureVersion; history: OfficialFeatureVersion[];
+  release?: { id: string; version: number; userIds: string[]; publishedAt: string; publishedBy: string };
 };
 export class FeatureConfigError extends Error {
   constructor(message: string, readonly status = 400) { super(message); }
@@ -26,7 +28,7 @@ export const emptyFeature = (): OfficialFeatureValues => ({ name: "", descriptio
 export function featureValues(value: unknown): OfficialFeatureValues {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new FeatureConfigError("功能配置无效");
   const v = value as Record<string, unknown>;
-  const keys = ["name", "description", "author", "instructions", "limitations", "integration", "modelId", "tools"];
+  const keys = ["name", "description", "author", "instructions", "limitations", "integration", "modelId", "tools", "knowledgeMode"];
   if (Object.keys(v).some(k => !keys.includes(k))) throw new FeatureConfigError("仅支持功能说明配置，请勿加入密钥、地址或脚本字段");
   const take = (key: string, max: number, required = true) => {
     const text = v[key];
@@ -35,9 +37,10 @@ export function featureValues(value: unknown): OfficialFeatureValues {
   };
   if (!["question_answer", "mcp", "openapi"].includes(String(v.integration))) throw new FeatureConfigError("接入类型无效");
   if (v.modelId !== undefined && (typeof v.modelId !== "string" || v.modelId.length > 100)) throw new FeatureConfigError("模型无效");
+  if (v.knowledgeMode !== undefined && !["none", "optional", "required"].includes(String(v.knowledgeMode))) throw new FeatureConfigError("知识使用方式无效");
   let tools: FeatureToolChoice[] | undefined;
   try { if (v.tools !== undefined) tools = validateFeatureTools(v.tools); } catch (e) { throw new FeatureConfigError(e instanceof Error ? e.message : "工具配置无效"); }
-  return { name: take("name",60), description: take("description",500), author: take("author",100), instructions: take("instructions",12000), limitations: take("limitations",2000), integration: v.integration as OfficialFeatureValues["integration"], ...(v.modelId !== undefined ? { modelId: v.modelId as string } : {}), ...(tools ? { tools } : {}) };
+  return { name: take("name",60), description: take("description",500), author: take("author",100), instructions: take("instructions",12000), limitations: take("limitations",2000), integration: v.integration as OfficialFeatureValues["integration"], ...(v.modelId !== undefined ? { modelId: v.modelId as string } : {}), ...(tools ? { tools } : {}), ...(v.knowledgeMode !== undefined ? { knowledgeMode: v.knowledgeMode as OfficialFeatureValues["knowledgeMode"] } : {}) };
 }
 export function updateOfficialFeature(settings: SystemSettings, id: string, input: unknown, actor: string, at: string) {
   if (!/^[a-z][a-z0-9-]{2,63}$/.test(id) || ["constructor", "prototype"].includes(id)) throw new FeatureConfigError("标识需为 3–64 位小写英文、数字或短横线，以英文开头");
@@ -56,6 +59,7 @@ export function updateOfficialFeature(settings: SystemSettings, id: string, inpu
   } else if (body.action === "pause") {
     if (!next.current) throw new FeatureConfigError("尚无已认定版本");
     next.status="paused";
+    delete next.release;
   } else if (body.action === "restore") {
     const version=next.history.find(v=>v.version===body.version);
     if (!version) throw new FeatureConfigError("历史版本不存在",404);

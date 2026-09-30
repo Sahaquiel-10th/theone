@@ -8,6 +8,7 @@ export type ChatOperation = {
   payloadHash: string; requestId: string; status: "pending" | "completed" | "failed" | "interrupted";
   conversationId?: string; assistantMessageId?: string; knowledgeWarning?: string;
   retryable?: boolean; createdAt: string; updatedAt: string;
+  featureRun?: { featureId: string; name: string; version: number; releaseId: string; budget: number; sources: { id: string; binding: string }[] };
 };
 export type ChatOperationScope = { workspaceId: string; userId: string; operationId: string };
 type ChatOperationDatabase = Database & { chatOperations?: ChatOperation[] };
@@ -71,7 +72,7 @@ function ownOperation(db: ChatOperationDatabase, scope: ChatOperationScope) {
 }
 
 /** Must run before any message creation, retrieval or model call. Store.mutate serializes starts. */
-export async function beginChatOperation(store: Store, input: ChatOperationScope & { requestId: string; conversationId?: string; payload: unknown }) {
+export async function beginChatOperation(store: Store, input: ChatOperationScope & { requestId: string; conversationId?: string; payload: unknown; featureRun?: ChatOperation["featureRun"]; beforeClaim?: (db: Database) => void }) {
   const payloadHash = createHash("sha256").update(canonicalJson(input.payload)).digest("hex");
   return store.mutate(db => {
     authorize(db, input);
@@ -83,6 +84,7 @@ export async function beginChatOperation(store: Store, input: ChatOperationScope
       assertReplayable(existing);
       return { kind: "completed" as const, operation: structuredClone(existing) };
     }
+    input.beforeClaim?.(db);
     if (input.conversationId) {
       if (!db.conversations.some(item => item.id === input.conversationId && item.workspaceId === input.workspaceId && item.userId === input.userId)) {
         throw new ChatOperationError("CHAT_OPERATION_NOT_FOUND", "对话不存在", 404);
@@ -91,7 +93,8 @@ export async function beginChatOperation(store: Store, input: ChatOperationScope
     }
     const timestamp = new Date().toISOString();
     const operation: ChatOperation = { id, workspaceId: input.workspaceId, userId: input.userId, operationId: input.operationId,
-      payloadHash, requestId: input.requestId, conversationId: input.conversationId || undefined, status: "pending", createdAt: timestamp, updatedAt: timestamp };
+      payloadHash, requestId: input.requestId, conversationId: input.conversationId || undefined, status: "pending", createdAt: timestamp, updatedAt: timestamp,
+      ...(input.featureRun ? { featureRun: structuredClone(input.featureRun) } : {}) };
     operations.push(operation);
     return { kind: "started" as const, operation: structuredClone(operation) };
   });

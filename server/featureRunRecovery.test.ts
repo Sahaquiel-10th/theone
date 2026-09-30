@@ -1,0 +1,22 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+const exec=promisify(execFile);
+test('feature release and scoped receipts survive real store restart; pending work never auto-replays',async t=>{
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'one-feature-recovery-'));
+  t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const env={...process.env,DB_PROVIDER:'json',ONE_DATA_DIR:directory,ADMIN_INITIAL_PASSWORD:'isolated-fixture-password',YYLX_API_KEY:'',NODE_ENV:'test'};
+  const run=async(code:string)=>(await exec(process.execPath,['--import','tsx','--input-type=module','-e',code],{env})).stdout;
+  await run(`const {store}=await import('./server/db.ts');const {updateOfficialFeature}=await import('./server/officialFeatures.ts');const {releaseFeature,startFeatureRun}=await import('./server/featureRuns.ts');
+    await store.mutate(db=>{db.models.push({id:'testmodel',name:'Test',kind:'chat',enabled:true,apiKey:'synthetic',systemPrompt:''});const s=db.settings,id=db.users[0].id;
+      updateOfficialFeature(s,'test-feature',{revision:0,action:'save',values:{name:'Test',description:'Read',author:'ONE',instructions:'Read only',limitations:'Test only',integration:'question_answer',modelId:'testmodel'}},id,'t');
+      updateOfficialFeature(s,'test-feature',{revision:1,action:'approve',evidence:'synthetic read only fixture approved for recovery test',confirmed:true},id,'t');
+      releaseFeature(db,'test-feature',{revision:2,action:'publish',version:1,userIds:[id],confirmed:true},id);
+    });const d=await store.read();await startFeatureRun(store,{workspaceId:d.users[0].defaultWorkspaceId,userId:d.users[0].id},'test-feature',{releaseId:d.settings.officialFeatures[0].release.id,prompt:'PRIVATE_PROMPT',sourceIds:[],budget:.1,confirmed:true,operationId:'feature_operation_123456'},async()=>{});`);
+  const d=JSON.parse(await run(`const{store}=await import('./server/db.ts');const{featureRunResult}=await import('./server/featureRuns.ts');const d=await store.read();console.log(JSON.stringify({release:d.settings.officialFeatures[0].release,result:featureRunResult(d,{workspaceId:d.users[0].defaultWorkspaceId,userId:d.users[0].id},'feature_operation_123456'),calls:d.modelUsageRecords.length}));`));
+  assert.equal(d.release.version,1);assert.equal(d.result.status,'interrupted');assert.equal(d.result.prompt,'PRIVATE_PROMPT');assert.equal(d.calls,0);
+});

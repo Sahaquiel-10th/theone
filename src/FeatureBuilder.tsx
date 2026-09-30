@@ -12,6 +12,8 @@ export function FeatureBuilder({ api, values, onChange, disabled }: { api: typeo
   const tools = values.tools ?? [];
   return <fieldset disabled={disabled}><legend>模型与能力</legend>
     <SearchPicker label="模型" value={values.modelId ?? ""} options={options.models.map(m => ({ value: m.id, label: m.name }))} onChange={modelId => onChange({ ...values, modelId })}/>
+    <p>使用者自己的知识</p><div className="settings-tabs">{([['none','不使用'],['optional','按需选择'],['required','必须选择']] as const).map(([mode,label])=><button type="button" key={mode} aria-pressed={(values.knowledgeMode??'none')===mode} onClick={()=>onChange({...values,knowledgeMode:mode})}>{label}</button>)}</div>
+    <p className="hint">只声明能力，使用时由每位用户选择自己的来源，不共享管理员知识。当前后台试运行仅验证 HTTP 工具；知识流程请上架给自己的账号后验证。</p>
     <p className="hint">按需添加工具。不添加工具时，按提示词回答。</p>
     {options.tools.map(tool => <label key={tool.id} className="sharing-check"><input type="checkbox" checked={tools.some(t => t.id === tool.id)} onChange={e => onChange({ ...values, tools: e.target.checked ? [...tools, { id: tool.id, description: tool.description }] : tools.filter(t => t.id !== tool.id) })}/>{tool.name}</label>)}
     {tools.map((tool, i) => <details key={tool.id} open><summary>{options.tools.find(t => t.id === tool.id)?.name ?? tool.id}</summary><label>什么时候调用、参数怎么填<textarea rows={3} maxLength={2000} value={tool.description} onChange={e => onChange({ ...values, tools: tools.map((t, n) => n === i ? { ...t, description: e.target.value } : t) })}/></label>{tool.document !== undefined ? <button type="button" onClick={() => onChange({ ...values, tools: tools.filter((_, n) => n !== i) })}>移除工具</button> : null}</details>)}

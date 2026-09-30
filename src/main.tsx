@@ -1,6 +1,7 @@
 import React, { FormEvent, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { AiTaskPanel } from "./AiTaskPanel";
 import { OfficialFeaturePanel } from "./OfficialFeaturePanel";
+import { FeatureCatalog } from "./FeatureCatalog";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { MessageMarkdown } from "./MessageMarkdown";
@@ -1566,7 +1567,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       {view === "admin" && user.role === "admin" ? (
         <AdminPanel actorId={user.id} refreshModels={refresh} onOpenSidebar={() => setHistoryOpen(true)} />
       ) : view === "features" ? (
-        <section className="account-page features-page"><header className="admin-header"><div><h2>功能</h2><p>让资料派上用场。</p></div></header><div className="account-body settings-account-body"><SharingPanel api={api} models={models}/></div></section>
+        <section className="account-page features-page"><header className="admin-header"><div><h2>功能</h2><p>让资料派上用场。</p></div></header><div className="account-body settings-account-body"><FeatureCatalog api={api}/><SharingPanel api={api} models={models}/></div></section>
       ) : view === "account" ? (
         <AccountPage user={user} profile={profile} onSaveProfile={saveProfile} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setHistoryOpen(true)} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgePage onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : setKnowledgeConnection(next)} />} />
       ) : (

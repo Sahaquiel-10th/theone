@@ -19,7 +19,7 @@ export function validateFeatureTools(value: unknown): FeatureToolChoice[] {
   const ids = new Set<string>();
   return value.map(raw => {
     if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).some(k => !["id", "description", "document", "operationId"].includes(k))) throw new Error("工具配置无效，请勿放入密钥或脚本");
-    if (typeof raw.id !== "string" || !/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(raw.id) || ids.has(raw.id)) throw new Error("工具标识无效或重复");
+    if (typeof raw.id !== "string" || !/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(raw.id) || raw.id === "knowledge_search" || ids.has(raw.id)) throw new Error("工具标识无效、保留或重复");
     ids.add(raw.id);
     if (typeof raw.description !== "string" || !raw.description.trim() || raw.description.length > 2000) throw new Error("请填写工具调用条件，最多 2000 字");
     if (raw.document !== undefined && JSON.stringify(raw.document).length > 40000) throw new Error("接口定义超过 40 KB");

@@ -18,6 +18,7 @@ import { installOfficialFeatureRoutes } from "./officialFeatureRoutes.js";
 import { installOfficialFeaturePilotRoutes } from "./officialFeaturePilotRoutes.js";
 import { installAdapterSandbox } from "./adapterSandbox.js";
 import { installFeatureTrialRoutes } from "./featureTrialRoutes.js";
+import { installFeatureRunRoutes } from "./featureRunRoutes.js";
 import { installPublicSharingRoutes } from "./publicSharingRoutes.js";
 import { appendOwnerContextTrace, buildContextTraceSections, ownerContextTraces } from "./contextTrace.js";
 import { AttachmentService, ATTACHMENT_MAX_BYTES, ATTACHMENT_CHUNK_BYTES, ATTACHMENT_IMAGE_MAX_BYTES, ownedAttachment, removeAttachmentFiles } from "./attachmentService.js";
@@ -913,6 +914,7 @@ const admin = [...keyAuth, requireRole("admin")] as const;
 installAiTaskRoutes(app, admin, store);
 installOfficialFeaturePilotRoutes(app, admin, store);
 installFeatureTrialRoutes(app, admin, store, confirmKeyBeforeModel);
+installFeatureRunRoutes(app, keyAuth, store, confirmKeyBeforeModel, knowledgeService);
 installOfficialFeatureRoutes(app, admin, store);
 installAdminPaymentRoutes(app, admin, store);
 app.post("/api/admin/models/:id/pricing", ...admin, asyncRoute(async (req, res) => {
