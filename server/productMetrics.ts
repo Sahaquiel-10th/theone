@@ -7,7 +7,7 @@ export const metricDay=(d:number)=>new Date(d*DAY).toISOString().slice(0,10);
 export const metricsDefinitions={
   active:'有效活跃：当天至少完成一次私人问答、官方功能、本机任务，或登录访客的公开问答。打开页面、登录、模型中间调用和失败不计入。',
   retention:'D1 / D7：注册后的第 1 / 第 7 个北京时间自然日有有效使用；仅统计观察日已完整结束的账号。人工开通日期作为账号创建日期，不等同于自主注册。',
-  recharge:'仅统计已确认到账的微信充值；充值是预付款，不是已确认收入。复购表示至少两笔到账充值。',
+  recharge:'仅统计已确认到账的微信充值；充值是预付款，不是已确认收入。复购表示至少两笔到账充值。实扣电力按付款账号排除管理员与测试账号，供应成本按相关模型调用汇总，不等于利润。',
   risk:'低余额待充值：余额不足 1 电力且近 30 天有效使用过；7–29 天未用为待唤回，30 天及以上未用为沉默，不推断订阅到期或欠费。',
   population:'默认排除管理员及手工标记的测试账号；禁用账号保留在累计账号口径中。匿名分享访客只计问题数，不冒充注册用户。历史指标仅基于现存记录。'
 };
@@ -15,6 +15,7 @@ export function productMetrics(db:Database,now=Date.now()){
   const today=day(now),valid=(s?:string)=>Number.isFinite(time(s))&&time(s)<=now;
   const population=db.users.filter(u=>u.role!=='admin'&&!u.analyticsExcluded&&valid(u.createdAt));
   const users=new Map(population.map(u=>[u.id,u]));
+  const included=(userId:string,workspaceId:string)=>users.get(userId)?.defaultWorkspaceId===workspaceId&&db.workspaceMembers.some(m=>m.userId===userId&&m.workspaceId===workspaceId);
   const activity=new Map<string,Set<number>>(),eventKeys=new Set<string>();
   const add=(userId:string,workspaceId:string,at:string,key:string)=>{
     const u=users.get(userId);if(!u||u.defaultWorkspaceId!==workspaceId||!valid(at)||time(at)<time(u.createdAt)||!db.workspaceMembers.some(m=>m.userId===userId&&m.workspaceId===workspaceId))return;
@@ -54,7 +55,8 @@ export function productMetrics(db:Database,now=Date.now()){
   };
   const activeIn=(n:number)=>[...activity.values()].filter(s=>[...s].some(d=>d>=today-n+1&&d<=today)).length;
   const usages=db.modelUsageRecords.filter(r=>r.status==='success'&&valid(r.completedAt)&&day(time(r.completedAt))>=today-29&&
-    (users.get(r.userId)?.defaultWorkspaceId===r.workspaceId||!!r.commercial&&users.get(r.commercial.snapshot.payerUserId)?.defaultWorkspaceId===r.commercial.snapshot.payerWorkspaceId));
+    (included(r.userId,r.workspaceId)||!!r.commercial&&included(r.commercial.snapshot.payerUserId,r.commercial.snapshot.payerWorkspaceId)));
+  const charge=(r:Database['modelUsageRecords'][number])=>{if(!r.commercial)return r.chargedMicros??0;const c=r.commercial,s=c.snapshot;return (included(s.payerUserId,s.payerWorkspaceId)?c.payerChargedMicros??0:0)+(included(s.publisherUserId,s.publisherWorkspaceId)?c.publisherChargedMicros??0:0);};
   const paid30=orders.filter(o=>day(time(o.paidAt))>=today-29),mau=activeIn(30),dau=activeIn(1);
   return {asOf:new Date(now).toISOString(),timezone:'Asia/Shanghai',definitions:metricsDefinitions,excludedUserIds:db.users.filter(u=>u.role!=='admin'&&u.analyticsExcluded).map(u=>u.id),
     summary:{accounts:rows.length,enabledAccounts:rows.filter(r=>r.enabled).length,selfRegistered:rows.filter(r=>r.origin==='self_registered').length,provisioned:rows.filter(r=>r.origin==='provisioned').length,excludedAccounts:db.users.filter(u=>u.role==='admin'||u.analyticsExcluded).length,
@@ -62,5 +64,5 @@ export function productMetrics(db:Database,now=Date.now()){
       activated:activity.size,dau,wau:activeIn(7),mau,stickiness:mau?dau/mau:null,d1:retained(1),d7:retained(7),
       lowBalance:rows.filter(r=>r.lowBalance).length,atRisk:rows.filter(r=>r.state==='at_risk').length,dormant:rows.filter(r=>r.state==='dormant').length,neverActivated:rows.filter(r=>r.state==='never').length,
       payingUsers30:new Set(paid30.map(o=>o.userId)).size,payingUsersEver:new Set(orders.map(o=>o.userId)).size,repeatPayers:rows.filter(r=>r.rechargeCount>=2).length,
-      rechargeCny30:paid30.reduce((n,o)=>n+o.amountCny,0),consumedMicros30:usages.reduce((n,r)=>n+(r.commercial?(r.commercial.payerChargedMicros??0)+(r.commercial.publisherChargedMicros??0):r.chargedMicros??0),0),costMicros30:usages.reduce((n,r)=>n+(r.costMicros??0),0),anonymousQuestions30},daily,users:rows};
+      rechargeCny30:paid30.reduce((n,o)=>n+o.amountCny,0),consumedMicros30:usages.reduce((n,r)=>n+charge(r),0),costMicros30:usages.reduce((n,r)=>n+(r.costMicros??0),0),anonymousQuestions30},daily,users:rows};
 }

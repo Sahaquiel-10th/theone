@@ -44,3 +44,8 @@ test('admin metrics endpoints enforce Key/role, paginate, export aggregates and 
  assert.equal((await fetch(url+'/exclusions',{method:'POST',headers,body:JSON.stringify({userId:'a',excluded:true,actorUserId:'forged',workspaceId:'wb'})})).status,200);
  assert.equal(db.auditLogs.at(-1)!.actorUserId,'admin');assert.equal(db.auditLogs.at(-1)!.workspaceId,'wa');assert.equal(db.users.length,27);assert.equal(productMetrics(db,now).summary.accounts,24);
 });
+test('commercial charges exclude admin/test subsidies while retaining eligible visitor consumption',()=>{
+ const db=fixture();db.modelUsageRecords=[{status:'success',userId:'admin',workspaceId:'wadmin',completedAt:'2026-09-30T00:00:00Z',costMicros:3,commercial:{snapshot:{payerUserId:'a',payerWorkspaceId:'wa',publisherUserId:'admin',publisherWorkspaceId:'wadmin'},payerChargedMicros:7,publisherChargedMicros:5}}] as any;
+ assert.equal(productMetrics(db,now).summary.consumedMicros30,7);
+ db.users[0].analyticsExcluded=true;assert.equal(productMetrics(db,now).summary.consumedMicros30,0);
+});
