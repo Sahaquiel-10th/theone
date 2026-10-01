@@ -69,9 +69,11 @@ export function creditPower(db: Database, params: {
   if (!account) throw new Error("电力账户不存在");
   if (!Number.isSafeInteger(params.amountMicros) || params.amountMicros <= 0 || !Number.isSafeInteger(account.balanceMicros + params.amountMicros)) throw new Error("电力数量必须为有效正数");
   const before = account.balanceMicros;
+  const paidBefore=Math.max(0,Math.min(before,account.paidBalanceMicros??0));
   account.balanceMicros += params.amountMicros;
+  account.paidBalanceMicros=paidBefore+(params.type==='recharge'?params.amountMicros:0);
   account.updatedAt = new Date().toISOString();
-  const entry = { id: uid("pwl"), workspaceId: params.workspaceId, userId: params.userId, type: params.type, amountMicros: params.amountMicros, balanceBeforeMicros: before, balanceAfterMicros: account.balanceMicros, title: params.title, batchId: params.batchId, createdByUserId: params.createdByUserId, createdAt: account.updatedAt } as const;
+  const entry = { id: uid("pwl"), workspaceId: params.workspaceId, userId: params.userId, type: params.type, amountMicros: params.amountMicros,paidPrincipalMicros:params.type==='recharge'?params.amountMicros:0,bonusMicros:params.type==='recharge'?0:params.amountMicros, balanceBeforeMicros: before, balanceAfterMicros: account.balanceMicros, title: params.title, batchId: params.batchId, createdByUserId: params.createdByUserId, createdAt: account.updatedAt } as const;
   db.powerLedger.push(entry);
   return entry;
 }
@@ -84,9 +86,12 @@ export function chargePower(db: Database, params: {
   if (!Number.isSafeInteger(params.amountMicros) || params.amountMicros < 0) throw new Error("扣费必须是有效的非负整数");
   if (availablePowerMicros(db, params.workspaceId, params.userId) < params.amountMicros) throw new Error("电力不足，请先充值");
   const before = account.balanceMicros;
+  const paidBefore=Math.max(0,Math.min(before,account.paidBalanceMicros??0)),bonusBefore=before-paidBefore;
+  const bonusMicros=Math.min(params.amountMicros,bonusBefore),paidPrincipalMicros=params.amountMicros-bonusMicros;
   account.balanceMicros -= params.amountMicros;
+  account.paidBalanceMicros=paidBefore-paidPrincipalMicros;
   account.updatedAt = new Date().toISOString();
-  const entry = { id: uid("pwl"), workspaceId: params.workspaceId, userId: params.userId, type: "usage" as const, amountMicros: -params.amountMicros, balanceBeforeMicros: before, balanceAfterMicros: account.balanceMicros, title: params.title, modelId: params.modelId, usageRecordId: params.usageRecordId, createdAt: account.updatedAt };
+  const entry = { id: uid("pwl"), workspaceId: params.workspaceId, userId: params.userId, type: "usage" as const, amountMicros: -params.amountMicros,paidPrincipalMicros,bonusMicros, balanceBeforeMicros: before, balanceAfterMicros: account.balanceMicros, title: params.title, modelId: params.modelId, usageRecordId: params.usageRecordId, createdAt: account.updatedAt };
   db.powerLedger.push(entry);
   return entry;
 }

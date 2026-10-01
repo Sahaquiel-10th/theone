@@ -1,6 +1,6 @@
 export type Role = "admin" | "user";
 
-export type User = { id: string; username: string; passwordHash: string; role: Role; defaultWorkspaceId: string; profile?: import("./betaProfile.js").AccountProfile; preferredModelId?: string; enabled: boolean; createdAt: string; featureCredentials?: import("./featureCredentials.js").FeatureCredential[] };
+export type User = { id: string; username: string; passwordHash: string; role: Role; defaultWorkspaceId: string; profile?: import("./betaProfile.js").AccountProfile; preferredModelId?: string; enabled: boolean; createdAt: string; featureCredentials?: import("./featureCredentials.js").FeatureCredential[]; registrationOrigin?:'visitor'; visitorAuthVersion?:number };
 export type Workspace = { id: string; name: string; slug: string; status: "active" | "suspended"; createdAt: string; updatedAt: string };
 export type WorkspaceMember = { id: string; workspaceId: string; userId: string; role: "owner" | "member"; createdAt: string };
 export type ConversationFolder = { id: string; workspaceId: string; userId: string; name: string; createdAt: string };
@@ -51,7 +51,7 @@ export type Attachment = {
 };
 export type AttachmentSummary = Pick<Attachment, "id" | "originalName" | "mimeType" | "kind" | "size" | "status" | "uploadedBytes" | "parseError" | "textChars" | "segmentCount">;
 export type SearchSource = { title: string; url: string; snippet: string };
-export type SystemSettings = { safetyRules: string; rechargeCnyPerPower: number; aiTasks?: import("./aiTaskConfig.js").AiTaskConfigs; officialFeatures?: import("./officialFeatures.js").OfficialFeatureRecord[] };
+export type SystemSettings = { safetyRules: string; rechargeCnyPerPower: number; aiTasks?: import("./aiTaskConfig.js").AiTaskConfigs; officialFeatures?: import("./officialFeatures.js").OfficialFeatureRecord[];publicCommercePolicy?:import('./publicSharingTypes.js').PublicCommercePolicy };
 
 export type UserSavedMemory = {
   id: string; workspaceId: string; userId: string; conversationId?: string; sourceMessageId?: string;
@@ -82,6 +82,7 @@ export type ExecutionTraceStep = {
 };
 
 export type ModelUsageRecord = {
+  commercial?:import('./publicSharingTypes.js').CommercialUsage;
   finishReason?: import("./modelGateway.js").ModelFinishReason;
   aiTaskVersion?: number;
   cacheUsage?: CacheUsage;
@@ -100,12 +101,14 @@ export type ModelUsageRecord = {
 };
 
 export type PowerAccount = {
+  paidBalanceMicros?: number;
   id: string; workspaceId: string; userId: string; balanceMicros: number;
   /** Funds held by pending calls and calls awaiting explicit billing review. */
   reservedMicros?: number;
   createdAt: string; updatedAt: string;
 };
 export type PowerLedgerEntry = {
+  paidPrincipalMicros?:number;bonusMicros?:number;
   id: string; workspaceId: string; userId: string; type: "gift" | "recharge" | "usage" | "adjustment" | "refund";
   amountMicros: number; balanceBeforeMicros: number; balanceAfterMicros: number; title: string; batchId?: string;
   modelId?: string; usageRecordId?: string; createdByUserId?: string; createdAt: string;
@@ -182,6 +185,6 @@ export type Database = {
   agents: Agent[]; attachments: Attachment[]; executionTasks: ExecutionTask[]; executionEvents: ExecutionEvent[]; settings: SystemSettings;
 };
 
-export type PublicUser = Omit<User, "passwordHash" | "featureCredentials">;
+export type PublicUser = Omit<User, "passwordHash" | "featureCredentials" | "visitorAuthVersion">;
 export type PublicModel = Pick<ModelConfig, "id" | "name" | "kind" | "isDefault">;
 export type AdminModel = Omit<ModelConfig, "apiKey" | "encryptedApiKey"> & { hasApiKey: boolean };

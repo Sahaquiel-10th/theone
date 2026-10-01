@@ -4,9 +4,11 @@ import { MODEL_MAX_OUTPUT_TOKENS } from "./modelGateway.js";
 import { calculateModelPower, chargePower, estimateTokenCeiling, MICROS_PER_POWER, powerAccount, releasePower, reservePower } from "./powerBilling.js";
 import { uid } from "./security.js";
 import { effectiveModel } from "./modelPricing.js";
+import {reserveCommerce,releaseCommerce,settleCommerce,restoreCommerceHolds} from './commerceBilling.js';
+import type {PublicCommerceSnapshot} from './publicSharingTypes.js';
 
 export type ModelUsage = { inputTokens: number; outputTokens: number; totalTokens: number; cacheUsage?: CacheUsage; source: string };
-type BillingParams = { workspaceId: string; userId: string; conversationId?: string; model: ModelConfig; input: unknown; activity: string; requestId: string; beforeReserve?: (db: Database, amountMicros: number) => void };
+type BillingParams = { workspaceId: string; userId: string; conversationId?: string; model: ModelConfig; input: unknown; activity: string; requestId: string; beforeReserve?: (db: Database, amountMicros: number) => void;commerce?:PublicCommerceSnapshot };
 type BillingScope = { usageId: string; workspaceId: string; userId: string };
 
 export class BillingReviewRequiredError extends Error {
@@ -95,8 +97,9 @@ export function settleBillingRecord(db: Database, scope: BillingScope, usage: Mo
     : calculateModelPower(pricingSnapshot(row), row.inputTokens, row.outputTokens, row.cacheUsage);
   const held = row.reservedMicros ?? 0;
   const charged = Math.min(held, calculated.chargedMicros);
-  releasePower(db, { workspaceId: row.workspaceId, userId: row.userId, amountMicros: held });
-  chargePower(db, { workspaceId: row.workspaceId, userId: row.userId, amountMicros: charged, modelId: row.modelId, usageRecordId: row.id, title: row.activity || "模型调用" });
+  if(row.commercial)settleCommerce(db,row,charged);
+  else {releasePower(db, { workspaceId: row.workspaceId, userId: row.userId, amountMicros: held });
+  chargePower(db, { workspaceId: row.workspaceId, userId: row.userId, amountMicros: charged, modelId: row.modelId, usageRecordId: row.id, title: row.activity || "模型调用" });}
   row.chargedMicros = charged; row.calculatedChargeMicros = calculated.chargedMicros; row.costMicros = calculated.costMicros;
   row.billingCapped = charged < calculated.chargedMicros; row.reservedMicros = 0; row.status = "success"; row.reviewReason = undefined;
   return row;
@@ -121,9 +124,11 @@ export async function runBilledModel<T extends { usage?: ModelUsage; finishReaso
       || !db.workspaceMembers.some((item) => item.userId === params.userId && item.workspaceId === params.workspaceId)
       || !db.workspaces.some((item) => item.id === params.workspaceId && item.status === "active")) throw new Error("账号或个人空间不可用");
     if (!db.models.some((item) => item.id === model.id && item.enabled)) throw new Error("模型已停用，请重新选择");
-    if (db.modelUsageRecords.some((item) => item.workspaceId === params.workspaceId && item.userId === params.userId && item.status === "needs_review")) throw new BillingReviewRequiredError();
+    const payers=[{workspaceId:params.workspaceId,userId:params.userId},...(params.commerce?[{workspaceId:params.commerce.payerWorkspaceId,userId:params.commerce.payerUserId}]:[])];
+    if (db.modelUsageRecords.some(item=>item.status==='needs_review'&&payers.some(p=>(item.workspaceId===p.workspaceId&&item.userId===p.userId)||(item.commercial?.snapshot.payerWorkspaceId===p.workspaceId&&item.commercial?.snapshot.payerUserId===p.userId)))) throw new BillingReviewRequiredError();
     params.beforeReserve?.(db, amountMicros);
-    reservePower(db, { ...params, amountMicros });
+    if(params.commerce)reserveCommerce(db,row,params.commerce,amountMicros);
+    else reservePower(db, { ...params, amountMicros });
     db.modelUsageRecords.push(row);
   });
   const scope = { usageId: row.id, workspaceId: row.workspaceId, userId: row.userId };
@@ -135,7 +140,8 @@ export async function runBilledModel<T extends { usage?: ModelUsage; finishReaso
       await store.mutate((db) => {
         const failed = scopedRecord(db, scope);
         if (failed.status !== "pending") return;
-        releasePower(db, { ...params, amountMicros: failed.reservedMicros ?? 0 });
+        if(failed.commercial){releaseCommerce(db,failed);failed.commercial.status='released';}
+        else releasePower(db, { ...params, amountMicros: failed.reservedMicros ?? 0 });
         failed.status = "failed"; failed.reservedMicros = 0; failed.chargedMicros = 0;
         failed.durationMs = Date.now() - startedAt; failed.completedAt = new Date().toISOString();
         failed.reviewReason = "upstream_failed_cost_unknown";
@@ -174,7 +180,8 @@ export function resolveBillingReview(db: Database, params: BillingScope & { acti
   if (row.status === "success" || row.status === "waived") return row;
   if (row.status !== "needs_review") throw new Error("这笔用量不需要人工核对");
   if (params.action === "waive") {
-    releasePower(db, { workspaceId: row.workspaceId, userId: row.userId, amountMicros: row.reservedMicros ?? 0 });
+    if(row.commercial){releaseCommerce(db,row);row.commercial.status='released';}
+    else releasePower(db, { workspaceId: row.workspaceId, userId: row.userId, amountMicros: row.reservedMicros ?? 0 });
     row.status = "waived"; row.reservedMicros = 0; row.chargedMicros = 0; row.completedAt = new Date().toISOString();
     row.reviewReason = "admin_waived";
     return row;
@@ -193,6 +200,7 @@ export function reconcileInterruptedBilling(db: Database) {
   for (const row of db.modelUsageRecords) {
     if (row.status === "pending") { row.status = "needs_review"; row.reviewReason = "server_restarted_before_settlement"; }
     if (row.status !== "needs_review") continue;
+    if(row.commercial){restoreCommerceHolds(db,row);continue;}
     const account = powerAccount(db, row.workspaceId, row.userId);
     if (account) account.reservedMicros = (account.reservedMicros ?? 0) + Math.max(0, row.reservedMicros ?? 0);
   }

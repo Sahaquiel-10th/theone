@@ -32,14 +32,14 @@ export function installAdminPaymentRoutes(app: Express, admin: readonly RequestH
     } catch { res.status(502).json({ error: "暂时无法核对微信订单，请稍后重试" }); }
   });
 }
-export function installPaymentRoutes(app: Express, keyAuth: readonly RequestHandler[], store: Store) {
-  app.get("/api/me/billing/summary", ...keyAuth, async (req, res) => {
+export function installPaymentRoutes(app: Express, keyAuth: readonly RequestHandler[], store: Store, prefix='/api/me') {
+  app.get(`${prefix}/billing/summary`, ...keyAuth, async (req, res) => {
     const db = await store.read();
     const spentMicros = db.powerLedger.filter(row => row.workspaceId === req.workspaceId && row.userId === req.user!.id && row.type === "usage")
       .reduce((sum, row) => sum + Math.max(0, -row.amountMicros), 0);
     res.json({ spentMicros });
   });
-  app.post("/api/me/payments/wechat", ...keyAuth, async (req, res) => {
+  app.post(`${prefix}/payments/wechat`, ...keyAuth, async (req, res) => {
     try {
       if (!wechatReady()) return res.status(503).json({ error: "微信支付尚未配置" });
       const scope = { workspaceId: req.workspaceId!, userId: req.user!.id }, c = wechatConfig();
@@ -61,7 +61,7 @@ export function installPaymentRoutes(app: Express, keyAuth: readonly RequestHand
       res.json({ order: publicPayment(saved), qrCode: saved.status === "pending" && saved.payment?.codeUrl && Date.parse(saved.payment.expiresAt) > Date.now() ? await QRCode.toDataURL(saved.payment.codeUrl) : null });
     } catch { res.status(400).json({ error: "未能创建支付订单，请检查金额或已有订单" }); }
   });
-  app.post("/api/me/payments/:id/check", ...keyAuth, async (req, res) => {
+  app.post(`${prefix}/payments/:id/check`, ...keyAuth, async (req, res) => {
     const order = (await store.read()).rechargeOrders.find(o => o.id === req.params.id && o.workspaceId === req.workspaceId && o.userId === req.user!.id);
     if (!order?.payment) return res.status(404).json({ error: "订单不存在" });
     try {
@@ -72,12 +72,12 @@ export function installPaymentRoutes(app: Express, keyAuth: readonly RequestHand
       res.json({ order: publicPayment((await store.read()).rechargeOrders.find(o => o.id === order.id)!) });
     } catch { res.status(502).json({ error: "暂时无法核对微信订单，请稍后重试" }); }
   });
-  app.get("/api/me/billing/history", ...keyAuth, async (req, res) => {
+  app.get(`${prefix}/billing/history`, ...keyAuth, async (req, res) => {
     const db = await store.read(), kind = req.query.kind;
     const page = Math.max(1, Math.min(1000000, Math.floor(Number(req.query.page) || 1))), pageSize = 10;
     const own = (r: { workspaceId: string; userId: string }) => r.workspaceId === req.workspaceId && r.userId === req.user!.id;
     const records = kind === "orders" ? db.rechargeOrders.filter(own).map(publicPayment)
-      : kind === "usage" ? db.modelUsageRecords.filter(own).map(publicUsageRecord) : db.powerLedger.filter(own);
+      : kind === "usage" ? db.modelUsageRecords.filter(r=>own(r)||r.commercial?.snapshot.payerWorkspaceId===req.workspaceId&&r.commercial?.snapshot.payerUserId===req.user!.id).map(r=>r.commercial?{id:r.id,createdAt:r.createdAt,status:r.status,modelNameSnapshot:r.modelNameSnapshot,activity:'分身问答',chargedMicros:(own(r)?r.commercial.publisherChargedMicros??0:0)+(r.commercial.snapshot.payerUserId===req.user!.id&&r.commercial.snapshot.payerWorkspaceId===req.workspaceId?r.commercial.payerChargedMicros??0:0),reservedMicros:(own(r)?r.commercial.publisherReservedMicros:0)+(r.commercial.snapshot.payerUserId===req.user!.id&&r.commercial.snapshot.payerWorkspaceId===req.workspaceId?r.commercial.payerReservedMicros:0)}:publicUsageRecord(r)) : db.powerLedger.filter(own);
     records.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
     res.json({ items: records.slice((page - 1) * pageSize, page * pageSize), page, total: records.length, pageSize });
   });

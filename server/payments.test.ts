@@ -24,6 +24,7 @@ test("payment replay freezes recharge exchange rate and settlement credits only 
   settlePayment(db, remote);
   const restored = JSON.parse(JSON.stringify(db)); settlePayment(restored, remote);
   assert.equal(restored.powerLedger.length, 1); assert.deepEqual(restored.powerAccounts.map((a: any) => a.balanceMicros), [100e6, 0]);
+  assert.equal(restored.powerAccounts[0].paidBalanceMicros,100e6);assert.equal(restored.powerLedger[0].paidPrincipalMicros,100e6);
   const second = preparePayment(db, { userId: "v", workspaceId: "x" }, "operation-123456789", 100, config);
   assert.throws(() => settlePayment(db, { ...remote, out_trade_no: second.order.id, amount: { total: 80000, currency: "CNY" } }), /已入账/);
 });

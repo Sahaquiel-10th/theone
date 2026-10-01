@@ -3,6 +3,9 @@ import type { Database, KnowledgeConnection } from "./types.js";
 import type { Publication, PublicSession, PublicRun } from "./publicSharingTypes.js";
 import { resolveAiTask } from "./aiTaskConfig.js";
 import { uid } from "./security.js";
+import { checkApiBudget } from './publicApi.js';
+import {publicationCommerceFields,publicationAccess,runCommerce,verifyRunCommerce} from './publicCommerce.js';
+import type {VisitorIdentity} from './visitorAccounts.js';
 
 export const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const timestamp = () => new Date().toISOString();
@@ -66,6 +69,7 @@ export function publish(db: Database, scope: { workspaceId: string; userId: stri
     return { id, provider: c.provider, binding: sourceBinding(c), label: c.providerSpaceName || c.provider };
   });
   const p: Publication = { id: uid("pub"), ...scope, slug: randomBytes(18).toString("base64url"),
+    ...publicationCommerceFields(db,input),
     version:old?(old.version??1)+1:1,userPrompt:text(input.prompt,12000,false),updatedAt:timestamp(),
     name: text(input.name, 60), description: text(input.description, 300, false),
     prompt: [config.model.systemPrompt, text(input.prompt, 12000, false)].filter(Boolean).join("\n\n"), modelId: config.model.id, taskVersion: config.version,
@@ -75,13 +79,15 @@ export function publish(db: Database, scope: { workspaceId: string; userId: stri
   db.auditLogs.push({ id: uid("aud"), ...scope, actorUserId: scope.userId, action: old?"publication.updated":"publication.created", targetType: "publication", targetId: p.id, details: {version:p.version, sources: sources.map(s => s.id), budgetMicros, perRunMicros }, createdAt: timestamp() });
   return p;
 }
-export function createGuest(db: Database, publicationId: string) {
+export function createGuest(db: Database, publicationId: string,identity?:VisitorIdentity,internalApi=false) {
   const p = activePublication(db, publicationId);
+  if(!internalApi)publicationAccess(db,p,identity);
   const sessions = db.publicSessions!.filter(s => s.publicationId === p.id);
   if (sessions.length >= 500 || sessions.filter(s => Date.now() - Date.parse(s.createdAt) < 60000).length >= 10) throw new SharingError("访问较多，请稍后再试或联系发布者", 429);
   const token = randomBytes(32).toString("base64url"), id = uid("gst");
   const session: PublicSession = { id, workspaceId: p.workspaceId, userId: id, publicationId: p.id, tokenHash: digest(token), uploadBytes: 0, uploadCount: 0, createdAt: timestamp(), expiresAt: new Date(Math.min(Date.parse(p.expiresAt), Date.now() + 7 * 86400000)).toISOString() };
   session.publicationVersion=p.version??1;
+  if(identity){session.accountUserId=identity.userId;session.accountWorkspaceId=identity.workspaceId;}
   db.publicSessions!.push(session); return { session, token };
 }
 export function guest(db: Database, slug: string, token: string) {
@@ -105,6 +111,8 @@ export function checkRunBudget(db: Database, runId: string, amount: number) {
   if (!r || r.status !== "running") throw new SharingError("任务已停止", 409);
   const p = activePublication(db, r.publicationId), all = usageFor(db, p), own = usageFor(db, p, r.id);
   if((r.publicationVersion??1)!==(p.version??1))throw new SharingError('分身版本已变化，请重新开始',409);
+  if(r.apiGrantId){const g=p.apiGrants?.find(g=>g.id===r.apiGrantId&&g.workspaceId===p.workspaceId&&g.userId===p.userId);if(!g)throw new SharingError('API 授权不可用',403);checkApiBudget(db,p,g,r.id,amount);}
+  verifyRunCommerce(db,p,r,amount);
   if (all.spent + all.held + amount > p.budgetMicros || own.spent + own.held + amount > p.perRunMicros) throw new SharingError("本次问题预计用量超过分享额度，请缩小问题范围或联系发布者", 402);
 }
 export function beginPublicRun(db: Database, p: Publication, s: PublicSession, input: Record<string, unknown>) {
@@ -124,6 +132,14 @@ export function beginPublicRun(db: Database, p: Publication, s: PublicSession, i
   if (runs.filter(r => r.sessionId === s.id).length >= 100 || runs.filter(r => Date.now() - Date.parse(r.createdAt) < 60000).length >= 20 || runs.filter(r => r.status === "running").length >= 2 || runs.some(r => r.sessionId === s.id && r.status === "running")) throw new SharingError("任务较多，请稍后再试", 429);
   const run: PublicRun = { id: uid("pqr"), workspaceId: s.workspaceId, userId: s.id, publicationId: p.id, sessionId: s.id, operationId, payloadHash, content, attachmentIds, status: "running", createdAt: timestamp() };
   run.publicationVersion=p.version??1;
+  run.apiGrantId=s.apiGrantId;run.entryPoint=s.apiGrantId?'published_api':'published_web';
+  run.commerce=runCommerce(db,p,s);
+  if((run.commerce?.multiplier??0)>0&&(input.confirmedPriceVersion!==(p.version??1)||input.confirmedPayment!==true))throw new SharingError('请确认当前版本的访客费用',409);
   db.publicRuns!.push(run); checkRunBudget(db, run.id, 1); return { run, created: true };
 }
-export function publicRun(run: PublicRun) { return { id: run.id, operationId: run.operationId, content: run.content, response: run.response, status: run.status, finishReason: run.finishReason, error: run.error, warning: run.warning, createdAt: run.createdAt }; }
+export function publicRun(run: PublicRun,db?:Database) {
+  const rows=db?.modelUsageRecords.filter(r=>r.workspaceId===run.workspaceId&&r.conversationId===run.id)??[];
+  const chargedMicros=rows.reduce((n,r)=>n+(r.commercial?.payerChargedMicros??0),0);
+  const heldMicros=rows.reduce((n,r)=>n+(r.commercial?.payerReservedMicros??0),0);
+  return { id: run.id, operationId: run.operationId, content: run.content, response: run.response, status: run.status, finishReason: run.finishReason, error: run.error, warning: run.warning, createdAt: run.createdAt,version:run.publicationVersion??1,chargedMicros,heldMicros };
+}

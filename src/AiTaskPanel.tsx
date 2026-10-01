@@ -6,7 +6,7 @@ type Values = { modelId: string; prompt: string; tools: string[]; maxSteps: numb
 type Version = Values & { version: number; publishedAt: string };
 type Summary = { id: string; name: string; modelKind: string; implementation: string; version: number };
 type Detail = { definition: Summary; revision: number; draft: Values; defaults: Values; published?: Version; tools: string[]; toolDefaults: Record<string, string>; registeredTools?: { name: string; label: string; localOnly: boolean; readOnly: boolean }[]; history: Version[]; total: number };
-type Model = { id: string; name: string; kind: string; enabled: boolean };
+type Model = { id: string; name: string; kind: string; enabled: boolean;inputPowerPerMillion?:number;outputPowerPerMillion?:number;imagePowerPerCall?:number;cachePrices?:{read?:number;write?:number;write1h?:number} };
 const toolNames: Record<string, string> = { list_files: "列出文件", read_file: "读取文件", search_text: "搜索文本", write_file: "写入文件", replace_in_file: "替换文本", run_command: "执行命令（仍需本机确认）" };
 
 export function AiTaskPanel({ api, models }: { api: typeof apiType; models: Model[] }) {
@@ -60,12 +60,14 @@ function TaskEditor({ api, task, models, onChanged }: { api: typeof apiType; tas
   if (!detail || !values) return <p role="status">{notice || "正在加载…"}</p>;
   if (task.implementation === "planned") return <p>核心调度执行器正在开发，暂不能发布配置。</p>;
   const dirty = JSON.stringify(values) !== JSON.stringify(detail.draft);
+  const selectedModel=models.find(m=>m.id===values.modelId);
   return <div className="ai-task-editor">
     <p>未指定模型时沿用原有选择。价格在“模型与定价”统一维护。工具只能从已接入目录中选择，不能在后台凭空创建函数。</p>
     <fieldset disabled={busy}>
       {task.id === "orchestrator" && <label><input type="checkbox" checked={values.enabled === true} onChange={e => setValues({ ...values, enabled: e.target.checked })} />启用纯文本聊天调度（附件和图片沿用现有流程）</label>}
       <label>任务模型</label>
       <SearchPicker label="模型" value={values.modelId} options={[{ value: "", label: "沿用原有模型" }, ...models.filter(m => m.enabled && m.kind === task.modelKind).map(m => ({ value: m.id, label: m.name }))]} onChange={modelId => setValues({ ...values, modelId })} />
+      {selectedModel?<details><summary>查看当前模型费用</summary>{selectedModel.kind==='image'?<p>每次生成 {selectedModel.imagePowerPerCall??'未配置'} 电力</p>:<><p>输入 {selectedModel.inputPowerPerMillion??'未配置'} · 输出 {selectedModel.outputPowerPerMillion??'未配置'} 电力 / 百万计量单位</p>{selectedModel.cachePrices?<p>缓存读取 {selectedModel.cachePrices.read??'未配置'} · 基础写入 {selectedModel.cachePrices.write??'未配置'} · 1 小时写入 {selectedModel.cachePrices.write1h??'未配置'} 电力 / 百万计量单位</p>:null}</>}<small>显示当前对外费率，折扣已包含；实际消耗查看本人任务账单。价格仍只在模型与定价中维护。</small></details>:<p className="hint">沿用运行时选择的模型；实际模型和消耗在本人任务记录中查看。</p>}
       <label>任务提示词<textarea style={{ width: "100%" }} rows={9} maxLength={12000} value={values.prompt} onChange={e => setValues({ ...values, prompt: e.target.value, promptMode: "replace" })} /></label>
       <button type="button" onClick={() => { if (confirm("用预制配置替换当前编辑内容？保存并发布后才生效。")) setValues(structuredClone(detail.defaults)); }}>恢复预制配置</button>
       {detail.tools.length > 0 && <><h4>允许使用的工具</h4>{detail.tools.map(tool => <details key={tool}><summary>{toolNames[tool] || tool} · {values.tools.includes(tool) ? "已启用" : "未启用"}</summary><label><input type="checkbox" checked={values.tools.includes(tool)} onChange={e => setValues({ ...values, tools: e.target.checked ? [...values.tools, tool] : values.tools.filter(t => t !== tool) })} />允许调用</label><label>何时调用（提供给 AI）<textarea style={{ width: "100%" }} rows={4} maxLength={2000} value={values.toolDescriptions?.[tool] ?? detail.toolDefaults[tool] ?? ""} onChange={e => setValues({ ...values, toolDescriptions: { ...values.toolDescriptions, [tool]: e.target.value } })} /></label></details>)}<label>最大步骤<input type="number" min={1} max={task.id === "orchestrator" ? 4 : 24} value={values.maxSteps} onChange={e => setValues({ ...values, maxSteps: Number(e.target.value) })} /></label></>}

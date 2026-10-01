@@ -4,6 +4,7 @@ import type { OfficialFeatureRecord, OfficialFeatureValues } from "../server/off
 import { Pagination, SettingsDialog } from "./SettingsControls";
 import { FeatureBuilder, FeatureTrial } from "./FeatureBuilder";
 import { FeatureRelease } from "./FeatureRelease";
+import {PublicCommercePolicyPanel} from './PublicServicePanels';
 
 type Row={id:string;name:string;author:string;status:string;version:number;releaseVersion?:number;hasChanges:boolean};
 type Detail=OfficialFeatureRecord & {total:number};
@@ -13,6 +14,7 @@ export function OfficialFeaturePanel({api}:{api:typeof Api}){
   const [data,setData]=useState<{items:Row[];total:number}>({items:[],total:0}),[q,setQ]=useState(""),[page,setPage]=useState(1),[refresh,setRefresh]=useState(0),[selected,setSelected]=useState<string|null>(null),[error,setError]=useState("");
   useEffect(()=>{let live=true;void api<typeof data>(`/api/admin/official-features?page=${page}&q=${encodeURIComponent(q)}`).then(d=>{if(live)setData(d);}).catch(e=>{if(live)setError(e.message);});return()=>{live=false;};},[api,page,q,refresh]);
   return <section><h3>官方智能体</h3><p className="hint">配置任务、模型与工具，认定后指定内测账号上架。私人知识由使用者自己选择。</p>
+    <PublicCommercePolicyPanel api={api}/>
     <div className="settings-tabs"><button type="button" onClick={()=>setSelected("")}>新增功能</button></div>
     <input type="search" aria-label="搜索官方功能" placeholder="搜索名称、作者或标识" value={q} onChange={e=>{setQ(e.target.value);setPage(1);}}/>
     <div className="settings-choice-list">{data.items.map(r=><button type="button" key={r.id} onClick={()=>setSelected(r.id)}><span><strong>{r.name}</strong><small>{r.author} · {status[r.status]}{r.version?` · v${r.version}`:""}{r.releaseVersion?` · 已上架 v${r.releaseVersion}`:' · 未上架'}{r.hasChanges?" · 草稿有修改":""}</small></span><span>配置</span></button>)}</div>

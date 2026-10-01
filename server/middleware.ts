@@ -33,7 +33,7 @@ export function auth(secret: string, injected?: AuthDependencies, options?: { ru
     } catch {
       // Invalid signatures and malformed cookie encodings are failed authentication.
     }
-    if (!payload) return res.status(401).json({ error: "未登录或登录已过期" });
+    if (!payload || payload.scope === 'visitor') return res.status(401).json({ error: "未登录或登录已过期" });
 
     const dependencies = injected ?? { store: (await import("./db.js")).store, oneKeyPresence: (await import("./runtime.js")).oneKeyPresence };
     const db = await dependencies.store.read();

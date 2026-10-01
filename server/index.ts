@@ -21,6 +21,9 @@ import { installAdapterSandbox } from "./adapterSandbox.js";
 import { installFeatureTrialRoutes } from "./featureTrialRoutes.js";
 import { installFeatureRunRoutes } from "./featureRunRoutes.js";
 import { installPublicSharingRoutes } from "./publicSharingRoutes.js";
+import { installPublicApiRoutes } from './publicApiRoutes.js';
+import {installVisitorRoutes} from './visitorRoutes.js';
+import {installPublicCommerceRoutes} from './publicCommerceRoutes.js';
 import { appendOwnerContextTrace, buildContextTraceSections, ownerContextTraces } from "./contextTrace.js";
 import { AttachmentService, ATTACHMENT_MAX_BYTES, ATTACHMENT_CHUNK_BYTES, ATTACHMENT_IMAGE_MAX_BYTES, ownedAttachment, removeAttachmentFiles } from "./attachmentService.js";
 import { hashPassword, signToken, uid, verifyPassword } from "./security.js";
@@ -187,7 +190,9 @@ async function persistGeneratedImage(params: { imageUrl?: string; workspaceId: s
 }
 
 const keyAuth = [auth(jwtSecret), requireOneKeySession] as const;
-installPublicSharingRoutes(app, keyAuth, store, knowledgeService, attachmentService);
+installVisitorRoutes(app,store,jwtSecret);
+installPublicSharingRoutes(app, keyAuth, store, knowledgeService, attachmentService,jwtSecret);
+installPublicApiRoutes(app, keyAuth, store, knowledgeService);
 installPaymentRoutes(app, keyAuth, store);
 installFeishuRoutes(app, keyAuth, store, feishuService, () => connectorRegistry.enabled("feishu"));
 
@@ -286,7 +291,7 @@ app.post("/api/me/password", auth(jwtSecret), requireRole("admin"), asyncRoute(a
   const currentPassword = requiredString(req.body.currentPassword, "当前密码");
   const newPassword = requiredString(req.body.newPassword, "新密码");
   if (newPassword.length < 8) throw new Error("新密码至少需要 8 个字符");
-  await store.mutate((db) => { const target = db.users.find((item) => item.id === req.user!.id)!; if (!verifyPassword(currentPassword, target.passwordHash)) throw new Error("当前密码错误"); target.passwordHash = hashPassword(newPassword); });
+  await store.mutate((db) => { const target = db.users.find((item) => item.id === req.user!.id)!; if (!verifyPassword(currentPassword, target.passwordHash)) throw new Error("当前密码错误"); target.passwordHash = hashPassword(newPassword); target.visitorAuthVersion=(target.visitorAuthVersion??0)+1; });
   res.json({ ok: true });
 }));
 app.post("/api/auth/logout", (_req, res) => { const secure = process.env.NODE_ENV === "production" ? "; Secure" : ""; res.setHeader("Set-Cookie", `one_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure}`); res.json({ ok: true }); });
@@ -912,6 +917,7 @@ app.post("/api/executions/:id/cancel", ...keyAuth, asyncRoute(async (req, res) =
 }));
 
 const admin = [...keyAuth, requireRole("admin")] as const;
+installPublicCommerceRoutes(app,keyAuth,admin,store);
 installAiTaskRoutes(app, admin, store);
 installOfficialFeaturePilotRoutes(app, admin, store);
 installFeatureTrialRoutes(app, admin, store, confirmKeyBeforeModel);
@@ -977,6 +983,7 @@ app.patch("/api/admin/users/:id", ...admin, asyncRoute(async (req, res) => {
       if (target.role !== "admin") throw new Error("普通用户仅通过 ONE Key 登录，不设置密码");
       if (req.body.password.trim().length < 8) throw new Error("密码至少需要 8 个字符");
       target.passwordHash = hashPassword(req.body.password.trim());
+      target.visitorAuthVersion=(target.visitorAuthVersion??0)+1;
     }
     db.auditLogs.push({ id: uid("aud"), workspaceId: target.defaultWorkspaceId, actorUserId: req.user!.id, action: "admin.user.updated", targetType: "user", targetId: target.id, details: { enabled: target.enabled }, requestId: res.locals.requestId, createdAt: now() });
     return target;
