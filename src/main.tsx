@@ -1,11 +1,13 @@
 import React, { FormEvent, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { AiTaskPanel } from "./AiTaskPanel";
 import { OfficialFeaturePanel } from "./OfficialFeaturePanel";
-import { FeatureCatalog } from "./FeatureCatalog";
+import { FeatureMarketplace } from "./FeatureMarketplace";
+import {ProductMetricsPanel} from './ProductMetricsPanel';
+import {OneWaitingCopy,useOneGreeting} from './OnePersonality';
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { MessageMarkdown } from "./MessageMarkdown";
-import { SharingPanel, PublicSharingPage } from "./PublicSharing";
+import { PublicSharingPage } from "./PublicSharing";
 import "katex/dist/katex.min.css";
 import {
   Archive,
@@ -66,6 +68,7 @@ import "./one-attention.css";
 import "./one-beta.css";
 import "./one-onboarding.css";
 import "./one-settings.css";
+import './one-product.css';
 import { Pagination, SearchPicker, SettingsDialog } from "./SettingsControls";
 import { BetaUserInsights } from "./BetaUserInsights";
 import { mergeTaskSnapshots, recoverTaskDraft } from "./oneStudioState";
@@ -654,6 +657,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const visibleConversations = conversations.filter((conversation) => conversation.archived === showArchived);
   const ungroupedConversations = visibleConversations.filter((conversation) => !conversation.folderId);
   const isWaiting = Object.values(loadingByConversation).some(Boolean) || executionBusy || preparingExecution;
+  const greeting=useOneGreeting(`${view}:${activeId}`);
 
   function announceTask(item: TaskNotice) {
     const read = shouldAutoReadTaskNotice(resolvedDraftKey(viewedConversationRef.current), item.conversationId, document.visibilityState === "visible");
@@ -1567,7 +1571,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       {view === "admin" && user.role === "admin" ? (
         <AdminPanel actorId={user.id} refreshModels={refresh} onOpenSidebar={() => setHistoryOpen(true)} />
       ) : view === "features" ? (
-        <section className="account-page features-page"><header className="admin-header"><div><h2>功能</h2><p>让资料派上用场。</p></div></header><div className="account-body settings-account-body"><FeatureCatalog api={api}/><SharingPanel api={api} models={models}/></div></section>
+        <section className="account-page features-page"><header className="admin-header"><div><h2>功能</h2></div></header><div className="account-body settings-account-body"><FeatureMarketplace api={api} models={models}/></div></section>
       ) : view === "account" ? (
         <AccountPage user={user} profile={profile} onSaveProfile={saveProfile} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setHistoryOpen(true)} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgePage onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : setKnowledgeConnection(next)} />} />
       ) : (
@@ -1635,9 +1639,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         <div className="studio-presence">
           <OneHeroEye mood={heroMood} />
           <div className="studio-presence-copy"><span className="studio-eyebrow">ONE IS WITH YOU</span>
-          <h2>{activeAgent?.name || (studioIdle ? `${profile.displayName ? `${profile.displayName}，` : ""}我在。` : "我在。")}</h2></div>
+          <h2>{activeAgent?.name || (studioIdle ? `${profile.displayName ? `${profile.displayName}，` : ""}${greeting}` : "我在。")}</h2></div>
         </div>
-        {(thinkingConversations.length > 0 || executionBusy || preparingExecution) ? <div className="studio-wait" aria-live="off"><p>正在想…</p></div> : null}
+        {(thinkingConversations.length > 0 || executionBusy || preparingExecution) ? <OneWaitingCopy/> : null}
 
         {otherRows.length > 0 || unreadNotices.length > 0 || taskStatusUnavailable ? <section className="studio-activity attention-activity" aria-label="任务动态">
           {otherRows.length > 0 || unreadNotices.length > 0 ? <button className="attention-activity-toggle" type="button" aria-expanded={activityExpanded} aria-controls="attention-task-list" onClick={() => setActivityExpanded(value => !value)}>
@@ -2381,7 +2385,7 @@ function AdminPanel({ actorId, refreshModels, onOpenSidebar }: { actorId: string
         </nav>
         {notice ? <div className="notice">{notice}</div> : null}
         <div className="admin-body">
-          {tab === "overview" ? <AdminOverview operations={operations} /> : null}
+          {tab === "overview" ? <><ProductMetricsPanel api={api} accounts={users}/><details className="quiet-details"><summary>系统与账务状态</summary><AdminOverview operations={operations}/></details></> : null}
           {tab === "users" ? <UsersTab users={users} reload={load} /> : null}
           {tab === "keys" ? <OneKeysTab users={users} devices={devices} reload={load} /> : null}
           {tab === "models" ? <ModelsTab models={models} reload={async () => { await load(); await refreshModels(); }} /> : null}
@@ -2540,7 +2544,6 @@ function AdminUsage({ summaries, reload }: { summaries: UserUsageSummary[]; relo
   if (!summaries.length) return <div className="empty-state compact">还没有内测用户</div>;
   return <div className="usage-user-list">
     <div className="ops-list-toolbar"><label>搜索用户<input type="search" placeholder="输入用户名" value={search} onChange={(event) => setSearch(event.target.value)} /></label><label>账号状态<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="active">正常账号</option><option value="archived">已停用 / 归档</option><option value="all">全部账号</option></select></label><span>{visible.length} 位用户 · 电力为计费单位</span></div>
-    <p className="hint">点击用户查看明细 · 不展示聊天、知识或附件内容</p>
     {!visible.length ? <div className="empty-state compact">没有符合条件的用户</div> : null}
     {visible.slice((userPage - 1) * 10, userPage * 10).map((item) => {
       const expanded = selectedUserId === item.userId;

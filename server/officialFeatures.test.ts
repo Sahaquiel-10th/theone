@@ -23,7 +23,8 @@ test("official versions are immutable; stale edits rejected; restore cannot re-e
   assert.equal(s.safetyRules,"safe");
 });
 test("malformed input, uploaded script fields, unsupported integrations and unconfirmed approval fail closed",()=>{
-  for(const bad of [null,[],{...values,script:"run"},{...values,apiKey:"secret"},{...values,integration:"shell"},{...values,name:""}])assert.throws(()=>featureValues(bad));
+  for(const bad of [null,[],{...values,script:"run"},{...values,apiKey:"secret"},{...values,integration:"shell"},{...values,name:""},{...values,category:'unreviewed'}])assert.throws(()=>featureValues(bad));
+  assert.equal(featureValues({...values,category:'research'}).category,'research');
   const s:SystemSettings={safetyRules:"safe",rechargeCnyPerPower:7};
   for(const id of ["__proto__","constructor","../feature","a"])assert.throws(()=>updateOfficialFeature(s,id,{revision:0,action:"save",values},"a","t"));
   updateOfficialFeature(s,"valid-id",{revision:0,action:"save",values},"a","t");

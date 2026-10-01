@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import type { api as Api } from "./oneApi";
 import type { OfficialFeatureRecord, OfficialFeatureValues } from "../server/officialFeatures";
-import { Pagination, SettingsDialog } from "./SettingsControls";
+import { Pagination, SettingsDialog,SearchPicker } from "./SettingsControls";
+import {featureCategories} from '../server/featureCategories';
 import { FeatureBuilder, FeatureTrial } from "./FeatureBuilder";
 import { FeatureRelease } from "./FeatureRelease";
 import {PublicCommercePolicyPanel} from './PublicServicePanels';
@@ -13,12 +14,11 @@ const status:Record<string,string>={draft:"草稿",approved:"配置已认定",pa
 export function OfficialFeaturePanel({api}:{api:typeof Api}){
   const [data,setData]=useState<{items:Row[];total:number}>({items:[],total:0}),[q,setQ]=useState(""),[page,setPage]=useState(1),[refresh,setRefresh]=useState(0),[selected,setSelected]=useState<string|null>(null),[error,setError]=useState("");
   useEffect(()=>{let live=true;void api<typeof data>(`/api/admin/official-features?page=${page}&q=${encodeURIComponent(q)}`).then(d=>{if(live)setData(d);}).catch(e=>{if(live)setError(e.message);});return()=>{live=false;};},[api,page,q,refresh]);
-  return <section><h3>官方智能体</h3><p className="hint">配置任务、模型与工具，认定后指定内测账号上架。私人知识由使用者自己选择。</p>
+  return <section className="official-feature-admin"><header className="section-toolbar"><h3>官方智能体</h3><button className="primary" type="button" onClick={()=>setSelected("")}>＋ 新增功能</button></header>
     <PublicCommercePolicyPanel api={api}/>
-    <div className="settings-tabs"><button type="button" onClick={()=>setSelected("")}>新增功能</button></div>
     <input type="search" aria-label="搜索官方功能" placeholder="搜索名称、作者或标识" value={q} onChange={e=>{setQ(e.target.value);setPage(1);}}/>
     <div className="settings-choice-list">{data.items.map(r=><button type="button" key={r.id} onClick={()=>setSelected(r.id)}><span><strong>{r.name}</strong><small>{r.author} · {status[r.status]}{r.version?` · v${r.version}`:""}{r.releaseVersion?` · 已上架 v${r.releaseVersion}`:' · 未上架'}{r.hasChanges?" · 草稿有修改":""}</small></span><span>配置</span></button>)}</div>
-    <Pagination page={page} total={data.total} onChange={setPage}/>{error?<p role="alert">{error}</p>:null}
+    {data.total>10?<Pagination page={page} total={data.total} onChange={setPage}/>:null}{error?<p role="alert">{error}</p>:null}
     {selected!==null?<SettingsDialog title={selected?"官方功能配置":"新增官方功能"} onClose={()=>setSelected(null)}><FeatureEditor key={selected} api={api} featureId={selected} onChanged={()=>setRefresh(n=>n+1)}/></SettingsDialog>:null}
   </section>;
 }
@@ -34,6 +34,7 @@ function FeatureEditor({api,featureId,onChanged}:{api:typeof Api;featureId:strin
   const changed=!!detail&&JSON.stringify(detail.draft)!==JSON.stringify(values);
   return <div className="sharing-form">
     <label>功能标识<input value={id} disabled={saved||busy} placeholder="例如 industry-report" maxLength={64} onChange={e=>setId(e.target.value)}/></label>
+    <label>功能分类<SearchPicker label="分类" value={values.category??'general'} options={featureCategories.map(c=>({value:c.id,label:c.name}))} onChange={category=>setValues({...values,category:category as OfficialFeatureValues['category']})}/></label>
     {([['name','名称',60],['author','作者或合作方',100],['description','用途',500],['instructions','执行要求',12000],['limitations','适用边界与限制',2000]] as const).map(([key,label,max])=><label key={key}>{label}{key==='name'||key==='author'?<input value={values[key]} maxLength={max} disabled={busy} onChange={e=>setValues({...values,[key]:e.target.value})}/>:<textarea rows={key==='instructions'?5:3} value={values[key]} maxLength={max} disabled={busy} onChange={e=>setValues({...values,[key]:e.target.value})}/>}</label>)}
     <FeatureBuilder api={api} values={values} onChange={setValues} disabled={busy}/>
     <button type="button" className="primary" disabled={busy|| (!!featureId&&!detail)} onClick={()=>void act("save")}>保存草稿</button>

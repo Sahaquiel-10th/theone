@@ -26,8 +26,9 @@ test('publication requires approval/admin; immutable released version survives d
   const f=fixture(),record=f.db().settings.officialFeatures![0];
   assert.throws(()=>availableFeature(f.db(),{workspaceId:'wb',userId:'b'},'research'));
   assert.throws(()=>releaseFeature(f.db(),'research',{action:'publish',revision:record.revision,version:1,userIds:['a'],confirmed:true},'a'));
-  updateOfficialFeature(f.db().settings,'research',{action:'save',revision:record.revision,values:{...record.draft,instructions:'changed'}},'b','t');
+  updateOfficialFeature(f.db().settings,'research',{action:'save',revision:record.revision,values:{...record.draft,instructions:'changed',category:'research'}},'b','t');
   assert.equal(availableFeature(f.db(),f.scope,'research').version.values.instructions,'根据工具结果回答');
+  assert.equal(availableFeature(f.db(),f.scope,'research').version.values.category,undefined);
   updateOfficialFeature(f.db().settings,'research',{action:'pause',revision:f.db().settings.officialFeatures![0].revision},'b','t');
   assert.throws(()=>availableFeature(f.db(),f.scope,'research'));
   assert.equal(f.db().settings.officialFeatures![0].release,undefined);
@@ -91,6 +92,10 @@ test('HTTP consumer routes require Key, separate recipients and hide definitions
   const url=`http://127.0.0.1:${(server.address() as any).port}/api/features`,headers={'x-key':'present','content-type':'application/json'};
   for(const path of ['', '/runs','/research','/runs/'+f.body.operationId])assert.equal((await fetch(url+path)).status,428);
   const list=await(await fetch(url,{headers})).json();assert.equal(list.items.length,1);assert.equal(list.items[0].instructions,undefined);assert.equal(list.items[0].userIds,undefined);
+  assert.equal((await(await fetch(url+'?category=general',{headers})).json()).items.length,1);
+  assert.equal((await(await fetch(url+'?category=research',{headers})).json()).items.length,0);
+  assert.equal((await fetch(url+'?category=unreviewed',{headers})).status,400);
+  assert.equal((await(await fetch(url+'?category=general',{headers:{...headers,'x-account':'b'}})).json()).items.length,0);
   assert.equal((await(await fetch(url,{headers:{...headers,'x-account':'b'}})).json()).items.length,0);
   assert.equal((await fetch(url+'/research',{headers:{...headers,'x-account':'b'}})).status,403);
   const body=JSON.stringify({...f.body,sourceIds:[],workspaceId:'wb',userId:'b'});

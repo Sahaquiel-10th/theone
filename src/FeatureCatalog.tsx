@@ -2,22 +2,23 @@ import { useEffect, useState } from "react";
 import type { api as Api } from "./oneApi";
 import { Pagination, SettingsDialog } from "./SettingsControls";
 import { ToolCredentialEditor, MyToolCredentials } from './FeatureConnections';
+import {featureCategories} from '../server/featureCategories';
+import {ArrowUpRight,BookOpen,Sparkles} from 'lucide-react';
 
-type Feature={id:string;releaseId:string;version:number;name:string;description:string;author:string;limitations:string;knowledgeMode:string;destinations:string[];credentials?:{endpoint:string;auth:'bearer'|'api_key'}[];sources?:{id:string;name:string}[]};
+type Feature={id:string;releaseId:string;version:number;name:string;description:string;author:string;category?:string;limitations:string;knowledgeMode:string;destinations:string[];credentials?:{endpoint:string;auth:'bearer'|'api_key'}[];sources?:{id:string;name:string}[]};
 type Run={operationId:string;name:string;version:number;status:string;createdAt:string;power:number;prompt?:string;content?:string;error?:string;finishReason?:string;trace?:{tool:string;query?:string;resultPreview:string;status:string}[];charges?:{model:string;power:number;status:string}[]};
 const status:Record<string,string>={pending:'执行中',completed:'已完成',failed:'未完成',interrupted:'已中断'};
 
-export function FeatureCatalog({api}:{api:typeof Api}) {
-  const [q,setQ]=useState(''),[page,setPage]=useState(1),[runPage,setRunPage]=useState(1),[refresh,setRefresh]=useState(0);
+export function FeatureCatalog({api,query:q='',category='all'}:{api:typeof Api;query?:string;category?:string}) {
+  const [page,setPage]=useState(1),[runPage,setRunPage]=useState(1),[refresh,setRefresh]=useState(0);
   const [list,setList]=useState<{items:Feature[];total:number}>({items:[],total:0}),[runs,setRuns]=useState<{items:Run[];total:number}>({items:[],total:0}),[selected,setSelected]=useState<string>(),[operation,setOperation]=useState<string>(),[error,setError]=useState('');
-  useEffect(()=>{let live=true;void api<typeof list>(`/api/features?q=${encodeURIComponent(q)}&page=${page}`).then(d=>{if(live)setList(d);}).catch(e=>{if(live)setError(e.message);});return()=>{live=false;};},[api,q,page,refresh]);
+  useEffect(()=>setPage(1),[q,category]);
+  useEffect(()=>{let live=true;void api<typeof list>(`/api/features?q=${encodeURIComponent(q)}&category=${encodeURIComponent(category)}&page=${page}`).then(d=>{if(live){setList(d);setError('');}}).catch(e=>{if(live)setError(e.message);});return()=>{live=false;};},[api,q,category,page,refresh]);
   useEffect(()=>{let live=true;void api<typeof runs>(`/api/features/runs?page=${runPage}`).then(d=>{if(live)setRuns(d);}).catch(e=>{if(live)setError(e.message);});return()=>{live=false;};},[api,runPage,refresh]);
-  return <section><h3>官方精选</h3><p className="hint">结合你的资料完成任务。仅显示为你开放的功能。</p>
-    <MyToolCredentials api={api}/>
-    <input type="search" aria-label="搜索精选功能" placeholder="搜索名称、用途或作者" value={q} onChange={e=>{setQ(e.target.value);setPage(1);}}/>
-    <div className="settings-choice-list">{list.items.map(f=><button type="button" key={f.id} onClick={()=>setSelected(f.id)}><span><strong>{f.name}</strong><small>{f.description}</small><small>{f.author} · v{f.version}</small></span><span>使用</span></button>)}</div>
-    {!list.total?<p className="hint">暂时没有为你开放的精选功能，个人分身仍可使用。</p>:null}<Pagination page={page} total={list.total} onChange={setPage}/>
-    <details><summary>我的功能任务 · {runs.total}</summary><button type="button" onClick={()=>setRefresh(n=>n+1)}>刷新任务</button><div className="settings-choice-list">{runs.items.map(r=><button type="button" key={r.operationId} onClick={()=>setOperation(r.operationId)}><span><strong>{r.name} · v{r.version}</strong><small>{new Date(r.createdAt).toLocaleString()} · {status[r.status]} · {r.power.toFixed(6)} 电力</small></span><span>查看</span></button>)}</div><Pagination page={runPage} total={runs.total} onChange={setRunPage}/></details>
+  return <section className="market-section"><header className="section-toolbar"><h3>官方精选</h3><span className="market-count">{list.total} 项</span></header>
+    <div className="market-grid">{list.items.map(f=><button className="market-card" type="button" key={f.id} onClick={()=>setSelected(f.id)}><span className="market-card-top"><span className="market-icon">{f.knowledgeMode==='required'?<BookOpen size={21}/>:<Sparkles size={21}/>}</span><span className="market-badge">{featureCategories.find(c=>c.id===f.category)?.name??'通用助手'}</span></span><strong>{f.name}</strong><p>{f.description}</p><span className="market-card-footer"><small>{f.author} · v{f.version}</small><span>打开 <ArrowUpRight size={15}/></span></span></button>)}</div>
+    {!list.total?<div className="market-empty"><Sparkles size={22}/><strong>{q||category!=='all'?'没有匹配的功能':'暂无已开放的精选功能'}</strong></div>:null}{list.total>10?<Pagination page={page} total={list.total} onChange={setPage}/>:null}
+    <div className="market-utilities"><details className="quiet-details"><summary>任务记录 · {runs.total}</summary><button type="button" onClick={()=>setRefresh(n=>n+1)}>刷新任务</button><div className="settings-choice-list">{runs.items.map(r=><button type="button" key={r.operationId} onClick={()=>setOperation(r.operationId)}><span><strong>{r.name} · v{r.version}</strong><small>{new Date(r.createdAt).toLocaleString()} · {status[r.status]} · {r.power.toFixed(6)} 电力</small></span><span>查看</span></button>)}</div>{runs.total>10?<Pagination page={runPage} total={runs.total} onChange={setRunPage}/>:null}</details><MyToolCredentials api={api}/></div>
     {error?<p role="alert">{error}</p>:null}
     {selected?<SettingsDialog title="使用精选功能" onClose={()=>setSelected(undefined)}><FeatureLaunch api={api} id={selected} onStarted={id=>{setSelected(undefined);setOperation(id);setRefresh(n=>n+1);}}/></SettingsDialog>:null}
     {operation?<SettingsDialog title="功能任务" onClose={()=>{setOperation(undefined);setRefresh(n=>n+1);}}><FeatureRunView api={api} operationId={operation}/></SettingsDialog>:null}

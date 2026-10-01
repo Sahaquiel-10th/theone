@@ -5,6 +5,7 @@ import { asyncRoute } from "./middleware.js";
 import { FeatureConfigError } from "./officialFeatures.js";
 import { ChatOperationError } from "./chatOperations.js";
 import { availableFeature, executeFeatureRun, featureMember, featureRunResult, featureSummary, startFeatureRun, type FeatureRunDependencies } from "./featureRuns.js";
+import {featureCategories} from './featureCategories.js';
 
 export function installFeatureRunRoutes(app: Express, keyAuth: readonly RequestHandler[], store: Store, verifyKey: (req: express.Request) => Promise<void>, knowledge: Pick<KnowledgeService, "recallWithDiagnostics">, deps: FeatureRunDependencies = {}) {
   const router = express.Router();
@@ -15,7 +16,8 @@ export function installFeatureRunRoutes(app: Express, keyAuth: readonly RequestH
   router.get("/", asyncRoute(async (req,res) => {
     const db = await store.read(), s = scope(req); featureMember(db, s);
     const q = String(req.query.q ?? "").slice(0,100).toLowerCase(), page = pageOf(req.query.page);
-    const items = (db.settings.officialFeatures ?? []).filter(f => f.status === "approved" && f.release?.userIds.includes(s.userId)).map(featureSummary).filter(f => `${f.name} ${f.description} ${f.author}`.toLowerCase().includes(q));
+    const category=String(req.query.category??'all');if(category!=='all'&&!featureCategories.some(c=>c.id===category))throw new FeatureConfigError('功能分类无效');
+    const items = (db.settings.officialFeatures ?? []).filter(f => f.status === "approved" && f.release?.userIds.includes(s.userId)).map(featureSummary).filter(f => `${f.name} ${f.description} ${f.author}`.toLowerCase().includes(q)&&(category==='all'||f.category===category));
     res.json({ items: items.slice((page-1)*10,page*10), total: items.length });
   }));
   router.get("/runs", asyncRoute(async (req,res) => {

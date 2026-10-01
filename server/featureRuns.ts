@@ -45,7 +45,7 @@ export function releaseFeature(db: Database, id: string, body: any, actor: strin
 }
 export function featureSummary(f: OfficialFeatureRecord) {
   const v = f.history.find(v => v.version === f.release?.version)!;
-  return { id: f.id, releaseId: f.release!.id, version: v.version, name: v.values.name, description: v.values.description, author: v.values.author, limitations: v.values.limitations, knowledgeMode: v.values.knowledgeMode ?? "none",
+  return { id: f.id, releaseId: f.release!.id, version: v.version, name: v.values.name, description: v.values.description, author: v.values.author, limitations: v.values.limitations, knowledgeMode: v.values.knowledgeMode ?? "none",category:v.values.category??'general',
     destinations: [...new Set((v.values.tools ?? []).map(featureToolEndpoint))], credentials: (v.values.tools ?? []).filter(t=>t.auth).map(t=>({endpoint:featureToolEndpoint(t),auth:t.auth!})) };
 }
 function ownRun(db: Database, scope: FeatureScope, operationId: string) {

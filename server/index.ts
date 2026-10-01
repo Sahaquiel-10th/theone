@@ -24,6 +24,7 @@ import { installPublicSharingRoutes } from "./publicSharingRoutes.js";
 import { installPublicApiRoutes } from './publicApiRoutes.js';
 import {installVisitorRoutes} from './visitorRoutes.js';
 import {installPublicCommerceRoutes} from './publicCommerceRoutes.js';
+import {installProductMetricsRoutes} from './productMetricsRoutes.js';
 import { appendOwnerContextTrace, buildContextTraceSections, ownerContextTraces } from "./contextTrace.js";
 import { AttachmentService, ATTACHMENT_MAX_BYTES, ATTACHMENT_CHUNK_BYTES, ATTACHMENT_IMAGE_MAX_BYTES, ownedAttachment, removeAttachmentFiles } from "./attachmentService.js";
 import { hashPassword, signToken, uid, verifyPassword } from "./security.js";
@@ -918,6 +919,7 @@ app.post("/api/executions/:id/cancel", ...keyAuth, asyncRoute(async (req, res) =
 
 const admin = [...keyAuth, requireRole("admin")] as const;
 installPublicCommerceRoutes(app,keyAuth,admin,store);
+installProductMetricsRoutes(app,admin,store);
 installAiTaskRoutes(app, admin, store);
 installOfficialFeaturePilotRoutes(app, admin, store);
 installFeatureTrialRoutes(app, admin, store, confirmKeyBeforeModel);

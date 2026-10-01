@@ -1,6 +1,6 @@
 export type Role = "admin" | "user";
 
-export type User = { id: string; username: string; passwordHash: string; role: Role; defaultWorkspaceId: string; profile?: import("./betaProfile.js").AccountProfile; preferredModelId?: string; enabled: boolean; createdAt: string; featureCredentials?: import("./featureCredentials.js").FeatureCredential[]; registrationOrigin?:'visitor'; visitorAuthVersion?:number };
+export type User = { id: string; username: string; passwordHash: string; role: Role; defaultWorkspaceId: string; profile?: import("./betaProfile.js").AccountProfile; preferredModelId?: string; enabled: boolean; createdAt: string; featureCredentials?: import("./featureCredentials.js").FeatureCredential[]; registrationOrigin?:'visitor'; visitorAuthVersion?:number;analyticsExcluded?:boolean };
 export type Workspace = { id: string; name: string; slug: string; status: "active" | "suspended"; createdAt: string; updatedAt: string };
 export type WorkspaceMember = { id: string; workspaceId: string; userId: string; role: "owner" | "member"; createdAt: string };
 export type ConversationFolder = { id: string; workspaceId: string; userId: string; name: string; createdAt: string };
