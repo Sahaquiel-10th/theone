@@ -27,12 +27,23 @@ export function installPublicSharingRoutes(app: Express, keyAuth: readonly Reque
     if (!sharingReady(db)) return res.json({ ready: false, items: [], total: 0, sources: [] });
     const page = pageOf(req.query.page), q = String(req.query.q || "").slice(0,100).toLowerCase();
     const mine = db.publications!.filter(p => p.workspaceId === req.workspaceId && p.userId === req.user!.id && `${p.name} ${p.description}`.toLowerCase().includes(q)).slice().reverse();
-    res.json({ ready: true, items: mine.slice((page-1)*10,page*10).map(p => ({ id:p.id, name:p.name, description:p.description, status:p.status, expiresAt:p.expiresAt, slug:p.slug, budgetMicros:p.budgetMicros, perRunMicros:p.perRunMicros, attachments:p.attachments, sources:p.sources.map(s=>s.label), ...usageFor(db,p) })), total:mine.length,
+    res.json({ ready: true, items: mine.slice((page-1)*10,page*10).map(p => ({ id:p.id, version:p.version??1, name:p.name, description:p.description, status:p.status, expiresAt:p.expiresAt, slug:p.slug, budgetMicros:p.budgetMicros, perRunMicros:p.perRunMicros, attachments:p.attachments, sources:p.sources.map(s=>s.label), ...usageFor(db,p) })), total:mine.length,
       sources: db.knowledgeConnections.filter(c => c.workspaceId === req.workspaceId && c.status === "connected").map(c => ({id:c.id, provider:c.provider, name:c.providerSpaceName || c.provider})) });
   }));
   router.post("/manage", ...keyAuth, asyncRoute(async (req, res) => {
     const p = await store.mutate(db => publish(db, {workspaceId:req.workspaceId!,userId:req.user!.id}, req.body));
     res.json({ id:p.id, slug:p.slug });
+  }));
+  router.get('/manage/:id/config',...keyAuth,asyncRoute(async(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    const p=ownedPublication(await store.read(),req.workspaceId!,req.user!.id,String(req.params.id));
+    const visible=(v:typeof p)=>({version:v.version??1,name:v.name,description:v.description,prompt:v.userPrompt??'',legacyPrompt:v.userPrompt===undefined,modelId:v.modelId,sourceIds:v.sources.map(s=>s.id),attachments:v.attachments,budget:v.budgetMicros/1e6,perRun:v.perRunMicros/1e6,days:Math.max(1,Math.min(90,Math.ceil((Date.parse(v.expiresAt)-Date.now())/86400000))),updatedAt:v.updatedAt??v.createdAt});
+    const page=pageOf(req.query.page),history=(p.history??[]).slice().reverse();
+    res.json({...visible(p),history:history.slice((page-1)*5,page*5).map(visible),total:history.length});
+  }));
+  router.post('/manage/:id/update',...keyAuth,asyncRoute(async(req,res)=>{
+    const p=await store.mutate(db=>publish(db,{workspaceId:req.workspaceId!,userId:req.user!.id},req.body,String(req.params.id)));
+    res.json({id:p.id,slug:p.slug,version:p.version});
   }));
   router.post("/manage/:id/close", ...keyAuth, asyncRoute(async (req,res) => {
     await store.mutate(db => { const p = ownedPublication(db,req.workspaceId!,req.user!.id,String(req.params.id)); p.status="closed";
@@ -48,7 +59,7 @@ export function installPublicSharingRoutes(app: Express, keyAuth: readonly Reque
     const db=await store.read(); requireSharing(db);
     const p=db.publications!.find(p=>p.slug===req.params.slug); if(!p) throw new SharingError("分享不存在",404);
     activePublication(db,p.id);
-    res.json({name:p.name,description:p.description,attachments:p.attachments,expiresAt:p.expiresAt});
+    res.json({name:p.name,description:p.description,attachments:p.attachments,expiresAt:p.expiresAt,version:p.version??1});
   }));
   router.post("/:slug/sessions",asyncRoute(async(req,res)=>{
     const result=await store.mutate(db=>{requireSharing(db); const p=db.publications!.find(p=>p.slug===req.params.slug);if(!p)throw new SharingError("分享不存在",404); return createGuest(db,p.id);});
@@ -98,7 +109,7 @@ export function installPublicSharingRoutes(app: Express, keyAuth: readonly Reque
     if(!r)throw new SharingError("任务不存在",404);res.json({run:publicRun(r)});
   }));
   router.use((err:unknown,_req:express.Request,res:express.Response,_next:express.NextFunction)=>{
-    res.status(err instanceof SharingError?err.status:400).json({error:err instanceof SharingError?err.message:"未能完成，请检查文件或稍后重试。",requestId:res.locals.requestId});
+    res.status(err instanceof SharingError?err.status:400).json({error:err instanceof SharingError?err.message:"未能完成，请检查文件或稍后重试。",code:err instanceof SharingError?err.code:undefined,requestId:res.locals.requestId});
   });
   app.use("/api/sharing",router);
 }

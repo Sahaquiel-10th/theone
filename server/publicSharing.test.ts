@@ -13,6 +13,35 @@ function fixture(){
   const input={name:"Test",description:"description",prompt:"answer briefly",modelId:"model",sourceIds:["source"],attachments:true,budget:10,perRun:1,days:7,confirmed:true};
   return {store,get db(){return db;},input,model};
 }
+test('same-link update preserves charges, rejects stale edits and starts fresh guest context',async()=>{
+  const f=fixture(),scope={workspaceId:'ws',userId:'owner'},p=publish(f.db,scope,f.input),slug=p.slug,a=createGuest(f.db,p.id);
+  const run=beginPublicRun(f.db,p,a.session,{content:'OLD_PRIVATE_QUESTION',operationId:'old_version_question',attachmentIds:[]}).run;
+  assert.throws(()=>publish(f.db,scope,{...f.input,version:1},p.id),/正在回答/);
+  run.status='completed';run.response='OLD_PRIVATE_RESULT';
+  f.db.modelUsageRecords.push({workspaceId:'ws',userId:'owner',conversationId:run.id,chargedMicros:20000,reservedMicros:0} as any);
+  assert.throws(()=>publish(f.db,scope,{...f.input,version:1,budget:.01,perRun:.01},p.id),/历史已用/);
+  assert.throws(()=>publish(f.db,{workspaceId:'other-ws',userId:'other'},{...f.input,version:1},p.id),/不存在/);
+  const updated=publish(f.db,scope,{...f.input,version:1,prompt:'NEW_PROMPT',sourceIds:[]},p.id);
+  assert.equal(updated.slug,slug);assert.equal(updated.id,p.id);assert.equal(updated.version,2);assert.equal(updated.history?.length,1);assert.equal(updated.history![0].userPrompt,'answer briefly');
+  assert.equal(usageFor(f.db,updated).spent,20000);assert.equal(f.db.publications!.length,1);
+  assert.throws(()=>publish(f.db,scope,{...f.input,version:1},p.id),/已被更新/);
+  assert.throws(()=>guest(f.db,slug,a.token),/重新开始/);
+  assert.throws(()=>beginPublicRun(f.db,p,a.session,{content:'old',operationId:'old_session_attempt',attachmentIds:[]}),/重新开始/);
+  const next=createGuest(f.db,p.id),r=beginPublicRun(f.db,p,next.session,{content:'NEW_QUESTION',operationId:'new_version_question',attachmentIds:[]}).run;
+  await executePublicQuestion(f.store,{recallWithDiagnostics:async(_w,_q,_k,ids)=>{assert.deepEqual(ids,[]);return {chunks:[],failures:[],status:'not_connected'};}},r.id,async(model,messages)=>{
+    assert.match(model.systemPrompt,/NEW_PROMPT/);assert.doesNotMatch(JSON.stringify(messages),/OLD_PRIVATE/);
+    return {content:'new answer',finishReason:'stop',usage:{inputTokens:1,outputTokens:1,totalTokens:2,source:'provider'}};
+  });
+  assert.equal(r.status,'completed');assert.equal(r.publicationVersion,2);
+});
+test('legacy version one is compatible; closed links never reopen and old prompt is not concatenated twice',()=>{
+  const f=fixture(),s={workspaceId:'ws',userId:'owner'},p=publish(f.db,s,f.input);
+  delete p.version;delete p.userPrompt;const a=createGuest(f.db,p.id);delete a.session.publicationVersion;
+  assert.equal(guest(f.db,p.slug,a.token).publication.id,p.id);
+  const updated=publish(f.db,s,{...f.input,version:1,prompt:'new instructions'},p.id);
+  assert.equal(updated.prompt,'new instructions');assert.equal(updated.history![0].userPrompt,undefined);
+  f.db.publications![0].status='closed';assert.throws(()=>publish(f.db,s,{...f.input,version:2},p.id),/不能重新开启/);
+});
 test("publication snapshots are explicit, owner-scoped and public source grants fail closed",()=>{
   const f=fixture();assert.equal(sharingReady(f.db),true);
   assert.throws(()=>publish(f.db,{workspaceId:"ws",userId:"other"},f.input));

@@ -54,6 +54,17 @@ test("real HTTP public flow: Key-managed publication, isolated uploads, paid que
   assert.equal((await fetch(url+`/questions/${receipt.id}`,{headers:owner})).status,401);
   const usage=await(await fetch(base+`/manage/${pub.id}/usage`,{headers:owner})).text();assert.doesNotMatch(usage,/PRIVATE_ATTACHMENT_MARKER|QUESTION_PRIVATE|Fixture grounded answer|tokenHash/);assert.equal(JSON.parse(usage).total,1);
   assert.equal((await fetch(base+`/manage/${pub.id}/usage`,{headers:{...owner,"x-user":"other"}})).status,404);
+  assert.equal((await fetch(base+`/manage/${pub.id}/config`)).status,428);
+  assert.equal((await fetch(base+`/manage/${pub.id}/config`,{headers:{...owner,'x-user':'other'}})).status,404);
+  const config=await(await fetch(base+`/manage/${pub.id}/config`,{headers:owner})).json();assert.equal(config.prompt,'PRIVATE_PROMPT');assert.equal(config.version,1);
+  const updateBody=JSON.stringify({...config,prompt:'NEW_PRIVATE_PROMPT',confirmed:true});
+  assert.equal((await fetch(base+`/manage/${pub.id}/update`,{method:'POST',headers:{...owner,'x-user':'other'},body:updateBody})).status,404);
+  const updated=await fetch(base+`/manage/${pub.id}/update`,{method:'POST',headers:owner,body:updateBody});assert.equal(updated.status,200);assert.equal((await updated.json()).slug,pub.slug);
+  assert.equal((await fetch(base+`/manage/${pub.id}/update`,{method:'POST',headers:owner,body:updateBody})).status,409);
+  assert.equal((await fetch(url+'/session',{headers:h1})).status,409);
+  assert.equal((await fetch(url+`/uploads/${fileId}`,{headers:h1})).status,409);
+  assert.doesNotMatch(await(await fetch(url)).text(),/PRIVATE_PROMPT|history|sourceIds/);
+  const newConfig=await(await fetch(base+`/manage/${pub.id}/config`,{headers:owner})).json();assert.equal(newConfig.version,2);assert.equal(newConfig.history.length,1);
   assert.equal((await fetch(base+`/manage/${pub.id}/close`,{method:"POST"})).status,428);
   assert.equal((await fetch(base+`/manage/${pub.id}/close`,{method:"POST",headers:owner})).status,200);
   assert.equal((await fetch(url+"/session",{headers:h1})).status,410);
