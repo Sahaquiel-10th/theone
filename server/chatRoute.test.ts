@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { WebSocket } from "ws";
 
-test("real chat HTTP route: Key gating, durable replay, attachment followup and restart isolation", { timeout: 25000 }, async t => {
+test("real chat HTTP route: Key gating, durable replay, attachment followup and restart isolation", { timeout: 60000 }, async t => {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "one-chat-route-"));
   const pair = crypto.generateKeyPairSync("ed25519");
@@ -48,8 +48,11 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
         UPLOAD_DIR: path.join(directory, "uploads"), JWT_SECRET: "fixture-session-signing-secret-not-production", PROVIDER_CREDENTIALS_KEY: "fixture-credential-encryption-secret-not-production", PORT: "0", HOST: "127.0.0.1", MODEL_REQUEST_TIMEOUT_MS: "2000" }, stdio: ["ignore", "pipe", "pipe"]
     });
     return await new Promise<string>((resolve, reject) => {
-      let output = "";
-      const timeout = setTimeout(() => reject(new Error("Isolated fixture server startup timed out")), 8000);
+      let output = "", startupErrors = "";
+      app!.stderr!.on("data", chunk => { startupErrors = (startupErrors + String(chunk)).slice(-4000); });
+      // Cold TypeScript/dependency loading can exceed eight seconds on desktop;
+      // this is a bounded readiness check, not a model-response deadline.
+      const timeout = setTimeout(() => reject(new Error(`Isolated fixture server startup timed out: ${startupErrors || output || "no startup output"}`)), 20000);
       app!.stdout!.on("data", chunk => { output += String(chunk); const match = output.match(/ONE API listening on (http:\/\/127\.0\.0\.1:\d+)/); if (match) { clearTimeout(timeout); resolve(match[1]); } });
       app!.once("exit", () => { clearTimeout(timeout); reject(new Error("Isolated fixture server exited")); });
     });

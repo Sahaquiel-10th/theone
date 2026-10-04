@@ -7,9 +7,24 @@ export function publicAttachmentSummary(attachment: Attachment): AttachmentSumma
   return { id, originalName, mimeType, kind, size, status, uploadedBytes, parseError, textChars, segmentCount };
 }
 
+/** Remove files only after their last server-authorized conversation reference. */
+export function detachConversationAttachments(db:Database,scope:AttachmentScope){
+  const candidates=db.attachments.filter(a=>a.workspaceId===scope.workspaceId&&a.userId===scope.userId&&(a.conversationId===scope.conversationId||a.sharedConversationIds?.includes(scope.conversationId!)));
+  const removed=new Set<string>();
+  for(const file of candidates){
+    const references=db.messages.filter(m=>m.workspaceId===scope.workspaceId&&m.userId===scope.userId&&m.conversationId!==scope.conversationId&&m.attachmentIds?.includes(file.id)&&db.conversations.some(c=>c.id===m.conversationId&&c.workspaceId===scope.workspaceId&&c.userId===scope.userId)&&(file.conversationId===m.conversationId||file.sharedConversationIds?.includes(m.conversationId)));
+    file.sharedConversationIds=file.sharedConversationIds?.filter(id=>id!==scope.conversationId);
+    if(!references.length)removed.add(file.id);
+    else if(file.conversationId===scope.conversationId){file.conversationId=references[0].conversationId;file.messageId=references[0].id;}
+  }
+  db.attachments=db.attachments.filter(a=>!removed.has(a.id));
+  return [...new Set(candidates.filter(a=>removed.has(a.id)&&!db.attachments.some(other=>other.storagePath===a.storagePath)).map(a=>a.storagePath))];
+}
+
 /** Rebuild the browser-safe view from relational records after a restart. */
 export function restoreConversationMessages(conversation: Pick<Conversation, "id" | "workspaceId" | "userId">, messages: MessageRecord[], attachments: Attachment[]): Message[] {
-  const owned = new Map(attachments.filter(item => item.workspaceId === conversation.workspaceId && item.userId === conversation.userId && (!item.conversationId || item.conversationId === conversation.id)).map(item => [item.id, item]));
+  const referenced = new Set(messages.filter(m => m.workspaceId === conversation.workspaceId && m.userId === conversation.userId && m.conversationId === conversation.id).flatMap(m => m.attachmentIds ?? []));
+  const owned = new Map(attachments.filter(item => item.workspaceId === conversation.workspaceId && item.userId === conversation.userId && (!item.conversationId || item.conversationId === conversation.id || item.sharedConversationIds?.includes(conversation.id) && referenced.has(item.id))).map(item => [item.id, item]));
   return messages.filter(message => message.conversationId === conversation.id && message.workspaceId === conversation.workspaceId && message.userId === conversation.userId)
     .slice()
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
@@ -34,9 +49,10 @@ export function selectConversationAttachments(db: Pick<Database, "attachments" |
   const conversation = scope.conversationId ? db.conversations.find(item => item.id === scope.conversationId && item.workspaceId === scope.workspaceId && item.userId === scope.userId) : undefined;
   if (scope.conversationId && !conversation) throw new Error("对话不存在或无权访问");
   const owned = new Map(db.attachments.filter(item => item.workspaceId === scope.workspaceId && item.userId === scope.userId).map(item => [item.id, item]));
+  const referenced = new Set(db.messages.filter(m => m.workspaceId === scope.workspaceId && m.userId === scope.userId && m.conversationId === scope.conversationId).flatMap(m => m.attachmentIds ?? []));
   const current = selected.map(id => {
     const attachment = owned.get(id);
-    if (!attachment || (attachment.conversationId && attachment.conversationId !== scope.conversationId)) throw new Error("附件不存在、属于其他对话或无权访问");
+    if (!attachment || (attachment.conversationId && attachment.conversationId !== scope.conversationId && !(scope.conversationId && attachment.sharedConversationIds?.includes(scope.conversationId) && referenced.has(id)))) throw new Error("附件不存在、属于其他对话或无权访问");
     if (attachment.status && attachment.status !== "ready") throw new Error(attachment.status === "failed" ? "附件解析失败，请重试或移除后发送" : "请等待附件上传并解析完成");
     return attachment;
   });
@@ -60,7 +76,7 @@ export function selectConversationAttachments(db: Pick<Database, "attachments" |
     seen.add(id);
     const attachment = owned.get(id);
     // A corrupt/stale record may not pull an attachment out of another chat.
-    if (!attachment || (attachment.conversationId && attachment.conversationId !== scope.conversationId)) continue;
+    if (!attachment || (attachment.conversationId && attachment.conversationId !== scope.conversationId && !(scope.conversationId && attachment.sharedConversationIds?.includes(scope.conversationId) && referenced.has(id)))) continue;
     if (context.length >= maxFiles || (attachment.kind === "image" && images >= maxImages)) { omittedCount++; continue; }
     context.push(attachment);
     if (attachment.kind === "image") images++;

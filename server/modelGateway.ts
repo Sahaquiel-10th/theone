@@ -34,6 +34,7 @@ export type ModelToolMessage = {
   content: string | null;
   tool_call_id?: string;
   tool_calls?: ModelToolCall[];
+  inputImageDataUrls?: string[];
 };
 
 export type ToolChatResult = {
@@ -258,7 +259,7 @@ export async function callModelWithTools(
       },
       body: JSON.stringify({
         model: model.model,
-        messages,
+        messages: messages.map(({inputImageDataUrls,...message})=>({...message,content:inputImageDataUrls?.length?[{type:'text',text:message.content||''},...inputImageDataUrls.map(url=>({type:'image_url',image_url:{url}}))]:message.content})),
         tools,
         tool_choice: "auto",
         temperature: 0.2,
@@ -335,6 +336,7 @@ async function callAnthropicModelWithTools(
     }
     const blocks: Array<Record<string, unknown>> = [];
     if (message.content) blocks.push({ type: "text", text: message.content });
+    for(const url of message.inputImageDataUrls??[]){const match=url.match(/^data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/i);if(!match)throw new Error('图片格式无效');blocks.push({type:'image',source:{type:'base64',media_type:match[1],data:match[2]}});}
     if (message.role === "assistant") {
       for (const call of message.tool_calls ?? []) {
         let input: unknown = {};

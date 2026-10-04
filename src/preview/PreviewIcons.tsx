@@ -1,0 +1,13 @@
+import type { ReactNode } from 'react';
+type Props = { size?: number };
+const icon = (paths: ReactNode) => ({ size = 16 }: Props) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths}</svg>;
+export const ArrowUp = icon(<path d="M12 20V4m-7 7 7-7 7 7" />);
+export const ArrowUpRight = icon(<path d="m6 18 12-12M6 6h12v12" />);
+export const Check = icon(<path d="m5 12 4 4 10-10" />);
+export const ChevronDown = icon(<path d="m6 9 6 6 6-6" />);
+export const ChevronLeft = icon(<path d="m15 6-6 6 6 6" />);
+export const X = icon(<path d="m6 6 12 12M6 18 18 6" />);
+export const Pause = icon(<path d="M8 5v14M16 5v14" />);
+export const RotateCcw = icon(<><path d="M3 11a9 9 0 1 1 2 7M3 4v7h7" /></>);
+export const SlidersHorizontal = icon(<><path d="M3 7h6m4 0h8M3 17h10m4 0h4M9 4v6m4-6v6m0 4v6m4-6v6" /></>);
+export const FlaskConical = icon(<><path d="M9 3h6m-5 0v6L4 19a1 1 0 0 0 1 2h14a1 1 0 0 0 1-2L14 9V3M7 15h10" /></>);

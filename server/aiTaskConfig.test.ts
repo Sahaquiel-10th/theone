@@ -2,10 +2,37 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { defaultTaskValues, editableTaskValues, resolveAiTask, updateTaskConfig, validateTaskValues } from "./aiTaskConfig.js";
 import type { ModelConfig, SystemSettings } from "./types.js";
+import { aiTaskCatalog } from "./aiTaskCatalog.js";
 
 const model = { id: "a", enabled: true, kind: "chat", systemPrompt: "base", apiKey: "not-for-client" } as ModelConfig;
 const second = { ...model, id: "b" };
 const settings = (): SystemSettings => ({ safetyRules: "immutable", rechargeCnyPerPower: 7 });
+test("every implemented AI role has an editable runtime prompt and model binding",()=>{
+ for(const role of aiTaskCatalog){
+  const fallback={...model,kind:role.modelKind} as ModelConfig;
+  const defaults=defaultTaskValues(role.id);
+  assert.ok(defaults.prompt.trim(),role.id);
+  const s=settings();
+  assert.equal(resolveAiTask(s,[fallback],role.id,fallback).values.prompt,defaults.prompt);
+  updateTaskConfig(s,[fallback],role.id,{revision:0,action:"draft",values:{...defaults,modelId:fallback.id,prompt:"管理员的可编辑指令"}},"admin","t");
+  updateTaskConfig(s,[fallback],role.id,{revision:1,action:"publish"},"admin","t");
+  assert.equal(resolveAiTask(s,[fallback],role.id,fallback).values.prompt,"管理员的可编辑指令");
+ }
+});
+test("runtime defaults match editable templates, never mutate models or replace published overrides", () => {
+  const s = settings();
+  for (const id of ["chat", "shared_answer", "attachment_summary", "execution_compile", "local_agent", "orchestrator"] as const) {
+    const resolved = resolveAiTask(s, [model], id, model);
+    assert.deepEqual(resolved.values, defaultTaskValues(id));
+    assert.equal(resolved.model.systemPrompt, `base\n\n${resolved.values.prompt}`);
+    assert.equal(resolved.replacesPrompt, true);
+  }
+  const empty = { ...defaultTaskValues("chat"), prompt: "" };
+  updateTaskConfig(s, [model], "chat", { action: "draft", revision: 0, values: empty }, "admin", "t1");
+  updateTaskConfig(s, [model], "chat", { action: "publish", revision: 1 }, "admin", "t2");
+  assert.equal(resolveAiTask(s, [model], "chat", model).model.systemPrompt, "base");
+  assert.equal(model.systemPrompt, "base");
+});
 test("presets are editable and legacy additive instructions survive conversion", () => {
   const defaults = defaultTaskValues("local_agent");
   assert.ok(defaults.prompt); assert.ok(defaults.toolDescriptions?.read_file);

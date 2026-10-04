@@ -3,9 +3,22 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 const main = fs.readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
 const sharing = fs.readFileSync(new URL("./PublicSharing.tsx", import.meta.url), "utf8");
+const featureNav = fs.readFileSync(new URL("./FeatureNav.tsx", import.meta.url), "utf8");
+test('preview preserves the main conversation and result identity across navigation',()=>{
+ assert.match(main,/preview.enabled&&preview.state.dialogue.length>0\?<CoordinatorConversation/);
+ assert.match(main,/preview.enabled\?<ResultSignal/);
+ const shelf=fs.readFileSync(new URL('./preview/FeatureShelf.tsx',import.meta.url),'utf8');
+ assert.match(shelf,/我的分身/);
+ assert.match(shelf,/<SharingPanel api=\{api\} models=\{models\}/);
+ const signal=fs.readFileSync(new URL('./preview/ResultSignal.tsx',import.meta.url),'utf8');
+ assert.match(signal,/if\(open\)onDismiss\(\)/);
+});
 test("features is a top-level destination; knowledge and OAuth returns live in settings", () => {
   const nav = main.slice(main.indexOf('<nav className="studio-navigation"'), main.indexOf('<div className="one-chrome-actions"'));
-  assert.match(nav, />功能<\/button>/);
+  assert.match(nav, /<FeatureNav/);
+  assert.match(nav, /canPeekAtFeatures/);
+  assert.match(nav, /openSurface\('features'\)/);
+  assert.match(featureNav, /<span>功能<\/span>/);
   assert.doesNotMatch(nav, />知识<\/button>/);
   assert.match(nav, /user.role === "admin"/);
   assert.match(main, /next === "knowledge" \? "account" : next/);
@@ -23,4 +36,17 @@ test("only the logo moves; previous page cannot leave a double-image trail", () 
   assert.match(css, /view-transition-old\(root\) \{ display: none/);
   assert.match(main, /interfaceTransition.current !== transition/);
   assert.match(main, /interfaceTransition.current\?\.skipTransition/);
+  assert.match(main, /eyeRoute\(view,/);
+  assert.match(main, /if\(route==='edge'&&previousEye&&nextEye\)/);
+  assert.match(main, /window.innerWidth,true/);
+});
+test('equipment view displays authorized capabilities without pretending automatic calling is live',()=>{
+ const catalog=fs.readFileSync(new URL('./FeatureCatalog.tsx',import.meta.url),'utf8');
+ const marketplace=fs.readFileSync(new URL('./FeatureMarketplace.tsx',import.meta.url),'utf8');
+ assert.match(catalog,/对话自动调用 · 待接入/);
+ assert.match(catalog,/已为你开放/);
+ assert.match(marketplace,/回到 ONE 对话/);
+ assert.match(marketplace,/搜索功能市场/);
+ assert.doesNotMatch(marketplace,/<details[^>]*equipment-find/);
+ assert.doesNotMatch(marketplace,/CapabilityMap/);
 });

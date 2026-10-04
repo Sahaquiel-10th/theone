@@ -4,6 +4,16 @@ import { OfficialFeaturePanel } from "./OfficialFeaturePanel";
 import { FeatureMarketplace } from "./FeatureMarketplace";
 import {ProductMetricsPanel} from './ProductMetricsPanel';
 import {OneWaitingCopy,useOneGreeting} from './OnePersonality';
+import {FeatureNav} from './FeatureNav';
+import {ThingsPanel} from './ThingsPanel';
+import {CoordinatorConversation} from './preview/CoordinatorConversation';
+import {FeatureShelf,type FeatureChoice} from './preview/FeatureShelf';
+import {ResultSignal} from './preview/ResultSignal';
+import {useWorkspacePreview} from './preview/useWorkspacePreview';
+import {useCoordinator} from './useCoordinator';
+import './preview/workspace-preview.css';
+import {canPeekAtFeatures,waitingForCurrentReply} from './oneFocusState';
+import {edgeJourney,directJourney,eyeRoute,overheadJourney,resolveEyeRoute,homeSettingsDistance,isConversationShelfMove,type EyeRoute} from './oneEdgeMotion';
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { MessageMarkdown } from "./MessageMarkdown";
@@ -12,6 +22,7 @@ import "katex/dist/katex.min.css";
 import {
   Archive,
   Check,
+  Sparkles,
   ArrowUp,
   ArrowUpRight,
   Bot,
@@ -32,6 +43,7 @@ import {
   Globe2,
   Image,
   KeyRound,
+  Lightbulb,
   LockKeyhole,
   Lock,
   LogOut,
@@ -69,6 +81,7 @@ import "./one-beta.css";
 import "./one-onboarding.css";
 import "./one-settings.css";
 import './one-product.css';
+import './one-playful.css';
 import { Pagination, SearchPicker, SettingsDialog } from "./SettingsControls";
 import { BetaUserInsights } from "./BetaUserInsights";
 import { mergeTaskSnapshots, recoverTaskDraft } from "./oneStudioState";
@@ -222,6 +235,9 @@ type Conversation = {
   messages: Message[];
   messageCount?: number;
   messagesLoaded?: boolean;
+  coordinatorMain?:boolean;
+  executorProfileId?:string;
+  workPaused?:boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -522,7 +538,10 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
 type TaskNotice = { id: string; conversationId: string; title: string; outcome: "reply" | "completed" | "failed" | "cancelled"; taskId?: string; read?: boolean };
 
 function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
+  const demo = useWorkspacePreview();
   const api = useContext(PrivateApiContext);
+  const coordinator = useCoordinator(api,user.id,!demo.enabled);
+  const preview = coordinator.enabled ? coordinator : demo;
   const [profile, setProfile] = useState<AccountProfile>(user.profile || { workspaceId: user.defaultWorkspaceId, displayName: "", onboarding: { knowledgeChoice: "pending" }, updatedAt: user.createdAt });
   const [pendingRequests, setPendingRequests] = useState(() => pendingChatSubmissions(user.id));
   const [hasSubmittedChat, setHasSubmittedChat] = useState(false);
@@ -552,13 +571,20 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
   const conversationPageSize = 30;
   const [models, setModels] = useState<Model[]>([]);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [storedConversations, setConversations] = useState<Conversation[]>([]);
+  const conversations: Conversation[] = demo.enabled ? demo.state.tasks.map(task => ({id: task.id, title: task.title, userId: user.id, modelId: 'preview-model', archived: false, messagesLoaded: true, createdAt: user.createdAt, updatedAt: user.createdAt, messages: task.messages.map(message => ({id:message.id,role:message.role,content:message.text,createdAt:user.createdAt}))})) : coordinator.enabled ? [...coordinator.state.tasks.map(task=>{const detail=coordinator.details[task.id]?.conversation,old=storedConversations.find(c=>c.id===task.id),meta=coordinator.snapshot?.tasks.find(c=>c.id===task.id);return detail?{...detail,messagesLoaded:true}:old||{id:task.id,title:task.title,userId:user.id,modelId:models.find(m=>m.isDefault)?.id||models[0]?.id||'',archived:false,messagesLoaded:false,messages:[],createdAt:user.createdAt,updatedAt:meta?.updatedAt||user.createdAt};}),...storedConversations.filter(c=>!coordinator.state.tasks.some(t=>t.id===c.id)&&!(c as Conversation&{coordinatorMain?:boolean}).coordinatorMain)] : storedConversations;
   const [conversationPage, setConversationPage] = useState(1);
   const [hasMoreConversations, setHasMoreConversations] = useState(false);
   const [loadingMoreConversations, setLoadingMoreConversations] = useState(false);
   const [folders, setFolders] = useState<ConversationFolder[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [activeId, setActiveId] = useState<string>("");
+  const [thingId,setThingId] = useState('');
+  const [thingDrafts,setThingDrafts] = useState<Record<string,string>>({});
+  const [resultLampOpen,setResultLampOpen] = useState(false);
+  const [dismissedResults,setDismissedResults] = useState<string[]>([]);
+  const [previewHome,setPreviewHome] = useState(true);
+  const [featureForNext,setFeatureForNext]=useState<FeatureChoice[]>([]);
   const [draftModelId, setDraftModelId] = useState("");
   const [draftAgentId, setDraftAgentId] = useState("");
   const [defaultModelId, setDefaultModelId] = useState("");
@@ -567,9 +593,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [view, setView] = useState<"chat" | "admin" | "account" | "features" | "agents" | "agentEditor">(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "account" : "chat"; });
+  const [view, setView] = useState<"chat" | "things" | "admin" | "account" | "features" | "agents" | "agentEditor">(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "account" : "chat"; });
   const [accountSection, setAccountSection] = useState(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "knowledge" : "profile"; });
   const interfaceTransition = useRef<OneViewTransition | null>(null);
+  const interfaceAnimations = useRef<Animation[]>([]);
   const [editingAgentId, setEditingAgentId] = useState<string | "new">("new");
   const [showArchived, setShowArchived] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
@@ -633,7 +660,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const targetConversation = composeNew ? undefined : active;
   const activeModelId = targetConversation?.modelId || draftModelId;
   const activeLoadingKey = active?.id || "draft";
-  const activeLoading = Boolean(loadingByConversation[activeLoadingKey]);
+  const activeLoading = Boolean(loadingByConversation[activeLoadingKey]) || (preview.enabled && preview.state.tasks.some(task => task.id === activeId && task.status === 'running'));
   const executionTask = selectConversationExecution(executionTasks, activeId, selectedExecutionId);
   const executionEvents = executionTask ? eventsByTask[executionTask.id] || [] : [];
   const runningExecutions = executionTasks.filter(isExecutionRunning);
@@ -641,8 +668,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const executionShortcut = currentRunningExecution || executionTask;
   const executionBusy = runningExecutions.length > 0;
   const activeExecutionMode = executionMode;
-  const targetLoading = !composeNew && activeLoading;
-  const studioIdle = view === "chat" && !activeId;
+  const targetLoading = preview.enabled ? Boolean(preview.state.pending) || Boolean(loadingByConversation[activeLoadingKey]) : !composeNew && activeLoading;
+  const studioIdle = view === "chat" && !activeId && (!preview.enabled || previewHome);
   const activePreparing = preparingExecution && preparingConversationId === activeId;
   const liveTaskIds = runningExecutions.map(task => task.id).sort().join("|");
   const currentModel = models.find((model) => model.id === activeModelId);
@@ -656,8 +683,33 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const canSearch = currentModel?.kind === "chat" && capabilities.webSearch.enabled && (!activeAgent || activeAgent.allowWebSearch);
   const visibleConversations = conversations.filter((conversation) => conversation.archived === showArchived);
   const ungroupedConversations = visibleConversations.filter((conversation) => !conversation.folderId);
-  const isWaiting = Object.values(loadingByConversation).some(Boolean) || executionBusy || preparingExecution;
+  const isWaiting = (preview.enabled && (Boolean(preview.state.pending) || preview.state.tasks.some(task=>task.status==='running'))) || Object.values(loadingByConversation).some(Boolean) || executionBusy || preparingExecution;
   const greeting=useOneGreeting(`${view}:${activeId}`);
+  const lampTasks = preview.enabled ? preview.state.tasks.filter(task=>task.unread && !dismissedResults.includes(`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`)) : [];
+  const lampKey=lampTasks.map(task=>`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`).join('|');
+  function closeResultLamp() { setResultLampOpen(false); if(coordinator.enabled)void coordinator.acknowledge().catch(e=>setError(e.message)); setDismissedResults(previous=>[...previous,...lampTasks.map(task=>`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`)]); }
+  async function selectThing(id:string) {
+    setThingId(id);
+    const item=conversations.find(conversation=>conversation.id===id);
+    if(coordinator.enabled){try{await coordinator.load(id);}catch(err){setError(err instanceof Error?err.message:'暂时无法打开');}return;}
+    if (!item || item.messagesLoaded || demo.enabled) return;
+    try { const result=await api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(id)}`); setConversations(previous=>previous.map(conversation=>conversation.id===id?{...result.conversation,messagesLoaded:true}:conversation)); } catch(err) {setError(err instanceof Error?err.message:'暂时无法打开');}
+  }
+  useEffect(() => { if (demo.enabled) demo.dispatch({type:'draft',text:content}); }, [demo.enabled, content]);
+  const coordinatorErrorRef = useRef("");
+  useEffect(()=>{
+    if(coordinator.error) setError(coordinator.error);
+    else if(coordinatorErrorRef.current) { const previous=coordinatorErrorRef.current; setError(old=>old===previous?"":old); }
+    coordinatorErrorRef.current=coordinator.error;
+  },[coordinator.error]);
+  const coordinatorRestored = useRef(false);
+  useEffect(()=>{
+    if(coordinator.enabled&&!coordinatorRestored.current){
+      coordinatorRestored.current=true;
+      if(coordinator.state.dialogue.length) setPreviewHome(false);
+    }
+  },[coordinator.enabled,coordinator.state.dialogue.length]);
+  useEffect(() => { if (preview.enabled && preview.state.selected && !activeId) setActiveId(preview.state.selected); }, [preview.enabled, preview.state.selected, activeId]);
 
   function announceTask(item: TaskNotice) {
     const read = shouldAutoReadTaskNotice(resolvedDraftKey(viewedConversationRef.current), item.conversationId, document.visibilityState === "visible");
@@ -911,27 +963,62 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     }).catch(() => undefined);
   }
 
-  function transitionInterface(update: () => void) {
+  function transitionInterface(update: () => void, route: EyeRoute = 'direct', conversationShelfMove=false) {
     interfaceTransition.current?.skipTransition();
+    interfaceAnimations.current.forEach(animation=>animation.cancel());
+    interfaceAnimations.current=[];
+    delete document.documentElement.dataset.oneRoute;
+    const visibleEye=()=>Array.from(document.querySelectorAll('.studio-presence > .one-presence')).map(element=>element.getBoundingClientRect()).find(bounds=>bounds.width>0&&bounds.height>0);
+    const previousEye = visibleEye();
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const transitionDocument = document as ViewTransitionDocument;
     if (!transitionDocument.startViewTransition || reducedMotion) {
       update();
       return;
     }
+    const root=document.querySelector<HTMLElement>('.one-studio');
+    const distanceLimit=root?homeSettingsDistance(root):null;
 
     document.documentElement.dataset.oneTransition = "flow";
-    const transition = transitionDocument.startViewTransition(() => flushSync(update));
+    let journey:ReturnType<typeof edgeJourney> = null;
+    let nearbyFrames:Keyframe[]|null=null;
+    const transition = transitionDocument.startViewTransition(() => {
+      flushSync(update);
+      const nextEye = visibleEye();
+      if(previousEye&&nextEye&&!conversationShelfMove)route=resolveEyeRoute(route,previousEye,nextEye,distanceLimit??0,window.innerWidth);
+      if(route==='edge'&&previousEye&&nextEye)journey=edgeJourney(previousEye,nextEye,window.innerWidth,true);
+      if(route==='overhead'&&previousEye&&nextEye)journey=overheadJourney(previousEye,nextEye);
+      if(journey)document.documentElement.dataset.oneRoute=route;
+      else if(previousEye&&nextEye&&Math.hypot(previousEye.left-nextEye.left,previousEye.top-nextEye.top)>12){
+        nearbyFrames=directJourney(previousEye,nextEye);
+        document.documentElement.dataset.oneRoute='direct';
+      }
+    });
     interfaceTransition.current = transition;
+    transition.ready.then(()=>{
+      if(interfaceTransition.current!==transition)return;
+      if(!journey){
+        if(nearbyFrames)interfaceAnimations.current=[document.documentElement.animate(nearbyFrames,{duration:conversationShelfMove?480:1100,fill:'both',pseudoElement:'::view-transition-group(one-presence-logo)'} as KeyframeAnimationOptions)];
+        return;
+      }
+      interfaceAnimations.current=[
+        document.documentElement.animate(journey.departure.map(frame=>({...frame,...(previousEye?{width:`${previousEye.width}px`,height:`${previousEye.height}px`}:{})})),{duration:route==='overhead'?620:460,easing:'ease-in-out',fill:'both',pseudoElement:'::view-transition-old(one-presence-logo)'} as KeyframeAnimationOptions),
+        document.documentElement.animate(journey.arrival,{delay:route==='overhead'?570:420,duration:route==='overhead'?1100:1550,easing:'linear',fill:'both',pseudoElement:'::view-transition-new(one-presence-logo)'} as KeyframeAnimationOptions)
+      ];
+    }).catch(()=>undefined);
     transition.finished.finally(() => {
       if (interfaceTransition.current !== transition) return;
+      interfaceAnimations.current.forEach(animation=>animation.cancel());
+      interfaceAnimations.current=[];
       interfaceTransition.current = null;
       delete document.documentElement.dataset.oneTransition;
+      delete document.documentElement.dataset.oneRoute;
     }).catch(() => undefined);
     return transition.updateCallbackDone.catch(() => undefined);
   }
 
   function switchDraft(key: string) {
+    if (preview.enabled) return;
     const previousKey = composeNew || !activeId ? "new" : activeId;
     draftsRef.current[previousKey] = { content, attachments: pendingAttachments };
     const draft = draftsRef.current[key];
@@ -947,21 +1034,24 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   function beginNewTask() {
+    if (preview.enabled) preview.dispatch({type:'bind',taskId:null});
     switchDraft("new");
     setComposeNew(true);
     requestAnimationFrame(() => document.getElementById("one-studio-input")?.focus());
   }
 
-  function openSurface(next: "chat" | "admin" | "knowledge" | "account" | "features") {
+  function openSurface(next: "chat" | "things" | "admin" | "knowledge" | "account" | "features") {
     transitionInterface(() => {
+      if(next==='chat'&&preview.enabled){setPreviewHome(false);setActiveId('');setFocusedTask(false);preview.dispatch({type:'select',taskId:null});preview.dispatch({type:'bind',taskId:null});}
       if (next === "knowledge") setAccountSection("knowledge");
       setView(next === "knowledge" ? "account" : next);
       setHistoryOpen(false);
       setSidebarOpen(false);
-    });
+    }, eyeRoute(view,next==='knowledge'?'account':next,studioIdle),preview.enabled&&isConversationShelfMove(view,next,studioIdle));
   }
 
   async function loadMoreConversations() {
+    if(coordinator.enabled && (coordinator.snapshot?.total??0)>coordinator.state.tasks.length)await coordinator.loadMore();
     if (loadingMoreConversations || !hasMoreConversations) return;
     const nextPage = conversationPage + 1;
     setLoadingMoreConversations(true);
@@ -986,6 +1076,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   async function openConversation(conversation: Conversation, selectedTaskId = "") {
+    if (preview.enabled) { transitionInterface(()=>{preview.dispatch({type:'select',taskId:conversation.id});preview.dispatch({type:'bind',taskId:conversation.id});setPreviewHome(false);setActiveId(conversation.id);setView('chat');setActivityExpanded(false);setHistoryOpen(false);}); return; }
     switchDraft(conversation.id);
     acknowledgeConversation(conversation.id);
     setActivityExpanded(false);
@@ -1029,8 +1120,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   function startNewChat() {
+    if (preview.enabled) { preview.dispatch({type:'select',taskId:null}); preview.dispatch({type:'bind',taskId:null}); }
     switchDraft("new");
     transitionInterface(() => {
+      if(preview.enabled)setPreviewHome(true);
       setActiveId("");
       setComposeNew(true);
       setDraftAgentId("");
@@ -1048,6 +1141,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     transitionInterface(() => {
       setActiveId("");
       setComposeNew(true);
+      setPreviewHome(false);
       setDraftAgentId(agent.id);
       setDraftModelId(agent.modelId);
       setContent("");
@@ -1165,6 +1259,22 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }, [pendingAttachments, api]);
 
   async function sendMessage(rawText: string) {
+    if (demo.enabled) { if (demo.state.pending || !rawText.trim()) return; setPreviewHome(false); demo.dispatch({type:'submit',text:rawText,features:featureForNext,id:crypto.randomUUID(),now:Date.now()});setFeatureForNext([]);setContent('');setHasSubmittedChat(true);return; }
+    // Preserve specialized image and newly selected personal-assistant routes.
+    // Neither is silently reinterpreted as a generic coordinator request.
+    if(coordinator.enabled && currentModel?.kind !== 'image' && !(composeNew && draftAgentId)){
+      if(uploadingAttachments||pendingAttachments.some(a=>a.status&&a.status!=='ready')){setError('请等待附件解析完成');return;}
+      if(coordinator.state.pending||(!rawText.trim()&&!pendingAttachments.length))return;
+      const text=rawText.trim()||(pendingAttachments.length?'请分析上传的附件。':''),files=[...pendingAttachments],features=[...featureForNext];
+      try{
+        let confirmedExternal=false;
+        if(features.length){const details=await Promise.all(features.map(f=>api<{name:string;destinations:string[]}>(`/api/features/${encodeURIComponent(f.id)}`)));confirmedExternal=confirm(`使用 ${details.map(f=>f.name).join('、')}。\n${details.flatMap(f=>f.destinations).length?'任务所需内容将发送至：'+[...new Set(details.flatMap(f=>f.destinations))].join('、'):'按需使用你已连接的知识来源'}\n执行会按实际用量消耗电力。是否继续？`);if(!confirmedExternal)return;}
+        setError('');setPreviewHome(false);setHasSubmittedChat(true);
+        await coordinator.submit({operationId:crypto.randomUUID(),text,modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
+        if(currentDraftRef.current.content===rawText)setContent('');
+        setPendingAttachments(old=>old.filter(file=>!files.some(sent=>sent.id===file.id)));setFeatureForNext(old=>old.filter(feature=>!features.some(sent=>sent.id===feature.id)));
+      }catch(err){setError(err instanceof Error?err.message:'暂时无法确认，请检查状态；不会重复执行');}return;
+    }
     if (uploadingAttachments || pendingAttachments.some(a => a.status && a.status !== "ready")) { setError("请等待附件解析完成，或移除失败的附件"); return; }
     let operationId = "";
     const target = targetConversation;
@@ -1248,6 +1358,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         delete draftsRef.current[tempId];
       }
       setActiveId((current) => (current === tempId || current === target?.id ? result.conversation.id : current));
+      if(coordinator.enabled && models.find(m=>m.id===result.conversation.modelId)?.kind==='chat'){
+        coordinator.dispatch({type:'bind',taskId:result.conversation.id});
+        coordinator.dispatch({type:'select',taskId:result.conversation.id});
+      }
       announceTask({ id: `reply:${result.conversation.id}:${result.conversation.updatedAt}`, conversationId: result.conversation.id, title: result.conversation.title, outcome: "reply" });
       setWebSearch(false);
     } catch (err) {
@@ -1283,6 +1397,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   async function send(event: FormEvent) {
     event.preventDefault();
+    if (preview.enabled) { await sendMessage(content); return; }
     if (uploadingAttachments) return;
     const text = content;
     if (composeMode === "execution" && !composeNew) {
@@ -1455,7 +1570,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           ? "curious"
           : "idle";
 
-  const thinkingConversations = conversations.filter(item => loadingByConversation[item.id]);
+  const thinkingConversations = conversations.filter(item => preview.enabled ? preview.state.tasks.some(task=>task.id===item.id&&task.status==='running') : loadingByConversation[item.id]);
   const composerTarget = composeNew || !active ? "新事情" : active.title;
   const unreadNotices = taskNotices.filter(item => !item.read);
   const activityRows = buildTaskActivityRows(conversations, executionTasks, new Set(thinkingConversations.map(item => item.id)), failedTaskIds, new Set(unreadNotices.map(item => item.conversationId)));
@@ -1464,7 +1579,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const settledOthers = otherRows.filter(item => item.status !== "running" && item.status !== "thinking");
   const latestTurnStart = Math.max(0, (active?.messages || []).map(message => message.role).lastIndexOf("user"));
   const showEarlier = expandedConversationId === activeId;
-  const currentStatus = activePreparing ? "正在连接" : currentRunningExecution ? "本机执行中" : activeLoading ? "准备回复中" : failedTaskIds.has(activeId) ? "待重试" : executionTask?.status === "completed" ? "本机已完成" : executionTask?.status === "cancelled" ? "本机已停止" : executionTask?.status === "failed" ? "执行需要看一下" : "当前事情";
+  const replyPending=waitingForCurrentReply(activeLoading,active?.messages??[]);
+  const currentStatus = activePreparing ? "正在连接" : currentRunningExecution ? "本机执行中" : activeLoading ? replyPending?'准备回复中':'正在回复' : failedTaskIds.has(activeId) ? "待重试" : executionTask?.status === "completed" ? "本机已完成" : executionTask?.status === "cancelled" ? "本机已停止" : executionTask?.status === "failed" ? "执行需要看一下" : "当前事情";
   const currentBusy = activePreparing || Boolean(currentRunningExecution) || activeLoading;
 
   function activityLabel(row: TaskActivityRow) {
@@ -1502,14 +1618,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   return (
-    <main className={`app-shell one-shell one-studio attention-workspace ${studioIdle ? "studio-idle" : "studio-open"} ${focusedTask && view === "chat" && !studioIdle ? "studio-focused" : ""} ${activeExecutionMode ? "execution-shell" : ""}`}>
+    <main className={`app-shell one-shell one-studio attention-workspace ${preview.enabled&&(view==='chat'||view==='features'||view==='account')?`coordinator-preview ${view==='features'?'coordinator-tools-open':view==='account'?'coordinator-settings-open coordinator-task-open':active?'coordinator-task-open':''}`:''} ${view==='things'?'studio-things':''} ${view==='features'?'studio-discover':''} ${studioIdle ? "studio-idle" : "studio-open"} ${focusedTask && view === "chat" && !studioIdle ? "studio-focused" : ""} ${activeExecutionMode ? "execution-shell" : ""}`}>
       <header className="one-chrome">
         <button className="one-brand-button" type="button" onClick={startNewChat} title="回到 ONE">
           <OneWordmark inverse />
         </button>
         <nav className="studio-navigation" aria-label="工作区导航">
           <button type="button" aria-current={view === "chat" ? "page" : undefined} onClick={() => openSurface("chat")}>工作台</button>
-          <button type="button" aria-current={view === "features" ? "page" : undefined} onClick={() => openSurface("features")}>功能</button>
+          <button type="button" aria-current={view === "things" ? "page" : undefined} onClick={() => openSurface("things")}>事情</button>
+          <FeatureNav quiet={!canPeekAtFeatures(view!=='chat'||studioIdle,isWaiting,content)} active={view==='features'} onClick={()=>openSurface('features')}/>
           <button type="button" aria-current={view === "account" ? "page" : undefined} onClick={() => openSurface("account")}>设置</button>
           {user.role === "admin" ? <button type="button" aria-current={view === "admin" ? "page" : undefined} onClick={() => openSurface("admin")}>管理</button> : null}
         </nav>
@@ -1567,28 +1684,32 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       ) : null}
 
       <div className="studio-layout">
-      <section className="studio-surface" aria-label={view === "chat" ? "当前事情" : "工作区内容"} hidden={studioIdle}>
-      {view === "admin" && user.role === "admin" ? (
+      <section className="studio-surface" aria-label={view === "chat" ? "当前事情" : "工作区内容"} hidden={studioIdle||(preview.enabled&&view==='chat'&&!active)}>
+      {view === "things" ? <ThingsPanel one={<div className="studio-presence things-one"><OneHeroEye mood="idle" label="回到 ONE 工作台" onActivate={()=>openSurface('chat')}/></div>} items={conversations} selectedId={thingId} drafts={thingDrafts} onDraftChange={(id,text)=>setThingDrafts(previous=>({...previous,[id]:text}))} onSelect={id=>void selectThing(id)} onSend={coordinator.enabled?async(id,text)=>{const task=conversations.find(c=>c.id===id);if(models.find(m=>m.id===task?.modelId)?.kind==='image'){const result=await api<{conversation:Conversation}>('/api/chat',{method:'POST',body:JSON.stringify({operationId:crypto.randomUUID(),content:text,conversationId:id,modelId:task?.modelId})});setConversations(old=>old.map(c=>c.id===id?{...result.conversation,messagesLoaded:true}:c));}else await coordinator.direct(id,text);}:demo.enabled?(id,text)=>demo.dispatch({type:'task-send',taskId:id,text,id:crypto.randomUUID(),now:Date.now()}):undefined} onWorkbench={id=>{void openConversation(conversations.find(item=>item.id===id)!);setResultLampOpen(false);}} hasMore={hasMoreConversations||(coordinator.enabled&&(coordinator.snapshot?.total??0)>coordinator.state.tasks.length)} onMore={()=>void loadMoreConversations()} loadingMore={loadingMoreConversations}/> : view === "admin" && user.role === "admin" ? (
         <AdminPanel actorId={user.id} refreshModels={refresh} onOpenSidebar={() => setHistoryOpen(true)} />
       ) : view === "features" ? (
-        <section className="account-page features-page"><header className="admin-header"><div><h2>功能</h2></div></header><div className="account-body settings-account-body"><FeatureMarketplace api={api} models={models}/></div></section>
+        <section className="account-page features-page"><header className="admin-header"><div><h2>功能</h2></div>{preview.enabled?<button type="button" className="feature-shelf-close" onClick={()=>openSurface('chat')} aria-label="收起功能"><X size={16}/></button>:null}</header><div className="account-body settings-account-body">{preview.enabled?<FeatureShelf api={api} models={models} selected={featureForNext.map(item=>item.id)} onChoose={feature=>{setFeatureForNext(previous=>previous.some(item=>item.id===feature.id)?previous.filter(item=>item.id!==feature.id):previous.length<8?[...previous,feature]:previous);}}/>:<FeatureMarketplace api={api} models={models} onAsk={()=>openSurface('chat')}/>}</div></section>
       ) : view === "account" ? (
         <AccountPage user={user} profile={profile} onSaveProfile={saveProfile} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setHistoryOpen(true)} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgePage onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : setKnowledgeConnection(next)} />} />
       ) : (
+      preview.enabled && !active ? <section className="workspace-task-overview"><h1>手头的事情</h1><div>{preview.state.tasks.filter(task=>task.messages.length).map(task=><button type="button" key={task.id} onClick={()=>void openConversation(conversations.find(item=>item.id===task.id)!)}><strong>{task.title}</strong><small>{task.status==='running'?'正在处理':task.status==='completed'?'结果好了':task.status==='failed'?'需要看一下':'接着聊'} ↗</small></button>)}</div></section> :
       <section className="studio-task" key={activeId}>
         <header className="studio-task-header">
           <div><div className={`task-current-state ${currentBusy ? "is-active" : ""}`}><span className={`task-indicator ${currentBusy ? "running" : executionTask?.status || "recent"}`} aria-hidden="true" />{currentStatus}</div><h1>{active?.title || "从一个念头开始"}</h1></div>
           <div className="studio-task-controls">
+            {preview.enabled&&active?<button type="button" onClick={()=>openSurface('chat')}>回到 ONE <X size={14}/></button>:null}
+            {preview.enabled && active ? <button type="button" className="studio-mode-switch" onClick={()=>{void selectThing(active.id);openSurface('things');}}>继续这件事</button> : null}
             {executionShortcut ? <button type="button" onClick={() => { setSelectedExecutionId(executionShortcut.id); setExpandedExecutionId(executionShortcut.id); setRevealExecutionId(executionShortcut.id); void loadLatestExecution(activeId, executionShortcut.id); }} aria-label="查看本机执行"><Zap size={14} /><span>{currentRunningExecution ? "执行中" : "执行"}</span></button> : null}
             <button type="button" aria-label={focusedTask ? "还原布局" : "放大当前事情"} aria-pressed={focusedTask} onClick={() => transitionInterface(() => setFocusedTask(value => !value))}>{focusedTask ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
           </div>
         </header>
         <div className="messages">
+          {coordinator.enabled&&active?.workPaused?<p role="status">这件事的后续补充已暂停，原话和用量保留。<button type="button" onClick={()=>{if(confirm('仅处理尚未执行的补充，不重跑失败轮次；会产生新的用量。继续？'))void coordinator.resumeTask(active.id).catch(e=>setError(e.message));}}>继续等待的补充</button></p>:null}
           {latestTurnStart > 0 ? <button className="conversation-fold-toggle" type="button" aria-expanded={showEarlier} onClick={() => setExpandedConversationId(showEarlier ? "" : activeId)}><ChevronDown size={13} /><span>{showEarlier ? "收起之前的对话" : `之前的对话 · ${latestTurnStart} 条`}</span></button> : null}
           {(active?.messages ?? []).length ? (
             active!.messages.map((message, index) => (
               <React.Fragment key={`${message.createdAt}-${index}`}>
-                <article hidden={!showEarlier && index < latestTurnStart} className={`message ${message.role} ${message.id && message.id === (executionTask?.sourceMessageId || executionSourceMessageId) && activeExecutionMode ? "execution-source" : ""}`}>
+                <article hidden={(!showEarlier && index < latestTurnStart)||(replyPending&&message.role==='assistant'&&!message.content.trim())} className={`message ${message.role} ${message.id && message.id === (executionTask?.sourceMessageId || executionSourceMessageId) && activeExecutionMode ? "execution-source" : ""}`}>
                   <div className="bubble">
                     <div className="studio-message-author">{message.role === "assistant" ? "ONE" : "你"}</div>
                     {message.attachments?.length ? <AttachmentList attachments={message.attachments} /> : null}
@@ -1602,19 +1723,20 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                           <button title="复制" onClick={() => copyMarkdown(message.content)}>
                             <Copy size={14} />
                           </button>
-                          {active && message.id ? (
+                          {!demo.enabled && active && message.id ? (
                             <button className={`execution-trigger ${index === active.messages.length - 1 && !executionTask ? "execution-primary-action" : ""}`} title={taskStatusUnavailable ? "正在确认本机状态" : executionBusy ? "本机正在工作，完成后可执行下一件" : "交给 ONE 执行"} disabled={taskStatusUnavailable || preparingExecution || executionBusy || activeLoading || active.id.startsWith("tmp_")} onClick={(event) => executeFromMessage(message, event.currentTarget)}>
                               <Zap size={14} />{index === active.messages.length - 1 && !executionTask ? <span>交给 ONE 执行</span> : null}
                             </button>
                           ) : null}
                         </div>
                         <MessageSources message={message} />
-                        {message.id && active && !active.id.startsWith("tmp_") ? <BetaFeedbackControls key={message.id} messageId={message.id} requestId={message.requestId} onSave={async input => (await api<{ feedback: import("./Onboarding").OwnBetaFeedback }>("/api/me/feedback", { method: "POST", body: JSON.stringify(input) })).feedback} /> : null}
+                        {!demo.enabled && message.id && active && !active.id.startsWith("tmp_") ? <BetaFeedbackControls key={message.id} messageId={message.id} requestId={message.requestId} onSave={async input => (await api<{ feedback: import("./Onboarding").OwnBetaFeedback }>("/api/me/feedback", { method: "POST", body: JSON.stringify(input) })).feedback} /> : null}
                       </>
                     ) : (
                       <>
                         <pre>{message.content}</pre>
-                        {active && message.id ? (
+                        {preview.enabled && preview.state.tasks.find(task=>task.id===activeId)?.messages.find(item=>item.id===message.id)?.status==='queued' ? <small>补充已收到 · 本轮完成后处理</small> : null}
+                        {!demo.enabled && active && message.id ? (
                           <div className="message-actions user-actions">
                             <button className="execution-trigger" title={taskStatusUnavailable ? "正在确认本机状态" : executionBusy ? "本机正在工作，完成后可执行下一件" : "交给 ONE 执行"} disabled={taskStatusUnavailable || preparingExecution || executionBusy || activeLoading || active.id.startsWith("tmp_")} onClick={(event) => executeFromMessage(message, event.currentTarget)}><Zap size={14} /></button>
                           </div>
@@ -1628,22 +1750,25 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               </React.Fragment>
             ))
           ) : <div className="studio-empty">{activeLoading ? "正在打开…" : failedTaskIds.has(activeId) ? "发送失败，草稿已保留。" : "发一条消息。"}</div>}
+          {replyPending?<OneWaitingCopy key={`waiting:${activeId}:${latestTurnStart}`}/>:null}
           {activePreparing || executionTask ? <ExecutionDisclosure key={executionTask?.id || "preparing"} task={executionTask} events={executionEvents} preparing={activePreparing} expanded={Boolean(executionTask && expandedExecutionId === executionTask.id)} onToggle={() => setExpandedExecutionId(expandedExecutionId === executionTask?.id ? "" : executionTask?.id || "")} onStop={source => cancelExecution(source)} /> : null}
         </div>
       </section>
       )}
       </section>
 
-      <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 助手">
+      <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 指挥台">
         {view === "chat" && !hasSubmittedChat && !conversations.length && !profile.onboarding.completedAt ? <Onboarding profile={profile} knowledgeConnected={[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection].some(item => item.status === "connected")} onSave={saveProfile} onOpenKnowledge={() => openSurface("knowledge")} onStartQuestion={suggestion => { setContent(suggestion); setComposeNew(true); setView("chat"); }} /> : null}
         <div className="studio-presence">
-          <OneHeroEye mood={heroMood} />
+          <OneHeroEye mood={heroMood} label={view==='features'?'收起功能，回到 ONE':'打开功能'} onActivate={()=>openSurface(view==='features'?'chat':'features')}/>
           <div className="studio-presence-copy"><span className="studio-eyebrow">ONE IS WITH YOU</span>
           <h2>{activeAgent?.name || (studioIdle ? `${profile.displayName ? `${profile.displayName}，` : ""}${greeting}` : "我在。")}</h2></div>
+          {preview.enabled?<ResultSignal tasks={lampTasks} busy={Boolean(content.trim()||preview.state.pending||view==='things')} ambient={view==='chat'&&!active} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)} onDismiss={closeResultLamp}/>:null}
         </div>
-        {(thinkingConversations.length > 0 || executionBusy || preparingExecution) ? <OneWaitingCopy/> : null}
 
-        {otherRows.length > 0 || unreadNotices.length > 0 || taskStatusUnavailable ? <section className="studio-activity attention-activity" aria-label="任务动态">
+        {preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)}/>:null}
+
+        {!preview.enabled && (otherRows.length > 0 || unreadNotices.length > 0 || taskStatusUnavailable) ? <section className="studio-activity attention-activity" aria-label="任务动态">
           {otherRows.length > 0 || unreadNotices.length > 0 ? <button className="attention-activity-toggle" type="button" aria-expanded={activityExpanded} aria-controls="attention-task-list" onClick={() => setActivityExpanded(value => !value)}>
             <span>{activeOthers.length ? <><span className="task-indicator running" aria-hidden="true" />另外 {activeOthers.length} 件正在进行</> : unreadNotices.length ? "有新的结果" : "其他事情"}</span>
             <span>{unreadNotices.length > 0 ? <b className="attention-unread-count">{unreadNotices.length} 条更新</b> : <small>{otherRows.length}</small>}<ChevronDown size={14} /></span>
@@ -1665,9 +1790,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </div>
 
         <form className="composer studio-composer" onSubmit={send}>
+          {preview.enabled&&featureForNext.length>0?<div className="selected-feature-list" aria-label="下一条使用的功能">{featureForNext.map(feature=><button key={feature.id} type="button" className="selected-feature-chip" aria-label={`取消功能：${feature.name}`} onClick={()=>setFeatureForNext(previous=>previous.filter(item=>item.id!==feature.id))}><Sparkles size={13}/><span>{feature.name}</span><X size={12}/></button>)}<small>下一条使用</small></div>:null}
           {!models.length ? <div className="chat-error"><span>模型未就绪，请联系管理员。</span><button type="button" onClick={() => void refresh()}>重试</button></div> : null}
           {pendingRequests.length ? <details className="one-pending-answers"><summary>有 {pendingRequests.length} 条消息待确认 · 查看原结果，不重复扣费</summary>{pendingRequests.map(item => <button type="button" key={item.operationId} onClick={() => void recoverAnswer(item.operationId)}>查看 {dateTime(item.createdAt)} 的结果</button>)}</details> : null}
-          {!studioIdle ? <div className="studio-compose-context">
+          {preview.enabled ? <div className="studio-compose-context"><span>{preview.state.boundTask ? `正在聊 · ${preview.state.tasks.find(task=>task.id===preview.state.boundTask)?.title}` : '交给 ONE'}</span>{preview.state.boundTask ? <button type="button" onClick={()=>preview.dispatch({type:'bind',taskId:null})}>取消指定 <X size={12}/></button> : null}</div> : !studioIdle ? <div className="studio-compose-context">
             <span title={composerTarget}>{composeMode === "execution" ? "继续执行" : composeNew || !active ? "新事情" : "继续聊"}{active && !composeNew ? ` · ${active.title}` : ""}</span>
             {active && composeNew ? <button type="button" onClick={() => { switchDraft(active.id); setComposeNew(false); }}>回到这件事</button> : active ? <button type="button" onClick={beginNewTask}><Plus size={12} />新事情</button> : null}
           </div> : null}
@@ -1701,7 +1827,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               placeholder={composeMode === "execution" ? "补充要求" : currentModel?.kind === "image" ? "描述你想怎么改" : "告诉我，你想做什么"}
               rows={3}
             />
-            <button id="one-studio-send" className="primary send" type="submit" aria-label={composeMode === "execution" ? "发送并继续执行" : "发送消息"} title={targetLoading ? "这件事正在回复，可以新开一件事" : "发送消息"} disabled={uploadingAttachments || pendingAttachments.some(a => a.status && a.status !== "ready") || (composeMode === "execution" ? taskStatusUnavailable || preparingExecution || executionBusy || !content.trim() || pendingAttachments.length > 0 : !activeModelId || targetLoading || (!content.trim() && !pendingAttachments.length))}>
+            <button id="one-studio-send" className="primary send" type="submit" aria-label={composeMode === "execution" ? "发送并继续执行" : "发送消息"} title={targetLoading ? (preview.enabled ? "ONE 正在承接这句话，可以先编辑下一条" : "这件事正在回复，可以新开一件事") : "发送消息"} disabled={uploadingAttachments || pendingAttachments.some(a => a.status && a.status !== "ready") || (composeMode === "execution" ? taskStatusUnavailable || preparingExecution || executionBusy || !content.trim() || pendingAttachments.length > 0 : !activeModelId || targetLoading || (!content.trim() && !pendingAttachments.length))}>
               {composeMode === "execution" ? <Zap size={18} /> : <ArrowUp size={19} />}
             </button>
           </div>
@@ -1716,13 +1842,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {studioIdle ? (
             <div className="studio-suggestions">
               <span>试试这些</span>
-              <button type="button" onClick={() => setContent("帮我回想最近反复提到的重要想法")}><span>我最近在反复想什么？</span><i aria-hidden="true">↗</i></button>
-              <button type="button" onClick={() => setContent("结合我的知识，把现在最重要的事情整理成一个行动方案")}><span>把一个想法变成行动</span><i aria-hidden="true">↗</i></button>
-              <button type="button" onClick={() => setContent("从我的个人知识中，找出现在最值得重新关注的内容")}><span>找找被我忘掉的好东西</span><i aria-hidden="true">↗</i></button>
+              <button type="button" onClick={() => setContent(demo.enabled ? "UI 保留独立输入框，其他事情先收起来" : "帮我回想最近反复提到的重要想法")}><span>{demo.enabled ? '接着上次的 UI 想一想' : '我最近在反复想什么？'}</span><i aria-hidden="true">↗</i></button>
+              <button type="button" onClick={() => setContent(demo.enabled ? "明天去露营，先准备个安排" : "结合我的知识，把现在最重要的事情整理成一个行动方案")}><span>{demo.enabled ? '明天去露营，准备一下' : '把一个想法变成行动'}</span><i aria-hidden="true">↗</i></button>
+              <button type="button" onClick={() => setContent(demo.enabled ? "UI 先记着这个想法，不要执行" : "从我的个人知识中，找出现在最值得重新关注的内容")}><span>{demo.enabled ? '有个想法，先帮我记着' : '找找被我忘掉的好东西'}</span><i aria-hidden="true">↗</i></button>
             </div>
           ) : null}
         <footer className="studio-assistant-footer"><span className={`connection-dot ${[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection].some(item => item.status === "connected") ? "connected" : "disconnected"}`} /><button type="button" onClick={() => openSurface("knowledge")}>{[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection].some(item => item.status === "connected") ? "知识已连接" : "连接知识"}</button></footer>
       </aside>
+      {demo.enabled ? <details className="workspace-preview-debug"><summary>本地调试</summary><p>规则分流 / 合成结果，不调用 AI。自动分流示例：UI、露营；其他内容可手动指定。</p><label>任务等待（秒）<input type="number" min="1" max="120" value={preview.state.workerMs/1000} onChange={event=>preview.dispatch({type:'settings',workerMs:Math.max(1,Math.min(120,Number(event.target.value)||1))*1000})}/></label><label><input type="checkbox" checked={preview.state.manual} onChange={event=>preview.dispatch({type:'settings',manual:event.target.checked})}/>手动结束任务</label>{preview.state.tasks.map(task=><div key={task.id}><button type="button" onClick={()=>void openConversation(conversations.find(item=>item.id===task.id)!)}>{task.title}</button><span>{task.status} · 排队 {task.queue.length}</span><button type="button" disabled={task.status!=='running'} onClick={()=>preview.dispatch({type:'finish',taskId:task.id,round:task.round,now:Date.now()})}>模拟完成</button></div>)}</details> : null}
       </div>
     </main>
   );
@@ -2933,4 +3060,6 @@ function App() {
 }
 
 const sharedSlug = /^\/s\/([A-Za-z0-9_-]{24})\/?$/.exec(window.location.pathname)?.[1];
-createRoot(document.getElementById("root")!).render(sharedSlug ? <PublicSharingPage slug={sharedSlug}/> : <App />);
+const appRoot = import.meta.hot?.data.appRoot ?? createRoot(document.getElementById("root")!);
+if(import.meta.hot)import.meta.hot.data.appRoot=appRoot;
+appRoot.render(sharedSlug ? <PublicSharingPage slug={sharedSlug}/> : <App />);

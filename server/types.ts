@@ -32,6 +32,7 @@ export type MessageRecord = Required<Pick<Message, "id" | "role" | "content" | "
 };
 
 export type Conversation = {
+  coordinatorMain?: boolean; executorProfileId?: string; workPaused?: boolean;
   id: string; workspaceId: string; userId: string; modelId: string; agentId?: string; folderId?: string;
   archived: boolean; title: string; messages: Message[]; createdAt: string; updatedAt: string;
 };
@@ -44,6 +45,7 @@ export type Agent = {
 
 export type AttachmentKind = "image" | "document" | "spreadsheet" | "presentation" | "text";
 export type Attachment = {
+  sharedConversationIds?:string[];
   id: string; workspaceId: string; userId: string; originalName: string; mimeType: string; kind: AttachmentKind;
   size: number; storagePath: string; extractedText: string; conversationId?: string; messageId?: string; createdAt: string;
   status?: "uploading" | "queued" | "parsing" | "ready" | "failed";
@@ -51,7 +53,7 @@ export type Attachment = {
 };
 export type AttachmentSummary = Pick<Attachment, "id" | "originalName" | "mimeType" | "kind" | "size" | "status" | "uploadedBytes" | "parseError" | "textChars" | "segmentCount">;
 export type SearchSource = { title: string; url: string; snippet: string };
-export type SystemSettings = { safetyRules: string; rechargeCnyPerPower: number; aiTasks?: import("./aiTaskConfig.js").AiTaskConfigs; officialFeatures?: import("./officialFeatures.js").OfficialFeatureRecord[];publicCommercePolicy?:import('./publicSharingTypes.js').PublicCommercePolicy };
+export type SystemSettings = { executorProfiles?: import('./executorProfiles.js').ExecutorProfile[]; safetyRules: string; rechargeCnyPerPower: number; aiTasks?: import("./aiTaskConfig.js").AiTaskConfigs; officialFeatures?: import("./officialFeatures.js").OfficialFeatureRecord[];publicCommercePolicy?:import('./publicSharingTypes.js').PublicCommercePolicy };
 
 export type UserSavedMemory = {
   id: string; workspaceId: string; userId: string; conversationId?: string; sourceMessageId?: string;

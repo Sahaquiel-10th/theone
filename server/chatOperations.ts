@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import type { Store } from "./db.js";
 import type { Conversation, Database, Message } from "./types.js";
 
-/** Compact, durable tombstones: never keep a second copy of prompts or chat history. */
+/** Durable submission records. Ordinary chat keeps compact tombstones;
+ * private queued work additionally stores its immutable execution configuration. */
 export type ChatOperation = {
+  workRun?: import('./coordinatorTypes.js').WorkRun; dispatchedTaskId?: string;
   id: string; workspaceId: string; userId: string; operationId: string;
   payloadHash: string; requestId: string; status: "pending" | "completed" | "failed" | "interrupted";
   conversationId?: string; assistantMessageId?: string; knowledgeWarning?: string;
@@ -171,6 +173,10 @@ export function reconcileInterruptedChatOperations(db: ChatOperationDatabase) {
   const timestamp = new Date().toISOString();
   for (const operation of db.chatOperations ?? []) {
     if (operation.status !== "pending") continue;
+    // Unstarted queue entries have made no external/model call. Keep them for
+    // an explicit Key-verified resume, never auto-replay an in-flight call.
+    if (operation.workRun?.state === 'queued') continue;
+    if (operation.workRun) { operation.workRun.state='interrupted'; operation.workRun.unread=true; operation.workRun.error='服务重启，本轮结果未确认；不会自动重跑。'; const c=db.conversations.find(c=>c.id===operation.conversationId&&c.workspaceId===operation.workspaceId&&c.userId===operation.userId);if(c)c.workPaused=true; }
     operation.status = "interrupted";
     operation.retryable = false;
     operation.updatedAt = timestamp;

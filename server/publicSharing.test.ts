@@ -5,6 +5,7 @@ import type { Database, ModelConfig } from "./types.js";
 import { activePublication, beginPublicRun, checkRunBudget, createGuest, guest, ownedPublication, publish, sharingReady, usageFor } from "./publicSharing.js";
 import { executePublicQuestion } from "./publicSharingRoutes.js";
 import { runBilledModel } from "./modelBilling.js";
+import { defaultTaskValues } from "./aiTaskConfig.js";
 
 function fixture(){
   const model={id:"model",name:"test model",apiKey:"MODEL_SECRET",enabled:true,kind:"chat",protocol:"openai",systemPrompt:"",inputPowerPerMillion:1,outputPowerPerMillion:1,costInputPowerPerMillion:1,costOutputPowerPerMillion:1} as ModelConfig;
@@ -39,7 +40,8 @@ test('legacy version one is compatible; closed links never reopen and old prompt
   delete p.version;delete p.userPrompt;const a=createGuest(f.db,p.id);delete a.session.publicationVersion;
   assert.equal(guest(f.db,p.slug,a.token).publication.id,p.id);
   const updated=publish(f.db,s,{...f.input,version:1,prompt:'new instructions'},p.id);
-  assert.equal(updated.prompt,'new instructions');assert.equal(updated.history![0].userPrompt,undefined);
+  assert.equal(updated.prompt,`${defaultTaskValues('shared_answer').prompt}\n\nnew instructions`);assert.equal(updated.history![0].userPrompt,undefined);
+  assert.doesNotMatch(updated.prompt,/answer briefly/);
   f.db.publications![0].status='closed';assert.throws(()=>publish(f.db,s,{...f.input,version:2},p.id),/不能重新开启/);
 });
 test("publication snapshots are explicit, owner-scoped and public source grants fail closed",()=>{
@@ -49,7 +51,7 @@ test("publication snapshots are explicit, owner-scoped and public source grants 
   assert.throws(()=>publish(f.db,{workspaceId:"ws",userId:"owner"},{...f.input,confirmed:false}));
   const p=publish(f.db,{workspaceId:"ws",userId:"owner"},f.input);
   assert.throws(()=>ownedPublication(f.db,"other-ws","other",p.id));
-  f.input.prompt="changed";assert.equal(p.prompt,"answer briefly");
+  f.input.prompt="changed";assert.equal(p.prompt,`${defaultTaskValues('shared_answer').prompt}\n\nanswer briefly`);
   assert.equal(p.attachments,true);assert.equal(p.sources.length,1);
   f.db.knowledgeConnections[0].encryptedApiKey="REPLACED_ACCOUNT";
   assert.throws(()=>activePublication(f.db,p.id),/授权已变更/);

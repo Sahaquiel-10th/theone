@@ -30,10 +30,12 @@ test("passes OpenAI function tools and returns tool calls", async () => {
     costInputPowerPerMillion: 1, costOutputPowerPerMillion: 1, createdAt: new Date().toISOString()
   } satisfies ModelConfig;
   try {
-    const result = await callModelWithTools(model, [{ role: "user", content: "查看文件" }], [{
+    const result = await callModelWithTools(model, [{ role: "user", content: "查看文件", inputImageDataUrls:["data:image/png;base64,aGVsbG8="] }], [{
       type: "function", function: { name: "list_files", description: "list", parameters: { type: "object" } }
     }], "tool-test");
     assert.equal(received.tool_choice, "auto");
+    assert.deepEqual(received.messages[0].content,[{type:"text",text:"查看文件"},{type:"image_url",image_url:{url:"data:image/png;base64,aGVsbG8="}}]);
+    assert.equal(received.messages[0].inputImageDataUrls,undefined);
     assert.equal(received.tools[0].function.name, "list_files");
     assert.equal(result.toolCalls[0].function.name, "list_files");
     assert.deepEqual(result.usage, { inputTokens: 12, outputTokens: 4, totalTokens: 16, source: "provider" });
@@ -76,7 +78,7 @@ test("translates Anthropic tool use and tool results", async () => {
   try {
     const result = await callModelWithTools(model, [
       { role: "system", content: "只操作授权目录" },
-      { role: "user", content: "查看文件" },
+      { role: "user", content: "查看文件", inputImageDataUrls:["data:image/png;base64,aGVsbG8="] },
       { role: "assistant", content: null, tool_calls: [{ id: "tool-1", type: "function", function: { name: "list_files", arguments: "{\"path\":\".\"}" } }] },
       { role: "tool", tool_call_id: "tool-1", content: "README.md" }
     ], [{
@@ -85,6 +87,8 @@ test("translates Anthropic tool use and tool results", async () => {
     assert.equal(requestPath, "/messages");
     assert.equal(apiKey, "anthropic-server-key");
     assert.equal(received.system, "只操作授权目录");
+    assert.ok(received.messages[0].content.some((block:any)=>block.type==="image"&&block.source.media_type==="image/png"&&block.source.data==="aGVsbG8="));
+    assert.equal(received.messages[0].inputImageDataUrls,undefined);
     assert.equal(received.tool_choice.type, "auto");
     assert.equal(received.tools[0].name, "read_file");
     assert.equal(received.tools[0].input_schema.type, "object");

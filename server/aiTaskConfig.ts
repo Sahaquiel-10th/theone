@@ -10,7 +10,7 @@ export type AiTaskConfigs = Partial<Record<AiTaskKind, AiTaskRecord>>;
 
 export function defaultTaskValues(id: string): AiTaskValues {
   const tools = taskToolNames(id);
-  return { modelId: "", prompt: taskPrompts[id] ?? "", promptMode: "replace", toolDescriptions: Object.fromEntries(tools.map(name => [name, taskToolDescriptions[name]])), tools, maxSteps: id === "local_agent" ? 24 : id === "orchestrator" ? 4 : 1, ...(id === "orchestrator" ? { enabled: false } : {}) };
+  return { modelId: "", prompt: taskPrompts[id] ?? "", promptMode: "replace", toolDescriptions: Object.fromEntries(tools.map(name => [name, taskToolDescriptions[name]])), tools, maxSteps: id === "local_agent" ? 24 : ["orchestrator", "task_worker"].includes(id) ? 4 : id === "coordinator" ? 2 : 1, ...(["orchestrator", "coordinator"].includes(id) ? { enabled: false } : {}) };
 }
 
 /** Show legacy additive configurations faithfully; conversion is explicit on save. */
@@ -29,7 +29,7 @@ export function validateTaskValues(id: string, value: unknown, models: ModelConf
   if (input.modelId && !models.some(model => model.id === input.modelId && model.enabled && model.kind === definition.modelKind)) throw new Error("请选择已启用且类型匹配的模型");
   const allowed = taskToolNames(id);
   if (!Array.isArray(input.tools) || input.tools.some(tool => typeof tool !== "string" || !allowed.includes(tool))) throw new Error("存在不允许的工具");
-  if (!Number.isInteger(input.maxSteps) || Number(input.maxSteps) < 1 || Number(input.maxSteps) > (id === "local_agent" ? 24 : id === "orchestrator" ? 4 : 1)) throw new Error("执行步数无效");
+  if (!Number.isInteger(input.maxSteps) || Number(input.maxSteps) < 1 || Number(input.maxSteps) > (id === "local_agent" ? 24 : ["orchestrator", "task_worker"].includes(id) ? 4 : id === "coordinator" ? 2 : 1)) throw new Error("执行步数无效");
   const descriptions: Record<string, string> = {};
   if (input.toolDescriptions !== undefined) {
     if (!input.toolDescriptions || typeof input.toolDescriptions !== "object" || Array.isArray(input.toolDescriptions)) throw new Error("工具说明无效");
@@ -40,7 +40,7 @@ export function validateTaskValues(id: string, value: unknown, models: ModelConf
   }
   if (input.promptMode !== undefined && input.promptMode !== "replace") throw new Error("提示词模式无效");
   if (input.enabled !== undefined && typeof input.enabled !== "boolean") throw new Error("启用状态无效");
-  return { modelId: input.modelId, prompt: input.prompt.trim(), tools: [...new Set(input.tools as string[])], maxSteps: Number(input.maxSteps), ...(id === "orchestrator" ? { enabled: input.enabled === true } : {}), ...(input.promptMode === "replace" ? { promptMode: "replace" as const } : {}), ...(input.toolDescriptions ? { toolDescriptions: descriptions } : {}) };
+  return { modelId: input.modelId, prompt: input.prompt.trim(), tools: [...new Set(input.tools as string[])], maxSteps: Number(input.maxSteps), ...(["orchestrator", "coordinator"].includes(id) ? { enabled: input.enabled === true } : {}), ...(input.promptMode === "replace" ? { promptMode: "replace" as const } : {}), ...(input.toolDescriptions ? { toolDescriptions: descriptions } : {}) };
 }
 
 /** Global administrator-owned configuration, never a store for user context. */
@@ -75,8 +75,12 @@ export function resolveAiTask(settings: SystemSettings, models: ModelConfig[], i
   const selected = config?.modelId ? models.find(model => model.id === config.modelId) : fallback;
   if (!selected?.enabled || selected.kind !== definition.modelKind) throw new Error(`${definition.name}配置的模型不可用，请联系管理员`);
   const model = structuredClone(selected);
-  if (config?.prompt) model.systemPrompt = [model.systemPrompt, config.prompt].filter(Boolean).join("\n\n");
-  return { model, version: config?.version ?? 0, values: structuredClone(config ?? defaultTaskValues(id)), replacesPrompt: config?.promptMode === "replace" };
+  const values = structuredClone(config ?? defaultTaskValues(id));
+  // The template displayed as the default in administration must be the one
+  // actually used. Published overrides (including an intentionally empty
+  // prompt) are never silently replaced with a new preset.
+  if (values.prompt) model.systemPrompt = [model.systemPrompt, values.prompt].filter(Boolean).join("\n\n");
+  return { model, version: config?.version ?? 0, values, replacesPrompt: !config || config.promptMode === "replace" };
 }
 
 export function taskSummaries(settings: SystemSettings) {

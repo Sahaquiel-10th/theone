@@ -47,6 +47,14 @@ test("operation IDs and pending lists are isolated by user", async t => {
   assert.equal(await chatSubmission(userB, payload), second);
 });
 
+test("coordinator retry IDs survive unknown receipts and remain separate from ordinary chat",async t=>{
+ storageFor(t);const user=randomUUID();const payload={operationId:undefined,text:"UI 再补充一点",featureIds:["research"],attachmentIds:[]};
+ const first=await chatSubmission(`coordinator:${user}`,payload);
+ assert.equal(await chatSubmission(`coordinator:${user}`,{...payload,operationId:undefined}),first);
+ assert.notEqual(await chatSubmission(user,payload),first);
+ assert.notEqual(await chatSubmission(`coordinator:${user}`,{...payload,text:"另一件事情"}),first);
+});
+
 test("resolved or explicitly safe submissions can be forgotten without clearing other requests", async t => {
   storageFor(t);
   const userId = randomUUID();

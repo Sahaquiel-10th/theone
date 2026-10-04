@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from 'node:fs';
 import { advanceEyeSpring, companionAperture, companionBlink, companionGaze } from "./oneEyeMotion";
+test('companion hover has no competing CSS squash animation',()=>{
+ const css=fs.readFileSync(new URL('./one-companion-eye.css',import.meta.url),'utf8');
+ assert.doesNotMatch(css,/one-cat-curiosity|transform:scale/);
+ assert.match(css,/transition: none/);
+});
 
 test("companion gaze is bounded and releases gradually at its outer edge", () => {
   assert.deepEqual(companionGaze(0, 0), { x: 0, y: 0, nearby: true });

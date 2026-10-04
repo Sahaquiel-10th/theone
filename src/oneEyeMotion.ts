@@ -41,7 +41,7 @@ export function companionBlink(elapsed: number, gentle: boolean) {
 
 /** The aperture closes around an unchanged pupil, like two real eyelids. */
 export function companionAperture(openness: number, friendliness = 0) {
-  const open = Math.max(.015, Math.min(1.05, openness));
+  const open = Math.max(.015, Math.min(1.2, openness));
   const top = 50 - 37 * open;
   const bottom = 50 + (37 - friendliness * 5) * open;
   const upperHandle = 50 - 21 * open;

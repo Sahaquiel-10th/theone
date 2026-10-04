@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildConversationAttachmentContext, restoreConversationMessages, selectConversationAttachments } from "./conversationAttachments.js";
+import { buildConversationAttachmentContext, restoreConversationMessages, selectConversationAttachments,detachConversationAttachments } from "./conversationAttachments.js";
 import type { Attachment, Conversation, Database, MessageRecord } from "./types.js";
 
 const createdAt = "2026-09-01T00:00:00.000Z";
+
+test('explicit server handoff survives source deletion but corrupt references do not grant another conversation access',()=>{
+ const file=attachment('shared',{conversationId:'conversation-a',sharedConversationIds:['task-a']});const db=database([file],[message('source',['shared']),message('target',['shared'],{conversationId:'task-a'})]);
+ db.conversations.push({...db.conversations[0],id:'task-a'});
+ assert.equal(selectConversationAttachments(db,{workspaceId:'workspace-a',userId:'user-a',conversationId:'task-a'},[]).context.length,1);
+ assert.equal(restoreConversationMessages(db.conversations[1],db.messages,db.attachments)[0].attachments?.length,1);
+ assert.deepEqual(detachConversationAttachments(db,{workspaceId:'workspace-a',userId:'user-a',conversationId:'conversation-a'}),[]);assert.equal(db.attachments[0].conversationId,'task-a');
+ db.conversations=db.conversations.filter(c=>c.id!=='conversation-a');db.messages=db.messages.filter(m=>m.conversationId!=='conversation-a');
+ assert.deepEqual(detachConversationAttachments(db,{workspaceId:'workspace-a',userId:'user-a',conversationId:'task-a'}),['/private/mock/shared.txt']);
+});
 function attachment(id: string, patch: Partial<Attachment> = {}): Attachment {
   return { id, workspaceId: "workspace-a", userId: "user-a", originalName: `${id}.txt`, mimeType: "text/plain", kind: "text", size: 10, storagePath: `/private/mock/${id}.txt`, extractedText: `${id} contents`, createdAt, ...patch };
 }

@@ -11,7 +11,7 @@ const MOOD_OPENNESS: Record<CompanionMood, number> = {
 };
 
 /** A quiet companion: the shell stays still; attention lives in the pupil and lids. */
-export function OneCompanionEye({ mood }: { mood: CompanionMood }) {
+export function OneCompanionEye({ mood,onActivate,label }: { mood: CompanionMood;onActivate?:()=>void;label?:string }) {
   const clipId = `one-companion-${useId().replace(/:/g, "")}`;
   const buttonRef = useRef<HTMLButtonElement>(null);
   const apertureRef = useRef<SVGPathElement>(null);
@@ -36,6 +36,8 @@ export function OneCompanionEye({ mood }: { mood: CompanionMood }) {
     let lastTime = 0;
     let nearby = false;
     let hovered = false;
+    let dodge:Axis={position:0,velocity:0};
+    let dodgeTarget=0;
     let keyboardFocused = false;
     let lastPointerAt = -Infinity;
     let gazeTarget = { x: 0, y: 0 };
@@ -56,9 +58,11 @@ export function OneCompanionEye({ mood }: { mood: CompanionMood }) {
     }
 
     function render(open = lid.position) {
-      const friendliness = reduced ? (hovered || keyboardFocused || reducedGreeting ? 1 : 0) : warmth.position;
+      const friendliness = reduced ? (hovered || keyboardFocused || reducedGreeting ? .18 : 0) : warmth.position;
       aperture!.setAttribute("d", companionAperture(open, friendliness));
       pupil!.setAttribute("transform", `translate(${horizontal.position.toFixed(3)} ${vertical.position.toFixed(3)})`);
+      const art=button!.querySelector<SVGSVGElement>('.companion-art');
+      if(art)art.style.transform=`translateX(${reduced?0:dodge.position.toFixed(2)}px)`;
     }
 
     function wake() {
@@ -76,8 +80,9 @@ export function OneCompanionEye({ mood }: { mood: CompanionMood }) {
       const frequency = nearby ? 19 : 13;
       horizontal = advanceEyeSpring(horizontal.position, horizontal.velocity, gazeTarget.x, seconds, frequency);
       vertical = advanceEyeSpring(vertical.position, vertical.velocity, gazeTarget.y, seconds, frequency);
-      const targetOpen = hovered || keyboardFocused ? Math.max(1, MOOD_OPENNESS[moodRef.current]) : MOOD_OPENNESS[moodRef.current];
-      const targetWarmth = hovered || keyboardFocused ? 1 : 0;
+      dodge=advanceEyeSpring(dodge.position,dodge.velocity,hovered?dodgeTarget:0,seconds,12);
+      const targetOpen = hovered ? .98 : keyboardFocused?1.025:MOOD_OPENNESS[moodRef.current];
+      const targetWarmth = hovered || keyboardFocused ? .18 : 0;
       lid = advanceEyeSpring(lid.position, lid.velocity, targetOpen, seconds, 15);
       warmth = advanceEyeSpring(warmth.position, warmth.velocity, targetWarmth, seconds, 13);
       const blinkAmount = blink ? companionBlink(now - blink.started, blink.gentle) : 1;
@@ -89,7 +94,8 @@ export function OneCompanionEye({ mood }: { mood: CompanionMood }) {
       const moving = Math.abs(horizontal.position - gazeTarget.x) + Math.abs(vertical.position - gazeTarget.y)
         + Math.abs(horizontal.velocity) + Math.abs(vertical.velocity)
         + Math.abs(lid.position - targetOpen) + Math.abs(lid.velocity)
-        + Math.abs(warmth.position - targetWarmth) + Math.abs(warmth.velocity) > .015;
+        + Math.abs(warmth.position - targetWarmth) + Math.abs(warmth.velocity)
+        + Math.abs(dodge.position-(hovered?dodgeTarget:0))+Math.abs(dodge.velocity) > .015;
       // No perpetual animation loop while ONE is simply resting.
       if (moving || blink) frame = requestAnimationFrame(animate);
     }
@@ -141,7 +147,7 @@ export function OneCompanionEye({ mood }: { mood: CompanionMood }) {
       const gaze = companionGaze(event.clientX - bounds.left - bounds.width / 2, event.clientY - bounds.top - bounds.height / 2);
       nearby = gaze.nearby;
       lastPointerAt = performance.now();
-      gazeTarget = { x: gaze.x, y: gaze.y };
+      gazeTarget = hovered ? {x:gaze.x*.3,y:gaze.y*.3} : { x: gaze.x, y: gaze.y };
       if (!blink) button!.dataset.companionState = nearby ? "watching" : "resting";
       wake();
     }
@@ -156,6 +162,8 @@ export function OneCompanionEye({ mood }: { mood: CompanionMood }) {
     function enter(event: PointerEvent) {
       if (event.pointerType !== "mouse" || !finePointer) return;
       hovered = true;
+      const bounds=button!.getBoundingClientRect();
+      dodgeTarget=event.clientX>=bounds.left+bounds.width/2?-3:3;
       if (reduced) render(MOOD_OPENNESS[moodRef.current]);
       else wake();
     }
@@ -204,6 +212,7 @@ export function OneCompanionEye({ mood }: { mood: CompanionMood }) {
       gazeTarget = { x: 0, y: 0 };
       horizontal = { position: 0, velocity: 0 };
       vertical = { position: 0, velocity: 0 };
+      dodge={position:0,velocity:0};dodgeTarget=0;
       lid = { position: MOOD_OPENNESS[moodRef.current], velocity: 0 };
       warmth = { position: keyboardFocused ? 1 : 0, velocity: 0 };
       button!.dataset.companionState = "resting";
@@ -292,9 +301,11 @@ export function OneCompanionEye({ mood }: { mood: CompanionMood }) {
       ref={buttonRef}
       className="one-presence one-companion-eye"
       type="button"
-      aria-label="和 ONE 打个招呼"
+      aria-label={label||(onActivate?"看看 ONE 会什么":"和 ONE 打个招呼")}
+      title={label||(onActivate?"看看我会什么":undefined)}
       data-companion-state="resting"
-      onClick={() => actionsRef.current.greet()}
+      data-mood={mood}
+      onClick={() => {actionsRef.current.greet();onActivate?.();}}
     >
       <svg className="one-hero-eye companion-art" viewBox="0 0 100 100" aria-hidden="true">
         <defs>

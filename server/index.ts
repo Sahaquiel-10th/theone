@@ -14,6 +14,7 @@ import { callModel, callModelWithTools } from "./modelGateway.js";
 import { runTaskOrchestrator } from "./taskOrchestrator.js";
 import { resolveAiTask } from "./aiTaskConfig.js";
 import { installAiTaskRoutes } from "./aiTaskRoutes.js";
+import { installCoordinatorRoutes } from './coordinatorRoutes.js';
 import { installOfficialFeatureRoutes } from "./officialFeatureRoutes.js";
 import { installFeatureConnectionRoutes } from "./featureConnectionRoutes.js";
 import { installOfficialFeaturePilotRoutes } from "./officialFeaturePilotRoutes.js";
@@ -34,7 +35,7 @@ import { buildSearchContext, searchWeb, webSearchEnabled } from "./webSearch.js"
 import { encryptCredential, knowledgeCredentialContext } from "./knowledge/credentialCipher.js";
 import { GetNoteProviderError, getNoteProvider } from "./knowledge/getnoteProvider.js";
 import { KnowledgeService } from "./knowledge/knowledgeService.js";
-import { selectConversationAttachments, publicAttachmentSummary } from "./conversationAttachments.js";
+import { selectConversationAttachments, publicAttachmentSummary, detachConversationAttachments } from "./conversationAttachments.js";
 import { prepareAttachmentContext, fullDocumentIntent } from "./attachmentRetrieval.js";
 import { beginChatOperation, bindChatOperationConversation, completeChatOperation, failChatOperationInMutation, getChatOperationResult, ChatOperationError } from "./chatOperations.js";
 import { accountProfile, updateAccountProfile, completeOnboardingOnChat, BetaInputError } from "./betaProfile.js";
@@ -546,7 +547,7 @@ app.post("/api/chat", ...keyAuth, asyncRoute(async (req, res) => {
 }));
 
 app.patch("/api/conversations/:id", ...keyAuth, asyncRoute(async (req, res) => { const conversation = await store.mutate((db) => { const target = db.conversations.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id); if (!target) throw new Error("对话不存在"); if (typeof req.body.archived === "boolean") target.archived = req.body.archived; if (typeof req.body.folderId === "string") target.folderId = req.body.folderId && db.conversationFolders.some((item) => item.id === req.body.folderId && item.workspaceId === req.workspaceId && item.userId === req.user!.id) ? req.body.folderId : undefined; target.updatedAt = now(); return target; }); res.json({ conversation }); }));
-app.delete("/api/conversations/:id", ...keyAuth, asyncRoute(async (req, res) => { let paths: string[] = []; await store.mutate((db) => { const target = db.conversations.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id); if (!target) throw new Error("对话不存在"); paths = db.attachments.filter((item) => item.workspaceId === req.workspaceId && item.conversationId === target.id).map((item) => item.storagePath); const taskIds = new Set(db.executionTasks.filter((item) => item.conversationId === target.id && item.workspaceId === req.workspaceId).map((item) => item.id)); db.conversations = db.conversations.filter((item) => item.id !== target.id); db.messages = db.messages.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.attachments = db.attachments.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.retrievalLogs = db.retrievalLogs.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.contextTraces = db.contextTraces.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.executionTasks = db.executionTasks.filter((item) => !taskIds.has(item.id)); db.executionEvents = db.executionEvents.filter((item) => !taskIds.has(item.taskId)); }); await Promise.all(paths.map((item) => removeAttachmentFiles(item).catch(() => undefined))); res.json({ ok: true }); }));
+app.delete("/api/conversations/:id", ...keyAuth, asyncRoute(async (req, res) => { let paths: string[] = []; await store.mutate((db) => { const target = db.conversations.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id); if (!target) throw new Error("对话不存在"); paths = detachConversationAttachments(db,{workspaceId:req.workspaceId!,userId:req.user!.id,conversationId:target.id}); const taskIds = new Set(db.executionTasks.filter((item) => item.conversationId === target.id && item.workspaceId === req.workspaceId).map((item) => item.id)); db.conversations = db.conversations.filter((item) => item.id !== target.id); db.messages = db.messages.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.retrievalLogs = db.retrievalLogs.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.contextTraces = db.contextTraces.filter((item) => item.conversationId !== target.id || item.workspaceId !== req.workspaceId); db.executionTasks = db.executionTasks.filter((item) => !taskIds.has(item.id)); db.executionEvents = db.executionEvents.filter((item) => !taskIds.has(item.taskId)); }); await Promise.all(paths.map((item) => removeAttachmentFiles(item).catch(() => undefined))); res.json({ ok: true }); }));
 
 app.get("/api/knowledge/connections/getnote", ...keyAuth, asyncRoute(async (req, res) => {
   const db = await store.read();
@@ -921,6 +922,7 @@ const admin = [...keyAuth, requireRole("admin")] as const;
 installPublicCommerceRoutes(app,keyAuth,admin,store);
 installProductMetricsRoutes(app,admin,store);
 installAiTaskRoutes(app, admin, store);
+installCoordinatorRoutes(app,keyAuth,admin,store,confirmKeyBeforeModel,knowledgeService,{webSearch:query=>webSearchEnabled()?searchWeb(query):Promise.resolve({status:'unavailable'})});
 installOfficialFeaturePilotRoutes(app, admin, store);
 installFeatureTrialRoutes(app, admin, store, confirmKeyBeforeModel);
 installFeatureRunRoutes(app, keyAuth, store, confirmKeyBeforeModel, knowledgeService);

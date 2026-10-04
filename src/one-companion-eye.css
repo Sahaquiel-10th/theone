@@ -28,7 +28,18 @@
   overflow: visible;
   transform: none;
   animation: none;
+  transition: none;
 }
+
+@media (hover:hover) and (pointer:fine) {
+  .one-companion-eye:not([data-mood="thinking"]):hover .companion-art {
+    animation:none;
+  }
+  .one-companion-eye:not([data-mood="thinking"]):active .companion-art {
+    animation:none;
+  }
+}
+@media(prefers-reduced-motion:reduce){.one-companion-eye .companion-art {animation:none!important;transition:none!important;transform:none!important;}}
 
 .one-companion-eye .companion-shell { fill: #111110; }
 .one-companion-eye .companion-white { fill: #fff; }
