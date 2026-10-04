@@ -7,6 +7,43 @@ import { WebSocket } from "ws";
 import { OneKeyPresence } from "./oneKeyPresence.js";
 const installationId = "a".repeat(32);
 
+test("two different Keys on one computer retain independent presence through reconnect", async () => {
+  const pairs = [crypto.generateKeyPairSync("ed25519"), crypto.generateKeyPairSync("ed25519")];
+  const devices = pairs.map((pair, index) => ({ id: `dual-${index}`, serialNumber: `DUAL-${index}`, workspaceId: `workspace-${index}`, userId: `user-${index}`, status: "active", publicKey: pair.publicKey.export({ type: "spki", format: "pem" }).toString(), createdAt: new Date().toISOString() }));
+  const presence = new OneKeyPresence({ read: async () => ({ oneKeyDevices: devices }) } as any);
+  const server = createServer(); presence.attach(server); server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address(); if (!address || typeof address === "string") throw new Error("测试服务未启动");
+  const sockets: WebSocket[] = [];
+  async function connect(index: number) {
+    const socket = new WebSocket(`ws://127.0.0.1:${(address as any).port}/api/one-key/launcher?deviceId=${devices[index].id}&installationId=${installationId}`);
+    sockets.push(socket);
+    const [raw] = await once(socket, "message"); const auth = JSON.parse(raw.toString());
+    socket.send(JSON.stringify({ type: "auth_response", challengeId: auth.challengeId, signature: sign(pairs[index].privateKey, auth.nonce) }));
+    const [ready] = await once(socket, "message"); assert.equal(JSON.parse(ready.toString()).type, "ready");
+    socket.on("message", raw => {
+      const message = JSON.parse(raw.toString());
+      if (message.type === "request_challenge") socket.send(JSON.stringify({ type: "proof_response", challengeId: message.challengeId, signature: sign(pairs[index].privateKey, message.nonce) }));
+    });
+    return socket;
+  }
+  const binding = (index: number) => ({ deviceId: devices[index].id, installationId, userId: devices[index].userId, workspaceId: devices[index].workspaceId, method: "POST", path: "/api/chat" });
+  try {
+    const first = await connect(0); await connect(1);
+    await Promise.all([presence.requireProof(binding(0)), presence.requireProof(binding(1))]);
+    const closed = once(first, "close"); first.close(); await closed;
+    assert.equal(presence.isConnected(devices[1].id, installationId), true);
+    await presence.requireProof(binding(1));
+    await connect(0);
+    await Promise.all([presence.requireProof(binding(0)), presence.requireProof(binding(1))]);
+    await assert.rejects(() => presence.requireProof({ ...binding(0), workspaceId: devices[1].workspaceId }), /不属于当前账号/);
+  } finally {
+    for (const socket of sockets) socket.terminate();
+    await presence.close();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+});
+
 function sign(privateKey: crypto.KeyObject, nonce: string) {
   return crypto.sign(null, Buffer.from(nonce, "base64url"), privateKey).toString("base64url");
 }

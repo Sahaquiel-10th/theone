@@ -121,6 +121,7 @@ func findCredentialUrl(expectedDeviceId: String? = nil, preferred: URL? = nil) -
     // Fast path never enumerates other volumes. Validate identity too: another
     // Key may now occupy the old mount path.
     if let found = candidates.first(where: { (try? loadCredential($0, expectedDeviceId: expectedDeviceId)) != nil }) { return found }
+    guard mayScanOtherKeyVolumes(expectedDeviceId: expectedDeviceId, preferred: preferred) else { return nil }
     // Event handlers give prompt recovery; this bounded fallback covers missed
     // mount notifications without scanning all disks every 500 ms.
     if Date() >= nextVolumeScan {
@@ -744,6 +745,23 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private var residentLock: ResidentLock?
     private let networkMonitor = NWPathMonitor()
     private var receivedInitialPath = false
+    private var reopenAcknowledged = false
+
+    private func reopenNotification(_ deviceId: String) -> Notification.Name {
+        let digest = SHA256.hash(data: Data(deviceId.utf8)).map { String(format: "%02x", $0) }.joined()
+        return Notification.Name("one.key.reopen.\(digest)")
+    }
+
+    @objc private func reopenRequested(_ notification: Notification) {
+        guard let requestId = notification.object as? String, UUID(uuidString: requestId) != nil else { return }
+        DistributedNotificationCenter.default().postNotificationName(Notification.Name("one.key.reopen.ack.\(requestId)"), object: nil, userInfo: nil, deliverImmediately: true)
+        requestLogin()
+        // A new double-click must wake the resident that actually owns this
+        // Key, not merely create a login URL while that resident is offline.
+        if !ready { nextVolumeScan = .distantPast; restartSession() }
+    }
+
+    @objc private func reopenReply(_ notification: Notification) { reopenAcknowledged = true }
 
     init(residentMode: Bool, expectedDeviceId: String?, initialCredentialUrl: URL?) {
         self.residentMode = residentMode
@@ -782,6 +800,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
                 residentLock = lock
+                DistributedNotificationCenter.default().addObserver(self, selector: #selector(reopenRequested(_:)), name: reopenNotification(resolvedDeviceId), object: nil)
             } catch {
                 showFailure(error)
                 return
@@ -838,6 +857,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         stopping = true
         NSWorkspace.shared.notificationCenter.removeObserver(self)
+        DistributedNotificationCenter.default().removeObserver(self)
         networkMonitor.cancel()
         loginTask?.cancel()
         removalTask?.cancel()
@@ -861,7 +881,10 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         while !stopping, generation == sessionGeneration {
         do {
             let wantedDeviceId = credential?.deviceId ?? expectedDeviceId
-            guard let foundUrl = findCredentialUrl(expectedDeviceId: wantedDeviceId, preferred: credentialUrl) else {
+            let portable = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent(".one/credential.json")
+            let candidates = keyCredentialCandidates(current: credentialUrl, original: initialCredentialUrl, portable: portable)
+            let direct = candidates.first { (try? loadCredential($0, expectedDeviceId: wantedDeviceId)) != nil }
+            guard let foundUrl = direct ?? findCredentialUrl(expectedDeviceId: wantedDeviceId, preferred: credentialUrl ?? initialCredentialUrl) else {
                 if residentMode {
                     ready = false
                     socket = nil
@@ -999,6 +1022,22 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
 
     private func openLoginThroughExistingResident(deviceId: String, preferred: URL? = nil) async {
         do {
+            let requestId = UUID().uuidString
+            let reply = Notification.Name("one.key.reopen.ack.\(requestId)")
+            reopenAcknowledged = false
+            DistributedNotificationCenter.default().addObserver(self, selector: #selector(reopenReply(_:)), name: reply, object: nil)
+            defer { DistributedNotificationCenter.default().removeObserver(self, name: reply, object: nil) }
+            DistributedNotificationCenter.default().postNotificationName(reopenNotification(deviceId), object: requestId, userInfo: nil, deliverImmediately: true)
+            for _ in 0..<15 {
+                try await Task.sleep(for: .milliseconds(100))
+                if reopenAcknowledged {
+                    stopping = true
+                    NSApplication.shared.terminate(nil)
+                    return
+                }
+            }
+            // Compatibility with already-running older launchers. New
+            // residents handle login themselves after authenticating.
             guard let credentialUrl = findCredentialUrl(expectedDeviceId: deviceId, preferred: preferred) else {
                 throw LauncherError.message("没有找到 ONE Key，请插入后重试")
             }
