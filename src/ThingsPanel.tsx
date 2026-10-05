@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MessageMarkdown } from "./MessageMarkdown";
 import "./things-panel.css";
+import { Zap } from "lucide-react";
+import { thingExecutionSource } from "./thingExecution";
 
 type Thing = {
   id: string;
@@ -21,6 +23,10 @@ export function ThingsPanel({
   hasMore,
   onMore,
   loadingMore,
+  onExecute,
+  executionDisabled = false,
+  executionPreparing = false,
+  executionContent,
 }: {
   one?: ReactNode;
   items: Thing[];
@@ -33,6 +39,10 @@ export function ThingsPanel({
   hasMore: boolean;
   onMore: () => void;
   loadingMore: boolean;
+  onExecute?: (conversationId: string, messageId: string, source: HTMLElement) => void | Promise<void>;
+  executionDisabled?: boolean;
+  executionPreparing?: boolean;
+  executionContent?: ReactNode;
 }) {
   const [sending, setSending] = useState<string[]>([]),
     [errors, setErrors] = useState<Record<string,string>>({});
@@ -46,6 +56,7 @@ export function ThingsPanel({
   const pages = Math.max(1, Math.ceil(found.length / 10)),
     current = Math.min(page, pages);
   const draft = drafts[selectedId] || "";
+  const executionSource = thingExecutionSource(selected);
   const messagesRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const element = messagesRef.current;
@@ -115,9 +126,14 @@ export function ThingsPanel({
           <>
             <header>
               <h2>{selected.title}</h2>
+              <div className="things-thread-actions">
+              {onExecute ? <button type="button" className="things-execute" disabled={executionDisabled || executionPreparing || sending.includes(selected.id) || !executionSource} title="把这件事的已发送对话交给本机执行；未发送草稿不会执行" onClick={event => {
+                if (executionSource) void onExecute(selected.id, executionSource.sourceMessageId, event.currentTarget);
+              }}><Zap size={14} aria-hidden="true" />{executionPreparing ? "准备执行…" : "执行"}</button> : null}
               <button type="button" onClick={() => onWorkbench(selected.id)}>
                 放到工作台 ↗
               </button>
+              </div>
             </header>
             <div className="things-thread-messages" ref={messagesRef}>
               {selected.messagesLoaded === false ? (
@@ -137,6 +153,7 @@ export function ThingsPanel({
                 <p>这件事还没开始。</p>
               )}
             </div>
+            {executionContent}
             {errors[selectedId] ? <p className="things-send-error" role="alert">{errors[selectedId]}</p> : null}
             {(
               <form
