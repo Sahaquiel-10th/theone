@@ -483,20 +483,48 @@ func executionProject(deviceId: String) -> String? {
     return path
 }
 
-func codexExecutable(credentialUrl: URL) -> String? {
-    let volumeRoot = credentialUrl.deletingLastPathComponent().deletingLastPathComponent()
-    var candidates = [String]()
-    if let bundled = Bundle.main.resourceURL?.appendingPathComponent("codex").path {
-        candidates.append(bundled)
+@MainActor
+func codexApplications() -> [URL] {
+    var apps = [URL]()
+    for identifier in ["com.openai.codex", "com.openai.chat", "com.openai.chatgpt"] {
+        if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) { apps.append(app) }
     }
-    candidates.append(contentsOf: [
-        volumeRoot.appendingPathComponent("ONE for Mac.app/Contents/Resources/codex").path,
-        volumeRoot.appendingPathComponent("ONE.app/Contents/Resources/codex").path,
-        "/Applications/ChatGPT.app/Contents/Resources/codex",
-        "/opt/homebrew/bin/codex",
-        "/usr/local/bin/codex"
-    ])
-    return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    for root in [URL(fileURLWithPath: "/Applications"), FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications")] {
+        for name in ["ChatGPT.app", "Codex.app"] { apps.append(root.appendingPathComponent(name)) }
+    }
+    return apps
+}
+
+@MainActor
+func selectCodexRuntime() -> String? {
+    NSApplication.shared.activate(ignoringOtherApps: true)
+    let panel = NSOpenPanel()
+    panel.title = "选择 Codex 应用或命令行程序"
+    panel.message = "ONE 未自动找到 Codex。请选择已安装的 ChatGPT/Codex 应用，或 codex 程序；取消不会安装或修改任何软件。"
+    panel.prompt = "使用此 Codex"
+    panel.canChooseFiles = true; panel.canChooseDirectories = false
+    panel.treatsFilePackagesAsDirectories = false; panel.allowsMultipleSelection = false
+    guard panel.runModal() == .OK else { return nil }
+    return panel.url?.path
+}
+
+func codexExecutable(credentialUrl: URL) async -> String? {
+    let volumeRoot = credentialUrl.deletingLastPathComponent().deletingLastPathComponent()
+    let key = "one.execution.codex.path"
+    let apps = await codexApplications()
+    let candidates = codexRuntimeCandidates(saved: oneDefaults().string(forKey: key), resources: Bundle.main.resourceURL, volume: volumeRoot, applications: apps, home: FileManager.default.homeDirectoryForCurrentUser, path: ProcessInfo.processInfo.environment["PATH"] ?? "")
+    if let found = await Task.detached(operation: { candidates.first(where: isCodexRuntime) }).value {
+        oneDefaults().set(found, forKey: key)
+        return found
+    }
+    oneDefaults().removeObject(forKey: key)
+    guard let selected = await selectCodexRuntime() else { return nil }
+    let choices = selected.hasSuffix(".app")
+        ? codexRuntimeCandidates(saved: nil, resources: nil, volume: volumeRoot, applications: [URL(fileURLWithPath: selected)], home: FileManager.default.homeDirectoryForCurrentUser, path: "").filter { $0.hasPrefix(selected + "/") }
+        : [selected]
+    guard let found = await Task.detached(operation: { choices.first(where: isCodexRuntime) }).value else { return nil }
+    oneDefaults().set(found, forKey: key)
+    return found
 }
 
 // Finder-launched processes do not inherit shell proxy variables. Honor the
@@ -553,8 +581,13 @@ final class CodexExecutionRunner: @unchecked Sendable {
     private func run(taskId: String, instruction: String, resume: Bool) async {
         let alreadyRunning = synchronized { processes[taskId] != nil }
         if alreadyRunning { await send(taskId: taskId, kind: "error", text: "Codex 正在执行当前任务", status: "failed"); return }
-        guard let executable = codexExecutable(credentialUrl: credentialUrl) else {
-            await send(taskId: taskId, kind: "error", text: "本机没有可用的 Codex Runtime，请更新 ONE 后重试", status: "failed")
+        guard let executable = await codexExecutable(credentialUrl: credentialUrl) else {
+            await send(taskId: taskId, kind: "error", text: "尚未连接可用的 Codex，或已取消选择。请安装 Codex 并登录，或执行时选择已有应用。更新 ONE 不会自动安装 Codex。", status: "failed")
+            return
+        }
+        let authenticated = await Task.detached { probeCodex(executable, arguments: ["login", "status"])?.status == 0 }.value
+        guard authenticated else {
+            await send(taskId: taskId, kind: "error", text: "已找到 Codex，但无法确认登录状态。请先在 Codex 完成登录，再重新执行；ONE 不会读取或上传你的登录凭证。", status: "failed")
             return
         }
 
