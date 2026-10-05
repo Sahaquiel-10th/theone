@@ -7,6 +7,16 @@ import { aiTaskCatalog } from "./aiTaskCatalog.js";
 const model = { id: "a", enabled: true, kind: "chat", systemPrompt: "base", apiKey: "not-for-client" } as ModelConfig;
 const second = { ...model, id: "b" };
 const settings = (): SystemSettings => ({ safetyRules: "immutable", rechargeCnyPerPower: 7 });
+test("coordinator attachment handoff guidance stays editable, without replacing published prompts", () => {
+  const preset = defaultTaskValues("coordinator");
+  assert.match(preset.prompt, /attachmentsRequireDelegation=true/);
+  assert.match(preset.prompt, /并没有附件正文/);
+  assert.match(preset.prompt, /必须调用 delegate_task/);
+  const s = settings();
+  updateTaskConfig(s, [model], "coordinator", { revision: 0, action: "draft", values: { ...preset, prompt: "管理员自定义分派", enabled: true } }, "admin", "t1");
+  updateTaskConfig(s, [model], "coordinator", { revision: 1, action: "publish" }, "admin", "t2");
+  assert.equal(resolveAiTask(s, [model], "coordinator", model).values.prompt, "管理员自定义分派");
+});
 test("every implemented AI role has an editable runtime prompt and model binding",()=>{
  for(const role of aiTaskCatalog){
   const fallback={...model,kind:role.modelKind} as ModelConfig;

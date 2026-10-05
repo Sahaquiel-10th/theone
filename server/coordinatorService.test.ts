@@ -35,6 +35,8 @@ test('legacy continuation preserves original history and attached file handoff i
  await assert.rejects(()=>f.service.dispatch(a,{...input('operation_foreign_f','UI'),attachmentIds:['foreign-file']},key));assert.equal(f.calls.length,0);
  const r=await f.service.dispatch(a,{...input('operation_attach_ok','UI 看看附件'),boundTaskId:'legacy',attachmentIds:['own-file']},key);
  assert.equal(r.taskId,'legacy');const queued=await f.store.read();assert.ok(queued.messages.some(m=>m.id==='legacy-user'));assert.ok(queued.attachments.find(a=>a.id==='own-file')!.sharedConversationIds?.includes('legacy'));
+ assert.equal(f.calls.find(c=>c.modelId==='router')!.requiredTool,'delegate_task');
+ assert.equal(f.calls.filter(c=>c.modelId==='router').at(-1)!.requiredTool,undefined,'acknowledgement must not dispatch again');
  await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,'legacy')).jobs[0].state==='completed');
  const call=f.calls.find(c=>c.modelId==='worker')!;assert.match(call.messages[0].content!,/独立输入框/);assert.match(JSON.stringify(call.messages),/之前的完整原话|之前的成果/);assert.doesNotMatch(JSON.stringify(call.messages),/不能读取/);
 });
@@ -187,7 +189,7 @@ function fixture() {
       return next;
     },
   } as Store;
-  const calls: { modelId: string; messages: ModelToolMessage[] }[] = [],
+  const calls: { modelId: string; messages: ModelToolMessage[]; requiredTool?: string }[] = [],
     recalls: { ws: string; ids?: readonly string[] }[] = [];
   let workerHook:
       ((messages: ModelToolMessage[]) => Promise<ToolChatResult>) | undefined,
@@ -201,8 +203,8 @@ function fixture() {
       },
     },
     {
-      modelCall: async (model, messages, tools) => {
-        calls.push({ modelId: model.id, messages: structuredClone(messages) });
+      modelCall: async (model, messages, tools, _requestId, options) => {
+        calls.push({ modelId: model.id, messages: structuredClone(messages), requiredTool: options?.requiredTool });
         if (model.id !== "router")
           return workerHook
             ? workerHook(messages)
@@ -463,6 +465,7 @@ test("real model-backed routing preserves one main conversation, separates origi
     key,
   );
   assert.equal(chat.taskId, undefined);
+  assert.equal(f.calls.at(-1)!.requiredTool, undefined, "ordinary conversation retains automatic routing");
   assert.equal((await f.service.state(a)).total, 2);
 });
 test("same-task supplements wait; another task proceeds; running snapshot excludes the new supplement", async () => {

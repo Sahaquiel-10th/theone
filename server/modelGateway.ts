@@ -233,12 +233,14 @@ export async function callModelWithTools(
   model: ModelConfig,
   messages: ModelToolMessage[],
   tools: ModelToolDefinition[],
-  requestId = "unknown"
+  requestId = "unknown",
+  options: { requiredTool?: string } = {}
 ): Promise<ToolChatResult> {
   if (!model.enabled) throw new Error("模型未启用");
   if (!model.apiKey) throw new Error("模型缺少 API Key");
   if (model.kind !== "chat") throw new Error("ONE Local Agent 需要支持 function calling 的对话模型");
-  if (model.protocol === "anthropic") return callAnthropicModelWithTools(model, messages, tools, requestId);
+  if (options.requiredTool && !tools.some(t => t.function.name === options.requiredTool)) throw new Error("指定工具未授权");
+  if (model.protocol === "anthropic") return callAnthropicModelWithTools(model, messages, tools, requestId, options);
 
   const endpoint = `${model.baseUrl.replace(/\/$/, "")}/chat/completions`;
   const startedAt = Date.now();
@@ -261,7 +263,7 @@ export async function callModelWithTools(
         model: model.model,
         messages: messages.map(({inputImageDataUrls,...message})=>({...message,content:inputImageDataUrls?.length?[{type:'text',text:message.content||''},...inputImageDataUrls.map(url=>({type:'image_url',image_url:{url}}))]:message.content})),
         tools,
-        tool_choice: "auto",
+        tool_choice: options.requiredTool ? { type: "function", function: { name: options.requiredTool } } : "auto",
         temperature: 0.2,
         max_tokens: MODEL_MAX_OUTPUT_TOKENS
       })
@@ -310,7 +312,8 @@ async function callAnthropicModelWithTools(
   model: ModelConfig,
   messages: ModelToolMessage[],
   tools: ModelToolDefinition[],
-  requestId: string
+  requestId: string,
+  options: { requiredTool?: string } = {}
 ): Promise<ToolChatResult> {
   const system = messages
     .filter((message) => message.role === "system" && typeof message.content === "string")
@@ -375,7 +378,7 @@ async function callAnthropicModelWithTools(
           description: tool.function.description,
           input_schema: tool.function.parameters
         })),
-        tool_choice: { type: "auto" },
+        tool_choice: options.requiredTool ? { type: "tool", name: options.requiredTool, disable_parallel_tool_use: true } : { type: "auto" },
         temperature: 0.2,
         max_tokens: MODEL_MAX_OUTPUT_TOKENS
       })

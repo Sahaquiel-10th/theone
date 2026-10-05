@@ -39,6 +39,10 @@ test("passes OpenAI function tools and returns tool calls", async () => {
     assert.equal(received.tools[0].function.name, "list_files");
     assert.equal(result.toolCalls[0].function.name, "list_files");
     assert.deepEqual(result.usage, { inputTokens: 12, outputTokens: 4, totalTokens: 16, source: "provider" });
+    const tools = [{ type: "function" as const, function: { name: "list_files", description: "list", parameters: { type: "object" } } }];
+    await callModelWithTools(model, [{ role: "user", content: "明确查看" }], tools, "required-openai", { requiredTool: "list_files" });
+    assert.deepEqual(received.tool_choice, { type: "function", function: { name: "list_files" } });
+    await assert.rejects(callModelWithTools(model, [], tools, "invalid", { requiredTool: "foreign_tool" }), /指定工具未授权/);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
@@ -99,6 +103,8 @@ test("translates Anthropic tool use and tool results", async () => {
     assert.equal(result.toolCalls[0].function.name, "read_file");
     assert.equal(result.toolCalls[0].function.arguments, "{\"path\":\"README.md\"}");
     assert.deepEqual(result.usage, { inputTokens: 18, outputTokens: 7, totalTokens: 25, source: "provider" });
+    await callModelWithTools(model, [{ role: "user", content: "明确读取" }], [{ type: "function", function: { name: "read_file", description: "read", parameters: { type: "object" } } }], "required-anthropic", { requiredTool: "read_file" });
+    assert.deepEqual(received.tool_choice, { type: "tool", name: "read_file", disable_parallel_tool_use: true });
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }

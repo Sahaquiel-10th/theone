@@ -607,6 +607,13 @@ export class CoordinatorService {
                 messages,
                 tools,
                 requestId,
+                // Explicit user selection is not ordinary small talk. Require
+                // only the authorized routing tool; handlers still validate
+                // task, executor and workspace. The final acknowledgement has
+                // no tools and must never be forced into another dispatch.
+                tools.some(t => t.function.name === "delegate_task") &&
+                (Boolean(input.boundTaskId) || features.length > 0 || attachments.length > 0)
+                  ? { requiredTool: "delegate_task" } : {},
               ),
           ),
       });
