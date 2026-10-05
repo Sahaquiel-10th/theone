@@ -1,6 +1,68 @@
 // The file commit and the progress notification are different operations.
 // A notification failure must not undo or prevent the committed hand-off.
 import Foundation
+import Darwin
+
+// Both ordinary launch and update hand-off use the exact verified executable,
+// not LaunchServices' cached bundle identity (shared by all portable Keys).
+func prepareRuntimeResident(source: URL, target: URL) throws {
+    if (try? Data(contentsOf: target)) == (try Data(contentsOf: source)) { return }
+    let temporary = target.deletingLastPathComponent().appendingPathComponent(".ONEPresence-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: temporary) }
+    try FileManager.default.copyItem(at: source, to: temporary)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: temporary.path)
+    guard rename(temporary.path, target.path) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+}
+
+// Do not use a task group here: its scope waits for all children, including a
+// socket operation that does not respond to cancellation. Only the first
+// outcome is allowed to resume the caller; late callbacks are harmless.
+private final class RuntimeOutcome<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Error>?
+    init(_ continuation: CheckedContinuation<T, Error>) { self.continuation = continuation }
+    func resolve(_ result: Result<T, Error>) {
+        lock.lock()
+        let waiting = continuation
+        continuation = nil
+        lock.unlock()
+        waiting?.resume(with: result)
+    }
+}
+
+enum RuntimeOperationError: Error { case timeout }
+
+func boundedRuntimeOperation<T: Sendable>(timeout: Duration, operation: @escaping @Sendable () async throws -> T) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+        let outcome = RuntimeOutcome(continuation)
+        let work = Task {
+            do { outcome.resolve(.success(try await operation())) }
+            catch { outcome.resolve(.failure(error)) }
+        }
+        Task {
+            do { try await Task.sleep(for: timeout) } catch { return }
+            outcome.resolve(.failure(RuntimeOperationError.timeout))
+            work.cancel()
+        }
+    }
+}
+
+enum RuntimeSocketOutcome: Sendable { case message(String), installed(URL) }
+
+func runtimeMessageOrInstallation(installation: Task<URL, Error>, receive: @escaping @Sendable () async throws -> String) async throws -> RuntimeSocketOutcome {
+    try await withCheckedThrowingContinuation { continuation in
+        let outcome = RuntimeOutcome(continuation)
+        let reader = Task {
+            do { outcome.resolve(.success(.message(try await receive()))) }
+            catch { outcome.resolve(.failure(error)) }
+        }
+        Task {
+            do { outcome.resolve(.success(.installed(try await installation.value))) }
+            catch { outcome.resolve(.failure(error)) }
+            reader.cancel()
+        }
+    }
+}
 
 final class RuntimeInstallActivity: @unchecked Sendable {
     private let lock = NSLock()

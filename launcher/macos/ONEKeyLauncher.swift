@@ -196,6 +196,11 @@ func launchResidentCopy() throws {
     _ = installationId()
     guard let source = Bundle.main.executableURL else { throw LauncherError.message("ONE 启动器不完整") }
     let portableCredential = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent(".one/credential.json")
+    try launchResidentExecutable(source: source, version: launcherVersion, credential: portableCredential, resume: CommandLine.arguments.contains("--one-update-resume"))
+}
+
+func launchResidentExecutable(source: URL, version: String, credential: URL, resume: Bool) throws {
+    guard version.range(of: #"^\d+(?:\.\d+){1,3}$"#, options: .regularExpression) != nil else { throw LauncherError.message("ONE 启动器版本无效") }
     let applicationSupport = try FileManager.default.url(
         for: .applicationSupportDirectory,
         in: .userDomainMask,
@@ -204,21 +209,16 @@ func launchResidentCopy() throws {
     )
     let installDirectory = applicationSupport.appendingPathComponent("ONE", isDirectory: true)
     try FileManager.default.createDirectory(at: installDirectory, withIntermediateDirectories: true)
-    let target = installDirectory.appendingPathComponent("ONEPresence-\(launcherVersion)")
-    if !FileManager.default.fileExists(atPath: target.path) {
-        let temporary = installDirectory.appendingPathComponent(".ONEPresence-\(UUID().uuidString)")
-        try FileManager.default.copyItem(at: source, to: temporary)
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: temporary.path)
-        try FileManager.default.moveItem(at: temporary, to: target)
-    }
+    let target = installDirectory.appendingPathComponent("ONEPresence-\(version)")
+    try prepareRuntimeResident(source: source, target: target)
 
     let process = Process()
     process.executableURL = target
     // The portable app must not read the credential itself. The installed
     // resident is the single process that receives removable-volume access,
     // discovers the Key and keeps proving its presence.
-    process.arguments = [residentArgument, credentialArgument, portableCredential.path]
-    if CommandLine.arguments.contains("--one-update-resume") { process.arguments?.append("--one-update-resume") }
+    process.arguments = [residentArgument, credentialArgument, credential.path]
+    if resume { process.arguments?.append("--one-update-resume") }
     process.standardInput = FileHandle.nullDevice
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
@@ -664,7 +664,17 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
     var installJob: Task<URL, Error>?
     do {
     while true {
-        let message = try JSONDecoder().decode(SocketMessage.self, from: Data(try await receiveText(task).utf8))
+        let text: String
+        if let installJob {
+            switch try await runtimeMessageOrInstallation(installation: installJob, receive: { try await receiveText(task) }) {
+            case .installed(let target):
+                runtimeInstallActivity.end()
+                task.cancel(with: .goingAway, reason: nil)
+                return target
+            case .message(let received): text = received
+            }
+        } else { text = try await receiveText(task) }
+        let message = try JSONDecoder().decode(SocketMessage.self, from: Data(text.utf8))
         if message.type == "request_challenge", let challengeId = message.challengeId, let nonce = message.nonce {
             let signature = try signNonce(nonce, credentialUrl: credentialUrl, deviceId: deviceId)
             let response = SocketResponse(type: "proof_response", challengeId: challengeId, signature: signature)
@@ -710,13 +720,12 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
 }
 
 func reportRuntimeProgress(_ socket: URLSessionWebSocketTask, requestId: String, status: String, error: String? = nil) async {
-    let deadline = Task {
-        do { try await Task.sleep(for: .seconds(2)) } catch { return }
-        socket.cancel(with: .goingAway, reason: nil)
-    }
-    defer { deadline.cancel() }
     if let data = try? JSONEncoder().encode(UpdateEventResponse(requestId: requestId, status: status, error: error)) {
-        try? await socket.send(.string(String(decoding: data, as: UTF8.self)))
+        // Cancellation alone is not a deadline: some URLSession callbacks never
+        // arrive after the connection disappears during removable-media work.
+        let _: Void? = try? await boundedRuntimeOperation(timeout: .seconds(2)) {
+            try await socket.send(.string(String(decoding: data, as: UTF8.self)))
+        }
     }
 }
 
@@ -954,23 +963,15 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 removalTask?.cancel()
                 loginTask?.cancel()
                 residentLock = nil
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-                process.arguments = ["-n", installedApp.path, "--args", "--one-update-resume"]
-                process.standardOutput = FileHandle.nullDevice
-                process.standardError = FileHandle.nullDevice
-                do { try process.run() } catch {
+                do {
+                    let info = NSDictionary(contentsOf: installedApp.appendingPathComponent("Contents/Info.plist"))
+                    guard let version = info?["CFBundleShortVersionString"] as? String else { throw LauncherError.message("新版启动器版本缺失") }
+                    try launchResidentExecutable(source: installedApp.appendingPathComponent("Contents/MacOS/ONE"), version: version, credential: foundUrl, resume: true)
+                } catch {
                     residentLock = try acquireResidentLock(deviceId: foundCredential.deviceId)
                     handingOff = false
                     try? recoverMacRuntimeOnMount(credential: foundUrl, deviceId: foundCredential.deviceId, preferPrevious: true)
                     throw error
-                }
-                process.waitUntilExit()
-                guard process.terminationStatus == 0 else {
-                    residentLock = try acquireResidentLock(deviceId: foundCredential.deviceId)
-                    handingOff = false
-                    try? recoverMacRuntimeOnMount(credential: foundUrl, deviceId: foundCredential.deviceId, preferPrevious: true)
-                    throw LauncherError.message("新版 Mac 启动器无法启动")
                 }
                 stopping = true
                 NSApplication.shared.terminate(nil)
