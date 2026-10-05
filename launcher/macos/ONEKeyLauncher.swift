@@ -159,7 +159,11 @@ func acquireResidentLock(deviceId: String) throws -> ResidentLock? {
     let directory = applicationSupport.appendingPathComponent("ONE", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let digest = SHA256.hash(data: Data(deviceId.utf8)).map { String(format: "%02x", $0) }.joined()
-    let target = directory.appendingPathComponent("presence-\(digest).lock")
+    // v1 residents can remain offline while holding their legacy lock forever.
+    // Use a stable v2 namespace, not a per-version lock: all repaired releases
+    // still share one local owner per Key. Authenticated server arbitration
+    // remains authoritative against older residents; never delete their locks.
+    let target = directory.appendingPathComponent(residentLockFilename(digest: digest))
     let descriptor = open(target.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
     guard descriptor >= 0 else { throw LauncherError.message("无法创建 ONE 驻留锁") }
     if flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
@@ -169,6 +173,18 @@ func acquireResidentLock(deviceId: String) throws -> ResidentLock? {
         throw LauncherError.message("无法锁定 ONE 驻留进程")
     }
     return ResidentLock(descriptor: descriptor)
+}
+
+func macRecoveryJournal(deviceId: String) throws -> URL {
+    let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+    let digest = SHA256.hash(data: Data(deviceId.utf8)).map { String(format: "%02x", $0) }.joined()
+    return support.appendingPathComponent("ONE/runtime-recovery-\(digest).json")
+}
+@discardableResult
+func recoverMacRuntimeOnMount(credential: URL, deviceId: String, preferPrevious: Bool = false) throws -> (record: MacRuntimeRecovery, status: String)? {
+    try recoverMacRuntime(credential: credential, journal: macRecoveryJournal(deviceId: deviceId), preferPrevious: preferPrevious) { app in
+        try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
+    }
 }
 
 func commandLineValue(_ name: String) -> String? {
@@ -364,7 +380,7 @@ func verifyFATVolumeAfterUpdate(_ volumeRoot: URL) throws {
     throw lastError ?? LauncherError.message("ONE Key 文件系统校验失败")
 }
 
-func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL, progress: (String) async -> Void) async throws -> URL {
+func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL, requestId: String = "", progress: (String) async -> Void) async throws -> URL {
     let credentialBefore = try Data(contentsOf: credentialUrl)
     guard let downloadUrl = URL(string: artifact.url) else { throw LauncherError.message("ONE 更新地址无效") }
     let downloadConfiguration = URLSessionConfiguration.ephemeral
@@ -425,18 +441,21 @@ func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL,
     // used, and both paths share the volume-root parent.
     try FATSafeFileOperations.copyTree(from: target, to: backup)
     try normalizeMacBundleOnFAT(backup)
+    let deviceId = try loadCredential(credentialUrl).deviceId
+    let journal = try macRecoveryJournal(deviceId: deviceId)
+    let recovery = try prepareMacRuntimeRecovery(credential: credentialUrl, staged: usbStagedApp, journal: journal, requestId: requestId, version: artifact.version)
+    let previous = volumeRoot.appendingPathComponent(recovery.previousName)
     do {
-        try FileManager.default.removeItem(at: target)
+        try FileManager.default.moveItem(at: target, to: previous)
         try FileManager.default.moveItem(at: usbStagedApp, to: target)
         try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", target.path])
         try verifyFATVolumeAfterUpdate(volumeRoot)
+        try recoverMacRuntimeOnMount(credential: credentialUrl, deviceId: deviceId)
     } catch {
-        try? FileManager.default.removeItem(at: target)
         do {
-            try FATSafeFileOperations.copyTree(from: backup, to: target)
-            try normalizeMacBundleOnFAT(target)
+            try recoverMacRuntimeOnMount(credential: credentialUrl, deviceId: deviceId)
         } catch {
-            throw LauncherError.message("ONE 更新失败，旧版启动器也未能自动恢复，请联系管理员")
+            throw LauncherError.message("更新已暂停，请插回同一枚 ONE Key；连接恢复后会自动校验或恢复启动器")
         }
         throw LauncherError.message("新版 Mac 启动器无法安装，已恢复旧版")
     }
@@ -650,6 +669,8 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
             let signature = try signNonce(nonce, credentialUrl: credentialUrl, deviceId: deviceId)
             let response = SocketResponse(type: "proof_response", challengeId: challengeId, signature: signature)
             try await task.send(.string(String(decoding: try JSONEncoder().encode(response), as: UTF8.self)))
+        } else if message.type == "runtime_recovery_ack", let requestId = message.requestId {
+            try? acknowledgeMacRecovery(credential: credentialUrl, journal: macRecoveryJournal(deviceId: deviceId), requestId: requestId)
         } else if message.type == "execution_start", let taskId = message.taskId, let instruction = message.instruction {
             execution.start(taskId: taskId, instruction: instruction, resume: false)
         } else if message.type == "execution_continue", let taskId = message.taskId, let instruction = message.instruction {
@@ -666,7 +687,7 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
                 let artifact = try verifyRuntimeUpdate(envelope)
                 await reportRuntimeProgress(task, requestId: requestId, status: "downloading")
                 return try await committedRuntimeInstallation(install: {
-                    try await installRuntimeUpdate(artifact, credentialUrl: credentialUrl) { status in
+                    try await installRuntimeUpdate(artifact, credentialUrl: credentialUrl, requestId: requestId) { status in
                         await reportRuntimeProgress(task, requestId: requestId, status: status)
                     }
                 }, reportCompletion: {
@@ -899,6 +920,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 throw LauncherError.message("没有找到 ONE Key，请插入后重试")
             }
             let foundCredential = try loadCredential(foundUrl)
+            let recovery = try recoverMacRuntimeOnMount(credential: foundUrl, deviceId: foundCredential.deviceId)
             let foundBase = foundCredential.serverBaseUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             credentialUrl = foundUrl
             credential = foundCredential
@@ -911,6 +933,10 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
 
             socket = connectedSocket
             ready = true
+            if let recovery, !recovery.record.requestId.isEmpty {
+                let report = ["type":"runtime_recovery_event", "requestId":recovery.record.requestId, "version":recovery.record.version, "status":recovery.status]
+                try await connectedSocket.send(.string(String(decoding: try JSONSerialization.data(withJSONObject: report), as: UTF8.self)))
+            }
             removalTask = Task { await monitorRemoval(of: foundUrl) }
 
             if !openedLogin || loginRequested {
@@ -936,12 +962,14 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 do { try process.run() } catch {
                     residentLock = try acquireResidentLock(deviceId: foundCredential.deviceId)
                     handingOff = false
+                    try? recoverMacRuntimeOnMount(credential: foundUrl, deviceId: foundCredential.deviceId, preferPrevious: true)
                     throw error
                 }
                 process.waitUntilExit()
                 guard process.terminationStatus == 0 else {
                     residentLock = try acquireResidentLock(deviceId: foundCredential.deviceId)
                     handingOff = false
+                    try? recoverMacRuntimeOnMount(credential: foundUrl, deviceId: foundCredential.deviceId, preferPrevious: true)
                     throw LauncherError.message("新版 Mac 启动器无法启动")
                 }
                 stopping = true

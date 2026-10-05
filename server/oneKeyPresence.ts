@@ -6,7 +6,7 @@ import { uid } from "./security.js";
 import { appendExecutionEvent } from "./executionService.js";
 import { validInstallationId } from "./oneKeyInstallation.js";
 import { compareRuntimeVersions, validRuntimeVersion, type RuntimeArchitecture, type RuntimeIdentity, type RuntimePlatform, type SignedRuntimeUpdate } from "./runtimeUpdate.js";
-import { recoverRuntimeUpdate, disconnectedRuntimeUpdate, confirmedRuntimeUpdate, type UpdateOwner } from './runtimeUpdateRecovery.js';
+import { recoverRuntimeUpdate, disconnectedRuntimeUpdate, confirmedRuntimeUpdate, runtimeRecoveryReceipt, type UpdateOwner } from './runtimeUpdateRecovery.js';
 
 const proofTimeoutMs = 2000;
 const authTimeoutMs = 5000;
@@ -355,6 +355,19 @@ export class OneKeyPresence {
       }
       this.sockets.set(state.deviceId, socket);
       socket.send(JSON.stringify({ type: "ready", deviceId: state.deviceId }));
+      return;
+    }
+    if (message.type === 'runtime_recovery_event' && state.authenticated && state.runtime && message.requestId
+      && this.sockets.get(state.deviceId) === socket) {
+      const db=await this.store.read();
+      const device=db.oneKeyDevices.find(item=>item.id===state.deviceId&&item.status==='active');
+      if(!device || !state.authenticated || this.sockets.get(state.deviceId)!==socket) return;
+      const receipt=runtimeRecoveryReceipt(db.auditLogs??[],{deviceId:device.id,installationId:state.installationId,userId:device.userId,workspaceId:device.workspaceId},state.runtime,message.requestId,message.version,message.status);
+      if(!receipt || (state.update && state.update.requestId!==message.requestId)) return;
+      state.update={requestId:message.requestId,version:receipt.version,status:receipt.status,updatedAt:new Date().toISOString(),message:receipt.status==='failed'?'更新中断，旧版已安全恢复，可以重试':undefined};
+      state.updateStartedAt=receipt.startedAt;
+      await this.checkpointUpdate(state);
+      if(state.authenticated&&this.sockets.get(state.deviceId)===socket) socket.send(JSON.stringify({type:'runtime_recovery_ack',requestId:message.requestId}));
       return;
     }
     if (message.type === "update_event" && state.authenticated && message.requestId && state.update?.requestId === message.requestId) {

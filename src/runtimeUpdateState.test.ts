@@ -48,10 +48,11 @@ test('manual update checks expose feedback and identity without dispatching inst
 });
 test('handoff polls without claiming success or asking for a new installation', () => {
   const view = runtimeUpdateView({ ...status, connectionState: 'reconnecting' }, true, now);
-  assert.match(view.issue, /自动重新连接/);
+  assert.match(view.issue, /自动确认结果/);
   assert.equal(view.busy, false);
   assert.deepEqual(runtimeUpdateView({ ...status, available: false, connectionState: 'connected', progress: undefined }, true, now), { busy: false, issue: '' });
-  assert.match(runtimeUpdateView({ ...status, connectionState: 'reconnecting' }, true, now + 100_000).issue, /重新双击/);
+  assert.match(runtimeUpdateView({ ...status, connectionState: 'reconnecting' }, true, now + 100_000).issue, /插回同一枚/);
+  assert.match(runtimeUpdateView({ ...status, connectionState: 'reconnecting' }, true, now + 100_000).issue, /修复启动器/);
 });
 
 test('success requires a connected matching runtime receipt, not completed installation or absent catalog', () => {

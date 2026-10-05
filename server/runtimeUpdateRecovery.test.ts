@@ -1,10 +1,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { recoverRuntimeUpdate, disconnectedRuntimeUpdate, confirmedRuntimeUpdate } from './runtimeUpdateRecovery.js';
+import { recoverRuntimeUpdate, disconnectedRuntimeUpdate, confirmedRuntimeUpdate, runtimeRecoveryReceipt } from './runtimeUpdateRecovery.js';
 import type { AuditLog } from './types.js';
 
 const owner = { deviceId: 'key-a', installationId: 'computer-a', userId: 'user-a', workspaceId: 'workspace-a' };
 const runtime = { platform: 'macos', architecture: 'arm64', version: '0.3.8', updateProtocol: 1 } as const;
+
+test('interrupted installation receipts are bound to the latest exact owner, request, platform and version',()=>{
+  assert.equal(runtimeRecoveryReceipt([row],owner,runtime,row.requestId!,'0.3.9','failed')?.status,'failed');
+  for(const field of ['workspaceId','userId','deviceId','installationId'] as const)assert.equal(runtimeRecoveryReceipt([row],{...owner,[field]:'foreign'},runtime,row.requestId!,'0.3.9','failed'),undefined);
+  assert.equal(runtimeRecoveryReceipt([row],owner,{...runtime,platform:'windows'},row.requestId!,'0.3.9','failed'),undefined);
+  assert.equal(runtimeRecoveryReceipt([row],owner,runtime,'wrong','0.3.9','failed'),undefined);
+  assert.equal(runtimeRecoveryReceipt([row],owner,runtime,row.requestId!,'0.3.10','failed'),undefined);
+  assert.equal(runtimeRecoveryReceipt([row],owner,runtime,row.requestId!,'0.3.9','installing'),undefined);
+  assert.equal(runtimeRecoveryReceipt([row],owner,{...runtime,version:'0.3.9'},row.requestId!,'0.3.9','failed'),undefined);
+  const newer={...row,requestId:'other',details:{...row.details,startedAt:200}};
+  assert.equal(runtimeRecoveryReceipt([row,newer],owner,runtime,row.requestId!,'0.3.9','failed'),undefined);
+});
 const row: AuditLog = { id: 'a', action: 'one_runtime.update.checkpoint', targetType: 'one_key_device',
   targetId: owner.deviceId, workspaceId: owner.workspaceId, actorUserId: owner.userId, requestId: 'update-a',
     createdAt: '2026-09-23T01:00:00Z', details: { installationId: owner.installationId, platform: 'macos',

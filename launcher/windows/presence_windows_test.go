@@ -3,7 +3,9 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"github.com/gorilla/websocket"
 	"net/http"
@@ -11,9 +13,60 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 )
+
+func TestOfflineLegacyMutexDoesNotBlockRepairedResident(t *testing.T) {
+	deviceID := "lock-test-" + t.Name() + time.Now().String()
+	digest := sha256.Sum256([]byte(deviceID))
+	name, _ := syscall.UTF16PtrFromString("Local\\ONEPresence-" + hex.EncodeToString(digest[:]))
+	handle, _, err := syscall.NewLazyDLL("kernel32.dll").NewProc("CreateMutexW").Call(0, 0, uintptr(unsafe.Pointer(name)))
+	if handle == 0 {
+		t.Fatal(err)
+	}
+	defer syscall.CloseHandle(syscall.Handle(handle))
+	repaired, acquired, err := acquireResidentLock(deviceID)
+	if err != nil || !acquired {
+		t.Fatal("legacy mutex blocked repaired resident", err)
+	}
+	defer repaired.close()
+	duplicate, acquired, err := acquireResidentLock(deviceID)
+	if err != nil || acquired || duplicate != nil {
+		t.Fatal("same-Key repaired residents were not isolated", err)
+	}
+	other, acquired, err := acquireResidentLock(deviceID + "-other")
+	if err != nil || !acquired {
+		t.Fatal("other Key was blocked", err)
+	}
+	other.close()
+}
+
+func TestAtomicRuntimeReplacementNeverDeletesTargetWhenSourceIsMissing(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "ONE for Windows.exe")
+	if err := os.WriteFile(target, []byte("working-old"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceRuntimeFile(filepath.Join(root, "missing.exe"), target); err == nil {
+		t.Fatal("missing replacement accepted")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "working-old" {
+		t.Fatal("working launcher deleted before replacement")
+	}
+	staged := filepath.Join(root, "staged.exe")
+	os.WriteFile(staged, []byte("verified-new"), 0700)
+	if err := replaceRuntimeFile(staged, target); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(target)
+	if err != nil || string(data) != "verified-new" {
+		t.Fatal("atomic replacement failed")
+	}
+}
 
 // Runs the actual Windows socket loop; only disk installation is substituted.
 func TestWindowsUpdateKeepsProofsAndJoinsAfterDisconnect(t *testing.T) {

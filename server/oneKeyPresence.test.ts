@@ -288,6 +288,25 @@ test("binds runtime update status and dispatch to the authenticated workspace an
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
 });
 
+test('authenticated interrupted-install recovery is checkpointed before acknowledgement and rejects stale receipts', async () => {
+  const pair=crypto.generateKeyPairSync('ed25519');
+  const device={id:'device-a',serialNumber:'ONE-A',workspaceId:'workspace-a',userId:'user-a',status:'active',publicKey:pair.publicKey.export({type:'spki',format:'pem'}).toString(),createdAt:new Date().toISOString()};
+  const db:any={oneKeyDevices:[device],auditLogs:[{id:'checkpoint',action:'one_runtime.update.checkpoint',workspaceId:device.workspaceId,actorUserId:device.userId,targetType:'one_key_device',targetId:device.id,requestId:'interrupted',createdAt:new Date().toISOString(),details:{installationId,platform:'macos',architecture:'arm64',fromVersion:'0.4.1',version:'0.4.2',status:'installing',startedAt:Date.now()}}]};
+  const presence=new OneKeyPresence({read:async()=>db,mutate:async(fn:any)=>fn(db)} as any);
+  const server=createServer();presence.attach(server);server.listen(0,'127.0.0.1');await once(server,'listening');
+  const address=server.address();if(!address||typeof address==='string')throw new Error('missing server');
+  const socket=new WebSocket(`ws://127.0.0.1:${address.port}/api/one-key/launcher?deviceId=${device.id}&installationId=${installationId}`);
+  const [raw]=await once(socket,'message');const auth=JSON.parse(raw.toString());const ready=once(socket,'message');
+  socket.send(JSON.stringify({type:'auth_response',challengeId:auth.challengeId,signature:sign(pair.privateKey,auth.nonce),platform:'macos',architecture:'arm64',launcherVersion:'0.4.1',updateProtocol:1}));await ready;
+  socket.send(JSON.stringify({type:'runtime_recovery_event',requestId:'foreign',version:'0.4.2',status:'failed'}));
+  await new Promise(resolve=>setTimeout(resolve,30));assert.equal(db.auditLogs.length,1);
+  const ack=once(socket,'message');socket.send(JSON.stringify({type:'runtime_recovery_event',requestId:'interrupted',version:'0.4.2',status:'failed'}));
+  const [ackRaw]=await ack;assert.equal(JSON.parse(ackRaw.toString()).type,'runtime_recovery_ack');
+  assert.equal(db.auditLogs.at(-1).details.status,'failed');
+  assert.equal((await presence.runtimeStatus({deviceId:device.id,installationId,userId:device.userId,workspaceId:device.workspaceId})).update?.status,'failed');
+  socket.close();await once(socket,'close');await presence.close();await new Promise<void>(resolve=>server.close(()=>resolve()));
+});
+
 test("keeps one resident per Key and computer while allowing a newer runtime to take over", async () => {
   const pair = crypto.generateKeyPairSync("ed25519");
   const device = {

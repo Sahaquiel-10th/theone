@@ -2,8 +2,16 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
+
+func TestResidentLockNamespaceDoesNotDependOnLegacyOwnerOrReleaseVersion(t *testing.T) {
+	name := residentMutexName("test-key")
+	if !strings.HasPrefix(name, "Local\\ONEPresence-v2-") || name != residentMutexName("test-key") || name == residentMutexName("admin-key") {
+		t.Fatal("invalid per-Key stable recovery namespace")
+	}
+}
 
 func TestResidentTakeoverWaitsForLockWithoutForcingOwner(t *testing.T) {
 	calls, pauses := 0, 0

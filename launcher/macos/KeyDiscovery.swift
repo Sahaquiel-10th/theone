@@ -1,5 +1,7 @@
 import Foundation
 
+func residentLockFilename(digest: String) -> String { "presence-\(digest)-v2.lock" }
+
 // A resident knows the original launch location even after an unmount clears
 // its current location. Try both before asking macOS for the volume inventory.
 func keyCredentialCandidates(current: URL?, original: URL?, portable: URL) -> [URL] {

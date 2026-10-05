@@ -1675,10 +1675,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         <span><strong>{runtimeUpdating ? "正在更新 ONE" : runtimeUpdateIssue ? "正在确认更新结果" : runtimeUpdateFailed ? "更新没有完成" : "ONE 可以更新"}</strong><small>{runtimeUpdateIssue || (runtimeUpdating ? ({ requested: "准备下载…", downloading: "正在下载…", verifying: "正在验证…", installing: "正在安装…", completed: "安装已完成，正在连接新版…", failed: runtimeUpdate.progress?.message || "更新失败" }[runtimeUpdate.progress?.status || "requested"]) : runtimeUpdateFailed ? runtimeUpdate.progress?.message || "请保持 ONE Key 插入并重试" : `${runtimeUpdate.current?.version || "当前版本"} → ${runtimeUpdate.latestVersion}`)}</small></span>
         {!runtimeUpdateIssue ? <button type="button" disabled={runtimeUpdating || runtimeChecking} onClick={() => void installRuntimeUpdate()}>{runtimeUpdating ? "请稍候" : runtimeUpdateFailed ? "重试" : "更新"}</button> : null}
         {runtimeUpdateIssue ? <details className="one-runtime-update-detail"><summary>连接详情</summary>
-          <span>当前账号：{user.username} · 运行 {runtimeUpdate.current?.version || "未知"} · 目标 {runtimeUpdate.latestVersion || "未知"}</span>
+          <div className="one-runtime-update-detail-body"><span>当前账号：{user.username} · 运行 {runtimeUpdate.current?.version || "未知"} · 目标 {runtimeUpdate.latestVersion || "未知"}</span>
           {runtimeCheckFeedback ? <span role="status">{runtimeCheckFeedback}</span> : null}
-          <button type="button" disabled={runtimeChecking} onClick={() => void refreshRuntimeUpdate(true)}>{runtimeChecking ? "查询中…" : "重新检测连接"}</button>
-          <button type="button" onClick={() => window.location.reload()}>刷新页面</button>
+          <div className="one-runtime-update-actions"><button type="button" disabled={runtimeChecking} onClick={() => void refreshRuntimeUpdate(true)}>{runtimeChecking ? "查询中…" : "重新检测连接"}</button>
+          <button type="button" onClick={() => window.location.reload()}>刷新页面</button></div></div>
         </details> : null}
       </section> : null}
 

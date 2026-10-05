@@ -67,6 +67,7 @@ type runtimeUpdatePayload struct {
 }
 
 type runtimeUpdateArtifact struct {
+	RequestID    string `json:"-"`
 	Platform     string `json:"platform"`
 	Architecture string `json:"architecture"`
 	Version      string `json:"version"`
@@ -227,8 +228,20 @@ func run(expectedDeviceID string) error {
 			failures = 0
 			continue
 		}
+		if recoveryErr := recoverWindowsRuntime(credentialPath, credential.DeviceID); recoveryErr != nil {
+			credentialPath = ""
+			time.Sleep(time.Second)
+			continue
+		}
 		connection, err := connectLauncher(base, credentialPath, credential.DeviceID)
 		if err == nil {
+			journal, _ := windowsRecoveryJournal(credential.DeviceID)
+			if record, status, reportErr := runtimeRecoveryReport(credentialPath, journal); reportErr == nil && record != nil && record.RequestID != "" {
+				if err = connection.WriteJSON(map[string]string{"type": "runtime_recovery_event", "requestId": record.RequestID, "version": record.Version, "status": status}); err != nil {
+					connection.Close()
+					continue
+				}
+			}
 			if !openedLogin {
 				if err = openLoginPage(base, credentialPath, credential.DeviceID); err != nil {
 					connection.Close()
@@ -248,9 +261,17 @@ func run(expectedDeviceID string) error {
 			command := exec.Command(installed.target, "--device-id", expectedDeviceID, "--credential-path", credentialPath, "--one-update-resume")
 			command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x00000008}
 			if startErr := command.Start(); startErr != nil {
-				_ = os.Remove(installed.target)
-				_ = copyFile(installed.backup, installed.target)
-				return errors.New("新版 Windows 启动器无法启动，已恢复旧版")
+				rollback := installed.target + ".rollback.exe"
+				if copyFile(installed.backup, rollback) != nil || replaceRuntimeFile(rollback, installed.target) != nil {
+					return errors.New("新版启动失败，请插回同一枚 Key；旧版备份已保留")
+				}
+				recoveredLock, ok, lockErr := acquireResidentLock(expectedDeviceID)
+				if lockErr != nil || !ok {
+					return errors.New("旧版已恢复，请重新打开 ONE")
+				}
+				lock = recoveredLock
+				defer recoveredLock.close()
+				continue
 			}
 			_ = command.Process.Release()
 			return nil
@@ -289,8 +310,7 @@ func acquireResidentLock(deviceID string) (*residentLock, bool, error) {
 	if deviceID == "" {
 		return nil, false, errors.New("ONE Key 设备编号无效")
 	}
-	digest := sha256.Sum256([]byte(deviceID))
-	name, err := syscall.UTF16PtrFromString("Local\\ONEPresence-" + hex.EncodeToString(digest[:]))
+	name, err := syscall.UTF16PtrFromString(residentMutexName(deviceID))
 	if err != nil {
 		return nil, false, errors.New("无法创建 ONE 驻留锁")
 	}
@@ -572,6 +592,9 @@ func serveProofsWithInstaller(connection *websocket.Conn, credentialPath, device
 			if err := writer.json(socketResponse{Type: "proof_response", ChallengeID: message.ChallengeID, Signature: signature}); err != nil {
 				return err
 			}
+		case "runtime_recovery_ack":
+			journal, _ := windowsRecoveryJournal(deviceID)
+			_ = acknowledgeRuntimeRecovery(credentialPath, journal, message.RequestID)
 		case "local_prepare":
 			root, err := executor.prepare(deviceID)
 			if err != nil {
@@ -595,6 +618,7 @@ func serveProofsWithInstaller(connection *websocket.Conn, credentialPath, device
 			request := message
 			update = startInstallJob(func() error {
 				artifact, err := verifyRuntimeUpdate(request.Envelope)
+				artifact.RequestID = request.RequestID
 				if err == nil {
 					_ = writer.json(map[string]any{"type": "update_event", "requestId": request.RequestID, "status": "downloading"})
 					err = install(artifact, credentialPath, func(status string) {
@@ -730,6 +754,9 @@ func copyAndHash(destination string, source io.Reader, maximum int64) (int64, st
 	}
 	var digest hash.Hash = sha256.New()
 	written, copyErr := io.Copy(io.MultiWriter(output, digest), io.LimitReader(source, maximum+1))
+	if copyErr == nil {
+		copyErr = output.Sync()
+	}
 	closeErr := output.Close()
 	if copyErr != nil {
 		return written, "", copyErr
@@ -751,6 +778,9 @@ func copyFile(source string, destination string) error {
 		return err
 	}
 	_, copyErr := io.Copy(output, input)
+	if copyErr == nil {
+		copyErr = output.Sync()
+	}
 	closeErr := output.Close()
 	if copyErr != nil {
 		return copyErr
@@ -813,15 +843,60 @@ func installRuntimeUpdate(artifact runtimeUpdateArtifact, credentialPath string,
 		_ = os.Remove(staging)
 		return errors.New("无法备份当前 Windows 启动器")
 	}
-	if err := os.Remove(target); err != nil {
-		_ = os.Remove(staging)
-		return errors.New("无法替换当前 Windows 启动器")
+	credential, err := loadCredential(credentialPath, "")
+	if err != nil {
+		return errors.New("ONE Key 已拔出，更新已暂停")
 	}
-	if err := os.Rename(staging, target); err != nil {
-		_ = copyFile(backup, target)
-		return errors.New("无法安装新版 Windows 启动器，已恢复旧版")
+	journal, err := windowsRecoveryJournal(credential.DeviceID)
+	if err != nil {
+		return err
+	}
+	if err = saveRuntimeRecovery(credentialPath, backup, staging, journal, artifact.RequestID, artifact.Version); err != nil {
+		return errors.New("无法保存更新恢复记录，旧版保持不变")
+	}
+	if err := replaceRuntimeFile(staging, target); err != nil {
+		if recoverErr := recoverWindowsRuntime(credentialPath, credential.DeviceID); recoverErr != nil {
+			return errors.New("更新已暂停，请插回同一枚 ONE Key；连接恢复后会自动校验或恢复启动器")
+		}
+		return errors.New("无法安装新版 Windows 启动器，旧版已保留")
+	}
+	if err := recoverWindowsRuntime(credentialPath, credential.DeviceID); err != nil {
+		return errors.New("更新已暂停，请插回同一枚 ONE Key后继续")
 	}
 	return &runtimeUpdateInstalled{target: target, backup: backup}
+}
+
+func windowsRecoveryJournal(deviceID string) (string, error) {
+	root, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256([]byte(deviceID))
+	return filepath.Join(root, "ONE", "runtime-recovery-"+hex.EncodeToString(digest[:])+".json"), nil
+}
+func recoverWindowsRuntime(credential, deviceID string) error {
+	journal, err := windowsRecoveryJournal(deviceID)
+	if err != nil {
+		return err
+	}
+	return recoverRuntimeFiles(credential, journal, copyFile, replaceRuntimeFile)
+}
+func replaceRuntimeFile(source, target string) error {
+	from, err := syscall.UTF16PtrFromString(source)
+	if err != nil {
+		return err
+	}
+	to, err := syscall.UTF16PtrFromString(target)
+	if err != nil {
+		return err
+	}
+	// Atomic replacement; never delete the working launcher before the new file
+	// is ready. WRITE_THROUGH requests disk flush, but cannot repair failing media.
+	result, _, callErr := syscall.NewLazyDLL("kernel32.dll").NewProc("MoveFileExW").Call(uintptr(unsafe.Pointer(from)), uintptr(unsafe.Pointer(to)), 0x1|0x8)
+	if result == 0 {
+		return callErr
+	}
+	return nil
 }
 
 func (executor *localExecutor) prepare(deviceID string) (string, error) {

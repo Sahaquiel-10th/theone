@@ -21,6 +21,21 @@ export function disconnectedRuntimeUpdate(logs: AuditLog[], owner: UpdateOwner, 
 }
 const phases = ['requested', 'downloading', 'verifying', 'installing', 'failed', 'completed'];
 
+export function runtimeRecoveryReceipt(logs: AuditLog[], owner: UpdateOwner, runtime: RuntimeIdentity, requestId: string, version: unknown, status: unknown) {
+  if (!validRuntimeVersion(version) || !['failed','completed'].includes(String(status))) return undefined;
+  const rows = logs.filter(row => row.action === 'one_runtime.update.checkpoint'
+    && row.workspaceId === owner.workspaceId && row.actorUserId === owner.userId && row.targetId === owner.deviceId
+    && row.details?.installationId === owner.installationId && row.details?.platform === runtime.platform
+    && validRuntimeVersion(row.details?.version) && phases.includes(String(row.details?.status))
+    && Number.isFinite(Number(row.details?.startedAt)));
+  rows.sort((a,b)=>Number(b.details!.startedAt)-Number(a.details!.startedAt)||Date.parse(b.createdAt)-Date.parse(a.createdAt));
+  const row=rows[0];
+  if (!row || row.requestId!==requestId || row.details!.version!==version) return undefined;
+  // A rollback report cannot undo a currently authenticated newer runtime.
+  if (status==='failed' && compareRuntimeVersions(runtime.version,String(version))>=0) return undefined;
+  return {startedAt:Number(row.details!.startedAt),version:String(version),status:status as 'failed'|'completed'};
+}
+
 export function confirmedRuntimeUpdate(logs: AuditLog[], owner: UpdateOwner, runtime: RuntimeIdentity, now = Date.now()) {
   const rows = logs.filter(row => row.action === 'one_runtime.update.checkpoint'
     && row.workspaceId === owner.workspaceId && row.actorUserId === owner.userId
