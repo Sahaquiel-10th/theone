@@ -266,7 +266,8 @@ app.get("/api/runtime/update", auth(jwtSecret, undefined, { runtimeStatusOnly: t
     // Installation completion is not proof that the new resident is running.
     // Keep the pending/recovery UI until an authenticated new version connects.
     available: Boolean(candidate),
-    progress: connected.update
+    progress: connected.update,
+    confirmation: connected.confirmation
   });
 }));
 app.post("/api/runtime/update", ...keyAuth, asyncRoute(async (req, res) => {

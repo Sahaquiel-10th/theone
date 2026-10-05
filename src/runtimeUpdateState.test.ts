@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from 'node:fs';
-import { runtimeUpdateView, type RuntimeUpdateStatus } from "./runtimeUpdateState.js";
+import { runtimeUpdateView, runtimeUpdateConfirmed, type RuntimeUpdateStatus } from "./runtimeUpdateState.js";
 
 const now = Date.now();
 const status: RuntimeUpdateStatus = { configured: true, supported: true, available: true, progress: { requestId: "upd-a", status: "requested", version: "0.3.9", updatedAt: new Date(now).toISOString() } };
@@ -51,5 +51,21 @@ test('handoff polls without claiming success or asking for a new installation', 
   assert.match(view.issue, /自动重新连接/);
   assert.equal(view.busy, false);
   assert.deepEqual(runtimeUpdateView({ ...status, available: false, connectionState: 'connected', progress: undefined }, true, now), { busy: false, issue: '' });
-  assert.match(runtimeUpdateView({ ...status, connectionState: 'reconnecting' }, true, now + 100_000).issue, /联系管理员/);
+  assert.match(runtimeUpdateView({ ...status, connectionState: 'reconnecting' }, true, now + 100_000).issue, /重新双击/);
+});
+
+test('success requires a connected matching runtime receipt, not completed installation or absent catalog', () => {
+  const confirmed: RuntimeUpdateStatus = { ...status, available: false, connectionState: 'connected', current: { platform: 'macos', architecture: 'arm64', version: '0.3.13', updateProtocol: 1 }, confirmation: { requestId: 'upd-a', version: '0.3.13' } };
+  assert.equal(runtimeUpdateConfirmed(confirmed), true);
+  assert.equal(runtimeUpdateConfirmed({ ...confirmed, connectionState: 'reconnecting' }), false);
+  assert.equal(runtimeUpdateConfirmed({ ...confirmed, confirmation: undefined }), false);
+  assert.equal(runtimeUpdateConfirmed({ ...confirmed, configured: false }), false);
+  assert.equal(runtimeUpdateConfirmed({ ...confirmed, current: { ...confirmed.current!, version: '0.3.10' } }), false);
+  assert.equal(runtimeUpdateConfirmed({ ...confirmed, available: true }), false);
+  assert.equal(runtimeUpdateConfirmed({ ...status, progress: { ...status.progress!, status: 'completed' } }), false);
+});
+
+test('a finished earlier version does not block offering a newer repair release', () => {
+  assert.deepEqual(runtimeUpdateView({ ...status, latestVersion: '0.3.13', progress: { ...status.progress!, status: 'completed', version: '0.3.11', recoveryRequired: true } }, false), { busy: false, issue: '' });
+  assert.ok(runtimeUpdateView({ ...status, latestVersion: '0.3.13', progress: { ...status.progress!, status: 'installing', version: '0.3.11', recoveryRequired: true } }, false).issue);
 });

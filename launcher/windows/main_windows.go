@@ -161,6 +161,23 @@ func run(expectedDeviceID string) error {
 		return err
 	}
 	if !acquired {
+		// A newer installed exe must negotiate server-side takeover before
+		// falling back to an old resident that still owns this Key's mutex.
+		path := findCredentialForDevice(expectedDeviceID)
+		if credential, loadErr := loadCredential(path, expectedDeviceID); loadErr == nil {
+			if candidate, connectErr := connectLauncher(strings.TrimRight(credential.ServerBaseURL, "/"), path, credential.DeviceID); connectErr == nil {
+				lock, acquired, err = awaitResidentTakeover(func() (*residentLock, bool, error) { return acquireResidentLock(expectedDeviceID) }, func() { time.Sleep(100 * time.Millisecond) })
+				candidate.Close()
+				if err != nil {
+					return err
+				}
+				if !acquired {
+					return errors.New("新版已经安装，旧启动器还未退出。请重新启动电脑后打开 U 盘中的 ONE，无需重新安装")
+				}
+			}
+		}
+	}
+	if !acquired {
 		credentialPath := findCredentialForDevice(expectedDeviceID)
 		if credentialPath == "" {
 			return errors.New("没有找到 ONE Key，请插入后重试")

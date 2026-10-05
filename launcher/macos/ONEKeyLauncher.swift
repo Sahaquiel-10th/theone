@@ -754,14 +754,15 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func reopenRequested(_ notification: Notification) {
         guard let requestId = notification.object as? String, UUID(uuidString: requestId) != nil else { return }
-        DistributedNotificationCenter.default().postNotificationName(Notification.Name("one.key.reopen.ack.\(requestId)"), object: nil, userInfo: nil, deliverImmediately: true)
+        DistributedNotificationCenter.default().postNotificationName(Notification.Name("one.key.reopen.ack.\(requestId)"), object: launcherVersion, userInfo: nil, deliverImmediately: true)
+        guard notification.userInfo?["version"] as? String == launcherVersion else { return }
         requestLogin()
         // A new double-click must wake the resident that actually owns this
         // Key, not merely create a login URL while that resident is offline.
         if !ready { nextVolumeScan = .distantPast; restartSession() }
     }
 
-    @objc private func reopenReply(_ notification: Notification) { reopenAcknowledged = true }
+    @objc private func reopenReply(_ notification: Notification) { reopenAcknowledged = notification.object as? String == launcherVersion }
 
     init(residentMode: Bool, expectedDeviceId: String?, initialCredentialUrl: URL?) {
         self.residentMode = residentMode
@@ -806,6 +807,10 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
         }
+        startResidentMonitoring()
+    }
+
+    private func startResidentMonitoring() {
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(resumeConnection), name: NSWorkspace.didWakeNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(volumeDidMount(_:)), name: NSWorkspace.didMountNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(volumeDidUnmount(_:)), name: NSWorkspace.didUnmountNotification, object: nil)
@@ -1027,7 +1032,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             reopenAcknowledged = false
             DistributedNotificationCenter.default().addObserver(self, selector: #selector(reopenReply(_:)), name: reply, object: nil)
             defer { DistributedNotificationCenter.default().removeObserver(self, name: reply, object: nil) }
-            DistributedNotificationCenter.default().postNotificationName(reopenNotification(deviceId), object: requestId, userInfo: nil, deliverImmediately: true)
+            DistributedNotificationCenter.default().postNotificationName(reopenNotification(deviceId), object: requestId, userInfo: ["version": launcherVersion], deliverImmediately: true)
             for _ in 0..<15 {
                 try await Task.sleep(for: .milliseconds(100))
                 if reopenAcknowledged {
@@ -1035,6 +1040,27 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                     NSApplication.shared.terminate(nil)
                     return
                 }
+            }
+            // A newer installed binary can be blocked by an older resident's
+            // local lock. Authenticate first: the server rejects equal-version
+            // duplicates but asks an older owner to exit with close code 4009.
+            if let credentialUrl = findCredentialUrl(expectedDeviceId: deviceId, preferred: preferred),
+               let credential = try? loadCredential(credentialUrl, expectedDeviceId: deviceId),
+               let replacement = try? await connectLauncher(base: credential.serverBaseUrl, credentialUrl: credentialUrl, deviceId: deviceId) {
+                defer { replacement.cancel(with: .goingAway, reason: nil) }
+                for _ in 0..<30 {
+                    if let lock = try acquireResidentLock(deviceId: deviceId) {
+                        residentLock = lock
+                        self.credentialUrl = credentialUrl
+                        self.credential = credential
+                        self.expectedDeviceId = deviceId
+                        DistributedNotificationCenter.default().addObserver(self, selector: #selector(reopenRequested(_:)), name: reopenNotification(deviceId), object: nil)
+                        startResidentMonitoring()
+                        return
+                    }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                throw LauncherError.message("新版已经安装，旧启动器还未退出。请重新启动电脑后打开 U 盘中的 ONE，无需重新安装。")
             }
             // Compatibility with already-running older launchers. New
             // residents handle login themselves after authenticating.

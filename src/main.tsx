@@ -96,7 +96,7 @@ import { FeishuConnection } from "./FeishuConnection";
 import { CacheUsageDetails } from "./CacheUsageDetails";
 import { PricingCatalog } from "./PricingPanel";
 import { GiftBatchHistory } from "./GiftBatchHistory";
-import { runtimeUpdateView, type RuntimeUpdateStatus } from "./runtimeUpdateState";
+import { runtimeUpdateView, runtimeUpdateConfirmed, type RuntimeUpdateStatus } from "./runtimeUpdateState";
 
 type Role = "admin" | "user";
 const PrivateApiContext = createContext<typeof api>(api);
@@ -624,6 +624,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [runtimeUpdateIssue, setRuntimeUpdateIssue] = useState("");
   const [runtimeChecking, setRuntimeChecking] = useState(false);
   const [runtimeCheckFeedback, setRuntimeCheckFeedback] = useState("");
+  const [dismissedRuntimeReceipt, setDismissedRuntimeReceipt] = useState(() => {
+    try { return sessionStorage.getItem(`one.runtime.confirmed.${user.id}`) || ""; } catch { return ""; }
+  });
   const runtimeCheck = useRef({ pending: false, dispatching: false, generation: 0, lastSuccess: Date.now(), active: false });
   const [runtimeUpdating, setRuntimeUpdating] = useState(false);
   const [executionTasks, setExecutionTasks] = useState<ExecutionTask[]>([]);
@@ -817,7 +820,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       // check, never silently send a second install into an uncertain first one.
       if (runtimeCheck.current.active && Date.now() - runtimeCheck.current.lastSuccess >= 30_000) {
         setRuntimeUpdating(false);
-        setRuntimeUpdateIssue("更新连接暂时中断，请保持 ONE Key 插入并检查状态");
+        setRuntimeUpdateIssue("正在自动恢复连接，请保持 ONE Key 插入；无需重复安装。");
       }
     } finally {
       runtimeCheck.current.pending = false;
@@ -1644,15 +1647,26 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </div>
       </header>
 
+      {runtimeUpdate && runtimeUpdateConfirmed(runtimeUpdate) && runtimeUpdate.confirmation?.requestId !== dismissedRuntimeReceipt ? <section className="one-runtime-update completed" aria-live="polite">
+        <span className="one-runtime-update-icon"><Check size={16} /></span>
+        <span><strong>ONE 已升级至 {runtimeUpdate.current?.version}</strong><small>新版已启动并连接，更新成功。可以继续使用 ONE。</small></span>
+        <button type="button" onClick={() => {
+          const receipt = runtimeUpdate.confirmation!.requestId;
+          setDismissedRuntimeReceipt(receipt);
+          try { sessionStorage.setItem(`one.runtime.confirmed.${user.id}`, receipt); } catch { /* storage optional */ }
+          window.location.reload();
+        }}>刷新页面</button>
+      </section> : null}
       {runtimeUpdate?.available ? <section className={`one-runtime-update ${runtimeUpdate.progress?.status || "available"}`} aria-live="polite">
         <span className="one-runtime-update-icon"><Download size={16} /></span>
-        <span><strong>{runtimeUpdating ? "正在更新 ONE" : runtimeUpdateIssue ? "请检查 ONE 更新" : runtimeUpdateFailed ? "更新没有完成" : "ONE 可以更新"}</strong><small>{runtimeUpdateIssue || (runtimeUpdating ? ({ requested: "准备下载…", downloading: "正在下载…", verifying: "正在验证…", installing: "正在安装…", completed: "正在重新连接…", failed: runtimeUpdate.progress?.message || "更新失败" }[runtimeUpdate.progress?.status || "requested"]) : runtimeUpdateFailed ? runtimeUpdate.progress?.message || "请保持 ONE Key 插入并重试" : `${runtimeUpdate.current?.version || "当前版本"} → ${runtimeUpdate.latestVersion}`)}</small></span>
-        <button type="button" disabled={runtimeUpdating || runtimeChecking} onClick={() => void (runtimeUpdateIssue ? refreshRuntimeUpdate(true) : installRuntimeUpdate())}>{runtimeChecking ? "查询中…" : runtimeUpdating ? "请稍候" : runtimeUpdateIssue ? "检查状态" : runtimeUpdateFailed ? "重试" : "更新"}</button>
-        {runtimeUpdateIssue ? <div className="one-runtime-update-detail">
+        <span><strong>{runtimeUpdating ? "正在更新 ONE" : runtimeUpdateIssue ? "正在确认更新结果" : runtimeUpdateFailed ? "更新没有完成" : "ONE 可以更新"}</strong><small>{runtimeUpdateIssue || (runtimeUpdating ? ({ requested: "准备下载…", downloading: "正在下载…", verifying: "正在验证…", installing: "正在安装…", completed: "安装已完成，正在连接新版…", failed: runtimeUpdate.progress?.message || "更新失败" }[runtimeUpdate.progress?.status || "requested"]) : runtimeUpdateFailed ? runtimeUpdate.progress?.message || "请保持 ONE Key 插入并重试" : `${runtimeUpdate.current?.version || "当前版本"} → ${runtimeUpdate.latestVersion}`)}</small></span>
+        {!runtimeUpdateIssue ? <button type="button" disabled={runtimeUpdating || runtimeChecking} onClick={() => void installRuntimeUpdate()}>{runtimeUpdating ? "请稍候" : runtimeUpdateFailed ? "重试" : "更新"}</button> : null}
+        {runtimeUpdateIssue ? <details className="one-runtime-update-detail"><summary>连接详情</summary>
           <span>当前账号：{user.username} · 运行 {runtimeUpdate.current?.version || "未知"} · 目标 {runtimeUpdate.latestVersion || "未知"}</span>
           {runtimeCheckFeedback ? <span role="status">{runtimeCheckFeedback}</span> : null}
+          <button type="button" disabled={runtimeChecking} onClick={() => void refreshRuntimeUpdate(true)}>{runtimeChecking ? "查询中…" : "重新检测连接"}</button>
           <button type="button" onClick={() => window.location.reload()}>刷新页面</button>
-        </div> : null}
+        </details> : null}
       </section> : null}
 
       {historyOpen ? (

@@ -6,7 +6,7 @@ import { uid } from "./security.js";
 import { appendExecutionEvent } from "./executionService.js";
 import { validInstallationId } from "./oneKeyInstallation.js";
 import { compareRuntimeVersions, validRuntimeVersion, type RuntimeArchitecture, type RuntimeIdentity, type RuntimePlatform, type SignedRuntimeUpdate } from "./runtimeUpdate.js";
-import { recoverRuntimeUpdate, disconnectedRuntimeUpdate, type UpdateOwner } from './runtimeUpdateRecovery.js';
+import { recoverRuntimeUpdate, disconnectedRuntimeUpdate, confirmedRuntimeUpdate, type UpdateOwner } from './runtimeUpdateRecovery.js';
 
 const proofTimeoutMs = 2000;
 const authTimeoutMs = 5000;
@@ -155,7 +155,7 @@ export class OneKeyPresence {
     return Boolean(this.isConnected(deviceId, installationId) && state?.capabilities.has("local_tools_v1"));
   }
 
-  async runtimeStatus(params: { deviceId: string; installationId?: string; userId: string; workspaceId: string }) {
+  async runtimeStatus(params: { deviceId: string; installationId?: string; userId: string; workspaceId: string }): Promise<{ runtime?: RuntimeIdentity; update?: RuntimeUpdateProgress; confirmation?: { requestId: string; version: string }; connectionState: 'connected' | 'reconnecting' }> {
     // Metadata only: a short hand-off has no socket. Return this computer's
     // journal as unconfirmed, never as proof of Key presence or completion.
     if (!this.isConnected(params.deviceId, params.installationId)) {
@@ -165,7 +165,7 @@ export class OneKeyPresence {
         && item.userId === params.userId && item.workspaceId === params.workspaceId);
       if (!device) throw new OneKeyPresenceError('ONE Key 已挂失或不属于当前账号');
       const saved = disconnectedRuntimeUpdate(db.auditLogs ?? [], params);
-      if (saved) return { ...saved, connectionState: 'reconnecting' as const };
+      if (saved) return { ...saved, confirmation: undefined, connectionState: 'reconnecting' as const };
       throw new OneKeyPresenceError('请将 ONE Key 插入当前这台电脑');
     }
     const socket = await this.ownedSocket(params);
@@ -175,7 +175,9 @@ export class OneKeyPresence {
     if (state.update && !["failed", "completed"].includes(state.update.status) && !this.updateInProgress(state)) {
       state.update = { ...state.update, recoveryRequired: true };
     }
-    return { runtime: state.runtime, update: state.update, connectionState: 'connected' as const };
+    const db = await this.store.read();
+    if (this.sockets.get(params.deviceId) !== socket || !state.authenticated) throw new OneKeyPresenceError('ONE 更新连接已变更');
+    return { runtime: state.runtime, update: state.update, confirmation: state.runtime ? confirmedRuntimeUpdate(db.auditLogs ?? [], params, state.runtime) : undefined, connectionState: 'connected' as const };
   }
 
   async requestRuntimeUpdate(params: { deviceId: string; installationId?: string; userId: string; workspaceId: string; version: string; envelope: SignedRuntimeUpdate }) {
@@ -184,7 +186,8 @@ export class OneKeyPresence {
     await this.restoreUpdate(state, params);
     if (this.sockets.get(params.deviceId) !== socket || !state.authenticated) throw new OneKeyPresenceError('ONE 更新连接已变更，请检查状态');
     if (!state.runtime || state.runtime.updateProtocol !== 1 || !state.capabilities.has("runtime_update_v1")) throw new OneKeyPresenceError("当前 ONE 启动器不支持在线更新", "ONE_RUNTIME_UPDATE_UNSUPPORTED");
-    if (state.update && state.update.status !== 'failed') return state.update;
+    if (state.update && state.update.status !== 'failed'
+      && !(state.update.status === 'completed' && compareRuntimeVersions(params.version, state.update.version) > 0)) return state.update;
     const requestId = uid("upd");
     state.updateStartedAt = Date.now();
     state.update = { requestId, status: "requested", version: params.version, updatedAt: new Date().toISOString() };

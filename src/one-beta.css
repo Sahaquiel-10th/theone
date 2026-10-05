@@ -54,6 +54,10 @@
 .one-runtime-update button:disabled { cursor: wait; opacity: .62; }
 .one-runtime-update.failed button { background: #a43c38; }
 
+@media (min-width: 1100px) {
+  .one-runtime-update { left: auto; right: 24px; transform: none; }
+}
+
 @media (max-width: 720px) {
   .one-runtime-update { top: 68px; }
 }

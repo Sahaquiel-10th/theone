@@ -275,6 +275,10 @@ test("binds runtime update status and dispatch to the authenticated workspace an
   assert.equal((await presence.requestRuntimeUpdate({ deviceId: 'device-a', installationId, userId: 'user-a', workspaceId: 'workspace-a', version: '0.3.0', envelope: command.envelope })).requestId, progress.requestId);
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(redispatched, false);
+  const nextCommand = once(reconnected, 'message');
+  const repair = await presence.requestRuntimeUpdate({ deviceId: 'device-a', installationId, userId: 'user-a', workspaceId: 'workspace-a', version: '0.3.13', envelope: command.envelope });
+  assert.notEqual(repair.requestId, progress.requestId);
+  assert.equal(JSON.parse((await nextCommand)[0].toString()).type, 'update_install');
   device.status = "revoked";
   await assert.rejects(() => presence.runtimeStatus({ deviceId: "device-a", installationId, userId: "user-a", workspaceId: "workspace-a" }), /挂失/);
 

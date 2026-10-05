@@ -21,6 +21,23 @@ export function disconnectedRuntimeUpdate(logs: AuditLog[], owner: UpdateOwner, 
 }
 const phases = ['requested', 'downloading', 'verifying', 'installing', 'failed', 'completed'];
 
+export function confirmedRuntimeUpdate(logs: AuditLog[], owner: UpdateOwner, runtime: RuntimeIdentity, now = Date.now()) {
+  const rows = logs.filter(row => row.action === 'one_runtime.update.checkpoint'
+    && row.workspaceId === owner.workspaceId && row.actorUserId === owner.userId
+    && row.targetId === owner.deviceId && row.details?.installationId === owner.installationId
+    && row.details?.platform === runtime.platform && typeof row.requestId === 'string'
+    && validRuntimeVersion(row.details?.version) && phases.includes(String(row.details?.status))
+    && Number.isFinite(Number(row.details?.startedAt))
+    && now - Date.parse(row.createdAt) >= 0 && now - Date.parse(row.createdAt) < 24 * 60 * 60_000);
+  rows.sort((a, b) => Number(b.details!.startedAt) - Number(a.details!.startedAt)
+    || Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  const row = rows[0];
+  // An install-completed event alone is never enough: this function is only
+  // used with the authenticated, currently connected runtime identity.
+  if (!row || compareRuntimeVersions(runtime.version, String(row.details!.version)) < 0) return undefined;
+  return { requestId: row.requestId!, version: runtime.version };
+}
+
 // Only this journal includes all four ownership dimensions and the platform.
 // Older audit rows cannot safely be attributed to this computer.
 export function recoverRuntimeUpdate(logs: AuditLog[], owner: UpdateOwner, runtime: RuntimeIdentity): RuntimeUpdateProgress | undefined {

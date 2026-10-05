@@ -1,14 +1,28 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { recoverRuntimeUpdate, disconnectedRuntimeUpdate } from './runtimeUpdateRecovery.js';
+import { recoverRuntimeUpdate, disconnectedRuntimeUpdate, confirmedRuntimeUpdate } from './runtimeUpdateRecovery.js';
 import type { AuditLog } from './types.js';
 
 const owner = { deviceId: 'key-a', installationId: 'computer-a', userId: 'user-a', workspaceId: 'workspace-a' };
 const runtime = { platform: 'macos', architecture: 'arm64', version: '0.3.8', updateProtocol: 1 } as const;
 const row: AuditLog = { id: 'a', action: 'one_runtime.update.checkpoint', targetType: 'one_key_device',
   targetId: owner.deviceId, workspaceId: owner.workspaceId, actorUserId: owner.userId, requestId: 'update-a',
-  createdAt: '2026-09-23T01:00:00Z', details: { installationId: owner.installationId, platform: 'macos',
+    createdAt: '2026-09-23T01:00:00Z', details: { installationId: owner.installationId, platform: 'macos',
     status: 'installing', version: '0.3.9', startedAt: 100 } };
+
+test('confirmed update receipts require a new runtime and exact owner binding', () => {
+  const now = Date.parse(row.createdAt) + 1000;
+  const next = { ...runtime, version: '0.3.9' };
+  assert.deepEqual(confirmedRuntimeUpdate([row], owner, next, now), { requestId: row.requestId, version: '0.3.9' });
+  assert.equal(confirmedRuntimeUpdate([{ ...row, details: { ...row.details, status: 'completed' } }], owner, runtime, now), undefined);
+  for (const field of ['workspaceId', 'userId', 'deviceId', 'installationId'] as const) {
+    assert.equal(confirmedRuntimeUpdate([row], { ...owner, [field]: 'foreign' }, next, now), undefined);
+  }
+  assert.equal(confirmedRuntimeUpdate([row], owner, { ...next, platform: 'windows' }, now), undefined);
+  assert.equal(confirmedRuntimeUpdate([row], owner, next, now + 24 * 60 * 60_000), undefined);
+  const later = { ...row, requestId: 'next-update', details: { ...row.details, version: '0.3.10', startedAt: 200 } };
+  assert.equal(confirmedRuntimeUpdate([later, row], owner, next, now), undefined);
+});
 
 test('update checkpoints survive restart without claiming a running upgrade or retrying an uncertain write', () => {
   const result = recoverRuntimeUpdate(JSON.parse(JSON.stringify([row])), owner, runtime);
