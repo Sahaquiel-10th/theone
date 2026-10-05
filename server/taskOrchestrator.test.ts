@@ -1,7 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runTaskOrchestrator } from "./taskOrchestrator.js";
+import { runTaskOrchestrator, OrchestrationToolError } from "./taskOrchestrator.js";
 const call = (id: string, query = "project", name = "knowledge_search") => ({ id, type: "function" as const, function: { name, arguments: JSON.stringify({ query }) } });
+
+test("failed tool records a safe trace before stopping, never provider secrets or a second model call", async () => {
+  for (const error of [new Error("https://provider.invalid?api_key=SECRET"), new OrchestrationToolError("TOOL_DEFINITION_CHANGED", "reviewed change")]) {
+    let calls = 0;
+    const snapshots: unknown[] = [];
+    await assert.rejects(runTaskOrchestrator({ entryPoint: "workspace", messages: [], maxSteps: 3,
+      tools: [{ name: "knowledge_search", run: async () => { throw error; } }],
+      beforeStep: async () => {}, onTrace: steps => snapshots.push(steps),
+      call: async () => { calls++; return { content: "", toolCalls: [call("failed")] }; }
+    }), value => value === error);
+    assert.equal(calls, 1);
+    const trace = snapshots[0] as { status: string; resultPreview: string }[];
+    assert.equal(trace[0].status, "failed");
+    assert.match(trace[0].resultPreview, error instanceof OrchestrationToolError ? /TOOL_DEFINITION_CHANGED/ : /TOOL_EXECUTION_FAILED/);
+    assert.doesNotMatch(JSON.stringify(snapshots), /SECRET|provider\.invalid/);
+  }
+});
 
 test("public executor rejects forbidden tools before any model charge and forged calls never execute", async () => {
   for (const entryPoint of ["published_web", "published_api"] as const) {

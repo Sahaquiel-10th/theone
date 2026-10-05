@@ -79,7 +79,7 @@ export type ContextTrace = {
 };
 
 export type ExecutionTraceStep = {
-  step: number; tool: string; status: "returned" | "reused" | "rejected"; query?: string;
+  step: number; tool: string; status: "returned" | "reused" | "rejected" | "failed"; query?: string;
   resultPreview: string; durationMs: number;
 };
 

@@ -60,6 +60,30 @@ struct RuntimeInstallationTests {
         } catch {}
         let preserved = try Data(contentsOf: destination)
         precondition(preserved == expected, "failed preparation must preserve resident")
+        let bundle = directory.appendingPathComponent("source.app")
+        let cached = directory.appendingPathComponent("cached.app")
+        try FileManager.default.createDirectory(at: bundle.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: bundle.appendingPathComponent("Contents/_CodeSignature"), withIntermediateDirectories: true)
+        try Data("binary".utf8).write(to: bundle.appendingPathComponent("Contents/MacOS/ONE"))
+        try Data("plist".utf8).write(to: bundle.appendingPathComponent("Contents/Info.plist"))
+        try Data("seal".utf8).write(to: bundle.appendingPathComponent("Contents/_CodeSignature/CodeResources"))
+        func verifyBundle(_ app: URL) throws {
+            for name in ["Contents/Info.plist", "Contents/MacOS/ONE", "Contents/_CodeSignature/CodeResources"] {
+                guard FileManager.default.fileExists(atPath: app.appendingPathComponent(name).path) else { throw FixtureError.installFailed }
+            }
+        }
+        let resident = try prepareRuntimeResidentBundle(source: bundle, target: cached, verify: verifyBundle)
+        precondition(resident == cached.appendingPathComponent("Contents/MacOS/ONE"))
+        try verifyBundle(cached)
+        do {
+            _ = try prepareRuntimeResidentBundle(source: bundle, target: cached) { app in
+                if app.lastPathComponent.hasPrefix(".ONE-resident-") { throw FixtureError.installFailed }
+                if app == cached { throw FixtureError.installFailed }
+                try verifyBundle(app)
+            }
+            fatalError("invalid staged bundle must be refused")
+        } catch FixtureError.installFailed {}
+        try verifyBundle(cached)
         print("Runtime installation hand-off tests passed")
     }
 }

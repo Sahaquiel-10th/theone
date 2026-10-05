@@ -209,8 +209,12 @@ func launchResidentExecutable(source: URL, version: String, credential: URL, res
     )
     let installDirectory = applicationSupport.appendingPathComponent("ONE", isDirectory: true)
     try FileManager.default.createDirectory(at: installDirectory, withIntermediateDirectories: true)
-    let target = installDirectory.appendingPathComponent("ONEPresence-\(version)")
-    try prepareRuntimeResident(source: source, target: target)
+    let sourceApp = source.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    guard sourceApp.pathExtension == "app" else { throw LauncherError.message("ONE 启动器应用不完整") }
+    let residentApp = installDirectory.appendingPathComponent("ONEPresence-\(version).app")
+    let target = try prepareRuntimeResidentBundle(source: sourceApp, target: residentApp) { app in
+        try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
+    }
 
     let process = Process()
     process.executableURL = target

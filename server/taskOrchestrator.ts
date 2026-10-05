@@ -3,6 +3,11 @@ import type { ExecutionTraceStep } from "./types.js";
 import { taskToolDescriptions } from "./aiTaskPresets.js";
 import { entryAllowsTool, type TaskEntryPoint } from "./aiTaskCatalog.js";
 
+/** Only these reviewed codes may enter a trace; provider exceptions can contain secrets. */
+export class OrchestrationToolError extends Error {
+  constructor(readonly code: "TOOL_DEFINITION_CHANGED", message: string) { super(message); }
+}
+
 export type OrchestrationTool = { name: string; description?: string; run: (query: string) => Promise<unknown>;
   structured?: { schema: Record<string, unknown>; validate: (input: unknown) => unknown; run: (input: unknown) => Promise<unknown> } };
 
@@ -56,7 +61,16 @@ export async function runTaskOrchestrator(input: {
         if (cache.has(key)) { output = cache.get(key); status = "reused"; }
         else {
           // Handler errors propagate: do not disguise revoked authorization as no matches.
-          output = tool.structured ? await tool.structured.run(structuredArgs) : await tool.run(query); cache.set(key, output); status = "returned";
+          try {
+            output = tool.structured ? await tool.structured.run(structuredArgs) : await tool.run(query);
+          } catch (error) {
+            trace.push({ step, tool: tool.name, status: "failed", query,
+              resultPreview: JSON.stringify({ status: "failed", code: error instanceof OrchestrationToolError ? error.code : "TOOL_EXECUTION_FAILED" }),
+              durationMs: Date.now() - started });
+            input.onTrace?.(structuredClone(trace));
+            throw error;
+          }
+          cache.set(key, output); status = "returned";
         }
       }
       const serialized = JSON.stringify(output);

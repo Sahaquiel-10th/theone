@@ -61,7 +61,8 @@ type Deps = FeatureRunDependencies & {
 const at = () => new Date().toISOString();
 const own = (item: { workspaceId: string; userId: string }, s: WorkScope) =>
   item.workspaceId === s.workspaceId && item.userId === s.userId;
-function budget(value: unknown, fallback = 0.1) {
+// A limit, not a flat charge: only actual settled model usage is deducted.
+function budget(value: unknown, fallback = 0.5) {
   const n = value ?? fallback;
   if (typeof n !== "number" || !Number.isFinite(n) || n < 0.001 || n > 10)
     throw new CoordinatorError("电力上限应为 0.001–10", 400);

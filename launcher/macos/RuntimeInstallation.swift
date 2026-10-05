@@ -3,6 +3,35 @@
 import Foundation
 import Darwin
 
+// A signed app executable is not a standalone signed command: its signature
+// seals Info.plist and Resources too. Keep the whole bundle for macOS TCC.
+func prepareRuntimeResidentBundle(source: URL, target: URL, verify: (URL) throws -> Void) throws -> URL {
+    let executable = "Contents/MacOS/ONE"
+    try verify(source)
+    if FileManager.default.fileExists(atPath: target.path),
+       (try? verify(target)) != nil,
+       (try? Data(contentsOf: target.appendingPathComponent(executable))) == (try Data(contentsOf: source.appendingPathComponent(executable))),
+       (try? Data(contentsOf: target.appendingPathComponent("Contents/Info.plist"))) == (try Data(contentsOf: source.appendingPathComponent("Contents/Info.plist"))) {
+        return target.appendingPathComponent(executable)
+    }
+    let parent = target.deletingLastPathComponent()
+    let staging = parent.appendingPathComponent(".ONE-resident-\(UUID().uuidString).app")
+    let backup = parent.appendingPathComponent(".ONE-resident-backup-\(UUID().uuidString).app")
+    defer { try? FileManager.default.removeItem(at: staging) }
+    try FileManager.default.copyItem(at: source, to: staging)
+    try verify(staging)
+    let existing = FileManager.default.fileExists(atPath: target.path)
+    if existing { try FileManager.default.moveItem(at: target, to: backup) }
+    do {
+        try FileManager.default.moveItem(at: staging, to: target)
+    } catch {
+        if existing { try? FileManager.default.moveItem(at: backup, to: target) }
+        throw error
+    }
+    if existing { try? FileManager.default.removeItem(at: backup) }
+    return target.appendingPathComponent(executable)
+}
+
 // Both ordinary launch and update hand-off use the exact verified executable,
 // not LaunchServices' cached bundle identity (shared by all portable Keys).
 func prepareRuntimeResident(source: URL, target: URL) throws {

@@ -260,6 +260,15 @@ function fixture() {
   };
 }
 const key = async () => {};
+test("omitted task budget has a usable bounded default; explicit smaller caps remain unchanged", async () => {
+  const f = fixture();
+  const first = await f.service.dispatch(a, { operationId: "operation_default_cap", text: "UI" }, key);
+  const second = await f.service.direct(a, first.taskId!, { operationId: "operation_explicit_cap", text: "补充", budget: 0.02 }, key);
+  const db = await f.store.read();
+  assert.equal(db.chatOperations?.find(o => o.operationId === "operation_default_cap_work")?.workRun?.budget, 0.5);
+  assert.equal(db.chatOperations?.find(o => o.operationId === "operation_explicit_cap")?.workRun?.budget, 0.02);
+  assert.equal(second.taskId, first.taskId);
+});
 async function waitFor(check: () => Promise<boolean>) {
   for (let n = 0; n < 100; n++) {
     if (await check()) return;

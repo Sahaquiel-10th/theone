@@ -29,7 +29,7 @@ export function FeatureBuilder({ api, values, onChange, disabled }: { api: typeo
   </fieldset>;
 }
 export function FeatureTrial({ api, id, revision, disabled }: { api: typeof Api; id: string; revision: number; disabled: boolean }) {
-  const [prompt, setPrompt] = useState(""), [budget, setBudget] = useState("0.1"), [busy, setBusy] = useState(false), [error, setError] = useState(""), [result, setResult] = useState<Result>(), [operationId, setOperationId] = useState("");
+  const [prompt, setPrompt] = useState(""), [budget, setBudget] = useState("0.5"), [busy, setBusy] = useState(false), [error, setError] = useState(""), [result, setResult] = useState<Result>(), [operationId, setOperationId] = useState("");
   async function execute(recover = false) {
     if (!recover && !confirm(`试运行会从你的账户扣除实际模型用量，本次上限 ${budget} 电力。继续？`)) return;
     setBusy(true); setError(""); if (!recover) setResult(undefined);
@@ -45,7 +45,7 @@ export function FeatureTrial({ api, id, revision, disabled }: { api: typeof Api;
     {operationId ? <button type="button" disabled={busy} onClick={() => void execute(true)}>查看本次结果（不重新执行）</button> : null}
     {error ? <p role="alert">{error}</p> : null}
     {result ? <><article><h4>回答</h4><p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{result.content}</p>{result.finishReason === "length" ? <p>达到回答长度上限，内容未完成。</p> : null}</article>
-      <details><summary>工具调用 · {result.trace.length} 次</summary>{result.trace.map((step, i) => <details key={i}><summary>{step.tool} · {step.status === "returned" ? "已返回" : step.status === "reused" ? "复用结果" : "已拒绝"} · {step.durationMs} ms</summary><p>输入</p><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{step.query}</pre><p>返回</p><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{step.resultPreview}</pre></details>)}</details>
+      <details><summary>工具调用 · {result.trace.length} 次</summary>{result.trace.map((step, i) => <details key={i}><summary>{step.tool} · {step.status === "returned" ? "已返回" : step.status === "reused" ? "复用结果" : step.status === "failed" ? "执行失败" : "已拒绝"} · {step.durationMs} ms</summary><p>输入</p><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{step.query}</pre><p>返回</p><pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{step.resultPreview}</pre></details>)}</details>
       <details><summary>用量 · {result.charges.reduce((sum, c) => sum + c.power, 0).toFixed(6)} 电力</summary>{result.charges.map((c, i) => <p key={i}>{c.model} · {c.power.toFixed(6)} 电力 · {c.status === "success" ? "已结算" : "请查看账单状态"}</p>)}</details></> : null}
   </div></details>;
 }

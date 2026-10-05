@@ -13,9 +13,16 @@ func olderResidentVersion(_ identity: ResidentProcessIdentity, support: URL, cur
     guard identity.pid > 1, identity.pid != currentPID, identity.uid == currentUID,
           !identity.startedAt.isEmpty else { return nil }
     let executable = URL(fileURLWithPath: identity.executable).standardizedFileURL
-    guard executable.deletingLastPathComponent() == support.standardizedFileURL,
-          executable.lastPathComponent.hasPrefix("ONEPresence-") else { return nil }
-    let version = String(executable.lastPathComponent.dropFirst("ONEPresence-".count))
+    let bundle = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let installed: URL
+    if executable.lastPathComponent == "ONE", executable.deletingLastPathComponent().lastPathComponent == "MacOS",
+       executable.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent == "Contents",
+       bundle.pathExtension == "app" { installed = bundle }
+    else { installed = executable }
+    guard installed.deletingLastPathComponent() == support.standardizedFileURL,
+          installed.lastPathComponent.hasPrefix("ONEPresence-") else { return nil }
+    let name = installed.pathExtension == "app" ? installed.deletingPathExtension().lastPathComponent : installed.lastPathComponent
+    let version = String(name.dropFirst("ONEPresence-".count))
     func parts(_ value: String) -> [Int]? {
         guard value.range(of: #"^(0|[1-9]\d*)(?:\.(0|[1-9]\d*)){1,3}$"#, options: .regularExpression) != nil else { return nil }
         let numbers = value.split(separator: ".").compactMap { Int($0) }

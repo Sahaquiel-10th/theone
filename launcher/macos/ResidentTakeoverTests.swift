@@ -19,6 +19,8 @@ struct ResidentTakeoverTests {
             olderResidentVersion(item, support: root, currentUID: getuid(), currentPID: getpid(), newVersion: version, credentialMatches: { $0 == credential }) != nil
         }
         precondition(approved(identity))
+        let bundledExecutable = root.appendingPathComponent("ONEPresence-0.4.2.app/Contents/MacOS/ONE").path
+        precondition(approved(ResidentProcessIdentity(pid: identity.pid, uid: identity.uid, executable: bundledExecutable, arguments: [bundledExecutable, "--one-resident", "--credential-path", credential.path], startedAt: identity.startedAt)), "signed bundle owners must support the same precise takeover")
         precondition(!approved(identity, version: "0.4.2"), "equal version must not be terminated")
         precondition(!approved(identity, version: "0.4.1"), "newer version must not be terminated")
         precondition(!approved(ResidentProcessIdentity(pid: identity.pid, uid: getuid()+1, executable: identity.executable, arguments: identity.arguments, startedAt: identity.startedAt)))

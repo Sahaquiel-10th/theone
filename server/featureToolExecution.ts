@@ -4,7 +4,7 @@ import { toolCredential,redactToolSecret } from './featureCredentials.js';
 import { openFeatureMcp,mcpDefinition,mcpDigest,mcpValidate } from './connectors/featureMcp.js';
 import { boundedHttps,timedExchange,type ToolExchange } from './connectors/boundedHttps.js';
 import { callReadOnlyHttp,validateFields,StandardToolError,type JsonTransport } from './connectors/standardHttp.js';
-import type { OrchestrationTool } from './taskOrchestrator.js';
+import { OrchestrationToolError, type OrchestrationTool } from './taskOrchestrator.js';
 
 export function executableFeatureTools(store:Store,scope:{workspaceId:string;userId:string},choices:FeatureToolChoice[],verify:()=>Promise<void>,deps:{transport?:JsonTransport;exchange?:ToolExchange}={}):OrchestrationTool[]{
   return choices.map(choice=>{
@@ -31,7 +31,7 @@ export function executableFeatureTools(store:Store,scope:{workspaceId:string;use
           }else output=await callReadOnlyHttp(http!,input,deps.transport);
         }catch(e){
           // Definition drift must stop the task, not let an answer hide the change.
-          if(e instanceof StandardToolError&&e.code==='MCP_TOOL_CHANGED')throw new Error('MCP 工具定义已变化，请管理员重新发现并认定');
+          if(e instanceof StandardToolError&&e.code==='MCP_TOOL_CHANGED')throw new OrchestrationToolError('TOOL_DEFINITION_CHANGED','MCP 工具定义已变化，请管理员重新发现并认定');
           output={status:'failed',code:e instanceof StandardToolError?e.code:'TOOL_UNAVAILABLE'};
         }
         await verify();return redactToolSecret(output,credential.secret);

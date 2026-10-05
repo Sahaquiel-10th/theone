@@ -26,7 +26,7 @@ export function FeatureCatalog({api,query:q='',category='all',equipment=false}:{
 }
 function FeatureLaunch({api,id,onStarted,inspectFirst=false}:{api:typeof Api;id:string;onStarted:(id:string)=>void;inspectFirst?:boolean}) {
   const [launch,setLaunch]=useState(!inspectFirst);
-  const [feature,setFeature]=useState<Feature>(),[sources,setSources]=useState<string[]>([]),[prompt,setPrompt]=useState(''),[budget,setBudget]=useState('0.1'),[confirmed,setConfirmed]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
+  const [feature,setFeature]=useState<Feature>(),[sources,setSources]=useState<string[]>([]),[prompt,setPrompt]=useState(''),[budget,setBudget]=useState('0.5'),[confirmed,setConfirmed]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
   const [attempt,setAttempt]=useState<{operationId:string;payload:string}>();
   useEffect(()=>{let live=true;void api<Feature>(`/api/features/${id}`).then(d=>{if(live)setFeature(d);}).catch(e=>{if(live)setError(e.message);});return()=>{live=false;};},[api,id]);
   async function start() {
@@ -53,6 +53,6 @@ function FeatureRunView({api,operationId}:{api:typeof Api;operationId:string}) {
   useEffect(()=>{let live=true;let timer:ReturnType<typeof setTimeout>;async function poll(){try{const r=await api<Run>(`/api/features/runs/${operationId}`);if(!live)return;setResult(r);setError('');if(r.status==='pending')timer=setTimeout(()=>void poll(),2500);}catch(e){if(live)setError(e instanceof Error?e.message:'无法读取结果');}}void poll();return()=>{live=false;clearTimeout(timer);};},[api,operationId,refresh]);
   return <div className="sharing-form"><button type="button" onClick={()=>setRefresh(n=>n+1)}>检查状态</button>{error?<p role="alert">{error}</p>:null}{result?<><h3>{result.name} · v{result.version}</h3><p>{status[result.status]} · {result.power.toFixed(6)} 电力</p>{result.status==='pending'?<p>正在执行，可关闭窗口，稍后在“我的功能任务”找回结果。不会因刷新而重跑。</p>:null}<details><summary>任务内容</summary><p style={{whiteSpace:'pre-wrap'}}>{result.prompt}</p></details>{result.error?<p role="alert">{result.error}</p>:null}<article style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{result.content}</article>
     {result.finishReason==='length'?<p>达到回答长度上限，内容尚未完整。</p>:null}
-    <details><summary>工具调用 · {result.trace?.length??0}</summary>{result.trace?.map((t,i)=><details key={i}><summary>{t.tool} · {t.status==='returned'?'已返回':t.status==='reused'?'复用结果':'已拒绝'}</summary><p>输入</p><pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{t.query}</pre><p>返回</p><pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{t.resultPreview}</pre></details>)}</details>
+    <details><summary>工具调用 · {result.trace?.length??0}</summary>{result.trace?.map((t,i)=><details key={i}><summary>{t.tool} · {t.status==='returned'?'已返回':t.status==='reused'?'复用结果':t.status==='failed'?'执行失败':'已拒绝'}</summary><p>输入</p><pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{t.query}</pre><p>返回</p><pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{t.resultPreview}</pre></details>)}</details>
     <details><summary>电力明细</summary>{result.charges?.map((c,i)=><p key={i}>{c.model} · {c.power.toFixed(6)} 电力 · {c.status==='success'?'已结算':c.status==='needs_review'?'待核对':c.status==='failed'?'调用失败':c.status}</p>)}</details></>:null}</div>;
 }
