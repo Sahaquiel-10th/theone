@@ -6,6 +6,7 @@ import {ProductMetricsPanel} from './ProductMetricsPanel';
 import {OneWaitingCopy,useOneGreeting} from './OnePersonality';
 import {FeatureNav} from './FeatureNav';
 import {ThingsPanel} from './ThingsPanel';
+import {sendThingMessage} from './sendThingMessage';
 import {CoordinatorConversation} from './preview/CoordinatorConversation';
 import {FeatureShelf,type FeatureChoice} from './preview/FeatureShelf';
 import {ResultSignal} from './preview/ResultSignal';
@@ -697,6 +698,18 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     if(coordinator.enabled){try{await coordinator.load(id);}catch(err){setError(err instanceof Error?err.message:'暂时无法打开');}return;}
     if (!item || item.messagesLoaded || demo.enabled) return;
     try { const result=await api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(id)}`); setConversations(previous=>previous.map(conversation=>conversation.id===id?{...result.conversation,messagesLoaded:true}:conversation)); } catch(err) {setError(err instanceof Error?err.message:'暂时无法打开');}
+  }
+  async function continueThing(id: string, text: string) {
+    if (demo.enabled) { demo.dispatch({type:'task-send',taskId:id,text,id:crypto.randomUUID(),now:Date.now()}); return; }
+    const task = conversations.find(conversation => conversation.id === id);
+    if (!task) throw new Error('这件事已不可用，请重新打开');
+    if (coordinator.enabled && models.find(model => model.id === task.modelId)?.kind !== 'image') {
+      await coordinator.direct(id, text);
+      return;
+    }
+    const conversation = await sendThingMessage<Conversation>(api, user.id, {conversationId:id,modelId:task.modelId,agentId:task.agentId,content:text.trim()});
+    setConversations(old => old.map(item => item.id === id ? {...conversation,messagesLoaded:true} : item));
+    setPendingRequests(pendingChatSubmissions(user.id));
   }
   useEffect(() => { if (demo.enabled) demo.dispatch({type:'draft',text:content}); }, [demo.enabled, content]);
   const coordinatorErrorRef = useRef("");
@@ -1699,7 +1712,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
       <div className="studio-layout">
       <section className="studio-surface" aria-label={view === "chat" ? "当前事情" : "工作区内容"} hidden={studioIdle||(preview.enabled&&view==='chat'&&!active)}>
-      {view === "things" ? <ThingsPanel one={<div className="studio-presence things-one"><OneHeroEye mood="idle" label="回到 ONE 工作台" onActivate={()=>openSurface('chat')}/></div>} items={conversations} selectedId={thingId} drafts={thingDrafts} onDraftChange={(id,text)=>setThingDrafts(previous=>({...previous,[id]:text}))} onSelect={id=>void selectThing(id)} onSend={coordinator.enabled?async(id,text)=>{const task=conversations.find(c=>c.id===id);if(models.find(m=>m.id===task?.modelId)?.kind==='image'){const result=await api<{conversation:Conversation}>('/api/chat',{method:'POST',body:JSON.stringify({operationId:crypto.randomUUID(),content:text,conversationId:id,modelId:task?.modelId})});setConversations(old=>old.map(c=>c.id===id?{...result.conversation,messagesLoaded:true}:c));}else await coordinator.direct(id,text);}:demo.enabled?(id,text)=>demo.dispatch({type:'task-send',taskId:id,text,id:crypto.randomUUID(),now:Date.now()}):undefined} onWorkbench={id=>{void openConversation(conversations.find(item=>item.id===id)!);setResultLampOpen(false);}} hasMore={hasMoreConversations||(coordinator.enabled&&(coordinator.snapshot?.total??0)>coordinator.state.tasks.length)} onMore={()=>void loadMoreConversations()} loadingMore={loadingMoreConversations}/> : view === "admin" && user.role === "admin" ? (
+      {view === "things" ? <ThingsPanel one={<div className="studio-presence things-one"><OneHeroEye mood="idle" label="回到 ONE 工作台" onActivate={()=>openSurface('chat')}/></div>} items={conversations} selectedId={thingId} drafts={thingDrafts} onDraftChange={(id,text)=>setThingDrafts(previous=>({...previous,[id]:text}))} onSelect={id=>void selectThing(id)} onSend={continueThing} onWorkbench={id=>{void openConversation(conversations.find(item=>item.id===id)!);setResultLampOpen(false);}} hasMore={hasMoreConversations||(coordinator.enabled&&(coordinator.snapshot?.total??0)>coordinator.state.tasks.length)} onMore={()=>void loadMoreConversations()} loadingMore={loadingMoreConversations}/> : view === "admin" && user.role === "admin" ? (
         <AdminPanel actorId={user.id} refreshModels={refresh} onOpenSidebar={() => setHistoryOpen(true)} />
       ) : view === "features" ? (
         <section className="account-page features-page"><header className="admin-header"><div><h2>功能</h2></div>{preview.enabled?<button type="button" className="feature-shelf-close" onClick={()=>openSurface('chat')} aria-label="收起功能"><X size={16}/></button>:null}</header><div className="account-body settings-account-body">{preview.enabled?<FeatureShelf api={api} models={models} selected={featureForNext.map(item=>item.id)} onChoose={feature=>{setFeatureForNext(previous=>previous.some(item=>item.id===feature.id)?previous.filter(item=>item.id!==feature.id):previous.length<8?[...previous,feature]:previous);}}/>:<FeatureMarketplace api={api} models={models} onAsk={()=>openSurface('chat')}/>}</div></section>

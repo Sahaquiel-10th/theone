@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MessageMarkdown } from "./MessageMarkdown";
 import "./things-panel.css";
 
@@ -28,14 +28,15 @@ export function ThingsPanel({
   drafts: Record<string, string>;
   onDraftChange: (id: string, text: string) => void;
   onSelect: (id: string) => void;
-  onSend?: (id: string, text: string) => void;
+  onSend: (id: string, text: string) => void | Promise<void>;
   onWorkbench: (id: string) => void;
   hasMore: boolean;
   onMore: () => void;
   loadingMore: boolean;
 }) {
   const [sending, setSending] = useState<string[]>([]),
-    [error, setError] = useState("");
+    [errors, setErrors] = useState<Record<string,string>>({});
+  const inFlight = useRef(new Set<string>());
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const selected = items.find((item) => item.id === selectedId);
@@ -45,6 +46,11 @@ export function ThingsPanel({
   const pages = Math.max(1, Math.ceil(found.length / 10)),
     current = Math.min(page, pages);
   const draft = drafts[selectedId] || "";
+  const messagesRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = messagesRef.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }, [selectedId, selected?.messages.length]);
   return (
     <section className="things-browser" aria-label="事情列表与对话">
       <aside className="things-list">
@@ -113,7 +119,7 @@ export function ThingsPanel({
                 放到工作台 ↗
               </button>
             </header>
-            <div className="things-thread-messages">
+            <div className="things-thread-messages" ref={messagesRef}>
               {selected.messagesLoaded === false ? (
                 <p>正在打开…</p>
               ) : selected.messages.length ? (
@@ -131,24 +137,24 @@ export function ThingsPanel({
                 <p>这件事还没开始。</p>
               )}
             </div>
-            {error ? <p role="alert">{error}</p> : null}
-            {onSend ? (
+            {errors[selectedId] ? <p className="things-send-error" role="alert">{errors[selectedId]}</p> : null}
+            {(
               <form
                 onSubmit={async (event) => {
                   event.preventDefault();
-                  if (!draft.trim() || sending.includes(selected.id)) return;
+                  if (!draft.trim() || inFlight.current.has(selected.id) || selected.messagesLoaded === false) return;
                   const id = selected.id,
                     original = draft;
+                  inFlight.current.add(id);
                   setSending((old) => [...old, id]);
-                  setError("");
+                  setErrors(old=>({...old,[id]:''}));
                   try {
                     await onSend(id, original);
                     onDraftChange(id, "");
                   } catch (e) {
-                    setError(
-                      e instanceof Error ? e.message : "发送未完成，草稿已保留",
-                    );
+                    setErrors(old=>({...old,[id]:e instanceof Error ? e.message : "发送未完成，草稿已保留"}));
                   } finally {
+                    inFlight.current.delete(id);
                     setSending((old) => old.filter((item) => item !== id));
                   }
                 }}
@@ -157,7 +163,7 @@ export function ThingsPanel({
                   aria-label="直接继续这件事"
                   placeholder="继续这件事…"
                   value={draft}
-                  disabled={sending.includes(selected.id)}
+                  disabled={sending.includes(selected.id) || selected.messagesLoaded === false}
                   onChange={(event) =>
                     onDraftChange(selected.id, event.target.value)
                   }
@@ -174,12 +180,12 @@ export function ThingsPanel({
                 />
                 <button
                   type="submit"
-                  disabled={!draft.trim() || sending.includes(selected.id)}
+                  disabled={!draft.trim() || sending.includes(selected.id) || selected.messagesLoaded === false}
                 >
                   {sending.includes(selected.id) ? "接收中" : "发送"}
                 </button>
               </form>
-            ) : null}
+            )}
           </>
         ) : (
           <div className="things-thread-empty">选一件事，接着聊。</div>
