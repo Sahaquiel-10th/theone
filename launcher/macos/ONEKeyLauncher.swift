@@ -1089,7 +1089,24 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                     }
                     try await Task.sleep(for: .milliseconds(100))
                 }
-                throw LauncherError.message("新版已经安装，旧启动器还未退出。请重新启动电脑后打开 U 盘中的 ONE，无需重新安装。")
+                let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("ONE", isDirectory: true)
+                let digest = SHA256.hash(data: Data(deviceId.utf8)).map { String(format: "%02x", $0) }.joined()
+                _ = terminateOlderResident(lock: support.appendingPathComponent(residentLockFilename(digest: digest)), support: support, newVersion: launcherVersion) { candidate in
+                    (try? loadCredential(candidate, expectedDeviceId: deviceId)) != nil
+                }
+                for _ in 0..<50 {
+                    if let lock = try acquireResidentLock(deviceId: deviceId) {
+                        residentLock = lock
+                        self.credentialUrl = credentialUrl
+                        self.credential = credential
+                        self.expectedDeviceId = deviceId
+                        DistributedNotificationCenter.default().addObserver(self, selector: #selector(reopenRequested(_:)), name: reopenNotification(deviceId), object: nil)
+                        startResidentMonitoring()
+                        return
+                    }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                throw LauncherError.message("新版已安装，但连接尚未恢复。请保持 Key 插入，再打开盘中的 ONE；不需要重复安装。")
             }
             // Compatibility with already-running older launchers. New
             // residents handle login themselves after authenticating.

@@ -73,7 +73,7 @@ if (!source.includes("__ONE_UPDATE_PUBLIC_KEY__") || !source.includes("__ONE_RUN
 fs.writeFileSync(generatedSource, source.replaceAll("__ONE_UPDATE_PUBLIC_KEY__", updatePublicKey).replaceAll("__ONE_RUNTIME_VERSION__", runtimeVersion));
 const slices = ["arm64", "x86_64"].map((architecture) => {
   const slice = path.join(outputRoot, `ONE-${architecture}`);
-  const compileArgs = ["-target", `${architecture}-apple-macosx13.0`, "-parse-as-library", "-O", generatedSource, fatSafeOperationsSource, path.join(root, 'launcher/macos/RuntimeInstallation.swift'), path.join(root, 'launcher/macos/RuntimeRecovery.swift'), path.join(root, 'launcher/macos/KeyDiscovery.swift'), "-o", slice];
+  const compileArgs = ["-target", `${architecture}-apple-macosx13.0`, "-parse-as-library", "-O", generatedSource, fatSafeOperationsSource, path.join(root, 'launcher/macos/RuntimeInstallation.swift'), path.join(root, 'launcher/macos/RuntimeRecovery.swift'), path.join(root, 'launcher/macos/ResidentTakeover.swift'), path.join(root, 'launcher/macos/KeyDiscovery.swift'), "-o", slice];
   if (swiftSdk) compileArgs.unshift("-sdk", swiftSdk);
   execFileSync(swiftcBinary, compileArgs, { env: { ...process.env, CLANG_MODULE_CACHE_PATH: moduleCache, SWIFT_MODULE_CACHE_PATH: moduleCache }, stdio: "inherit" });
   return slice;
