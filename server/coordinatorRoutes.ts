@@ -69,6 +69,8 @@ export function installCoordinatorRoutes(
         return res.json({
           status: operation.status,
           operationId: operation.operationId,
+          requestId: operation.requestId,
+          error: operation.status === "failed" ? db.contextTraces.find(t => t.workspaceId === s.workspaceId && t.userId === s.userId && t.requestId === operation.requestId)?.responsePreview.slice(0, 500) : undefined,
           taskId: operation.dispatchedTaskId,
         });
       res.json({

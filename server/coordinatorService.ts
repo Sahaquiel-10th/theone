@@ -650,6 +650,18 @@ export class CoordinatorService {
           dispatched,
           sections,
         );
+      // Failed routing is still a real, possibly billed attempt. Keep the same
+      // owner's diagnostic record even when no worker was created. Never store
+      // raw gateway/transport exceptions, which can contain credentials.
+      await this.store.mutate((d) => {
+        if (d.contextTraces.some(t => own(t, s) && t.requestId === requestId)) return;
+        appendOwnerContextTrace(d, {
+          id: uid("ctx"), ...s, conversationId: cid, assistantMessageId: "",
+          modelId: config.model.id, requestId, query: content,
+          responsePreview: error instanceof CoordinatorError ? error.message.slice(0, 500) : "本次未完成分派，可能已有模型用量；不会自动重试",
+          sections, executionSteps: trace, createdAt: at(),
+        });
+      });
       await failChatOperation(this.store, scope);
       throw error instanceof CoordinatorError
         ? error

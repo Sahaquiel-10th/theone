@@ -260,6 +260,20 @@ function fixture() {
   };
 }
 const key = async () => {};
+test("failed core routing preserves only its owner's safe diagnostic receipt", async () => {
+  const f = fixture();
+  f.setRoute(() => { throw new Error("upstream api_key=SECRET"); });
+  await assert.rejects(f.service.dispatch(a, input("operation_route_failure", "UI"), key));
+  const db = await f.store.read(), operation = db.chatOperations?.find(o => o.operationId === "operation_route_failure")!;
+  assert.equal(operation.status, "failed");
+  const traces = db.contextTraces.filter(t => t.requestId === operation.requestId);
+  assert.equal(traces.length, 1);
+  assert.equal(traces[0].workspaceId, a.workspaceId);
+  assert.equal(traces[0].userId, a.userId);
+  assert.match(traces[0].responsePreview, /未完成分派/);
+  assert.doesNotMatch(JSON.stringify(traces), /api_key|SECRET/);
+  assert.equal(db.contextTraces.filter(t => t.workspaceId === b.workspaceId).length, 0);
+});
 test("omitted task budget has a usable bounded default; explicit smaller caps remain unchanged", async () => {
   const f = fixture();
   const first = await f.service.dispatch(a, { operationId: "operation_default_cap", text: "UI" }, key);
