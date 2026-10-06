@@ -16,7 +16,7 @@ struct KeyDiscoveryTests {
         precondition(keyCredentialCandidates(current: renamed, original: original, portable: portable) == [renamed, original, portable])
         precondition(keyCredentialCandidates(current: original, original: original, portable: portable) == [original, portable], "paths are unique")
         precondition(!mayScanOtherKeyVolumes(expectedDeviceId: nil, preferred: original), "unresolved test launch cannot adopt admin Key")
-        precondition(mayScanOtherKeyVolumes(expectedDeviceId: "test-device", preferred: original), "known identity can recover a renamed mount")
+        precondition(!mayScanOtherKeyVolumes(expectedDeviceId: "test-device", preferred: original), "single-Key recovery must not read other volumes")
         precondition(residentLockFilename(digest: "test") == "presence-test-v2.lock", "offline legacy owner must not block repaired launch")
         precondition(residentLockFilename(digest: "test") != residentLockFilename(digest: "admin"), "each Key keeps its own lock")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

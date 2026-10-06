@@ -6,6 +6,15 @@ import { runtimeUpdateView, runtimeUpdateConfirmed, type RuntimeUpdateStatus } f
 const now = Date.now();
 const status: RuntimeUpdateStatus = { configured: true, supported: true, available: true, progress: { requestId: "upd-a", status: "requested", version: "0.3.9", updatedAt: new Date(now).toISOString() } };
 
+test('Mac installed files ask for a fresh launch immediately, not endless automatic handoff', () => {
+  const result: RuntimeUpdateStatus = { ...status, current: { platform: 'macos', architecture: 'arm64', version: '0.4.5', updateProtocol: 1 }, connectionState: 'reconnecting', progress: { ...status.progress!, status: 'completed', version: '0.4.7' } };
+  const view = runtimeUpdateView(result, true, now);
+  assert.equal(view.busy, false);
+  assert.match(view.issue, /重新双击同一枚/);
+  assert.match(view.issue, /无需再次安装/);
+  assert.equal(runtimeUpdateConfirmed(result), false);
+});
+
 test("update UI resumes polling an active install after a page refresh", () => {
   assert.equal(runtimeUpdateView(status, false, now).busy, true);
 });

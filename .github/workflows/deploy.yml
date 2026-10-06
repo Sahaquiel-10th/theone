@@ -52,6 +52,10 @@ jobs:
               -o "$RUNNER_TEMP/one-$suite-tests"
             "$RUNNER_TEMP/one-$suite-tests"
           done
+          xcrun swiftc -sdk "$ONE_TEST_SDK" -target "$ONE_TEST_ARCH-apple-macosx13.0" -parse-as-library \
+            launcher/macos/ResidentTakeover.swift launcher/macos/MachineResident.swift launcher/macos/MachineResidentTests.swift \
+            -o "$RUNNER_TEMP/one-machine-tests"
+          "$RUNNER_TEMP/one-machine-tests"
 
   deploy:
     if: vars.DEPLOY_ENABLED == 'true'

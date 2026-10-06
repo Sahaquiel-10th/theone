@@ -25,7 +25,7 @@ func keyCredentialCandidates(current: URL?, original: URL?, portable: URL) -> [U
 }
 
 func mayScanOtherKeyVolumes(expectedDeviceId: String?, preferred: URL?) -> Bool {
-    // Before resolving an identity, a launch from A must never adopt B simply
-    // because A is temporarily unreadable. After resolving, scans match ID.
-    expectedDeviceId != nil || preferred == nil
+    // An explicitly opened Key stays bound to that mount. Never probe a second
+    // volume merely because permission/mount recovery on the first failed.
+    preferred == nil && expectedDeviceId == nil
 }

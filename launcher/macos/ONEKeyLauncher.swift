@@ -210,7 +210,10 @@ func commandLineValue(_ name: String) -> String? {
 func launchResidentCopy() throws {
     _ = installationId()
     guard let source = Bundle.main.executableURL else { throw LauncherError.message("ONE 启动器不完整") }
-    let portableCredential = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent(".one/credential.json")
+    let portableCredential = commandLineValue(credentialArgument).map { URL(fileURLWithPath: $0) } ?? Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent(".one/credential.json")
+    guard portableCredential.standardizedFileURL.pathComponents.count == 5, portableCredential.path.hasPrefix("/Volumes/"), portableCredential.lastPathComponent == "credential.json", portableCredential.deletingLastPathComponent().lastPathComponent == ".one" else {
+        throw LauncherError.message("请从 ONE Key 打开启动器")
+    }
     try launchResidentExecutable(source: source, version: launcherVersion, credential: portableCredential, resume: CommandLine.arguments.contains("--one-update-resume"))
 }
 
@@ -224,6 +227,10 @@ func launchResidentExecutable(source: URL, version: String, credential: URL, res
     )
     let installDirectory = applicationSupport.appendingPathComponent("ONE", isDirectory: true)
     try FileManager.default.createDirectory(at: installDirectory, withIntermediateDirectories: true)
+    guard let transition = try acquireMachineLease(directory: installDirectory, name: "machine-launch-v1.lock") else {
+        throw LauncherError.message("ONE 正在切换或更新，请稍后再打开。无需反复点击。")
+    }
+    defer { withExtendedLifetime(transition) {} }
     let sourceApp = source.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     guard sourceApp.pathExtension == "app" else { throw LauncherError.message("ONE 启动器应用不完整") }
     let residentApp = installDirectory.appendingPathComponent("ONEPresence-\(version).app")
@@ -231,6 +238,9 @@ func launchResidentExecutable(source: URL, version: String, credential: URL, res
         try runProcess("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
     }
 
+    // Explicit opening switches this OS user to one Key. Retire old permission
+    // identities before the replacement reads any credential. Never kill by name.
+    try stopInstalledMachineResidents(support: installDirectory)
     let process = Process()
     process.executableURL = target
     // The portable app must not read the credential itself. The installed
@@ -242,6 +252,14 @@ func launchResidentExecutable(source: URL, version: String, credential: URL, res
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
     try process.run()
+    // Serialize rapid double-clicks until the child owns the machine lease,
+    // which it acquires before credential access or any permission prompt.
+    for _ in 0..<30 {
+        if residentLockOwners(installDirectory.appendingPathComponent("machine-presence-v1.lock")).contains(process.processIdentifier) { return }
+        if !process.isRunning { throw LauncherError.message("ONE 未能启动，请重新打开同一枚 Key。无需重复安装。") }
+        usleep(100_000)
+    }
+    throw LauncherError.message("ONE 启动尚未确认，请稍后重新打开同一枚 Key。")
 }
 
 func signNonce(_ nonce: String, credentialUrl: URL, deviceId: String) throws -> String {
@@ -825,6 +843,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private var openedLogin = CommandLine.arguments.contains("--one-update-resume")
     private var loginRequested = false
     private var residentLock: ResidentLock?
+    private var machineLease: MachineResidentLease?
     private let networkMonitor = NWPathMonitor()
     private var receivedInitialPath = false
     private var reopenAcknowledged = false
@@ -876,13 +895,18 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 NSApplication.shared.terminate(nil)
                 return
             } catch {
-                // If local installation is unavailable, retain the portable
-                // behavior so the Key remains usable after a manual launch.
-                NSLog("ONE resident installation failed: \(error.localizedDescription)")
+                // No portable fallback competing for removable-volume access.
+                showFailure(error)
+                return
             }
         }
         if residentMode {
             do {
+                let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("ONE", isDirectory: true)
+                guard let lease = try acquireMachineLease(directory: support, name: "machine-presence-v1.lock") else {
+                    throw LauncherError.message("这台电脑已有 ONE 在运行。请从要使用的 Key 双击 ONE，完成切换。")
+                }
+                machineLease = lease
                 let resolvedDeviceId: String
                 if let expectedDeviceId {
                     resolvedDeviceId = expectedDeviceId
@@ -931,6 +955,8 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func volumeDidMount(_ notification: Notification) {
         nextVolumeScan = .distantPast
         guard let volume = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL else { return }
+        let boundVolume = (credentialUrl ?? initialCredentialUrl)?.deletingLastPathComponent().deletingLastPathComponent()
+        guard boundVolume?.standardizedFileURL == volume.standardizedFileURL else { return }
         let candidate = volume.appendingPathComponent(".one/credential.json")
         let wantedDeviceId = credential?.deviceId ?? expectedDeviceId
         guard let mountedCredential = try? loadCredential(candidate), wantedDeviceId == nil || mountedCredential.deviceId == wantedDeviceId else { return }
@@ -1030,7 +1056,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 openedLogin = true
             }
             failures = 0
-            if let installedApp = try await serveProofs(connectedSocket, credentialUrl: foundUrl, deviceId: foundCredential.deviceId) {
+            if try await serveProofs(connectedSocket, credentialUrl: foundUrl, deviceId: foundCredential.deviceId) != nil {
                 handingOff = true
                 // Release the per-Key lock before starting the new portable
                 // app so its updated resident can take over immediately.
@@ -1039,16 +1065,10 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 removalTask?.cancel()
                 loginTask?.cancel()
                 residentLock = nil
-                do {
-                    let info = NSDictionary(contentsOf: installedApp.appendingPathComponent("Contents/Info.plist"))
-                    guard let version = info?["CFBundleShortVersionString"] as? String else { throw LauncherError.message("新版启动器版本缺失") }
-                    try launchResidentExecutable(source: installedApp.appendingPathComponent("Contents/MacOS/ONE"), version: version, credential: foundUrl, resume: true)
-                } catch {
-                    residentLock = try acquireResidentLock(deviceId: foundCredential.deviceId)
-                    handingOff = false
-                    try? recoverMacRuntimeOnMount(credential: foundUrl, deviceId: foundCredential.deviceId, preferPrevious: true)
-                    throw error
-                }
+                machineLease = nil
+                // Deliberately end here. A fresh explicit launch of the updated
+                // USB app owns the new permission identity, never a child of the
+                // old updating identity. Recovery journal remains until proof.
                 stopping = true
                 NSApplication.shared.terminate(nil)
                 return

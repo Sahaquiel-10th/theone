@@ -15,6 +15,10 @@ export function runtimeUpdateConfirmed(result: RuntimeUpdateStatus) {
 }
 
 export function runtimeUpdateView(result: RuntimeUpdateStatus, wasUpdating: boolean, now = Date.now()) {
+  if (result.current?.platform === 'macos' && result.progress?.status === 'completed'
+    && !runtimeUpdateConfirmed(result) && (result.available || result.connectionState === 'reconnecting')) {
+    return { busy: false, issue: '更新文件已安装。请重新双击同一枚 U 盘中的 ONE；连接成功后网页会自动确认，无需再次安装。' };
+  }
   if (result.connectionState === 'reconnecting') {
     const age = now - Date.parse(result.progress?.updatedAt || '');
     return { busy: false, issue: Number.isFinite(age) && age <= 90_000
