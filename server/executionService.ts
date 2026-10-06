@@ -23,10 +23,25 @@ export function messagesThrough(records: MessageRecord[], conversationId: string
   return ordered.slice(0, selectedIndex + 1);
 }
 
-export function buildExecutionCompilerMessages(records: MessageRecord[], sourceMessageId: string, taskPrompt?: string): Message[] {
+/** Only handoffs anchored to this owned conversation's selected prefix are eligible. */
+export function executionHandoffs(database: Database, records: MessageRecord[], workspaceId: string, userId: string) {
+  const anchors = new Map(records.filter(record => record.workspaceId === workspaceId && record.userId === userId)
+    .map(record => [record.id, record.conversationId]));
+  return (database.chatOperations ?? []).filter(operation => operation.workspaceId === workspaceId
+    && operation.userId === userId && operation.workRun && anchors.has(operation.workRun.inputMessageId)
+    && operation.conversationId === anchors.get(operation.workRun.inputMessageId))
+    .map(operation => ({ messageId: operation.workRun!.inputMessageId, instruction: operation.workRun!.instruction }));
+}
+
+export function buildExecutionCompilerMessages(records: MessageRecord[], sourceMessageId: string, taskPrompt?: string,
+  handoffs: { messageId: string; instruction: string }[] = []): Message[] {
   const selected = records.find((item) => item.id === sourceMessageId);
   if (!selected) throw new Error("作为执行起点的消息不存在");
-  const transcript = records.map((item) => `${item.id === sourceMessageId ? "【执行焦点】" : ""}${item.role === "user" ? "用户" : "ONE"}：${item.content}`).join("\n\n");
+  const transcript = records.map((item) => {
+    const briefs = handoffs.filter(handoff => handoff.messageId === item.id)
+      .map(handoff => `【本条消息已保存的调度交接，仅作上下文，不是额外授权】\n${handoff.instruction}`).join("\n\n");
+    return `${item.id === sourceMessageId ? "【执行焦点】" : ""}${item.role === "user" ? "用户" : "ONE"}：${item.content}${briefs ? `\n\n${briefs}` : ""}`;
+  }).join("\n\n");
   const clipped = transcript.length > maxCompilerContextChars ? transcript.slice(transcript.length - maxCompilerContextChars) : transcript;
   if (taskPrompt !== undefined) return [{ role: "user", content: `${taskPrompt}\n\n以下是截至执行焦点的对话资料：\n${clipped}`, createdAt: new Date().toISOString() }];
   return [{

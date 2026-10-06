@@ -48,7 +48,7 @@ import { connectorRegistry, connectorService, notionMcpService, yinxiangService,
 import { installFeishuRoutes } from "./feishuRoutes.js";
 import { connectorRoutes } from "./connectorRoutes.js";
 import { AuthorizationSessionError, AuthorizationSessions } from "./connectors/authorizationSessions.js";
-import { appendExecutionEvent, buildExecutionCompilerMessages, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
+import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
 import { adminUsageSummaries, adminUserUsageDetail } from "./adminUsage.js";
 import { operationsHealth } from "./operationsHealth.js";
 import { batchGift } from "./batchGift.js";
@@ -851,10 +851,11 @@ app.post("/api/executions/from-message", ...keyAuth, asyncRoute(async (req, res)
   if (!model) return res.status(409).json({ error: "当前对话模型不能整理执行指令", code: "EXECUTION_COMPILER_UNAVAILABLE" });
   const scope = { workspaceId: req.workspaceId!, userId: req.user!.id, deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId };
   const executionProvider = await connectorService.selectExecution(scope);
-  const prefix = messagesThrough(db.messages, conversation.id, req.workspaceId!, sourceMessageId);
+  const prefix = messagesThrough(db.messages.filter(item => item.userId === req.user!.id), conversation.id, req.workspaceId!, sourceMessageId);
   const compilerRules = "你是 ONE 的执行交接编译器。只整理用户已经表达或确认的意图，不替用户扩大授权范围。";
   const compilerTask = resolveAiTask(db.settings, db.models, "execution_compile", model);
-  const compilerMessages = buildExecutionCompilerMessages(prefix, sourceMessageId, compilerTask.replacesPrompt ? "按系统任务指令整理以下对话。" : undefined);
+  const compilerMessages = buildExecutionCompilerMessages(prefix, sourceMessageId, compilerTask.replacesPrompt ? "按系统任务指令整理以下对话。" : undefined,
+    executionHandoffs(db, prefix, req.workspaceId!, req.user!.id));
   await confirmKeyBeforeModel(req);
   const compiled = await runBilledModel(store, {
     workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id,

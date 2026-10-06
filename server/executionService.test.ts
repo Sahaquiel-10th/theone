@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Database, ExecutionTask, MessageRecord } from "./types.js";
-import { appendExecutionEvent, buildExecutionCompilerMessages, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
+import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
 
 test("execution trace cannot expose another workspace or user's instruction", () => {
   const database = { executionTasks: [{ id: "t", workspaceId: "a", userId: "u", instruction: "private" }], messages: [] } as unknown as Database;
@@ -29,6 +29,29 @@ test("public execution task never exposes the compiled instruction or device id"
   const task = { id: "task-a", workspaceId: "workspace-a", userId: "user-a", conversationId: "c1", sourceMessageId: "m2", provider: "codex", status: "queued", instruction: "secret handoff", deviceId: "device-a", createdAt: "2026-01-01", updatedAt: "2026-01-01" } satisfies ExecutionTask;
   assert.equal("instruction" in publicExecutionTask(task), false);
   assert.equal("deviceId" in publicExecutionTask(task), false);
+});
+
+test("confirmation retains the saved dispatch brief but excludes foreign and later handoffs", () => {
+  const owned = records.filter(record => record.workspaceId === "workspace-a").map(record =>
+    record.id === "m1" ? { ...record, content: "OK，开搞" } : record);
+  const prefix = messagesThrough(owned, "c1", "workspace-a", "m2");
+  const operation = { workspaceId: "workspace-a", userId: "user-a", conversationId: "c1",
+    workRun: { inputMessageId: "m1", instruction: "创建 .md 文档，内容只有：荷叶饼好吃，一个 5 块" } };
+  const database = { chatOperations: [operation,
+    { ...operation, workspaceId: "workspace-b", workRun: { ...operation.workRun, instruction: "其他空间秘密" } },
+    { ...operation, userId: "user-b", workRun: { ...operation.workRun, instruction: "其他用户秘密" } },
+    { ...operation, conversationId: "c2", workRun: { ...operation.workRun, instruction: "其他事情秘密" } },
+    { ...operation, workRun: { inputMessageId: "m3", instruction: "未来修改" } }
+  ] } as unknown as Database;
+  const handoffs = executionHandoffs(database, prefix, "workspace-a", "user-a");
+  assert.equal(handoffs.length, 1);
+  for (const prompt of [undefined, "按配置指令整理"]) {
+    const compiled = buildExecutionCompilerMessages(prefix, "m2", prompt, handoffs)[0].content;
+    assert.match(compiled, /OK，开搞/);
+    assert.match(compiled, /荷叶饼好吃，一个 5 块/);
+    assert.match(compiled, /不是额外授权/);
+    assert.doesNotMatch(compiled, /秘密|未来修改/);
+  }
 });
 
 test("task events are isolated by workspace and user", () => {
