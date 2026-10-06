@@ -49,7 +49,7 @@
 .attention-workspace .execution-disclosure-grid { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 280ms cubic-bezier(.2,.8,.2,1); }
 .attention-workspace .execution-disclosure-grid[data-open="true"] { grid-template-rows: 1fr; }
 .attention-workspace .execution-disclosure-clip { min-height: 0; overflow: hidden; }
-.attention-workspace .execution-disclosure-body { margin: 0 18px; padding: 19px 0; border-top: 1px solid var(--studio-line); }
+.attention-workspace .execution-disclosure-body { margin: 0 18px; padding: 19px 0; border-top: 1px solid var(--studio-line); max-height:40vh; overflow:auto; overscroll-behavior:contain; }
 .attention-workspace .execution-disclosure-body .markdown-body { font-size: 13px; }
 .attention-workspace .execution-current-step { margin: 0 0 16px; color: var(--studio-ink); font-size: 12px; line-height: 1.85; }
 .attention-workspace .execution-problem { margin: 0 0 16px; color: #b5744f; font-size: 12px; line-height: 1.85; }

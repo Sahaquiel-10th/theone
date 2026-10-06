@@ -3170,6 +3170,11 @@ summary {
   mix-blend-mode: normal;
 }
 
+:root[data-one-execution-transition="exit"]::view-transition-old(root){z-index:2}
+:root[data-one-execution-transition="exit"]::view-transition-new(root){z-index:1}
+:root[data-one-execution-transition="enter"]::view-transition-old(root){z-index:1}
+:root[data-one-execution-transition="enter"]::view-transition-new(root){z-index:2}
+
 .execution-trigger {
   position: relative;
   overflow: visible;

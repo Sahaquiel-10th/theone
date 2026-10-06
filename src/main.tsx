@@ -646,7 +646,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [failedTaskIds, setFailedTaskIds] = useState<Set<string>>(() => new Set());
   const [activityExpanded, setActivityExpanded] = useState(false);
   const [expandedExecutionId, setExpandedExecutionId] = useState("");
-  const [expandedConversationId, setExpandedConversationId] = useState("");
   const [focusedTask, setFocusedTask] = useState(false);
   const [revealExecutionId, setRevealExecutionId] = useState("");
   const [taskNotices, setTaskNotices] = useState<TaskNotice[]>([]);
@@ -654,6 +653,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const observedTasksRef = useRef<ExecutionTask[]>([]);
   const motionTasksRef = useRef<Set<string> | null>(null);
   const executionOriginRef = useRef<TransitionPoint>({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+  const executionPointerRef = useRef<{element: HTMLElement; point: TransitionPoint} | null>(null);
   const draftsRef = useRef<Record<string, { content: string; attachments: AttachmentSummary[] }>>({});
   const draftAliasesRef = useRef<Record<string, string>>({});
   const composeKeyRef = useRef("new");
@@ -703,14 +703,20 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const previous = motionTasksRef.current; motionTasksRef.current = new Set(executionTasks.map(t=>t.id));
     if (!previous) return;
     const fresh = executionTasks.find(t=>!previous.has(t.id) && isExecutionRunning(t));
-    if (fresh && !executionMode && !preparingExecution) { setTakeoverTaskId(fresh.id); transitionExecutionMode(true, executionOriginRef.current); }
+    if (fresh) {
+      setTakeoverTaskId(fresh.id);
+      if (!executionMode && !preparingExecution) transitionExecutionMode(true, executionOriginRef.current);
+    }
   }, [executionTasks]);
   function closeResultLamp() { setResultLampOpen(false); if(coordinator.enabled)void coordinator.acknowledge().catch(e=>setError(e.message)); setDismissedResults(previous=>[...previous,...lampTasks.map(task=>`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`)]); }
   async function selectThing(id:string) {
     setThingId(id);
+    await loadThingMessages(id);
+  }
+  async function loadThingMessages(id:string, force=false) {
     const item=conversations.find(conversation=>conversation.id===id);
     if(coordinator.enabled){try{await coordinator.load(id);}catch(err){setError(err instanceof Error?err.message:'暂时无法打开');}return;}
-    if (!item || item.messagesLoaded || demo.enabled) return;
+    if (!item || (!force && item.messagesLoaded) || demo.enabled) return;
     try { const result=await api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(id)}`); setConversations(previous=>previous.map(conversation=>conversation.id===id?{...result.conversation,messagesLoaded:true}:conversation)); } catch(err) {setError(err instanceof Error?err.message:'暂时无法打开');}
   }
   async function continueThing(id: string, text: string) {
@@ -732,13 +738,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     else if(coordinatorErrorRef.current) { const previous=coordinatorErrorRef.current; setError(old=>old===previous?"":old); }
     coordinatorErrorRef.current=coordinator.error;
   },[coordinator.error]);
-  const coordinatorRestored = useRef(false);
-  useEffect(()=>{
-    if(coordinator.enabled&&!coordinatorRestored.current){
-      coordinatorRestored.current=true;
-      if(coordinator.state.dialogue.length) setPreviewHome(false);
-    }
-  },[coordinator.enabled,coordinator.state.dialogue.length]);
   useEffect(() => { if (preview.enabled && preview.state.selected && !activeId) setActiveId(preview.state.selected); }, [preview.enabled, preview.state.selected, activeId]);
 
   function announceTask(item: TaskNotice) {
@@ -915,12 +914,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   useEffect(() => {
-    if (!coordinator.enabled) return;
+    if (!coordinator.enabled && !liveTaskIds) return;
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') void refreshExecutionTasks();
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [coordinator.enabled]);
+  }, [coordinator.enabled, liveTaskIds]);
 
   useEffect(() => {
     if (!liveTaskIds) return;
@@ -945,6 +944,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     if (!executionMode || preparingExecution || !task || isExecutionRunning(task)) return;
     const timer = window.setTimeout(() => {
       transitionExecutionMode(false, executionOriginRef.current);
+      void loadThingMessages(task.conversationId, true);
     }, task.status === "completed" ? 1100 : 700);
     return () => window.clearTimeout(timer);
   }, [executionTasks, executionMode, takeoverTaskId, preparingExecution]);
@@ -964,12 +964,16 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   function pointFromElement(element?: HTMLElement | null): TransitionPoint {
     if (!element) return executionOriginRef.current;
+    const pointer = executionPointerRef.current;
+    executionPointerRef.current = null;
+    if (pointer && element.contains(pointer.element)) return pointer.point;
     const bounds = element.getBoundingClientRect();
     return { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 };
   }
 
   function transitionExecutionMode(next: boolean, source?: HTMLElement | TransitionPoint | null) {
     delete document.documentElement.dataset.oneTransition;
+    document.documentElement.dataset.oneExecutionTransition = next ? 'enter' : 'exit';
     const point = source instanceof HTMLElement ? pointFromElement(source) : source || executionOriginRef.current;
     if (next) executionOriginRef.current = point;
 
@@ -990,18 +994,19 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
     transition.ready.then(() => {
       document.documentElement.animate(
-        { clipPath: [`circle(0px at ${point.x}px ${point.y}px)`, `circle(${radius}px at ${point.x}px ${point.y}px)`] },
+        { clipPath: (next ? [0, radius] : [radius, 0]).map(r => `circle(${r}px at ${point.x}px ${point.y}px)`) },
         {
           duration: next ? 430 : 380,
           easing: next ? "cubic-bezier(.2,.82,.2,1)" : "cubic-bezier(.3,.72,.2,1)",
           fill: "both",
-          pseudoElement: "::view-transition-new(root)"
+          pseudoElement: next ? "::view-transition-new(root)" : "::view-transition-old(root)"
         } as KeyframeAnimationOptions & { pseudoElement: string }
       );
     }).catch(() => undefined);
   }
 
   function transitionInterface(update: () => void, route: EyeRoute = 'direct', conversationShelfMove=false) {
+    delete document.documentElement.dataset.oneExecutionTransition;
     interfaceTransition.current?.skipTransition();
     interfaceAnimations.current.forEach(animation=>animation.cancel());
     interfaceAnimations.current=[];
@@ -1306,13 +1311,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       const text=rawText.trim()||(pendingAttachments.length?'请分析上传的附件。':''),files=[...pendingAttachments],features=[...featureForNext];
       try{
         let confirmedExternal=false;
-        if(features.length){const details=await Promise.all(features.map(f=>api<{name:string;destinations:string[]}>(`/api/features/${encodeURIComponent(f.id)}`)));confirmedExternal=confirm(`使用 ${details.map(f=>f.name).join('、')}。\n${details.flatMap(f=>f.destinations).length?'任务所需内容将发送至：'+[...new Set(details.flatMap(f=>f.destinations))].join('、'):'按需使用你已连接的知识来源'}\n执行会按实际用量消耗电力。是否继续？`);if(!confirmedExternal)return;}
+        if(features.length){const details=await Promise.all(features.map(f=>api<{name:string;destinations:string[]}>(`/api/features/${encodeURIComponent(f.id)}`)));confirmedExternal=confirm(`使用 ${details.map(f=>f.name).join('、')}。\n${details.flatMap(f=>f.destinations).length?'任务所需内容将发送至：'+[...new Set(details.flatMap(f=>f.destinations))].join('、'):'按需使用你已连接的知识来源'}\n执行会按实际用量消耗电力。是否继续？`);if(!confirmedExternal)return false;}
         setError('');setPreviewHome(false);setHasSubmittedChat(true);
         if (!localExecution) executionOriginRef.current = pointFromElement(document.getElementById('one-studio-send'));
         await coordinator.submit({operationId:crypto.randomUUID(),text,localExecution,modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
         if(currentDraftRef.current.content===rawText)setContent('');
         setPendingAttachments(old=>old.filter(file=>!files.some(sent=>sent.id===file.id)));setFeatureForNext(old=>old.filter(feature=>!features.some(sent=>sent.id===feature.id)));
-      }catch(err){setError(err instanceof Error?err.message:'暂时无法确认，请检查状态；不会重复执行');}return;
+        return true;
+      }catch(err){setError(err instanceof Error?err.message:'暂时无法确认，请检查状态；不会重复执行');if(localExecution)throw err;}return false;
     }
     if (uploadingAttachments || pendingAttachments.some(a => a.status && a.status !== "ready")) { setError("请等待附件解析完成，或移除失败的附件"); return; }
     let operationId = "";
@@ -1539,6 +1545,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setExecutionSourceMessageId(message.id);
     setExpandedExecutionId("");
     setError("");
+    transitionExecutionMode(true, origin);
     try {
       const result = await api<{ task: ExecutionTask; events: ExecutionEvent[] }>("/api/executions/from-message", {
         method: "POST",
@@ -1547,7 +1554,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       setTakeoverTaskId(result.task.id);
       setSelectedExecutionId(result.task.id);
       rememberExecution(result.task, result.events);
-      transitionExecutionMode(true, origin);
     } catch (err) {
       transitionExecutionMode(false, origin);
       setError(err instanceof Error ? err.message : "无法交给本机执行");
@@ -1560,17 +1566,28 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   async function executeDraft(rawText: string, source: HTMLElement, conversationId?: string) {
     if (!rawText.trim() || preparingExecution || executionBusy || taskStatusUnavailable) return;
     executionOriginRef.current = pointFromElement(source);
-    if (!conversationId && coordinator.enabled) { await sendMessage(rawText, true); return; }
+    if (!conversationId && coordinator.enabled) {
+      setTakeoverTaskId(''); setPreparingExecution(true);
+      transitionExecutionMode(true, executionOriginRef.current);
+      try {
+        if (!await sendMessage(rawText, true)) transitionExecutionMode(false, executionOriginRef.current);
+        else await refreshExecutionTasks();
+      }
+      catch { transitionExecutionMode(false, executionOriginRef.current); }
+      finally { setPreparingExecution(false); }
+      return;
+    }
     if (!conversationId) { setError('请先打开一件事情，或启用持续对话调度后执行'); return; }
-    setPreparingExecution(true); setPreparingConversationId(conversationId); setError('');
+    setPreparingExecution(true); setPreparingConversationId(conversationId); setError(''); setTakeoverTaskId('');
+    transitionExecutionMode(true, executionOriginRef.current);
     try {
       const operationId = await chatSubmission(`execution-input:${user.id}`, { conversationId, content: rawText.trim() });
       const result = await api<{task:ExecutionTask;events:ExecutionEvent[]}>('/api/executions/from-input', { method:'POST', body:JSON.stringify({conversationId,content:rawText.trim(),operationId}) });
       rememberExecution(result.task,result.events); setTakeoverTaskId(result.task.id); setSelectedExecutionId(result.task.id);
-      transitionExecutionMode(true, executionOriginRef.current);
-      if (view === 'things') { setThingDrafts(old => ({...old,[conversationId]:old[conversationId] === rawText ? '' : old[conversationId]})); await selectThing(conversationId); }
+      if (view === 'things') { setThingDrafts(old => ({...old,[conversationId]:old[conversationId] === rawText ? '' : old[conversationId]})); }
       else if (currentDraftRef.current.content === rawText) setContent('');
-    } catch (e) { setError(e instanceof Error ? e.message : '执行未确认，原话保留'); if (view === 'things') throw e; }
+      await loadThingMessages(conversationId, true);
+    } catch (e) { transitionExecutionMode(false, executionOriginRef.current); setError(e instanceof Error ? e.message : '执行未确认，原话保留'); if (view === 'things') throw e; }
     finally { setPreparingExecution(false); setPreparingConversationId(''); }
   }
 
@@ -1634,7 +1651,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const activeOthers = otherRows.filter(item => item.status === "running" || item.status === "thinking");
   const settledOthers = otherRows.filter(item => item.status !== "running" && item.status !== "thinking");
   const latestTurnStart = Math.max(0, (active?.messages || []).map(message => message.role).lastIndexOf("user"));
-  const showEarlier = expandedConversationId === activeId;
   const replyPending=waitingForCurrentReply(activeLoading,active?.messages??[]);
   const currentStatus = activePreparing ? "正在连接" : currentRunningExecution ? "本机执行中" : activeLoading ? replyPending?'准备回复中':'正在回复' : failedTaskIds.has(activeId) ? "待重试" : executionTask?.status === "completed" ? "本机已完成" : executionTask?.status === "cancelled" ? "本机已停止" : executionTask?.status === "failed" ? "执行需要看一下" : "当前事情";
   const currentBusy = activePreparing || Boolean(currentRunningExecution) || activeLoading;
@@ -1674,7 +1690,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   return (
-    <main className={`app-shell one-shell one-studio attention-workspace ${preview.enabled&&(view==='chat'||view==='features'||view==='account')?`coordinator-preview ${view==='features'?'coordinator-tools-open':view==='account'?'coordinator-settings-open coordinator-task-open':active?'coordinator-task-open':''}`:''} ${view==='things'?'studio-things':''} ${view==='features'?'studio-discover':''} ${studioIdle ? "studio-idle" : "studio-open"} ${focusedTask && view === "chat" && !studioIdle ? "studio-focused" : ""} ${activeExecutionMode ? "execution-shell" : ""}`}>
+    <main onPointerDownCapture={event=>{if(event.target instanceof HTMLElement)executionPointerRef.current={element:event.target,point:{x:event.clientX,y:event.clientY}};else if(event.target instanceof SVGElement)executionPointerRef.current={element:event.target.closest('button')!,point:{x:event.clientX,y:event.clientY}};}} onKeyDownCapture={()=>{executionPointerRef.current=null;}} className={`app-shell one-shell one-studio attention-workspace ${preview.enabled&&(view==='chat'||view==='features'||view==='account')?`coordinator-preview ${view==='features'?'coordinator-tools-open':view==='account'?'coordinator-settings-open coordinator-task-open':active?'coordinator-task-open':''}`:''} ${view==='things'?'studio-things':''} ${view==='features'?'studio-discover':''} ${studioIdle ? "studio-idle" : "studio-open"} ${focusedTask && view === "chat" && !studioIdle ? "studio-focused" : ""} ${activeExecutionMode ? "execution-shell" : ""}`}>
       <header className="one-chrome">
         <button className="one-brand-button" type="button" onClick={startNewChat} title="回到 ONE">
           <OneWordmark inverse />
@@ -1759,10 +1775,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         onExecuteDraft={(id,text,source)=>executeDraft(text,source,id)}
         onSelect={id=>void selectThing(id)} onSend={continueThing}
         onWorkbench={id=>{void openConversation(conversations.find(item=>item.id===id)!);setResultLampOpen(false);}}
-        onExecute={async (id,messageId,source)=>{
-          const message=conversations.find(item=>item.id===id)?.messages.find(item=>item.id===messageId);
-          if(message) await executeFromMessage(message,source,id);
-        }}
         executionDisabled={taskStatusUnavailable || preparingExecution || executionBusy || Boolean(loadingByConversation[thingId])}
         executionPreparing={preparingExecution && preparingConversationId===thingId}
         executionContent={preparingExecution && preparingConversationId===thingId || thingExecutionTask ? <ExecutionDisclosure
@@ -1794,11 +1806,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </header>
         <div className="messages">
           {coordinator.enabled&&active?.workPaused?<p role="status">这件事的后续补充已暂停，原话和用量保留。<button type="button" onClick={()=>{if(confirm('仅处理尚未执行的补充，不重跑失败轮次；会产生新的用量。继续？'))void coordinator.resumeTask(active.id).catch(e=>setError(e.message));}}>继续等待的补充</button></p>:null}
-          {latestTurnStart > 0 ? <button className="conversation-fold-toggle" type="button" aria-expanded={showEarlier} onClick={() => setExpandedConversationId(showEarlier ? "" : activeId)}><ChevronDown size={13} /><span>{showEarlier ? "收起之前的对话" : `之前的对话 · ${latestTurnStart} 条`}</span></button> : null}
           {(active?.messages ?? []).length ? (
             active!.messages.map((message, index) => (
               <React.Fragment key={`${message.createdAt}-${index}`}>
-                <article hidden={(!showEarlier && index < latestTurnStart)||(replyPending&&message.role==='assistant'&&!message.content.trim())} className={`message ${message.role} ${message.id && message.id === (executionTask?.sourceMessageId || executionSourceMessageId) && activeExecutionMode ? "execution-source" : ""}`}>
+                <article hidden={replyPending&&message.role==='assistant'&&!message.content.trim()} className={`message ${message.role} ${message.id && message.id === (executionTask?.sourceMessageId || executionSourceMessageId) && activeExecutionMode ? "execution-source" : ""}`}>
                   <div className="bubble">
                     <div className="studio-message-author">{message.role === "assistant" ? "ONE" : "你"}</div>
                     {message.attachments?.length ? <AttachmentList attachments={message.attachments} /> : null}

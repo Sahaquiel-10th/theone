@@ -157,6 +157,23 @@ func main() {
 }
 
 func run(expectedDeviceID string) error {
+	machineName, err := machineMutexName("presence")
+	if err != nil {
+		return err
+	}
+	machine, acquired, err := acquireNamedResidentLock(machineName)
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return errors.New("另一枚 ONE Key 正在运行，请先关闭它再打开本枚 Key")
+	}
+	defer machine.close()
+	control, err := newMachineControl()
+	if err != nil {
+		return err
+	}
+	defer control.close()
 	lock, acquired, err := acquireResidentLock(expectedDeviceID)
 	if err != nil {
 		return err
@@ -204,16 +221,19 @@ func run(expectedDeviceID string) error {
 	}
 
 	for failures := 0; ; {
+		if !control.bind(nil) {
+			return nil
+		}
 		if credentialPath == "" {
 			credentialPath = findCredentialForDevice(expectedDeviceID)
 			if credentialPath == "" {
-				time.Sleep(time.Second)
+				control.pause(time.Second)
 				continue
 			}
 			credential, err := loadCredential(credentialPath, expectedDeviceID)
 			if err != nil {
 				credentialPath = ""
-				time.Sleep(time.Second)
+				control.pause(time.Second)
 				continue
 			}
 			if expectedDeviceID == "" {
@@ -230,11 +250,14 @@ func run(expectedDeviceID string) error {
 		}
 		if recoveryErr := recoverWindowsRuntime(credentialPath, credential.DeviceID); recoveryErr != nil {
 			credentialPath = ""
-			time.Sleep(time.Second)
+			control.pause(time.Second)
 			continue
 		}
 		connection, err := connectLauncher(base, credentialPath, credential.DeviceID)
 		if err == nil {
+			if !control.bind(connection) {
+				return nil
+			}
 			journal, _ := windowsRecoveryJournal(credential.DeviceID)
 			if record, status, reportErr := runtimeRecoveryReport(credentialPath, journal); reportErr == nil && record != nil && record.RequestID != "" {
 				if err = connection.WriteJSON(map[string]string{"type": "runtime_recovery_event", "requestId": record.RequestID, "version": record.Version, "status": status}); err != nil {
@@ -258,6 +281,7 @@ func run(expectedDeviceID string) error {
 			// Release the singleton before the new portable executable starts;
 			// otherwise its updated resident would see the old lock and exit.
 			lock.close()
+			machine.close()
 			command := exec.Command(installed.target, "--device-id", expectedDeviceID, "--credential-path", credentialPath, "--one-update-resume")
 			command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x00000008}
 			if startErr := command.Start(); startErr != nil {
@@ -269,9 +293,8 @@ func run(expectedDeviceID string) error {
 				if lockErr != nil || !ok {
 					return errors.New("旧版已恢复，请重新打开 ONE")
 				}
-				lock = recoveredLock
-				defer recoveredLock.close()
-				continue
+				recoveredLock.close()
+				return errors.New("旧版已恢复，请重新打开 ONE")
 			}
 			_ = command.Process.Release()
 			return nil
@@ -302,7 +325,7 @@ func run(expectedDeviceID string) error {
 		}
 		failures++
 		failures = min(failures, 5)
-		time.Sleep(time.Duration(min(failures*3, 15)) * time.Second)
+		control.pause(time.Duration(min(failures*3, 15)) * time.Second)
 	}
 }
 
@@ -310,7 +333,11 @@ func acquireResidentLock(deviceID string) (*residentLock, bool, error) {
 	if deviceID == "" {
 		return nil, false, errors.New("ONE Key 设备编号无效")
 	}
-	name, err := syscall.UTF16PtrFromString(residentMutexName(deviceID))
+	return acquireNamedResidentLock(residentMutexName(deviceID))
+}
+
+func acquireNamedResidentLock(lockName string) (*residentLock, bool, error) {
+	name, err := syscall.UTF16PtrFromString(lockName)
 	if err != nil {
 		return nil, false, errors.New("无法创建 ONE 驻留锁")
 	}
@@ -346,6 +373,18 @@ func argumentValue(name string) string {
 }
 
 func launchResidentCopy(deviceID, credentialPath string) error {
+	launchName, err := machineMutexName("launch")
+	if err != nil {
+		return err
+	}
+	launch, acquired, err := acquireNamedResidentLock(launchName)
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		return errors.New("ONE 正在切换 Key，请稍后重试")
+	}
+	defer launch.close()
 	if _, err := installationID(); err != nil {
 		return err
 	}
@@ -386,6 +425,9 @@ func launchResidentCopy(deviceID, credentialPath string) error {
 			return errors.New("无法完成 ONE 在场检测器安装")
 		}
 	}
+	if err := stopMachineResidents(installDirectory); err != nil {
+		return err
+	}
 	args := []string{residentArgument, "--device-id", deviceID, "--credential-path", credentialPath}
 	if hasArgument("--one-update-resume") {
 		args = append(args, "--one-update-resume")
@@ -395,7 +437,23 @@ func launchResidentCopy(deviceID, credentialPath string) error {
 	if err := command.Start(); err != nil {
 		return errors.New("无法启动 ONE 在场检测器")
 	}
-	return command.Process.Release()
+	defer command.Process.Release()
+	machineName, err := machineMutexName("presence")
+	if err != nil {
+		return err
+	}
+	for attempt := 0; attempt < 50; attempt++ {
+		probe, free, err := acquireNamedResidentLock(machineName)
+		if err != nil {
+			return err
+		}
+		if !free {
+			return nil
+		}
+		probe.close()
+		time.Sleep(100 * time.Millisecond)
+	}
+	return errors.New("ONE 尚未启动成功，请重新打开 U 盘中的 ONE；不会启动第二个驻留程序")
 }
 
 func findCredential() (string, error) {

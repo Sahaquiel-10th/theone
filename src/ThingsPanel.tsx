@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MessageMarkdown } from "./MessageMarkdown";
 import "./things-panel.css";
 import { Zap } from "lucide-react";
-import { thingExecutionSource } from "./thingExecution";
 
 type Thing = {
   id: string;
@@ -23,7 +22,6 @@ export function ThingsPanel({
   hasMore,
   onMore,
   loadingMore,
-  onExecute,
   executionDisabled = false,
   executionPreparing = false,
   executionContent,
@@ -40,7 +38,6 @@ export function ThingsPanel({
   hasMore: boolean;
   onMore: () => void;
   loadingMore: boolean;
-  onExecute?: (conversationId: string, messageId: string, source: HTMLElement) => void | Promise<void>;
   executionDisabled?: boolean;
   executionPreparing?: boolean;
   executionContent?: ReactNode;
@@ -58,7 +55,6 @@ export function ThingsPanel({
   const pages = Math.max(1, Math.ceil(found.length / 10)),
     current = Math.min(page, pages);
   const draft = drafts[selectedId] || "";
-  const executionSource = thingExecutionSource(selected);
   const messagesRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const element = messagesRef.current;
@@ -129,9 +125,6 @@ export function ThingsPanel({
             <header>
               <h2>{selected.title}</h2>
               <div className="things-thread-actions">
-              {onExecute ? <button type="button" className="things-execute" disabled={executionDisabled || executionPreparing || sending.includes(selected.id) || !executionSource} title="把这件事的已发送对话交给本机执行；未发送草稿不会执行" onClick={event => {
-                if (executionSource) void onExecute(selected.id, executionSource.sourceMessageId, event.currentTarget);
-              }}><Zap size={14} aria-hidden="true" />{executionPreparing ? "准备执行…" : "执行"}</button> : null}
               <button type="button" onClick={() => onWorkbench(selected.id)}>
                 放到工作台 ↗
               </button>
@@ -203,7 +196,7 @@ export function ThingsPanel({
                 >
                   {sending.includes(selected.id) ? "接收中" : "发送"}
                 </button>
-                {onExecuteDraft ? <button type="button" disabled={!draft.trim()||executionDisabled||executionPreparing||sending.includes(selected.id)||selected.messagesLoaded===false} onClick={event=>{setErrors(old=>({...old,[selected.id]:''}));void onExecuteDraft(selected.id,draft,event.currentTarget).catch(e=>setErrors(old=>({...old,[selected.id]:e instanceof Error?e.message:'执行未确认，草稿已保留'})));}}><Zap size={14}/>执行</button> : null}
+                {onExecuteDraft ? <button className="things-compose-execute" type="button" disabled={!draft.trim()||executionDisabled||executionPreparing||sending.includes(selected.id)||selected.messagesLoaded===false} onClick={event=>{setErrors(old=>({...old,[selected.id]:''}));void onExecuteDraft(selected.id,draft,event.currentTarget).catch(e=>setErrors(old=>({...old,[selected.id]:e instanceof Error?e.message:'执行未确认，草稿已保留'})));}}><Zap size={14} aria-hidden="true"/><span>执行</span></button> : null}
               </form>
             )}
           </>
