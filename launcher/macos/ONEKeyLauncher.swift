@@ -101,11 +101,24 @@ func base64UrlEncode(_ value: Data) -> String {
     value.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
 }
 
+private var credentialAccessBlocked = false
+private let credentialAccessMessage = "macOS 未允许 ONE 读取 Key，自动重试已停止。请先退出其他旧版 ONE，再检查系统设置中的可移除宗卷权限，然后重新打开 ONE。无需反复点击允许或重新安装。"
+
 func loadCredential(_ credentialUrl: URL, expectedDeviceId: String? = nil) throws -> DeviceCredential {
-    guard FileManager.default.fileExists(atPath: credentialUrl.path) else {
-        throw LauncherError.message("ONE Key 已拔出或凭证不存在")
+    guard !credentialAccessBlocked else { throw LauncherError.message(credentialAccessMessage) }
+    let data: Data
+    do {
+        // fileExists hides permission errors as 'missing'. Read once so that
+        // denied access suspends this process instead of entering mount polling.
+        data = try Data(contentsOf: credentialUrl)
+    } catch {
+        if isCredentialPermissionDenied(error) {
+            credentialAccessBlocked = true
+            throw LauncherError.message(credentialAccessMessage)
+        }
+        throw error
     }
-    let credential = try JSONDecoder().decode(DeviceCredential.self, from: Data(contentsOf: credentialUrl))
+    let credential = try JSONDecoder().decode(DeviceCredential.self, from: data)
     guard credential.version == 1, expectedDeviceId == nil || credential.deviceId == expectedDeviceId else {
         throw LauncherError.message("ONE Key 凭证不匹配")
     }
@@ -114,6 +127,7 @@ func loadCredential(_ credentialUrl: URL, expectedDeviceId: String? = nil) throw
 
 private var nextVolumeScan = Date.distantPast
 func findCredentialUrl(expectedDeviceId: String? = nil, preferred: URL? = nil) -> URL? {
+    guard !credentialAccessBlocked else { return nil }
     let portable = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent(".one/credential.json")
     var candidates = [URL]()
     if let preferred { candidates.append(preferred) }
@@ -121,6 +135,7 @@ func findCredentialUrl(expectedDeviceId: String? = nil, preferred: URL? = nil) -
     // Fast path never enumerates other volumes. Validate identity too: another
     // Key may now occupy the old mount path.
     if let found = candidates.first(where: { (try? loadCredential($0, expectedDeviceId: expectedDeviceId)) != nil }) { return found }
+    guard !credentialAccessBlocked else { return nil }
     guard mayScanOtherKeyVolumes(expectedDeviceId: expectedDeviceId, preferred: preferred) else { return nil }
     // Event handlers give prompt recovery; this bounded fallback covers missed
     // mount notifications without scanning all disks every 500 ms.
@@ -133,7 +148,7 @@ func findCredentialUrl(expectedDeviceId: String? = nil, preferred: URL? = nil) -
     return candidates
         .filter { seen.insert($0.standardizedFileURL.path).inserted }
         .first { url in
-            guard FileManager.default.fileExists(atPath: url.path), let credential = try? loadCredential(url) else { return false }
+            guard !credentialAccessBlocked, let credential = try? loadCredential(url) else { return false }
             return expectedDeviceId == nil || credential.deviceId == expectedDeviceId
         }
 }
@@ -872,7 +887,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 if let expectedDeviceId {
                     resolvedDeviceId = expectedDeviceId
                 } else {
-                    guard let foundUrl = findCredentialUrl(preferred: initialCredentialUrl) else { throw LauncherError.message("没有找到 ONE Key，请插入后重试") }
+                    guard let foundUrl = findCredentialUrl(preferred: initialCredentialUrl) else { throw LauncherError.message(credentialAccessBlocked ? credentialAccessMessage : "没有找到 ONE Key，请插入后重试") }
                     let foundCredential = try loadCredential(foundUrl)
                     credentialUrl = foundUrl
                     credential = foundCredential
@@ -973,6 +988,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             let candidates = keyCredentialCandidates(current: credentialUrl, original: initialCredentialUrl, portable: portable)
             let direct = candidates.first { (try? loadCredential($0, expectedDeviceId: wantedDeviceId)) != nil }
             guard let foundUrl = direct ?? findCredentialUrl(expectedDeviceId: wantedDeviceId, preferred: credentialUrl ?? initialCredentialUrl) else {
+                if credentialAccessBlocked { throw LauncherError.message(credentialAccessMessage) }
                 if residentMode {
                     ready = false
                     socket = nil
@@ -1053,6 +1069,15 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             return
         } catch {
             if stopping || generation != sessionGeneration { return }
+            if credentialAccessBlocked {
+                socket?.cancel(with: .goingAway, reason: nil)
+                removalTask?.cancel()
+                ready = false
+                stopping = true
+                residentLock = nil
+                showFailure(LauncherError.message(credentialAccessMessage))
+                return
+            }
             failures += 1
             let closeCode = socket?.closeCode.rawValue ?? 0
             socket?.cancel(with: .goingAway, reason: nil)

@@ -10,6 +10,10 @@ const value = (name) => { const index = args.indexOf(name); return index >= 0 ? 
 const outputRoot = path.resolve(root, value("--output") || "output/ONE-Key-macOS");
 const credentialPath = value("--credential") ? path.resolve(value("--credential")) : "";
 const codexBinary = value("--codex-bin") ? path.resolve(value("--codex-bin")) : "";
+// Production releases should use one stable Developer ID Application identity
+// across versions. Ad-hoc signatures have hash-based requirements and can
+// replace each other's removable-volume authorization when both versions run.
+const signingIdentity = value("--signing-identity") || "-";
 const publicKeyPath = path.resolve(root, value("--update-public-key") || "config/runtime-update-public-key.txt");
 const versionPath = path.resolve(root, value("--runtime-version") || "config/runtime-version.txt");
 if (!fs.existsSync(publicKeyPath)) throw new Error(`更新发布公钥不存在：${publicKeyPath}`);
@@ -122,7 +126,9 @@ execFileSync("/usr/bin/xattr", ["-cr", app], { stdio: "inherit" });
 // FAT32 ONE Key. They then invalidate the sealed app bundle, so the signed
 // build must never contain them.
 removeAppleDouble(app);
-execFileSync("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", app], { stdio: "inherit" });
+const signingArgs = ["--force", "--deep", "--sign", signingIdentity];
+if (signingIdentity !== "-") signingArgs.push("--options", "runtime", "--timestamp");
+execFileSync("/usr/bin/codesign", [...signingArgs, app], { stdio: "inherit" });
 // Desktop/File Provider volumes can add Finder metadata while codesign writes
 // its bundle. Clear it once more so strict verification and USB copying remain
 // deterministic; this does not change signed file contents.

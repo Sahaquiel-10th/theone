@@ -4,6 +4,11 @@ import Darwin
 @main
 struct KeyDiscoveryTests {
     static func main() {
+        precondition(isCredentialPermissionDenied(NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError)))
+        precondition(isCredentialPermissionDenied(NSError(domain: NSPOSIXErrorDomain, code: 13)))
+        precondition(isCredentialPermissionDenied(NSError(domain: NSCocoaErrorDomain, code: 256, userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: 1)])))
+        precondition(!isCredentialPermissionDenied(NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoSuchFileError)), "unplug remains recoverable, not a permission failure")
+        precondition(!isCredentialPermissionDenied(NSError(domain: NSURLErrorDomain, code: -1009)), "network loss remains recoverable")
         let original = URL(fileURLWithPath: "/Volumes/TESTONLYONE/.one/credential.json")
         let renamed = URL(fileURLWithPath: "/Volumes/TESTONLYONE 1/.one/credential.json")
         let portable = URL(fileURLWithPath: "/Library/ONE/.one/credential.json")
