@@ -64,6 +64,7 @@ export function useCoordinator(
     [bound, setBound] = useState<string | null>(null),
     [localPending, setPending] = useState<string | null>(null),
     [error, setError] = useState(""),
+    [settlement, setSettlement] = useState<{operationId:string;status:string;taskId?:string} | null>(null),
     [page, setPage] = useState(1);
   const live = useRef(true),
     refreshing = useRef(false),
@@ -174,6 +175,7 @@ export function useCoordinator(
             throw e;
           }
           if (status.status !== "pending") {
+            setSettlement({operationId:operation,...status});
             try {
               localStorage.removeItem(pendingKey(userId));
             } catch {}
@@ -228,6 +230,7 @@ export function useCoordinator(
         body: JSON.stringify(input),
       });
       await refresh();
+      return input.operationId;
     } catch (e) {
       if (e instanceof ApiError && e.status && e.status < 500) {
         try {
@@ -382,6 +385,7 @@ export function useCoordinator(
     report: async (ids: string[]) => { await api("/api/coordinator/reports", { method: "POST", body: JSON.stringify({ ids }) }); await refresh(); },
     resumeTask,
     error,
+    settlement,
     clearError: () => setError(""),
     snapshot,
     details,

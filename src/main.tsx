@@ -13,6 +13,7 @@ import {FeatureShelf,type FeatureChoice} from './preview/FeatureShelf';
 import {ResultSignal} from './preview/ResultSignal';
 import {useWorkspacePreview} from './preview/useWorkspacePreview';
 import {useCoordinator} from './useCoordinator';
+import {executionHandoffOutcome} from './executionHandoff';
 import './preview/workspace-preview.css';
 import './task-transfer.css';
 import {canPeekAtFeatures,waitingForCurrentReply} from './oneFocusState';
@@ -637,6 +638,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [taskStatusUnavailable, setTaskStatusUnavailable] = useState(true);
   const [selectedExecutionId, setSelectedExecutionId] = useState("");
   const [executionMode, setExecutionMode] = useState(false);
+  const [awaitingExecutionOperationId, setAwaitingExecutionOperationId] = useState('');
   const [preparingExecution, setPreparingExecution] = useState(false);
   const [preparingConversationId, setPreparingConversationId] = useState("");
   const [executionSourceMessageId, setExecutionSourceMessageId] = useState("");
@@ -948,6 +950,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     }, task.status === "completed" ? 1100 : 700);
     return () => window.clearTimeout(timer);
   }, [executionTasks, executionMode, takeoverTaskId, preparingExecution]);
+
+  useEffect(() => {
+    const outcome = executionHandoffOutcome(awaitingExecutionOperationId, coordinator.settlement);
+    if (outcome === 'pending') return;
+    setAwaitingExecutionOperationId('');
+    // A clarification or failed dispatch is not a running local execution.
+    if (outcome === 'not_started') transitionExecutionMode(false, executionOriginRef.current);
+  }, [coordinator.settlement, awaitingExecutionOperationId]);
 
   async function loadLatestExecution(conversationId: string, selectedTaskId = "") {
     if (conversationId.startsWith("tmp_")) return;
@@ -1314,7 +1324,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         if(features.length){const details=await Promise.all(features.map(f=>api<{name:string;destinations:string[]}>(`/api/features/${encodeURIComponent(f.id)}`)));confirmedExternal=confirm(`使用 ${details.map(f=>f.name).join('、')}。\n${details.flatMap(f=>f.destinations).length?'任务所需内容将发送至：'+[...new Set(details.flatMap(f=>f.destinations))].join('、'):'按需使用你已连接的知识来源'}\n执行会按实际用量消耗电力。是否继续？`);if(!confirmedExternal)return false;}
         setError('');setPreviewHome(false);setHasSubmittedChat(true);
         if (!localExecution) executionOriginRef.current = pointFromElement(document.getElementById('one-studio-send'));
-        await coordinator.submit({operationId:crypto.randomUUID(),text,localExecution,modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
+        const operationId = await coordinator.submit({operationId:crypto.randomUUID(),text,localExecution,modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
+        if (localExecution) setAwaitingExecutionOperationId(operationId);
         if(currentDraftRef.current.content===rawText)setContent('');
         setPendingAttachments(old=>old.filter(file=>!files.some(sent=>sent.id===file.id)));setFeatureForNext(old=>old.filter(feature=>!features.some(sent=>sent.id===feature.id)));
         return true;
