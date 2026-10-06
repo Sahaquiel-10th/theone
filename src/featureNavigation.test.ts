@@ -6,7 +6,8 @@ const sharing = fs.readFileSync(new URL("./PublicSharing.tsx", import.meta.url),
 const featureNav = fs.readFileSync(new URL("./FeatureNav.tsx", import.meta.url), "utf8");
 test('preview preserves the main conversation and result identity across navigation',()=>{
  assert.match(main,/preview.enabled&&preview.state.dialogue.length>0\?<CoordinatorConversation/);
- assert.match(main,/preview.enabled\?<ResultSignal/);
+ assert.match(main,/demo.enabled\?<ResultSignal/);
+ assert.match(main,/coordinator.enabled && view==='chat' \? <TaskTransferRail/);
  const shelf=fs.readFileSync(new URL('./preview/FeatureShelf.tsx',import.meta.url),'utf8');
  assert.match(shelf,/我的分身/);
  assert.match(shelf,/<SharingPanel api=\{api\} models=\{models\}/);

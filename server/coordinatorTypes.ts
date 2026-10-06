@@ -3,7 +3,7 @@ import type { OfficialFeatureValues } from "./officialFeatures.js";
 import type { CredentialBinding } from "./featureCredentials.js";
 export type WorkRun = {
   state:
-    "queued" | "running" | "completed" | "failed" | "interrupted" | "cancelled";
+    "queued" | "running" | "completed" | "failed" | "interrupted" | "cancelled" | "prepared";
   executorId: string;
   executorVersion: number;
   values: ExecutorValues;

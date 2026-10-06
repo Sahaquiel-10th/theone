@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import dotenv from "dotenv";
 import mysql from "mysql2/promise";
+import { pendingWork } from './pending-work.mjs';
 
 const args = process.argv.slice(2);
 if (args.length !== 0 && (args.length !== 2 || args[0] !== "--env" || !path.isAbsolute(args[1]))) {
@@ -30,12 +31,13 @@ try {
     if (!versions.length) throw new Error("ONE_SCHEMA_V2_REQUIRED");
     // LIMIT 0 validates the exact application-readable column shape without reading users' data.
     await connection.execute({ sql: "SELECT id, workspace_id, user_id, parent_id, lookup_key, record_json, created_at, updated_at FROM chat_operations LIMIT 0", timeout: 5000 });
-    const [operations] = await connection.execute({ sql: "SELECT COUNT(*) AS pending FROM chat_operations WHERE JSON_UNQUOTE(JSON_EXTRACT(record_json, '$.status')) = 'pending'", timeout: 5000 });
+    const [operations] = await connection.execute({ sql: "SELECT JSON_UNQUOTE(JSON_EXTRACT(record_json, '$.workRun.state')) AS state, COUNT(*) AS total FROM chat_operations WHERE JSON_UNQUOTE(JSON_EXTRACT(record_json, '$.status')) = 'pending' GROUP BY state", timeout: 5000 });
     const [usage] = await connection.execute({ sql: "SELECT JSON_UNQUOTE(JSON_EXTRACT(record_json, '$.status')) AS state, COUNT(*) AS total FROM model_usage_records WHERE JSON_UNQUOTE(JSON_EXTRACT(record_json, '$.status')) IN ('pending', 'needs_review') GROUP BY state", timeout: 5000 });
-    const pendingOperations = Number(operations[0].pending);
+    const { active: pendingOperations, queued } = pendingWork(operations);
     const pendingModels = Number(usage.find(row => row.state === "pending")?.total || 0);
     const reviews = Number(usage.find(row => row.state === "needs_review")?.total || 0);
     console.log(`ONE schema v2: ready; pending chat operations: ${pendingOperations}; pending model calls: ${pendingModels}; billing reviews: ${reviews}.`);
+    if (queued) console.log(`ONE durable queue: ${queued} unstarted tasks preserved; these require Key-verified resume and do not block restart.`);
     if (pendingOperations > 0 || pendingModels > 0) throw new Error("ONE_ACTIVE_REQUESTS_WAIT_BEFORE_RESTART");
     const [sharingSchema] = await connection.execute({ sql: "SELECT version FROM schema_migrations WHERE version = 3 LIMIT 1", timeout: 5000 });
     if (sharingSchema.length) {

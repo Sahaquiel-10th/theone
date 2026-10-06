@@ -35,7 +35,7 @@ test('legacy continuation preserves original history and attached file handoff i
  await assert.rejects(()=>f.service.dispatch(a,{...input('operation_foreign_f','UI'),attachmentIds:['foreign-file']},key));assert.equal(f.calls.length,0);
  const r=await f.service.dispatch(a,{...input('operation_attach_ok','UI 看看附件'),boundTaskId:'legacy',attachmentIds:['own-file']},key);
  assert.equal(r.taskId,'legacy');const queued=await f.store.read();assert.ok(queued.messages.some(m=>m.id==='legacy-user'));assert.ok(queued.attachments.find(a=>a.id==='own-file')!.sharedConversationIds?.includes('legacy'));
- assert.equal(f.calls.find(c=>c.modelId==='router')!.requiredTool,'delegate_task');
+ assert.equal(f.calls.find(c=>c.modelId==='router')!.requiredTool,'delegate_task','new attachments require delegation without pretending to read them');
  assert.equal(f.calls.filter(c=>c.modelId==='router').at(-1)!.requiredTool,undefined,'acknowledgement must not dispatch again');
  await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,'legacy')).jobs[0].state==='completed');
  const call=f.calls.find(c=>c.modelId==='worker')!;assert.match(call.messages[0].content!,/独立输入框/);assert.match(JSON.stringify(call.messages),/之前的完整原话|之前的成果/);assert.doesNotMatch(JSON.stringify(call.messages),/不能读取/);
@@ -262,6 +262,47 @@ function fixture() {
   };
 }
 const key = async () => {};
+test('natural local execution requires the enabled tool, saves complete handoff and never runs a cloud worker', async () => {
+ const f=fixture();let count=0;
+ f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('已受理，等待文件夹授权。'):{...answer(''),toolCalls:[{id:'local',type:'function',function:{name:'execute_local_task',arguments:JSON.stringify({taskId:null,title:'创建文档',instruction:'创建说明.md，仅含原文：荷叶饼好吃，一个5块。禁止添加其他内容。',executorId:'general'})}}]});
+ const r=await f.service.dispatch(a,input('operation_natural_123','帮我创建说明.md，内容是荷叶饼好吃，一个5块，开始执行'),key,undefined,async(cid,mid)=>{count++;const db=await f.store.read();const job=db.chatOperations!.find(o=>o.workRun?.inputMessageId===mid)!;assert.match(job.workRun!.instruction,/禁止添加其他内容/);assert.equal(db.messages.find(m=>m.id===mid)!.conversationId,cid);return{id:'local-natural',status:'selecting_target'};});
+ assert.ok(r.taskId);assert.equal(count,1);await f.service.resume(a,key);assert.equal(f.calls.filter(c=>c.modelId==='worker').length,0);
+ const denied=fixture();await denied.store.mutate(d=>{d.settings.aiTasks!.coordinator!.published!.tools=['delegate_task'];});denied.setRoute(()=>({...answer(''),toolCalls:[{id:'blocked',type:'function',function:{name:'execute_local_task',arguments:'{}'}}]}));
+ await assert.rejects(denied.service.dispatch(a,input('operation_natural_denied','开始执行'),key,undefined,async()=>{throw Error('must never invoke');}));assert.equal((await denied.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
+});
+test('on-demand task reading is private and local completion reporting is persistent and idempotent',async()=>{
+ const f=fixture(),stamp=new Date().toISOString();await f.store.mutate(d=>{d.conversations.push({...a,id:'owned',title:'旧UI',modelId:'worker',messages:[{id:'old',role:'user',content:'文件只能写一句荷叶饼',createdAt:stamp}],archived:false,createdAt:stamp,updatedAt:stamp},{...b,id:'foreign',title:'不能读取',modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp});});
+ let step=0;f.setRoute(messages=>{if(step++===0)return{...answer(''),toolCalls:[{id:'read',type:'function',function:{name:'read_task',arguments:JSON.stringify({query:'owned'})}}]};assert.match(JSON.stringify(messages),/文件只能写一句荷叶饼/);return answer('目标确认，请继续。');});
+ await f.service.dispatch(a,input('operation_read_12345','之前UI的要求是什么？'),key);
+ await f.store.mutate(d=>{d.executionTasks=[{...a,id:'local-completed',conversationId:'owned',sourceMessageId:'old',provider:'codex',instruction:'创建文档',deviceId:'fixture-key',status:'completed',finalResponse:'本轮进程结束，产物需查看',createdAt:stamp,updatedAt:stamp}];});
+ await f.service.report(b,['local-completed'],key);assert.equal((await f.store.read()).executionTasks[0].reportedToCoordinatorAt,undefined);
+ await f.service.report(a,['local-completed'],key);await f.service.report(a,['local-completed'],key);const db=await f.store.read();assert.equal(db.conversations.find(c=>c.coordinatorMain&&c.userId==='a')!.messages.filter(m=>m.id==='report_local-completed').length,1);assert.ok(db.executionTasks[0].reportedToCoordinatorAt);
+ await f.store.mutate(d=>{const task=d.executionTasks[0];task.reportRound=1;task.reportedToCoordinatorAt=undefined;task.finalResponse='第二轮的独立结果';});await f.service.report(a,['local-completed'],key);await f.service.report(a,['local-completed'],key);assert.equal((await f.store.read()).conversations.find(c=>c.coordinatorMain&&c.userId==='a')!.messages.filter(m=>m.id==='report_local-completed_1').length,1);
+ const blocked=fixture();await blocked.store.mutate(d=>{d.conversations.push({...b,id:'foreign',title:'秘密',modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp});});blocked.setRoute(()=>({...answer(''),toolCalls:[{id:'read',type:'function',function:{name:'read_task',arguments:JSON.stringify({query:'foreign'})}}]}));await assert.rejects(blocked.service.dispatch(a,input('operation_read_denied','读旧事情'),key));
+});
+test('local dispatch preserves the handoff, bypasses cloud worker and replay never executes twice', async () => {
+  const f = fixture(), executed: string[] = [];
+  const run = async (cid: string, mid: string) => { const d=await f.store.read(); assert.equal(d.messages.find(m=>m.id===mid)?.content,'UI 标题改成荷叶饼，开工'); executed.push(cid); return {id:'ext-fixture',status:'queued'}; };
+  const request={...input('operation_local_1234','UI 标题改成荷叶饼，开工'),localExecution:true};
+  const result = await f.service.dispatch(a,request,key,undefined,run);
+  await f.service.resume(a,key);
+  assert.equal(f.calls.filter(c=>c.modelId==='worker').length,0);
+  assert.equal((await f.service.task(a,result.taskId!)).jobs[0].state,'prepared');
+  await f.service.dispatch(a,request,key,undefined,run);
+  assert.equal(executed.length,1);
+  await assert.rejects(f.service.dispatch(b,{...request,operationId:'operation_local_other',boundTaskId:result.taskId},key,undefined,run),/不存在|未授权/);
+});
+test('completed result returns to the main dialogue once and cannot leak another user result',async()=>{
+  const f=fixture(),r=await f.service.dispatch(a,input('operation_report_123','UI'),key);
+  await f.service.resume(a,key); await waitFor(async()=>(await f.service.task(a,r.taskId!)).jobs[0].state==='completed');
+  const d=await f.store.read(),id=d.chatOperations!.find(o=>o.workRun)!.id;
+  await f.service.report(b,[id],key); assert.equal((await f.store.read()).conversations.find(c=>c.userId==='b'&&c.coordinatorMain),undefined);
+  await f.service.report(a,[id],key);await f.service.report(a,[id],key);
+  const main=(await f.store.read()).conversations.find(c=>c.userId==='a'&&c.coordinatorMain)!;
+  assert.equal(main.messages.filter(m=>m.id===`report_${id}`).length,1);
+  assert.match(main.messages.find(m=>m.id===`report_${id}`)!.content,/真实合成模型返回的成果/);
+  assert.equal((await f.service.state(a)).notices.length,0);
+});
 test("failed core routing preserves only its owner's safe diagnostic receipt", async () => {
   const f = fixture();
   f.setRoute(() => { throw new Error("upstream api_key=SECRET"); });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Database, ExecutionTask, MessageRecord } from "./types.js";
-import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
+import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, saveExecutionInput, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
 
 test("execution trace cannot expose another workspace or user's instruction", () => {
   const database = { executionTasks: [{ id: "t", workspaceId: "a", userId: "u", instruction: "private" }], messages: [] } as unknown as Database;
@@ -15,6 +15,12 @@ const records: MessageRecord[] = [
   { id: "m3", workspaceId: "workspace-a", userId: "user-a", conversationId: "c1", role: "user", content: "不要改数据库", createdAt: "2026-01-01T00:00:02.000Z" },
   { id: "foreign", workspaceId: "workspace-b", userId: "user-b", conversationId: "c1", role: "user", content: "别人的内容", createdAt: "2026-01-01T00:00:00.500Z" }
 ];
+
+test('long execution histories retain the original goal and latest handoff beside the recent context',()=>{
+ const long=[{...records[0],content:'创建说明.md；只写荷叶饼好吃，一个5块，不加其他文字'},...Array.from({length:60},(_,i)=>({...records[1],id:`long-${i}`,content:'讨论细节'.repeat(200),createdAt:`2026-01-01T00:01:${String(i).padStart(2,'0')}.000Z`})),{...records[2],content:'OK，开搞'}];
+ const result=buildExecutionCompilerMessages(long,'m3',undefined,[{messageId:'m3',instruction:'文档标题改成荷叶饼；保持原文和禁止事项'}])[0].content;
+ assert.match(result,/只写荷叶饼好吃，一个5块/);assert.match(result,/文档标题改成荷叶饼/);assert.match(result,/中间部分因长度未全部提供/);assert.match(result,/OK，开搞/);
+});
 
 test("execution handoff stops at the selected message and stays in the workspace", () => {
   const prefix = messagesThrough(records, "c1", "workspace-a", "m2");
@@ -60,4 +66,16 @@ test("task events are isolated by workspace and user", () => {
   appendExecutionEvent(database, { id: "event-a", workspaceId: "workspace-a", userId: "user-a", taskId: task.id, kind: "message", text: "visible", createdAt: "2026-01-01" });
   appendExecutionEvent(database, { id: "event-b", workspaceId: "workspace-b", userId: "user-b", taskId: task.id, kind: "message", text: "hidden", createdAt: "2026-01-02" });
   assert.deepEqual(taskEvents(database, task).map((item) => item.text), ["visible"]);
+});
+
+test('direct execution saves the draft once, preserves legacy context and rejects foreign ownership', () => {
+  const db = { messages: [], conversations: [{ id:'c',workspaceId:'a',userId:'u',messages:[{role:'user',content:'创建文档，保留标题',createdAt:'2026-01-01'}] }] } as unknown as Database;
+  const id = saveExecutionInput(db,'a','u','c','operation_input_1234','标题改成荷叶饼，开工','2026-01-02');
+  assert.equal(saveExecutionInput(db,'a','u','c','operation_input_1234','标题改成荷叶饼，开工','2026-01-03'),id);
+  assert.equal(db.messages.length,2); assert.ok(id.length<96);
+  assert.match(buildExecutionCompilerMessages(messagesThrough(db.messages,'c','a',id),id)[0].content,/创建文档，保留标题/);
+  assert.throws(()=>saveExecutionInput(db,'b','u','c','operation_input_1234','x','now'),/不存在/);
+  assert.throws(()=>saveExecutionInput(db,'a','other','c','operation_input_1234','x','now'),/不存在/);
+  assert.throws(()=>saveExecutionInput(db,'a','u','c','operation_input_1234','改变内容','now'),/不能修改/);
+  assert.throws(()=>saveExecutionInput(db,'a','u','c','operation_input_other','x'.repeat(8001),'now'),/8000/);
 });

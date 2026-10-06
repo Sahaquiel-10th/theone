@@ -48,7 +48,7 @@ import { connectorRegistry, connectorService, notionMcpService, yinxiangService,
 import { installFeishuRoutes } from "./feishuRoutes.js";
 import { connectorRoutes } from "./connectorRoutes.js";
 import { AuthorizationSessionError, AuthorizationSessions } from "./connectors/authorizationSessions.js";
-import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
+import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, saveExecutionInput, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
 import { adminUsageSummaries, adminUserUsageDetail } from "./adminUsage.js";
 import { operationsHealth } from "./operationsHealth.js";
 import { batchGift } from "./batchGift.js";
@@ -839,16 +839,29 @@ app.get("/api/executions/:id/stream", ...keyAuth, asyncRoute(async (req, res) =>
   res.on("close", () => { closed = true; clearInterval(timer); });
 }));
 
-app.post("/api/executions/from-message", ...keyAuth, asyncRoute(async (req, res) => {
-  if (!req.oneKeyDeviceId) return res.status(428).json({ error: "请通过 ONE Key 打开 ONE 后再执行本地任务", code: "ONE_RUNNER_REQUIRED" });
-  if (!oneKeyPresence.isConnected(req.oneKeyDeviceId, req.oneKeyInstallationId)) return res.status(428).json({ error: "本机执行未连接，请插入 ONE Key 并双击 ONE 图标", code: "ONE_RUNNER_REQUIRED" });
-  const conversationId = requiredString(req.body.conversationId, "对话 ID");
-  const sourceMessageId = requiredString(req.body.sourceMessageId, "消息 ID");
+async function startLocalExecution(req: express.Request, res: express.Response, conversationId: string, sourceMessageId: string, operationId?: string) {
+  if (operationId !== undefined && (typeof operationId !== 'string' || !/^[A-Za-z0-9_-]{16,100}$/.test(operationId))) throw new Error("执行编号无效");
+  if (!req.oneKeyDeviceId || !oneKeyPresence.isConnected(req.oneKeyDeviceId, req.oneKeyInstallationId)) throw new Error("本机执行未连接，请插入 ONE Key 并双击 ONE 图标");
   const db = await store.read();
   const conversation = db.conversations.find((item) => item.id === conversationId && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
-  if (!conversation) return res.status(404).json({ error: "对话不存在", code: "CONVERSATION_NOT_FOUND" });
+  if (!conversation) throw new Error("对话不存在");
   const model = db.models.find((item) => item.id === conversation.modelId && item.enabled && item.kind === "chat");
-  if (!model) return res.status(409).json({ error: "当前对话模型不能整理执行指令", code: "EXECUTION_COMPILER_UNAVAILABLE" });
+  if (!model) throw new Error("当前对话模型不能整理执行指令");
+  const requestOperationId = operationId ?? uid("execution");
+  const claim = await beginChatOperation(store, { workspaceId: req.workspaceId!, userId: req.user!.id,
+    operationId: requestOperationId, conversationId, requestId: res.locals.requestId,
+    payload: { kind: "local_execution", conversationId, sourceMessageId, deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId },
+    beforeClaim: d => {
+      if (d.executionTasks.some(t => t.workspaceId === req.workspaceId && t.userId === req.user!.id && t.deviceId === req.oneKeyDeviceId && t.installationId === req.oneKeyInstallationId && ['queued','selecting_target','running'].includes(t.status)))
+        throw new Error("本机还有任务正在执行。当前要求已保留，请等本轮结束后再执行；不会同时修改文件。");
+    } });
+  if (claim.kind === "completed") {
+    const latest = await store.read();
+    const saved = latest.executionTasks.find(t => t.dispatchOperationId === requestOperationId && t.workspaceId === req.workspaceId && t.userId === req.user!.id);
+    if (!saved) throw new Error("执行回执尚未确认，请勿重复执行");
+    return { task: publicExecutionTask(saved), events: taskEvents(latest, saved) };
+  }
+  try {
   const scope = { workspaceId: req.workspaceId!, userId: req.user!.id, deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId };
   const executionProvider = await connectorService.selectExecution(scope);
   const prefix = messagesThrough(db.messages.filter(item => item.userId === req.user!.id), conversation.id, req.workspaceId!, sourceMessageId);
@@ -864,14 +877,20 @@ app.post("/api/executions/from-message", ...keyAuth, asyncRoute(async (req, res)
   }, (snapshot) => callModel(snapshot, compilerMessages, compilerRules, res.locals.requestId));
   const timestamp = now();
   if (compiled.finishReason === "length" || compiled.finishReason === "filtered") throw new Error("执行指令未完整生成，未发送到本机。请缩小任务范围后再试；本次模型用量已记录。");
+  if (!compiled.content.trim()) throw new Error("未生成有效执行指令，未发送到本机；原始要求已保留。");
   const useLocalAgent = executionProvider === "local_agent";
   const task: ExecutionTask = {
     id: uid("ext"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id,
-    sourceMessageId, provider: executionProvider, status: "queued", instruction: compiled.content.trim(), deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId,
+    sourceMessageId, dispatchOperationId: requestOperationId, provider: executionProvider, status: "queued", instruction: compiled.content.trim(), deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId,
     createdAt: timestamp, updatedAt: timestamp
   };
   await store.mutate((mutable) => {
     mutable.executionTasks.push(task);
+    const c = mutable.conversations.find(c => c.id === conversationId && c.workspaceId === req.workspaceId && c.userId === req.user!.id)!;
+    const receipt = { id: uid("msg"), role: "assistant" as const, content: "本机执行已受理，正在连接执行器。结果确认后会在这里保留。", createdAt: timestamp };
+    c.messages.push(receipt); c.updatedAt = timestamp;
+    mutable.messages.push({ ...receipt, workspaceId: c.workspaceId, userId: c.userId, conversationId });
+    completeChatOperation(mutable, { workspaceId: req.workspaceId!, userId: req.user!.id, operationId: requestOperationId }, { conversationId, assistantMessageId: receipt.id });
     appendExecutionEvent(mutable, { id: uid("exe"), workspaceId: task.workspaceId, userId: task.userId, taskId: task.id, kind: "status", text: useLocalAgent ? "正在连接 ONE Local Agent…" : "正在连接本机 Codex…", createdAt: timestamp });
     mutable.auditLogs.push({ id: uid("aud"), workspaceId: task.workspaceId, actorUserId: task.userId, action: useLocalAgent ? "execution.local_agent.created" : "execution.codex.created", targetType: "execution_task", targetId: task.id, details: { conversationId, sourceMessageId }, requestId: res.locals.requestId, createdAt: timestamp });
   });
@@ -883,7 +902,24 @@ app.post("/api/executions/from-message", ...keyAuth, asyncRoute(async (req, res)
     await store.mutate((mutable) => { const target = mutable.executionTasks.find((item) => item.id === task.id); if (target) { target.status = "failed"; target.lastError = failure; target.updatedAt = now(); target.completedAt = target.updatedAt; appendExecutionEvent(mutable, { id: uid("exe"), workspaceId: target.workspaceId, userId: target.userId, taskId: target.id, kind: "error", text: failure, createdAt: target.updatedAt }); } });
   }
   const latest = await store.read(); const saved = latest.executionTasks.find((item) => item.id === task.id)!;
-  res.status(201).json({ task: publicExecutionTask(saved), events: taskEvents(latest, saved) });
+  return { task: publicExecutionTask(saved), events: taskEvents(latest, saved) };
+  } catch (error) {
+    await store.mutate(d => failChatOperationInMutation(d, { workspaceId: req.workspaceId!, userId: req.user!.id, operationId: requestOperationId }));
+    throw error;
+  }
+}
+app.post("/api/executions/from-message", ...keyAuth, asyncRoute(async (req, res) => {
+  res.status(201).json(await startLocalExecution(req, res, requiredString(req.body.conversationId, "对话 ID"), requiredString(req.body.sourceMessageId, "消息 ID"), req.body.operationId));
+}));
+
+app.post("/api/executions/from-input", ...keyAuth, asyncRoute(async (req, res) => {
+  await confirmKeyBeforeModel(req);
+  const conversationId = requiredString(req.body.conversationId, "事情 ID");
+  const content = requiredString(req.body.content, "执行要求");
+  const operationId = requiredString(req.body.operationId, "执行编号");
+  if (!/^[A-Za-z0-9_-]{16,100}$/.test(operationId)) throw new Error("执行编号无效");
+  const sourceMessageId = await store.mutate(d => saveExecutionInput(d, req.workspaceId!, req.user!.id, conversationId, operationId, content, now()));
+  res.status(201).json(await startLocalExecution(req, res, conversationId, sourceMessageId, operationId));
 }));
 
 app.post("/api/executions/:id/messages", ...keyAuth, asyncRoute(async (req, res) => {
@@ -893,6 +929,7 @@ app.post("/api/executions/:id/messages", ...keyAuth, asyncRoute(async (req, res)
     if (!target) throw new Error("执行任务不存在");
     if (target.status === "queued" || target.status === "selecting_target" || target.status === "running") throw new Error("本机任务正在执行，请等待当前步骤完成");
     const timestamp = now(); target.status = "queued"; target.updatedAt = timestamp; target.completedAt = undefined; target.lastError = undefined;
+    target.reportRound = (target.reportRound ?? 0) + 1; target.reportedToCoordinatorAt = undefined; target.finalResponse = undefined;
     appendExecutionEvent(database, { id: uid("exe"), workspaceId: target.workspaceId, userId: target.userId, taskId: target.id, kind: "user_message", text: content, createdAt: timestamp });
     return target;
   });
@@ -924,7 +961,8 @@ const admin = [...keyAuth, requireRole("admin")] as const;
 installPublicCommerceRoutes(app,keyAuth,admin,store);
 installProductMetricsRoutes(app,admin,store);
 installAiTaskRoutes(app, admin, store);
-installCoordinatorRoutes(app,keyAuth,admin,store,confirmKeyBeforeModel,knowledgeService,{webSearch:query=>webSearchEnabled()?searchWeb(query):Promise.resolve({status:'unavailable'})});
+installCoordinatorRoutes(app,keyAuth,admin,store,confirmKeyBeforeModel,knowledgeService,{webSearch:query=>webSearchEnabled()?searchWeb(query):Promise.resolve({status:'unavailable'}),
+  executeLocal: async (req, res, cid, mid, operationId) => { const result = await startLocalExecution(req, res, cid, mid, operationId); return { id: result.task.id, status: result.task.status }; }});
 installOfficialFeaturePilotRoutes(app, admin, store);
 installFeatureTrialRoutes(app, admin, store, confirmKeyBeforeModel);
 installFeatureRunRoutes(app, keyAuth, store, confirmKeyBeforeModel, knowledgeService);

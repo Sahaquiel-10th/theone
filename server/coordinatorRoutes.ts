@@ -22,6 +22,7 @@ export function installCoordinatorRoutes(
   knowledge: Pick<KnowledgeService, "recallWithDiagnostics">,
   deps: FeatureRunDependencies & {
     webSearch?: (query: string) => Promise<unknown>;
+    executeLocal?: (req: express.Request, res: express.Response, cid: string, mid: string, operationId: string) => Promise<{ id: string; status: string }>;
   } = {},
 ) {
   const service = new CoordinatorService(store, knowledge, deps),
@@ -92,6 +93,7 @@ export function installCoordinatorRoutes(
         res
           .status(202)
           .json({ status: "pending", operationId: req.body.operationId }),
+        deps.executeLocal ? (cid, mid, operationId) => deps.executeLocal!(req, res, cid, mid, operationId) : undefined,
       );
       if (!res.headersSent) res.json({ status: "completed", ...result });
       void service.resume(s, verify).catch(() => {});
@@ -128,6 +130,7 @@ export function installCoordinatorRoutes(
       res.json({ ok: true });
     }),
   );
+  router.post("/reports", asyncRoute(async (req, res) => res.json(await service.report(scope(req), req.body?.ids, () => verifyKey(req)))));
   settings.get(
     "/",
     asyncRoute(async (req, res) => {

@@ -152,6 +152,9 @@ export type ExecutionTask = {
   id: string; workspaceId: string; userId: string; conversationId: string; sourceMessageId: string;
   provider: "codex" | "local_agent"; status: ExecutionTaskStatus; instruction: string; deviceId: string;
   installationId?: string; targetName?: string; providerThreadId?: string; finalResponse?: string; lastError?: string;
+  dispatchOperationId?: string;
+  reportedToCoordinatorAt?: string;
+  reportRound?: number;
   createdAt: string; updatedAt: string; startedAt?: string; completedAt?: string;
 };
 export type ExecutionEvent = {

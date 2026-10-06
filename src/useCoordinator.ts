@@ -42,6 +42,7 @@ type Job = {
 };
 type Detail = { conversation: Conversation; jobs: Job[] };
 export type CoordinatorSubmission = {
+  localExecution?: boolean;
   operationId: string;
   text: string;
   modelId?: string;
@@ -378,6 +379,7 @@ export function useCoordinator(
     load,
     refresh,
     acknowledge,
+    report: async (ids: string[]) => { await api("/api/coordinator/reports", { method: "POST", body: JSON.stringify({ ids }) }); await refresh(); },
     resumeTask,
     error,
     clearError: () => setError(""),

@@ -1,0 +1,18 @@
+.task-transfer-rail{position:fixed;right:24px;top:160px;width:clamp(155px,16vw,235px);max-height:calc(100dvh - 240px);overflow:visible;display:flex;flex-direction:column;gap:10px;z-index:12;scrollbar-width:thin}
+.one-studio button.task-transfer-bubble{display:flex;align-items:center;gap:9px;padding:12px 14px;border:1px solid var(--studio-line);border-radius:18px 18px 5px 18px;background:var(--studio-paper);color:var(--studio-ink);font:inherit;text-align:left;cursor:pointer;animation:task-depart 550ms cubic-bezier(.2,.75,.25,1) both}
+.task-transfer-bubble>span{flex:1;min-width:0}.task-transfer-bubble strong{display:block;font-size:12px;font-weight:500;overflow-wrap:anywhere}.task-transfer-bubble small{display:block;font-size:10px;color:var(--studio-muted);margin-top:5px}
+.task-transfer-spinner{animation:task-spin 2s linear infinite;flex-shrink:0}
+.one-studio button.task-transfer-bubble.is-returning{animation:task-return 650ms ease-in-out forwards;pointer-events:none}
+.one-studio button.task-transfer-more{background:transparent;border:0;color:var(--studio-muted);font:inherit;font-size:11px;padding:6px;cursor:pointer}
+.one-studio button.composer-execute{display:flex;align-items:center;gap:5px;border:1px solid var(--studio-line);border-radius:10px;background:var(--studio-paper);color:var(--studio-ink);padding:9px 10px;font:inherit;font-size:11px;cursor:pointer;flex-shrink:0;align-self:flex-end}
+.one-studio button.composer-execute:disabled{opacity:.4;cursor:default}
+@keyframes task-depart{from{opacity:0;transform:translateX(-20vw)}to{opacity:1;transform:translateX(0)}}
+@keyframes task-return{0%{transform:translateX(0);opacity:1}85%{transform:translateX(-20vw);opacity:.8}100%{transform:translateX(-23vw);opacity:0}}
+@keyframes task-spin{to{transform:rotate(360deg)}}
+.coordinator-task-open .task-transfer-rail{position:static;width:100%;max-height:100px;flex-direction:row;flex:0 0 auto;overflow:auto}.coordinator-task-open button.task-transfer-bubble{min-width:140px;animation:none}
+.execution-shell .things-browser,.execution-shell .things-detail,.execution-shell .things-thread,.execution-shell .things-composer{background:var(--studio-paper);color:var(--studio-ink)}
+.execution-shell .things-browser :is(button,input,textarea){background:var(--studio-surface);border-color:var(--studio-line);color:var(--studio-ink)}
+.execution-shell .things-list-items button[aria-current=true]{background:var(--studio-line)}
+@media(max-width:1250px){.task-transfer-rail{right:12px;width:145px}.one-studio.coordinator-preview:not(.coordinator-task-open):not(.coordinator-tools-open).studio-open .studio-assistant{width:min(900px,calc(100% - 300px))}}
+@media(max-width:900px){.task-transfer-rail{position:static;order:2;width:100%;max-height:100px;flex-direction:row;flex:0 0 auto;overflow:auto}.one-studio button.task-transfer-bubble{min-width:155px;animation:none}.one-studio button.task-transfer-bubble.is-returning{animation:none;opacity:.5}.one-studio.coordinator-preview:not(.coordinator-task-open):not(.coordinator-tools-open).studio-open .studio-assistant{width:100%}}
+@media(prefers-reduced-motion:reduce){.one-studio button.task-transfer-bubble,.one-studio button.task-transfer-bubble.is-returning,.task-transfer-spinner{animation:none}}

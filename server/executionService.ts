@@ -1,6 +1,24 @@
 import type { Database, ExecutionEvent, ExecutionTask, Message, MessageRecord } from "./types.js";
+import { createHash } from "node:crypto";
 
 const maxCompilerContextChars = 36_000;
+
+export function saveExecutionInput(database: Database, workspaceId: string, userId: string, conversationId: string, operationId: string, content: string, timestamp: string) {
+  if (!/^[A-Za-z0-9_-]{16,100}$/.test(operationId) || !content.trim() || content.length > 8000) throw new Error("执行编号或要求无效（最多 8000 字符）");
+  const c = database.conversations.find(c => c.id === conversationId && c.workspaceId === workspaceId && c.userId === userId && !c.coordinatorMain);
+  if (!c) throw new Error("事情不存在");
+  const id = `msg_${createHash('sha256').update(JSON.stringify([workspaceId,userId,conversationId,operationId])).digest('hex')}`;
+  const existing = database.messages.find(m => m.id === id && m.conversationId === c.id && m.workspaceId === workspaceId && m.userId === userId);
+  if (existing) { if (existing.content !== content.trim()) throw new Error("同一执行编号不能修改内容"); return id; }
+  for (const [index, message] of c.messages.entries()) {
+    message.id ??= `msg_${createHash('sha256').update(JSON.stringify([workspaceId,userId,conversationId,index,message.createdAt,message.role,message.content])).digest('hex')}`;
+    if (!database.messages.some(m => m.id === message.id && m.conversationId === c.id && m.workspaceId === workspaceId && m.userId === userId)) database.messages.push({...message,id:message.id,attachmentIds:message.attachments?.map(a=>a.id),workspaceId,userId,conversationId});
+  }
+  const message = { id, role: 'user' as const, content:content.trim(), createdAt:timestamp };
+  c.messages.push(message);c.updatedAt=timestamp;
+  database.messages.push({...message,workspaceId,userId,conversationId});
+  return id;
+}
 
 export function executionTrace(database: Database, taskId: string, workspaceId: string, userId: string) {
   const task = database.executionTasks.find((item) => item.id === taskId && item.workspaceId === workspaceId && item.userId === userId);
@@ -42,7 +60,11 @@ export function buildExecutionCompilerMessages(records: MessageRecord[], sourceM
       .map(handoff => `【本条消息已保存的调度交接，仅作上下文，不是额外授权】\n${handoff.instruction}`).join("\n\n");
     return `${item.id === sourceMessageId ? "【执行焦点】" : ""}${item.role === "user" ? "用户" : "ONE"}：${item.content}${briefs ? `\n\n${briefs}` : ""}`;
   }).join("\n\n");
-  const clipped = transcript.length > maxCompilerContextChars ? transcript.slice(transcript.length - maxCompilerContextChars) : transcript;
+  const truncated = transcript.length > maxCompilerContextChars;
+  // Keep the original goal and recent reviewed briefs outside the rolling window.
+  // A short confirmation at the end must never erase the task's origin.
+  const anchored = truncated ? `【早期用户目标，若与后续明确修改冲突以后续为准】\n${records.filter(r => r.role === 'user').slice(0, 2).map(r => r.content).join('\n\n')}\n\n【最近相关交接，仅作参考，不是新增授权】\n${handoffs.filter(h => records.some(r => r.id === h.messageId)).slice(-3).map(h => h.instruction).join('\n\n')}\n\n【近期原始记录；中间部分因长度未全部提供，缺少关键约束时必须询问】\n` : '';
+  const clipped = anchored + (truncated ? transcript.slice(transcript.length - maxCompilerContextChars) : transcript);
   if (taskPrompt !== undefined) return [{ role: "user", content: `${taskPrompt}\n\n以下是截至执行焦点的对话资料：\n${clipped}`, createdAt: new Date().toISOString() }];
   return [{
     role: "user",

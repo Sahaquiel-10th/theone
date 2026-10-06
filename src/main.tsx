@@ -8,11 +8,13 @@ import {FeatureNav} from './FeatureNav';
 import {ThingsPanel} from './ThingsPanel';
 import {sendThingMessage} from './sendThingMessage';
 import {CoordinatorConversation} from './preview/CoordinatorConversation';
+import {TaskTransferRail, type Transfer} from './TaskTransferRail';
 import {FeatureShelf,type FeatureChoice} from './preview/FeatureShelf';
 import {ResultSignal} from './preview/ResultSignal';
 import {useWorkspacePreview} from './preview/useWorkspacePreview';
 import {useCoordinator} from './useCoordinator';
 import './preview/workspace-preview.css';
+import './task-transfer.css';
 import {canPeekAtFeatures,waitingForCurrentReply} from './oneFocusState';
 import {edgeJourney,directJourney,eyeRoute,overheadJourney,resolveEyeRoute,homeSettingsDistance,isConversationShelfMove,type EyeRoute} from './oneEdgeMotion';
 import { createRoot } from "react-dom/client";
@@ -650,6 +652,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [taskNotices, setTaskNotices] = useState<TaskNotice[]>([]);
   const [visibleReceiptId, setVisibleReceiptId] = useState("");
   const observedTasksRef = useRef<ExecutionTask[]>([]);
+  const motionTasksRef = useRef<Set<string> | null>(null);
   const executionOriginRef = useRef<TransitionPoint>({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
   const draftsRef = useRef<Record<string, { content: string; attachments: AttachmentSummary[] }>>({});
   const draftAliasesRef = useRef<Record<string, string>>({});
@@ -692,6 +695,16 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const greeting=useOneGreeting(`${view}:${activeId}`);
   const lampTasks = preview.enabled ? preview.state.tasks.filter(task=>task.unread && !dismissedResults.includes(`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`)) : [];
   const lampKey=lampTasks.map(task=>`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`).join('|');
+  const transfers: Transfer[] = [...(coordinator.snapshot?.tasks ?? []).filter(t => t.running || t.queued).map(t => ({id:`work:${t.id}`,taskId:t.id,title:t.title,state:t.running?'running':'queued'})),
+    ...(coordinator.snapshot?.notices ?? []).map(n => ({id:n.id,taskId:n.taskId,title:n.title||conversations.find(c=>c.id===n.taskId)?.title||'这件事',state:n.state})),
+    ...executionTasks.filter(t=>isExecutionRunning(t)).map(t=>({id:t.id,taskId:t.conversationId,title:conversations.find(c=>c.id===t.conversationId)?.title||'本机任务',state:t.status}))];
+  const uniqueTransfers = [...new Map(transfers.map(t=>[t.id,t])).values()];
+  useEffect(() => {
+    const previous = motionTasksRef.current; motionTasksRef.current = new Set(executionTasks.map(t=>t.id));
+    if (!previous) return;
+    const fresh = executionTasks.find(t=>!previous.has(t.id) && isExecutionRunning(t));
+    if (fresh && !executionMode && !preparingExecution) { setTakeoverTaskId(fresh.id); transitionExecutionMode(true, executionOriginRef.current); }
+  }, [executionTasks]);
   function closeResultLamp() { setResultLampOpen(false); if(coordinator.enabled)void coordinator.acknowledge().catch(e=>setError(e.message)); setDismissedResults(previous=>[...previous,...lampTasks.map(task=>`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`)]); }
   async function selectThing(id:string) {
     setThingId(id);
@@ -900,6 +913,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       setTaskStatusUnavailable(false);
     } catch { setTaskStatusUnavailable(true); }
   }
+
+  useEffect(() => {
+    if (!coordinator.enabled) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshExecutionTasks();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [coordinator.enabled]);
 
   useEffect(() => {
     if (!liveTaskIds) return;
@@ -1275,7 +1296,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     return () => { cancelled = true; clearTimeout(timer); };
   }, [pendingAttachments, api]);
 
-  async function sendMessage(rawText: string) {
+  async function sendMessage(rawText: string, localExecution = false) {
     if (demo.enabled) { if (demo.state.pending || !rawText.trim()) return; setPreviewHome(false); demo.dispatch({type:'submit',text:rawText,features:featureForNext,id:crypto.randomUUID(),now:Date.now()});setFeatureForNext([]);setContent('');setHasSubmittedChat(true);return; }
     // Preserve specialized image and newly selected personal-assistant routes.
     // Neither is silently reinterpreted as a generic coordinator request.
@@ -1287,7 +1308,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         let confirmedExternal=false;
         if(features.length){const details=await Promise.all(features.map(f=>api<{name:string;destinations:string[]}>(`/api/features/${encodeURIComponent(f.id)}`)));confirmedExternal=confirm(`使用 ${details.map(f=>f.name).join('、')}。\n${details.flatMap(f=>f.destinations).length?'任务所需内容将发送至：'+[...new Set(details.flatMap(f=>f.destinations))].join('、'):'按需使用你已连接的知识来源'}\n执行会按实际用量消耗电力。是否继续？`);if(!confirmedExternal)return;}
         setError('');setPreviewHome(false);setHasSubmittedChat(true);
-        await coordinator.submit({operationId:crypto.randomUUID(),text,modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
+        if (!localExecution) executionOriginRef.current = pointFromElement(document.getElementById('one-studio-send'));
+        await coordinator.submit({operationId:crypto.randomUUID(),text,localExecution,modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
         if(currentDraftRef.current.content===rawText)setContent('');
         setPendingAttachments(old=>old.filter(file=>!files.some(sent=>sent.id===file.id)));setFeatureForNext(old=>old.filter(feature=>!features.some(sent=>sent.id===feature.id)));
       }catch(err){setError(err instanceof Error?err.message:'暂时无法确认，请检查状态；不会重复执行');}return;
@@ -1515,24 +1537,41 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setPreparingConversationId(conversationId);
     setTakeoverTaskId("");
     setExecutionSourceMessageId(message.id);
-    if (view !== "things") transitionExecutionMode(true, origin);
     setExpandedExecutionId("");
     setError("");
     try {
       const result = await api<{ task: ExecutionTask; events: ExecutionEvent[] }>("/api/executions/from-message", {
         method: "POST",
-        body: JSON.stringify({ conversationId, sourceMessageId: message.id })
+        body: JSON.stringify({ conversationId, sourceMessageId: message.id, operationId: await chatSubmission(`execution:${user.id}`, { conversationId, sourceMessageId: message.id }) })
       });
       setTakeoverTaskId(result.task.id);
       setSelectedExecutionId(result.task.id);
       rememberExecution(result.task, result.events);
+      transitionExecutionMode(true, origin);
     } catch (err) {
-      if (view !== "things") transitionExecutionMode(false, origin);
+      transitionExecutionMode(false, origin);
       setError(err instanceof Error ? err.message : "无法交给本机执行");
     } finally {
       setPreparingExecution(false);
       setPreparingConversationId("");
     }
+  }
+
+  async function executeDraft(rawText: string, source: HTMLElement, conversationId?: string) {
+    if (!rawText.trim() || preparingExecution || executionBusy || taskStatusUnavailable) return;
+    executionOriginRef.current = pointFromElement(source);
+    if (!conversationId && coordinator.enabled) { await sendMessage(rawText, true); return; }
+    if (!conversationId) { setError('请先打开一件事情，或启用持续对话调度后执行'); return; }
+    setPreparingExecution(true); setPreparingConversationId(conversationId); setError('');
+    try {
+      const operationId = await chatSubmission(`execution-input:${user.id}`, { conversationId, content: rawText.trim() });
+      const result = await api<{task:ExecutionTask;events:ExecutionEvent[]}>('/api/executions/from-input', { method:'POST', body:JSON.stringify({conversationId,content:rawText.trim(),operationId}) });
+      rememberExecution(result.task,result.events); setTakeoverTaskId(result.task.id); setSelectedExecutionId(result.task.id);
+      transitionExecutionMode(true, executionOriginRef.current);
+      if (view === 'things') { setThingDrafts(old => ({...old,[conversationId]:old[conversationId] === rawText ? '' : old[conversationId]})); await selectThing(conversationId); }
+      else if (currentDraftRef.current.content === rawText) setContent('');
+    } catch (e) { setError(e instanceof Error ? e.message : '执行未确认，原话保留'); if (view === 'things') throw e; }
+    finally { setPreparingExecution(false); setPreparingConversationId(''); }
   }
 
   async function sendExecutionMessage(rawText: string) {
@@ -1717,6 +1756,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         one={<div className="studio-presence things-one"><OneHeroEye mood="idle" label="回到 ONE 工作台" onActivate={()=>openSurface('chat')}/></div>}
         items={conversations} selectedId={thingId} drafts={thingDrafts}
         onDraftChange={(id,text)=>setThingDrafts(previous=>({...previous,[id]:text}))}
+        onExecuteDraft={(id,text,source)=>executeDraft(text,source,id)}
         onSelect={id=>void selectThing(id)} onSend={continueThing}
         onWorkbench={id=>{void openConversation(conversations.find(item=>item.id===id)!);setResultLampOpen(false);}}
         onExecute={async (id,messageId,source)=>{
@@ -1812,10 +1852,11 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <OneHeroEye mood={heroMood} label={view==='features'?'收起功能，回到 ONE':'打开功能'} onActivate={()=>openSurface(view==='features'?'chat':'features')}/>
           <div className="studio-presence-copy"><span className="studio-eyebrow">ONE IS WITH YOU</span>
           <h2>{activeAgent?.name || (studioIdle ? `${profile.displayName ? `${profile.displayName}，` : ""}${greeting}` : "我在。")}</h2></div>
-          {preview.enabled?<ResultSignal tasks={lampTasks} busy={Boolean(content.trim()||preview.state.pending||view==='things')} ambient={view==='chat'&&!active} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)} onDismiss={closeResultLamp}/>:null}
+          {demo.enabled?<ResultSignal tasks={lampTasks} busy={Boolean(content.trim()||preview.state.pending||view==='things')} ambient={view==='chat'&&!active} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)} onDismiss={closeResultLamp}/>:null}
         </div>
 
         {preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)}/>:null}
+        {coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(content.trim() || isComposing || coordinator.state.pending)} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onReport={ids=>coordinator.report(ids)} /> : null}
 
         {!preview.enabled && (otherRows.length > 0 || unreadNotices.length > 0 || taskStatusUnavailable) ? <section className="studio-activity attention-activity" aria-label="任务动态">
           {otherRows.length > 0 || unreadNotices.length > 0 ? <button className="attention-activity-toggle" type="button" aria-expanded={activityExpanded} aria-controls="attention-task-list" onClick={() => setActivityExpanded(value => !value)}>
@@ -1879,6 +1920,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             <button id="one-studio-send" className="primary send" type="submit" aria-label={composeMode === "execution" ? "发送并继续执行" : "发送消息"} title={targetLoading ? (preview.enabled ? "ONE 正在承接这句话，可以先编辑下一条" : "这件事正在回复，可以新开一件事") : "发送消息"} disabled={uploadingAttachments || pendingAttachments.some(a => a.status && a.status !== "ready") || (composeMode === "execution" ? taskStatusUnavailable || preparingExecution || executionBusy || !content.trim() || pendingAttachments.length > 0 : !activeModelId || targetLoading || (!content.trim() && !pendingAttachments.length))}>
               {composeMode === "execution" ? <Zap size={18} /> : <ArrowUp size={19} />}
             </button>
+            {composeMode==='chat' && !demo.enabled && currentModel?.kind==='chat' ? <button type="button" className="composer-execute" aria-label="发送并执行本机任务" title="把当前要求和相关上下文交给本机执行" disabled={!content.trim()||targetLoading||uploadingAttachments||pendingAttachments.length>0||preparingExecution||executionBusy||taskStatusUnavailable} onClick={event=>void executeDraft(content,event.currentTarget,coordinator.enabled?undefined:targetConversation?.id)}><Zap size={16}/><span>执行</span></button> : null}
           </div>
           <div className="studio-compose-tools">
             {canAttach && capabilities.attachments.enabled && composeMode === "chat" ? <label className="studio-attach" title="添加文件或图片"><Paperclip size={15} /><span>{uploadingAttachments ? "上传中" : "附件"}</span><input aria-label="添加附件" type="file" multiple accept={attachmentAccept} disabled={uploadingAttachments} onChange={event => { void uploadAttachments(event.target.files); event.target.value = ""; }} /></label> : <span />}

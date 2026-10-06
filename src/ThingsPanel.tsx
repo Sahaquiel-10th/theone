@@ -27,6 +27,7 @@ export function ThingsPanel({
   executionDisabled = false,
   executionPreparing = false,
   executionContent,
+  onExecuteDraft,
 }: {
   one?: ReactNode;
   items: Thing[];
@@ -43,6 +44,7 @@ export function ThingsPanel({
   executionDisabled?: boolean;
   executionPreparing?: boolean;
   executionContent?: ReactNode;
+  onExecuteDraft?: (id: string, text: string, source: HTMLElement) => Promise<void>;
 }) {
   const [sending, setSending] = useState<string[]>([]),
     [errors, setErrors] = useState<Record<string,string>>({});
@@ -201,6 +203,7 @@ export function ThingsPanel({
                 >
                   {sending.includes(selected.id) ? "接收中" : "发送"}
                 </button>
+                {onExecuteDraft ? <button type="button" disabled={!draft.trim()||executionDisabled||executionPreparing||sending.includes(selected.id)||selected.messagesLoaded===false} onClick={event=>{setErrors(old=>({...old,[selected.id]:''}));void onExecuteDraft(selected.id,draft,event.currentTarget).catch(e=>setErrors(old=>({...old,[selected.id]:e instanceof Error?e.message:'执行未确认，草稿已保留'})));}}><Zap size={14}/>执行</button> : null}
               </form>
             )}
           </>

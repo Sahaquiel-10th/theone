@@ -10,7 +10,7 @@ export type AiTaskConfigs = Partial<Record<AiTaskKind, AiTaskRecord>>;
 
 export function defaultTaskValues(id: string): AiTaskValues {
   const tools = taskToolNames(id);
-  return { modelId: "", prompt: taskPrompts[id] ?? "", promptMode: "replace", toolDescriptions: Object.fromEntries(tools.map(name => [name, taskToolDescriptions[name]])), tools, maxSteps: id === "local_agent" ? 24 : ["orchestrator", "task_worker"].includes(id) ? 4 : id === "coordinator" ? 2 : 1, ...(["orchestrator", "coordinator"].includes(id) ? { enabled: false } : {}) };
+  return { modelId: "", prompt: taskPrompts[id] ?? "", promptMode: "replace", toolDescriptions: Object.fromEntries(tools.map(name => [name, taskToolDescriptions[name]])), tools, maxSteps: id === "local_agent" ? 24 : ["orchestrator", "task_worker", "coordinator"].includes(id) ? 4 : 1, ...(["orchestrator", "coordinator"].includes(id) ? { enabled: false } : {}) };
 }
 
 /** Show legacy additive configurations faithfully; conversion is explicit on save. */
@@ -29,7 +29,7 @@ export function validateTaskValues(id: string, value: unknown, models: ModelConf
   if (input.modelId && !models.some(model => model.id === input.modelId && model.enabled && model.kind === definition.modelKind)) throw new Error("请选择已启用且类型匹配的模型");
   const allowed = taskToolNames(id);
   if (!Array.isArray(input.tools) || input.tools.some(tool => typeof tool !== "string" || !allowed.includes(tool))) throw new Error("存在不允许的工具");
-  if (!Number.isInteger(input.maxSteps) || Number(input.maxSteps) < 1 || Number(input.maxSteps) > (id === "local_agent" ? 24 : ["orchestrator", "task_worker"].includes(id) ? 4 : id === "coordinator" ? 2 : 1)) throw new Error("执行步数无效");
+  if (!Number.isInteger(input.maxSteps) || Number(input.maxSteps) < 1 || Number(input.maxSteps) > (id === "local_agent" ? 24 : ["orchestrator", "task_worker", "coordinator"].includes(id) ? 4 : 1)) throw new Error("执行步数无效");
   const descriptions: Record<string, string> = {};
   if (input.toolDescriptions !== undefined) {
     if (!input.toolDescriptions || typeof input.toolDescriptions !== "object" || Array.isArray(input.toolDescriptions)) throw new Error("工具说明无效");

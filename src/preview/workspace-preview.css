@@ -24,7 +24,7 @@
 
 /* ONE's conversation is the default workspace. Tasks are a detail view, not a second inbox. */
 .one-studio.coordinator-preview:not(.coordinator-task-open) .studio-layout{grid-template-columns:minmax(0,1fr)}
-.one-studio.coordinator-preview:not(.coordinator-task-open).studio-open .studio-assistant{width:min(760px,100%);height:100%;margin:0 auto;padding:28px 24px 12px;overflow:hidden;gap:18px}
+.one-studio.coordinator-preview:not(.coordinator-task-open).studio-open .studio-assistant{width:min(1120px,62vw);max-width:100%;height:100%;margin:0 auto;padding:28px 24px 12px;overflow:hidden;gap:18px}
 .coordinator-preview.studio-open .studio-presence{flex-direction:row;align-items:center;gap:14px;order:1}
 .coordinator-preview.studio-open .studio-presence .one-presence{width:54px;height:54px}
 .coordinator-preview.studio-open .studio-presence-copy h2{font-size:17px;margin:0}
