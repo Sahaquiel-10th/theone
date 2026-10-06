@@ -813,6 +813,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private let networkMonitor = NWPathMonitor()
     private var receivedInitialPath = false
     private var reopenAcknowledged = false
+    private var reopenDeviceId: String?
 
     private func reopenNotification(_ deviceId: String) -> Notification.Name {
         let digest = SHA256.hash(data: Data(deviceId.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -821,15 +822,30 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func reopenRequested(_ notification: Notification) {
         guard let requestId = notification.object as? String, UUID(uuidString: requestId) != nil else { return }
-        DistributedNotificationCenter.default().postNotificationName(Notification.Name("one.key.reopen.ack.\(requestId)"), object: launcherVersion, userInfo: nil, deliverImmediately: true)
         guard notification.userInfo?["version"] as? String == launcherVersion else { return }
         requestLogin()
         // A new double-click must wake the resident that actually owns this
         // Key, not merely create a login URL while that resident is offline.
         if !ready { nextVolumeScan = .distantPast; restartSession() }
+        Task { @MainActor in
+            // Allow wake/reconnect, but never acknowledge merely being alive.
+            for _ in 0..<30 {
+                if stopping { return }
+                if ready {
+                    DistributedNotificationCenter.default().postNotificationName(Notification.Name("one.key.reopen.ack.\(requestId)"), object: launcherVersion, userInfo: ["ready": true, "pid": Int(getpid())], deliverImmediately: true)
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
     }
 
-    @objc private func reopenReply(_ notification: Notification) { reopenAcknowledged = notification.object as? String == launcherVersion }
+    @objc private func reopenReply(_ notification: Notification) {
+        guard let deviceId = reopenDeviceId,
+              let support = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false).appendingPathComponent("ONE", isDirectory: true) else { return }
+        let digest = SHA256.hash(data: Data(deviceId.utf8)).map { String(format: "%02x", $0) }.joined()
+        reopenAcknowledged = isHealthyResidentReply(version: notification.object as? String, expectedVersion: launcherVersion, ready: notification.userInfo?["ready"] as? Bool == true, pid: (notification.userInfo?["pid"] as? NSNumber)?.int32Value, lockOwners: residentLockOwners(support.appendingPathComponent(residentLockFilename(digest: digest))))
+    }
 
     init(residentMode: Bool, expectedDeviceId: String?, initialCredentialUrl: URL?) {
         self.residentMode = residentMode
@@ -979,6 +995,13 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
 
             socket = connectedSocket
             ready = true
+            // Pre-v2 residents may be offline and polling removable volumes
+            // forever. Only retire the exact same Key after our server proof.
+            let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("ONE", isDirectory: true)
+            let digest = SHA256.hash(data: Data(foundCredential.deviceId.utf8)).map { String(format: "%02x", $0) }.joined()
+            _ = terminateOlderResident(lock: support.appendingPathComponent("presence-\(digest).lock"), support: support, newVersion: launcherVersion) { candidate in
+                (try? loadCredential(candidate, expectedDeviceId: foundCredential.deviceId)) != nil
+            }
             if let recovery, !recovery.record.requestId.isEmpty {
                 let report = ["type":"runtime_recovery_event", "requestId":recovery.record.requestId, "version":recovery.record.version, "status":recovery.status]
                 try await connectedSocket.send(.string(String(decoding: try JSONSerialization.data(withJSONObject: report), as: UTF8.self)))
@@ -1096,10 +1119,11 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             let requestId = UUID().uuidString
             let reply = Notification.Name("one.key.reopen.ack.\(requestId)")
             reopenAcknowledged = false
+            reopenDeviceId = deviceId
             DistributedNotificationCenter.default().addObserver(self, selector: #selector(reopenReply(_:)), name: reply, object: nil)
-            defer { DistributedNotificationCenter.default().removeObserver(self, name: reply, object: nil) }
+            defer { DistributedNotificationCenter.default().removeObserver(self, name: reply, object: nil); reopenDeviceId = nil }
             DistributedNotificationCenter.default().postNotificationName(reopenNotification(deviceId), object: requestId, userInfo: ["version": launcherVersion], deliverImmediately: true)
-            for _ in 0..<15 {
+            for _ in 0..<35 {
                 try await Task.sleep(for: .milliseconds(100))
                 if reopenAcknowledged {
                     stopping = true
@@ -1128,7 +1152,10 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 }
                 let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("ONE", isDirectory: true)
                 let digest = SHA256.hash(data: Data(deviceId.utf8)).map { String(format: "%02x", $0) }.joined()
-                _ = terminateOlderResident(lock: support.appendingPathComponent(residentLockFilename(digest: digest)), support: support, newVersion: launcherVersion) { candidate in
+                // Server authentication succeeded: an equal-version active
+                // connection would have rejected this duplicate. Recover an
+                // offline same-version owner as well as older owners.
+                _ = terminateOlderResident(lock: support.appendingPathComponent(residentLockFilename(digest: digest)), support: support, newVersion: launcherVersion, allowEqualAfterAuthentication: true) { candidate in
                     (try? loadCredential(candidate, expectedDeviceId: deviceId)) != nil
                 }
                 for _ in 0..<50 {

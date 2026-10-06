@@ -9,7 +9,7 @@ struct ResidentProcessIdentity: Equatable {
     let startedAt: String
 }
 
-func olderResidentVersion(_ identity: ResidentProcessIdentity, support: URL, currentUID: UInt32, currentPID: Int32, newVersion: String, credentialMatches: (URL) -> Bool) -> String? {
+func olderResidentVersion(_ identity: ResidentProcessIdentity, support: URL, currentUID: UInt32, currentPID: Int32, newVersion: String, allowEqualAfterAuthentication: Bool = false, credentialMatches: (URL) -> Bool) -> String? {
     guard identity.pid > 1, identity.pid != currentPID, identity.uid == currentUID,
           !identity.startedAt.isEmpty else { return nil }
     let executable = URL(fileURLWithPath: identity.executable).standardizedFileURL
@@ -34,7 +34,8 @@ func olderResidentVersion(_ identity: ResidentProcessIdentity, support: URL, cur
         let left = index < old.count ? old[index] : 0, right = index < new.count ? new[index] : 0
         if left != right { older = left < right; break }
     }
-    guard older, identity.arguments.first == identity.executable else { return nil }
+    let equal = old == new
+    guard older || (equal && allowEqualAfterAuthentication), identity.arguments.first == identity.executable else { return nil }
     let args = Array(identity.arguments.dropFirst())
     guard args.count == 3 || args.count == 4, args[0] == "--one-resident", args[1] == "--credential-path",
           args.count == 3 || args[3] == "--one-update-resume",
@@ -89,16 +90,24 @@ func residentLockOwners(_ lock: URL) -> [Int32] {
 }
 
 // Call only AFTER the replacement completed the server's Key challenge. Require
-// the precise lock owner, same UID, installed resident path, older version and
+// the precise lock owner, same UID, installed resident path, older version (or
+// equal version only with authenticated recovery explicitly enabled) and
 // exact Key credential. Recheck PID identity and lock ownership immediately
 // before a normal termination signal. Never kill by name or touch other Keys.
-func terminateOlderResident(lock: URL, support: URL, newVersion: String, credentialMatches: (URL) -> Bool) -> Bool {
+func terminateOlderResident(lock: URL, support: URL, newVersion: String, allowEqualAfterAuthentication: Bool = false, credentialMatches: (URL) -> Bool) -> Bool {
     var signalled = false
     for pid in residentLockOwners(lock) {
         guard let identity = inspectResidentProcess(pid),
-              olderResidentVersion(identity, support: support, currentUID: getuid(), currentPID: getpid(), newVersion: newVersion, credentialMatches: credentialMatches) != nil,
+              olderResidentVersion(identity, support: support, currentUID: getuid(), currentPID: getpid(), newVersion: newVersion, allowEqualAfterAuthentication: allowEqualAfterAuthentication, credentialMatches: credentialMatches) != nil,
               inspectResidentProcess(pid) == identity, residentLockOwners(lock).contains(pid) else { continue }
         if kill(pid, SIGTERM) == 0 { signalled = true }
     }
     return signalled
+}
+
+// A notification from an offline process is not proof of a usable resident.
+// Require the current Key's exact lock owner, not another installed copy.
+func isHealthyResidentReply(version: String?, expectedVersion: String, ready: Bool, pid: Int32?, lockOwners: [Int32]) -> Bool {
+    guard ready, version == expectedVersion, let pid, pid > 1 else { return false }
+    return lockOwners.contains(pid)
 }
