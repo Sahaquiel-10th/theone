@@ -18,6 +18,10 @@ import Foundation
         rejected { _ = try files.create("credential.json", content: "fake") }
         rejected { _ = try MacLocalFiles(root: FileManager.default.homeDirectoryForCurrentUser.path) }
         rejected { _ = try files.create("fake.docx", content: "not a Word file") }
+        let malformed = try JSONDecoder().decode(LocalFileArguments.self, from: Data("{\"path\":\"测试 说明.md\",\"oldText\":\"5 块钱\"}".utf8))
+        rejected { try malformed.validate(tool: "replace_in_file") }
+        let absent = try JSONDecoder().decode(LocalFileArguments.self, from: Data("{\"path\":\"empty.md\"}".utf8))
+        rejected { try absent.validate(tool: "write_file") }
         try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("linked.txt").path, withDestinationPath: outside.path)
         rejected { _ = try files.read("linked.txt") }
         rejected { _ = try files.replace("linked.txt", old: "OUTSIDE", new: "BROKEN") }

@@ -810,6 +810,7 @@ final class MacLocalExecutor {
         return roots[taskId]!
     }
     func execute(_ taskId: String, tool: String, args: LocalFileArguments) throws -> String {
+        try args.validate(tool: tool)
         guard try loadCredential(credentialUrl).deviceId == deviceId else { throw LauncherError.message("ONE Key 已断开，未操作") }
         guard !cancelled.contains(taskId), let root = roots[taskId], root == oneDefaults().string(forKey: "one.execution.project.\(deviceId)") else { throw LauncherError.message("执行已停止或授权目录已变化，未操作") }
         let files = try MacLocalFiles(root: root), path = args.path ?? "."

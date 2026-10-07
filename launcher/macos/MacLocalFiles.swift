@@ -12,6 +12,16 @@ struct LocalFileArguments: Decodable {
     var caseSensitive: Bool?
     var startLine: Int?
     var endLine: Int?
+    func validate(tool: String) throws {
+        if path == nil || path!.isEmpty { throw LocalFileFailure.message("工具没有提供有效相对路径，未操作") }
+        switch tool {
+        case "write_file": if content == nil { throw LocalFileFailure.message("没有提供文件内容，未创建") }
+        case "replace_in_file": if oldText == nil || newText == nil { throw LocalFileFailure.message("没有提供完整替换原文与新文，未修改") }
+        case "search_text": if query == nil || query!.isEmpty { throw LocalFileFailure.message("搜索内容不能为空") }
+        case "list_files", "read_file": break
+        default: throw LocalFileFailure.message("ONE 原生文件工具不支持此操作")
+        }
+    }
 }
 
 enum LocalFileFailure: LocalizedError {
