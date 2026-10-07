@@ -80,9 +80,9 @@ export class FlomoMcpService extends RemoteMcpKnowledgeService {
       const search = tools.find(t => t.name === "memo_search"), read = tools.find(t => t.name === "memo_batch_get");
       if (!search || !read) throw incompatible();
       const limit = Math.max(1, Math.min(10, Number.isFinite(topK) ? Math.floor(topK) : 5));
-      const selected = memos(await mcpDeadline(client.callTool({ name: search.name, arguments: flomoArguments(search, query, limit) }), "flomo 搜索超时")).slice(0, limit);
+      const selected = memos(this.referenceResult(connection, await mcpDeadline(client.callTool({ name: search.name, arguments: flomoArguments(search, query, limit) }), "flomo 搜索超时"))).slice(0, limit);
       if (!selected.length) return [];
-      const fetched = memos(await mcpDeadline(client.callTool({ name: read.name, arguments: flomoArguments(read, selected.map(m => m.id), limit) }), "flomo 正文读取超时"));
+      const fetched = memos(this.referenceResult(connection, await mcpDeadline(client.callTool({ name: read.name, arguments: flomoArguments(read, selected.map(m => m.id), limit) }), "flomo 正文读取超时")));
       const byId = new Map(fetched.map(m => [m.id, m]));
       return selected.flatMap(hit => {
         const memo = byId.get(hit.id);

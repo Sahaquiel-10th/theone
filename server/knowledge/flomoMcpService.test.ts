@@ -127,3 +127,13 @@ test("flomo refresh affects only the exact workspace", async () => {
   const service = new FlomoMcpService(f.store, { fetch: (async (_url, init) => { assert.equal(new URLSearchParams(String(init?.body)).get("refresh_token"), "refresh-a"); return new Response(JSON.stringify({ access_token: "renewed-a", expires_in: 3600 })); }) as typeof fetch, createClient: async token => ({ async listTools() { assert.equal(token, "renewed-a"); return { tools }; }, async callTool() {}, async close() {} }) });
   await service.verify("a"); assert.equal(b.encryptedAccessToken, originalB);
 });
+
+test("flomo never forwards echoed credentials into knowledge context", async () => {
+  const f = fixture(); connect(f, "a");
+  f.database.knowledgeConnections[0].encryptedRefreshToken = encryptCredential("refresh-secret", knowledgeCredentialContext("a", "flomo", "refresh_token"));
+  const service = new FlomoMcpService(f.store, { createClient: async () => ({ async listTools() { return { tools }; }, async callTool() { return { content: [{ type: "text", text: JSON.stringify({ memos: [{ id: "1", content: "资料 token-a refresh-secret" }] }) }] }; }, async close() {} }) });
+  const chunks = await service.search("a", "资料", 5);
+  assert.equal(chunks.length, 1);
+  assert.doesNotMatch(JSON.stringify(chunks), /token-a|refresh-secret/);
+  assert.match(chunks[0].content, /凭据已隐藏/);
+});
