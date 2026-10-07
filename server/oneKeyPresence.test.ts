@@ -127,7 +127,7 @@ test("accepts execution events only for the authenticated device workspace", asy
 
   const startMessage = once(socket, "message");
   await presence.startExecution("device-a", "task-a", "safe", installationId);
-  assert.deepEqual(JSON.parse((await startMessage)[0].toString()), { type: "execution_start", taskId: "task-a", instruction: "safe" });
+  assert.deepEqual(JSON.parse((await startMessage)[0].toString()), { type: "execution_start", taskId: "task-a", instruction: "safe", round: 0 });
 
   let mutated = nextMutation();
   socket.send(JSON.stringify({ type: "execution_event", taskId: "task-a", kind: "message", text: "done", status: "completed", providerThreadId: "thread-a" }));

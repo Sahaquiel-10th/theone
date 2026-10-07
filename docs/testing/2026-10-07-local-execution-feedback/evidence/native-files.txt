@@ -1,0 +1,1 @@
+Mac native file create/read/replace/no-overwrite/traversal/symlink/hardlink checks passed: /var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-local-files-1C47F649-E301-4DA2-B7F4-34584239B724

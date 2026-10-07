@@ -3,7 +3,7 @@ import type { Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import type { Store } from "./db.js";
 import { uid } from "./security.js";
-import { appendExecutionEvent } from "./executionService.js";
+import { appendExecutionEvent, executionTerminal, saveExecutionReceipt } from "./executionService.js";
 import { validInstallationId } from "./oneKeyInstallation.js";
 import { compareRuntimeVersions, validRuntimeVersion, type RuntimeArchitecture, type RuntimeIdentity, type RuntimePlatform, type SignedRuntimeUpdate } from "./runtimeUpdate.js";
 import { recoverRuntimeUpdate, disconnectedRuntimeUpdate, confirmedRuntimeUpdate, runtimeRecoveryReceipt, type UpdateOwner } from './runtimeUpdateRecovery.js';
@@ -25,6 +25,10 @@ type PendingLocalRequest = {
   deviceId: string;
   socket: WebSocket;
   taskId: string;
+  configuration?: boolean;
+  change?: boolean;
+  workspaceId?: string;
+  userId?: string;
   resolve: (value: { targetName?: string; output?: string }) => void;
   reject: (error: Error) => void;
   timeout: NodeJS.Timeout;
@@ -155,6 +159,11 @@ export class OneKeyPresence {
     return Boolean(this.isConnected(deviceId, installationId) && state?.capabilities.has("local_tools_v1"));
   }
 
+  supportsCodex(deviceId: string, installationId?: string) {
+    const socket = this.sockets.get(deviceId), state = socket ? this.states.get(socket) : undefined;
+    return Boolean(this.isConnected(deviceId, installationId) && state && (state.capabilities.has("codex_exec_v1") || !state.capabilities.has("local_tools_v1")));
+  }
+
   async runtimeStatus(params: { deviceId: string; installationId?: string; userId: string; workspaceId: string }): Promise<{ runtime?: RuntimeIdentity; update?: RuntimeUpdateProgress; confirmation?: { requestId: string; version: string }; connectionState: 'connected' | 'reconnecting' }> {
     // Metadata only: a short hand-off has no socket. Return this computer's
     // journal as unconfirmed, never as proof of Key presence or completion.
@@ -230,21 +239,50 @@ export class OneKeyPresence {
     return this.localRequest(deviceId, taskId, requestId, { type: "local_prepare", taskId, requestId }, 120_000, installationId);
   }
 
+  async localConfiguration(scope: { deviceId: string; installationId?: string; workspaceId: string; userId: string }, change: boolean) {
+    await this.requireProof({ ...scope, method: change ? "POST" : "GET", path: "/api/me/local-device" });
+    const socket = this.sockets.get(scope.deviceId), state = socket && this.states.get(socket);
+    if (!socket || !state?.authenticated || state.installationId !== scope.installationId || !state.capabilities.has("local_configuration_v1")) throw new OneKeyPresenceError("此启动器尚不支持目录设置，请先升级 ONE");
+    const db = await this.store.read();
+    if (change && db.executionTasks.some(t => t.deviceId === scope.deviceId && t.installationId === scope.installationId && !executionTerminal(t.status))) throw new OneKeyPresenceError("本机还有任务在执行，请停止或等结束后更换目录");
+    const requestId = uid("cfg");
+    return new Promise<{ targetName?: string; output?: string }>((resolve, reject) => {
+      const timeout = setTimeout(() => { this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError("本机目录设置未返回，请检查电脑上的选择窗口")); }, 120_000);
+      this.pendingLocal.set(requestId, { deviceId: scope.deviceId, socket, taskId: "device_settings", configuration: true, change, workspaceId: scope.workspaceId, userId: scope.userId, resolve, reject, timeout });
+      socket.send(JSON.stringify({ type: "local_configuration", taskId: "device_settings", requestId, change }), error => {
+        if (!error) return;
+        clearTimeout(timeout); this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError("本机连接已断开"));
+      });
+    });
+  }
+
   async executeLocalTool(deviceId: string, taskId: string, tool: LocalToolName, args: Record<string, unknown>, installationId?: string) {
     const requestId = uid("tol");
     return this.localRequest(deviceId, taskId, requestId, { type: "tool_request", taskId, requestId, tool, arguments: args }, 190_000, installationId);
   }
 
   async startExecution(deviceId: string, taskId: string, instruction: string, installationId?: string) {
-    await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_start", taskId, instruction });
+    const db = await this.store.read();
+    const round = db.executionTasks.find(t => t.id === taskId && t.deviceId === deviceId && t.installationId === installationId)?.reportRound ?? 0;
+    await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_start", taskId, instruction, round });
   }
 
   async continueExecution(deviceId: string, taskId: string, instruction: string, installationId?: string) {
-    await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_continue", taskId, instruction });
+    const db = await this.store.read();
+    const round = db.executionTasks.find(t => t.id === taskId && t.deviceId === deviceId && t.installationId === installationId)?.reportRound ?? 0;
+    await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_continue", taskId, instruction, round });
   }
 
   async cancelExecution(deviceId: string, taskId: string, installationId?: string) {
-    const socket = await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_cancel", taskId });
+    const socket = await this.executionSocket(deviceId, taskId, installationId);
+    await this.store.mutate(db => {
+      const task = db.executionTasks.find(t => t.id === taskId && t.deviceId === deviceId && t.installationId === installationId);
+      if (!task || executionTerminal(task.status)) return;
+      task.status = "cancelled"; task.updatedAt = task.completedAt = new Date().toISOString();
+      task.lastError = "停止请求已提交；已经产生的文件修改不会自动撤销。";
+      saveExecutionReceipt(db, task);
+    });
+    socket.send(JSON.stringify({ type: "execution_cancel", taskId }));
     for (const [id, pending] of this.pendingLocal) if (pending.socket === socket && pending.taskId === taskId) {
       clearTimeout(pending.timeout); this.pendingLocal.delete(id); pending.reject(new Error("执行已停止"));
     }
@@ -293,7 +331,7 @@ export class OneKeyPresence {
     if (!state) return;
     let message: {
       type?: string; challengeId?: string; signature?: string; taskId?: string;
-      kind?: string; text?: string; providerThreadId?: string; targetName?: string; status?: string;
+      kind?: string; text?: string; providerThreadId?: string; targetName?: string; status?: string; round?: number;
       requestId?: string; ok?: boolean; output?: string; error?: string; capabilities?: unknown;
       platform?: unknown; architecture?: unknown; launcherVersion?: unknown; updateProtocol?: unknown; version?: unknown;
     };
@@ -409,7 +447,7 @@ export class OneKeyPresence {
       const task = db.executionTasks.find(item => item.id === pending.taskId && item.deviceId === state.deviceId && item.installationId === state.installationId);
       this.pendingLocal.delete(message.requestId);
       clearTimeout(pending.timeout);
-      if (!device || !task || task.workspaceId !== device.workspaceId || task.userId !== device.userId) pending.reject(new OneKeyPresenceError("ONE Key 或执行任务已失效"));
+      if (!device || (pending.configuration ? device.workspaceId !== pending.workspaceId || device.userId !== pending.userId : !task || task.workspaceId !== device.workspaceId || task.userId !== device.userId)) pending.reject(new OneKeyPresenceError("ONE Key 或执行任务已失效"));
       else if (message.type === "local_error" || message.ok === false) pending.reject(new Error(message.error?.slice(0, 2000) || "本机工具执行失败"));
       else pending.resolve({ targetName: message.targetName?.slice(0, 200), output: message.output?.slice(0, 120_000) ?? "" });
       return;
@@ -426,7 +464,7 @@ export class OneKeyPresence {
       return;
     }
     if (message.type === "execution_event" && state.authenticated && message.taskId && message.kind) {
-      await this.executionEvent(socket, state, { taskId: message.taskId, kind: message.kind, text: message.text, providerThreadId: message.providerThreadId, targetName: message.targetName, status: message.status });
+      await this.executionEvent(socket, state, { taskId: message.taskId, kind: message.kind, text: message.text, providerThreadId: message.providerThreadId, targetName: message.targetName, status: message.status, round: message.round });
     }
   }
 
@@ -438,6 +476,7 @@ export class OneKeyPresence {
     if (!device || !task || task.workspaceId !== device.workspaceId || task.userId !== device.userId) throw new OneKeyPresenceError("执行任务不属于当前 ONE Key 或这台电脑");
     const socket = this.sockets.get(deviceId);
     if (!socket || !this.isConnected(deviceId, installationId)) throw new OneKeyPresenceError("请将 ONE Key 插入任务原来的电脑");
+    if ([...this.pendingLocal.values()].some(p => p.socket === socket && p.configuration && p.change)) throw new OneKeyPresenceError("正在更换本机工作目录，请完成选择后再执行");
     return socket;
   }
 
@@ -476,7 +515,7 @@ export class OneKeyPresence {
   }
 
   private async executionEvent(socket: WebSocket, state: SocketState, message: {
-    taskId: string; kind: string; text?: string; providerThreadId?: string; targetName?: string; status?: string;
+    taskId: string; kind: string; text?: string; providerThreadId?: string; targetName?: string; status?: string; round?: number;
   }) {
     const allowedKinds = new Set(["status", "message", "command", "file_change", "error"]);
     const kind = allowedKinds.has(message.kind) ? message.kind as "status" | "message" | "command" | "file_change" | "error" : "status";
@@ -486,16 +525,28 @@ export class OneKeyPresence {
       const device = database.oneKeyDevices.find((item) => item.id === state.deviceId && item.status === "active");
       const task = database.executionTasks.find((item) => item.id === message.taskId && item.deviceId === state.deviceId && item.installationId === state.installationId);
       if (!device || !task || task.workspaceId !== device.workspaceId || task.userId !== device.userId) return;
+      if (state.capabilities.has("execution_round_v1") && message.round !== (task.reportRound ?? 0)) return;
+      // A terminal is immutable until an explicit continuation starts a new round.
+      if (executionTerminal(task.status)) return;
       const timestamp = new Date().toISOString();
       if (message.providerThreadId) task.providerThreadId = message.providerThreadId.slice(0, 200);
-      if (message.targetName) task.targetName = message.targetName.slice(0, 200);
+      if (message.targetName) task.targetName = message.targetName.slice(0, 1000);
       if (message.status === "selecting_target") task.status = "selecting_target";
       if (message.status === "running") { task.status = "running"; task.startedAt ??= timestamp; task.lastError = undefined; }
-      if (message.status === "completed") { task.status = "completed"; task.completedAt = timestamp; if (text) task.finalResponse = text; }
+      if (kind === "message" && text) task.finalResponse = text;
+      if (message.status === "completed") {
+        const response = task.finalResponse || text;
+        const generic = /^Codex 本轮已结束/.test(response);
+        task.status = response && !generic ? "completed" : "failed";
+        task.completedAt = timestamp;
+        if (task.status === "completed") task.finalResponse = response;
+        else task.lastError = "执行器已退出，但没有返回可确认的结果。请检查文件，不会自动重跑。";
+      }
       if (message.status === "failed") { task.status = "failed"; task.completedAt = timestamp; task.lastError = text || "Codex 执行失败"; }
       if (message.status === "cancelled") { task.status = "cancelled"; task.completedAt = timestamp; }
       task.updatedAt = timestamp;
       if (text) appendExecutionEvent(database, { id: uid("exe"), workspaceId: task.workspaceId, userId: task.userId, taskId: task.id, kind, text, createdAt: timestamp });
+      saveExecutionReceipt(database, task);
     });
   }
 
@@ -503,12 +554,26 @@ export class OneKeyPresence {
     const state = this.states.get(socket);
     if (!state) return;
     clearTimeout(state.authTimeout);
-    if (this.sockets.get(state.deviceId) === socket) this.sockets.delete(state.deviceId);
+    const current = this.sockets.get(state.deviceId) === socket;
+    if (current) this.sockets.delete(state.deviceId);
     for (const [id, proof] of this.pending) if (proof.socket === socket) {
       clearTimeout(proof.timeout); this.pending.delete(id); proof.reject(new OneKeyPresenceError("ONE Key 连接已断开"));
     }
     for (const [id, pending] of this.pendingLocal) if (pending.socket === socket) {
       clearTimeout(pending.timeout); this.pendingLocal.delete(id); pending.reject(new OneKeyPresenceError("ONE Local Agent 连接已断开"));
     }
+    if (current && typeof this.store.mutate === "function") void this.store.mutate(db => {
+      // A reconnect is not permission to replay a task. A replaced socket must
+      // not fail work on the newly authenticated connection.
+      if (this.sockets.has(state.deviceId)) return;
+      const device = db.oneKeyDevices.find(d => d.id === state.deviceId && d.status === "active");
+      if (!device) return;
+      for (const task of db.executionTasks ?? []) {
+        if (task.deviceId !== state.deviceId || task.installationId !== state.installationId || task.workspaceId !== device.workspaceId || task.userId !== device.userId || executionTerminal(task.status)) continue;
+        task.status = "failed"; task.updatedAt = task.completedAt = new Date().toISOString();
+        task.lastError = "本机连接中断，执行结果尚未确认。可能已产生部分修改，请检查文件；不会自动重跑。";
+        saveExecutionReceipt(db, task);
+      }
+    }).catch(() => { /* Store failure is handled by the next explicit status request. */ });
   }
 }

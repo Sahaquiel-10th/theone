@@ -1,0 +1,4 @@
+.local-device-settings .local-directory-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.local-device-settings .local-directory-actions>button{width:auto;padding:9px 14px;border:1px solid var(--studio-line,#dce0d6);border-radius:9px;font:inherit;cursor:pointer}
+.local-device-settings .local-directory-actions>button:not(.primary){background:transparent;color:inherit}
+.local-device-settings .local-directory-actions>button:disabled{opacity:.5;cursor:default}

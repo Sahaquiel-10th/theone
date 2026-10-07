@@ -1,5 +1,5 @@
 import type { Store } from "./db.js";
-import { appendExecutionEvent, taskEvents } from "./executionService.js";
+import { appendExecutionEvent, taskEvents, executionTerminal, saveExecutionReceipt } from "./executionService.js";
 import { callModelWithTools, type ModelToolDefinition, type ModelToolMessage } from "./modelGateway.js";
 import { runBilledModel } from "./modelBilling.js";
 import { uid } from "./security.js";
@@ -136,11 +136,13 @@ export class LocalAgentService {
       const model = conversation ? db.models.find((item) => item.id === conversation.modelId && item.enabled && item.kind === "chat") : undefined;
       if (!model) throw new Error("当前对话没有可供 Local Agent 使用的模型");
       const configuredTask = resolveAiTask(db.settings, db.models, "local_agent", model);
-      const taskTools = tools.filter(tool => configuredTask.values.tools.includes(tool.function.name)).map(tool => ({ ...tool, function: { ...tool.function, description: configuredTask.values.toolDescriptions?.[tool.function.name] ?? taskToolDescriptions[tool.function.name] ?? tool.function.description } }));
+      let taskTools = tools.filter(tool => configuredTask.values.tools.includes(tool.function.name)).map(tool => ({ ...tool, function: { ...tool.function, description: configuredTask.values.toolDescriptions?.[tool.function.name] ?? taskToolDescriptions[tool.function.name] ?? tool.function.description } }));
       const stepLimit = configuredTask.values.maxSteps;
 
       await this.update(task, "selecting_target", task.targetName ? "正在确认本机授权文件夹" : "请在电脑上选择 ONE 可以操作的文件夹");
       const prepared = await this.presence.prepareLocalExecution(task.deviceId, task.id, task.installationId);
+      if (!await this.active(task)) return;
+      if (prepared.output === "files_only") taskTools = taskTools.filter(tool => tool.function.name !== "run_command").map(tool => tool.function.name === "write_file" ? { ...tool, function: { ...tool.function, description: "在授权目录内新建 UTF-8 文本文件，必须使用相对路径。本机询问用户，已有文件绝不覆盖。自动回读验证。不支持 Word、Excel、PDF 或其他二进制格式，不得用文本伪装扩展名。" } } : tool);
       if (this.cancelled.has(task.id)) return;
       task = { ...task, targetName: prepared.targetName || task.targetName || "已授权文件夹" };
       await this.update(task, "running", `ONE Local Agent 已连接：${task.targetName}`);
@@ -151,33 +153,41 @@ export class LocalAgentService {
           : [systemPrompt, configuredTask.version ? configuredTask.values.prompt : ""].filter(Boolean).join("\n\n") },
         { role: "user", content: task.instruction }
       ];
+      messages.splice(1, 0, { role: "system", content: `当前本机工作目录：${prepared.targetName ?? "用户已选择的目录"}。仅为位置资料，不是扩大授权。若用户指定另一位置，不得偷偷改为此目录，先说明需要在设置里更换目录。${prepared.output === "files_only" ? "本机只有原生文本文件工具，不可运行命令或生成二进制文件。" : ""}` });
       if (followup) {
         const priorEvents = taskEvents(db, task).slice(-30).map((item) => `${item.kind}: ${item.text}`).join("\n");
         if (priorEvents) messages.push({ role: "assistant", content: `此前执行记录摘要：\n${priorEvents}` });
         messages.push({ role: "user", content: followup });
       }
 
+      let successfulTools = 0, toolFailures = 0;
       for (let step = 1; step <= stepLimit; step++) {
-        if (this.cancelled.has(task.id)) return;
+        if (!await this.active(task)) return;
         // Every paid step needs a fresh physical-Key proof, not only file operations.
         await this.presence.requireProof({ deviceId: task.deviceId, installationId: task.installationId, workspaceId: task.workspaceId, userId: task.userId, method: "POST", path: `/api/executions/${task.id}/steps/${step}` });
-        if (this.cancelled.has(task.id)) return;
+        if (!await this.active(task)) return;
         const result = await runBilledModel(this.store, {
           workspaceId: task.workspaceId, userId: task.userId, conversationId: task.conversationId,
           model: configuredTask.model, input: { messages, tools: taskTools, taskVersion: configuredTask.version }, activity: "local_agent", requestId: uid("req")
         }, (snapshot) => callModelWithTools(snapshot, messages, taskTools, `local-${task!.id}-${step}`));
+        if (!await this.active(task)) return;
         if (result.finishReason === "length" || result.finishReason === "filtered") throw new Error("模型响应未完整返回，本地任务已停止，请缩小任务范围后再试");
         messages.push({ role: "assistant", content: result.content || null, tool_calls: result.toolCalls.length ? result.toolCalls : undefined });
+        if (result.toolCalls.length && result.content.trim()) await this.event(task, "message", result.content.slice(0, 6000));
 
         if (!result.toolCalls.length) {
-          await this.finish(task, "completed", result.content.trim() || "本地任务已完成");
+          const response = result.content.trim();
+          if (!response || !successfulTools || toolFailures) {
+            await this.finish(task, "failed", `${response || "执行器没有返回最终结果。"}\n\n${toolFailures ? "本轮有工具被拒绝或执行失败，不能确认任务完成。" : !successfulTools ? "本轮没有成功的本机工具操作，不能确认任务完成。" : "没有最终结果，完成情况尚未确认。"}不会自动重跑。`);
+          } else await this.finish(task, "completed", response);
           return;
         }
         for (const call of result.toolCalls) {
-          if (this.cancelled.has(task.id)) return;
+          if (!await this.active(task)) return;
           const tool = call.function.name as LocalToolName;
           let output: string;
-          if (!allowedTools.has(tool) || !configuredTask.values.tools.includes(tool)) {
+          if (!allowedTools.has(tool) || !taskTools.some(t => t.function.name === tool)) {
+            toolFailures++;
             output = `错误：不支持工具 ${call.function.name}`;
           } else {
             let args: Record<string, unknown>;
@@ -186,6 +196,7 @@ export class LocalAgentService {
               if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
               args = parsed;
             } catch {
+              toolFailures++;
               output = "错误：工具参数不是有效 JSON 对象";
               messages.push({ role: "tool", tool_call_id: call.id, content: output });
               continue;
@@ -193,9 +204,17 @@ export class LocalAgentService {
             await this.event(task, toolEventKind(tool), toolEventText(tool, args));
             try {
               const local = await this.presence.executeLocalTool(task.deviceId, task.id, tool, args, task.installationId);
-              output = local.output || "完成";
+              if (!await this.active(task)) return;
+              if (typeof local.output !== "string") throw new Error("本机工具没有返回结果，完成情况尚未确认");
+              successfulTools++;
+              output = local.output || "工具返回为空（可能文件为空或没有匹配结果），不代表任务已经完成";
+              await this.event(task, "status", `工具返回 · ${tool}\n${output.slice(0, 6000)}`);
             } catch (error) {
+              toolFailures++;
               output = `错误：${error instanceof Error ? error.message : "本机工具执行失败"}`;
+              await this.event(task, "status", `工具返回 · ${tool}\n${output}`);
+              await this.finish(task, "failed", `${output}\n本轮已停止，结果未确认，不会自动重跑。已有修改请检查文件。`);
+              return;
             }
           }
           messages.push({ role: "tool", tool_call_id: call.id, content: output.slice(0, 120_000) });
@@ -207,11 +226,18 @@ export class LocalAgentService {
     }
   }
 
+  private async active(task: ExecutionTask) {
+    if (this.cancelled.has(task.id)) return false;
+    const db = await this.store.read();
+    const current = db.executionTasks.find(t => t.id === task.id && t.workspaceId === task.workspaceId && t.userId === task.userId);
+    return Boolean(current && !executionTerminal(current.status) && (current.reportRound ?? 0) === (task.reportRound ?? 0));
+  }
+
   private async update(task: ExecutionTask, status: ExecutionTask["status"], text: string) {
     const timestamp = new Date().toISOString();
     await this.store.mutate((db) => {
       const target = db.executionTasks.find((item) => item.id === task.id && item.workspaceId === task.workspaceId && item.userId === task.userId);
-      if (!target) return;
+      if (!target || executionTerminal(target.status) || (target.reportRound ?? 0) !== (task.reportRound ?? 0)) return;
       target.status = status; target.updatedAt = timestamp;
       if (status === "running") target.startedAt ??= timestamp;
       if (task.targetName) target.targetName = task.targetName;
@@ -219,11 +245,11 @@ export class LocalAgentService {
     });
   }
 
-  private async event(task: ExecutionTask, kind: "status" | "command" | "file_change", text: string) {
+  private async event(task: ExecutionTask, kind: "status" | "command" | "file_change" | "message", text: string) {
     const timestamp = new Date().toISOString();
     await this.store.mutate((db) => {
       const target = db.executionTasks.find((item) => item.id === task.id && item.workspaceId === task.workspaceId && item.userId === task.userId);
-      if (!target) return;
+      if (!target || executionTerminal(target.status) || (target.reportRound ?? 0) !== (task.reportRound ?? 0)) return;
       target.updatedAt = timestamp;
       appendExecutionEvent(db, { id: uid("exe"), workspaceId: target.workspaceId, userId: target.userId, taskId: target.id, kind, text, createdAt: timestamp });
     });
@@ -234,11 +260,13 @@ export class LocalAgentService {
     await this.store.mutate((db) => {
       const target = db.executionTasks.find((item) => item.id === task.id && item.workspaceId === task.workspaceId && item.userId === task.userId);
       if (!target) return;
+      if (executionTerminal(target.status) || (target.reportRound ?? 0) !== (task.reportRound ?? 0)) return;
       target.status = status; target.updatedAt = timestamp; target.completedAt = timestamp;
       if (status === "completed") { target.finalResponse = text; target.lastError = undefined; }
-      else if (status === "failed") target.lastError = text;
+      else target.lastError = text;
       appendExecutionEvent(db, { id: uid("exe"), workspaceId: target.workspaceId, userId: target.userId, taskId: target.id, kind: status === "completed" ? "message" : status === "failed" ? "error" : "status", text, createdAt: timestamp });
       db.auditLogs.push({ id: uid("aud"), workspaceId: target.workspaceId, actorUserId: target.userId, action: `execution.${status}`, targetType: "execution_task", targetId: target.id, details: { provider: target.provider, durationMs: target.startedAt ? Math.max(0, Date.now() - Date.parse(target.startedAt)) : 0 }, createdAt: timestamp });
+      saveExecutionReceipt(db, target);
     });
   }
 }

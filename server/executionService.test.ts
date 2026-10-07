@@ -2,6 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Database, ExecutionTask, MessageRecord } from "./types.js";
 import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, saveExecutionInput, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
+import { saveExecutionReceipt, executionReceipts } from './executionService.js';
+
+test('execution receipts retain source and round, deduplicate and isolate workspace and owner', () => {
+  const task = { id:'t', workspaceId:'a', userId:'u', conversationId:'c', provider:'codex', status:'completed', finalResponse:'创建 /QA/result.txt，回读 ONE_QA_OK', targetName:'/QA', updatedAt:'2026-10-07' } as ExecutionTask;
+  const db = { conversations:[{id:'c',workspaceId:'a',userId:'u',messages:[]}], messages:[] } as unknown as Database;
+  saveExecutionReceipt(db,task); saveExecutionReceipt(db,task);
+  assert.equal(db.messages.length,1); assert.match(db.messages[0].content,/第 1 轮/); assert.match(db.messages[0].content,/回读 ONE_QA_OK/);
+  assert.equal(executionReceipts(db,'b','u').length,0); assert.equal(executionReceipts(db,'a','v').length,0);
+  saveExecutionReceipt(db,{...task,reportRound:1,status:'cancelled',lastError:'停止'});
+  assert.equal(db.messages.length,2); assert.match(db.messages[1].content,/取消/);
+  saveExecutionReceipt(db,{...task,workspaceId:'b',reportRound:2}); assert.equal(db.messages.length,2);
+  for (let reportRound=2;reportRound<8;reportRound++) saveExecutionReceipt(db,{...task,reportRound});
+  assert.equal(executionReceipts(db,'a','u','c').length,3);
+});
 
 test("execution trace cannot expose another workspace or user's instruction", () => {
   const database = { executionTasks: [{ id: "t", workspaceId: "a", userId: "u", instruction: "private" }], messages: [] } as unknown as Database;

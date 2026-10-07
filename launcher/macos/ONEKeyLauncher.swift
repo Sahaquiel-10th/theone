@@ -42,7 +42,11 @@ struct SocketMessage: Decodable {
     let deviceId: String?
     let taskId: String?
     let instruction: String?
+    let round: Int?
     let requestId: String?
+    let change: Bool?
+    let tool: String?
+    let arguments: LocalFileArguments?
     let envelope: SignedRuntimeUpdate?
 }
 struct SocketResponse: Encodable { let type: String; let challengeId: String; let signature: String }
@@ -50,7 +54,7 @@ struct SocketAuthResponse: Encodable {
     let type: String
     let challengeId: String
     let signature: String
-    let capabilities = ["runtime_update_v1"]
+    let capabilities = ["runtime_update_v1", "local_configuration_v1", "local_tools_v1", "codex_exec_v1", "execution_round_v1"]
     let platform = "macos"
     let architecture: String
     let launcherVersion: String
@@ -64,6 +68,15 @@ struct ExecutionEventResponse: Encodable {
     let providerThreadId: String?
     let targetName: String?
     let status: String?
+    let round: Int
+}
+struct LocalConfigurationResponse: Encodable {
+    let type: String
+    let taskId: String
+    let requestId: String
+    let targetName: String?
+    let output: String
+    let error: String?
 }
 struct SignedRuntimeUpdate: Codable { let payload: String; let signature: String }
 struct RuntimeUpdatePayload: Decodable {
@@ -500,20 +513,21 @@ func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL,
 }
 
 @MainActor
-func executionProject(deviceId: String) -> String? {
+func executionProject(deviceId: String, change: Bool = false) -> String? {
     let key = "one.execution.project.\(deviceId)"
-    if let saved = oneDefaults().string(forKey: key), FileManager.default.fileExists(atPath: saved) { return saved }
+    if !change, let saved = oneDefaults().string(forKey: key), FileManager.default.fileExists(atPath: saved) { return saved }
     NSApplication.shared.activate(ignoringOtherApps: true)
     let panel = NSOpenPanel()
     panel.title = "选择允许 ONE 执行任务的文件夹"
-    panel.message = "Codex 只能在你选择的文件夹中读取和修改文件。以后可以重新选择。"
+    panel.message = "选择本轮工作的文件夹。ONE 原生文件工具限于此目录；外部执行器的权限另由其安全机制约束。可在 ONE 设置中更换。"
     panel.prompt = "允许并开始执行"
     panel.canChooseDirectories = true
     panel.canChooseFiles = false
     panel.allowsMultipleSelection = false
     guard panel.runModal() == .OK, let path = panel.url?.path else { return nil }
-    oneDefaults().set(path, forKey: key)
-    return path
+    let canonical = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+    oneDefaults().set(canonical, forKey: key)
+    return canonical
 }
 
 @MainActor
@@ -591,7 +605,10 @@ final class CodexExecutionRunner: @unchecked Sendable {
     private var threadIds: [String: String] = [:]
     private var projectPaths: [String: String] = [:]
     private var lastResponses: [String: String] = [:]
+    private var toolFailures = Set<String>()
     private var cancelled = Set<String>()
+    private var preparing = Set<String>()
+    private var rounds: [String: Int] = [:]
     private var outputBuffers: [String: String] = [:]
     private var errorBuffers: [String: String] = [:]
 
@@ -601,17 +618,27 @@ final class CodexExecutionRunner: @unchecked Sendable {
         self.credentialUrl = credentialUrl
     }
 
-    func start(taskId: String, instruction: String, resume: Bool) {
+    func start(taskId: String, instruction: String, resume: Bool, round: Int = 0) {
+        let accepted = synchronized { () -> Bool in
+            if processes[taskId] != nil || preparing.contains(taskId) { return false }
+            preparing.insert(taskId); cancelled.remove(taskId); rounds[taskId] = round
+            return true
+        }
+        guard accepted else {
+            Task { await send(taskId: taskId, kind: "error", text: "上一轮的本机进程或授权窗口尚未退出，请关闭窗口后再执行；本次未启动，也不会自动重跑。", status: "failed", round: round) }
+            return
+        }
         Task { await self.run(taskId: taskId, instruction: instruction, resume: resume) }
     }
 
     func cancel(taskId: String) {
-        let process = synchronized { cancelled.insert(taskId); return processes[taskId] }
+        let (process, round) = synchronized { cancelled.insert(taskId); return (processes[taskId], rounds[taskId] ?? 0) }
         process?.terminate()
-        Task { await send(taskId: taskId, kind: "status", text: "已停止 Codex 执行", status: "cancelled") }
+        Task { await send(taskId: taskId, kind: "status", text: "已提交停止请求；已产生的修改不会自动撤销", status: "cancelled", round: round) }
     }
 
     private func run(taskId: String, instruction: String, resume: Bool) async {
+        defer { synchronized { preparing.remove(taskId) } }
         let alreadyRunning = synchronized { processes[taskId] != nil }
         if alreadyRunning { await send(taskId: taskId, kind: "error", text: "Codex 正在执行当前任务", status: "failed"); return }
         guard let executable = await codexExecutable(credentialUrl: credentialUrl) else {
@@ -625,15 +652,21 @@ final class CodexExecutionRunner: @unchecked Sendable {
         }
 
         var projectPath = synchronized { projectPaths[taskId] }
+        let configuredPath = oneDefaults().string(forKey: "one.execution.project.\(deviceId)")
+        if let projectPath, let configuredPath, projectPath != configuredPath {
+            await send(taskId: taskId, kind: "error", text: "授权目录已更换。请从这件事重新发起执行，不会复用旧目录或旧会话。", status: "failed")
+            return
+        }
         if projectPath == nil {
-            await send(taskId: taskId, kind: "status", text: "请选择 Codex 可以工作的文件夹", status: "selecting_target")
+            await send(taskId: taskId, kind: "status", text: configuredPath == nil ? "请在电脑上选择工作文件夹" : "正在确认已选择的工作目录：\(configuredPath!)", status: "selecting_target")
             projectPath = await executionProject(deviceId: deviceId)
         }
         guard let projectPath else {
             await send(taskId: taskId, kind: "error", text: "没有选择执行文件夹", status: "cancelled")
             return
         }
-        let threadId = synchronized { projectPaths[taskId] = projectPath; cancelled.remove(taskId); return threadIds[taskId] }
+        if synchronized({ cancelled.contains(taskId) }) { return }
+        let threadId = synchronized { projectPaths[taskId] = projectPath; return threadIds[taskId] }
 
         let process = Process()
         let stdout = Pipe(), stderr = Pipe(), stdin = Pipe()
@@ -646,28 +679,43 @@ final class CodexExecutionRunner: @unchecked Sendable {
         process.standardError = stderr
         process.standardInput = stdin
 
-        stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let self else { return }
-            for line in self.appendOutput(taskId: taskId, data: data) { self.consume(taskId: taskId, line: line, targetName: URL(fileURLWithPath: projectPath).lastPathComponent) }
-        }
-        stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let self else { return }
-            self.synchronized {
-                let combined = (self.errorBuffers[taskId] ?? "") + String(decoding: data, as: UTF8.self)
-                self.errorBuffers[taskId] = String(combined.suffix(4000))
-            }
-        }
-
         do {
+            synchronized { lastResponses.removeValue(forKey: taskId); toolFailures.remove(taskId) }
             try process.run()
-            synchronized { processes[taskId] = process; lastResponses.removeValue(forKey: taskId) }
-            await send(taskId: taskId, kind: "status", text: resume ? "Codex 已继续执行" : "Codex 已开始执行", targetName: URL(fileURLWithPath: projectPath).lastPathComponent, status: "running")
+            synchronized { processes[taskId] = process }
+            // Read both pipes through EOF. Process exit alone is not an output
+            // barrier; each event is awaited before publishing the terminal.
+            try? stdout.fileHandleForWriting.close()
+            try? stderr.fileHandleForWriting.close()
+            let outputReader = Task.detached { [self] in
+                var pending = Data()
+                while true {
+                    let chunk = stdout.fileHandleForReading.availableData
+                    if chunk.isEmpty { break }
+                    pending.append(chunk)
+                    while let newline = pending.firstIndex(of: 10) {
+                        let line = String(decoding: pending[..<newline], as: UTF8.self)
+                        pending.removeSubrange(...newline)
+                        await consume(taskId: taskId, line: line, targetName: projectPath)
+                    }
+                }
+                if !pending.isEmpty { await consume(taskId: taskId, line: String(decoding: pending, as: UTF8.self), targetName: projectPath) }
+            }
+            let errorReader = Task.detached { [self] in
+                while true {
+                    let data = stderr.fileHandleForReading.availableData
+                    if data.isEmpty { break }
+                    synchronized {
+                        let combined = (errorBuffers[taskId] ?? "") + String(decoding: data, as: UTF8.self)
+                        errorBuffers[taskId] = String(combined.suffix(4000))
+                    }
+                }
+            }
+            await send(taskId: taskId, kind: "status", text: "\(resume ? "继续执行" : "开始执行") · 工作位置：\(projectPath)", targetName: projectPath, status: "running")
             stdin.fileHandleForWriting.write(Data(instruction.utf8)); try? stdin.fileHandleForWriting.close()
             let exitCode = await Task.detached { process.waitUntilExit(); return process.terminationStatus }.value
-            stdout.fileHandleForReading.readabilityHandler = nil
-            stderr.fileHandleForReading.readabilityHandler = nil
+            await outputReader.value
+            await errorReader.value
             let result = synchronized { () -> (Bool, String?, String) in
                 processes.removeValue(forKey: taskId)
                 let wasCancelled = cancelled.remove(taskId) != nil
@@ -679,7 +727,12 @@ final class CodexExecutionRunner: @unchecked Sendable {
             let (wasCancelled, finalResponse, errorText) = result
             if wasCancelled { return }
             if exitCode == 0 {
-                await send(taskId: taskId, kind: "status", text: finalResponse == nil ? "Codex 本轮已结束，但没有返回文字结果" : "Codex 本轮已结束，请查看执行结果", status: "completed")
+                if let finalResponse, !finalResponse.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let failed = synchronized { toolFailures.remove(taskId) != nil }
+                    await send(taskId: taskId, kind: failed ? "error" : "status", text: failed ? "\(finalResponse)\n\n本轮有工具执行失败，完成情况需检查，不会自动重跑。" : finalResponse, status: failed ? "failed" : "completed")
+                } else {
+                    await send(taskId: taskId, kind: "error", text: "执行器已退出，但没有返回本轮结果，任务是否完成尚未确认。请检查文件，不会自动重跑。", status: "failed")
+                }
             } else {
                 await send(taskId: taskId, kind: "error", text: errorText.isEmpty ? "Codex 执行失败" : String(errorText.prefix(4000)), status: "failed")
             }
@@ -691,26 +744,39 @@ final class CodexExecutionRunner: @unchecked Sendable {
         }
     }
 
-    private func consume(taskId: String, line: String, targetName: String) {
+    private func consume(taskId: String, line: String, targetName: String) async {
         guard let data = line.data(using: .utf8), let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let type = payload["type"] as? String else { return }
         if type == "thread.started", let id = payload["thread_id"] as? String {
             synchronized { threadIds[taskId] = id }
-            Task { await send(taskId: taskId, kind: "status", text: "Codex 会话已建立", providerThreadId: id, targetName: targetName, status: "running") }
+            await send(taskId: taskId, kind: "status", text: "Codex 会话已建立", providerThreadId: id, targetName: targetName, status: "running")
+            return
+        }
+        if type == "turn.failed" || type == "error" {
+            synchronized { toolFailures.insert(taskId) }
+            let detail = (payload["error"] as? [String: Any])?["message"] as? String ?? payload["message"] as? String ?? "执行器返回错误"
+            await send(taskId: taskId, kind: "error", text: String(detail.prefix(4000)))
             return
         }
         guard let item = payload["item"] as? [String: Any], let itemType = item["type"] as? String else { return }
         if type == "item.completed", itemType == "agent_message", let text = item["text"] as? String, !text.isEmpty {
             synchronized { lastResponses[taskId] = text }
-            Task { await send(taskId: taskId, kind: "message", text: text) }
+            await send(taskId: taskId, kind: "message", text: text)
         } else if type == "item.started", itemType == "command_execution", let command = item["command"] as? String {
-            Task { await send(taskId: taskId, kind: "command", text: "正在运行：\(String(command.prefix(600)))") }
+            await send(taskId: taskId, kind: "command", text: "正在运行：\(String(command.prefix(600)))")
+        } else if type == "item.completed", itemType == "command_execution" {
+            let failed = (item["exit_code"] as? Int).map { $0 != 0 } ?? (item["status"] as? String == "failed")
+            if failed { synchronized { toolFailures.insert(taskId) } }
+            let output = item["aggregated_output"] as? String ?? "未返回文字输出"
+            await send(taskId: taskId, kind: failed ? "error" : "command", text: "工具返回\(failed ? " · 失败" : "")：\n\(String(output.prefix(6000)))")
         } else if type == "item.completed", itemType == "file_change" {
-            Task { await send(taskId: taskId, kind: "file_change", text: "Codex 已更新文件") }
+            let paths = (item["changes"] as? [[String: Any]])?.compactMap { $0["path"] as? String }.joined(separator: "\n") ?? ""
+            if item["status"] as? String == "failed" { synchronized { toolFailures.insert(taskId) } }
+            await send(taskId: taskId, kind: "file_change", text: "执行器报告文件变更：\n\(String(paths.prefix(4000)))")
         }
     }
 
-    private func send(taskId: String, kind: String, text: String? = nil, providerThreadId: String? = nil, targetName: String? = nil, status: String? = nil) async {
-        let event = ExecutionEventResponse(taskId: taskId, kind: kind, text: text, providerThreadId: providerThreadId, targetName: targetName, status: status)
+    private func send(taskId: String, kind: String, text: String? = nil, providerThreadId: String? = nil, targetName: String? = nil, status: String? = nil, round: Int? = nil) async {
+        let event = ExecutionEventResponse(taskId: taskId, kind: kind, text: text, providerThreadId: providerThreadId, targetName: targetName, status: status, round: round ?? synchronized { rounds[taskId] ?? 0 })
         if let data = try? JSONEncoder().encode(event) { try? await socket.send(.string(String(decoding: data, as: UTF8.self))) }
     }
 
@@ -729,8 +795,62 @@ final class CodexExecutionRunner: @unchecked Sendable {
     }
 }
 
+@MainActor
+final class MacLocalExecutor {
+    private var roots = [String: String]()
+    private var cancelled = Set<String>()
+    private let deviceId: String
+    private let credentialUrl: URL
+    init(deviceId: String, credentialUrl: URL) { self.deviceId = deviceId; self.credentialUrl = credentialUrl }
+    func cancel(_ taskId: String) { cancelled.insert(taskId) }
+    func prepare(_ taskId: String) throws -> String {
+        cancelled.remove(taskId)
+        guard let path = executionProject(deviceId: deviceId) else { throw LauncherError.message("已取消目录授权，尚未操作文件") }
+        roots[taskId] = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        return roots[taskId]!
+    }
+    func execute(_ taskId: String, tool: String, args: LocalFileArguments) throws -> String {
+        guard try loadCredential(credentialUrl).deviceId == deviceId else { throw LauncherError.message("ONE Key 已断开，未操作") }
+        guard !cancelled.contains(taskId), let root = roots[taskId], root == oneDefaults().string(forKey: "one.execution.project.\(deviceId)") else { throw LauncherError.message("执行已停止或授权目录已变化，未操作") }
+        let files = try MacLocalFiles(root: root), path = args.path ?? "."
+        if tool == "write_file" || tool == "replace_in_file" {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            let alert = NSAlert(); alert.messageText = tool == "write_file" ? "ONE 请求创建文件" : "ONE 请求修改文件"
+            alert.informativeText = "工作目录：\(root)\n相对路径：\(path)\n\n\(String((args.content ?? args.newText ?? "").prefix(1200)))"
+            alert.addButton(withTitle: "允许"); alert.addButton(withTitle: "不允许")
+            if alert.runModal() != .alertFirstButtonReturn { throw LauncherError.message("用户拒绝文件操作，未修改") }
+            if cancelled.contains(taskId) { throw LauncherError.message("执行已停止，未修改") }
+            guard try loadCredential(credentialUrl).deviceId == deviceId else { throw LauncherError.message("ONE Key 已断开，未修改") }
+            guard root == oneDefaults().string(forKey: "one.execution.project.\(deviceId)") else { throw LauncherError.message("授权目录已变化，未修改") }
+        }
+        switch tool {
+        case "list_files": return try files.list(path, depth: min(4, max(1, args.maxDepth ?? 2))).joined(separator: "\n")
+        case "read_file":
+            let lines = try files.read(path).components(separatedBy: "\n"), start = max(1, args.startLine ?? 1), end = min(lines.count, args.endLine ?? 500)
+            if start > end { return "没有对应行" }
+            return lines[(start-1)..<end].enumerated().map { "\($0.offset+start): \($0.element)" }.joined(separator: "\n")
+        case "search_text":
+            guard let query = args.query, !query.isEmpty else { throw LauncherError.message("搜索内容不能为空") }
+            var found = [String](), candidates = (try? files.list(path, depth: 4)) ?? []
+            if candidates.isEmpty && (try? files.read(path)) != nil { candidates = [path] }
+            for candidate in candidates where !candidate.hasSuffix("/") {
+                guard let text = try? files.read(candidate) else { continue }
+                for (index,line) in text.components(separatedBy: "\n").enumerated() {
+                    if line.range(of: query, options: args.caseSensitive == true ? [] : .caseInsensitive) != nil { found.append("\(candidate):\(index+1): \(String(line.prefix(600)))") }
+                    if found.count >= min(200, max(1, args.maxResults ?? 80)) { return found.joined(separator: "\n") }
+                }
+            }
+            return found.isEmpty ? "没有匹配" : found.joined(separator: "\n")
+        case "write_file": guard let content = args.content else { throw LauncherError.message("缺少文件内容") }; return try files.create(path, content: content)
+        case "replace_in_file": guard let old = args.oldText, let new = args.newText else { throw LauncherError.message("缺少替换内容") }; return try files.replace(path, old: old, new: new)
+        default: throw LauncherError.message("Mac 原生文件工具不支持此操作；未运行命令或扩大权限")
+        }
+    }
+}
+
 func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: String) async throws -> URL? {
     let execution = CodexExecutionRunner(socket: task, deviceId: deviceId, credentialUrl: credentialUrl)
+    let localExecutor = await MacLocalExecutor(deviceId: deviceId, credentialUrl: credentialUrl)
     var installJob: Task<URL, Error>?
     do {
     while true {
@@ -751,12 +871,41 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
             try await task.send(.string(String(decoding: try JSONEncoder().encode(response), as: UTF8.self)))
         } else if message.type == "runtime_recovery_ack", let requestId = message.requestId {
             try? acknowledgeMacRecovery(credential: credentialUrl, journal: macRecoveryJournal(deviceId: deviceId), requestId: requestId)
+        } else if message.type == "local_configuration", let requestId = message.requestId {
+            Task { @MainActor in
+                let selected = message.change == true ? executionProject(deviceId: deviceId, change: true) : oneDefaults().string(forKey: "one.execution.project.\(deviceId)")
+                let response = LocalConfigurationResponse(type: message.change == true && selected == nil ? "local_error" : "local_ready", taskId: "device_settings", requestId: requestId, targetName: selected, output: selected ?? "", error: message.change == true && selected == nil ? "已取消选择，原授权目录保持不变" : nil)
+                if let data = try? JSONEncoder().encode(response) { try? await task.send(.string(String(decoding: data, as: UTF8.self))) }
+            }
         } else if message.type == "execution_start", let taskId = message.taskId, let instruction = message.instruction {
-            execution.start(taskId: taskId, instruction: instruction, resume: false)
+            execution.start(taskId: taskId, instruction: instruction, resume: false, round: message.round ?? 0)
         } else if message.type == "execution_continue", let taskId = message.taskId, let instruction = message.instruction {
-            execution.start(taskId: taskId, instruction: instruction, resume: true)
+            execution.start(taskId: taskId, instruction: instruction, resume: true, round: message.round ?? 0)
         } else if message.type == "execution_cancel", let taskId = message.taskId {
             execution.cancel(taskId: taskId)
+            await localExecutor.cancel(taskId)
+        } else if message.type == "local_prepare", let taskId = message.taskId, let requestId = message.requestId {
+            Task { @MainActor in
+                do {
+                    let root = try localExecutor.prepare(taskId)
+                    let response = LocalConfigurationResponse(type: "local_ready", taskId: taskId, requestId: requestId, targetName: root, output: "files_only", error: nil)
+                    try await task.send(.string(String(decoding: JSONEncoder().encode(response), as: UTF8.self)))
+                } catch {
+                    let response = LocalConfigurationResponse(type: "local_error", taskId: taskId, requestId: requestId, targetName: nil, output: "", error: error.localizedDescription)
+                    if let data = try? JSONEncoder().encode(response) { try? await task.send(.string(String(decoding: data, as: UTF8.self))) }
+                }
+            }
+        } else if message.type == "tool_request", let taskId = message.taskId, let requestId = message.requestId, let tool = message.tool, let arguments = message.arguments {
+            Task { @MainActor in
+                do {
+                    let output = try localExecutor.execute(taskId, tool: tool, args: arguments)
+                    let response = LocalConfigurationResponse(type: "tool_result", taskId: taskId, requestId: requestId, targetName: nil, output: String(output.prefix(120000)), error: nil)
+                    try await task.send(.string(String(decoding: JSONEncoder().encode(response), as: UTF8.self)))
+                } catch {
+                    let response = LocalConfigurationResponse(type: "local_error", taskId: taskId, requestId: requestId, targetName: nil, output: "", error: error.localizedDescription)
+                    if let data = try? JSONEncoder().encode(response) { try? await task.send(.string(String(decoding: data, as: UTF8.self))) }
+                }
+            }
         } else if message.type == "update_install", let requestId = message.requestId, let envelope = message.envelope {
             guard installJob == nil, runtimeInstallActivity.begin() else { continue }
             installJob = Task.detached {

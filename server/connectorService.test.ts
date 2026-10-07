@@ -50,10 +50,10 @@ test("connector registry rejects duplicates and unknown disable targets", () => 
 test("connector list is scoped, secret-free and does not claim runtime readiness", async () => {
   const { service } = fixture();
   const list = await service.list(scope);
-  assert.deepEqual(list.map(item => item.id), ["getnote", "codex", "local_agent"]);
+  assert.deepEqual(list.map(item => item.id), ["getnote", "local_agent", "codex"]);
   assert.equal(list[0].health.state, "configured");
-  assert.equal(list[1].health.state, "transport_ready");
-  assert.equal(list[2].health.state, "unavailable");
+  assert.equal(list.find(item => item.id === "codex")!.health.state, "transport_ready");
+  assert.equal(list.find(item => item.id === "local_agent")!.health.state, "unavailable");
   assert.doesNotMatch(JSON.stringify(list), /private-|encryptedApiKey|deviceId|providerThreadId/);
   await assert.rejects(service.list({ ...scope, workspaceId: "b" }), ConnectorAccessError);
   const other = await service.list({ workspaceId: "b", userId: "ub", deviceId: "da" });

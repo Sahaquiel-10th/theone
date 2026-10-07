@@ -280,6 +280,19 @@ test('on-demand task reading is private and local completion reporting is persis
  await f.store.mutate(d=>{const task=d.executionTasks[0];task.reportRound=1;task.reportedToCoordinatorAt=undefined;task.finalResponse='第二轮的独立结果';});await f.service.report(a,['local-completed'],key);await f.service.report(a,['local-completed'],key);assert.equal((await f.store.read()).conversations.find(c=>c.coordinatorMain&&c.userId==='a')!.messages.filter(m=>m.id==='report_local-completed_1').length,1);
  const blocked=fixture();await blocked.store.mutate(d=>{d.conversations.push({...b,id:'foreign',title:'秘密',modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp});});blocked.setRoute(()=>({...answer(''),toolCalls:[{id:'read',type:'function',function:{name:'read_task',arguments:JSON.stringify({query:'foreign'})}}]}));await assert.rejects(blocked.service.dispatch(a,input('operation_read_denied','读旧事情'),key));
 });
+test('a batch briefing is one message with all task links and replays never duplicate it', async () => {
+ const f=fixture(); await f.service.dispatch(a,input('operation_batch_start','你好'),key);
+ const stamp=new Date().toISOString();
+ await f.store.mutate(d=>{
+   d.executionTasks=['one','two'].map(id=>({...a,id,conversationId:id,sourceMessageId:id,provider:'local_agent',instruction:'safe',deviceId:'fixture-key',status:'completed',finalResponse:`${id} 已创建并回读：/QA/${id}.md`,createdAt:stamp,updatedAt:stamp}));
+   for(const id of ['one','two']) d.conversations.push({...a,id,title:id,modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp});
+ });
+ await f.service.report(a,['one','two'],key);await f.service.report(a,['two','one'],key);
+ const state=await f.service.state(a), brief=state.conversation!.messages.filter(m=>m.id?.startsWith('report_'));
+ assert.equal(brief.length,1);assert.match(brief[0].content,/2 件事情/);
+ assert.deepEqual(state.links.filter(l=>l.messageId===brief[0].id).map(l=>l.taskId).sort(),['one','two']);
+ assert.equal(state.notices.length,0);
+});
 test('local dispatch preserves the handoff, bypasses cloud worker and replay never executes twice', async () => {
   const f = fixture(), executed: string[] = [];
   const run = async (cid: string, mid: string) => { const d=await f.store.read(); assert.equal(d.messages.find(m=>m.id===mid)?.content,'UI 标题改成荷叶饼，开工'); executed.push(cid); return {id:'ext-fixture',status:'queued'}; };

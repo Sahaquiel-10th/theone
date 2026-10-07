@@ -18,7 +18,7 @@ export function CoordinatorConversation({messages,tasks,pending,onOpen}:{message
    {messages.map(message=><article key={message.id} className={`coordinator-message ${message.role}`} data-message-kind={message.kind||'conversation'}>
     {message.featureName?<span className="coordinator-feature-label">{message.featureName}</span>:null}{message.role==='assistant'?<MessageMarkdown>{message.text}</MessageMarkdown>:<p>{message.text}</p>}
     {message.files?.map(file=><small key={file.id}>📎 {file.originalName}</small>)}
-    {message.taskId?<button type="button" className="coordinator-task-link" aria-label={`打开任务：${tasks.find(task=>task.id===message.taskId)?.title}`} onClick={()=>onOpen(message.taskId!)}><Lightbulb size={13}/>{tasks.find(task=>task.id===message.taskId)?.title} <span aria-hidden="true">↗</span></button>:null}
+    {(message.taskIds?.length ? message.taskIds : message.taskId ? [message.taskId] : []).map(id=><button key={id} type="button" className="coordinator-task-link" aria-label={`打开任务：${tasks.find(task=>task.id===id)?.title || '查看事情'}`} onClick={()=>onOpen(id)}><Lightbulb size={13}/>{tasks.find(task=>task.id===id)?.title || '查看事情'} <span aria-hidden="true">↗</span></button>)}
    </article>)}
    {pending?<OneWaitingCopy/>:null}
   </div>

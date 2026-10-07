@@ -353,6 +353,7 @@ export function useCoordinator(
         originalName: file.originalName,
       })),
       taskId: snapshot?.links?.find((l) => l.messageId === m.id)?.taskId,
+      taskIds: [...new Set(snapshot?.links?.filter(l => l.messageId === m.id).map(l => l.taskId) ?? [])],
     })),
     pending:
       localPending || snapshot?.pendingOperationId

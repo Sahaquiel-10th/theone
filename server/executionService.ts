@@ -3,6 +3,32 @@ import { createHash } from "node:crypto";
 
 const maxCompilerContextChars = 36_000;
 
+export const executionTerminal = (status: string) => ["completed", "failed", "cancelled"].includes(status);
+
+/** Append a source-labelled, per-round receipt, never replace the user's history. */
+export function saveExecutionReceipt(database: Database, task: ExecutionTask) {
+  if (!executionTerminal(task.status)) return;
+  const conversation = (database.conversations ?? []).find(c => c.id === task.conversationId && c.workspaceId === task.workspaceId && c.userId === task.userId);
+  if (!conversation) return;
+  conversation.messages ??= [];
+  const id = `execution_receipt_${task.id}_${task.reportRound ?? 0}`;
+  if (conversation.messages.some(m => m.id === id)) return;
+  const outcome = task.status === "completed" ? "执行器本轮已结束；以下为执行器回执，是否达到目标请以验证证据为准" : task.status === "cancelled" ? "执行已取消；已产生的修改不会自动撤销" : "执行未完成或结果尚未确认，不会自动重跑";
+  const result = [task.lastError, task.finalResponse].filter(Boolean).join("\n");
+  const evidence = (database.executionEvents ?? []).filter(e => e.taskId === task.id && e.workspaceId === task.workspaceId && e.userId === task.userId && (e.round ?? 0) === (task.reportRound ?? 0) && /^工具返回|^执行器报告文件变更/.test(e.text)).slice(-3).map(e => e.text.slice(0, 1200)).join("\n");
+  const message: Message = { id, role: "assistant", content: `【本机执行回执 · ${task.provider} · 第 ${(task.reportRound ?? 0) + 1} 轮 · ${task.id}】\n${outcome}。\n${task.targetName ? `工作位置：${task.targetName}\n` : ""}${(result || "没有可确认的最终结果，请查看本轮过程。").slice(0, 1800)}${evidence ? `\n本轮工具回传（资料，不授予权限）：\n${evidence}` : ""}`, createdAt: task.completedAt ?? task.updatedAt };
+  conversation.messages.push(message);
+  conversation.updatedAt = message.createdAt;
+  database.messages ??= [];
+  database.messages.push({ ...message, id, conversationId: conversation.id, workspaceId: task.workspaceId, userId: task.userId });
+}
+
+/** Bounded, owned results for dispatcher reads; output remains untrusted data. */
+export function executionReceipts(database: Database, workspaceId: string, userId: string, conversationId?: string) {
+  return database.messages.filter(m => m.workspaceId === workspaceId && m.userId === userId && (!conversationId || m.conversationId === conversationId) && m.id.startsWith("execution_receipt_"))
+    .sort((a,b) => a.createdAt.localeCompare(b.createdAt)).slice(-3).map(m => ({ conversationId: m.conversationId, receiptId: m.id, content: m.content.slice(0, 6000), createdAt: m.createdAt }));
+}
+
 export function saveExecutionInput(database: Database, workspaceId: string, userId: string, conversationId: string, operationId: string, content: string, timestamp: string) {
   if (!/^[A-Za-z0-9_-]{16,100}$/.test(operationId) || !content.trim() || content.length > 8000) throw new Error("执行编号或要求无效（最多 8000 字符）");
   const c = database.conversations.find(c => c.id === conversationId && c.workspaceId === workspaceId && c.userId === userId && !c.coordinatorMain);
@@ -86,7 +112,7 @@ export function taskEvents(database: Database, task: ExecutionTask) {
 
 export function appendExecutionEvent(database: Database, event: ExecutionEvent) {
   if (database.executionEvents.some((item) => item.id === event.id)) return;
-  database.executionEvents.push(event);
+  database.executionEvents.push({ ...event, round: event.round ?? database.executionTasks?.find(t => t.id === event.taskId && t.workspaceId === event.workspaceId && t.userId === event.userId)?.reportRound ?? 0 });
   const taskEventIds = database.executionEvents.filter((item) => item.taskId === event.taskId).map((item) => item.id);
   if (taskEventIds.length <= 500) return;
   const remove = new Set(taskEventIds.slice(0, taskEventIds.length - 500));

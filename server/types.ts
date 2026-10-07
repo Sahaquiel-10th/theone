@@ -160,7 +160,7 @@ export type ExecutionTask = {
 export type ExecutionEvent = {
   id: string; workspaceId: string; userId: string; taskId: string;
   kind: "status" | "user_message" | "message" | "command" | "file_change" | "error";
-  text: string; createdAt: string;
+  text: string; createdAt: string; round?: number;
 };
 
 export type OneKeyDevice = {

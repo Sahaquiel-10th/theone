@@ -14,6 +14,7 @@ import {ResultSignal} from './preview/ResultSignal';
 import {useWorkspacePreview} from './preview/useWorkspacePreview';
 import {useCoordinator} from './useCoordinator';
 import {executionHandoffOutcome} from './executionHandoff';
+import { LocalDeviceSettings } from './LocalDeviceSettings';
 import { waitingForOfficialApproval, officialApprovalLabel, officialApprovalHint } from "./knowledgeAvailability";
 import './preview/workspace-preview.css';
 import './task-transfer.css';
@@ -315,7 +316,7 @@ function executionStatusLabel(task: ExecutionTask | null, preparing = false) {
   if (!task) return "准备开始";
   if (task.status === "queued" || task.status === "selecting_target") return "正在连接本机";
   if (task.status === "running") return "正在替你工作";
-  if (task.status === "completed") return "任务已经完成";
+  if (task.status === "completed") return "本轮结果已返回";
   if (task.status === "cancelled") return "任务已停止";
   return "遇到了一点问题";
 }
@@ -508,7 +509,7 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
   onToggle: () => void; onStop: (source: HTMLElement) => void;
 }) {
   const [trace, setTrace] = useState("");
-  const steps = events.filter(event => event.kind === "status" || event.kind === "error");
+  const steps = events.filter(event => event.kind !== "user_message");
   const latestStep = steps[steps.length - 1]?.text;
   const api = useContext(PrivateApiContext);
   const status = preparing ? "preparing" : task?.status || "preparing";
@@ -525,6 +526,7 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
     <div className="execution-disclosure-grid" data-open={expanded}>
       <div className="execution-disclosure-clip" inert={!expanded} aria-hidden={!expanded}>
         <div id="one-execution-content" className="execution-disclosure-body">
+          {task?.targetName ? <p className="execution-current-step">工作文件夹：{task.targetName}（可在设置 → 本机执行中更换）</p> : null}
           {!busy && task?.status === "failed" ? <p className="execution-problem">{task.lastError || "执行未完成。"}</p> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><MessageMarkdown>{task.finalResponse}</MessageMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接本机…" : task?.status === "cancelled" ? "已停止。" : latestStep || "等待本机反馈…"}</p>}
           {steps.length > 0 ? <details className="execution-step-history"><summary>过程记录 · {steps.length} 条</summary><ol>{steps.slice(-30).map(event => <li key={event.id} className={event.kind}>{event.text}</li>)}</ol>{steps.length > 30 ? <small>最近 30 条</small> : null}</details> : null}
           {task ? <details className="execution-step-history" onToggle={async event => {
@@ -2326,6 +2328,7 @@ function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onM
       <div className="account-body settings-account-body">
         {section === "knowledge" ? knowledge : section === "power" ? billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载电力账户…</p> : <>
         <section className="account-panel"><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
+        <LocalDeviceSettings key={user.id} api={api} />
         <section className="account-panel">
           <div className="account-panel-title"><Bot size={18} /><h3>默认模型</h3></div>
           <SearchPicker label="默认模型" value={selectedModelId} onChange={chooseModel} options={models.filter(model => model.kind === "chat").map(model => ({ value: model.id, label: model.name }))} />

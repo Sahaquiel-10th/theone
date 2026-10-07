@@ -1,5 +1,5 @@
 /** Local synthetic interaction model. Never used by production chat routes. */
-export type Message = { id: string; role: 'user' | 'assistant'; text: string; files?:{id:string;originalName:string}[]; featureName?:string; instruction?: string; kind?: 'result'; status?: 'running' | 'queued' | 'held' | 'done' | 'cancelled' | 'failed'; taskId?: string };
+export type Message = { id: string; role: 'user' | 'assistant'; text: string; files?:{id:string;originalName:string}[]; featureName?:string; instruction?: string; kind?: 'result'; status?: 'running' | 'queued' | 'held' | 'done' | 'cancelled' | 'failed'; taskId?: string; taskIds?: string[] };
 export type Task = { id: string; title: string; messages: Message[]; active: string[]; queue: string[]; dueAt: number | null; round: number; status: 'idle' | 'running' | 'completed' | 'failed' | 'stopped'; result: string; unread: boolean };
 export type Notice = { id: string; taskId: string; summary: string };
 export type PreviewState = { tasks: Task[]; dialogue: Message[]; pending: null | { id: string; text: string; target: string | null; dueAt: number; notices: string[] }; notices: Notice[]; selected: string | null; boundTask: string | null; lastTarget: string | null; draft: string; schedulerMs: number; workerMs: number; manual: boolean };

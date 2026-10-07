@@ -80,6 +80,7 @@ const slices = ["arm64", "x86_64"].map((architecture) => {
   const compileArgs = ["-target", `${architecture}-apple-macosx13.0`, "-parse-as-library", "-O", generatedSource, fatSafeOperationsSource, path.join(root, 'launcher/macos/RuntimeInstallation.swift'), path.join(root, 'launcher/macos/RuntimeRecovery.swift'), path.join(root, 'launcher/macos/ResidentTakeover.swift'), path.join(root, 'launcher/macos/KeyDiscovery.swift'), "-o", slice];
   compileArgs.push(path.join(root, 'launcher/macos/CodexRuntime.swift'));
   compileArgs.push(path.join(root, 'launcher/macos/MachineResident.swift'));
+  compileArgs.push(path.join(root, 'launcher/macos/MacLocalFiles.swift'));
   if (swiftSdk) compileArgs.unshift("-sdk", swiftSdk);
   execFileSync(swiftcBinary, compileArgs, { env: { ...process.env, CLANG_MODULE_CACHE_PATH: moduleCache, SWIFT_MODULE_CACHE_PATH: moduleCache }, stdio: "inherit" });
   return slice;

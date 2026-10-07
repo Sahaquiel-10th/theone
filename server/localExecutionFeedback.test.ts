@@ -1,0 +1,50 @@
+import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import test from 'node:test';
+import { WebSocket } from 'ws';
+import { OneKeyPresence } from './oneKeyPresence.js';
+import type { ExecutionTask } from './types.js';
+
+test('directory settings and execution receipts are computer/owner/round bound, with immutable cancellation and disconnect', async () => {
+  const pair = crypto.generateKeyPairSync('ed25519'), installationId = 'a'.repeat(32), timestamp = new Date().toISOString();
+  const device = { id:'key',workspaceId:'wa',userId:'a',status:'active',publicKey:pair.publicKey.export({type:'spki',format:'pem'}).toString() };
+  const task: ExecutionTask = { id:'task',deviceId:'key',installationId,workspaceId:'wa',userId:'a',conversationId:'thing',sourceMessageId:'input',instruction:'safe',provider:'codex',status:'queued',reportRound:0,createdAt:timestamp,updatedAt:timestamp };
+  const db: any = {oneKeyDevices:[device], executionTasks:[task],executionEvents:[],messages:[],conversations:[{id:'thing',workspaceId:'wa',userId:'a',messages:[]}],auditLogs:[]};
+  let chain=Promise.resolve();
+  const store: any={read:async()=>structuredClone(db),mutate:(fn:any)=>{const run=chain.then(()=>fn(db));chain=run.then(()=>{},()=>{});return run;}};
+  const presence=new OneKeyPresence(store), server=createServer();presence.attach(server);server.listen(0,'127.0.0.1');await once(server,'listening');
+  const address=server.address();if(!address||typeof address==='string')throw Error('no server');
+  const socket=new WebSocket(`ws://127.0.0.1:${address.port}/api/one-key/launcher?deviceId=key&installationId=${installationId}`);
+  const auth=JSON.parse((await once(socket,'message'))[0].toString());
+  const signature=(nonce:string)=>crypto.sign(null,Buffer.from(nonce,'base64url'),pair.privateKey).toString('base64url');
+  socket.send(JSON.stringify({type:'auth_response',challengeId:auth.challengeId,signature:signature(auth.nonce),capabilities:['local_configuration_v1','execution_round_v1','codex_exec_v1']}));await once(socket,'message');
+  let selections=0, holdConfig=false, held:any;
+  socket.on('message',raw=>{const m=JSON.parse(raw.toString());if(m.type==='request_challenge')socket.send(JSON.stringify({type:'proof_response',challengeId:m.challengeId,signature:signature(m.nonce)}));if(m.type==='local_configuration'){if(m.change)selections++;if(holdConfig){held=m;return;}socket.send(JSON.stringify({type:'local_ready',taskId:m.taskId,requestId:m.requestId,targetName:'/QA/current'}));}});
+  const scope={deviceId:'key',installationId,workspaceId:'wa',userId:'a'};
+  const settle=async()=>{await new Promise(r=>setTimeout(r,15));await chain;};
+  const event=async(values:object)=>{socket.send(JSON.stringify({type:'execution_event',taskId:'task',kind:'message',round:0,...values}));await settle();};
+  try {
+    assert.equal((await presence.localConfiguration(scope,false)).targetName,'/QA/current');
+    await assert.rejects(presence.localConfiguration({...scope,workspaceId:'wb'},false),/不属于/);
+    await assert.rejects(presence.localConfiguration({...scope,userId:'b'},false),/不属于/);
+    await assert.rejects(presence.localConfiguration({...scope,installationId:'b'.repeat(32)},false),/当前这台电脑/);
+    await assert.rejects(presence.localConfiguration(scope,true),/任务在执行/);assert.equal(selections,0);
+    await event({text:'真实结果：/QA/产物.md；已回读内容一致'});
+    await event({kind:'status',status:'completed',text:'Codex 本轮已结束'});
+    assert.equal(task.status,'completed');assert.match(task.finalResponse!,/产物.md/);assert.equal(db.messages.length,1);
+    assert.equal((await presence.localConfiguration(scope,true)).targetName,'/QA/current');assert.equal(selections,1);
+    holdConfig=true;const changing=presence.localConfiguration(scope,true);
+    for(let n=0;n<100&&!held;n++)await new Promise(r=>setTimeout(r,5));assert.ok(held);
+    await assert.rejects(presence.startExecution('key','task','safe',installationId),/正在更换/);
+    socket.send(JSON.stringify({type:'local_ready',taskId:held.taskId,requestId:held.requestId,targetName:'/QA/new'}));await changing;holdConfig=false;
+    task.status='queued';task.reportRound=1;task.finalResponse=undefined;
+    await event({round:0,status:'completed',text:'old round'});assert.equal(task.status,'queued');
+    await presence.cancelExecution('key','task',installationId);assert.equal(task.status,'cancelled');
+    await event({round:1,status:'completed',text:'late success'});assert.equal(task.status,'cancelled');assert.equal(db.messages.length,2);
+    task.status='running';task.reportRound=2;
+    socket.close();await once(socket,'close');await settle();
+    assert.equal(task.status,'failed');assert.match(task.lastError!,/连接中断.*不会自动重跑/);assert.equal(db.messages.length,3);
+  } finally {socket.terminate();await presence.close();await new Promise<void>(resolve=>server.close(()=>resolve()));}
+});

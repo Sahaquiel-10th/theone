@@ -1,0 +1,62 @@
+{"event":"local_agent_model_request_started","requestId":"local-qa-task-1","modelId":"model-qa","model":"qa","inputMessages":3,"tools":6}
+{"event":"local_agent_model_request_completed","requestId":"local-qa-task-1","modelId":"model-qa","durationMs":21,"toolCalls":1}
+{"event":"local_agent_model_request_started","requestId":"local-qa-task-2","modelId":"model-qa","model":"qa","inputMessages":5,"tools":6}
+{"event":"local_agent_model_request_completed","requestId":"local-qa-task-2","modelId":"model-qa","durationMs":8,"toolCalls":1}
+{"event":"local_agent_model_request_started","requestId":"local-qa-task-3","modelId":"model-qa","model":"qa","inputMessages":7,"tools":6}
+{"event":"local_agent_model_request_completed","requestId":"local-qa-task-3","modelId":"model-qa","durationMs":5,"toolCalls":0}
+{"id":"LA-01","expected":"completed","actual":"completed","finalResponse":"已写入并回读验证 ONE_QA_OK","modelCalls":3,"tools":["write_file","read_file"],"fileExists":true,"reservedMicros":0,"root":"/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-qa-local-agent-ljwPOu"}
+✔ LA-01: write and verify real temporary file (64.110333ms)
+{"event":"local_agent_model_request_started","requestId":"local-qa-task-1","modelId":"model-qa","model":"qa","inputMessages":3,"tools":6}
+{"event":"local_agent_model_request_completed","requestId":"local-qa-task-1","modelId":"model-qa","durationMs":17,"toolCalls":0}
+{"id":"LA-02a","expected":"not_completed","actual":"failed","lastError":"已创建 QA.txt，内容 ONE_QA_OK\n\n本轮没有成功的本机工具操作，不能确认任务完成。不会自动重跑。","modelCalls":1,"tools":[],"fileExists":false,"reservedMicros":0,"root":"/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-qa-local-agent-awusEK"}
+✔ LA-02a: requested file but model only claims success (29.930917ms)
+{"event":"local_agent_model_request_started","requestId":"local-qa-task-1","modelId":"model-qa","model":"qa","inputMessages":3,"tools":6}
+{"event":"local_agent_model_request_completed","requestId":"local-qa-task-1","modelId":"model-qa","durationMs":3,"toolCalls":0}
+{"id":"LA-02b","expected":"not_completed","actual":"failed","lastError":"执行器没有返回最终结果。\n\n本轮没有成功的本机工具操作，不能确认任务完成。不会自动重跑。","modelCalls":1,"tools":[],"fileExists":false,"reservedMicros":0,"root":"/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-qa-local-agent-jGCGHQ"}
+✔ LA-02b: empty final answer without tools or artifact (6.80275ms)
+{"event":"local_agent_model_request_started","requestId":"local-qa-task-1","modelId":"model-qa","model":"qa","inputMessages":3,"tools":6}
+{"event":"local_agent_model_request_completed","requestId":"local-qa-task-1","modelId":"model-qa","durationMs":3,"toolCalls":1}
+{"id":"LA-03","expected":"not_completed","actual":"failed","lastError":"错误：用户拒绝写入文件\n本轮已停止，结果未确认，不会自动重跑。已有修改请检查文件。","modelCalls":1,"tools":["write_file"],"fileExists":false,"reservedMicros":0,"root":"/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-qa-local-agent-CNlaYZ"}
+✔ LA-03: user denies write and model acknowledges failure (11.861291ms)
+{"event":"local_agent_model_request_started","requestId":"local-qa-task-1","modelId":"model-qa","model":"qa","inputMessages":3,"tools":6}
+{"event":"local_agent_model_request_completed","requestId":"local-qa-task-1","modelId":"model-qa","durationMs":3,"toolCalls":1}
+{"id":"LA-04a","expected":"not_completed","actual":"failed","lastError":"错误：磁盘写入失败\n本轮已停止，结果未确认，不会自动重跑。已有修改请检查文件。","modelCalls":1,"tools":["write_file"],"fileExists":false,"reservedMicros":0,"root":"/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-qa-local-agent-cMCCZp"}
+✔ LA-04a: tool failure then model incorrectly claims success (8.823708ms)
+{"event":"local_agent_model_request_started","requestId":"local-qa-task-1","modelId":"model-qa","model":"qa","inputMessages":3,"tools":6}
+{"event":"local_agent_model_request_completed","requestId":"local-qa-task-1","modelId":"model-qa","durationMs":3,"toolCalls":1}
+{"event":"local_agent_model_request_started","requestId":"local-qa-task-2","modelId":"model-qa","model":"qa","inputMessages":5,"tools":6}
+{"event":"local_agent_model_request_completed","requestId":"local-qa-task-2","modelId":"model-qa","durationMs":2,"toolCalls":0}
+{"id":"LA-04b","expected":"not_completed","actual":"failed","lastError":"参数错误，未创建文件\n\n本轮有工具被拒绝或执行失败，不能确认任务完成。不会自动重跑。","modelCalls":2,"tools":[],"fileExists":false,"reservedMicros":0,"root":"/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-qa-local-agent-NZlX1T"}
+✔ LA-04b: invalid tool JSON then model acknowledges failure (22.657291ms)
+{"event":"local_agent_model_request_started","requestId":"local-qa-task-1","modelId":"model-qa","model":"qa","inputMessages":3,"tools":6}
+{"event":"local_agent_model_request_completed","requestId":"local-qa-task-1","modelId":"model-qa","durationMs":7,"toolCalls":1}
+{"event":"local_agent_model_request_started","requestId":"local-qa-task-2","modelId":"model-qa","model":"qa","inputMessages":5,"tools":6}
+{"event":"local_agent_model_request_completed","requestId":"local-qa-task-2","modelId":"model-qa","durationMs":4,"toolCalls":0}
+{"id":"LA-05a","expected":"not_completed","actual":"failed","lastError":"不支持该工具，任务未完成\n\n本轮有工具被拒绝或执行失败，不能确认任务完成。不会自动重跑。","modelCalls":2,"tools":[],"fileExists":false,"reservedMicros":0,"root":"/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-qa-local-agent-SpPmi7"}
+✔ LA-05a: unknown tool must never reach local transport (22.891166ms)
+{"event":"local_agent_model_request_started","requestId":"local-qa-task-1","modelId":"model-qa","model":"qa","inputMessages":3,"tools":1}
+{"event":"local_agent_model_request_completed","requestId":"local-qa-task-1","modelId":"model-qa","durationMs":4,"toolCalls":1}
+{"id":"LA-05b","expected":"failed","actual":"failed","lastError":"Local Agent 已达到 1 步上限，请缩小任务后继续","modelCalls":1,"tools":["list_files"],"fileExists":false,"reservedMicros":0,"root":"/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-qa-local-agent-fluJbb"}
+✔ LA-05b: step limit stops an unfinished tool loop (9.162292ms)
+{"event":"local_agent_model_request_started","requestId":"local-qa-task-1","modelId":"model-qa","model":"qa","inputMessages":3,"tools":0}
+{"event":"local_agent_model_request_completed","requestId":"local-qa-task-1","modelId":"model-qa","durationMs":3,"toolCalls":1}
+{"event":"local_agent_model_request_started","requestId":"local-qa-task-2","modelId":"model-qa","model":"qa","inputMessages":5,"tools":0}
+{"event":"local_agent_model_request_completed","requestId":"local-qa-task-2","modelId":"model-qa","durationMs":1,"toolCalls":0}
+{"id":"LA-05c","expected":"not_completed","actual":"failed","lastError":"写入工具未授权，未创建文件\n\n本轮有工具被拒绝或执行失败，不能确认任务完成。不会自动重跑。","modelCalls":2,"tools":[],"fileExists":false,"reservedMicros":0,"root":"/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-qa-local-agent-7DvrqI"}
+✔ LA-05c: disabled write tool must never reach transport (12.420167ms)
+{"event":"local_agent_model_request_started","requestId":"local-qa-task-1","modelId":"model-qa","model":"qa","inputMessages":3,"tools":6}
+{"event":"local_agent_model_request_completed","requestId":"local-qa-task-1","modelId":"model-qa","durationMs":3,"toolCalls":0}
+{"id":"LA-07","expected":"cancelled","actual":"cancelled","lastError":"执行已由用户停止","modelCalls":1,"tools":[],"fileExists":false,"reservedMicros":0,"root":"/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-qa-local-agent-MQM4Md"}
+✔ LA-07: cancel while waiting for model preserves cancelled state (17.016792ms)
+{"event":"local_agent_model_request_started","requestId":"local-qa-task-1","modelId":"model-qa","model":"qa","inputMessages":3,"tools":6}
+{"event":"local_agent_model_request_completed","requestId":"local-qa-task-1","modelId":"model-qa","durationMs":4,"toolCalls":1}
+{"id":"LA-04c","expected":"failed","actual":"failed","lastError":"模型响应未完整返回，本地任务已停止，请缩小任务范围后再试","modelCalls":1,"tools":[],"fileExists":false,"reservedMicros":0,"root":"/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-qa-local-agent-2qxkYn"}
+✔ LA-04c: truncated model response stops before tool (19.025ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 11
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 485.306084

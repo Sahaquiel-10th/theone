@@ -2,11 +2,11 @@ import type { OneKeyPresence } from "../oneKeyPresence.js";
 import type { LocalAgentService } from "../localAgentService.js";
 import type { ExecutionAdapter } from "./registry.js";
 
-export type ExecutionPresence = Pick<OneKeyPresence, "isConnected" | "supportsLocalAgent" | "startExecution" | "continueExecution" | "cancelExecution">;
+export type ExecutionPresence = Pick<OneKeyPresence, "isConnected" | "supportsLocalAgent" | "startExecution" | "continueExecution" | "cancelExecution"> & { supportsCodex?: OneKeyPresence["supportsCodex"] };
 export type LocalExecutor = Pick<LocalAgentService, "start" | "cancel">;
 
 export function executionConnectors(presence: ExecutionPresence, local: LocalExecutor): ExecutionAdapter[] {
-  return (["codex", "local_agent"] as const).map(provider => ({
+  return (["local_agent", "codex"] as const).map(provider => ({
     kind: "execution",
     provider,
     manifest: {
@@ -17,7 +17,7 @@ export function executionConnectors(presence: ExecutionPresence, local: LocalExe
       const device = db.oneKeyDevices.find(item => item.id === scope.deviceId && item.workspaceId === scope.workspaceId && item.userId === scope.userId && item.status === "active");
       if (!device || !presence.isConnected(device.id, scope.installationId)) return { state: "offline", code: "DEVICE_OFFLINE", message: "请将当前账号的 ONE Key 插入这台电脑", evidence: "transport" };
       const isLocal = presence.supportsLocalAgent(device.id, scope.installationId);
-      if ((provider === "local_agent") !== isLocal) return { state: "unavailable", code: "RUNTIME_NOT_SELECTED", message: "当前启动器使用另一条执行路径", evidence: "transport" };
+      if (provider === "local_agent" ? !isLocal : !(presence.supportsCodex?.(device.id, scope.installationId) ?? !isLocal)) return { state: "unavailable", code: "RUNTIME_NOT_SELECTED", message: "当前启动器没有此执行能力", evidence: "transport" };
       return { state: "transport_ready", code: "TRANSPORT_CONNECTED", message: "本机通道在线；运行环境、账号和目录权限仍需执行时确认", evidence: "transport" };
     },
     async dispatch(action, task, instruction) {

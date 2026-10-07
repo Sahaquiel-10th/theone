@@ -6,7 +6,7 @@ import { LocalAgentService } from "./localAgentService.js";
 import type { Database, ModelConfig } from "./types.js";
 const installationId = "a".repeat(32);
 
-for (const scenario of ["normal", "unplug", "excluded"]) test(`Local Agent policy: ${scenario}`, async () => {
+for (const scenario of ["normal", "unplug", "excluded", "native-command"]) test(`Local Agent policy: ${scenario}`, async () => {
   const unplugAfterFirstTool = scenario === "unplug";
   let modelCalls = 0;
   const modelServer = createServer((request, response) => {
@@ -15,7 +15,7 @@ for (const scenario of ["normal", "unplug", "excluded"]) test(`Local Agent polic
       modelCalls++;
       response.setHeader("Content-Type", "application/json");
       response.end(JSON.stringify(modelCalls === 1 ? {
-        choices: [{ message: { content: null, tool_calls: [{ id: "call-list", type: "function", function: { name: "list_files", arguments: "{\"path\":\".\",\"maxDepth\":2}" } }] } }],
+        choices: [{ message: { content: null, tool_calls: [{ id: "call-list", type: "function", function: { name: scenario === "native-command" ? "run_command" : "list_files", arguments: scenario === "native-command" ? '{"command":"echo hello"}' : "{\"path\":\".\",\"maxDepth\":2}" } }] } }],
         usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 }
       } : {
         choices: [{ message: { content: "已检查授权文件夹。" } }],
@@ -49,7 +49,7 @@ for (const scenario of ["normal", "unplug", "excluded"]) test(`Local Agent polic
   let proofCount = 0;
   const presence = {
     requireProof: async (scope: { userId: string; workspaceId: string; installationId: string }) => { proofCount++; assert.equal(scope.userId, "user-a"); assert.equal(scope.workspaceId, "workspace-a"); assert.equal(scope.installationId, installationId); if (!present) throw new Error("请插入 ONE Key"); },
-    prepareLocalExecution: async (_deviceId: string, _taskId: string, computer: string) => { assert.equal(computer, installationId); return { targetName: "project-a" }; },
+    prepareLocalExecution: async (_deviceId: string, _taskId: string, computer: string) => { assert.equal(computer, installationId); return { targetName: "project-a", output: scenario === "native-command" ? "files_only" : undefined }; },
     executeLocalTool: async (_deviceId: string, _taskId: string, tool: string, args: unknown, computer: string) => { assert.equal(computer, installationId); toolRequests.push({ tool, args }); if (unplugAfterFirstTool) present = false; return { output: "README.md" }; },
     cancelExecution: async () => undefined
   } as any;
@@ -59,9 +59,9 @@ for (const scenario of ["normal", "unplug", "excluded"]) test(`Local Agent polic
     for (let attempt = 0; attempt < 200 && !["completed", "failed"].includes(database.executionTasks[0].status); attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
-    assert.equal(database.executionTasks[0].status, unplugAfterFirstTool ? "failed" : "completed");
+    assert.equal(database.executionTasks[0].status, unplugAfterFirstTool || scenario === "excluded" || scenario === "native-command" ? "failed" : "completed");
     assert.equal(database.executionTasks[0].targetName, "project-a");
-    assert.deepEqual(toolRequests, scenario === "excluded" ? [] : [{ tool: "list_files", args: { path: ".", maxDepth: 2 } }]);
+    assert.deepEqual(toolRequests, scenario === "excluded" || scenario === "native-command" ? [] : [{ tool: "list_files", args: { path: ".", maxDepth: 2 } }]);
     assert.equal(database.modelUsageRecords.length, unplugAfterFirstTool ? 1 : 2);
     assert.equal(modelCalls, unplugAfterFirstTool ? 1 : 2);
     assert.equal(proofCount, 2);
