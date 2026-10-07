@@ -155,3 +155,7 @@
   .one-settings-dialog > header { padding: 20px 20px 10px; }
   .settings-dialog-body { padding: 12px 20px 22px; }
 }
+.enterprise-connection-notice { text-align: center; padding: 8px 0 18px; }
+.enterprise-connection-notice img { display: block; margin: 18px auto; width: 240px; max-width: 100%; height: auto; background: white; border: 12px solid white; box-sizing: border-box; }
+.enterprise-connection-notice .hint { margin-top: 14px; }
+.knowledge-source-mark.flomo { background: #e6f3eb; color: #347b58; }

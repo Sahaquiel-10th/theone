@@ -32,6 +32,7 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
     users, workspaces: users.map(user => ({ id: user.defaultWorkspaceId, name: user.id, slug: user.id, status: "active", createdAt: timestamp, updatedAt: timestamp })),
     workspaceMembers: users.map(user => ({ id: `member-${user.id}`, userId: user.id, workspaceId: user.defaultWorkspaceId, role: "owner", createdAt: timestamp })),
     models: [model], oneKeyDevices: ["a", "b"].map(userId => ({ id: userId === "a" ? "key" : "key-b", serialNumber: `fixture-key-${userId}`, workspaceId: `space-${userId}`, userId, status: "active", publicKey: pair.publicKey.export({ type: "spki", format: "pem" }).toString(), createdAt: timestamp })),
+    knowledgeConnections: ["a", "b"].map(id => ({ id: `flomo-${id}`, workspaceId: `space-${id}`, provider: "flomo", status: "pending", clientId: `client-${id}`, encryptedAccessToken: "PRIVATE_FIXTURE_TOKEN", providerSpaceName: `flomo-owner-${id}`, createdAt: timestamp, updatedAt: timestamp })),
     conversations: [], messages: [], attachments: [], settings: { safetyRules: "Fixture safety", rechargeCnyPerPower: 7,
       aiTasks: { chat: { revision: 1, draft: { modelId: "", prompt: "DRAFT_NOT_LIVE", tools: [], maxSteps: 1 }, history: [], published: { modelId: "", prompt: "PUBLISHED_TASK_INSTRUCTION", tools: [], maxSteps: 1, version: 1, publishedBy: "fixture-admin", publishedAt: timestamp } } } }
   }));
@@ -85,6 +86,13 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
   const attachmentId = ((await upload.json()) as any).attachment.id;
   await connect(computerB, "key-b");
   const otherCookie = await login(computerB, "key-b");
+  // The new connector routes inherit exact server-side workspace/Key authorization.
+  assert.equal((await get("/api/knowledge/connections/flomo", "")).status, 401);
+  const flomoA = await (await get("/api/knowledge/connections/flomo?workspaceId=space-b&userId=b", cookie)).text();
+  assert.match(flomoA, /flomo-owner-a/); assert.doesNotMatch(flomoA, /flomo-owner-b|PRIVATE_FIXTURE_TOKEN|encryptedAccessToken/);
+  const flomoB = await (await get("/api/knowledge/connections/flomo?workspaceId=space-a", otherCookie)).text();
+  assert.match(flomoB, /flomo-owner-b/); assert.doesNotMatch(flomoB, /flomo-owner-a|PRIVATE_FIXTURE_TOKEN/);
+  assert.equal((await fetch(`${base}/api/knowledge/connections/flomo/oauth/start`, { method: "POST" })).status, 401);
   for (const [suffix, method] of [["", "GET"], ["/content", "GET"], ["/complete", "POST"], ["/retry", "POST"], ["", "DELETE"], ["/chunks?offset=0", "PUT"]]) {
     const response = await fetch(`${base}/api/attachments/${attachmentId}${suffix}`, { method, headers: { Cookie: otherCookie, "Content-Type": "application/octet-stream" }, ...(method === "PUT" ? { body: "bad" } : {}) });
     assert.ok(response.status >= 400);

@@ -60,7 +60,7 @@ export type UserSavedMemory = {
   content: string; status: "active" | "deleted"; createdAt: string; updatedAt: string;
 };
 
-export type KnowledgeProviderId = "getnote" | "notion" | "yinxiang" | "flowus" | "feishu";
+export type KnowledgeProviderId = "getnote" | "notion" | "yinxiang" | "flowus" | "feishu" | "flomo";
 export type RetrievalLog = {
   id: string; workspaceId: string; userId: string; conversationId: string; query: string; provider: KnowledgeProviderId | "multiple";
   matchedItemsJson: unknown; injectedContext: string; createdAt: string;

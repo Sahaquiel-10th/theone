@@ -97,6 +97,7 @@ import { chatSubmission, forgetChatSubmission, pendingChatSubmissions } from "./
 import { Onboarding, ProfileNameEditor, BetaFeedbackControls, type AccountProfile, type ProfilePatch } from "./Onboarding";
 import { getNotePollFailureAction, prepareGetNoteAuthorizationWindow } from "./getNoteAuthorization";
 import { PaymentPanel } from "./PaymentPanel";
+import { EnterpriseKnowledgeCard, FlomoConnectionNotice } from "./EnterpriseConnectionNotice";
 import { FeishuConnection } from "./FeishuConnection";
 import { CacheUsageDetails } from "./CacheUsageDetails";
 import { PricingCatalog } from "./PricingPanel";
@@ -183,7 +184,7 @@ type AppCapabilities = {
 };
 
 type KnowledgeConnection = {
-  provider: "getnote" | "notion" | "yinxiang" | "flowus";
+  provider: "getnote" | "notion" | "yinxiang" | "flowus" | "flomo";
   status: "disconnected" | "pending" | "connected" | "error" | "revoked";
   providerSpaceName?: string;
   credentialExpiresAt?: string;
@@ -624,6 +625,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   });
   const [notionConnection, setNotionConnection] = useState<KnowledgeConnection>({ provider: "notion", status: "disconnected" });
   const [yinxiangConnection, setYinxiangConnection] = useState<KnowledgeConnection>({ provider: "yinxiang", status: "disconnected" });
+  const [flomoConnection, setFlomoConnection] = useState<KnowledgeConnection>({ provider: "flomo", status: "disconnected" });
   const [flowusConnection, setFlowusConnection] = useState<KnowledgeConnection>({ provider: "flowus", status: "disconnected" });
   const [runtimeUpdate, setRuntimeUpdate] = useState<RuntimeUpdateStatus | null>(null);
   const [runtimeUpdateIssue, setRuntimeUpdateIssue] = useState("");
@@ -781,7 +783,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   async function refresh() {
     const keep = <T,>(fallback: T) => (error: Error) => { setError(error.message); return fallback; };
-    const [modelResult, conversationResult, workspaceResult, agentResult, capabilityResult, knowledgeResult, notionResult, yinxiangResult, flowusResult] = await Promise.all([
+    const [modelResult, conversationResult, workspaceResult, agentResult, capabilityResult, knowledgeResult, notionResult, yinxiangResult, flowusResult, flomoResult] = await Promise.all([
       api<{ models: Model[]; defaultModelId: string }>("/api/models").catch(keep({ models, defaultModelId })),
       api<{ conversations: Conversation[]; pagination: { page: number; hasMore: boolean } }>(
         `/api/conversations?summary=1&page=1&pageSize=${conversationPageSize}&archived=${showArchived}`
@@ -792,7 +794,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/getnote").catch(keep({ connection: knowledgeConnection, configured: false })),
       api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/notion").catch(keep({ connection: notionConnection, configured: false })),
       api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/yinxiang").catch(keep({ connection: yinxiangConnection, configured: false })),
-      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/flowus").catch(keep({ connection: flowusConnection, configured: false }))
+      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/flowus").catch(keep({ connection: flowusConnection, configured: false })),
+      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/flomo").catch(keep({ connection: flomoConnection, configured: false }))
     ]);
     setModels(modelResult.models);
     setDefaultModelId(modelResult.defaultModelId);
@@ -817,6 +820,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setNotionConnection(notionResult.connection);
     setYinxiangConnection(yinxiangResult.connection);
     setFlowusConnection(flowusResult.connection);
+    setFlomoConnection(flomoResult.connection);
     setDraftModelId((current) => (
       modelResult.models.some((model) => model.id === current)
         ? current
@@ -1716,8 +1720,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </nav>
         <div className="one-chrome-actions">
           <button className="one-chrome-button knowledge" type="button" title="知识来源" onClick={() => openSurface("knowledge")}>
-            <span className={`connection-dot ${[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection].some(item => item.status === "connected") ? "connected" : "disconnected"}`} />
-            <span>{[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection].some(item => item.status === "connected") ? "知识已连接" : "连接知识"}</span>
+            <span className={`connection-dot ${[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "connected" : "disconnected"}`} />
+            <span>{[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "知识已连接" : "连接知识"}</span>
           </button>
           <button className={`one-chrome-button icon-only ${historyOpen ? "active" : ""}`} type="button" title="最近任务" onClick={() => setHistoryOpen((open) => !open)}>
             <Archive size={16} />
@@ -1803,7 +1807,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       ) : view === "features" ? (
         <section className="account-page features-page"><header className="admin-header"><div><h2>功能</h2></div>{preview.enabled?<button type="button" className="feature-shelf-close" onClick={()=>openSurface('chat')} aria-label="收起功能"><X size={16}/></button>:null}</header><div className="account-body settings-account-body">{preview.enabled?<FeatureShelf api={api} models={models} selected={featureForNext.map(item=>item.id)} onChoose={feature=>{setFeatureForNext(previous=>previous.some(item=>item.id===feature.id)?previous.filter(item=>item.id!==feature.id):previous.length<8?[...previous,feature]:previous);}}/>:<FeatureMarketplace api={api} models={models} onAsk={()=>openSurface('chat')}/>}</div></section>
       ) : view === "account" ? (
-        <AccountPage user={user} profile={profile} onSaveProfile={saveProfile} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setHistoryOpen(true)} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgePage onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : setKnowledgeConnection(next)} />} />
+        <AccountPage user={user} profile={profile} onSaveProfile={saveProfile} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setHistoryOpen(true)} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgePage onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : next.provider === "flomo" ? setFlomoConnection(next) : setKnowledgeConnection(next)} />} />
       ) : (
       preview.enabled && !active ? <section className="workspace-task-overview"><h1>手头的事情</h1><div>{preview.state.tasks.filter(task=>task.messages.length).map(task=><button type="button" key={task.id} onClick={()=>void openConversation(conversations.find(item=>item.id===task.id)!)}><strong>{task.title}</strong><small>{task.status==='running'?'正在处理':task.status==='completed'?'结果好了':task.status==='failed'?'需要看一下':'接着聊'} ↗</small></button>)}</div></section> :
       <section className="studio-task" key={activeId}>
@@ -1870,7 +1874,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       </section>
 
       <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 指挥台">
-        {view === "chat" && !hasSubmittedChat && !conversations.length && !profile.onboarding.completedAt ? <Onboarding profile={profile} knowledgeConnected={[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection].some(item => item.status === "connected")} onSave={saveProfile} onOpenKnowledge={() => openSurface("knowledge")} onStartQuestion={suggestion => { setContent(suggestion); setComposeNew(true); setView("chat"); }} /> : null}
+        {view === "chat" && !hasSubmittedChat && !conversations.length && !profile.onboarding.completedAt ? <Onboarding profile={profile} knowledgeConnected={[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected")} onSave={saveProfile} onOpenKnowledge={() => openSurface("knowledge")} onStartQuestion={suggestion => { setContent(suggestion); setComposeNew(true); setView("chat"); }} /> : null}
         <div className="studio-presence">
           <OneHeroEye mood={heroMood} label={view==='features'?'收起功能，回到 ONE':'打开功能'} onActivate={()=>openSurface(view==='features'?'chat':'features')}/>
           <div className="studio-presence-copy"><span className="studio-eyebrow">ONE IS WITH YOU</span>
@@ -1961,7 +1965,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               <button type="button" onClick={() => setContent(demo.enabled ? "UI 先记着这个想法，不要执行" : "从我的个人知识中，找出现在最值得重新关注的内容")}><span>{demo.enabled ? '有个想法，先帮我记着' : '找找被我忘掉的好东西'}</span><i aria-hidden="true">↗</i></button>
             </div>
           ) : null}
-        <footer className="studio-assistant-footer"><span className={`connection-dot ${[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection].some(item => item.status === "connected") ? "connected" : "disconnected"}`} /><button type="button" onClick={() => openSurface("knowledge")}>{[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection].some(item => item.status === "connected") ? "知识已连接" : "连接知识"}</button></footer>
+        <footer className="studio-assistant-footer"><span className={`connection-dot ${[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "connected" : "disconnected"}`} /><button type="button" onClick={() => openSurface("knowledge")}>{[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "知识已连接" : "连接知识"}</button></footer>
       </aside>
       {demo.enabled ? <details className="workspace-preview-debug"><summary>本地调试</summary><p>规则分流 / 合成结果，不调用 AI。自动分流示例：UI、露营；其他内容可手动指定。</p><label>任务等待（秒）<input type="number" min="1" max="120" value={preview.state.workerMs/1000} onChange={event=>preview.dispatch({type:'settings',workerMs:Math.max(1,Math.min(120,Number(event.target.value)||1))*1000})}/></label><label><input type="checkbox" checked={preview.state.manual} onChange={event=>preview.dispatch({type:'settings',manual:event.target.checked})}/>手动结束任务</label>{preview.state.tasks.map(task=><div key={task.id}><button type="button" onClick={()=>void openConversation(conversations.find(item=>item.id===task.id)!)}>{task.title}</button><span>{task.status} · 排队 {task.queue.length}</span><button type="button" disabled={task.status!=='running'} onClick={()=>preview.dispatch({type:'finish',taskId:task.id,round:task.round,now:Date.now()})}>模拟完成</button></div>)}</details> : null}
       </div>
@@ -2352,19 +2356,19 @@ function KnowledgePage({
   const [providerQuery, setProviderQuery] = useState("");
   const [providerFilter, setProviderFilter] = useState("all");
   const [connection, setConnection] = useState<KnowledgeConnection>({ provider: "getnote", status: "disconnected" });
-  const [remoteConnections, setRemoteConnections] = useState<Record<"notion" | "yinxiang" | "flowus", KnowledgeConnection>>({
-    notion: { provider: "notion", status: "disconnected" }, yinxiang: { provider: "yinxiang", status: "disconnected" }, flowus: { provider: "flowus", status: "disconnected" }
+  const [remoteConnections, setRemoteConnections] = useState<Record<"notion" | "yinxiang" | "flowus" | "flomo", KnowledgeConnection>>({
+    notion: { provider: "notion", status: "disconnected" }, yinxiang: { provider: "yinxiang", status: "disconnected" }, flowus: { provider: "flowus", status: "disconnected" }, flomo: { provider: "flomo", status: "disconnected" }
   });
   const [configured, setConfigured] = useState(false);
-  const [remoteConfigured, setRemoteConfigured] = useState<Record<"notion" | "yinxiang" | "flowus", boolean>>({ notion: false, yinxiang: false, flowus: false });
-  const [remoteBusy, setRemoteBusy] = useState<"notion" | "yinxiang" | "flowus" | "">("");
+  const [remoteConfigured, setRemoteConfigured] = useState<Record<"notion" | "yinxiang" | "flowus" | "flomo", boolean>>({ notion: false, yinxiang: false, flowus: false, flomo: false });
+  const [remoteBusy, setRemoteBusy] = useState<"notion" | "yinxiang" | "flowus" | "flomo" | "">("");
   const [testConnectAvailable, setTestConnectAvailable] = useState(false);
   const [flow, setFlow] = useState<GetNoteDeviceFlow | null>(null);
   const [polling, setPolling] = useState(false);
   const [notice, setNotice] = useState("");
 
   async function load() {
-    const providers = ["notion", "yinxiang", "flowus"] as const;
+    const providers = ["notion", "yinxiang", "flowus", "flomo"] as const;
     const [getNoteResult, ...remoteResults] = await Promise.allSettled([
       api<{ connection: KnowledgeConnection; configured: boolean; testConnectAvailable?: boolean }>("/api/knowledge/connections/getnote"),
       ...providers.map(provider => api<{ connection: KnowledgeConnection; configured: boolean }>(`/api/knowledge/connections/${provider}`))
@@ -2400,9 +2404,9 @@ function KnowledgePage({
     const params = new URLSearchParams(window.location.search);
     const provider = params.get("knowledge");
     const status = params.get("status");
-    if ((provider === "yinxiang" || provider === "flowus" || provider === "feishu") && status) {
-      const label = provider === "yinxiang" ? "印象笔记" : provider === "feishu" ? "飞书" : "息流 FlowUs";
-      setNotice(status === "connected" ? `${label} 已连接` : status === "cancelled" ? `${label} 授权已取消` : `${label} 授权未完成，请重试。`);
+    if ((provider === "yinxiang" || provider === "flowus" || provider === "flomo" || provider === "feishu") && status) {
+      const label = provider === "yinxiang" ? "印象笔记" : provider === "feishu" ? "飞书" : provider === "flomo" ? "flomo" : "息流 FlowUs";
+      setNotice(status === "connected" ? `${label} 已连接` : status === "cancelled" ? `${label} 授权已取消` : provider === "flomo" ? "flomo 授权未完成，请确认 MAX 会员并重试。" : `${label} 授权未完成，请重试。`);
       const url = new URL(window.location.href); url.searchParams.delete("knowledge"); url.searchParams.delete("status"); window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
     }
     load().catch((err) => setNotice(err.message));
@@ -2501,7 +2505,7 @@ function KnowledgePage({
     }
   }
 
-  async function connectRemote(provider: "notion" | "yinxiang" | "flowus") {
+  async function connectRemote(provider: "notion" | "yinxiang" | "flowus" | "flomo") {
     setNotice("");
     setRemoteBusy(provider);
     try {
@@ -2513,7 +2517,7 @@ function KnowledgePage({
     }
   }
 
-  async function disconnectRemote(provider: "notion" | "yinxiang" | "flowus", label: string) {
+  async function disconnectRemote(provider: "notion" | "yinxiang" | "flowus" | "flomo", label: string) {
     if (!confirm(`断开 ${label}？`)) return;
     await api(`/api/knowledge/connections/${provider}`, { method: "DELETE" });
     await load();
@@ -2527,10 +2531,9 @@ function KnowledgePage({
         <div><h2>知识来源</h2></div>
       </header>
       <div className="account-body knowledge-catalog-body">
-        <FeishuConnection api={api} />
         {notice ? <div className={`${/失败|无法|过期|不稳定|尚未配置|未完成|还没有会员|请联系/.test(notice) ? "error" : "notice"} account-wide-notice`} role="status">{notice}</div> : null}
         <div className="knowledge-catalog-toolbar"><div className="settings-search"><Search size={17} /><input type="search" aria-label="搜索知识来源" placeholder="搜索知识来源" value={providerQuery} onChange={e => setProviderQuery(e.target.value)} /></div><div className="settings-tabs" aria-label="连接状态">{[["all", "全部"], ["connected", "已连接"], ["disconnected", "未连接"]].map(([id, label]) => <button type="button" key={id} aria-pressed={providerFilter === id} onClick={() => setProviderFilter(id)}>{label}</button>)}</div></div>
-        <div className="knowledge-catalog">{([{ id: "getnote", label: "得到大脑", note: "笔记与语义搜索", item: connection }, { id: "notion", label: "Notion", note: "页面与工作区", item: remoteConnections.notion }, { id: "yinxiang", label: "印象笔记", note: "笔记与笔记本", item: remoteConnections.yinxiang }, { id: "flowus", label: "息流 FlowUs", note: "页面与知识空间", item: remoteConnections.flowus }]).filter(p => `${p.label} ${p.id}`.toLowerCase().includes(providerQuery.trim().toLowerCase()) && (providerFilter === "all" || (providerFilter === "connected" ? p.item.status === "connected" : p.item.status !== "connected"))).map(p => <button type="button" className="knowledge-source-card" key={p.id} onClick={() => setSelectedProvider(p.id)}><span className={`knowledge-source-mark ${p.id}`}>{p.label.slice(0, 1)}</span><span><strong>{p.label}</strong><small>{p.note}</small></span><span className={`knowledge-source-status ${p.item.status}`}>{waitingForOfficialApproval(p.id, remoteConfigured.yinxiang, p.item.status) ? officialApprovalLabel : p.item.status === "connected" ? "已连接" : p.item.status === "pending" ? "授权中" : p.item.status === "error" ? "需重连" : "连接"}<ChevronRight size={14} /></span></button>)}</div>
+        <div className="knowledge-catalog">{([{ id: "getnote", label: "得到大脑", note: "笔记与语义搜索", item: connection }, { id: "notion", label: "Notion", note: "页面与工作区", item: remoteConnections.notion }, { id: "yinxiang", label: "印象笔记", note: "笔记与笔记本", item: remoteConnections.yinxiang }, { id: "flowus", label: "息流 FlowUs", note: "页面与知识空间", item: remoteConnections.flowus }, { id: "flomo", label: "flomo", note: "笔记搜索 · 需 MAX 会员", item: remoteConnections.flomo }]).filter(p => `${p.label} ${p.id}`.toLowerCase().includes(providerQuery.trim().toLowerCase()) && (providerFilter === "all" || (providerFilter === "connected" ? p.item.status === "connected" : p.item.status !== "connected"))).map(p => <button type="button" className="knowledge-source-card" key={p.id} onClick={() => setSelectedProvider(p.id)}><span className={`knowledge-source-mark ${p.id}`}>{p.label.slice(0, 1)}</span><span><strong>{p.label}</strong><small>{p.note}</small></span><span className={`knowledge-source-status ${p.item.status}`}>{waitingForOfficialApproval(p.id, remoteConfigured.yinxiang, p.item.status) ? officialApprovalLabel : p.item.status === "connected" ? "已连接" : p.item.status === "pending" ? "授权中" : p.item.status === "error" ? "需重连" : "连接"}<ChevronRight size={14} /></span></button>)}<FeishuConnection api={api} query={providerQuery} filter={providerFilter} /><EnterpriseKnowledgeCard id="dingtalk" label="钉钉" query={providerQuery} filter={providerFilter} /><EnterpriseKnowledgeCard id="wechat" label="微信" query={providerQuery} filter={providerFilter} /></div>
         {selectedProvider === "getnote" ? <SettingsDialog title="得到大脑" onClose={() => setSelectedProvider("")}><section className="knowledge-connection-detail">
           <div className="knowledge-provider-head">
             <div className="provider-icon"><Database size={19} /></div>
@@ -2560,12 +2563,13 @@ function KnowledgePage({
           )}
         </section>{notice ? <p role="status">{notice}</p> : null}</SettingsDialog> : null}
         {([
-          { id: "notion", label: "Notion" }, { id: "yinxiang", label: "印象笔记" }, { id: "flowus", label: "息流 FlowUs" }
+          { id: "notion", label: "Notion" }, { id: "yinxiang", label: "印象笔记" }, { id: "flowus", label: "息流 FlowUs" }, { id: "flomo", label: "flomo" }
         ] as const).filter(provider => provider.id === selectedProvider).map(provider => {
           const item = remoteConnections[provider.id];
           const awaitingApproval = waitingForOfficialApproval(provider.id, remoteConfigured[provider.id], item.status);
           return <SettingsDialog key={provider.id} title={provider.label} onClose={() => setSelectedProvider("")}><section className="knowledge-connection-detail">
             <div className="knowledge-provider-head"><div className="provider-icon"><FileText size={19} /></div><div><h3>{provider.label}</h3></div><span className={`provider-status ${item.status}`}>{awaitingApproval ? officialApprovalLabel : item.status === "connected" ? "已连接" : item.status === "pending" ? "授权中" : item.status === "error" ? "需重连" : "未连接"}</span></div>
+            {provider.id === "flomo" ? <FlomoConnectionNotice /> : null}
             {item.status === "connected" ? <><div className="notice">工作区：{item.providerSpaceName || provider.label}</div><p className="hint">只读：ONE 会按需搜索相关内容，不会修改或删除内容。</p><button className="danger" type="button" onClick={() => void disconnectRemote(provider.id, provider.label)}>断开连接</button></>
               : <><button className="primary" type="button" disabled={!remoteConfigured[provider.id] || Boolean(remoteBusy)} onClick={() => void connectRemote(provider.id)}>{awaitingApproval ? officialApprovalLabel : remoteBusy === provider.id ? `正在打开 ${provider.label}…` : `连接 ${provider.label}`}</button>{!remoteConfigured[provider.id] ? <p className="hint">{awaitingApproval ? officialApprovalHint : `${provider.label} 连接暂未开通，请联系管理员。`}</p> : null}</>}
           </section>{notice ? <p role="status">{notice}</p> : null}</SettingsDialog>;
