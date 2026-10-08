@@ -14,6 +14,20 @@ export function runtimeUpdateConfirmed(result: RuntimeUpdateStatus) {
     && result.confirmation?.requestId && result.confirmation.version === result.current.version);
 }
 
+// The status endpoint remains authenticated during a runtime handoff. A failed
+// /me check must not erase the installation result or masquerade as a lost Key.
+export function runtimeRecoveryMessage(result: RuntimeUpdateStatus): string {
+  if (!result.configured || !result.supported || !result.progress || runtimeUpdateConfirmed(result)) return '';
+  if (result.progress.status === 'completed' && result.current?.platform === 'macos'
+    && (result.available || result.connectionState === 'reconnecting')) {
+    return `更新文件已安装（${result.progress.version}）。旧启动器已退出，请重新双击同一枚 U 盘中的 ONE。无需拔插、重装或重启电脑；新版连接后本页会自动恢复。`;
+  }
+  if (result.connectionState === 'reconnecting' && result.progress.status !== 'failed') {
+    return '更新连接尚未恢复。若正在安装，请保持 Key 插入；若安装已结束，请重新打开同一枚 U 盘中的 ONE。不要重复安装，本页会自动检查连接。';
+  }
+  return '';
+}
+
 export function runtimeUpdateView(result: RuntimeUpdateStatus, wasUpdating: boolean, now = Date.now()) {
   if (result.current?.platform === 'macos' && result.progress?.status === 'completed'
     && !runtimeUpdateConfirmed(result) && (result.available || result.connectionState === 'reconnecting')) {

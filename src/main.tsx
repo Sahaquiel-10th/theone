@@ -103,7 +103,7 @@ import { FeishuConnection } from "./FeishuConnection";
 import { CacheUsageDetails } from "./CacheUsageDetails";
 import { PricingCatalog } from "./PricingPanel";
 import { GiftBatchHistory } from "./GiftBatchHistory";
-import { runtimeUpdateView, runtimeUpdateConfirmed, type RuntimeUpdateStatus } from "./runtimeUpdateState";
+import { runtimeUpdateView, runtimeUpdateConfirmed, runtimeRecoveryMessage, type RuntimeUpdateStatus } from "./runtimeUpdateState";
 
 type Role = "admin" | "user";
 const PrivateApiContext = createContext<typeof api>(api);
@@ -3130,12 +3130,13 @@ function App() {
   const [bootMessage, setBootMessage] = useState("加载中…");
   const [bootError, setBootError] = useState("");
   const [recoveryLogin, setRecoveryLogin] = useState(false);
+  const [updateRecovery, setUpdateRecovery] = useState("");
   const bootGeneration = useRef(0);
   const currentUser = useRef<User | null>(null);
   currentUser.current = user;
-  async function boot() {
+  async function boot(quiet = false) {
     const generation = ++bootGeneration.current;
-    expectUser(""); setBooting(true); setBootError(""); setUser(null);
+    expectUser(""); if (!quiet) setBooting(true); setBootError(""); setUser(null);
     const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     const loginCode = fragment.get("one-key");
     if (loginCode) window.history.replaceState({}, "", `${window.location.pathname}${window.location.search}`);
@@ -3143,11 +3144,17 @@ function App() {
       setBootMessage(loginCode ? "正在验证 ONE Key…" : "正在连接…");
       const result = loginCode ? await api<{ user: User }>("/api/auth/one-key/redeem", { method: "POST", body: JSON.stringify({ loginCode }) }) : await api<{ user: User }>("/api/me");
       if (generation !== bootGeneration.current) return;
-      expectUser(result.user.id); setUser(result.user); setRecoveryLogin(false);
+      expectUser(result.user.id); setUser(result.user); setRecoveryLogin(false); setUpdateRecovery("");
       if (loginCode) announceSessionChange();
     } catch (error) {
       if (generation !== bootGeneration.current) return;
       setBootError(error instanceof ApiError && error.status === 401 ? "请插入 ONE Key。首次使用请从 U 盘打开 ONE。" : error instanceof Error ? error.message : "暂时连不上 ONE，请检查网络后重试。");
+      try {
+        const runtime = await api<RuntimeUpdateStatus>("/api/runtime/update", { signal: AbortSignal.timeout(10_000) });
+        if (generation === bootGeneration.current) setUpdateRecovery(runtimeRecoveryMessage(runtime));
+      } catch {
+        if (generation === bootGeneration.current) setUpdateRecovery("");
+      }
     } finally { if (generation === bootGeneration.current) setBooting(false); }
   }
   useEffect(() => {
@@ -3168,8 +3175,14 @@ function App() {
     return () => { bootGeneration.current++; window.removeEventListener(SESSION_EVENT, changed); window.removeEventListener("storage", storage); window.removeEventListener("online", checkIdentity); document.removeEventListener("visibilitychange", checkIdentity); };
   }, []);
 
+  useEffect(() => {
+    if (user || !updateRecovery || recoveryLogin) return;
+    const timer = window.setInterval(() => { if (document.visibilityState === 'visible') void boot(true); }, 10_000);
+    return () => window.clearInterval(timer);
+  }, [user, updateRecovery, recoveryLogin]);
+
   if (booting) return <div className="boot">{bootMessage}</div>;
-  if (!user) return recoveryLogin ? <><Login onDone={next => { expectUser(next.id); setUser(next); announceSessionChange(); }} /><button className="one-login-back" onClick={() => setRecoveryLogin(false)}>返回 ONE Key 登录</button></> : <main className="one-key-welcome"><OneEye size="hero" /><h1>插入 ONE Key</h1><p role="status">{bootError}</p><button className="primary" onClick={() => void boot()}>重新连接</button><details><summary>连接帮助</summary><p>检查 ONE Key、网络和启动器版本。Key 已挂失请联系管理员。</p><button className="secondary" onClick={() => setRecoveryLogin(true)}>超管登录</button></details></main>;
+  if (!user) return recoveryLogin ? <><Login onDone={next => { expectUser(next.id); setUser(next); announceSessionChange(); }} /><button className="one-login-back" onClick={() => setRecoveryLogin(false)}>返回 ONE Key 登录</button></> : <main className="one-key-welcome"><OneEye size="hero" /><h1>{updateRecovery ? "重新打开 ONE，完成更新" : "插入 ONE Key"}</h1><p role="status">{updateRecovery || bootError}</p><button className="primary" onClick={() => void boot()}>{updateRecovery ? "我已重新打开，检查连接" : "重新连接"}</button><details><summary>连接帮助</summary><p>{updateRecovery ? "网页不能替你启动本机程序。打开 U 盘，双击 ONE；如果出现系统权限提示，请按提示处理。若确实拔出了 Key，请插回同一枚。" : "检查 ONE Key、网络和启动器版本。Key 已挂失请联系管理员。"}</p><button className="secondary" onClick={() => setRecoveryLogin(true)}>超管登录</button></details></main>;
   return (
     <PrivateApiContext.Provider value={privateApi}><ChatApp
       key={user.id}

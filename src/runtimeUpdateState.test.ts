@@ -1,10 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from 'node:fs';
-import { runtimeUpdateView, runtimeUpdateConfirmed, type RuntimeUpdateStatus } from "./runtimeUpdateState.js";
+import { runtimeUpdateView, runtimeUpdateConfirmed, runtimeRecoveryMessage, type RuntimeUpdateStatus } from "./runtimeUpdateState.js";
 
 const now = Date.now();
 const status: RuntimeUpdateStatus = { configured: true, supported: true, available: true, progress: { requestId: "upd-a", status: "requested", version: "0.3.9", updatedAt: new Date(now).toISOString() } };
+
+test('disconnected login retains authenticated Mac installation instructions, not an insert-Key dead end', () => {
+  const installed: RuntimeUpdateStatus = { ...status, current: { platform: 'macos', architecture: 'arm64', version: '0.4.7', updateProtocol: 1 }, connectionState: 'reconnecting', progress: { ...status.progress!, status: 'completed', version: '0.4.9' } };
+  assert.match(runtimeRecoveryMessage(installed), /重新双击同一枚/);
+  assert.match(runtimeRecoveryMessage(installed), /无需拔插/);
+  assert.match(runtimeRecoveryMessage(installed), /0.4.9/);
+  assert.equal(runtimeRecoveryMessage({ ...installed, configured: false }), '');
+  assert.equal(runtimeRecoveryMessage({ ...installed, supported: false }), '');
+  assert.equal(runtimeRecoveryMessage({ ...installed, progress: undefined }), '');
+  assert.equal(runtimeRecoveryMessage({ ...installed, progress: { ...installed.progress!, status: 'failed' } }), '');
+  assert.equal(runtimeRecoveryMessage({ ...installed, available: false, connectionState: 'connected', current: { ...installed.current!, version: '0.4.9' }, confirmation: { requestId: 'upd-a', version: '0.4.9' } }), '');
+  const source = fs.readFileSync(new URL('./main.tsx', import.meta.url), 'utf8');
+  assert.match(source, /setUpdateRecovery\(runtimeRecoveryMessage\(runtime\)\)/);
+  assert.match(source, /重新打开 ONE，完成更新/);
+  assert.match(source, /void boot\(true\)/);
+});
 
 test('Mac installed files ask for a fresh launch immediately, not endless automatic handoff', () => {
   const result: RuntimeUpdateStatus = { ...status, current: { platform: 'macos', architecture: 'arm64', version: '0.4.5', updateProtocol: 1 }, connectionState: 'reconnecting', progress: { ...status.progress!, status: 'completed', version: '0.4.7' } };
