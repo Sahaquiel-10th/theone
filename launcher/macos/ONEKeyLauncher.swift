@@ -48,13 +48,14 @@ struct SocketMessage: Decodable {
     let tool: String?
     let arguments: LocalFileArguments?
     let envelope: SignedRuntimeUpdate?
+    let gateway: CodexGatewayConfiguration?
 }
 struct SocketResponse: Encodable { let type: String; let challengeId: String; let signature: String }
 struct SocketAuthResponse: Encodable {
     let type: String
     let challengeId: String
     let signature: String
-    let capabilities = ["runtime_update_v1", "local_configuration_v1", "local_tools_v1", "codex_exec_v1", "execution_round_v1"]
+    let capabilities = ["runtime_update_v1", "local_configuration_v1", "local_tools_v1", "codex_exec_v1", "execution_round_v1", "codex_gateway_v1"]
     let platform = "macos"
     let architecture: String
     let launcherVersion: String
@@ -618,7 +619,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
         self.credentialUrl = credentialUrl
     }
 
-    func start(taskId: String, instruction: String, resume: Bool, round: Int = 0) {
+    func start(taskId: String, instruction: String, resume: Bool, round: Int = 0, gateway: CodexGatewayConfiguration? = nil) {
         let accepted = synchronized { () -> Bool in
             if processes[taskId] != nil || preparing.contains(taskId) { return false }
             preparing.insert(taskId); cancelled.remove(taskId); rounds[taskId] = round
@@ -628,7 +629,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
             Task { await send(taskId: taskId, kind: "error", text: "上一轮的本机进程或授权窗口尚未退出，请关闭窗口后再执行；本次未启动，也不会自动重跑。", status: "failed", round: round) }
             return
         }
-        Task { await self.run(taskId: taskId, instruction: instruction, resume: resume) }
+        Task { await self.run(taskId: taskId, instruction: instruction, resume: resume, gateway: gateway) }
     }
 
     func cancel(taskId: String) {
@@ -637,7 +638,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
         Task { await send(taskId: taskId, kind: "status", text: "已提交停止请求；已产生的修改不会自动撤销", status: "cancelled", round: round) }
     }
 
-    private func run(taskId: String, instruction: String, resume: Bool) async {
+    private func run(taskId: String, instruction: String, resume: Bool, gateway: CodexGatewayConfiguration?) async {
         defer { synchronized { preparing.remove(taskId) } }
         let alreadyRunning = synchronized { processes[taskId] != nil }
         if alreadyRunning { await send(taskId: taskId, kind: "error", text: "Codex 正在执行当前任务", status: "failed"); return }
@@ -645,7 +646,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
             await send(taskId: taskId, kind: "error", text: "尚未连接可用的 Codex，或已取消选择。请安装 Codex 并登录，或执行时选择已有应用。更新 ONE 不会自动安装 Codex。", status: "failed")
             return
         }
-        let authenticated = await Task.detached { probeCodex(executable, arguments: ["login", "status"])?.status == 0 }.value
+        let authenticated = gateway != nil ? true : await Task.detached { probeCodex(executable, arguments: ["login", "status"])?.status == 0 }.value
         guard authenticated else {
             await send(taskId: taskId, kind: "error", text: "已找到 Codex，但无法确认登录状态。请先在 Codex 完成登录，再重新执行；ONE 不会读取或上传你的登录凭证。", status: "failed")
             return
@@ -673,6 +674,20 @@ final class CodexExecutionRunner: @unchecked Sendable {
         process.executableURL = URL(fileURLWithPath: executable)
         process.environment = executionEnvironment()
         var arguments = ["exec", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check", "-C", projectPath]
+        if let gateway {
+            do {
+                let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let identity = SHA256.hash(data: Data("\(deviceId):\(taskId)".utf8)).map { String(format: "%02x", $0) }.joined()
+                let home = support.appendingPathComponent("ONE/codex/\(identity)")
+                try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                let overrides = try gateway.launchOverrides(home: home, environment: executionEnvironment())
+                process.environment = overrides.environment
+                arguments = overrides.arguments + arguments
+            } catch {
+                await send(taskId: taskId, kind: "error", text: "无法准备 ONE 执行环境；本机尚未开始操作，不会使用个人 Codex 账号", status: "failed")
+                return
+            }
+        }
         if resume, let threadId { arguments += ["resume", threadId, "-"] } else { arguments.append("-") }
         process.arguments = arguments
         process.standardOutput = stdout
@@ -879,9 +894,9 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
                 if let data = try? JSONEncoder().encode(response) { try? await task.send(.string(String(decoding: data, as: UTF8.self))) }
             }
         } else if message.type == "execution_start", let taskId = message.taskId, let instruction = message.instruction {
-            execution.start(taskId: taskId, instruction: instruction, resume: false, round: message.round ?? 0)
+            execution.start(taskId: taskId, instruction: instruction, resume: false, round: message.round ?? 0, gateway: message.gateway)
         } else if message.type == "execution_continue", let taskId = message.taskId, let instruction = message.instruction {
-            execution.start(taskId: taskId, instruction: instruction, resume: true, round: message.round ?? 0)
+            execution.start(taskId: taskId, instruction: instruction, resume: true, round: message.round ?? 0, gateway: message.gateway)
         } else if message.type == "execution_cancel", let taskId = message.taskId {
             execution.cancel(taskId: taskId)
             await localExecutor.cancel(taskId)

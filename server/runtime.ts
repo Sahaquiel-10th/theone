@@ -8,6 +8,7 @@ import { ConnectorService } from "./connectorService.js";
 import { NotionMcpService } from "./knowledge/notionMcpService.js";
 import { notionConnector } from "./connectors/notion.js";
 import { RuntimeUpdateCatalog } from "./runtimeUpdate.js";
+import { CodexGateway } from "./codexGateway.js";
 import { RemoteMcpKnowledgeService } from "./knowledge/remoteMcpKnowledgeService.js";
 import { FlomoMcpService } from "./knowledge/flomoMcpService.js";
 import { flowusConfig, flomoConfig } from "./knowledge/remoteMcpProviders.js";
@@ -18,6 +19,12 @@ import { FeishuService } from "./knowledge/feishuService.js";
 import { feishuConnector } from "./connectors/feishu.js";
 
 export const oneKeyPresence = new OneKeyPresence(store);
+export const codexGateway = new CodexGateway(store, scope => oneKeyPresence.requireProof(scope), {
+  enabled: process.env.ONE_CODEX_GATEWAY_ENABLED === "true",
+  baseUrl: process.env.ONE_CODEX_GATEWAY_URL?.trim() || "",
+  modelId: process.env.ONE_CODEX_GATEWAY_MODEL_ID?.trim() || ""
+});
+if (codexGateway.enabled()) oneKeyPresence.configureCodexGateway(task => codexGateway.prepare(task));
 export const runtimeUpdateCatalog = new RuntimeUpdateCatalog();
 export const localAgentService = new LocalAgentService(store, oneKeyPresence);
 export const notionMcpService = new NotionMcpService(store);
@@ -26,7 +33,7 @@ export const flowusMcpService = new RemoteMcpKnowledgeService(store, flowusConfi
 export const yinxiangService = new YinxiangService(store);
 export const feishuService = new FeishuService(store);
 export const connectorRegistry = new ConnectorRegistry(
-  [getnoteConnector, notionConnector(notionMcpService), yinxiangConnector(yinxiangService), remoteMcpConnector(flowusMcpService, flowusConfig), remoteMcpConnector(flomoMcpService, flomoConfig), feishuConnector(feishuService), ...executionConnectors(oneKeyPresence, localAgentService)],
+  [getnoteConnector, notionConnector(notionMcpService), yinxiangConnector(yinxiangService), remoteMcpConnector(flowusMcpService, flowusConfig), remoteMcpConnector(flomoMcpService, flomoConfig), feishuConnector(feishuService), ...executionConnectors(oneKeyPresence, localAgentService, { preferCodex: codexGateway.enabled() })],
   (process.env.ONE_DISABLED_CONNECTORS || "").split(",").map(value => value.trim()).filter(Boolean)
 );
 export const connectorService = new ConnectorService(store, connectorRegistry);

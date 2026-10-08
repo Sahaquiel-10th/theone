@@ -5,8 +5,9 @@ import type { ExecutionAdapter } from "./registry.js";
 export type ExecutionPresence = Pick<OneKeyPresence, "isConnected" | "supportsLocalAgent" | "startExecution" | "continueExecution" | "cancelExecution"> & { supportsCodex?: OneKeyPresence["supportsCodex"] };
 export type LocalExecutor = Pick<LocalAgentService, "start" | "cancel">;
 
-export function executionConnectors(presence: ExecutionPresence, local: LocalExecutor): ExecutionAdapter[] {
-  return (["local_agent", "codex"] as const).map(provider => ({
+export function executionConnectors(presence: ExecutionPresence, local: LocalExecutor, options: { preferCodex?: boolean } = {}): ExecutionAdapter[] {
+  const providers = options.preferCodex ? ["codex", "local_agent"] as const : ["local_agent", "codex"] as const;
+  return providers.map(provider => ({
     kind: "execution",
     provider,
     manifest: {

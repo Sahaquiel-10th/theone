@@ -14,6 +14,14 @@ import { KnowledgeService } from "./knowledge/knowledgeService.js";
 
 const installationId = "a".repeat(32);
 const scope = { workspaceId: "a", userId: "ua", deviceId: "da", installationId };
+test("Codex priority is opt-in and does not rewrite an existing task provider", () => {
+  const presence = {} as ExecutionPresence;
+  const local = { start() {}, async cancel() {} };
+  assert.deepEqual(executionConnectors(presence, local).map(adapter => adapter.provider), ["local_agent", "codex"]);
+  assert.deepEqual(executionConnectors(presence, local, { preferCodex: true }).map(adapter => adapter.provider), ["codex", "local_agent"]);
+  const registry = new ConnectorRegistry(executionConnectors(presence, local, { preferCodex: true }));
+  assert.equal(registry.execution("local_agent")?.provider, "local_agent");
+});
 function fixture(disabled: string[] = []) {
   const db = {
     users: ["a", "b"].map(id => ({ id: `u${id}`, defaultWorkspaceId: id, enabled: true })),

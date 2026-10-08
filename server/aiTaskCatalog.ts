@@ -5,6 +5,7 @@ export const aiTaskCatalog = [
   { id: "attachment_summary", name: "附件整理", modelKind: "chat", toolCapable: false, implementation: "existing" },
   { id: "execution_compile", name: "对话转执行指令", modelKind: "chat", toolCapable: false, implementation: "existing" },
   { id: "local_agent", name: "本地执行 Agent", modelKind: "chat", toolCapable: true, implementation: "existing" },
+  { id: "codex_execution", name: "Codex 本机执行（ONE 网关）", modelKind: "chat", toolCapable: false, implementation: "existing" },
   { id: "image_generation", name: "图片生成", modelKind: "image", toolCapable: false, implementation: "existing" },
   { id: "orchestrator", name: "检索与工具调度（原聊天）", modelKind: "chat", toolCapable: true, implementation: "existing" },
   { id: "coordinator", name: "ONE 持续对话与任务分派", modelKind: "chat", toolCapable: true, implementation: "existing" },

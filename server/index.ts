@@ -56,6 +56,8 @@ import { installAdminPaymentRoutes, installPaymentCallback, installPaymentRoutes
 import { effectiveModel, publishPricing, cancelScheduledPricing, publicPrices } from "./modelPricing.js";
 import { publicPayment } from "./payments.js";
 import { runtimeUpdateWasCompleted } from "./runtimeUpdate.js";
+import { codexGateway } from "./runtime.js";
+import { installCodexGatewayRoutes } from "./codexGateway.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -88,6 +90,7 @@ if (process.env.NODE_ENV === "production" && jwtSecret === "dev-secret-change-me
 
 installPaymentCallback(app, store);
 app.use(express.json({ limit: "2mb" }));
+installCodexGatewayRoutes(app, codexGateway);
 app.set("trust proxy", "loopback");
 app.disable("x-powered-by");
 app.use((req, res, next) => {

@@ -13,6 +13,7 @@
     "build:one-key:windows": "node scripts/build-windows-one-key.mjs",
     "release:one-runtime": "node scripts/publish-runtime-update.mjs",
     "check:executor-catalog": "tsx scripts/check-executor-catalog.ts",
+    "probe:codex-provider": "tsx scripts/probe-codex-provider.ts",
     "provision:one-key": "tsx scripts/provision-one-key-dual.ts",
     "start": "NODE_ENV=production tsx server/index.ts"
   },

@@ -3,6 +3,8 @@ import type { Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import type { Store } from "./db.js";
 import { uid } from "./security.js";
+import type { CodexGatewayConfiguration } from "./codexGateway.js";
+import type { ExecutionTask } from "./types.js";
 import { appendExecutionEvent, executionTerminal, saveExecutionReceipt } from "./executionService.js";
 import { validInstallationId } from "./oneKeyInstallation.js";
 import { compareRuntimeVersions, validRuntimeVersion, type RuntimeArchitecture, type RuntimeIdentity, type RuntimePlatform, type SignedRuntimeUpdate } from "./runtimeUpdate.js";
@@ -81,6 +83,18 @@ export class OneKeyPresence {
   private pingTimer?: NodeJS.Timeout;
 
   constructor(private store: Store) {}
+
+  private codexGateway?: (task: ExecutionTask) => Promise<CodexGatewayConfiguration>;
+  configureCodexGateway(prepare: (task: ExecutionTask) => Promise<CodexGatewayConfiguration>) { this.codexGateway = prepare; }
+
+  private async gatewayConfiguration(taskId: string, deviceId: string, installationId?: string) {
+    if (!this.codexGateway) return undefined;
+    const socket = await this.executionSocket(deviceId, taskId, installationId);
+    if (!this.states.get(socket)?.capabilities.has("codex_gateway_v1")) throw new Error("请升级 ONE 启动器后使用统一执行接口；不会切换到个人 Codex 账号");
+    const task = (await this.store.read()).executionTasks.find(t => t.id === taskId && t.deviceId === deviceId && t.installationId === installationId);
+    if (!task) throw new Error("执行任务不存在");
+    return this.codexGateway(task);
+  }
 
   private updateInProgress(state?: SocketState) {
     return Boolean(state?.update && !state.update.recoveryRequired && !["completed", "failed"].includes(state.update.status)
@@ -264,13 +278,15 @@ export class OneKeyPresence {
   async startExecution(deviceId: string, taskId: string, instruction: string, installationId?: string) {
     const db = await this.store.read();
     const round = db.executionTasks.find(t => t.id === taskId && t.deviceId === deviceId && t.installationId === installationId)?.reportRound ?? 0;
-    await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_start", taskId, instruction, round });
+    const gateway = await this.gatewayConfiguration(taskId, deviceId, installationId);
+    await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_start", taskId, instruction, round, gateway });
   }
 
   async continueExecution(deviceId: string, taskId: string, instruction: string, installationId?: string) {
     const db = await this.store.read();
     const round = db.executionTasks.find(t => t.id === taskId && t.deviceId === deviceId && t.installationId === installationId)?.reportRound ?? 0;
-    await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_continue", taskId, instruction, round });
+    const gateway = await this.gatewayConfiguration(taskId, deviceId, installationId);
+    await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_continue", taskId, instruction, round, gateway });
   }
 
   async cancelExecution(deviceId: string, taskId: string, installationId?: string) {
