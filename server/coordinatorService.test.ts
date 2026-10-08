@@ -307,6 +307,16 @@ test('local notices acknowledge their own execution round without suppressing a 
  await f.store.mutate(d=>{d.executionTasks[0].reportRound=1;d.executionTasks[0].reportedToCoordinatorAt=undefined;});
  assert.equal((await f.service.state(a)).notices.length,1);
 });
+test('saving a task alone is not proof that the local executor accepted it',async()=>{
+ const f=fixture();let runs=0;
+ const result=await f.service.dispatch(a,{...input('operation_local_rejected','UI 改标题'),localExecution:true},key,undefined,async()=>{runs++;throw new Error('连接执行器失败');});
+ assert.match(result.conversation.messages.at(-1)?.content ?? '',/尚不能确认已开始或完成/);
+ assert.equal(runs,1);
+ const db=await f.store.read();
+ assert.ok(db.messages.some(m=>m.role==='user'&&m.content==='UI 改标题'));
+ assert.equal((db.executionTasks ?? []).length,0);
+ assert.equal(db.chatOperations?.find(o=>o.operationId==='operation_local_rejected')?.status,'completed');
+});
 test('a batch briefing is one message with all task links and replays never duplicate it', async () => {
  const f=fixture(); await f.service.dispatch(a,input('operation_batch_start','你好'),key);
  const stamp=new Date().toISOString();

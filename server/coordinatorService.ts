@@ -442,6 +442,7 @@ export class CoordinatorService {
       };
     const mid = uid("msg");
     let localRequested = input.localExecution === true;
+    let localAccepted = false;
     let dispatched: string | undefined,
       trace: ExecutionTraceStep[] = [],
       sections: ContextTraceSection[] = [];
@@ -598,6 +599,7 @@ export class CoordinatorService {
               const saved = await this.store.read();
               const job = saved.chatOperations!.find(o => own(o, s) && o.operationId === `${input.operationId}_work`)!;
               local = await executeLocal!(dispatched, job.workRun!.inputMessageId, `local_${input.operationId}`);
+              localAccepted = Boolean(local?.id);
             }
             await this.store.mutate((d) => {
               const o = d.chatOperations!.find(
@@ -688,7 +690,7 @@ export class CoordinatorService {
       )
         throw new CoordinatorError("调度回答未完整返回");
       if (
-        input.localExecution && !dispatched
+        localRequested && !localAccepted
       ) throw new CoordinatorError("本机执行尚未开始：调度没有实际分派任务。你的原始要求已保留，请明确对应事情后再执行；不会自动重跑。", 409);
       if (
         (input.boundTaskId || features.length || attachments.length) &&
