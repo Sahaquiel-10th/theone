@@ -154,6 +154,7 @@ export type ExecutionTask = {
   installationId?: string; targetName?: string; providerThreadId?: string; finalResponse?: string; lastError?: string;
   dispatchOperationId?: string;
   reportedToCoordinatorAt?: string;
+  noticeReadRound?: number;
   reportRound?: number;
   createdAt: string; updatedAt: string; startedAt?: string; completedAt?: string;
 };

@@ -280,6 +280,33 @@ test('on-demand task reading is private and local completion reporting is persis
  await f.store.mutate(d=>{const task=d.executionTasks[0];task.reportRound=1;task.reportedToCoordinatorAt=undefined;task.finalResponse='第二轮的独立结果';});await f.service.report(a,['local-completed'],key);await f.service.report(a,['local-completed'],key);assert.equal((await f.store.read()).conversations.find(c=>c.coordinatorMain&&c.userId==='a')!.messages.filter(m=>m.id==='report_local-completed_1').length,1);
  const blocked=fixture();await blocked.store.mutate(d=>{d.conversations.push({...b,id:'foreign',title:'秘密',modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp});});blocked.setRoute(()=>({...answer(''),toolCalls:[{id:'read',type:'function',function:{name:'read_task',arguments:JSON.stringify({query:'foreign'})}}]}));await assert.rejects(blocked.service.dispatch(a,input('operation_read_denied','读旧事情'),key));
 });
+test('an execution click cannot be acknowledged as dispatched without a real local task', async () => {
+ const f=fixture(); f.setRoute(()=>answer('已转达并开始执行。'));
+ let runs=0;
+ await assert.rejects(()=>f.service.dispatch(a,{...input('operation_false_local','修改网页标题'),localExecution:true},key,undefined,async()=>{runs++;return{id:'never',status:'queued'};}),/本机执行尚未开始/);
+ assert.equal(runs,0);
+ const db=await f.store.read();
+ assert.ok(db.messages.some(m=>m.role==='user'&&m.content==='修改网页标题'));
+ assert.ok(!db.messages.some(m=>m.role==='assistant'&&m.content==='已转达并开始执行。'));
+});
+test('local notices acknowledge their own execution round without suppressing a requested brief', async () => {
+ const f=fixture(); await f.service.dispatch(a,input('operation_notice_init','你好'),key);
+ const stamp=new Date().toISOString();
+ await f.store.mutate(d=>{
+  d.conversations.push({...a,id:'notice-task',title:'本机测试',modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp});
+  d.executionTasks=[{...a,id:'notice-execution',conversationId:'notice-task',sourceMessageId:'m',provider:'local_agent',instruction:'safe',deviceId:'fixture-key',status:'completed',reportRound:0,finalResponse:'已回读',createdAt:stamp,updatedAt:stamp}];
+ });
+ await assert.rejects(()=>f.service.acknowledge(b,['notice-execution']));
+ await assert.rejects(()=>f.service.acknowledge(a,['notice-execution','missing']));
+ assert.equal((await f.store.read()).executionTasks[0].noticeReadRound,undefined);
+ await f.service.acknowledge(a,['notice-execution']); await f.service.acknowledge(a,['notice-execution']);
+ assert.equal((await f.service.state(a)).notices.length,0);
+ assert.equal((await f.store.read()).executionTasks[0].reportedToCoordinatorAt,undefined);
+ await f.service.report(a,['notice-execution'],key);
+ assert.ok((await f.store.read()).executionTasks[0].reportedToCoordinatorAt);
+ await f.store.mutate(d=>{d.executionTasks[0].reportRound=1;d.executionTasks[0].reportedToCoordinatorAt=undefined;});
+ assert.equal((await f.service.state(a)).notices.length,1);
+});
 test('a batch briefing is one message with all task links and replays never duplicate it', async () => {
  const f=fixture(); await f.service.dispatch(a,input('operation_batch_start','你好'),key);
  const stamp=new Date().toISOString();

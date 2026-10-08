@@ -252,7 +252,7 @@ export class CoordinatorService {
           title: tasks.find((t) => t.id === o.conversationId)?.title,
           state: o.workRun!.state,
           resultMessageId: o.workRun!.resultMessageId,
-        })), ...(db.executionTasks ?? []).filter(t => own(t, s) && ["completed", "failed", "cancelled"].includes(t.status) && !t.reportedToCoordinatorAt)
+        })), ...(db.executionTasks ?? []).filter(t => own(t, s) && ["completed", "failed", "cancelled"].includes(t.status) && !t.reportedToCoordinatorAt && t.noticeReadRound !== (t.reportRound ?? 0))
           .slice(-30).map(t => ({ id: t.id, taskId: t.conversationId, title: tasks.find(c => c.id === t.conversationId)?.title, state: t.status }))],
     };
   }
@@ -315,11 +315,14 @@ export class CoordinatorService {
         const op = db.chatOperations?.find(
           (o) => o.id === id && own(o, s) && o.workRun,
         );
-        if (!op) throw new CoordinatorError("通知不存在", 404);
+        const execution = db.executionTasks?.find(t => t.id === id && own(t, s) && ["completed", "failed", "cancelled"].includes(t.status));
+        if (!op && !execution) throw new CoordinatorError("通知不存在", 404);
       }
       for (const op of db.chatOperations ?? [])
         if (own(op, s) && selected.includes(op.id) && op.workRun)
           op.workRun.unread = false;
+      for (const task of db.executionTasks ?? [])
+        if (own(task, s) && selected.includes(task.id) && ["completed", "failed", "cancelled"].includes(task.status)) task.noticeReadRound = task.reportRound ?? 0;
     });
   }
   private profiles(db: Database, s: WorkScope, external: boolean) {
@@ -684,6 +687,9 @@ export class CoordinatorService {
         result.finishReason === "filtered"
       )
         throw new CoordinatorError("调度回答未完整返回");
+      if (
+        input.localExecution && !dispatched
+      ) throw new CoordinatorError("本机执行尚未开始：调度没有实际分派任务。你的原始要求已保留，请明确对应事情后再执行；不会自动重跑。", 409);
       if (
         (input.boundTaskId || features.length || attachments.length) &&
         !dispatched
