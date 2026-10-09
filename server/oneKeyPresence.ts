@@ -301,8 +301,8 @@ export class OneKeyPresence {
     const requestId = uid('prep');
     if (install) state.executorPreparationError = undefined;
     const response = new Promise<{ targetName?: string; output?: string }>((resolve, reject) => {
-      const timeout = setTimeout(() => { this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError('工具准备尚未返回；请重新检查状态，不会自动执行任务')); }, install ? 540_000 : 15_000);
-      this.pendingLocal.set(requestId, { deviceId: scope.deviceId, socket, taskId: 'device_settings', configuration: true, change: install, preparationPhase: install ? 'confirming' : undefined, workspaceId: scope.workspaceId, userId: scope.userId, resolve, reject, timeout });
+      const timeout = setTimeout(() => { this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError('工具准备尚未返回；请重新检查状态，不会自动执行任务')); }, install ? 540_000 : 60_000);
+      this.pendingLocal.set(requestId, { deviceId: scope.deviceId, socket, taskId: 'device_settings', configuration: true, change: install, preparationPhase: install ? 'checking' : undefined, workspaceId: scope.workspaceId, userId: scope.userId, resolve, reject, timeout });
       socket.send(JSON.stringify({ type: install ? 'executor_prepare' : 'executor_status', requestId, envelope: install ? release.envelope : undefined }), error => {
         if (!error) return; clearTimeout(timeout); this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError('本机连接中断，请重新检查工具状态'));
       });
@@ -311,13 +311,14 @@ export class OneKeyPresence {
       // Downloads may outlive an HTTP proxy timeout. Acknowledge dispatch now;
       // status polling checks the actual installed tool, never repeats install.
       void response.catch(error => { state.executorPreparationError = error instanceof Error ? error.message.slice(0, 1000) : '准备未完成，请重新检查'; });
-      return { available: true, preparing: true, phase: 'confirming', version: release.version, size: release.size };
+      return { available: true, preparing: true, phase: 'checking', version: release.version, size: release.size };
     }
     const result = await response;
     // Status contains no executable path or gateway credentials.
     const installedVersion = validRuntimeVersion(result.output) ? result.output : undefined;
-    return { available: true, preparing: false, version: release.version, size: release.size, installedVersion,
-      error: installedVersion === release.version ? undefined : state.executorPreparationError };
+    const installedSource = installedVersion && result.targetName === 'existing' ? 'existing' : installedVersion ? 'managed' : undefined;
+    return { available: true, preparing: false, version: release.version, size: release.size, installedVersion, installedSource,
+      error: installedSource === 'existing' || installedVersion === release.version ? undefined : state.executorPreparationError };
   }
 
   async executeLocalTool(deviceId: string, taskId: string, tool: LocalToolName, args: Record<string, unknown>, installationId?: string) {

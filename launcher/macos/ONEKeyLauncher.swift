@@ -559,6 +559,7 @@ func selectCodexRuntime() -> String? {
 }
 
 func codexExecutable(credentialUrl: URL, allowSelection: Bool = true) async -> String? {
+    if !allowSelection { return await oneGatewayCodex(credentialUrl: credentialUrl)?.path }
     if let installed = try? managedCodexInstalled(credentialUrl: credentialUrl), isCodexRuntime(installed.path) { return installed.path }
     let volumeRoot = credentialUrl.deletingLastPathComponent().deletingLastPathComponent()
     let key = "one.execution.codex.path"
@@ -577,6 +578,22 @@ func codexExecutable(credentialUrl: URL, allowSelection: Bool = true) async -> S
     guard let found = await Task.detached(operation: { choices.first(where: isCodexRuntime) }).value else { return nil }
     oneDefaults().set(found, forKey: key)
     return found
+}
+
+func oneGatewayCodex(credentialUrl: URL) async -> (path: String, version: String, source: String)? {
+    let volume = credentialUrl.deletingLastPathComponent().deletingLastPathComponent()
+    let apps = await codexApplications()
+    let managedRoot = (try? managedCodexRoot().path) ?? ""
+    let candidates = codexRuntimeCandidates(saved: oneDefaults().string(forKey: "one.execution.codex.path"), resources: Bundle.main.resourceURL, volume: volume, applications: apps, home: FileManager.default.homeDirectoryForCurrentUser, path: ProcessInfo.processInfo.environment["PATH"] ?? "")
+        .filter { managedRoot.isEmpty || !$0.hasPrefix(managedRoot + "/") }
+    if let existing = await Task.detached(operation: { discoverCompatibleCodex(candidates) }).value {
+        return (existing.path, existing.version, "existing")
+    }
+    if let managed = try? managedCodexInstalled(credentialUrl: credentialUrl),
+       await Task.detached(operation: { discoverCompatibleCodex([managed.path]) != nil }).value {
+        return (managed.path, managed.version, "managed")
+    }
+    return nil
 }
 
 func managedCodexRoot() throws -> URL {
@@ -927,6 +944,10 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
         } else if ["executor_status", "executor_prepare"].contains(message.type), let requestId = message.requestId {
             Task {
                 do {
+                    func reportPhase(_ phase: String) async {
+                        let response = LocalConfigurationResponse(type: "executor_progress", taskId: "device_settings", requestId: requestId, targetName: nil, output: phase, error: nil)
+                        if let data = try? JSONEncoder().encode(response) { try? await task.send(.string(String(decoding:data,as:UTF8.self))) }
+                    }
                     if message.type == "executor_prepare" {
                         guard !runtimeInstallActivity.active, managedCodexActivity.begin() else { throw ManagedCodexError.busy }
                         defer { managedCodexActivity.end() }
@@ -935,13 +956,10 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
                         let credential = try JSONDecoder().decode(DeviceCredential.self, from: Data(contentsOf: credentialUrl))
                         guard let origin = URL(string: credential.serverBaseUrl) else { throw ManagedCodexError.invalid }
                         let release = try managedCodexRelease(envelope, publicKey: executorPublicKeyRaw, origin: origin, architecture: runtimeArchitecture())
-                        let installed = try managedCodexInstalled(credentialUrl: credentialUrl)
-                        if installed == nil || installed!.version.compare(release.version, options: .numeric) == .orderedAscending {
+                        let selected = await oneGatewayCodex(credentialUrl: credentialUrl)
+                        if selected == nil || (selected!.source == "managed" && selected!.version.compare(release.version, options: .numeric) == .orderedAscending) {
+                            await reportPhase("confirming")
                             guard await confirmManagedCodex(release) else { throw LauncherError.message("已取消准备，没有安装或启动任务") }
-                            func reportPhase(_ phase: String) async {
-                                let response = LocalConfigurationResponse(type: "executor_progress", taskId: "device_settings", requestId: requestId, targetName: nil, output: phase, error: nil)
-                                if let data = try? JSONEncoder().encode(response) { try? await task.send(.string(String(decoding:data,as:UTF8.self))) }
-                            }
                             await reportPhase("downloading")
                             let bytes = try await ManagedCodexDownload(expected: release.size).fetch(URL(string: release.url)!)
                             await reportPhase("verifying")
@@ -957,8 +975,8 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
                             }.value
                         }
                     }
-                    let installed = try managedCodexInstalled(credentialUrl: credentialUrl)
-                    let response = LocalConfigurationResponse(type: "local_ready", taskId: "device_settings", requestId: requestId, targetName: nil, output: installed?.version ?? "", error: nil)
+                    let selected = await oneGatewayCodex(credentialUrl: credentialUrl)
+                    let response = LocalConfigurationResponse(type: "local_ready", taskId: "device_settings", requestId: requestId, targetName: selected?.source, output: selected?.version ?? "", error: nil)
                     try await task.send(.string(String(decoding: JSONEncoder().encode(response), as: UTF8.self)))
                 } catch {
                     let response = LocalConfigurationResponse(type: "local_error", taskId: "device_settings", requestId: requestId, targetName: nil, output: "", error: "工具准备未完成：\(error.localizedDescription)。未自动执行任务，可重新检查。")

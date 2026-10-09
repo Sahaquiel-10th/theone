@@ -20,11 +20,11 @@ test('managed preparation binds owner, computer, live Key and task/update exclus
   const auth = JSON.parse((await once(socket,'message'))[0].toString());
   const sign = (nonce:string)=>crypto.sign(null,Buffer.from(nonce,'base64url'),pair.privateKey).toString('base64url');
   socket.send(JSON.stringify({type:'auth_response', challengeId:auth.challengeId, signature:sign(auth.nonce), capabilities:['managed_codex_v1','runtime_update_v1','local_configuration_v1'],platform:'macos',architecture:'arm64',launcherVersion:'0.4.10',updateProtocol:1})); await once(socket,'message');
-  let held:any, count=0;
+  let held:any, count=0, existing = false;
   socket.on('message', raw => {
     const message=JSON.parse(raw.toString());
     if(message.type==='request_challenge')socket.send(JSON.stringify({type:'proof_response',challengeId:message.challengeId,signature:sign(message.nonce)}));
-    if(message.type==='executor_status')socket.send(JSON.stringify({type:'local_ready',taskId:'device_settings',requestId:message.requestId,output:'0.160.1'}));
+    if(message.type==='executor_status')socket.send(JSON.stringify({type:'local_ready',taskId:'device_settings',requestId:message.requestId,output:existing?'0.161.0':'0.160.1',targetName:existing?'existing':undefined}));
     if(message.type==='executor_prepare'){held=message;count++;}
   });
   const scope = { deviceId:'key',installationId,workspaceId:'wa',userId:'a' }, envelope={payload:'signed',signature:'signed'};
@@ -55,6 +55,10 @@ test('managed preparation binds owner, computer, live Key and task/update exclus
     const refused=await presence.managedExecutor(scope,nextCatalog);
     assert.equal(refused.installedVersion,'0.160.1');assert.match(refused.error!,/用户拒绝/);
     const afterRefusal=count;await presence.managedExecutor(scope,nextCatalog);assert.equal(count,afterRefusal);
+    existing=true;
+    const reused=await presence.managedExecutor(scope,nextCatalog);
+    assert.equal(reused.installedSource,'existing');assert.equal(reused.installedVersion,'0.161.0');assert.equal(reused.error,undefined);assert.equal(count,afterRefusal);
+    existing=false;
     held=undefined;
     const interrupted=await presence.managedExecutor(scope,catalog,true);
     for(let i=0;i<100&&!held;i++)await new Promise(r=>setTimeout(r,5));
