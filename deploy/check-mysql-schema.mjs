@@ -39,6 +39,8 @@ try {
     console.log(`ONE schema v2: ready; pending chat operations: ${pendingOperations}; pending model calls: ${pendingModels}; billing reviews: ${reviews}.`);
     if (queued) console.log(`ONE durable queue: ${queued} unstarted tasks preserved; these require Key-verified resume and do not block restart.`);
     if (pendingOperations > 0 || pendingModels > 0) throw new Error("ONE_ACTIVE_REQUESTS_WAIT_BEFORE_RESTART");
+    const [executions] = await connection.execute({ sql: "SELECT COUNT(*) AS active FROM execution_tasks WHERE JSON_UNQUOTE(JSON_EXTRACT(record_json, '$.status')) NOT IN ('queued', 'completed', 'failed', 'cancelled')", timeout: 5000 });
+    if (Number(executions[0].active)) throw new Error('ONE_LOCAL_EXECUTIONS_WAIT_BEFORE_RESTART');
     const [sharingSchema] = await connection.execute({ sql: "SELECT version FROM schema_migrations WHERE version = 3 LIMIT 1", timeout: 5000 });
     if (sharingSchema.length) {
       const [sharingRuns] = await connection.execute({ sql: "SELECT COUNT(*) AS pending FROM public_runs WHERE JSON_UNQUOTE(JSON_EXTRACT(record_json, '$.status')) = 'running'", timeout: 5000 });

@@ -9,6 +9,7 @@ import { NotionMcpService } from "./knowledge/notionMcpService.js";
 import { notionConnector } from "./connectors/notion.js";
 import { RuntimeUpdateCatalog } from "./runtimeUpdate.js";
 import { CodexGateway } from "./codexGateway.js";
+import { ManagedExecutorDistribution } from "./managedExecutorDistribution.js";
 import { RemoteMcpKnowledgeService } from "./knowledge/remoteMcpKnowledgeService.js";
 import { FlomoMcpService } from "./knowledge/flomoMcpService.js";
 import { flowusConfig, flomoConfig } from "./knowledge/remoteMcpProviders.js";
@@ -26,6 +27,7 @@ export const codexGateway = new CodexGateway(store, scope => oneKeyPresence.requ
 });
 if (codexGateway.enabled()) oneKeyPresence.configureCodexGateway(task => codexGateway.prepare(task));
 export const runtimeUpdateCatalog = new RuntimeUpdateCatalog();
+export const managedExecutorDistribution = new ManagedExecutorDistribution();
 export const localAgentService = new LocalAgentService(store, oneKeyPresence);
 export const notionMcpService = new NotionMcpService(store);
 export const flomoMcpService = new FlomoMcpService(store);

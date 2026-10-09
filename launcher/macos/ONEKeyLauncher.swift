@@ -7,6 +7,8 @@ import Darwin
 
 let launcherVersion = "__ONE_RUNTIME_VERSION__"
 let updatePublicKeyRaw = "__ONE_UPDATE_PUBLIC_KEY__"
+let executorPublicKeyRaw = "__ONE_EXECUTOR_PUBLIC_KEY__"
+let managedCodexActivity = ManagedCodexActivity()
 let residentArgument = "--one-resident"
 let deviceArgument = "--device-id"
 let credentialArgument = "--credential-path"
@@ -55,7 +57,7 @@ struct SocketAuthResponse: Encodable {
     let type: String
     let challengeId: String
     let signature: String
-    let capabilities = ["runtime_update_v1", "local_configuration_v1", "local_tools_v1", "codex_exec_v1", "execution_round_v1", "codex_gateway_v1"]
+    let capabilities = ["runtime_update_v1", "local_configuration_v1", "local_tools_v1", "codex_exec_v1", "execution_round_v1", "codex_gateway_v1", "managed_codex_v1"]
     let platform = "macos"
     let architecture: String
     let launcherVersion: String
@@ -556,7 +558,8 @@ func selectCodexRuntime() -> String? {
     return panel.url?.path
 }
 
-func codexExecutable(credentialUrl: URL) async -> String? {
+func codexExecutable(credentialUrl: URL, allowSelection: Bool = true) async -> String? {
+    if let installed = try? managedCodexInstalled(credentialUrl: credentialUrl), isCodexRuntime(installed.path) { return installed.path }
     let volumeRoot = credentialUrl.deletingLastPathComponent().deletingLastPathComponent()
     let key = "one.execution.codex.path"
     let apps = await codexApplications()
@@ -566,6 +569,7 @@ func codexExecutable(credentialUrl: URL) async -> String? {
         return found
     }
     oneDefaults().removeObject(forKey: key)
+    if !allowSelection { return nil }
     guard let selected = await selectCodexRuntime() else { return nil }
     let choices = selected.hasSuffix(".app")
         ? codexRuntimeCandidates(saved: nil, resources: nil, volume: volumeRoot, applications: [URL(fileURLWithPath: selected)], home: FileManager.default.homeDirectoryForCurrentUser, path: "").filter { $0.hasPrefix(selected + "/") }
@@ -573,6 +577,32 @@ func codexExecutable(credentialUrl: URL) async -> String? {
     guard let found = await Task.detached(operation: { choices.first(where: isCodexRuntime) }).value else { return nil }
     oneDefaults().set(found, forKey: key)
     return found
+}
+
+func managedCodexRoot() throws -> URL {
+    try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        .appendingPathComponent("ONE/executors", isDirectory: true)
+}
+func runtimeArchitecture() -> String {
+    #if arch(arm64)
+    return "arm64"
+    #else
+    return "x86_64"
+    #endif
+}
+func managedCodexInstalled(credentialUrl: URL) throws -> (path: String, version: String)? {
+    let credential = try JSONDecoder().decode(DeviceCredential.self, from: Data(contentsOf: credentialUrl))
+    guard let origin = URL(string: credential.serverBaseUrl) else { throw ManagedCodexError.invalid }
+    return try installedManagedCodex(root: managedCodexRoot(), publicKey: executorPublicKeyRaw, origin: origin, architecture: runtimeArchitecture())
+}
+@MainActor
+func confirmManagedCodex(_ release: ManagedCodexRelease) -> Bool {
+    NSApplication.shared.activate(ignoringOtherApps: true)
+    let alert = NSAlert()
+    alert.messageText = "准备 ONE 本机执行工具"
+    alert.informativeText = "将下载官方 Codex \(release.version)（约 \(max(1, release.size / 1024 / 1024)) MB），来源经 ONE 校验。安装到本机 ONE 专用目录，不需要第三方登录，不改现有 Codex 配置。工作文件夹授权仍单独选择。"
+    alert.addButton(withTitle: "下载并准备"); alert.addButton(withTitle: "暂不准备")
+    return alert.runModal() == .alertFirstButtonReturn
 }
 
 // Finder-launched processes do not inherit shell proxy variables. Honor the
@@ -641,9 +671,10 @@ final class CodexExecutionRunner: @unchecked Sendable {
     private func run(taskId: String, instruction: String, resume: Bool, gateway: CodexGatewayConfiguration?) async {
         defer { synchronized { preparing.remove(taskId) } }
         let alreadyRunning = synchronized { processes[taskId] != nil }
+        if managedCodexActivity.isActive() { await send(taskId: taskId, kind: "error", text: "正在准备本机执行工具，本轮尚未操作文件，请准备完成后再执行", status: "failed"); return }
         if alreadyRunning { await send(taskId: taskId, kind: "error", text: "Codex 正在执行当前任务", status: "failed"); return }
-        guard let executable = await codexExecutable(credentialUrl: credentialUrl) else {
-            await send(taskId: taskId, kind: "error", text: "尚未连接可用的 Codex，或已取消选择。请安装 Codex 并登录，或执行时选择已有应用。更新 ONE 不会自动安装 Codex。", status: "failed")
+        guard let executable = await codexExecutable(credentialUrl: credentialUrl, allowSelection: gateway == nil) else {
+            await send(taskId: taskId, kind: "error", text: gateway != nil ? "尚未找到执行工具。请在设置 → 本机执行中准备工具，然后重新执行；本轮未操作文件，不需要个人 Codex 登录。" : "尚未连接可用的 Codex，或已取消选择。请安装 Codex 并登录，或执行时选择已有应用。更新 ONE 不会自动安装 Codex。", status: "failed")
             return
         }
         let authenticated = gateway != nil ? true : await Task.detached { probeCodex(executable, arguments: ["login", "status"])?.status == 0 }.value
@@ -893,6 +924,47 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
                 let response = LocalConfigurationResponse(type: message.change == true && selected == nil ? "local_error" : "local_ready", taskId: "device_settings", requestId: requestId, targetName: selected, output: selected ?? "", error: message.change == true && selected == nil ? "已取消选择，原授权目录保持不变" : nil)
                 if let data = try? JSONEncoder().encode(response) { try? await task.send(.string(String(decoding: data, as: UTF8.self))) }
             }
+        } else if ["executor_status", "executor_prepare"].contains(message.type), let requestId = message.requestId {
+            Task {
+                do {
+                    if message.type == "executor_prepare" {
+                        guard !runtimeInstallActivity.active, managedCodexActivity.begin() else { throw ManagedCodexError.busy }
+                        defer { managedCodexActivity.end() }
+                        guard let signed = message.envelope else { throw ManagedCodexError.invalid }
+                        let envelope = ManagedCodexEnvelope(payload: signed.payload, signature: signed.signature)
+                        let credential = try JSONDecoder().decode(DeviceCredential.self, from: Data(contentsOf: credentialUrl))
+                        guard let origin = URL(string: credential.serverBaseUrl) else { throw ManagedCodexError.invalid }
+                        let release = try managedCodexRelease(envelope, publicKey: executorPublicKeyRaw, origin: origin, architecture: runtimeArchitecture())
+                        let installed = try managedCodexInstalled(credentialUrl: credentialUrl)
+                        if installed == nil || installed!.version.compare(release.version, options: .numeric) == .orderedAscending {
+                            guard await confirmManagedCodex(release) else { throw LauncherError.message("已取消准备，没有安装或启动任务") }
+                            func reportPhase(_ phase: String) async {
+                                let response = LocalConfigurationResponse(type: "executor_progress", taskId: "device_settings", requestId: requestId, targetName: nil, output: phase, error: nil)
+                                if let data = try? JSONEncoder().encode(response) { try? await task.send(.string(String(decoding:data,as:UTF8.self))) }
+                            }
+                            await reportPhase("downloading")
+                            let bytes = try await ManagedCodexDownload(expected: release.size).fetch(URL(string: release.url)!)
+                            await reportPhase("verifying")
+                            // Require the same credential still present before committing. Unplug
+                            // aborts preparation, but never corrupts the previous pointer.
+                            _ = try signNonce(Data("one-executor-commit".utf8).base64EncodedString(), credentialUrl: credentialUrl, deviceId: deviceId)
+                            let root = try managedCodexRoot()
+                            _ = try await Task.detached {
+                                try commitManagedCodex(bytes: bytes, envelope: envelope, release: release, root: root) { path, version in
+                                    guard let probe = probeCodex(path, arguments: ["--version"]), probe.status == 0 else { return false }
+                                    return probe.output.trimmingCharacters(in: .whitespacesAndNewlines) == "codex-cli \(version)"
+                                }
+                            }.value
+                        }
+                    }
+                    let installed = try managedCodexInstalled(credentialUrl: credentialUrl)
+                    let response = LocalConfigurationResponse(type: "local_ready", taskId: "device_settings", requestId: requestId, targetName: nil, output: installed?.version ?? "", error: nil)
+                    try await task.send(.string(String(decoding: JSONEncoder().encode(response), as: UTF8.self)))
+                } catch {
+                    let response = LocalConfigurationResponse(type: "local_error", taskId: "device_settings", requestId: requestId, targetName: nil, output: "", error: "工具准备未完成：\(error.localizedDescription)。未自动执行任务，可重新检查。")
+                    if let data = try? JSONEncoder().encode(response) { try? await task.send(.string(String(decoding: data, as: UTF8.self))) }
+                }
+            }
         } else if message.type == "execution_start", let taskId = message.taskId, let instruction = message.instruction {
             execution.start(taskId: taskId, instruction: instruction, resume: false, round: message.round ?? 0, gateway: message.gateway)
         } else if message.type == "execution_continue", let taskId = message.taskId, let instruction = message.instruction {
@@ -923,6 +995,11 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
                 }
             }
         } else if message.type == "update_install", let requestId = message.requestId, let envelope = message.envelope {
+            if managedCodexActivity.isActive() {
+                let response = UpdateEventResponse(requestId: requestId, status: "failed", error: "正在准备执行工具，请完成后再更新 ONE")
+                try? await task.send(.string(String(decoding:try JSONEncoder().encode(response),as:UTF8.self)))
+                continue
+            }
             guard installJob == nil, runtimeInstallActivity.begin() else { continue }
             installJob = Task.detached {
               // Always wake the socket reader; it joins the result even after

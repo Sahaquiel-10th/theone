@@ -29,6 +29,7 @@ type PendingLocalRequest = {
   taskId: string;
   configuration?: boolean;
   change?: boolean;
+  preparationPhase?: string;
   workspaceId?: string;
   userId?: string;
   resolve: (value: { targetName?: string; output?: string }) => void;
@@ -60,6 +61,7 @@ type SocketState = {
   update?: RuntimeUpdateProgress;
   updateStartedAt?: number;
   updateLoaded?: boolean;
+  executorPreparationError?: string;
 };
 
 function verifySignature(publicKey: string, nonce: string, signature: string) {
@@ -205,6 +207,7 @@ export class OneKeyPresence {
 
   async requestRuntimeUpdate(params: { deviceId: string; installationId?: string; userId: string; workspaceId: string; version: string; envelope: SignedRuntimeUpdate }) {
     const socket = await this.ownedSocket(params);
+    if ([...this.pendingLocal.values()].some(p => p.socket === socket && p.configuration && p.change)) throw new OneKeyPresenceError('正在更换目录或准备工具，请完成后再更新 ONE');
     const state = this.states.get(socket)!;
     await this.restoreUpdate(state, params);
     if (this.sockets.get(params.deviceId) !== socket || !state.authenticated) throw new OneKeyPresenceError('ONE 更新连接已变更，请检查状态');
@@ -259,6 +262,7 @@ export class OneKeyPresence {
     if (!socket || !state?.authenticated || state.installationId !== scope.installationId || !state.capabilities.has("local_configuration_v1")) throw new OneKeyPresenceError("此启动器尚不支持目录设置，请先升级 ONE");
     const db = await this.store.read();
     if (change && db.executionTasks.some(t => t.deviceId === scope.deviceId && t.installationId === scope.installationId && !executionTerminal(t.status))) throw new OneKeyPresenceError("本机还有任务在执行，请停止或等结束后更换目录");
+    if (change && [...this.pendingLocal.values()].some(p => p.socket === socket && p.configuration && p.change)) throw new OneKeyPresenceError('本机正在设置或准备工具，请完成后再更换目录');
     const requestId = uid("cfg");
     return new Promise<{ targetName?: string; output?: string }>((resolve, reject) => {
       const timeout = setTimeout(() => { this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError("本机目录设置未返回，请检查电脑上的选择窗口")); }, 120_000);
@@ -268,6 +272,52 @@ export class OneKeyPresence {
         clearTimeout(timeout); this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError("本机连接已断开"));
       });
     });
+  }
+
+  async managedExecutor(scope: { deviceId: string; installationId?: string; workspaceId: string; userId: string },
+    catalog: (runtime: RuntimeIdentity) => { envelope: SignedRuntimeUpdate; version: string; size: number } | undefined, install = false) {
+    await this.requireProof({ ...scope, method: install ? 'POST' : 'GET', path: '/api/me/executor' });
+    const socket = await this.ownedSocket(scope), state = this.states.get(socket)!;
+    if (!state.runtime || state.runtime.platform !== 'macos' || !state.capabilities.has('managed_codex_v1')) {
+      if (install) throw new OneKeyPresenceError('请先升级 ONE 启动器，当前版本不支持一键准备执行工具');
+      return { available: false, message: '当前启动器尚不支持一键准备；现有文件工具仍可用' };
+    }
+    const release = catalog(state.runtime);
+    if (!release) {
+      if (install) throw new Error('执行工具尚未发布，请稍后再试');
+      return { available: false, message: '执行工具正在准备发布；现有文件工具仍可用' };
+    }
+    const pending = [...this.pendingLocal.values()].find(p => p.socket === socket && p.configuration && p.change);
+    if (pending) {
+      if (install) throw new OneKeyPresenceError('正在准备工具或更换工作目录，请完成后再试');
+      return { available: true, preparing: true, phase: pending.preparationPhase, version: release.version, size: release.size };
+    }
+    const db = await this.store.read();
+    if (install && (this.updateInProgress(state) || db.executionTasks.some(t => t.deviceId === scope.deviceId && t.installationId === scope.installationId && !executionTerminal(t.status))))
+      throw new OneKeyPresenceError('本机正在执行任务或更新 ONE，请完成后再准备工具');
+    if (install && [...this.pendingLocal.values()].some(p => p.socket === socket && p.configuration && p.change))
+      throw new OneKeyPresenceError('正在准备工具或更换工作目录，请完成后再试');
+    if (this.sockets.get(scope.deviceId) !== socket || !state.authenticated) throw new OneKeyPresenceError('本机连接已变更，请重新检查');
+    const requestId = uid('prep');
+    if (install) state.executorPreparationError = undefined;
+    const response = new Promise<{ targetName?: string; output?: string }>((resolve, reject) => {
+      const timeout = setTimeout(() => { this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError('工具准备尚未返回；请重新检查状态，不会自动执行任务')); }, install ? 540_000 : 15_000);
+      this.pendingLocal.set(requestId, { deviceId: scope.deviceId, socket, taskId: 'device_settings', configuration: true, change: install, preparationPhase: install ? 'confirming' : undefined, workspaceId: scope.workspaceId, userId: scope.userId, resolve, reject, timeout });
+      socket.send(JSON.stringify({ type: install ? 'executor_prepare' : 'executor_status', requestId, envelope: install ? release.envelope : undefined }), error => {
+        if (!error) return; clearTimeout(timeout); this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError('本机连接中断，请重新检查工具状态'));
+      });
+    });
+    if (install) {
+      // Downloads may outlive an HTTP proxy timeout. Acknowledge dispatch now;
+      // status polling checks the actual installed tool, never repeats install.
+      void response.catch(error => { state.executorPreparationError = error instanceof Error ? error.message.slice(0, 1000) : '准备未完成，请重新检查'; });
+      return { available: true, preparing: true, phase: 'confirming', version: release.version, size: release.size };
+    }
+    const result = await response;
+    // Status contains no executable path or gateway credentials.
+    const installedVersion = validRuntimeVersion(result.output) ? result.output : undefined;
+    return { available: true, preparing: false, version: release.version, size: release.size, installedVersion,
+      error: installedVersion === release.version ? undefined : state.executorPreparationError };
   }
 
   async executeLocalTool(deviceId: string, taskId: string, tool: LocalToolName, args: Record<string, unknown>, installationId?: string) {
@@ -454,6 +504,12 @@ export class OneKeyPresence {
       }
       return;
     }
+    if (message.type === 'executor_progress' && state.authenticated && message.requestId) {
+      const pending = this.pendingLocal.get(message.requestId);
+      if (pending?.configuration && pending.change && pending.deviceId === state.deviceId && pending.socket === socket && this.sockets.get(state.deviceId) === socket
+        && ['confirming','downloading','verifying','checking'].includes(message.output || '')) pending.preparationPhase = message.output;
+      return;
+    }
     if ((message.type === "local_ready" || message.type === "local_error" || message.type === "tool_result") && state.authenticated && message.requestId) {
       const pending = this.pendingLocal.get(message.requestId);
       if (!pending || pending.deviceId !== state.deviceId || pending.taskId !== message.taskId || pending.socket !== socket || this.sockets.get(state.deviceId) !== socket) return;
@@ -492,7 +548,7 @@ export class OneKeyPresence {
     if (!device || !task || task.workspaceId !== device.workspaceId || task.userId !== device.userId) throw new OneKeyPresenceError("执行任务不属于当前 ONE Key 或这台电脑");
     const socket = this.sockets.get(deviceId);
     if (!socket || !this.isConnected(deviceId, installationId)) throw new OneKeyPresenceError("请将 ONE Key 插入任务原来的电脑");
-    if ([...this.pendingLocal.values()].some(p => p.socket === socket && p.configuration && p.change)) throw new OneKeyPresenceError("正在更换本机工作目录，请完成选择后再执行");
+    if ([...this.pendingLocal.values()].some(p => p.socket === socket && p.configuration && p.change)) throw new OneKeyPresenceError("正在更换本机工作目录或准备执行工具，请完成后再执行");
     return socket;
   }
 

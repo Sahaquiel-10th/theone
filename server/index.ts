@@ -56,7 +56,7 @@ import { installAdminPaymentRoutes, installPaymentCallback, installPaymentRoutes
 import { effectiveModel, publishPricing, cancelScheduledPricing, publicPrices } from "./modelPricing.js";
 import { publicPayment } from "./payments.js";
 import { runtimeUpdateWasCompleted } from "./runtimeUpdate.js";
-import { codexGateway } from "./runtime.js";
+import { codexGateway, managedExecutorDistribution } from "./runtime.js";
 import { installCodexGatewayRoutes } from "./codexGateway.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -91,6 +91,12 @@ if (process.env.NODE_ENV === "production" && jwtSecret === "dev-secret-change-me
 installPaymentCallback(app, store);
 app.use(express.json({ limit: "2mb" }));
 installCodexGatewayRoutes(app, codexGateway);
+// Only public, signed executor packages; never a user file directory.
+app.get('/executor-downloads/:name', asyncRoute(async (req, res) => {
+  const file = managedExecutorDistribution.artifact(String(req.params.name));
+  if (!file) { res.status(404).json({ error: '执行工具尚未发布' }); return; }
+  res.sendFile(file);
+}));
 app.set("trust proxy", "loopback");
 app.disable("x-powered-by");
 app.use((req, res, next) => {
@@ -930,6 +936,14 @@ app.post("/api/executions/from-input", ...keyAuth, asyncRoute(async (req, res) =
 
 app.get("/api/me/local-device", ...keyAuth, asyncRoute(async (req, res) => {
   res.json(await oneKeyPresence.localConfiguration({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, workspaceId: req.workspaceId!, userId: req.user!.id }, false));
+}));
+for (const method of ['get', 'post'] as const) app[method]('/api/me/executor', ...keyAuth, asyncRoute(async (req, res) => {
+  if (!codexGateway.enabled()) {
+    if (method === 'post') throw new Error('统一工程执行尚未开放，现有文件工具仍可用');
+    res.json({ available: false, message: '统一工程执行正在准备，现有文件工具仍可用' }); return;
+  }
+  res.status(method === 'post' ? 202 : 200).json(await oneKeyPresence.managedExecutor({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, workspaceId: req.workspaceId!, userId: req.user!.id },
+    runtime => managedExecutorDistribution.release(runtime), method === 'post'));
 }));
 app.post("/api/me/local-device", ...keyAuth, asyncRoute(async (req, res) => {
   res.json(await oneKeyPresence.localConfiguration({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, workspaceId: req.workspaceId!, userId: req.user!.id }, true));

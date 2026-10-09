@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -15,10 +16,13 @@ const codexBinary = value("--codex-bin") ? path.resolve(value("--codex-bin")) : 
 // replace each other's removable-volume authorization when both versions run.
 const signingIdentity = value("--signing-identity") || "-";
 const publicKeyPath = path.resolve(root, value("--update-public-key") || "config/runtime-update-public-key.txt");
+const executorPublicKeyPath = path.resolve(root, value("--executor-public-key") || "config/runtime-update-public-key.txt");
 const versionPath = path.resolve(root, value("--runtime-version") || "config/runtime-version.txt");
 if (!fs.existsSync(publicKeyPath)) throw new Error(`更新发布公钥不存在：${publicKeyPath}`);
 if (!fs.existsSync(versionPath)) throw new Error(`启动器版本文件不存在：${versionPath}`);
 const updatePublicKey = fs.readFileSync(publicKeyPath, "utf8").trim();
+const executorPublicKey = fs.readFileSync(executorPublicKeyPath, "utf8").trim();
+if (!/^[A-Za-z0-9_-]{43}$/.test(executorPublicKey)) throw new Error("执行工具发布公钥格式无效");
 const runtimeVersion = fs.readFileSync(versionPath, "utf8").trim();
 const commandLineSwiftc = "/Library/Developer/CommandLineTools/usr/bin/swiftc";
 const commandLineLipo = "/Library/Developer/CommandLineTools/usr/bin/lipo";
@@ -68,26 +72,32 @@ fs.writeFileSync(path.join(contents, "Info.plist"), `<?xml version="1.0" encodin
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>`);
 
-const generatedSource = path.join(outputRoot, ".ONEKeyLauncher.swift");
-const fatSafeOperationsSource = path.join(root, "launcher/macos/FATSafeFileOperations.swift");
-const moduleCache = path.join(outputRoot, ".module-cache");
+// Desktop can be File Provider managed: compiler input timestamps may change
+// during hydration. Compile immutable snapshots outside synced folders.
+const buildWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'one-mac-runtime-build-'));
+const generatedSource = path.join(buildWorkspace, ".ONEKeyLauncher.swift");
+const snapshot = name => {
+  const source = path.join(root, 'launcher/macos', name);
+  const target = path.join(buildWorkspace, name);
+  fs.copyFileSync(source, target); return target;
+};
+const fatSafeOperationsSource = snapshot('FATSafeFileOperations.swift');
+const moduleCache = path.join(buildWorkspace, ".module-cache");
 fs.mkdirSync(moduleCache, { recursive: true });
 const source = fs.readFileSync(path.join(root, "launcher/macos/ONEKeyLauncher.swift"), "utf8");
 if (!source.includes("__ONE_UPDATE_PUBLIC_KEY__") || !source.includes("__ONE_RUNTIME_VERSION__")) throw new Error("Mac 启动器缺少版本或更新公钥占位符");
-fs.writeFileSync(generatedSource, source.replaceAll("__ONE_UPDATE_PUBLIC_KEY__", updatePublicKey).replaceAll("__ONE_RUNTIME_VERSION__", runtimeVersion));
+fs.writeFileSync(generatedSource, source.replaceAll("__ONE_UPDATE_PUBLIC_KEY__", updatePublicKey).replaceAll("__ONE_EXECUTOR_PUBLIC_KEY__", executorPublicKey).replaceAll("__ONE_RUNTIME_VERSION__", runtimeVersion));
+const helpers = ['RuntimeInstallation.swift','RuntimeRecovery.swift','ResidentTakeover.swift','KeyDiscovery.swift','CodexRuntime.swift','CodexGatewayConfiguration.swift','ManagedCodex.swift','MachineResident.swift','MacLocalFiles.swift'].map(snapshot);
 const slices = ["arm64", "x86_64"].map((architecture) => {
-  const slice = path.join(outputRoot, `ONE-${architecture}`);
-  const compileArgs = ["-target", `${architecture}-apple-macosx13.0`, "-parse-as-library", "-O", generatedSource, fatSafeOperationsSource, path.join(root, 'launcher/macos/RuntimeInstallation.swift'), path.join(root, 'launcher/macos/RuntimeRecovery.swift'), path.join(root, 'launcher/macos/ResidentTakeover.swift'), path.join(root, 'launcher/macos/KeyDiscovery.swift'), "-o", slice];
-  compileArgs.push(path.join(root, 'launcher/macos/CodexRuntime.swift'));
-  compileArgs.push(path.join(root, 'launcher/macos/CodexGatewayConfiguration.swift'));
-  compileArgs.push(path.join(root, 'launcher/macos/MachineResident.swift'));
-  compileArgs.push(path.join(root, 'launcher/macos/MacLocalFiles.swift'));
+  const slice = path.join(buildWorkspace, `ONE-${architecture}`);
+  const compileArgs = ["-target", `${architecture}-apple-macosx13.0`, "-parse-as-library", "-O", generatedSource, fatSafeOperationsSource, ...helpers, "-o", slice];
   if (swiftSdk) compileArgs.unshift("-sdk", swiftSdk);
   execFileSync(swiftcBinary, compileArgs, { env: { ...process.env, CLANG_MODULE_CACHE_PATH: moduleCache, SWIFT_MODULE_CACHE_PATH: moduleCache }, stdio: "inherit" });
   return slice;
 });
 execFileSync(lipoBinary, ["-create", ...slices, "-output", path.join(macos, "ONE")], { stdio: "inherit" });
 for (const slice of slices) fs.unlinkSync(slice);
+fs.rmSync(buildWorkspace, { recursive: true, force: true });
 if (codexBinary) {
   if (!fs.existsSync(codexBinary)) throw new Error(`Codex Runtime 不存在：${codexBinary}`);
   fs.copyFileSync(codexBinary, path.join(resources, "codex"));

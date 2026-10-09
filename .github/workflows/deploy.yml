@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
           ONE_TEST_SDK=$(xcrun --sdk macosx --show-sdk-path)
           ONE_TEST_ARCH=$(uname -m)
-          for suite in KeyDiscovery RuntimeInstallation RuntimeRecovery ResidentTakeover CodexRuntime CodexGatewayConfiguration MacLocalFiles; do
+          for suite in KeyDiscovery RuntimeInstallation RuntimeRecovery ResidentTakeover CodexRuntime CodexGatewayConfiguration ManagedCodex MacLocalFiles; do
             xcrun swiftc -sdk "$ONE_TEST_SDK" -target "$ONE_TEST_ARCH-apple-macosx13.0" -parse-as-library \
               "launcher/macos/$suite.swift" "launcher/macos/${suite}Tests.swift" \
               -o "$RUNNER_TEMP/one-$suite-tests"
