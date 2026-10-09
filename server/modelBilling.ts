@@ -1,7 +1,7 @@
 import type { Store } from "./db.js";
 import type { CacheUsage, Database, ModelConfig, ModelUsageRecord } from "./types.js";
 import { MODEL_MAX_OUTPUT_TOKENS } from "./modelGateway.js";
-import { calculateModelPower, chargePower, estimateTokenCeiling, MICROS_PER_POWER, powerAccount, releasePower, reservePower } from "./powerBilling.js";
+import { calculateModelPower, contextPricedModel, chargePower, estimateTokenCeiling, MICROS_PER_POWER, powerAccount, releasePower, reservePower } from "./powerBilling.js";
 import { uid } from "./security.js";
 import { effectiveModel } from "./modelPricing.js";
 import {reserveCommerce,releaseCommerce,settleCommerce,restoreCommerceHolds} from './commerceBilling.js';
@@ -51,8 +51,9 @@ export function modelReservationMicros(model: ModelConfig, input: unknown) {
   for (const value of [model.inputPowerPerMillion, model.outputPowerPerMillion, model.costInputPowerPerMillion, model.costOutputPowerPerMillion]) {
     if (!Number.isFinite(value) || value < 0) throw new Error("模型计费价格无效，请联系管理员");
   }
-  const maximumInput = Math.max(model.inputPowerPerMillion, ...Object.values(model.cachePrices || {}));
-  const amount = calculateModelPower({ ...model, inputPowerPerMillion: maximumInput }, estimateInputCeiling({ input, modelPrompt: model.systemPrompt }), MODEL_MAX_OUTPUT_TOKENS).chargedMicros;
+  const high = model.pricing?.longContext ? contextPricedModel(model, model.pricing.longContext.thresholdInputTokens + 1) : model;
+  const maximumInput = Math.max(model.inputPowerPerMillion, ...Object.values(model.cachePrices || {}), high.inputPowerPerMillion, ...Object.values(high.cachePrices || {}));
+  const amount = calculateModelPower({ ...model, pricing: undefined, inputPowerPerMillion: maximumInput, outputPowerPerMillion: Math.max(model.outputPowerPerMillion, high.outputPowerPerMillion) }, estimateInputCeiling({ input, modelPrompt: model.systemPrompt }), MODEL_MAX_OUTPUT_TOKENS).chargedMicros;
   if (!Number.isSafeInteger(amount) || amount < 0) throw new Error("本次请求超过电力计费范围，请缩短输入");
   return amount;
 }
@@ -68,7 +69,8 @@ function pricingSnapshot(row: ModelUsageRecord): ModelConfig {
     outputPowerPerMillion: row.outputPowerPerMillionSnapshot ?? 0,
     costInputPowerPerMillion: row.costInputPowerPerMillionSnapshot ?? 0,
     costOutputPowerPerMillion: row.costOutputPowerPerMillionSnapshot ?? 0,
-    cachePrices: row.cachePricesSnapshot, cacheCostPrices: row.cacheCostPricesSnapshot
+    cachePrices: row.cachePricesSnapshot, cacheCostPrices: row.cacheCostPricesSnapshot,
+    pricing: row.pricingSnapshot, longContextCostPrices: row.longContextCostPricesSnapshot
   } as ModelConfig;
 }
 
@@ -89,7 +91,10 @@ export function settleBillingRecord(db: Database, scope: BillingScope, usage: Mo
     row.inputTokens = usage.inputTokens; row.outputTokens = usage.outputTokens; row.totalTokens = usage.totalTokens; row.cacheUsage = usage.cacheUsage;
   }
   row.source = isFixedImage ? "fixed" : "provider";
-  if (!isFixedImage && row.cacheUsage && row.cacheUsage.read + row.cacheUsage.write > 0 && (!row.cachePricesSnapshot || !row.cacheCostPricesSnapshot)) {
+  row.promptTokens = row.inputTokens + (row.cacheUsage?.read ?? 0) + (row.cacheUsage?.write ?? 0);
+  row.contextPriceTier = row.pricingSnapshot?.longContext && row.promptTokens > row.pricingSnapshot.longContext.thresholdInputTokens ? "long" : "standard";
+  const selected = contextPricedModel(pricingSnapshot(row), row.inputTokens, row.cacheUsage);
+  if (!isFixedImage && row.cacheUsage && row.cacheUsage.read + row.cacheUsage.write > 0 && (!selected.cachePrices || !selected.cacheCostPrices)) {
     row.status = "needs_review"; row.reviewReason = "cache_pricing_missing"; return row;
   }
   const calculated = isFixedImage
@@ -112,7 +117,7 @@ export async function runBilledModel<T extends { usage?: ModelUsage; finishReaso
   const row: ModelUsageRecord = {
     aiTaskVersion: params.input && typeof params.input === "object" && "taskVersion" in params.input && Number.isSafeInteger(params.input.taskVersion) ? Number(params.input.taskVersion) : undefined,
     id: uid("use"), workspaceId: params.workspaceId, userId: params.userId, conversationId: params.conversationId ?? "",
-    pricingSnapshot: model.pricing, modelNameSnapshot: model.name, cachePricesSnapshot: model.cachePrices, cacheCostPricesSnapshot: model.cacheCostPrices,
+    pricingSnapshot: structuredClone(model.pricing), longContextCostPricesSnapshot: structuredClone(model.longContextCostPrices), modelNameSnapshot: model.name, cachePricesSnapshot: structuredClone(model.cachePrices), cacheCostPricesSnapshot: structuredClone(model.cacheCostPrices),
     modelId: model.id, inputTokens: 0, outputTokens: 0, totalTokens: 0, source: "unknown", status: "pending",
     chargedMicros: 0, reservedMicros: amountMicros, activity: params.activity, requestId: params.requestId, createdAt: timestamp,
     inputPowerPerMillionSnapshot: model.inputPowerPerMillion, outputPowerPerMillionSnapshot: model.outputPowerPerMillion,
@@ -190,7 +195,8 @@ export function resolveBillingReview(db: Database, params: BillingScope & { acti
   const cacheUsage = params.cacheUsage ?? row.cacheUsage;
   const checked = { inputTokens: params.inputTokens, outputTokens: params.outputTokens, totalTokens: params.inputTokens + params.outputTokens + (cacheUsage?.read ?? 0) + (cacheUsage?.write ?? 0), cacheUsage, source: "provider" };
   if (!validUsage(checked)) throw new Error("缓存用量不完整或不一致");
-  if (cacheUsage && cacheUsage.read + cacheUsage.write > 0 && (!row.cachePricesSnapshot || !row.cacheCostPricesSnapshot)) throw new Error("本次调用缺少缓存价格快照，不能按新价补扣；请免扣释放预占");
+  const selected = contextPricedModel(pricingSnapshot(row), params.inputTokens, cacheUsage);
+  if (cacheUsage && cacheUsage.read + cacheUsage.write > 0 && (!selected.cachePrices || !selected.cacheCostPrices)) throw new Error("本次调用缺少缓存价格快照，不能按新价补扣；请免扣释放预占");
   return settleBillingRecord(db, params, checked, row.durationMs ?? 0);
 }
 

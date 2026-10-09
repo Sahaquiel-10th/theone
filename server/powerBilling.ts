@@ -9,6 +9,7 @@ function micros(value: number) {
 }
 
 export function calculateModelPower(model: ModelConfig, inputTokens: number, outputTokens: number, cache?: CacheUsage) {
+  model = contextPricedModel(model, inputTokens, cache);
   const cachePower = (prices?: CachePrices) => {
     if (!cache || cache.read + cache.write === 0) return 0;
     const buckets = [[cache.read, prices?.read], [cache.write - cache.write1h, prices?.write], [cache.write1h, prices?.write1h]];
@@ -23,6 +24,18 @@ export function calculateModelPower(model: ModelConfig, inputTokens: number, out
   const costPower = inputTokens / 1_000_000 * model.costInputPowerPerMillion
     + outputTokens / 1_000_000 * model.costOutputPowerPerMillion + cachePower(model.cacheCostPrices);
   return { chargedMicros: micros(chargedPower), costMicros: micros(costPower) };
+}
+
+/** The full request uses one tier; cache buckets are input, output is not. */
+export function contextPricedModel(model: ModelConfig, inputTokens: number, cache?: CacheUsage): ModelConfig {
+  const tier = model.pricing?.longContext;
+  if (!tier || inputTokens + (cache?.read ?? 0) + (cache?.write ?? 0) <= tier.thresholdInputTokens) return model;
+  const costs = model.longContextCostPrices;
+  if (!costs) throw new Error("长上下文采购价格未配置");
+  const factor = model.pricing!.multiplier;
+  return { ...model, inputPowerPerMillion: tier.referenceInput * factor, outputPowerPerMillion: tier.referenceOutput * factor,
+    cachePrices: tier.referenceCache ? { read: tier.referenceCache.read * factor, write: tier.referenceCache.write * factor, write1h: tier.referenceCache.write1h * factor } : undefined,
+    costInputPowerPerMillion: costs.input, costOutputPowerPerMillion: costs.output, cacheCostPrices: costs.cache };
 }
 
 export function powerAccount(db: Database, workspaceId: string, userId: string) {

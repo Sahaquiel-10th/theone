@@ -6,6 +6,12 @@ import { CacheUsageDetails } from "./CacheUsageDetails";
 import { usagePower, usageDiscount, type PowerUsage } from "./usagePower";
 const row: PowerUsage = { inputTokens: 2, outputTokens: 171, inputPowerPerMillionSnapshot: 1.8, outputPowerPerMillionSnapshot: 9,
   cacheUsage: { read: 0, write: 6684, write5m: 6684, write1h: 0 }, cachePricesSnapshot: { read: .18, write: 2.25, write1h: 3.6 }, chargedMicros: 16582, status: "success" };
+test("long-context bill detail and discount match the full-request tier", () => {
+  const tiered: PowerUsage = { ...row, inputTokens: 1, outputTokens: 100, cacheUsage: { read: 272000, write: 0, write1h: 0, write5m: 0 }, chargedMicros: 33543,
+    pricingSnapshot: { multiplier: .6, referenceInput: 2, referenceOutput: 10, referenceCache: { read: .1, write: 2.5, write1h: 2.5 }, longContext: { thresholdInputTokens: 272000, referenceInput: 4, referenceOutput: 15, referenceCache: { read: .2, write: 5, write1h: 5 } } } };
+  assert.equal(usagePower(tiered)?.total, 33543);
+  assert.deepEqual(usageDiscount(tiered), { reference: 55904, discounted: 33543, multiplier: .6 });
+});
 test("discounted snapshot is applied once; components sum to settled charge", () => {
   const p = usagePower(row)!;
   assert.equal(p.total, 16582); assert.equal(p.input + p.output, p.total); assert.equal(p.adjustment, 0);

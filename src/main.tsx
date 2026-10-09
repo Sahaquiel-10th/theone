@@ -122,7 +122,7 @@ type User = {
 };
 
 type Model = {
-  pricing?: { referenceInput: number; referenceOutput: number; referenceCache?: { read: number; write: number; write1h: number }; multiplier: number; version: number; label: string; effectiveAt?: string; publishedAt?: string; explanation?: string };
+  pricing?: { referenceInput: number; referenceOutput: number; referenceCache?: { read: number; write: number; write1h: number }; longContext?: { thresholdInputTokens: number; referenceInput: number; referenceOutput: number; referenceCache?: { read: number; write: number; write1h: number } }; multiplier: number; version: number; label: string; effectiveAt?: string; publishedAt?: string; explanation?: string };
   cacheCostPrices?: { read: number; write: number; write1h: number };
   pricingHistory?: { pricing: NonNullable<Model["pricing"]>; cancelledAt?: string }[];
   id: string;

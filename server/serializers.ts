@@ -26,7 +26,7 @@ export function publicUsageRecord(record: ModelUsageRecord) {
   const reservedMicros=c?c.publisherReservedMicros+(samePayer?c.payerReservedMicros:0):record.reservedMicros;
   return { id, workspaceId, userId, conversationId, modelId, inputTokens, outputTokens, totalTokens,
     source, chargedMicros, inputPowerPerMillionSnapshot, outputPowerPerMillionSnapshot, requestId, status, createdAt,
-    reservedMicros, activity, durationMs, completedAt, billingCapped, imagePowerPerCallSnapshot, pricingSnapshot, modelNameSnapshot, cacheUsage, cachePricesSnapshot };
+    reservedMicros, activity, durationMs, completedAt, billingCapped, imagePowerPerCallSnapshot, pricingSnapshot, modelNameSnapshot, cacheUsage, cachePricesSnapshot, contextPriceTier: record.contextPriceTier, promptTokens: record.promptTokens };
 }
 
 /** Operational telemetry is deliberately content-free, including third-party error details. */

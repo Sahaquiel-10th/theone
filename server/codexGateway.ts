@@ -69,7 +69,16 @@ export class CodexGateway {
   async responses(token: string, raw: unknown, signal: AbortSignal, emit: (event: Record<string, unknown>) => void) {
     const grant = this.grants.get(digest(token));
     if (!this.enabled() || !grant || grant.expiresAt <= this.now()) throw unavailable();
-    this.active(await this.store.read(), grant);
+    const current = await this.store.read();
+    this.active(current, grant);
+    const priced = current.models.find(model => model.id === grant.model.id && model.enabled);
+    if (!priced || priced.model !== grant.model.model || priced.baseUrl !== grant.model.baseUrl || priced.protocol !== grant.model.protocol) throw unavailable();
+    // Routing/prompt stay bound to the grant, but each new billable request
+    // freezes the pricing version effective when that request starts.
+    const billingModel: ModelConfig = { ...grant.model, pricing: priced.pricing, pricingHistory: priced.pricingHistory,
+      inputPowerPerMillion: priced.inputPowerPerMillion, outputPowerPerMillion: priced.outputPowerPerMillion,
+      cachePrices: priced.cachePrices, cacheCostPrices: priced.cacheCostPrices, longContextCostPrices: priced.longContextCostPrices,
+      costInputPowerPerMillion: priced.costInputPowerPerMillion, costOutputPowerPerMillion: priced.costOutputPowerPerMillion };
     await this.proof({ ...grant, method: "POST", path: "/api/executor-gateway/v1/responses" });
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw unavailable();
     const input = raw as Record<string, unknown>;
@@ -96,7 +105,7 @@ export class CodexGateway {
     const check = setInterval(() => void this.store.read().then(db => { try { this.active(db, grant); } catch { abort(); } }).catch(abort), 1000);
     try {
       await runBilledModel(this.store, { workspaceId: grant.workspaceId, userId: grant.userId, conversationId: grant.conversationId,
-        model: grant.model, input: { taskId: grant.id, round: grant.round, request: body }, activity: "codex_execution", requestId,
+        model: billingModel, input: { taskId: grant.id, round: grant.round, request: body }, activity: "codex_execution", requestId,
         beforeReserve: db => {
           this.active(db, grant);
           const calls = db.modelUsageRecords.filter(row => row.workspaceId === grant.workspaceId && row.userId === grant.userId && row.requestId?.startsWith(prefix));

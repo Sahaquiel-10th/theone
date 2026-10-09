@@ -1,9 +1,9 @@
-import type { Database, ModelConfig } from "./types.js";
+import type { CachePrices, Database, ModelConfig } from "./types.js";
 import { uid } from "./security.js";
 export function effectiveModel(model: ModelConfig, at = Date.now()): ModelConfig {
   const due = model.pricingHistory?.filter(row => !row.cancelledAt && Date.parse(row.pricing.effectiveAt || row.pricing.publishedAt) <= at)
     .sort((a, b) => b.pricing.version - a.pricing.version)[0];
-  if (due) model = { ...model, pricing: due.pricing, costInputPowerPerMillion: due.costInput, costOutputPowerPerMillion: due.costOutput, cacheCostPrices: due.cacheCostPrices };
+  if (due) model = { ...model, pricing: due.pricing, costInputPowerPerMillion: due.costInput, costOutputPowerPerMillion: due.costOutput, cacheCostPrices: due.cacheCostPrices, longContextCostPrices: due.longContextCostPrices };
   if (!model.pricing || model.kind !== "chat") return structuredClone(model);
   return { ...structuredClone(model), cachePrices: model.pricing.referenceCache ? { read: model.pricing.referenceCache.read * model.pricing.multiplier, write: model.pricing.referenceCache.write * model.pricing.multiplier, write1h: model.pricing.referenceCache.write1h * model.pricing.multiplier } : undefined, inputPowerPerMillion: model.pricing.referenceInput * model.pricing.multiplier,
     outputPowerPerMillion: model.pricing.referenceOutput * model.pricing.multiplier };
@@ -37,6 +37,20 @@ export function publishPricing(db: Database, modelId: string, actorUserId: strin
     ? { read: referenceCache.read * procurementMultiplier, write: referenceCache.write * procurementMultiplier, write1h: referenceCache.write1h * procurementMultiplier }
     : explicitCacheCostPrices;
   if (!!referenceCache !== !!cacheCostPrices) throw new Error("请同时填写缓存官方价与采购价");
+  let longContext: NonNullable<ModelConfig["pricing"]>["longContext"];
+  let longContextCostPrices: ModelConfig["longContextCostPrices"];
+  if (body.longContext !== undefined) {
+    const v = body.longContext as Record<string, unknown>;
+    if (!v || typeof v !== "object" || !Number.isSafeInteger(v.thresholdInputTokens) || Number(v.thresholdInputTokens) < 1 || Number(v.thresholdInputTokens) > 10000000) throw new Error("长上下文阈值必须是有效的输入 Token 整数");
+    if (procurementMultiplier === undefined) throw new Error("分档计价请填写统一进货系数");
+    const rate = (key: string) => { const n = v[key]; if (typeof n !== "number" || !Number.isFinite(n) || n < 0 || n > 1e6) throw new Error("长上下文价格无效"); return n; };
+    const longCache = v.referenceCache as CachePrices | undefined;
+    if (!!longCache !== !!referenceCache || longCache && (["read", "write", "write1h"] as const).some(k => typeof longCache[k] !== "number" || !Number.isFinite(longCache[k]) || longCache[k] < 0 || longCache[k] > 1e6)) throw new Error("请完整填写两档缓存价格");
+    longContext = { thresholdInputTokens: Number(v.thresholdInputTokens), referenceInput: rate("referenceInput"), referenceOutput: rate("referenceOutput"), referenceCache: longCache ? { ...longCache } : undefined };
+    const values = [longContext.referenceInput, longContext.referenceOutput, ...Object.values(longCache || {})];
+    if (values.some(n => n * multiplier > 1e6 || n * procurementMultiplier > 1e6)) throw new Error("折算后价格超出范围");
+    longContextCostPrices = { input: longContext.referenceInput * procurementMultiplier, output: longContext.referenceOutput * procurementMultiplier, cache: longCache ? { read: longCache.read * procurementMultiplier, write: longCache.write * procurementMultiplier, write1h: longCache.write1h * procurementMultiplier } : undefined };
+  }
   if ([costInput, costOutput, ...Object.values(cacheCostPrices || {}), referenceInput * multiplier, referenceOutput * multiplier, ...Object.values(referenceCache || {}).map(n => n * multiplier)].some(n => !Number.isFinite(n) || n > 1e6)) throw new Error("折算后价格超出范围");
   const publishedAt = new Date().toISOString();
   const effectiveAt = body.effectiveAt ? String(body.effectiveAt) : publishedAt;
@@ -45,15 +59,16 @@ export function publishPricing(db: Database, modelId: string, actorUserId: strin
   if (explanation.length > 1000 || (body.explanation !== undefined && !explanation)) throw new Error("请填写 1 至 1000 字的调价说明");
   if (model.pricingHistory?.some(row => !row.cancelledAt && Date.parse(row.pricing.effectiveAt || row.pricing.publishedAt) > Date.now())) throw new Error("请先撤回尚未生效的调价，再发布新价格");
   const pricing = { version: Math.max(model.pricing?.version ?? 0, ...(model.pricingHistory || []).map(row => row.pricing.version)) + 1, multiplier, referenceInput, referenceOutput,
-    label: multiplier < 1 ? "优惠期" : multiplier > 1 ? `含 ${Number(((multiplier - 1) * 100).toFixed(2))}% 服务费` : "标准价格", referenceCache, publishedAt, effectiveAt: new Date(effectiveAt).toISOString(), explanation: explanation || "模型计费价格更新" };
+    label: multiplier < 1 ? "优惠期" : multiplier > 1 ? `含 ${Number(((multiplier - 1) * 100).toFixed(2))}% 服务费` : "标准价格", referenceCache, longContext, publishedAt, effectiveAt: new Date(effectiveAt).toISOString(), explanation: explanation || "模型计费价格更新" };
   db.auditLogs.push({ id: uid("aud"), actorUserId, action: "admin.pricing.published", targetType: "model", targetId: model.id,
-    details: { previous: model.pricing ?? null, pricing, previousCostInput: model.costInputPowerPerMillion, previousCostOutput: model.costOutputPowerPerMillion, costInput, costOutput, cacheCostPrices, previousCacheCostPrices: model.cacheCostPrices }, createdAt: publishedAt });
-  if (!model.pricingHistory?.length) model.pricingHistory = [{ pricing: model.pricing || { version: 0, label: "原价格", multiplier: 1, referenceInput: model.inputPowerPerMillion, referenceOutput: model.outputPowerPerMillion, publishedAt: "1970-01-01T00:00:00.000Z" }, costInput: model.costInputPowerPerMillion, costOutput: model.costOutputPowerPerMillion }];
-  model.pricingHistory.push({ pricing, costInput, costOutput, cacheCostPrices });
+    details: { previous: model.pricing ?? null, pricing, previousCostInput: model.costInputPowerPerMillion, previousCostOutput: model.costOutputPowerPerMillion, costInput, costOutput, cacheCostPrices, longContextCostPrices, previousCacheCostPrices: model.cacheCostPrices }, createdAt: publishedAt });
+  if (!model.pricingHistory?.length) model.pricingHistory = [{ pricing: model.pricing || { version: 0, label: "原价格", multiplier: 1, referenceInput: model.inputPowerPerMillion, referenceOutput: model.outputPowerPerMillion, referenceCache: model.cachePrices, publishedAt: "1970-01-01T00:00:00.000Z" }, costInput: model.costInputPowerPerMillion, costOutput: model.costOutputPowerPerMillion, cacheCostPrices: model.cacheCostPrices, longContextCostPrices: model.longContextCostPrices }];
+  model.pricingHistory.push({ pricing, costInput, costOutput, cacheCostPrices, longContextCostPrices });
   const active = effectiveModel(model);
   model.pricing = active.pricing; model.inputPowerPerMillion = active.inputPowerPerMillion; model.outputPowerPerMillion = active.outputPowerPerMillion;
   model.costInputPowerPerMillion = active.costInputPowerPerMillion; model.costOutputPowerPerMillion = active.costOutputPowerPerMillion;
   model.cachePrices = active.cachePrices; model.cacheCostPrices = active.cacheCostPrices;
+  model.longContextCostPrices = active.longContextCostPrices;
   return pricing;
 }
 

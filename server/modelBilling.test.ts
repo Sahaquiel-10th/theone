@@ -18,6 +18,26 @@ function fixture() {
 }
 const usage = { inputTokens: 10, outputTokens: 5, totalTokens: 15, source: "provider" };
 const scope = (id: string) => ({ usageId: id, workspaceId: "wa", userId: "a" });
+test("tier snapshot survives price changes, manual review, owner isolation and duplicate settlement", async () => {
+  const f = fixture();
+  f.model.pricing = { version: 2, label: "test", publishedAt: new Date().toISOString(), multiplier: 1, referenceInput: 2, referenceOutput: 10, referenceCache: { read: .1, write: 2.5, write1h: 2.5 }, longContext: { thresholdInputTokens: 272000, referenceInput: 4, referenceOutput: 15, referenceCache: { read: .2, write: 5, write1h: 5 } } };
+  f.model.cacheCostPrices = { read: .01, write: .25, write1h: .25 };
+  f.model.longContextCostPrices = { input: .4, output: 1.5, cache: { read: .02, write: .5, write1h: .5 } };
+  f.db().powerAccounts[0].balanceMicros = 10000000;
+  f.params.input = "x".repeat(300000);
+  await runBilledModel(f.store, f.params, async () => { f.model.pricing!.longContext!.referenceInput = 99; f.model.longContextCostPrices!.input = 99; return { usage: undefined }; });
+  const row = f.db().modelUsageRecords[0];
+  const cacheUsage = { read: 272000, write: 0, write5m: 0, write1h: 0 };
+  assert.throws(() => resolveBillingReview(f.db(), { ...scope(row.id), userId: "b", workspaceId: "wb", action: "provider_usage", inputTokens: 1, outputTokens: 100, cacheUsage }), /不属于/);
+  resolveBillingReview(f.db(), { ...scope(row.id), action: "provider_usage", inputTokens: 1, outputTokens: 100, cacheUsage });
+  assert.equal(row.promptTokens, 272001); assert.equal(row.contextPriceTier, "long");
+  assert.equal(row.chargedMicros, 55904); assert.equal(row.costMicros, 5591);
+  assert.equal(row.pricingSnapshot?.version, 2);
+  assert.ok(!JSON.stringify(publicUsageRecord(row)).includes("longContextCostPrices"));
+  resolveBillingReview(f.db(), { ...scope(row.id), action: "provider_usage", inputTokens: 0, outputTokens: 0 });
+  assert.equal(f.db().powerLedger.length, 1);
+  assert.equal(f.db().powerAccounts[1].balanceMicros, 1000000);
+});
 
 test("cache buckets bill separately, freeze costs, isolate owners and survive replay", async () => {
   const f = fixture();

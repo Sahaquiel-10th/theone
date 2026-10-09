@@ -40,6 +40,17 @@ function fixture() {
   return { gateway, db, task, calls: () => calls, proof: () => proof, setMode: (value: string) => { mode = value; }, deny: () => { deny = true; }, advance: () => { clock += 61 * 60_000; } };
 }
 const signal = () => new AbortController().signal;
+test("new Codex requests adopt newly published rates, while in-flight snapshots remain frozen", async () => {
+  const f = fixture(), config = await f.gateway.prepare(f.task);
+  f.db.models[0].inputPowerPerMillion = 3;
+  f.db.models[0].outputPowerPerMillion = 6;
+  await f.gateway.responses(config.token, request, signal(), event => {
+    if (event.type === "response.created") f.db.models[0].inputPowerPerMillion = 99;
+  });
+  assert.equal(f.db.modelUsageRecords[0].inputPowerPerMillionSnapshot, 3);
+  assert.equal(f.db.modelUsageRecords[0].chargedMicros, 60);
+  assert.equal(f.db.powerAccounts[1].balanceMicros, 10000000);
+});
 
 test("Codex streams through ONE, hides supplier credentials and settles its own workspace once", async () => {
   const f = fixture(), config = await f.gateway.prepare(f.task);
