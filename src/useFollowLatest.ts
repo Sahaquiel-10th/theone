@@ -5,8 +5,8 @@ export function nearLatest(node: {scrollHeight: number; scrollTop: number; clien
 }
 
 /** Follow streamed content, but never move a reader who deliberately scrolled up. */
-export function useFollowLatest(conversationKey: string, visible: boolean) {
-  const scroll = useRef<HTMLDivElement>(null);
+export function useFollowLatest<T extends HTMLElement = HTMLDivElement>(conversationKey: string, visible: boolean) {
+  const scroll = useRef<T>(null);
   const follow = useRef(true);
   const [newMessages, setNewMessages] = useState(false);
   useLayoutEffect(() => {

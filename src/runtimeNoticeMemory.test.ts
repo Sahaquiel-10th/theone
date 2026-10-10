@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {rememberRuntimeNotice, runtimeNoticeSeen} from './runtimeNoticeMemory';
 import {nearLatest} from './useFollowLatest';
+import {readFileSync} from 'node:fs';
 test('upgrade notice persists across new windows, separately for each user and version', () => {
   const values = new Map<string,string>();
   const storage = {getItem: (key:string) => values.get(key) ?? null, setItem: (key:string,value:string) => { values.set(key,value); }};
@@ -19,4 +20,9 @@ test('unavailable storage does not block login', () => {
 test('reading older messages disables follow; near bottom resumes it', () => {
   assert.equal(nearLatest({scrollHeight:2000,scrollTop:0,clientHeight:500}),false);
   assert.equal(nearLatest({scrollHeight:2000,scrollTop:1480,clientHeight:500}),true);
+});
+test('workbench follows the actual outer scroll surface, not its overflow-visible message list', () => {
+  const source = readFileSync(new URL('./main.tsx',import.meta.url),'utf8');
+  assert.match(source, /className="studio-surface" ref=\{taskScroll.scroll\} onScroll=\{taskScroll.onScroll\}/);
+  assert.doesNotMatch(source, /className="messages" ref=\{taskScroll.scroll\}/);
 });

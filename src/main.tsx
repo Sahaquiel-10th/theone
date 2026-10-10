@@ -700,7 +700,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const activeExecutionMode = executionMode;
   const targetLoading = preview.enabled ? Boolean(preview.state.pending) || Boolean(loadingByConversation[activeLoadingKey]) : !composeNew && activeLoading;
   const studioIdle = view === "chat" && !activeId && (!preview.enabled || previewHome);
-  const taskScroll = useFollowLatest(activeId, view === 'chat' && Boolean(active));
+  const taskScroll = useFollowLatest<HTMLElement>(activeId, view === 'chat' && Boolean(active));
   const activePreparing = preparingExecution && preparingConversationId === activeId;
   const liveTaskIds = runningExecutions.map(task => task.id).sort().join("|");
   const currentModel = models.find((model) => model.id === activeModelId);
@@ -1801,7 +1801,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       ) : null}
 
       <div className="studio-layout">
-      <section className="studio-surface" aria-label={view === "chat" ? "当前事情" : "工作区内容"} hidden={studioIdle||(preview.enabled&&view==='chat'&&!active)}>
+      <section className="studio-surface" ref={taskScroll.scroll} onScroll={taskScroll.onScroll} aria-label={view === "chat" ? "当前事情" : "工作区内容"} hidden={studioIdle||(preview.enabled&&view==='chat'&&!active)}>
       {view === "things" ? <ThingsPanel
         one={<div className="studio-presence things-one"><OneHeroEye mood="idle" label="回到 ONE 工作台" onActivate={()=>openSurface('chat')}/></div>}
         items={conversations} selectedId={thingId} drafts={thingDrafts}
@@ -1838,7 +1838,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             <button type="button" aria-label={focusedTask ? "还原布局" : "放大当前事情"} aria-pressed={focusedTask} onClick={() => transitionInterface(() => setFocusedTask(value => !value))}>{focusedTask ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
           </div>
         </header>
-        <div className="messages" ref={taskScroll.scroll} onScroll={taskScroll.onScroll}>
+        <div className="messages">
           {coordinator.enabled&&active?.workPaused?<p role="status">这件事的后续补充已暂停，原话和用量保留。<button type="button" onClick={()=>{if(confirm('仅处理尚未执行的补充，不重跑失败轮次；会产生新的用量。继续？'))void coordinator.resumeTask(active.id).catch(e=>setError(e.message));}}>继续等待的补充</button></p>:null}
           {(active?.messages ?? []).length ? (
             active!.messages.map((message, index) => (
