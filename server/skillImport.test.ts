@@ -12,8 +12,9 @@ import type { Store } from './db.js';
 const skill = '---\nname: weekly-report\ndescription: >\n  汇总本周进展\n  并列出下周计划\n---\n# 周报\n根据用户提供的资料整理，不编造进度。';
 async function pack(files: Record<string,string>) { const zip = new JSZip(); for(const [p,s] of Object.entries(files))zip.file(p,s);return zip.generateAsync({type:'nodebuffer',compression:'DEFLATE'}); }
 test('Markdown and ZIP preserve instructions, references and attribution without granting tools',async()=>{
-  const md = await importSkill(Buffer.from(skill),'SKILL.md');
+  const md = await importSkill(Buffer.from(skill),'weekly.md');
   assert.equal(md.description,'汇总本周进展 并列出下周计划');
+  assert.equal(md.instructions,'# 周报\n根据用户提供的资料整理，不编造进度。');
   const result = await importSkill(await pack({'weekly/SKILL.md':skill,'weekly/references/template.md':'先列结论，再列行动','LICENSE.txt':'Test license'}),'weekly.zip');
   assert.match(result.instructions,/先列结论，再列行动/);assert.match(result.skillAttribution,/Test license/);
   assert.deepEqual(result.files,['weekly/SKILL.md','weekly/references/template.md','LICENSE.txt']);

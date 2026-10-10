@@ -36,7 +36,7 @@ function metadata(source: string, key: string): string {
   }
   return typeof value === 'string' ? value : '';
 }
-function preview(source: string, files: Map<string, string>): SkillImport {
+function preview(source: string, files: Map<string, string>, mainFile: string): SkillImport {
   const match = source.match(/^---\n([\s\S]*?)\n---(?:\n|$)/);
   const instructions = match ? source.slice(match[0].length).trim() : source.trim();
   const name = match ? metadata(match[1], 'name') : (instructions.match(/^#\s+(.+)$/m)?.[1] ?? '待填写名称');
@@ -44,7 +44,7 @@ function preview(source: string, files: Map<string, string>): SkillImport {
   if (!instructions || !name || !description) throw new FeatureConfigError('skill 需要名称、用途和执行说明');
   if (name.length > 60 || description.length > 500) throw new FeatureConfigError('名称最多 60 字，用途最多 500 字，请先整理 skill 元信息');
   const licenses = [...files].filter(([file]) => /(^|\/)(LICENSE|NOTICE)(\.(txt|md))?$/i.test(file));
-  const references = [...files].filter(([file]) => /\.md$/i.test(file) && !/(^|\/)(SKILL|LICENSE|NOTICE)\.md$/i.test(file));
+  const references = [...files].filter(([file]) => file !== mainFile && /\.md$/i.test(file) && !/(^|\/)(LICENSE|NOTICE)\.md$/i.test(file));
   const combined = instructions + references.map(([file, value]) => `\n\n---\n参考文件：${file}\n${value}`).join('');
   if (combined.length > 12000) throw new FeatureConfigError('执行说明与参考资料合计超过 12000 字，请先拆分为独立技能；不会截断导入');
   const skillAttribution = [match ? `skill 声明的许可：${metadata(match[1], 'license') || '未声明'}` : 'skill 未声明许可', ...licenses.map(([file, value]) => `${file}\n${value}`)].join('\n\n');
@@ -54,7 +54,7 @@ function preview(source: string, files: Map<string, string>): SkillImport {
 
 export async function importSkill(bytes: Buffer, filename: string): Promise<SkillImport> {
   if (!bytes.length || bytes.length > SKILL_UPLOAD_BYTES) throw new FeatureConfigError('skill 文件须为 1 字节至 2MB');
-  if (/\.md$/i.test(filename)) return preview(text(bytes), new Map([[path.basename(filename), text(bytes)]]));
+  if (/\.md$/i.test(filename)) return preview(text(bytes), new Map([[path.basename(filename), text(bytes)]]), path.basename(filename));
   if (!/\.zip$/i.test(filename)) throw new FeatureConfigError('请选择 .md 文件或 .zip 压缩包');
   let zip: JSZip;
   try { zip = await JSZip.loadAsync(bytes); } catch { throw new FeatureConfigError('无法读取 ZIP 压缩包'); }
@@ -83,5 +83,5 @@ export async function importSkill(bytes: Buffer, filename: string): Promise<Skil
   }
   const skills = [...files].filter(([file]) => /(^|\/)SKILL\.md$/i.test(file));
   if (skills.length !== 1) throw new FeatureConfigError('压缩包必须且只能包含一个 SKILL.md，请分别导入每个 skill');
-  return preview(skills[0][1], files);
+  return preview(skills[0][1], files, skills[0][0]);
 }
