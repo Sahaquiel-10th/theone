@@ -5,11 +5,17 @@ import { FeatureConfigError, updateOfficialFeature } from "./officialFeatures.js
 import { uid } from "./security.js";
 import { featureToolPresets, featureAllowedEndpoints, featureMcpEndpoints } from "./featureTools.js";
 import { releaseFeature } from "./featureRuns.js";
+import multer from 'multer';
+import { importSkill, SKILL_UPLOAD_BYTES } from './skillImport.js';
 
 export function installOfficialFeatureRoutes(app: Express, admin: readonly RequestHandler[], store: Store) {
   const router=express.Router();
   router.use(...admin);
   router.use((_req,res,next)=>{res.setHeader("Cache-Control","no-store");next();});
+  router.post('/import', multer({storage:multer.memoryStorage(),limits:{fileSize:SKILL_UPLOAD_BYTES,files:1,fields:0}}).single('file'), asyncRoute(async(req,res)=>{
+    if (!req.file) throw new FeatureConfigError('请选择 skill 文件');
+    res.json(await importSkill(req.file.buffer, req.file.originalname));
+  }));
   router.get("/options",asyncRoute(async(_req,res)=>{
     const db=await store.read();
     res.json({models:db.models.filter(m=>m.enabled&&m.kind==="chat").map(m=>({id:m.id,name:m.name})),tools:featureToolPresets,allowedEndpoints:featureAllowedEndpoints(),mcpEndpoints:featureMcpEndpoints()});
@@ -42,6 +48,7 @@ export function installOfficialFeatureRoutes(app: Express, admin: readonly Reque
     res.json({ok:true,revision});
   }));
   router.use((err:unknown,_req:express.Request,res:express.Response,_next:express.NextFunction)=>{
+    if(err instanceof multer.MulterError){res.status(400).json({error:'一次只能上传一个不超过 2MB 的 skill 文件'});return;}
     if(err instanceof FeatureConfigError){res.status(err.status).json({error:err.message});return;}
     _next(err);
   });

@@ -25,6 +25,16 @@ export function OfficialFeaturePanel({api}:{api:typeof Api}){
 function FeatureEditor({api,featureId,onChanged}:{api:typeof Api;featureId:string;onChanged:()=>void}){
   const [id,setId]=useState(featureId),[saved,setSaved]=useState(!!featureId),[detail,setDetail]=useState<Detail>(),[values,setValues]=useState<OfficialFeatureValues>(initial),[evidence,setEvidence]=useState(""),[confirmed,setConfirmed]=useState(false),[busy,setBusy]=useState(false),[notice,setNotice]=useState(""),[page,setPage]=useState(1);
   const [history,setHistory]=useState<Detail>();
+  const [imported,setImported]=useState<{files:string[];warnings:string[]}>();
+  async function uploadSkill(file:File){
+    if(file.size>2*1024*1024){setNotice('skill 文件不能超过 2MB');return;}
+    setBusy(true);setNotice('');
+    try{const body=new FormData();body.append('file',file);
+      const result=await api<{name:string;description:string;instructions:string;skillAttribution:string;files:string[];warnings:string[]}>('/api/admin/official-features/import',{method:'POST',body});
+      setValues({...values,name:result.name,description:result.description,instructions:result.instructions,skillAttribution:result.skillAttribution,author:'待填写原作者'});setImported(result);
+      setNotice('已填入编辑区，请填写作者、使用边界并检查依赖，然后保存草稿。');
+    }catch(e){setNotice(e instanceof Error?e.message:'导入失败');}finally{setBusy(false);}
+  }
   useEffect(()=>{if(!featureId)return;let live=true;void api<Detail>(`/api/admin/official-features/${featureId}`).then(d=>{if(live){setDetail(d);setHistory(d);setValues(d.draft);}}).catch(e=>{if(live)setNotice(e.message);});return()=>{live=false;};},[api,featureId]);
   useEffect(()=>{if(!saved)return;let live=true;void api<Detail>(`/api/admin/official-features/${id}?page=${page}`).then(d=>{if(live)setHistory(d);}).catch(e=>{if(live)setNotice(e.message);});return()=>{live=false;};},[api,id,saved,page]);
   async function act(action:string,version?:number){setBusy(true);setNotice("");try{
@@ -33,9 +43,13 @@ function FeatureEditor({api,featureId,onChanged}:{api:typeof Api;featureId:strin
   }catch(e){setNotice(e instanceof Error?e.message:"未能完成");}finally{setBusy(false);}}
   const changed=!!detail&&JSON.stringify(detail.draft)!==JSON.stringify(values);
   return <div className="sharing-form">
+    <label>从 skill 文件导入<input type="file" accept=".md,.zip" disabled={busy|| (!!featureId&&!detail)} onChange={e=>{const file=e.target.files?.[0];e.target.value='';if(file&&(!values.instructions||confirm('导入会替换编辑区的名称、用途和执行要求，继续？')))void uploadSkill(file);}}/></label>
+    <p className="hint">支持 Markdown 或包含单个 SKILL.md 的 ZIP，最大 2MB。Markdown 参考资料一起导入；带脚本或其他素材的包需要单独适配。</p>
+    {imported?<details><summary>导入文件与检查事项</summary>{imported.warnings.map(w=><p key={w}>{w}</p>)}{imported.files.map(f=><p key={f}>{f}</p>)}</details>:null}
     <label>功能标识<input value={id} disabled={saved||busy} placeholder="例如 industry-report" maxLength={64} onChange={e=>setId(e.target.value)}/></label>
     <label>功能分类<SearchPicker label="分类" value={values.category??'general'} options={featureCategories.map(c=>({value:c.id,label:c.name}))} onChange={category=>setValues({...values,category:category as OfficialFeatureValues['category']})}/></label>
     {([['name','名称',60],['author','作者或合作方',100],['description','用途',500],['instructions','执行要求',12000],['limitations','适用边界与限制',2000]] as const).map(([key,label,max])=><label key={key}>{label}{key==='name'||key==='author'?<input value={values[key]} maxLength={max} disabled={busy} onChange={e=>setValues({...values,[key]:e.target.value})}/>:<textarea rows={key==='instructions'?5:3} value={values[key]} maxLength={max} disabled={busy} onChange={e=>setValues({...values,[key]:e.target.value})}/>}</label>)}
+    {values.skillAttribution!==undefined?<label>来源、许可与署名记录<textarea rows={5} maxLength={30000} disabled={busy} value={values.skillAttribution} onChange={e=>setValues({...values,skillAttribution:e.target.value})}/></label>:null}
     <FeatureBuilder api={api} values={values} onChange={setValues} disabled={busy}/>
     <button type="button" className="primary" disabled={busy|| (!!featureId&&!detail)} onClick={()=>void act("save")}>保存草稿</button>
     {saved&&detail?<FeatureTrial key={`${id}:${detail.revision}`} api={api} id={id} revision={detail.revision} disabled={busy||changed||!values.modelId||detail.status==='paused'}/>:null}

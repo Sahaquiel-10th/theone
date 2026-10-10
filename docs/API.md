@@ -169,3 +169,10 @@ ONE 通过官方托管 MCP 只调用 `notion-fetch`、`notion-search` 和 `notio
 - 挂失 Key、撤销 Session、断开 Provider 后立即停止对应能力；
 - Provider 失败不能跨租户降级；
 - 凭据不出现在响应、URL、日志和模型上下文中。
+# 2026-10-10：官方功能 skill 导入
+
+`POST /api/admin/official-features/import`：超管本人 Key 在场保护，multipart/form-data 的单个 `file` 字段，支持 `.md` 和 `.zip`，最大 2MB。仅返回当前请求的名称、用途、执行说明、许可与署名记录、文件列表和检查提示，不写数据库或文件，不自动保存、认定、上架或授予工具权限。
+
+ZIP 必须只含一个 `SKILL.md`；Markdown 参考资料合并到执行说明，LICENSE/NOTICE 文本保存在可编辑的 `skillAttribution` 中，随草稿和认定版本保留，不进入模型的任务指令。说明与参考资料合计上限 12000 字，许可记录上限 30000 字；超限明确拒绝，不截断。最多 100 条目、单文件解压 128KB、合计解压 512KB；路径穿越、符号链接、非 UTF-8、脚本及非文本素材包拒绝导入并说明需适配。当前不支持 RAR、tar.gz、多技能整库 ZIP 或任意脚本执行。
+
+skill 元信息仅提取简单顶层 name/description/license 字符串和折叠/字面多行文本，不从上传内容推导模型、工具、凭证或发布配置。上传者仍须核对作者、来源、商用授权和依赖；导入不构成许可审查或运行验收。该入口不新增用户数据存储路径；已有功能授权、workspace 隔离和版本上架流程保持独立验证。

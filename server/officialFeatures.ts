@@ -9,6 +9,7 @@ import {featureCategories,type FeatureCategory} from './featureCategories.js';
 export type OfficialFeatureValues = {
   name: string; description: string; author: string; instructions: string;
   limitations: string; integration: "question_answer" | "mcp" | "openapi";
+  skillAttribution?: string;
   modelId?: string; tools?: FeatureToolChoice[];
   category?:FeatureCategory;
   knowledgeMode?: "none" | "optional" | "required";
@@ -30,7 +31,7 @@ export const emptyFeature = (): OfficialFeatureValues => ({ name: "", descriptio
 export function featureValues(value: unknown): OfficialFeatureValues {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new FeatureConfigError("功能配置无效");
   const v = value as Record<string, unknown>;
-  const keys = ["name", "description", "author", "instructions", "limitations", "integration", "modelId", "tools", "knowledgeMode", "category"];
+  const keys = ["name", "description", "author", "instructions", "limitations", "integration", "modelId", "tools", "knowledgeMode", "category", "skillAttribution"];
   if (Object.keys(v).some(k => !keys.includes(k))) throw new FeatureConfigError("仅支持功能说明配置，请勿加入密钥、地址或脚本字段");
   const take = (key: string, max: number, required = true) => {
     const text = v[key];
@@ -39,11 +40,12 @@ export function featureValues(value: unknown): OfficialFeatureValues {
   };
   if (!["question_answer", "mcp", "openapi"].includes(String(v.integration))) throw new FeatureConfigError("接入类型无效");
   if (v.modelId !== undefined && (typeof v.modelId !== "string" || v.modelId.length > 100)) throw new FeatureConfigError("模型无效");
+  if (v.skillAttribution !== undefined && (typeof v.skillAttribution !== 'string' || v.skillAttribution.length > 30000)) throw new FeatureConfigError('来源与许可记录无效或过长');
   if (v.knowledgeMode !== undefined && !["none", "optional", "required"].includes(String(v.knowledgeMode))) throw new FeatureConfigError("知识使用方式无效");
   let tools: FeatureToolChoice[] | undefined;
   if(v.category!==undefined&&!featureCategories.some(c=>c.id===v.category))throw new FeatureConfigError('功能分类无效');
   try { if (v.tools !== undefined) tools = validateFeatureTools(v.tools); } catch (e) { throw new FeatureConfigError(e instanceof Error ? e.message : "工具配置无效"); }
-  return { name: take("name",60), description: take("description",500), author: take("author",100), instructions: take("instructions",12000), limitations: take("limitations",2000), integration: v.integration as OfficialFeatureValues["integration"], ...(v.modelId !== undefined ? { modelId: v.modelId as string } : {}), ...(tools ? { tools } : {}), ...(v.knowledgeMode !== undefined ? { knowledgeMode: v.knowledgeMode as OfficialFeatureValues["knowledgeMode"] } : {}),...(v.category!==undefined?{category:v.category as FeatureCategory}:{}) };
+  return { name: take("name",60), description: take("description",500), author: take("author",100), instructions: take("instructions",12000), limitations: take("limitations",2000), integration: v.integration as OfficialFeatureValues["integration"], ...(v.skillAttribution !== undefined ? {skillAttribution: v.skillAttribution as string} : {}), ...(v.modelId !== undefined ? { modelId: v.modelId as string } : {}), ...(tools ? { tools } : {}), ...(v.knowledgeMode !== undefined ? { knowledgeMode: v.knowledgeMode as OfficialFeatureValues["knowledgeMode"] } : {}),...(v.category!==undefined?{category:v.category as FeatureCategory}:{}) };
 }
 export function updateOfficialFeature(settings: SystemSettings, id: string, input: unknown, actor: string, at: string) {
   if (!/^[a-z][a-z0-9-]{2,63}$/.test(id) || ["constructor", "prototype"].includes(id)) throw new FeatureConfigError("标识需为 3–64 位小写英文、数字或短横线，以英文开头");
