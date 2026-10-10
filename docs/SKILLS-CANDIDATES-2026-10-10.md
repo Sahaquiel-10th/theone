@@ -58,7 +58,7 @@
    证据：https://github.com/alirezarezvani/claude-skills/blob/main/STORE.md
 2. anthropics/skills 的 docx / xlsx / pptx / pdf：仓库声明 source-available、非开源；docx/LICENSE.txt 限制复制、修改和分发，不直接作为 ONE 的商用技能。记录需求：Word 文档、Excel 表格、PPT 演示和 PDF 处理，未来寻找授权清楚的独立实现或自行开发。
    证据：https://github.com/anthropics/skills/blob/main/skills/docx/LICENSE.txt
-3. ComposioHQ/awesome-claude-skills：发现会议分析、发票归类、文件整理、资料写作等工作场景；本轮根目录和相关目录未发现明确许可证，README 的 License 段要求回看每个原作者的许可。不能将公开代码或聚合目录等同于可商用授权；暂缓。记录原名：meeting-insights-analyzer、invoice-organizer、file-organizer、content-research-writer。
+3. ComposioHQ/awesome-claude-skills：发现会议分析、发票归类、文件整理、资料写作等工作场景；README 声明整个仓库为 Apache 2.0，同时提示单项技能可能采用不同许可；本轮根目录和相关目录未发现完整 LICENSE 文件，单项授权范围尚未核实。不能将公开代码或聚合目录等同于可商用授权；暂缓。记录原名：meeting-insights-analyzer、invoice-organizer、file-organizer、content-research-writer。
    来源：https://github.com/ComposioHQ/awesome-claude-skills
 
 ## 选定后的本地保存约定
