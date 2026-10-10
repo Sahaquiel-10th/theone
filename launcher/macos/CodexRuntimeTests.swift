@@ -1,7 +1,31 @@
 import Foundation
 
 @main struct CodexRuntimeTests {
-    static func main() {
+    static func main() async throws {
+        // Exercise both exit-before-await and await-before-exit repeatedly.
+        for delay in [false, true] {
+            for _ in 0..<12 {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/sh")
+                process.arguments = ["-c", delay ? "sleep 0.02; exit 7" : "exit 7"]
+                let exit = CodexProcessExit(process: process)
+                try process.run()
+                if !delay { try await Task.sleep(nanoseconds: 30_000_000) }
+                let code = await exit.value()
+                precondition(code == 7)
+                // A later observer sees the cached status, without double resume.
+                let cached = await exit.value()
+                precondition(cached == 7)
+            }
+        }
+        let stopped = Process()
+        stopped.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        stopped.arguments = ["10"]
+        let stoppedExit = CodexProcessExit(process: stopped)
+        try stopped.run()
+        stopped.terminate()
+        let stoppedStatus = await stoppedExit.value()
+        precondition(stoppedStatus != 0)
         let candidates = codexRuntimeCandidates(saved: "/custom/codex", resources: nil, volume: URL(fileURLWithPath: "/Volumes/test"), applications: [URL(fileURLWithPath: "/Elsewhere/ChatGPT.app")], home: URL(fileURLWithPath: "/Users/test"), path: ":relative:/custom:/opt/homebrew/bin")
         precondition(candidates.first == "/custom/codex")
         precondition(candidates.contains("/Elsewhere/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"))

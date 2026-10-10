@@ -1,6 +1,43 @@
 import Foundation
 import Darwin
 
+// Install before launch: a short-lived child may exit before the async caller
+// starts awaiting. Do not move Foundation's waitUntilExit between cooperative
+// worker threads; its run-loop wait can remain stuck after the child has gone.
+final class CodexProcessExit: @unchecked Sendable {
+    private let lock = NSLock()
+    private var status: Int32?
+    private var waiter: CheckedContinuation<Int32, Never>?
+
+    init(process: Process) {
+        process.terminationHandler = { [self] process in finish(process.terminationStatus) }
+    }
+
+    private func finish(_ value: Int32) {
+        lock.lock()
+        guard status == nil else { lock.unlock(); return }
+        status = value
+        let continuation = waiter
+        waiter = nil
+        lock.unlock()
+        continuation?.resume(returning: value)
+    }
+
+    func value() async -> Int32 {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if let status {
+                lock.unlock()
+                continuation.resume(returning: status)
+            } else {
+                precondition(waiter == nil, "Only one exit waiter per process")
+                waiter = continuation
+                lock.unlock()
+            }
+        }
+    }
+}
+
 // Bounded discovery only: no recursive disk search or shell startup scripts.
 func codexRuntimeCandidates(saved: String?, resources: URL?, volume: URL, applications: [URL], home: URL, path: String) -> [String] {
     var result = saved.map { [$0] } ?? []

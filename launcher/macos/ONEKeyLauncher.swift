@@ -741,6 +741,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
         process.standardOutput = stdout
         process.standardError = stderr
         process.standardInput = stdin
+        let processExit = CodexProcessExit(process: process)
 
         do {
             synchronized { lastResponses.removeValue(forKey: taskId); toolFailures.remove(taskId) }
@@ -776,7 +777,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
             }
             await send(taskId: taskId, kind: "status", text: "\(resume ? "继续执行" : "开始执行") · 工作位置：\(projectPath)", targetName: projectPath, status: "running")
             stdin.fileHandleForWriting.write(Data(instruction.utf8)); try? stdin.fileHandleForWriting.close()
-            let exitCode = await Task.detached { process.waitUntilExit(); return process.terminationStatus }.value
+            let exitCode = await processExit.value()
             await outputReader.value
             await errorReader.value
             let result = synchronized { () -> (Bool, String?, String) in
