@@ -74,6 +74,7 @@ export function useCoordinator(
     selectedRef = useRef(selected),
     pageRef = useRef(1),
     directReceipts = useRef(new Map<string, string>()),
+    submissionError = useRef(""),
     resumeKey = useRef("");
   snapshotRef.current = snapshot;
   detailsRef.current = details;
@@ -121,7 +122,7 @@ export function useCoordinator(
         }));
         pageRef.current = Math.max(nextPage, pageRef.current);
         setPage(pageRef.current);
-        setError("");
+        setError(submissionError.current);
         const affected = [
           ...new Set(
             [
@@ -169,7 +170,8 @@ export function useCoordinator(
             if(e instanceof ApiError && e.status===404) {
               try {localStorage.removeItem(pendingKey(userId));}catch{}
               setPending(null);
-              setError("暂未找到接收记录，原话仍保留；可重试同一条消息，系统会沿用原提交编号，避免重复执行。");
+              submissionError.current = "暂未找到接收记录，原话仍保留；可重试同一条消息，系统会沿用原提交编号，避免重复执行。";
+              setError(submissionError.current);
               return;
             }
             throw e;
@@ -181,10 +183,10 @@ export function useCoordinator(
             } catch {}
             setPending(null);
             forgetChatSubmission(`coordinator:${userId}`,operation);
-            if (status.status !== "completed")
-              setError(
-                "这条消息未完成，原话和已产生的用量保留；不会自动重跑。",
-              );
+            if (status.status !== "completed") {
+              submissionError.current = "这条消息未完成，原话和已产生的用量保留；不会自动重跑。";
+              setError(submissionError.current);
+            }
           }
         } else setPending(null);
       } catch (e) {
@@ -220,6 +222,7 @@ export function useCoordinator(
       throw Error("ONE 正在承接上一句话，请稍候");
     sending.current = true;
     setPending(input.operationId);
+    submissionError.current = "";
     setError("");
     try {
       input={...input,operationId:await chatSubmission(`coordinator:${userId}`,{...input,operationId:undefined})};

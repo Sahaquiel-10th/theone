@@ -17,6 +17,21 @@ test('execution receipts retain source and round, deduplicate and isolate worksp
   assert.equal(executionReceipts(db,'a','u','c').length,3);
 });
 
+test('failed receipts retain the actual answer once and keep the failure notice', () => {
+  const answer = '创建 /QA/result.txt，回读 ONE_QA_OK';
+  const task = { id:'t', workspaceId:'a', userId:'u', conversationId:'c', provider:'codex', status:'failed', finalResponse:answer, lastError:`${answer}\n本轮有工具执行失败，不会自动重跑`, updatedAt:'2026-10-10' } as ExecutionTask;
+  const db = { conversations:[{id:'c',workspaceId:'a',userId:'u',messages:[]}], messages:[] } as unknown as Database;
+  saveExecutionReceipt(db,task);
+  assert.equal(db.messages[0].content.split(answer).length - 1, 1);
+  assert.match(db.messages[0].content,/工具执行失败/);
+  assert.match(db.messages[0].content,/执行未完成/);
+  saveExecutionReceipt(db,{...task,reportRound:1,lastError:'连接中断'});
+  assert.match(db.messages[1].content,/连接中断/);
+  assert.match(db.messages[1].content,/回读 ONE_QA_OK/);
+  assert.equal(executionReceipts(db,'b','u').length,0);
+  assert.equal(executionReceipts(db,'a','other').length,0);
+});
+
 test("execution trace cannot expose another workspace or user's instruction", () => {
   const database = { executionTasks: [{ id: "t", workspaceId: "a", userId: "u", instruction: "private" }], messages: [] } as unknown as Database;
   assert.equal(executionTrace(database, "t", "b", "u"), undefined);
