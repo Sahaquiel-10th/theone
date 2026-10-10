@@ -22,10 +22,15 @@ export function useFollowLatest(conversationKey: string, visible: boolean) {
     latest();
     const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(latest); };
     frame = requestAnimationFrame(latest);
-    const mutations = new MutationObserver(schedule);
-    mutations.observe(node, {childList: true, subtree: true, characterData: true});
     const resize = new ResizeObserver(schedule);
-    resize.observe(node);
+    const observeSizes = () => {
+      resize.disconnect();
+      resize.observe(node);
+      for (const child of node.children) resize.observe(child);
+    };
+    observeSizes();
+    const mutations = new MutationObserver(() => { observeSizes(); schedule(); });
+    mutations.observe(node, {childList: true, subtree: true, characterData: true});
     node.addEventListener('load', schedule, true);
     return () => { cancelAnimationFrame(frame); mutations.disconnect(); resize.disconnect(); node.removeEventListener('load', schedule, true); };
   }, [conversationKey, visible]);
