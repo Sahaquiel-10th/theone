@@ -32,6 +32,19 @@ test('failed receipts retain the actual answer once and keep the failure notice'
   assert.equal(executionReceipts(db,'a','other').length,0);
 });
 
+test('normal exit with tool errors describes review, not verified success, and remains owned and idempotent', () => {
+  const answer = '回读结果：/QA/index.html 标题匹配';
+  const task = {id:'review',workspaceId:'a',userId:'u',conversationId:'c',provider:'codex',status:'failed',finalResponse:answer,lastError:`${answer}\n\n本轮有工具执行失败，完成情况需检查，不会自动重跑。`,updatedAt:'2026-10-10'} as ExecutionTask;
+  const db = {conversations:[{id:'c',workspaceId:'a',userId:'u',messages:[]}],messages:[]} as unknown as Database;
+  saveExecutionReceipt(db,task); saveExecutionReceipt(db,task);
+  assert.equal(db.messages.length,1);
+  assert.match(db.messages[0].content,/执行器已结束，过程中有工具报错/);
+  assert.match(db.messages[0].content,/最终结果需核对/);
+  assert.equal(task.status,'failed');
+  assert.equal(executionReceipts(db,'other','u').length,0);
+  assert.equal(executionReceipts(db,'a','other').length,0);
+});
+
 test("execution trace cannot expose another workspace or user's instruction", () => {
   const database = { executionTasks: [{ id: "t", workspaceId: "a", userId: "u", instruction: "private" }], messages: [] } as unknown as Database;
   assert.equal(executionTrace(database, "t", "b", "u"), undefined);

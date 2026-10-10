@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
+import {useFollowLatest} from './useFollowLatest';
 import { MessageMarkdown } from "./MessageMarkdown";
 import "./things-panel.css";
 import { Zap } from "lucide-react";
@@ -55,11 +56,7 @@ export function ThingsPanel({
   const pages = Math.max(1, Math.ceil(found.length / 10)),
     current = Math.min(page, pages);
   const draft = drafts[selectedId] || "";
-  const messagesRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const element = messagesRef.current;
-    if (element) element.scrollTop = element.scrollHeight;
-  }, [selectedId, selected?.messages.length]);
+  const {scroll: messagesRef, onScroll} = useFollowLatest(selectedId, Boolean(selected));
   return (
     <section className="things-browser" aria-label="事情列表与对话">
       <aside className="things-list">
@@ -130,7 +127,7 @@ export function ThingsPanel({
               </button>
               </div>
             </header>
-            <div className="things-thread-messages" ref={messagesRef}>
+            <div className="things-thread-messages" ref={messagesRef} onScroll={onScroll}>
               {selected.messagesLoaded === false ? (
                 <p>正在打开…</p>
               ) : selected.messages.length ? (

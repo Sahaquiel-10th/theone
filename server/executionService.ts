@@ -1,5 +1,6 @@
 import type { Database, ExecutionEvent, ExecutionTask, Message, MessageRecord } from "./types.js";
 import { createHash } from "node:crypto";
+import {executionNeedsReview} from '../src/executionReview.js';
 
 const maxCompilerContextChars = 36_000;
 
@@ -13,7 +14,7 @@ export function saveExecutionReceipt(database: Database, task: ExecutionTask) {
   conversation.messages ??= [];
   const id = `execution_receipt_${task.id}_${task.reportRound ?? 0}`;
   if (conversation.messages.some(m => m.id === id)) return;
-  const outcome = task.status === "completed" ? "执行器本轮已结束；以下为执行器回执，是否达到目标请以验证证据为准" : task.status === "cancelled" ? "执行已取消；已产生的修改不会自动撤销" : "执行未完成或结果尚未确认，不会自动重跑";
+  const outcome = task.status === "completed" ? "执行器本轮已结束；以下为执行器回执，是否达到目标请以验证证据为准" : task.status === "cancelled" ? "执行已取消；已产生的修改不会自动撤销" : executionNeedsReview(task) ? "执行器已结束，过程中有工具报错；最终结果需核对，不会自动重跑" : "执行未完成或结果尚未确认，不会自动重跑";
   // Some executors attach the actual answer to a failure notice. Preserve the
   // notice without saving the answer twice (or truncating the useful suffix).
   const error = task.lastError?.trim() ?? "";

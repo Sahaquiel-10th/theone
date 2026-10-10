@@ -1,4 +1,4 @@
-import React, { FormEvent, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { FormEvent, createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AiTaskPanel } from "./AiTaskPanel";
 import { OfficialFeaturePanel } from "./OfficialFeaturePanel";
 import { FeatureMarketplace } from "./FeatureMarketplace";
@@ -8,6 +8,9 @@ import {FeatureNav} from './FeatureNav';
 import {ThingsPanel} from './ThingsPanel';
 import {sendThingMessage} from './sendThingMessage';
 import {CoordinatorConversation} from './preview/CoordinatorConversation';
+import {useFollowLatest} from './useFollowLatest';
+import {runtimeNoticeSeen, rememberRuntimeNotice} from './runtimeNoticeMemory';
+import {executionNeedsReview} from './executionReview';
 import {TaskTransferRail, type Transfer} from './TaskTransferRail';
 import {FeatureShelf,type FeatureChoice} from './preview/FeatureShelf';
 import {ResultSignal} from './preview/ResultSignal';
@@ -518,7 +521,7 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
     <div className="execution-disclosure-header">
       <button className="execution-disclosure-toggle" type="button" aria-expanded={expanded} aria-controls="one-execution-content" onClick={onToggle}>
         <span className={`task-indicator ${busy ? "running" : status}`} aria-hidden="true">{status === "completed" ? <Check size={12} /> : null}</span>
-        <span><strong>{executionStatusLabel(task, preparing)}</strong><small>{preparing ? "正在连接本机…" : task?.status === "completed" ? "查看结果" : task?.status === "failed" ? "查看问题" : latestStep || "查看过程"}</small></span>
+        <span><strong>{executionNeedsReview(task) ? '本轮已结束，结果待核对' : executionStatusLabel(task, preparing)}</strong><small>{preparing ? "正在连接本机…" : executionNeedsReview(task) ? '有工具报错，请核对最终回执' : task?.status === "completed" ? "查看结果" : task?.status === "failed" ? "查看问题" : latestStep || "查看过程"}</small></span>
         <span className="execution-expand-label">{expanded ? "收起" : "展开"}</span><ChevronDown size={15} />
       </button>
       {isExecutionRunning(task) ? <button className="execution-stop" type="button" onClick={event => onStop(event.currentTarget)}><Square size={10} />停止</button> : null}
@@ -527,7 +530,7 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
       <div className="execution-disclosure-clip" inert={!expanded} aria-hidden={!expanded}>
         <div id="one-execution-content" className="execution-disclosure-body">
           {task?.targetName ? <p className="execution-current-step">工作文件夹：{task.targetName}（可在设置 → 本机执行中更换）</p> : null}
-          {!busy && task?.status === "failed" ? <p className="execution-problem">{task.lastError || "执行未完成。"}</p> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><MessageMarkdown>{task.finalResponse}</MessageMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接本机…" : task?.status === "cancelled" ? "已停止。" : latestStep || "等待本机反馈…"}</p>}
+          {!busy && executionNeedsReview(task) ? <><p className="execution-problem">执行器已结束，过程中有工具报错。请按最终回执核对目标是否完成；不会自动重跑。</p><MessageMarkdown>{task!.finalResponse!}</MessageMarkdown></> : !busy && task?.status === "failed" ? <p className="execution-problem">{task.lastError || "执行未完成。"}</p> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><MessageMarkdown>{task.finalResponse}</MessageMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接本机…" : task?.status === "cancelled" ? "已停止。" : latestStep || "等待本机反馈…"}</p>}
           {steps.length > 0 ? <details className="execution-step-history"><summary>过程记录 · {steps.length} 条</summary><ol>{steps.slice(-30).map(event => <li key={event.id} className={event.kind}>{event.text}</li>)}</ol>{steps.length > 30 ? <small>最近 30 条</small> : null}</details> : null}
           {task ? <details className="execution-step-history" onToggle={async event => {
             if (!event.currentTarget.open || trace) return;
@@ -636,6 +639,18 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [dismissedRuntimeReceipt, setDismissedRuntimeReceipt] = useState(() => {
     try { return sessionStorage.getItem(`one.runtime.confirmed.${user.id}`) || ""; } catch { return ""; }
   });
+  useLayoutEffect(() => {
+    if (!runtimeUpdate || !runtimeUpdateConfirmed(runtimeUpdate)) return;
+    const version = runtimeUpdate.current!.version;
+    try {
+      if (runtimeNoticeSeen(localStorage, user.id, version)) {
+        setDismissedRuntimeReceipt(runtimeUpdate.confirmation!.requestId);
+      } else {
+        // Remember presentation, not just clicking Refresh. Keep this first notice visible.
+        rememberRuntimeNotice(localStorage, user.id, version);
+      }
+    } catch { /* Browser may deny even access to localStorage. */ }
+  }, [user.id, runtimeUpdate?.confirmation?.requestId, runtimeUpdate?.connectionState, runtimeUpdate?.current?.version]);
   const runtimeCheck = useRef({ pending: false, dispatching: false, generation: 0, lastSuccess: Date.now(), active: false });
   const [runtimeUpdating, setRuntimeUpdating] = useState(false);
   const [executionTasks, setExecutionTasks] = useState<ExecutionTask[]>([]);
@@ -685,6 +700,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const activeExecutionMode = executionMode;
   const targetLoading = preview.enabled ? Boolean(preview.state.pending) || Boolean(loadingByConversation[activeLoadingKey]) : !composeNew && activeLoading;
   const studioIdle = view === "chat" && !activeId && (!preview.enabled || previewHome);
+  const taskScroll = useFollowLatest(activeId, view === 'chat' && Boolean(active));
   const activePreparing = preparingExecution && preparingConversationId === activeId;
   const liveTaskIds = runningExecutions.map(task => task.id).sort().join("|");
   const currentModel = models.find((model) => model.id === activeModelId);
@@ -1740,7 +1756,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         <button type="button" onClick={() => {
           const receipt = runtimeUpdate.confirmation!.requestId;
           setDismissedRuntimeReceipt(receipt);
-          try { sessionStorage.setItem(`one.runtime.confirmed.${user.id}`, receipt); } catch { /* storage optional */ }
+          try { if (runtimeUpdate.current?.version) rememberRuntimeNotice(localStorage, user.id, runtimeUpdate.current.version); } catch { /* storage optional */ }
           window.location.reload();
         }}>刷新页面</button>
       </section> : null}
@@ -1822,7 +1838,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             <button type="button" aria-label={focusedTask ? "还原布局" : "放大当前事情"} aria-pressed={focusedTask} onClick={() => transitionInterface(() => setFocusedTask(value => !value))}>{focusedTask ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
           </div>
         </header>
-        <div className="messages">
+        <div className="messages" ref={taskScroll.scroll} onScroll={taskScroll.onScroll}>
           {coordinator.enabled&&active?.workPaused?<p role="status">这件事的后续补充已暂停，原话和用量保留。<button type="button" onClick={()=>{if(confirm('仅处理尚未执行的补充，不重跑失败轮次；会产生新的用量。继续？'))void coordinator.resumeTask(active.id).catch(e=>setError(e.message));}}>继续等待的补充</button></p>:null}
           {(active?.messages ?? []).length ? (
             active!.messages.map((message, index) => (
@@ -1884,7 +1900,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {demo.enabled?<ResultSignal tasks={lampTasks} busy={Boolean(content.trim()||preview.state.pending||view==='things')} ambient={view==='chat'&&!active} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)} onDismiss={closeResultLamp}/>:null}
         </div>
 
-        {preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)}/>:null}
+        {preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation visible={view==='chat'||view==='features'||view==='account'} messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)}/>:null}
         {coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(content.trim() || isComposing || coordinator.state.pending)} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onReport={ids=>coordinator.report(ids)} /> : null}
 
         {!preview.enabled && (otherRows.length > 0 || unreadNotices.length > 0 || taskStatusUnavailable) ? <section className="studio-activity attention-activity" aria-label="任务动态">
