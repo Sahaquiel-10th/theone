@@ -32,14 +32,14 @@
 
 来源：https://github.com/coreyhaines31/marketingskills
 
-许可：https://github.com/coreyhaines31/marketingskills/blob/main/LICENSE （MIT，保留许可与版权声明）。README 明确技能库免费且以 MIT 发布，由合作伙伴资助。作者也提供代理、培训和付费产品；目前证据支持免费技能库与付费服务分开。如果用户希望连有商业服务的作者也排除，则整组移入自主编写需求，不直接引入。
+许可：https://github.com/coreyhaines31/marketingskills/blob/main/LICENSE （MIT，保留许可与版权声明）。README 明确技能库免费且以 MIT 发布，由合作伙伴资助。作者也提供代理、培训和付费产品，技能库接受合作伙伴资助。按用户“不采用打算靠 skills 赚钱的创作者技能”的保守标准，本组暂仅记录需求，不直接选入；免费发布和 MIT 授权事实不改变这一产品选择。
 
 | 原名 | 用途 | 建议 |
 | --- | --- | --- |
-| copywriting | 产品、网站与活动营销文案 | 首批备选；适配中文语境 |
-| copy-editing | 修改文案、提升清晰度和说服力 | 首批备选 |
-| content-strategy | 内容选题与发布计划 | 首批备选 |
-| customer-research | 客户访谈、评论和需求研究 | 与 synthesize-research 去重后选 |
+| copywriting | 产品、网站与活动营销文案 | 自主编写需求；适配中文语境 |
+| copy-editing | 修改文案、提升清晰度和说服力 | 自主编写需求 |
+| content-strategy | 内容选题与发布计划 | 自主编写需求 |
+| customer-research | 客户访谈、评论和需求研究 | 自主编写需求；与 synthesize-research 去重 |
 | sales-enablement | 销售介绍、异议处理与演示材料 | 第二批 |
 | seo-audit | 网站搜索表现诊断 | 第二批，需要网页读取和工具验证 |
 | ad-creative | 广告标题及素材文案 | 第二批；不包含自动投放 |
