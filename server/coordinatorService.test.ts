@@ -12,7 +12,7 @@ import { CoordinatorService } from "./coordinatorService.js";
 import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
 import { executorDefaults, updateExecutor } from "./executorProfiles.js";
 import { reconcileInterruptedChatOperations } from "./chatOperations.js";
-import type { ModelToolMessage, ToolChatResult } from "./modelGateway.js";
+import type { ModelToolMessage, ModelToolDefinition, ToolChatResult } from "./modelGateway.js";
 
 test('legacy assistant restrictions remain enforced before accepting or charging a task supplement',async()=>{
  const f=fixture(),stamp=new Date().toISOString();
@@ -189,7 +189,7 @@ function fixture() {
       return next;
     },
   } as Store;
-  const calls: { modelId: string; messages: ModelToolMessage[]; requiredTool?: string }[] = [],
+  const calls: { modelId: string; messages: ModelToolMessage[]; tools: ModelToolDefinition[]; requiredTool?: string }[] = [],
     recalls: { ws: string; ids?: readonly string[] }[] = [];
   let workerHook:
       ((messages: ModelToolMessage[]) => Promise<ToolChatResult>) | undefined,
@@ -204,7 +204,7 @@ function fixture() {
     },
     {
       modelCall: async (model, messages, tools, _requestId, options) => {
-        calls.push({ modelId: model.id, messages: structuredClone(messages), requiredTool: options?.requiredTool });
+        calls.push({ modelId: model.id, messages: structuredClone(messages), tools: structuredClone(tools), requiredTool: options?.requiredTool });
         if (model.id !== "router")
           return workerHook
             ? workerHook(messages)
@@ -288,6 +288,29 @@ test('an execution click cannot be acknowledged as dispatched without a real loc
  const db=await f.store.read();
  assert.ok(db.messages.some(m=>m.role==='user'&&m.content==='修改网页标题'));
  assert.ok(!db.messages.some(m=>m.role==='assistant'&&m.content==='已转达并开始执行。'));
+});
+
+test('explicit answer-only messages cannot delegate even when bound to an existing task', async () => {
+ const f=fixture(), stamp=new Date().toISOString();
+ await f.store.mutate(d=>d.conversations.push({...a,id:'owned-read',title:'UI',modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp}));
+ f.setRoute(()=>answer('只读回执回答，没有执行。'));
+ let runs=0;
+ const reply=await f.service.dispatch(a,{...input('operation_answer_only_01','只回答，不执行、不重跑。'),boundTaskId:'owned-read'},key,undefined,async()=>{runs++;return{id:'never',status:'queued'};});
+ assert.equal(reply.taskId,undefined);
+ assert.equal(runs,0);
+ assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
+ const tools=f.calls.filter(c=>c.modelId==='router').flatMap(c=>c.tools.map(t=>t.function.name));
+ assert.ok(!tools.includes('delegate_task')&&!tools.includes('execute_local_task'));
+ const denied=fixture(); denied.setRoute(()=>({...answer(''),toolCalls:[{id:'forbidden',type:'function',function:{name:'execute_local_task',arguments:JSON.stringify({taskId:null,title:'旧任务',instruction:'不能执行',executorId:'general'})}}]}));
+ await assert.rejects(()=>denied.service.dispatch(a,input('operation_answer_only_02','只回答，不执行。'),key,undefined,async()=>{runs++;return{id:'never',status:'queued'};}));
+ assert.equal(runs,0);
+ assert.equal((await denied.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
+ const foreign=fixture(); foreign.setRoute(()=>answer('不应读取'));
+ await foreign.store.mutate(d=>d.conversations.push({...a,id:'owned-read',title:'UI',modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp}));
+ await assert.rejects(()=>foreign.service.dispatch(b,{...input('operation_answer_only_03','只回答，不执行。'),boundTaskId:'owned-read'},key));
+ assert.equal(foreign.calls.length,0);
+ await assert.rejects(()=>f.service.dispatch(a,{...input('operation_answer_only_04','不执行。'),localExecution:true},key,undefined,async()=>{runs++;return{id:'never',status:'queued'};}),/本机尚未开始/);
+ assert.equal(runs,0);
 });
 test('local notices acknowledge their own execution round without suppressing a requested brief', async () => {
  const f=fixture(); await f.service.dispatch(a,input('operation_notice_init','你好'),key);
