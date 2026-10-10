@@ -12,7 +12,7 @@ export function installOfficialFeatureRoutes(app: Express, admin: readonly Reque
   const router=express.Router();
   router.use(...admin);
   router.use((_req,res,next)=>{res.setHeader("Cache-Control","no-store");next();});
-  router.post('/import', multer({storage:multer.memoryStorage(),limits:{fileSize:SKILL_UPLOAD_BYTES,files:1,fields:0}}).single('file'), asyncRoute(async(req,res)=>{
+  router.post('/imports/preview', multer({storage:multer.memoryStorage(),limits:{fileSize:SKILL_UPLOAD_BYTES,files:1,fields:0}}).single('file'), asyncRoute(async(req,res)=>{
     if (!req.file) throw new FeatureConfigError('请选择 skill 文件');
     res.json(await importSkill(req.file.buffer, req.file.originalname));
   }));

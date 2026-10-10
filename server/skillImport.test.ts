@@ -40,7 +40,7 @@ test('HTTP import is admin and Key protected, request-local and never persists o
   const store={mutate:async()=>{writes++;throw new Error('must not persist');}} as unknown as Store;
   const app=express();installOfficialFeatureRoutes(app,[(req,res,next)=>{if(req.headers['x-key']!=='present'){res.sendStatus(428);return;}if(req.headers['x-role']!=='admin'){res.sendStatus(403);return;}next();}],store);
   const server=app.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});
-  const url=`http://127.0.0.1:${(server.address() as any).port}/api/admin/official-features/import`;
+  const url=`http://127.0.0.1:${(server.address() as any).port}/api/admin/official-features/imports/preview`;
   const body=()=>{const f=new FormData();f.append('file',new Blob([skill]),'SKILL.md');return f;};
   assert.equal((await fetch(url,{method:'POST',body:body()})).status,428);
   assert.equal((await fetch(url,{method:'POST',headers:{'x-key':'present','x-role':'user','x-workspace':'other'},body:body()})).status,403);

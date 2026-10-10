@@ -30,7 +30,7 @@ function FeatureEditor({api,featureId,onChanged}:{api:typeof Api;featureId:strin
     if(file.size>2*1024*1024){setNotice('skill 文件不能超过 2MB');return;}
     setBusy(true);setNotice('');
     try{const body=new FormData();body.append('file',file);
-      const result=await api<{name:string;description:string;instructions:string;skillAttribution:string;files:string[];warnings:string[]}>('/api/admin/official-features/import',{method:'POST',body});
+      const result=await api<{name:string;description:string;instructions:string;skillAttribution:string;files:string[];warnings:string[]}>('/api/admin/official-features/imports/preview',{method:'POST',body});
       setValues({...values,name:result.name,description:result.description,instructions:result.instructions,skillAttribution:result.skillAttribution,author:'待填写原作者'});setImported(result);
       setNotice('已填入编辑区，请填写作者、使用边界并检查依赖，然后保存草稿。');
     }catch(e){setNotice(e instanceof Error?e.message:'导入失败');}finally{setBusy(false);}
