@@ -1,10 +1,10 @@
 import JSZip from 'jszip';
 import path from 'node:path';
-import { FeatureConfigError } from './officialFeatures.js';
+import { FeatureConfigError,featureValues,type OfficialFeatureValues } from './officialFeatures.js';
 
 export const SKILL_UPLOAD_BYTES = 2 * 1024 * 1024;
 const TEXT_BYTES = 128 * 1024;
-export type SkillImport = { name: string; description: string; instructions: string; skillAttribution: string; files: string[]; warnings: string[] };
+export type SkillImport = { values?:Omit<OfficialFeatureValues,'modelId'>; name: string; description: string; instructions: string; skillAttribution: string; files: string[]; warnings: string[] };
 
 function text(bytes: Buffer): string {
   if (bytes.length > TEXT_BYTES) throw new FeatureConfigError('单个说明文件不能超过 128KB');
@@ -67,7 +67,7 @@ export async function importSkill(bytes: Buffer, filename: string): Promise<Skil
     if (/^[\/\\]|^[a-z]:|\\|\0/i.test(original) || original.split('/').includes('..')) throw new FeatureConfigError('压缩包包含不安全路径');
     if (entry.dir || /(^|\/)(__MACOSX|\.DS_Store)(\/|$)/.test(entry.name)) continue;
     if (typeof entry.unixPermissions === 'number' && (entry.unixPermissions & 0o170000) === 0o120000) throw new FeatureConfigError('压缩包不能包含符号链接');
-    if (!/\.md$|(^|\/)(LICENSE|NOTICE)(\.(txt|md))?$/i.test(entry.name)) throw new FeatureConfigError(`文件 ${entry.name} 需要适配；当前仅导入说明、Markdown 参考资料和许可文件，不能直接运行脚本或素材包`);
+    if (!/(^|\/)config\.json$|\.md$|(^|\/)(LICENSE|NOTICE)(\.(txt|md))?$/i.test(entry.name)) throw new FeatureConfigError(`文件 ${entry.name} 需要适配；当前仅导入说明、Markdown 参考资料和许可文件，不能直接运行脚本或素材包`);
     const stream = entry.nodeStream('nodebuffer');
     const chunks: Buffer[] = []; let size = 0;
     try {
@@ -83,5 +83,8 @@ export async function importSkill(bytes: Buffer, filename: string): Promise<Skil
   }
   const skills = [...files].filter(([file]) => /(^|\/)SKILL\.md$/i.test(file));
   if (skills.length !== 1) throw new FeatureConfigError('压缩包必须且只能包含一个 SKILL.md，请分别导入每个 skill');
-  return preview(skills[0][1], files, skills[0][0]);
+  const result=preview(skills[0][1], files, skills[0][0]);
+  const config=files.get(path.posix.join(path.posix.dirname(skills[0][0]),'config.json'));
+  if(config){try{const parsed=JSON.parse(config);const {modelId,...values}=featureValues(parsed.values);result.values=values;result.warnings.push('压缩包中的选项与按钮已通过格式校验；模型需单独选择，工具配置仍需管理员核对，不会自动上架。');}catch(e){throw new FeatureConfigError(e instanceof Error?e.message:'config.json 配置无效');}}
+  return result;
 }

@@ -1,13 +1,15 @@
+import { localSkillTool, type SkillLocalContext } from "./skillLocalTools.js";
 import type { Store } from './db.js';
-import { featureToolEndpoint,resolveFeatureTool,type FeatureToolChoice } from './featureTools.js';
+import { featureToolEndpoint,resolveFeatureTool,isLocalFeatureTool,type FeatureToolChoice } from './featureTools.js';
 import { toolCredential,redactToolSecret } from './featureCredentials.js';
 import { openFeatureMcp,mcpDefinition,mcpDigest,mcpValidate } from './connectors/featureMcp.js';
 import { boundedHttps,timedExchange,type ToolExchange } from './connectors/boundedHttps.js';
 import { callReadOnlyHttp,validateFields,StandardToolError,type JsonTransport } from './connectors/standardHttp.js';
 import { OrchestrationToolError, type OrchestrationTool } from './taskOrchestrator.js';
 
-export function executableFeatureTools(store:Store,scope:{workspaceId:string;userId:string},choices:FeatureToolChoice[],verify:()=>Promise<void>,deps:{transport?:JsonTransport;exchange?:ToolExchange}={}):OrchestrationTool[]{
+export function executableFeatureTools(store:Store,scope:{workspaceId:string;userId:string},choices:FeatureToolChoice[],verify:()=>Promise<void>,deps:{transport?:JsonTransport;exchange?:ToolExchange;localContext?:SkillLocalContext}={}):OrchestrationTool[]{
   return choices.map(choice=>{
+    if(isLocalFeatureTool(choice))return localSkillTool(choice.id,choice.description,verify,deps.localContext);
     const endpoint=featureToolEndpoint(choice),http=choice.mcp?undefined:resolveFeatureTool(choice),mcp=choice.mcp?.tool;
     return{name:choice.id,description:choice.description,run:async()=>{throw new Error('需要结构化参数');},structured:{
       schema:mcp?{...mcp.inputSchema,additionalProperties:false}:{type:'object',additionalProperties:false,properties:http!.input,required:http!.required},

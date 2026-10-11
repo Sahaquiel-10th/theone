@@ -1,0 +1,546 @@
+{
+  "date": "2026-10-10",
+  "status": "候选方案，未编写、安装或上架功能",
+  "mix": {
+    "industry": 4,
+    "store": 8,
+    "general": 12
+  },
+  "sources": [
+    {
+      "id": "N1",
+      "name": "润合门店运营训练营报道（2024-12-07，派读宠业参考来源、维宠转载）",
+      "url": "https://www.petdhw.com/show-46309.html",
+      "use": "历史报道；线索为引流、利润、客诉、培训后行动与评估。不能认定为明日负责人的当前项目或采购要求。"
+    },
+    {
+      "id": "N2",
+      "name": "unit-economics",
+      "url": "https://github.com/SkillMedev/skills/blob/main/skills/unit-economics/SKILL.md",
+      "use": "获客成本、贡献与回本计算场景。原实现有 SaaS 假设；医院不套用订阅 LTV 公式或行业阈值。"
+    },
+    {
+      "id": "N3",
+      "name": "customer-analytics",
+      "url": "https://github.com/SkillMedev/skills/blob/main/skills/customer-analytics/SKILL.md",
+      "use": "客户分组与重复购买分析场景；阈值依据具体业务重新设计。"
+    },
+    {
+      "id": "N4",
+      "name": "review-engine",
+      "url": "https://github.com/SkillMedev/skills/blob/main/skills/review-engine/SKILL.md",
+      "use": "公开评价与服务反馈场景；不照搬国外平台机制、转化率或评价引导策略。"
+    },
+    {
+      "id": "N5",
+      "name": "google-business-profile-optimizer",
+      "url": "https://github.com/SkillMedev/skills/blob/main/skills/google-business-profile-optimizer/SKILL.md",
+      "use": "本地服务门店信息完整性和内容维护场景；国内渠道规则另查，不承诺排名。"
+    },
+    {
+      "id": "N6",
+      "name": "retention-and-churn-killer",
+      "url": "https://github.com/SkillMedev/skills/blob/main/skills/retention-and-churn-killer/SKILL.md",
+      "use": "留存、回访与重新到店场景；原实现面向健身房，不把高就诊频率设为医院目标。"
+    },
+    {
+      "id": "N7",
+      "name": "hiring-a-players-and-sops",
+      "url": "https://github.com/SkillMedev/skills/blob/main/skills/hiring-a-players-and-sops/SKILL.md",
+      "use": "岗位带教与操作流程场景；原实现面向健身房，不采用其薪酬或招聘规则。"
+    },
+    {
+      "id": "N8",
+      "name": "openaccountant skills",
+      "url": "https://github.com/openaccountant/skills/blob/main/README.md",
+      "use": "发现 profit-loss、break-even-calc、client-profitability 等需求名称，未运行。"
+    },
+    {
+      "id": "B1",
+      "name": "新瑞鹏集团介绍",
+      "url": "https://ruipengpet.com/intro",
+      "use": "确认宠物医疗与健康管理业务"
+    },
+    {
+      "id": "B2",
+      "name": "润合供应链官网",
+      "url": "https://ruipengpet.com/runhe_supply",
+      "use": "确认商品贸易、物流、品牌与渠道服务；不据此认定具体岗位痛点"
+    },
+    {
+      "id": "B3",
+      "name": "铎悦教育官网",
+      "url": "https://ruipengpet.com/doyue_edu",
+      "use": "确认医疗与商业培训、线上课程及线下实操；不据此认定采购意向"
+    },
+    {
+      "id": "R1",
+      "name": "sales-proposal-writer",
+      "url": "https://github.com/SkillMedev/skills/blob/main/skills/sales-proposal-writer/SKILL.md",
+      "use": "需求观察：客户资料转合作方案；不复制代码或提示词"
+    },
+    {
+      "id": "R2",
+      "name": "trade-pipeline-skill",
+      "url": "https://github.com/Dangooy/trade-pipeline-skill",
+      "use": "需求观察：询价数据转报价与单据；原项目面向五金外贸，不是宠物供应链成品"
+    },
+    {
+      "id": "R3",
+      "name": "lesson-plan-builder",
+      "url": "https://github.com/SkillMedev/skills/blob/main/skills/lesson-plan-builder/SKILL.md",
+      "use": "需求观察：单节课教学计划；不照搬其固定时长与教学比例"
+    },
+    {
+      "id": "R4",
+      "name": "quiz-generator",
+      "url": "https://github.com/SkillMedev/skills/blob/main/skills/quiz-generator/SKILL.md",
+      "use": "需求观察：题目、答案解析、教师和学员版本"
+    },
+    {
+      "id": "R5",
+      "name": "course-quiz-builder",
+      "url": "https://github.com/the3ma/course-quiz-builder/blob/main/README.md",
+      "use": "需求观察：课程资料转可交互测验，包含页面生成脚本"
+    },
+    {
+      "id": "R6",
+      "name": "兽医诊所 AI 工作场景清单",
+      "url": "https://gist.github.com/Steffd415/19e2693db5a879dd9afc70ba6a8ae374",
+      "use": "场景线索：评价回复、宠主沟通、培训整理；这是一份公开提示词场景清单，不是经过验证的行业技能库"
+    },
+    {
+      "id": "R7",
+      "name": "domestic-ecommerce-prompts",
+      "url": "https://github.com/wendysun718/my-codex-skills/tree/main/skills/domestic-ecommerce-prompts",
+      "use": "需求观察：朋友圈营销文案、商品图与短视频脚本"
+    },
+    {
+      "id": "R8",
+      "name": "baoyu-skills",
+      "url": "https://github.com/JimLiu/baoyu-skills",
+      "use": "需求观察：图文卡片、封面、翻译与图片处理"
+    },
+    {
+      "id": "R9",
+      "name": "writer-skill",
+      "url": "https://github.com/zdyya/writer-skill",
+      "use": "需求观察：公众号写作、事实检查、HTML 排版"
+    },
+    {
+      "id": "R10",
+      "name": "genai_portrait_skill",
+      "url": "https://github.com/grapeot/genai_portrait_skill",
+      "use": "需求观察：人像编辑、光线背景协调、对比复核"
+    },
+    {
+      "id": "R11",
+      "name": "HivisionIDPhotos",
+      "url": "https://github.com/Zeyi-Lin/HivisionIDPhotos",
+      "use": "需求观察：证件照尺寸、换底、打印排版；如后续复用工具代码，另核查代码及模型许可"
+    },
+    {
+      "id": "R12",
+      "name": "email-writer",
+      "url": "https://github.com/librefang/librefang-registry/tree/main/skills/email-writer",
+      "use": "需求观察：商务邮件，语言选择由 ONE 自行设计"
+    },
+    {
+      "id": "R13",
+      "name": "frontend-design",
+      "url": "https://github.com/anthropics/skills/tree/main/skills/frontend-design",
+      "use": "需求观察：可预览网页；营销业务结构由 ONE 自行设计"
+    },
+    {
+      "id": "R14",
+      "name": "portrait-visual-play",
+      "url": "https://github.com/jay-yangPY/portrait-visual-play",
+      "use": "需求观察：基于照片的创意人像，需要真实图片编辑工具"
+    },
+    {
+      "id": "R15",
+      "name": "Knowledge Work Plugins",
+      "url": "https://github.com/anthropics/knowledge-work-plugins",
+      "use": "需求观察：会议、客户回复、流程、汇报与研究整理"
+    },
+    {
+      "id": "R16",
+      "name": "spreadsheet-skill",
+      "url": "https://github.com/dsl-builders/spreadsheet-skill",
+      "use": "需求观察：生成、查询与验证 Excel 文件"
+    }
+  ],
+  "features": [
+    {
+      "id": "S01",
+      "name": "门店利润与保本测算",
+      "group": "通用门店",
+      "category": "经营分析",
+      "input": "收入、直接成本、固定费用、项目数量与统计口径",
+      "config": "周期、项目分类、人工费用归类、试算参数",
+      "output": "利润测算表、保本试算、数据缺口与三种情景",
+      "example": "宠物医院：把零售和各服务项目分开；教培、美容门店也可用",
+      "check": "确定性脚本计算；区分毛利、贡献与营业利润，不用销售额冒充利润",
+      "sources": [
+        "N2",
+        "N8"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "S02",
+      "name": "活动收益与优惠测算",
+      "group": "通用门店",
+      "category": "经营分析",
+      "input": "原价、直接成本、优惠、渠道费用、预计参与量",
+      "config": "折扣／满减／组合、预算、服务容量",
+      "output": "单笔贡献、活动回本人数、情景比较表",
+      "example": "医院体检活动、门店周年活动、课程招生优惠都可试算",
+      "check": "纳入赠品与履约成本；计算结果不等于对需求量的预测",
+      "sources": [
+        "N2"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "S03",
+      "name": "本地门店获客计划",
+      "group": "通用门店",
+      "category": "营销获客",
+      "input": "门店资料、目标客户、渠道现状、预算、服务能力",
+      "config": "行业、城市、平台、周期、目标",
+      "output": "渠道检查表、两周行动计划、文案与记录表",
+      "example": "医院、美容店、健身房都可检查门店信息、咨询与预约环节",
+      "check": "区分咨询、预约、实际到店；用可执行动作，不承诺排名和收益",
+      "sources": [
+        "N5"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "S04",
+      "name": "老客分组与回访计划",
+      "group": "通用门店",
+      "category": "客户服务",
+      "input": "脱敏客户记录、交易日期、服务类型、回访依据",
+      "config": "分组规则、正常服务周期、目的、渠道",
+      "output": "可复核的分组、回访草稿、结果记录表",
+      "example": "医院按服务需要回访；美容店按正常消费周期，课程按学习阶段",
+      "check": "不把久未就医判定为流失；分组不推断性格，不自动发送",
+      "sources": [
+        "N3",
+        "N6"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "S05",
+      "name": "评价与客诉处理",
+      "group": "通用门店",
+      "category": "客户服务",
+      "input": "真实评价或投诉、事实、可提供的解决方式",
+      "config": "平台、语气、回复长度、升级条件",
+      "output": "回复草稿、内部处理步骤、重复问题汇总",
+      "example": "医院、美容、餐饮、培训机构都有相同服务问题",
+      "check": "不编造好评；不承诺未批准赔偿；临床争议交专业人员",
+      "sources": [
+        "N4"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "S06",
+      "name": "新员工接待陪练",
+      "group": "通用门店",
+      "category": "学习培训",
+      "input": "批准的服务说明、沟通标准、模拟情景",
+      "config": "岗位、行业、难度、练习轮数",
+      "output": "模拟顾客对话、按标准反馈、下一轮练习",
+      "example": "顾客嫌价格高、问包含什么、预约后没来；医院和其他门店均可练",
+      "check": "评分必须引用明确标准；练习数据不用于推断真实员工表现",
+      "sources": [
+        "N7",
+        "R3"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "S07",
+      "name": "门店岗位手册与检查表",
+      "group": "通用门店",
+      "category": "门店管理",
+      "input": "操作记录、截图、制度、岗位分工",
+      "config": "开闭店／交班／收货／服务、详细程度",
+      "output": "操作手册、交班或执行检查表",
+      "example": "前台预约交接、培训机构开课准备、美容店收货均可配置",
+      "check": "每个步骤有触发条件、责任与完成标准；不添加未经批准制度",
+      "sources": [
+        "N7",
+        "R15"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "S08",
+      "name": "课程转行动计划与复盘",
+      "group": "通用门店",
+      "category": "学习培训",
+      "input": "课程资料、目标、现状、时间资源；后续执行记录",
+      "config": "门店／个人、行动周期、指标、复盘模板",
+      "output": "7／14／30 天计划、负责人、每日记录、复盘稿",
+      "example": "经营课后变成门店获客动作；语言课、销售课也可用",
+      "check": "学习、行动、业务结果分别检查；不把营业额涨幅全归因于培训",
+      "sources": [
+        "N1",
+        "R3",
+        "R4"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "V01",
+      "name": "宠物医院一周发布内容",
+      "group": "行业场景",
+      "category": "内容创作",
+      "input": "已批准健康资料、医院服务、真实图片、活动规则",
+      "config": "猫／犬、季节、渠道、语气、发布频率",
+      "output": "一周选题、正文、配图说明",
+      "example": "用医院实际服务与宠主常见问题组织内容",
+      "check": "不编造病例与效果；医学表达依据资料并经兽医审核",
+      "sources": [
+        "R7",
+        "R9"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "V02",
+      "name": "宠物医院服务说明卡",
+      "group": "行业场景",
+      "category": "客户服务",
+      "input": "批准的项目范围、价格、预约与准备说明",
+      "config": "项目、宠主理解程度、微信／打印",
+      "output": "项目说明、包含与不包含事项、常见问题卡",
+      "example": "解释体检服务包含哪些内容、预约要准备什么",
+      "check": "核对项目与费用；按已批准资料解释，不决定是否需要诊疗",
+      "sources": [
+        "R15"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "V03",
+      "name": "宠物医院活动宣传包",
+      "group": "行业场景",
+      "category": "营销获客",
+      "input": "已批准的活动、真实价格、时间、品牌素材",
+      "config": "体检／健康教育等主题、渠道、图片比例",
+      "output": "海报、朋友圈稿、报名说明",
+      "example": "猫咪健康主题日；由医院确定适用条件与服务内容",
+      "check": "渠道版本价格日期一致；医疗活动由医院审核，不靠恐惧促销",
+      "sources": [
+        "R7",
+        "R8"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "V04",
+      "name": "宠主服务沟通练习",
+      "group": "行业场景",
+      "category": "学习培训",
+      "input": "医院批准的项目说明、服务规范、情景材料",
+      "config": "前台／店长、咨询／预约／费用解释",
+      "output": "角色练习、回应建议、依据规范的反馈",
+      "example": "宠主询问费用差异、预约准备、服务流程",
+      "check": "与 S06 共用陪练能力；不生成诊疗、用药或个体病情结论",
+      "sources": [
+        "N7",
+        "R3"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "G01",
+      "name": "小红书笔记撰写",
+      "group": "通用办公与创作",
+      "category": "内容创作",
+      "input": "主题、真实经历、产品事实、参考材料",
+      "config": "种草／经验／教程、语气、篇幅",
+      "output": "标题＋正文＋标签",
+      "example": "按用户自己的工作或生活材料使用；没有默认宠物行业设定",
+      "check": "长度、重复与事实核查",
+      "sources": [
+        "R7"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "G02",
+      "name": "朋友圈文案",
+      "group": "通用办公与创作",
+      "category": "内容创作",
+      "input": "经历或产品事实、照片",
+      "config": "日常／活动／营销、语气、长度",
+      "output": "可选文案版本",
+      "example": "按用户自己的工作或生活材料使用；没有默认宠物行业设定",
+      "check": "信息与篇幅检查",
+      "sources": [
+        "R7"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "G03",
+      "name": "公众号文章与排版",
+      "group": "通用办公与创作",
+      "category": "内容创作",
+      "input": "主题、资料、个人写作样例",
+      "config": "读者、风格、篇幅、排版主题",
+      "output": "文章＋可复制 HTML 排版",
+      "example": "按用户自己的工作或生活材料使用；没有默认宠物行业设定",
+      "check": "HTML 渲染、事实引用核查",
+      "sources": [
+        "R9"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "G04",
+      "name": "多语言商务邮件",
+      "group": "通用办公与创作",
+      "category": "办公文档",
+      "input": "沟通目的、背景、收件人关系",
+      "config": "语言、场景、语气、中外文对照",
+      "output": "主题＋邮件正文＋可选对照",
+      "example": "按用户自己的工作或生活材料使用；没有默认宠物行业设定",
+      "check": "术语、日期、金额一致性检查",
+      "sources": [
+        "R12"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "G05",
+      "name": "合作方案与报价附件",
+      "group": "通用办公与创作",
+      "category": "办公文档",
+      "input": "客户需求、能力范围、成本与价格规则",
+      "config": "方案类型、篇幅、阶段、报价方式",
+      "output": "方案＋交付与报价表",
+      "example": "按用户自己的工作或生活材料使用；没有默认宠物行业设定",
+      "check": "文档与表格生成、金额复核",
+      "sources": [
+        "R1",
+        "R2"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "G06",
+      "name": "竞品资料整理",
+      "group": "通用办公与创作",
+      "category": "办公文档",
+      "input": "产品名称或网址、目标维度",
+      "config": "比较对象、维度、资料时间范围",
+      "output": "比较表＋证据链接＋机会假设",
+      "example": "按用户自己的工作或生活材料使用；没有默认宠物行业设定",
+      "check": "网页取材与引用检查",
+      "sources": [
+        "R15"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "G07",
+      "name": "会议纪要与行动清单",
+      "group": "通用办公与创作",
+      "category": "办公文档",
+      "input": "会议笔记或转写文本",
+      "config": "详略、内部／客户版、行动项格式",
+      "output": "纪要＋负责人、截止日与未决事项",
+      "example": "按用户自己的工作或生活材料使用；没有默认宠物行业设定",
+      "check": "待办表与文档导出",
+      "sources": [
+        "R15"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "G08",
+      "name": "Excel 清洗与合并",
+      "group": "通用办公与创作",
+      "category": "办公文档",
+      "input": "表格与清洗要求",
+      "config": "匹配列、重复规则、日期与单位",
+      "output": "清洗后表格＋变更统计＋异常清单",
+      "example": "按用户自己的工作或生活材料使用；没有默认宠物行业设定",
+      "check": "脚本合并、去重、格式与行数复核",
+      "sources": [
+        "R16"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "G09",
+      "name": "文章与活动封面",
+      "group": "通用办公与创作",
+      "category": "创意设计",
+      "input": "标题、内容摘要、图片与品牌素材",
+      "config": "比例、风格、文字布局",
+      "output": "封面图片",
+      "example": "按用户自己的工作或生活材料使用；没有默认宠物行业设定",
+      "check": "图片生成或套版、尺寸导出",
+      "sources": [
+        "R8"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "G10",
+      "name": "职业形象照",
+      "group": "通用办公与创作",
+      "category": "创意设计",
+      "input": "本人照片、参考风格",
+      "config": "背景、光线、用途、比例",
+      "output": "形象照＋原图对比",
+      "example": "按用户自己的工作或生活材料使用；没有默认宠物行业设定",
+      "check": "图片编辑与结果复核",
+      "sources": [
+        "R10"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "G11",
+      "name": "短视频分镜与口播",
+      "group": "通用办公与创作",
+      "category": "内容创作",
+      "input": "主题、产品、真实素材",
+      "config": "平台、时长、语气、镜头条件",
+      "output": "分镜表＋口播稿＋拍摄清单",
+      "example": "按用户自己的工作或生活材料使用；没有默认宠物行业设定",
+      "check": "时间估算与镜头表导出",
+      "sources": [
+        "R7"
+      ],
+      "status": "候选，未实现"
+    },
+    {
+      "id": "G12",
+      "name": "资料转学习卡片",
+      "group": "通用办公与创作",
+      "category": "学习培训",
+      "input": "文章、文档、课程笔记",
+      "config": "学习／执行、卡片数、详细程度",
+      "output": "关键概念＋行动卡＋自测题",
+      "example": "按用户自己的工作或生活材料使用；没有默认宠物行业设定",
+      "check": "资料引用与卡片套版",
+      "sources": [
+        "R4",
+        "R8"
+      ],
+      "status": "候选，未实现"
+    }
+  ]
+}

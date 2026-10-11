@@ -6,6 +6,7 @@ import { uid } from "./security.js";
 import { featureToolPresets, featureAllowedEndpoints, featureMcpEndpoints } from "./featureTools.js";
 import { releaseFeature } from "./featureRuns.js";
 import multer from 'multer';
+import {oneSkillLibrary,installOneSkillLibrary} from './oneSkillLibrary.js';
 import { importSkill, SKILL_UPLOAD_BYTES } from './skillImport.js';
 
 export function installOfficialFeatureRoutes(app: Express, admin: readonly RequestHandler[], store: Store) {
@@ -16,9 +17,11 @@ export function installOfficialFeatureRoutes(app: Express, admin: readonly Reque
     if (!req.file) throw new FeatureConfigError('请选择 skill 文件');
     res.json(await importSkill(req.file.buffer, req.file.originalname));
   }));
+  router.get("/library",asyncRoute(async(_req,res)=>{const db=await store.read();res.json({items:oneSkillLibrary.map(s=>({id:s.id,name:s.values.name,category:s.values.category,tags:s.values.experience?.tags,mode:s.values.experience?.mode,installed:!!db.settings.officialFeatures?.some(f=>f.id===s.id)}))});}));
+  router.post("/library/install",asyncRoute(async(req,res)=>{const result=await store.mutate(db=>installOneSkillLibrary(db,req.user!.id,req.body?.ids,{text:req.body?.textModelId,image:req.body?.imageModelId}));res.json(result);}));
   router.get("/options",asyncRoute(async(_req,res)=>{
     const db=await store.read();
-    res.json({models:db.models.filter(m=>m.enabled&&m.kind==="chat").map(m=>({id:m.id,name:m.name})),tools:featureToolPresets,allowedEndpoints:featureAllowedEndpoints(),mcpEndpoints:featureMcpEndpoints()});
+    res.json({models:db.models.filter(m=>m.enabled).map(m=>({id:m.id,name:m.name,kind:m.kind})),tools:featureToolPresets,allowedEndpoints:featureAllowedEndpoints(),mcpEndpoints:featureMcpEndpoints()});
   }));
   router.get("/recipients",asyncRoute(async(req,res)=>{
     const db=await store.read(), q=String(req.query.q??"").slice(0,100).toLowerCase(), page=Math.max(1,Math.floor(Number(req.query.page)||1));

@@ -22,6 +22,7 @@ import { installFeatureConnectionRoutes } from "./featureConnectionRoutes.js";
 import { installOfficialFeaturePilotRoutes } from "./officialFeaturePilotRoutes.js";
 import { installAdapterSandbox } from "./adapterSandbox.js";
 import { installFeatureTrialRoutes } from "./featureTrialRoutes.js";
+import { bootstrapOneSkills } from './oneSkillLibrary.js';
 import { installFeatureRunRoutes } from "./featureRunRoutes.js";
 import { installPublicSharingRoutes } from "./publicSharingRoutes.js";
 import { installPublicApiRoutes } from './publicApiRoutes.js';
@@ -1003,7 +1004,7 @@ installCoordinatorRoutes(app,keyAuth,admin,store,confirmKeyBeforeModel,knowledge
   executeLocal: async (req, res, cid, mid, operationId) => { const result = await startLocalExecution(req, res, cid, mid, operationId); return { id: result.task.id, status: result.task.status }; }});
 installOfficialFeaturePilotRoutes(app, admin, store);
 installFeatureTrialRoutes(app, admin, store, confirmKeyBeforeModel);
-installFeatureRunRoutes(app, keyAuth, store, confirmKeyBeforeModel, knowledgeService);
+installFeatureRunRoutes(app, keyAuth, store, confirmKeyBeforeModel, knowledgeService, {artifactDirectory:uploadDir});
 installFeatureConnectionRoutes(app, keyAuth, admin, store, confirmKeyBeforeModel);
 installOfficialFeatureRoutes(app, admin, store);
 installAdminPaymentRoutes(app, admin, store);
@@ -1193,6 +1194,7 @@ if (process.env.NODE_ENV === "production") {
   app.get(/.*/, (_req, res) => res.sendFile(path.join(root, "dist", "index.html")));
 }
 
+await store.mutate(db=>bootstrapOneSkills(db));
 const server = createServer(app);
 oneKeyPresence.attach(server);
 await attachmentService.recover();
