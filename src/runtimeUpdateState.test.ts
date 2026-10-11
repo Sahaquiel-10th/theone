@@ -34,6 +34,31 @@ test('Mac installed files ask for a fresh launch immediately, not endless automa
 test("update UI resumes polling an active install after a page refresh", () => {
   assert.equal(runtimeUpdateView(status, false, now).busy, true);
 });
+test('Mac handoff without a completed receipt explains reopening immediately without asserting success', () => {
+  for (const phase of ['requested', 'downloading', 'verifying', 'installing'] as const) {
+    for (const connection of [{ connectionState: 'reconnecting' as const }, { recoveryRequired: true }]) {
+      const result: RuntimeUpdateStatus = {
+        ...status,
+        current: { platform: 'macos', architecture: 'arm64', version: '0.4.13', updateProtocol: 1 },
+        connectionState: 'connectionState' in connection ? connection.connectionState : 'connected',
+        progress: { ...status.progress!, status: phase, recoveryRequired: 'recoveryRequired' in connection },
+      };
+      for (const time of [now, now + 100_000]) {
+        const view = runtimeUpdateView(result, false, time);
+        assert.equal(view.busy, false);
+        assert.match(view.issue, /结果尚未确认/);
+        assert.match(view.issue, /若安装已结束，请重新双击同一枚/);
+        assert.match(view.issue, /无需拔插或重复安装/);
+        assert.doesNotMatch(view.issue, /已安装|已完成|更新成功/);
+        assert.equal(runtimeUpdateConfirmed(result), false);
+      }
+    }
+  }
+  const mac = { ...status, current: { platform: 'macos' as const, architecture: 'arm64', version: '0.4.13', updateProtocol: 1 } };
+  assert.equal(runtimeUpdateView(mac, false, now).busy, true);
+  assert.deepEqual(runtimeUpdateView({ ...mac, available: false, connectionState: 'connected', current: { ...mac.current, version: '0.4.14' }, confirmation: { requestId: 'upd-a', version: '0.4.14' }, progress: { ...status.progress!, recoveryRequired: true } }, true, now), { busy: false, issue: '' });
+  assert.deepEqual(runtimeUpdateView({ ...mac, progress: { ...status.progress!, status: 'failed' } }, false, now), { busy: false, issue: '' });
+});
 test("stale prepare/download/reconnect stages never leave the update button busy forever", () => {
   for (const phase of ["requested", "downloading", "verifying", "installing", "completed"] as const) {
     const result = runtimeUpdateView({ ...status, progress: { ...status.progress!, status: phase } }, true, now + 60 * 60_000);

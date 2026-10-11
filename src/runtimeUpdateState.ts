@@ -33,6 +33,12 @@ export function runtimeUpdateView(result: RuntimeUpdateStatus, wasUpdating: bool
     && !runtimeUpdateConfirmed(result) && (result.available || result.connectionState === 'reconnecting')) {
     return { busy: false, issue: '更新文件已安装。请重新双击同一枚 U 盘中的 ONE；连接成功后网页会自动确认，无需再次安装。' };
   }
+  // A Mac install may exit before its completed receipt reaches the server.
+  // Explain the fresh-launch handoff without treating missing evidence as success.
+  if (result.current?.platform === 'macos' && result.progress && result.progress.status !== 'failed' && !runtimeUpdateConfirmed(result)
+    && (result.connectionState === 'reconnecting' || result.progress.recoveryRequired)) {
+    return { busy: false, issue: '更新结果尚未确认。若仍在安装，请保持 Key 插入；若安装已结束，请重新双击同一枚 U 盘中的 ONE，无需拔插或重复安装。新版连接后网页会自动确认结果。' };
+  }
   if (result.connectionState === 'reconnecting') {
     const age = now - Date.parse(result.progress?.updatedAt || '');
     return { busy: false, issue: Number.isFinite(age) && age <= 90_000
