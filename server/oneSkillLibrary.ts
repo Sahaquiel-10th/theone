@@ -24,6 +24,8 @@ export function installOneSkillLibrary(db:Database,actor:string,selection:string
 export function bootstrapOneSkills(db:Database){
   const admins=db.users.filter(u=>u.enabled&&u.role==='admin');if(!admins.length)return {added:[] as string[],opened:[] as string[]};
   const missing=oneSkillLibrary.filter(s=>!db.settings.officialFeatures?.some(f=>f.id===s.id)).map(s=>s.id);if(!missing.length)return {added:[] as string[],opened:[] as string[]};
+  // Capacity exhaustion must never prevent Key/login/chat from starting.
+  if((db.settings.officialFeatures?.length??0)+missing.length>100)return {added:[] as string[],opened:[] as string[]};
   const installed=installOneSkillLibrary(db,admins[0].id,missing),opened:string[]=[];
   for(const id of installed.added){
     const r=db.settings.officialFeatures!.find(f=>f.id===id)!;if(!r.draft.modelId)continue;

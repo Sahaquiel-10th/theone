@@ -102,3 +102,5 @@ test('ONE ZIP preserves options and reviewed tools but drops uploaded model bind
 });
 
 test('first edition bootstraps only missing skills, opens admin testing and preserves operator changes',()=>{const f=fixture();const first=bootstrapOneSkills(f.db());assert.equal(first.added.length,24);assert.equal(first.opened.length,24);for(const s of f.db().settings.officialFeatures!)assert.deepEqual(s.release?.userIds,['a']);assert.throws(()=>availableFeature(f.db(),{workspaceId:'wb',userId:'b'},'one-g04'));const r=f.db().settings.officialFeatures![0];delete r.release;r.draft.instructions='管理员自己的修改';assert.equal(bootstrapOneSkills(f.db()).added.length,0);assert.equal(r.release,undefined);assert.equal(r.draft.instructions,'管理员自己的修改');});
+
+test('a full existing catalog cannot make first-party bootstrap stop application startup',()=>{const f=fixture();f.db().settings.officialFeatures=Array.from({length:100},(_,i)=>({id:'existing-'+i})) as any;assert.equal(bootstrapOneSkills(f.db()).added.length,0);assert.equal(f.db().settings.officialFeatures!.length,100);});
