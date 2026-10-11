@@ -9,6 +9,8 @@ final class LocalPreview: @unchecked Sendable {
     private var clients: [ObjectIdentifier: NWConnection] = [:]
     // Accessed only on queue, like listener and clients.
     private var startupReplied = false
+    private var stopped = false
+    private var address: String?
     private let files: MacLocalFiles
     private let entry: String
     private let prefix: String
@@ -50,13 +52,16 @@ final class LocalPreview: @unchecked Sendable {
                         guard let self, let server else { return }
                         switch state {
                         case .ready:
+                            guard !stopped else { server.cancel(); return }
                             guard !startupReplied, let port = server.port else { return }; startupReplied = true
                             let clock = DispatchSource.makeTimerSource(queue: queue)
                             clock.schedule(deadline: .now() + 2, repeating: 2)
                             clock.setEventHandler { [weak self] in if let self, !self.present() || Date() > self.expires { self.close() } }
                             timer = clock; clock.resume()
                             let name = entry.addingPercentEncoding(withAllowedCharacters: CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"))!
-                            continuation.resume(returning: "http://127.0.0.1:\(port.rawValue)/\(token)/\(name)")
+                            let url = "http://127.0.0.1:\(port.rawValue)/\(token)/\(name)"
+                            address = url
+                            continuation.resume(returning: url)
                         case .failed(let error):
                             if !startupReplied { startupReplied = true; continuation.resume(throwing: error) }; close()
                         case .cancelled:
@@ -110,9 +115,46 @@ final class LocalPreview: @unchecked Sendable {
     }
 
     private func close() {
+        stopped = true; address = nil
         timer?.cancel(); timer = nil
         listener?.cancel(); listener = nil
         for client in clients.values { client.cancel() }; clients.removeAll()
     }
     func stop() { queue.sync { close() } }
+    func currentURL() -> String? {
+        queue.sync {
+            if !present() || Date() > expires { close() }
+            return stopped ? nil : address
+        }
+    }
+}
+
+/// Own previews independently of the WebSocket receive loop. Slow listener
+/// startup or HTTP verification must never delay device challenge responses.
+actor LocalPreviewManager {
+    private var previews: [String: LocalPreview] = [:]
+    private let verify: @Sendable (String) async throws -> Void
+    init(verify: @escaping @Sendable (String) async throws -> Void = { url in
+        var request = URLRequest(url: URL(string: url)!)
+        request.timeoutInterval = 3
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw LocalFileFailure.message("本机网页未通过访问验证") }
+    }) { self.verify = verify }
+    func stopAll() { for preview in previews.values { preview.stop() }; previews.removeAll() }
+    func stop(_ taskId: String) { previews.removeValue(forKey: taskId)?.stop() }
+    func status(_ taskId: String) -> String { previews[taskId]?.currentURL() ?? "" }
+    func start(_ taskId: String, root: String, entry: String, present: @escaping @Sendable () -> Bool) async throws -> String {
+        stopAll()
+        let preview = try LocalPreview(root: root, entry: entry, present: present)
+        previews[taskId] = preview
+        do {
+            let url = try await preview.start()
+            try await verify(url)
+            guard previews[taskId] === preview, preview.currentURL() == url else { throw LocalFileFailure.message("预览已停止或已替换") }
+            return url
+        } catch {
+            if previews[taskId] === preview { stop(taskId) } else { preview.stop() }
+            throw error
+        }
+    }
 }

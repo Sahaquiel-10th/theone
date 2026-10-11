@@ -939,7 +939,7 @@ app.get("/api/me/local-device", ...keyAuth, asyncRoute(async (req, res) => {
   res.json(await oneKeyPresence.localConfiguration({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, workspaceId: req.workspaceId!, userId: req.user!.id }, false));
 }));
 app.post('/api/executions/:id/preview', ...keyAuth, asyncRoute(async (req, res) => {
-  if (!['start','stop'].includes(req.body.action)) { res.status(400).json({error: '预览操作无效'}); return; }
+  if (!['start','stop','status'].includes(req.body.action)) { res.status(400).json({error: '预览操作无效'}); return; }
   res.json(await oneKeyPresence.staticPreview({deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, workspaceId: req.workspaceId!, userId: req.user!.id}, String(req.params.id), req.body.action, req.body.path));
 }));
 for (const method of ['get', 'post'] as const) app[method]('/api/me/executor', ...keyAuth, asyncRoute(async (req, res) => {
