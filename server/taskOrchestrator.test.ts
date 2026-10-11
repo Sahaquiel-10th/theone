@@ -2,6 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { runTaskOrchestrator, OrchestrationToolError } from "./taskOrchestrator.js";
 const call = (id: string, query = "project", name = "knowledge_search") => ({ id, type: "function" as const, function: { name, arguments: JSON.stringify({ query }) } });
+test('progress reports actual tool boundaries, not fabricated completion',async()=>{
+ const stages:string[]=[];let calls=0;
+ await runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:2,beforeStep:async()=>{},onStage:(stage,tool)=>stages.push(`${stage}:${tool||''}`),tools:[{name:'knowledge_search',run:async()=>{stages.push('actual-read');return{chunks:[]};}}],call:async()=>++calls===1?{content:'',toolCalls:[call('read')]}:{content:'没有匹配资料',toolCalls:[]}});
+ assert.deepEqual(stages,['model:','tool:knowledge_search','actual-read','tool_returned:knowledge_search','model:']);
+});
 
 test("failed tool records a safe trace before stopping, never provider secrets or a second model call", async () => {
   for (const error of [new Error("https://provider.invalid?api_key=SECRET"), new OrchestrationToolError("TOOL_DEFINITION_CHANGED", "reviewed change")]) {

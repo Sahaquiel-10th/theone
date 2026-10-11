@@ -59,6 +59,8 @@ export function useCoordinator(
   enabled: boolean,
 ) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null),
+    [outgoing, setOutgoing] = useState<{id:string;text:string;priorIds:string[];failed?:boolean} | null>(null),
+    [progress, setProgress] = useState<{phase:string;startedAt:string} | null>(null),
     [details, setDetails] = useState<Record<string, Detail>>({}),
     [selected, setSelected] = useState<string | null>(null),
     [bound, setBound] = useState<string | null>(null),
@@ -164,12 +166,13 @@ export function useCoordinator(
         const operation = next.pendingOperationId || persisted;
         if (operation) {
           setPending(operation);
-          let status: {status:string;taskId?:string};
+          let status: {status:string;taskId?:string;progress?:{phase:string;startedAt:string}};
           try { status = await api(`/api/coordinator/messages/${encodeURIComponent(operation)}`); }
           catch(e) {
             if(e instanceof ApiError && e.status===404) {
               try {localStorage.removeItem(pendingKey(userId));}catch{}
               setPending(null);
+              setProgress(null);
               submissionError.current = "暂未找到接收记录，原话仍保留；可重试同一条消息，系统会沿用原提交编号，避免重复执行。";
               setError(submissionError.current);
               return;
@@ -177,6 +180,7 @@ export function useCoordinator(
             throw e;
           }
           if (status.status !== "pending") {
+            setProgress(null);
             setSettlement({operationId:operation,...status});
             try {
               localStorage.removeItem(pendingKey(userId));
@@ -184,11 +188,11 @@ export function useCoordinator(
             setPending(null);
             forgetChatSubmission(`coordinator:${userId}`,operation);
             if (status.status !== "completed") {
-              submissionError.current = "这条消息未完成，原话和已产生的用量保留；不会自动重跑。";
+              submissionError.current = status.status==='interrupted' ? "回复已停止，原话保留；已经交出的任务可在任务区单独停止，不会自动重跑。" : "这条消息未完成，原话和已产生的用量保留；不会自动重跑。";
               setError(submissionError.current);
             }
-          }
-        } else setPending(null);
+          } else setProgress(status.progress || {phase:'正在等待处理结果',startedAt:next.conversation?.messages.at(-1)?.createdAt || new Date().toISOString()});
+        } else {setPending(null);setProgress(null);}
       } catch (e) {
         if (live.current)
           setError(e instanceof Error ? e.message : "连接暂时不可用");
@@ -221,6 +225,8 @@ export function useCoordinator(
     )
       throw Error("ONE 正在承接上一句话，请稍候");
     sending.current = true;
+    setOutgoing({id:input.operationId,text:input.text,priorIds:snapshotRef.current?.conversation?.messages.map(m=>m.id!)||[]});
+    setProgress({phase:'正在发送你的要求',startedAt:new Date().toISOString()});
     setPending(input.operationId);
     submissionError.current = "";
     setError("");
@@ -235,6 +241,7 @@ export function useCoordinator(
       await refresh();
       return input.operationId;
     } catch (e) {
+      setOutgoing(old=>old?{...old,failed:true}:null);
       if (e instanceof ApiError && e.status && e.status < 500) {
         try {
           localStorage.removeItem(pendingKey(userId));
@@ -347,9 +354,9 @@ export function useCoordinator(
   });
   const state: PreviewState = {
     tasks,
-    dialogue: (snapshot?.conversation?.messages ?? []).map((m) => ({
+    dialogue: [...(snapshot?.conversation?.messages ?? []).map((m) => ({
       id: m.id!,
-      role: m.role === "user" ? "user" : "assistant",
+      role: m.role === "user" ? "user" as const : "assistant" as const,
       text: m.content,
       files: m.attachments?.map((file) => ({
         id: file.id,
@@ -357,7 +364,7 @@ export function useCoordinator(
       })),
       taskId: snapshot?.links?.find((l) => l.messageId === m.id)?.taskId,
       taskIds: [...new Set(snapshot?.links?.filter(l => l.messageId === m.id).map(l => l.taskId) ?? [])],
-    })),
+    })), ...(outgoing && !snapshot?.conversation?.messages.some(m=>m.role==='user'&&!outgoing.priorIds.includes(m.id!)&&m.content===outgoing.text) ? [{id:`outgoing_${outgoing.id}`,role:'user' as const,text:outgoing.text,status:outgoing.failed?'failed' as const:undefined,featureName:outgoing.failed?'发送状态待确认 · 原话保留':'发送中'}] : [])],
     pending:
       localPending || snapshot?.pendingOperationId
         ? {
@@ -391,6 +398,9 @@ export function useCoordinator(
     error,
     settlement,
     clearError: () => setError(""),
+    progress,
+    stop: async () => {const id=localPending||snapshotRef.current?.pendingOperationId;if(!id)return;await api(`/api/coordinator/messages/${encodeURIComponent(id)}/stop`,{method:'POST',body:'{}'});await refresh();},
+    stopTask: async (id:string) => {await api(`/api/coordinator/tasks/${encodeURIComponent(id)}/stop`,{method:'POST',body:'{}'});await refresh();},
     snapshot,
     details,
     page,

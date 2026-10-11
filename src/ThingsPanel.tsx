@@ -10,6 +10,7 @@ type Thing = {
   updatedAt: string;
   messages: { id?: string; role: string; content: string }[];
   messagesLoaded?: boolean;
+  taskState?: 'active' | 'review' | 'ended' | 'history';
 };
 export function ThingsPanel({
   one,
@@ -48,31 +49,33 @@ export function ThingsPanel({
     [errors, setErrors] = useState<Record<string,string>>({});
   const inFlight = useRef(new Set<string>());
   const [query, setQuery] = useState("");
+  const [category,setCategory]=useState<'active'|'review'|'ended'|'history'>('active');
   const [page, setPage] = useState(1);
   const selected = items.find((item) => item.id === selectedId);
   const found = items.filter((item) =>
-    item.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()),
+    item.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) && (query.trim() || (item.taskState||'history')===category),
   );
   const pages = Math.max(1, Math.ceil(found.length / 10)),
     current = Math.min(page, pages);
   const draft = drafts[selectedId] || "";
   const {scroll: messagesRef, onScroll} = useFollowLatest(selectedId, Boolean(selected));
   return (
-    <section className="things-browser" aria-label="事情列表与对话">
+    <section className="things-browser" aria-label="任务列表与对话">
       <aside className="things-list">
         <header className="things-list-heading">
-          <h2>事情</h2>
+          <h2>任务</h2>
           {one}
         </header>
         <input
-          aria-label="搜索事情"
-          placeholder="搜索事情"
+          aria-label="搜索任务和历史对话"
+          placeholder="搜索任务或对话"
           value={query}
           onChange={(event) => {
             setQuery(event.target.value);
             setPage(1);
           }}
         />
+        <nav className="task-category-tabs" aria-label="任务状态">{([['active','进行中'],['review','待确认'],['ended','已结束'],['history','历史对话']] as const).map(([id,label])=><button type="button" key={id} aria-pressed={category===id} onClick={()=>{setCategory(id);setPage(1);setQuery('');}}>{label}</button>)}</nav>
         <div className="things-list-items">
           {found.slice((current - 1) * 10, current * 10).map((item) => (
             <button
@@ -83,11 +86,11 @@ export function ThingsPanel({
             >
               <strong>{item.title}</strong>
               <small>
-                {new Date(item.updatedAt).toLocaleDateString("zh-CN")}
+                {item.taskState==='active'?'正在处理 · ':item.taskState==='review'?'需要看一下 · ':item.taskState==='ended'?'分派任务 · ':'历史对话 · '}{new Date(item.updatedAt).toLocaleDateString("zh-CN")}
               </small>
             </button>
           ))}
-          {!found.length ? <p>还没有找到这件事。</p> : null}
+          {!found.length ? <p>{query?'没有找到匹配记录。':category==='active'?'目前没有进行中的任务。已完成的工作在“已结束”，普通聊天在“历史对话”。':'这里暂时没有记录。'}</p> : null}
         </div>
         {pages > 1 ? (
           <footer>

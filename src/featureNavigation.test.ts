@@ -35,11 +35,14 @@ test("only the logo moves; previous page cannot leave a double-image trail", () 
   const css = fs.readFileSync(new URL("./one-studio.css", import.meta.url), "utf8");
   assert.match(css, /studio-presence > \.one-presence \{ view-transition-name: one-presence-logo/);
   assert.match(css, /view-transition-old\(root\) \{ display: none/);
-  assert.match(main, /interfaceTransition.current !== transition/);
-  assert.match(main, /interfaceTransition.current\?\.skipTransition/);
+  const motion = fs.readFileSync(new URL('./interruptibleEye.ts',import.meta.url),'utf8');
+  assert.match(main, /eyeMotion.current!.move\(\(\)=>flushSync\(update\)/);
+  assert.match(motion, /pointerEvents:'none'/);
+  assert.match(motion, /\(ghost \|\| visible\(\)\)\?\.getBoundingClientRect/);
+  assert.doesNotMatch(motion, /startViewTransition/);
   assert.match(main, /eyeRoute\(view,/);
-  assert.match(main, /if\(route==='edge'&&previousEye&&nextEye\)/);
-  assert.match(main, /window.innerWidth,true/);
+  assert.match(motion, /route === 'edge'/);
+  assert.match(motion, /window.innerWidth, true/);
 });
 test('equipment view displays authorized capabilities without pretending automatic calling is live',()=>{
  const catalog=fs.readFileSync(new URL('./FeatureCatalog.tsx',import.meta.url),'utf8');

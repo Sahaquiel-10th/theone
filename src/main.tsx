@@ -25,7 +25,8 @@ import { waitingForOfficialApproval, officialApprovalLabel, officialApprovalHint
 import './preview/workspace-preview.css';
 import './task-transfer.css';
 import {canPeekAtFeatures,waitingForCurrentReply} from './oneFocusState';
-import {edgeJourney,directJourney,eyeRoute,overheadJourney,resolveEyeRoute,homeSettingsDistance,isConversationShelfMove,type EyeRoute} from './oneEdgeMotion';
+import {eyeRoute,isConversationShelfMove,type EyeRoute} from './oneEdgeMotion';
+import {createEyeMotion} from './interruptibleEye';
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { MessageMarkdown } from "./MessageMarkdown";
@@ -612,8 +613,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [notice, setNotice] = useState("");
   const [view, setView] = useState<"chat" | "things" | "admin" | "company" | "account" | "features" | "agents" | "agentEditor">(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "account" : user.access?.role === "company_admin" ? "company" : user.role === "admin" ? "admin" : "chat"; });
   const [accountSection, setAccountSection] = useState(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "knowledge" : "profile"; });
-  const interfaceTransition = useRef<OneViewTransition | null>(null);
-  const interfaceAnimations = useRef<Animation[]>([]);
+  const eyeMotion = useRef<ReturnType<typeof createEyeMotion> | null>(null);
+  if (!eyeMotion.current) eyeMotion.current = createEyeMotion();
+  useEffect(()=>()=>eyeMotion.current?.clear(),[]);
   const [editingAgentId, setEditingAgentId] = useState<string | "new">("new");
   const [showArchived, setShowArchived] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
@@ -687,6 +689,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const composeKeyRef = useRef("new");
   composeKeyRef.current = composeNew || !activeId ? "new" : activeId;
   const currentDraftRef = useRef({ content, attachments: pendingAttachments });
+  const coordinatorFailedDraft = useRef<{text:string;files:AttachmentSummary[];features:FeatureChoice[]}|null>(null);
   currentDraftRef.current = { content, attachments: pendingAttachments };
   const viewedConversationRef = useRef("");
   viewedConversationRef.current = view === "chat" ? activeId : "";
@@ -1046,57 +1049,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   function transitionInterface(update: () => void, route: EyeRoute = 'direct', conversationShelfMove=false) {
     delete document.documentElement.dataset.oneExecutionTransition;
-    interfaceTransition.current?.skipTransition();
-    interfaceAnimations.current.forEach(animation=>animation.cancel());
-    interfaceAnimations.current=[];
+    delete document.documentElement.dataset.oneTransition;
     delete document.documentElement.dataset.oneRoute;
-    const visibleEye=()=>Array.from(document.querySelectorAll('.studio-presence > .one-presence')).map(element=>element.getBoundingClientRect()).find(bounds=>bounds.width>0&&bounds.height>0);
-    const previousEye = visibleEye();
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const transitionDocument = document as ViewTransitionDocument;
-    if (!transitionDocument.startViewTransition || reducedMotion) {
-      update();
-      return;
-    }
-    const root=document.querySelector<HTMLElement>('.one-studio');
-    const distanceLimit=root?homeSettingsDistance(root):null;
-
-    document.documentElement.dataset.oneTransition = "flow";
-    let journey:ReturnType<typeof edgeJourney> = null;
-    let nearbyFrames:Keyframe[]|null=null;
-    const transition = transitionDocument.startViewTransition(() => {
-      flushSync(update);
-      const nextEye = visibleEye();
-      if(previousEye&&nextEye&&!conversationShelfMove)route=resolveEyeRoute(route,previousEye,nextEye,distanceLimit??0,window.innerWidth);
-      if(route==='edge'&&previousEye&&nextEye)journey=edgeJourney(previousEye,nextEye,window.innerWidth,true);
-      if(route==='overhead'&&previousEye&&nextEye)journey=overheadJourney(previousEye,nextEye);
-      if(journey)document.documentElement.dataset.oneRoute=route;
-      else if(previousEye&&nextEye&&Math.hypot(previousEye.left-nextEye.left,previousEye.top-nextEye.top)>12){
-        nearbyFrames=directJourney(previousEye,nextEye);
-        document.documentElement.dataset.oneRoute='direct';
-      }
-    });
-    interfaceTransition.current = transition;
-    transition.ready.then(()=>{
-      if(interfaceTransition.current!==transition)return;
-      if(!journey){
-        if(nearbyFrames)interfaceAnimations.current=[document.documentElement.animate(nearbyFrames,{duration:conversationShelfMove?480:1100,fill:'both',pseudoElement:'::view-transition-group(one-presence-logo)'} as KeyframeAnimationOptions)];
-        return;
-      }
-      interfaceAnimations.current=[
-        document.documentElement.animate(journey.departure.map(frame=>({...frame,...(previousEye?{width:`${previousEye.width}px`,height:`${previousEye.height}px`}:{})})),{duration:route==='overhead'?620:460,easing:'ease-in-out',fill:'both',pseudoElement:'::view-transition-old(one-presence-logo)'} as KeyframeAnimationOptions),
-        document.documentElement.animate(journey.arrival,{delay:route==='overhead'?570:420,duration:route==='overhead'?1100:1550,easing:'linear',fill:'both',pseudoElement:'::view-transition-new(one-presence-logo)'} as KeyframeAnimationOptions)
-      ];
-    }).catch(()=>undefined);
-    transition.finished.finally(() => {
-      if (interfaceTransition.current !== transition) return;
-      interfaceAnimations.current.forEach(animation=>animation.cancel());
-      interfaceAnimations.current=[];
-      interfaceTransition.current = null;
-      delete document.documentElement.dataset.oneTransition;
-      delete document.documentElement.dataset.oneRoute;
-    }).catch(() => undefined);
-    return transition.updateCallbackDone.catch(() => undefined);
+    eyeMotion.current!.move(()=>flushSync(update), conversationShelfMove ? 'direct' : route, conversationShelfMove ? 420 : 560);
+    return Promise.resolve();
   }
 
   function switchDraft(key: string) {
@@ -1348,15 +1304,18 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       if(uploadingAttachments||pendingAttachments.some(a=>a.status&&a.status!=='ready')){setError('请等待附件解析完成');return;}
       if(coordinator.state.pending||(!rawText.trim()&&!pendingAttachments.length))return;
       const text=rawText.trim()||(pendingAttachments.length?'请分析上传的附件。':''),files=[...pendingAttachments],features=[...featureForNext];
+      coordinatorFailedDraft.current={text,files,features};
       try{
         let confirmedExternal=false;
         if(features.length){const details=await Promise.all(features.map(f=>api<{name:string;destinations:string[]}>(`/api/features/${encodeURIComponent(f.id)}`)));confirmedExternal=confirm(`使用 ${details.map(f=>f.name).join('、')}。\n${details.flatMap(f=>f.destinations).length?'任务所需内容将发送至：'+[...new Set(details.flatMap(f=>f.destinations))].join('、'):'按需使用你已连接的知识来源'}\n执行会按实际用量消耗电力。是否继续？`);if(!confirmedExternal)return false;}
         setError('');setPreviewHome(false);setHasSubmittedChat(true);
         if (!localExecution) executionOriginRef.current = pointFromElement(document.getElementById('one-studio-send'));
-        const operationId = await coordinator.submit({operationId:crypto.randomUUID(),text,localExecution,modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
-        if (localExecution) setAwaitingExecutionOperationId(operationId);
+        // Capture the sent content now; a new draft must never be cleared by a late receipt.
         if(currentDraftRef.current.content===rawText)setContent('');
         setPendingAttachments(old=>old.filter(file=>!files.some(sent=>sent.id===file.id)));setFeatureForNext(old=>old.filter(feature=>!features.some(sent=>sent.id===feature.id)));
+        const operationId = await coordinator.submit({operationId:crypto.randomUUID(),text,localExecution,modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
+        coordinatorFailedDraft.current=null;
+        if (localExecution) setAwaitingExecutionOperationId(operationId);
         return true;
       }catch(err){setError(err instanceof Error?err.message:'暂时无法确认，请检查状态；不会重复执行');if(localExecution)throw err;}return false;
     }
@@ -1737,7 +1696,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </button>
         <nav className="studio-navigation" aria-label="工作区导航">
           <button type="button" aria-current={view === "chat" ? "page" : undefined} onClick={() => openSurface("chat")}>工作台</button>
-          <button type="button" aria-current={view === "things" ? "page" : undefined} onClick={() => openSurface("things")}>事情</button>
+          <button type="button" aria-current={view === "things" ? "page" : undefined} onClick={() => openSurface("things")}>任务</button>
           <FeatureNav quiet={!canPeekAtFeatures(view!=='chat'||studioIdle,isWaiting,content)} active={view==='features'} onClick={()=>openSurface('features')}/>
           <button type="button" aria-current={view === "account" ? "page" : undefined} onClick={() => openSurface("account")}>设置</button>
           {user.role === "admin" ? <button type="button" aria-current={view === "admin" ? "page" : undefined} onClick={() => openSurface("admin")}>管理</button> : null}
@@ -1748,7 +1707,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             <span className={`connection-dot ${[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "connected" : "disconnected"}`} />
             <span>{[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "知识已连接" : "连接知识"}</span>
           </button>
-          <button className={`one-chrome-button icon-only ${historyOpen ? "active" : ""}`} type="button" title="最近任务" onClick={() => setHistoryOpen((open) => !open)}>
+          <button className={`one-chrome-button icon-only ${historyOpen ? "active" : ""}`} type="button" title="历史对话" onClick={() => setHistoryOpen((open) => !open)}>
             <Archive size={16} />
           </button>
           <button className="one-user-button" type="button" title="账号" onClick={() => openSurface("account")}>
@@ -1811,7 +1770,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       <section className="studio-surface" ref={taskScroll.scroll} onScroll={taskScroll.onScroll} aria-label={view === "chat" ? "当前事情" : "工作区内容"} hidden={studioIdle||(preview.enabled&&view==='chat'&&!active)}>
       {view === "things" ? <ThingsPanel
         one={<div className="studio-presence things-one"><OneHeroEye mood="idle" label="回到 ONE 工作台" onActivate={()=>openSurface('chat')}/></div>}
-        items={conversations} selectedId={thingId} drafts={thingDrafts}
+        items={conversations.filter(c=>!coordinator.snapshot?.conversation||c.id!==coordinator.snapshot.conversation.id).map(c=>{const task=coordinator.snapshot?.tasks.find(t=>t.id===c.id);const local=executionTasks.find(t=>t.conversationId===c.id);const notice=coordinator.snapshot?.notices.find(n=>n.taskId===c.id);return {...c,taskState:(task?.running||task?.queued||local&&isExecutionRunning(local)?'active':notice?.state&&['failed','interrupted','cancelled'].includes(notice.state)?'review':task||local||c.executorProfileId?'ended':'history') as 'active'|'review'|'ended'|'history'};})} selectedId={thingId} drafts={thingDrafts}
         onDraftChange={(id,text)=>setThingDrafts(previous=>({...previous,[id]:text}))}
         onExecuteDraft={(id,text,source)=>executeDraft(text,source,id)}
         onSelect={id=>void selectThing(id)} onSend={continueThing}
@@ -1910,8 +1869,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {demo.enabled?<ResultSignal tasks={lampTasks} busy={Boolean(content.trim()||preview.state.pending||view==='things')} ambient={view==='chat'&&!active} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)} onDismiss={closeResultLamp}/>:null}
         </div>
 
-        {preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation visible={view==='chat'||view==='features'||view==='account'} messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)}/>:null}
-        {coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(content.trim() || isComposing || coordinator.state.pending)} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onReport={ids=>coordinator.report(ids)} /> : null}
+        {preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation visible={view==='chat'||view==='features'||view==='account'} messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} progress={coordinator.enabled?coordinator.progress:null} onStop={coordinator.enabled?coordinator.stop:undefined} onRestore={text=>{
+          if(currentDraftRef.current.content.trim()){setError('输入框已有新草稿，先保留或发送它，再恢复原话。');return;}
+          setContent(text);const failed=coordinatorFailedDraft.current;
+          if(failed?.text===text){
+            setPendingAttachments(old=>[...new Map([...old,...failed.files].map(file=>[file.id,file])).values()]);
+            setFeatureForNext(old=>[...new Map([...old,...failed.features].map(feature=>[feature.id,feature])).values()]);
+          }
+        }} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)}/>:null}
+        {coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null}
 
         {!preview.enabled && (otherRows.length > 0 || unreadNotices.length > 0 || taskStatusUnavailable) ? <section className="studio-activity attention-activity" aria-label="任务动态">
           {otherRows.length > 0 || unreadNotices.length > 0 ? <button className="attention-activity-toggle" type="button" aria-expanded={activityExpanded} aria-controls="attention-task-list" onClick={() => setActivityExpanded(value => !value)}>

@@ -73,6 +73,7 @@ export function installCoordinatorRoutes(
           requestId: operation.requestId,
           error: operation.status === "failed" ? db.contextTraces.find(t => t.workspaceId === s.workspaceId && t.userId === s.userId && t.requestId === operation.requestId)?.responsePreview.slice(0, 500) : undefined,
           taskId: operation.dispatchedTaskId,
+          progress: operation.status==='pending' ? service.currentProgress(s,operation.operationId) : undefined,
         });
       res.json({
         status: "completed",
@@ -99,6 +100,8 @@ export function installCoordinatorRoutes(
       void service.resume(s, verify).catch(() => {});
     }),
   );
+  router.post('/messages/:operationId/stop', asyncRoute(async(req,res)=>res.json(await service.cancel(scope(req),String(req.params.operationId),()=>verifyKey(req)))));
+  router.post('/tasks/:id/stop', asyncRoute(async(req,res)=>res.json(await service.cancelTask(scope(req),String(req.params.id),()=>verifyKey(req)))));
   router.post(
     "/tasks/:id/messages",
     asyncRoute(async (req, res) => {

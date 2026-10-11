@@ -195,6 +195,30 @@ function assertWork(
  * process memory only caps concurrent calls, never owns a user's task data. */
 export class CoordinatorService {
   private active = new Set<string>();
+  private progress = new Map<string, {phase: string; startedAt: string}>();
+  private progressKey(s: WorkScope, operationId: string) {return JSON.stringify([s.workspaceId,s.userId,operationId]);}
+  currentProgress(s: WorkScope, operationId: string) {return this.progress.get(this.progressKey(s,operationId));}
+  async cancel(s: WorkScope, operationId: string, verifyKey: () => Promise<void>) {
+    await verifyKey();
+    return this.store.mutate(d=>{
+      featureMember(d,s);
+      const op=d.chatOperations?.find(o=>own(o,s)&&o.operationId===operationId&&o.requestId.startsWith('coord_'));
+      if(!op)throw new CoordinatorError('消息不存在',404);
+      if(op.status!=='pending')return {status:op.status};
+      op.status='interrupted';op.updatedAt=at();
+      return {status:'interrupted', taskId:op.dispatchedTaskId, message:'已停止后续回复和分派；已经交出的任务需在任务区单独停止，已产生的用量仍保留。'};
+    });
+  }
+  async cancelTask(s: WorkScope, id: string, verifyKey: () => Promise<void>) {
+    await verifyKey();
+    await this.store.mutate(d=>{
+      taskOf(d,s,id);
+      for(const op of d.chatOperations??[])if(own(op,s)&&op.conversationId===id&&op.workRun&&['queued','running'].includes(op.workRun.state)) {
+        op.workRun.state='cancelled';op.workRun.unread=true;op.status='interrupted';op.updatedAt=at();
+      }
+    });
+    return {ok:true};
+  }
   constructor(
     private store: Store,
     private knowledge: Pick<KnowledgeService, "recallWithDiagnostics">,
@@ -209,8 +233,7 @@ export class CoordinatorService {
         (c) =>
           own(c, s) &&
           !c.coordinatorMain &&
-          (c.executorProfileId ||
-            db.models.find((m) => m.id === c.modelId)?.kind === "chat"),
+          (c.executorProfileId || db.chatOperations?.some(o=>own(o,s)&&o.conversationId===c.id&&o.workRun) || db.executionTasks?.some(t=>own(t,s)&&t.conversationId===c.id)),
       )
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     const operations = (db.chatOperations ?? []).filter(
@@ -296,16 +319,18 @@ export class CoordinatorService {
         if (!(d.chatOperations ?? []).some(o => own(o, s) && o.id === `notice_${reportId}`) && !main.messages.some(m => m.id === mid)) {
           const result = local?.lastError || local?.finalResponse || (job?.workRun?.resultMessageId ? task.messages.find(m => m.id === job.workRun!.resultMessageId)?.content : "");
           const success = local ? local.status === "completed" : job!.workRun!.state === "completed";
-          const status = success ? (local ? "本机这轮执行已结束" : "这轮结果好了") : "这轮需要你看一下";
+          const cancelled = local?.status==='cancelled'||job?.workRun?.state==='cancelled';
+          const status = cancelled ? '这轮已停止，已发生的修改不会自动撤销' : success ? (local ? "本机这轮执行已结束" : "这轮结果好了") : "这轮需要你看一下";
           sharedMessageId ??= mid;
-          brief.push(`${task.title}：${status}。${result ? `\n${result.slice(0, 240)}${result.length > 240 ? "…" : ""}` : "结果未确认，请查看过程。"}`);
+          const firstLine=(result||'').split('\n').map(line=>line.replace(/^\s*[#>*-]+\s*/, '').trim()).find(Boolean)||'';
+          brief.push(`${task.title}：${status}。${firstLine ? `${firstLine.slice(0,100)}${firstLine.length>100?'…':''}` : '结果未确认，请查看过程。'}`);
           d.chatOperations ??= [];
           d.chatOperations.push({ id: `notice_${reportId}`, ...s, operationId: `notice_${reportId}`, payloadHash: "result-reference", requestId: "result_notice", status: "completed", conversationId: main.id, dispatchedTaskId: taskId, assistantMessageId: sharedMessageId, createdAt: at(), updatedAt: at() });
         }
         if (local) local.reportedToCoordinatorAt = at();
         if (job) job.workRun!.unread = false;
       }
-      if (sharedMessageId) saveMessage(d, s, main, { id: sharedMessageId, role: "assistant", content: `${brief.length > 1 ? `有 ${brief.length} 件事情返回了反馈：\n\n` : ""}${brief.join("\n\n")}\n\n完整过程和文件位置留在各自的事情里。`, createdAt: at() });
+      if (sharedMessageId) saveMessage(d, s, main, { id: sharedMessageId, role: "assistant", content: `${brief.join('\n\n')}\n\n可以打开任务查看结果和文件位置。`, createdAt: at() });
     });
     return { ok: true };
   }
@@ -450,6 +475,8 @@ export class CoordinatorService {
     let dispatched: string | undefined,
       trace: ExecutionTraceStep[] = [],
       sections: ContextTraceSection[] = [];
+    const progressKey=this.progressKey(s,input.operationId);
+    this.progress.set(progressKey,{phase:'正在理解你的要求',startedAt:at()});
     try {
       await this.store.mutate((d) => {
         const c = d.conversations.find((c) => c.id === cid && own(c, s));
@@ -514,10 +541,13 @@ export class CoordinatorService {
         s,
         input.confirmedExternal === true,
       );
+      const authorizedSources=current.knowledgeConnections.filter(c=>c.workspaceId===s.workspaceId&&c.status==='connected'&&canReadKnowledge(current,s,c.id)&&(!sources||sources.includes(c.id))).slice(0,5).map(c=>({id:c.id,binding:sourceBinding(c)}));
       const verify = async () => {
         await verifyKey();
         const d = await this.store.read();
         featureMember(d, s);
+        assertSources(d,s,authorizedSources);
+        if(!d.chatOperations?.some(o=>own(o,s)&&o.operationId===input.operationId&&o.status==='pending'))throw new CoordinatorError('本轮已停止，不再回复或分派',409);
         if (
           d.settings.aiTasks?.coordinator?.published?.enabled !== true ||
           !d.conversations.some((c) => c.id === cid && own(c, s))
@@ -595,11 +625,13 @@ export class CoordinatorService {
                 originMessageId: mid,
                 attachmentIds: attachments,
                 localExecution: localRequested,
+                parentOperationId: input.operationId,
               },
               verifyKey,
             );
             let local;
             if (localRequested) {
+              await verify();
               if (attachments.length) throw new CoordinatorError("本机执行暂不接收新附件，请先在事情中讨论附件再执行", 400);
               const saved = await this.store.read();
               const job = saved.chatOperations!.find(o => own(o, s) && o.operationId === `${input.operationId}_work`)!;
@@ -629,6 +661,9 @@ export class CoordinatorService {
         await verify(); const d = await this.store.read(), c = taskOf(d, s, id);
         return { id: c.id, title: c.title, messages: c.messages.slice(-20).map(m => ({ role: m.role, content: m.content.slice(-4000) })), executionReceipts: executionReceipts(d, s.workspaceId, s.userId, id), handoffs: (d.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === id && o.workRun).slice(-5).map(o => o.workRun!.instruction) };
       }};
+      const referenceTools:OrchestrationTool[]=[];
+      if(authorizedSources.length)referenceTools.push({name:'knowledge_search',description:config.values.toolDescriptions?.knowledge_search,run:async query=>{await verify();const result=await this.knowledge.recallWithDiagnostics(s.workspaceId,query,5,authorizedSources.map(source=>source.id),s.userId);await verify();return result;}});
+      if(input.webSearch&&this.deps.webSearch)referenceTools.push({name:'web_search',description:config.values.toolDescriptions?.web_search,run:async query=>{await verify();return this.deps.webSearch!(query);}});
       const messages: ModelToolMessage[] = [
         {
           role: "system",
@@ -644,10 +679,15 @@ export class CoordinatorService {
       const result = await runTaskOrchestrator({
         entryPoint: "workspace",
         messages,
-        tools: [tool, ...(executeLocal ? [localTool] : []), searchTool, readTool].filter(t => config.values.tools.includes(t.name) && (!answerOnly || ['search_tasks','read_task'].includes(t.name))),
+        tools: [tool, ...(executeLocal ? [localTool] : []), searchTool, readTool, ...referenceTools].filter(t => config.values.tools.includes(t.name) && (!answerOnly || ['search_tasks','read_task','knowledge_search','web_search'].includes(t.name))),
         maxSteps: config.values.maxSteps,
         beforeStep: verify,
         onTrace: (t) => (trace = t),
+        onStage: (stage,name)=>{
+          const item=this.progress.get(progressKey);if(!item)return;
+          const labels:Record<string,string>={knowledge_search:'正在查找已授权知识库',web_search:'正在查找公开资料',search_tasks:'正在定位相关任务',read_task:'正在核对任务上下文',delegate_task:'正在交接任务',execute_local_task:'正在交给本机执行'};
+          item.phase=stage==='model'?'正在等待模型回答':stage==='tool_returned'?'已取得工具反馈，正在整理回答':labels[name||'']||'正在调用已授权工具';
+        },
         call: (messages, offeredTools) => {
           const tools = dispatched ? [] : offeredTools;
           return runBilledModel(
@@ -661,6 +701,7 @@ export class CoordinatorService {
               input: { messages, tools, taskVersion: config.version },
               beforeReserve: (d, amount) => {
                 featureMember(d, s);
+                if(!d.chatOperations?.some(o=>own(o,s)&&o.operationId===input.operationId&&o.status==='pending'))throw new CoordinatorError('本轮已停止，未开始新的模型调用',409);
                 if (
                   d.settings.aiTasks?.coordinator?.published?.enabled !== true
                 )
@@ -699,7 +740,7 @@ export class CoordinatorService {
         localRequested && !localAccepted
       ) throw new CoordinatorError("本机执行尚未开始：调度没有实际分派任务。你的原始要求已保留，请明确对应事情后再执行；不会自动重跑。", 409);
       if (
-        !answerOnly && (input.boundTaskId || features.length || attachments.length) &&
+        !answerOnly && (features.length || attachments.length) &&
         !dispatched
       )
         throw new CoordinatorError(
@@ -751,7 +792,7 @@ export class CoordinatorService {
         : new CoordinatorError(
             "本次未完成分派，可能已有模型用量；不会自动重试",
           );
-    }
+    } finally {this.progress.delete(progressKey);}
   }
   private async finishDispatch(
     s: WorkScope,
@@ -766,6 +807,8 @@ export class CoordinatorService {
     sections: ContextTraceSection[] = [],
   ) {
     await this.store.mutate((d) => {
+      const operation=d.chatOperations?.find(o=>own(o,s)&&o.operationId===operationId);
+      if(operation?.status==='interrupted')throw new CoordinatorError('本轮已停止，晚到的回复不会写入对话',409);
       if (
         d.chatOperations?.some(
           (o) =>
@@ -863,6 +906,7 @@ export class CoordinatorService {
       originMessageId?: string;
       attachmentIds?: string[];
       localExecution?: boolean;
+      parentOperationId?: string;
     },
     verifyKey: () => Promise<void>,
   ) {
@@ -956,6 +1000,7 @@ export class CoordinatorService {
       payload: { kind: "worker", ...input },
       beforeClaim: (d) => {
         featureMember(d, s);
+        if(input.parentOperationId&&!d.chatOperations?.some(o=>own(o,s)&&o.operationId===input.parentOperationId&&o.status==='pending'))throw new CoordinatorError('调度已停止，未创建新任务',409);
         const queued = (d.chatOperations ?? []).filter(
           (o) => own(o, s) && o.status === "pending" && o.workRun,
         );
@@ -970,6 +1015,7 @@ export class CoordinatorService {
     try {
       return await this.store.mutate((d) => {
         featureMember(d, s);
+        if(input.parentOperationId&&!d.chatOperations?.some(o=>own(o,s)&&o.operationId===input.parentOperationId&&o.status==='pending'))throw new CoordinatorError('调度已停止，未创建新任务',409);
         resolveExecutor(d, executorId, modelOf(d, config.model.id));
         assertSources(d, s, sources);
         verifyCredentialBindings(d, s, credentials);

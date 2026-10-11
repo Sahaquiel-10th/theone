@@ -19,6 +19,7 @@ export async function runTaskOrchestrator(input: {
   maxSteps: number;
   beforeStep: () => Promise<void>;
   onTrace?: (steps: ExecutionTraceStep[]) => void;
+  onStage?: (stage: 'model' | 'tool' | 'tool_returned', tool?: string) => void;
   call: (messages: ModelToolMessage[], tools: ModelToolDefinition[]) => Promise<ToolChatResult>;
 }) {
   if (!["workspace", "published_web", "published_api"].includes(input.entryPoint)) throw new Error("执行入口无效");
@@ -35,6 +36,7 @@ export async function runTaskOrchestrator(input: {
   const cache = new Map<string, unknown>();
   for (let step = 1; step <= steps; step++) {
     await input.beforeStep();
+    input.onStage?.('model');
     const result = await input.call(messages, step === steps ? [] : tools);
     if (result.toolCalls.length && (result.finishReason === "length" || result.finishReason === "filtered")) throw new Error("模型工具指令未完整返回，已停止执行；本次已产生的用量可在账单中查看");
     if (!result.toolCalls.length) {
@@ -62,7 +64,9 @@ export async function runTaskOrchestrator(input: {
         else {
           // Handler errors propagate: do not disguise revoked authorization as no matches.
           try {
+            input.onStage?.('tool', tool.name);
             output = tool.structured ? await tool.structured.run(structuredArgs) : await tool.run(query);
+            input.onStage?.('tool_returned', tool.name);
           } catch (error) {
             trace.push({ step, tool: tool.name, status: "failed", query,
               resultPreview: JSON.stringify({ status: "failed", code: error instanceof OrchestrationToolError ? error.code : "TOOL_EXECUTION_FAILED" }),

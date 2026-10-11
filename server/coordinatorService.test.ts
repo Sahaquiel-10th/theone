@@ -69,6 +69,39 @@ test('truncated task output is not a completed result; own trace preserves actua
 
 const a = { workspaceId: "wa", userId: "a" },
   b = { workspaceId: "wb", userId: "b" };
+
+test('stopping a pending reply is scoped, preserves original words and rejects late delegation',async()=>{
+ const f=fixture();let release!:(r:ToolChatResult)=>void;
+ const blocked=new Promise<ToolChatResult>(resolve=>{release=resolve;});
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{modelCall:async()=>blocked});
+ const operationId='operation_stop_reply_001';
+ const running=service.dispatch(a,input(operationId,'想想活动方案'),key);
+ const rejected=assert.rejects(running,/已停止/);
+ await waitFor(async()=>service.currentProgress(a,operationId)?.phase==='正在等待模型回答');
+ assert.equal(service.currentProgress(b,operationId),undefined);
+ await assert.rejects(()=>service.cancel(b,operationId,key),/不存在/);
+ await service.cancel(a,operationId,key);
+ release({...answer(''),toolCalls:[{id:'late',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'不能分派',instruction:'不能执行',executorId:'general'})}}]});
+ await rejected;
+ const db=await f.store.read();assert.equal(db.chatOperations?.find(o=>o.operationId===operationId)?.status,'interrupted');
+ assert.equal(db.chatOperations?.filter(o=>o.workRun).length,0);
+ assert.equal(db.conversations.find(c=>c.coordinatorMain)!.messages.length,1);
+ assert.equal(db.conversations[0].messages[0].content,'想想活动方案');
+ assert.equal(service.currentProgress(a,operationId),undefined);
+});
+test('task stop cancels queued work and late worker output without touching another owner',async()=>{
+ const f=fixture();const task=await f.service.dispatch(a,input('operation_cancel_work_001','UI'),key);
+ await assert.rejects(()=>f.service.cancelTask(b,task.taskId!,key),/不存在/);
+ let release!:(r:ToolChatResult)=>void;f.setWorker(async()=>new Promise(resolve=>{release=resolve;}));
+ await f.service.resume(a,key);await waitFor(async()=>Boolean(release));
+ await f.service.cancelTask(a,task.taskId!,key);release(answer('晚到的成果，不得写入'));
+ await new Promise(resolve=>setTimeout(resolve,30));
+ const detail=await f.service.task(a,task.taskId!);assert.equal(detail.jobs[0].state,'cancelled');
+ assert.equal(detail.conversation.messages.filter(m=>m.role==='assistant').length,0);
+ const queued=await f.service.dispatch(a,input('operation_cancel_queue_01','露营'),key);
+ await f.service.cancelTask(a,queued.taskId!,key);await f.service.resume(a,key);
+ assert.equal((await f.service.task(a,queued.taskId!)).jobs[0].state,'cancelled');
+});
 const answer = (content: string): ToolChatResult => ({
   content,
   finishReason: "stop",
@@ -262,6 +295,18 @@ function fixture() {
   };
 }
 const key = async () => {};
+test('coordinator knowledge tools retrieve only exact authorized sources and answer without delegated work',async()=>{
+ const f=fixture();
+ await f.store.mutate(d=>{
+  d.settings.aiTasks!.coordinator!.published!.tools.push('knowledge_search');
+  d.knowledgeConnections.push({id:'source-own',workspaceId:'wa',provider:'getnote',status:'connected',clientId:'own',encryptedApiKey:'PRIVATE'} as any,{id:'source-foreign',workspaceId:'wb',provider:'getnote',status:'connected',clientId:'foreign',encryptedApiKey:'FOREIGN'} as any);
+ });
+ f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('已查授权资料，没有匹配内容。'):{...answer(''),toolCalls:[{id:'kb',type:'function',function:{name:'knowledge_search',arguments:JSON.stringify({query:'资料里如何安排活动'})}}]});
+ await f.service.dispatch(a,input('operation_knowledge_direct_01','查查我的资料库'),key);
+ assert.deepEqual(f.recalls,[{ws:'wa',ids:['source-own']}]);
+ const db=await f.store.read();assert.equal(db.chatOperations!.filter(o=>o.workRun).length,0);
+ assert.doesNotMatch(JSON.stringify(f.calls),/PRIVATE|FOREIGN|source-foreign/);
+});
 test('natural local execution requires the enabled tool, saves complete handoff and never runs a cloud worker', async () => {
  const f=fixture();let count=0;
  f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('已受理，等待文件夹授权。'):{...answer(''),toolCalls:[{id:'local',type:'function',function:{name:'execute_local_task',arguments:JSON.stringify({taskId:null,title:'创建文档',instruction:'创建说明.md，仅含原文：荷叶饼好吃，一个5块。禁止添加其他内容。',executorId:'general'})}}]});
@@ -349,7 +394,7 @@ test('a batch briefing is one message with all task links and replays never dupl
  });
  await f.service.report(a,['one','two'],key);await f.service.report(a,['two','one'],key);
  const state=await f.service.state(a), brief=state.conversation!.messages.filter(m=>m.id?.startsWith('report_'));
- assert.equal(brief.length,1);assert.match(brief[0].content,/2 件事情/);
+ assert.equal(brief.length,1);assert.match(brief[0].content,/one.*已创建/);assert.match(brief[0].content,/two.*已创建/);
  assert.deepEqual(state.links.filter(l=>l.messageId===brief[0].id).map(l=>l.taskId).sort(),['one','two']);
  assert.equal(state.notices.length,0);
 });
@@ -517,6 +562,11 @@ test("HTTP routes require trusted Key/admin gates and isolate task and operation
       "/api/coordinator/messages/operation_http_0001",
     );
     assert.equal(receipt.status, 200);
+    for(const endpoint of [`/api/coordinator/messages/operation_http_0001/stop`,`/api/coordinator/tasks/${result.taskId}/stop`]){
+      assert.equal((await request(endpoint,'a','POST',{},false)).status,428);
+      assert.equal((await request(endpoint,'b','POST',{})).status,404);
+      assert.equal((await request(endpoint,'a','POST',{})).status,200);
+    }
     const json = JSON.stringify(await receipt.json());
     assert.doesNotMatch(json, /fixture-only|modelPrompt|credentials/);
     assert.equal(
