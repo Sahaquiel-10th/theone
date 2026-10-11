@@ -137,7 +137,7 @@
 
 复用 power_accounts / recharge_orders 的 JSON 记录，增加可选字段；不修改已有余额、不删旧流水、不改已共享 SQL migration。
 
-- settings.membershipBilling：版本化目录及开关。旧库缺省关闭，已保存配置在重新加载时保留。
+- settings.membershipBilling：版本化目录及开关。2026-10 试行发布一次性启用，已保存配置在重新加载时保留。settings.membershipTrialRollout 为持久化启用标记；后续重启不得重新启用被管理员关闭的购买开关。
 - recharge_orders.product：服务端商品快照，含价格、档位、月数、每月额度、配置版本。套餐 requestedMicros 为 0，不是普通充值。
 - recharge_orders.fulfilledDeviceId / membershipActivatedAt：交付与激活分离。externalPaymentReference 记录线下首购唯一收款凭据。
 - power_accounts.membershipPeriods：每月独立来源，含开始、到期、初始及剩余额度；未来月份不能提前使用，过期额度不并入钱包。升级平移未用完的普通会员时间，保留已消耗额度。
@@ -145,3 +145,5 @@
 - power_ledger.membershipMicros：会员支付部分；paidPrincipalMicros 仅为已充值本金，bonusMicros 包含会员及赠送额度，不能用赠送额度生成分身收入。
 
 账号与订单精确绑定 workspaceId + userId，个人会员不能进入企业资金池。核验、发放和审计在同次 Store.mutate 中持久化；重复通知、重试及激活不会重复发放。
+
+- 试行启用仅发布目录并固定新充值汇率为 ¥7 / 电力，不修改任何旧账户余额、充值本金、预留、会员周期或待付订单快照。旧电力与新充值均展示为长期有效的额外额度；月额度不累计。

@@ -56,6 +56,7 @@ import { adminUsageSummaries, adminUserUsageDetail } from "./adminUsage.js";
 import { operationsHealth } from "./operationsHealth.js";
 import { batchGift } from "./batchGift.js";
 import { catalog as membershipCatalog } from "./memberships.js";
+import { activateMembershipTrial } from "./memberships.js";
 import { installMembershipRoutes } from "./membershipRoutes.js";
 import { installAdminPaymentRoutes, installPaymentCallback, installPaymentRoutes } from "./paymentRoutes.js";
 import { effectiveModel, publishPricing, cancelScheduledPricing, publicPrices } from "./modelPricing.js";
@@ -1194,6 +1195,7 @@ if (process.env.NODE_ENV === "production") {
   app.get(/.*/, (_req, res) => res.sendFile(path.join(root, "dist", "index.html")));
 }
 
+await store.mutate(db=>activateMembershipTrial(db));
 await store.mutate(db=>bootstrapOneSkills(db));
 const server = createServer(app);
 oneKeyPresence.attach(server);

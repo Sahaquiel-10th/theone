@@ -8,6 +8,24 @@ export type MembershipCatalog = { enabled: boolean; version: number; standardMon
 export type MembershipPeriod = { id: string; orderId: string; tier: MembershipTier; startsAt: string; endsAt: string; grantedMicros: number; remainingMicros: number; version: number };
 export type PowerHold = { id: string; walletMicros: number; periods: { id: string; amountMicros: number }[] };
 export const trialCatalog: MembershipCatalog = { enabled: false, version: 1, standardMonthlyFen: 9900, premiumMonthlyFen: 29900, standardMonthlyMicros: 20e6, premiumMonthlyMicros: 70e6, annualDiscountBps: 2000, standardKeyFen: 99900, premiumKeyFen: 129900, includedMonths: 3 };
+/** Explicitly authorized launch; durable marker prevents restarts undoing later admin choices.
+ * Legacy wallet balances, principal, holds, and payment snapshots are deliberately untouched. */
+export function activateMembershipTrial(db: Database) {
+  const rollout = '2026-10-membership-v1';
+  if (db.settings.membershipTrialRollout === rollout) return false;
+  db.settings.membershipBilling = { ...trialCatalog, enabled: true, version: catalog(db).version + 1 };
+  db.settings.rechargeCnyPerPower = 7;
+  db.settings.membershipTrialRollout = rollout;
+  db.auditLogs.push({ id: uid('aud'), action: 'membership.trial.launched', targetType: 'settings',
+    details: { rollout, config: db.settings.membershipBilling, legacyBalancesPreserved: true }, createdAt: new Date().toISOString() });
+  return true;
+}
+/** Public offer contains no account data, procurement prices or payment credentials. */
+export function publicMembershipPlans(db: Database) {
+  const config = catalog(db);
+  return { enabled: config.enabled, version: config.version, annualDiscountPercent: config.annualDiscountBps / 100,
+    products: config.enabled ? products(config).map(({ id, label, kind, tier, months, amountFen }) => ({ id, label, kind, tier, months, amountFen })) : [] };
+}
 export function catalog(db: Database): MembershipCatalog { return db.settings.membershipBilling ?? { ...trialCatalog }; }
 export function products(config: MembershipCatalog): MembershipProduct[] {
   return (['standard', 'premium'] as const).flatMap(tier => {

@@ -1,10 +1,11 @@
 import type { Express, RequestHandler } from 'express';
 import type { Store } from './db.js';
-import { activateKeyMembership, catalog, membershipSummary, products, publishCatalog, recordKeySale } from './memberships.js';
+import { activateKeyMembership, publicMembershipPlans, catalog, membershipSummary, products, publishCatalog, recordKeySale } from './memberships.js';
 import { uid } from './security.js';
 import { publicPayment } from './payments.js';
 
 export function installMembershipRoutes(app:Express, auth:readonly RequestHandler[], admin:readonly RequestHandler[], store:Store) {
+  app.get('/api/membership/plans',async(_req,res)=>{res.set('Cache-Control','no-store').json(publicMembershipPlans(await store.read()));});
   app.get('/api/me/membership',...auth,async(req,res)=>{
     try {res.json(membershipSummary(await store.read(),{workspaceId:req.workspaceId!,userId:req.user!.id}));}
     catch {res.status(400).json({error:'当前账户不使用个人会员'});}

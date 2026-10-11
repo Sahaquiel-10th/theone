@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import { once } from 'node:events';
 import type { Database, RechargeOrder, ModelConfig } from './types.js';
-import { activateKeyMembership, activePeriod, grantMembership, membershipSummary, monthAnniversary, products, publishCatalog, recordKeySale, trialCatalog } from './memberships.js';
+import { activateKeyMembership, activateMembershipTrial, publicMembershipPlans, activePeriod, grantMembership, membershipSummary, monthAnniversary, products, publishCatalog, recordKeySale, trialCatalog } from './memberships.js';
 import { availablePowerMicros, chargePower, reservePower, releasePower } from './powerBilling.js';
 import { preparePayment, settlePayment } from './payments.js';
 import { reconcileInterruptedBilling, runBilledModel } from './modelBilling.js';
@@ -26,7 +26,7 @@ test('Key purchase activates after exact-device delivery, not at payment; repeat
 test('manual first-Key sale records verified receipt once with no premature credit',()=>{const db=fixture(),input={...scope,operationId:'offline-order-123456',productId:'standard-key',paymentReference:'bank-reference-123'};recordKeySale(db,'a',input);recordKeySale(db,'a',input);assert.equal(db.rechargeOrders.length,1);assert.equal(db.powerAccounts[0].membershipPeriods,undefined);assert.equal(db.powerAccounts[0].balanceMicros,10e6);assert.throws(()=>recordKeySale(db,'b',input),/管理员/);assert.throws(()=>recordKeySale(db,'a',{...input,operationId:'another-order-1234'}),/已入账/);});
 test('membership access rejects forged workspace, disabled membership and enterprise billing',()=>{const db=fixture();assert.throws(()=>membershipSummary(db,{workspaceId:'wb',userId:'a'}),/不可用/);assert.throws(()=>preparePayment(db,{workspaceId:'wb',userId:'a'},'forged-operation-id',{productId:'standard-monthly'},{appId:'app',mchId:'merchant'}),/不可用/);db.workspaceMembers[0].status='disabled';assert.throws(()=>grantMembership(db,order(db,'bad')),/不可用/);});
 test('actual model lifecycle consumes monthly allowance, frozen .6 price is not discounted again',async()=>{const db=fixture();grantMembership(db,order(db,'m'));const model={id:'model',kind:'chat',name:'test',enabled:true,inputPowerPerMillion:6,outputPowerPerMillion:12,costInputPowerPerMillion:1,costOutputPowerPerMillion:2,pricing:{version:1,label:'优惠期 ×0.6',multiplier:.6,referenceInput:10,referenceOutput:20,publishedAt:new Date().toISOString()}} as ModelConfig;db.models.push(model);await runBilledModel({read:async()=>db,mutate:async fn=>fn(db)},{...scope,model,input:'hello',activity:'test',requestId:'request'},async()=>({usage:{inputTokens:1000,outputTokens:1000,totalTokens:2000,source:'provider'}}));assert.equal(db.powerLedger[0].membershipMicros,18000);assert.equal(db.powerAccounts[0].balanceMicros,10e6);assert.equal(db.modelUsageRecords[0].costMicros,3000);assert.equal(db.powerAccounts[0].powerHolds!.length,0);});
-test('HTTP membership scope ignores browser workspace and admin endpoints require admin auth',async t=>{const db=fixture(),app=express();app.use(express.json());const auth=(req:any,res:any,next:any)=>{if(req.headers.authorization!=='user')return res.sendStatus(401);req.user={id:'a'};req.workspaceId='wa';next();};const admin=(_req:any,res:any)=>res.sendStatus(403);installMembershipRoutes(app,[auth],[admin],{read:async()=>db,mutate:async fn=>fn(db)});const server=app.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});const base=`http://127.0.0.1:${(server.address() as any).port}`;assert.equal((await fetch(`${base}/api/me/membership`)).status,401);const reply=await(await fetch(`${base}/api/me/membership?workspaceId=wb&userId=b`,{headers:{authorization:'user'}})).json() as any;assert.equal(reply.purchasedBalanceCny,70);assert.equal((await fetch(`${base}/api/admin/membership`)).status,403);const fail=await fetch(`${base}/api/me/membership/activate`,{method:'POST',headers:{authorization:'user','content-type':'application/json'},body:JSON.stringify({workspaceId:'wb',userId:'b',orderId:'foreign'})});assert.equal(fail.status,400);});
+test('HTTP membership scope ignores browser workspace and admin endpoints require admin auth',async t=>{const db=fixture(),app=express();app.use(express.json());const auth=(req:any,res:any,next:any)=>{if(req.headers.authorization!=='user')return res.sendStatus(401);req.user={id:'a'};req.workspaceId='wa';next();};const admin=(_req:any,res:any)=>res.sendStatus(403);installMembershipRoutes(app,[auth],[admin],{read:async()=>db,mutate:async fn=>fn(db)});const server=app.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});const base=`http://127.0.0.1:${(server.address() as any).port}`;const publicOffer=await(await fetch(`${base}/api/membership/plans`)).json() as any;assert.equal(publicOffer.products.length,6);assert.equal(publicOffer.accounts,undefined);assert.equal((await fetch(`${base}/api/me/membership`)).status,401);const reply=await(await fetch(`${base}/api/me/membership?workspaceId=wb&userId=b`,{headers:{authorization:'user'}})).json() as any;assert.equal(reply.purchasedBalanceCny,70);assert.equal((await fetch(`${base}/api/admin/membership`)).status,403);const fail=await fetch(`${base}/api/me/membership/activate`,{method:'POST',headers:{authorization:'user','content-type':'application/json'},body:JSON.stringify({workspaceId:'wb',userId:'b',orderId:'foreign'})});assert.equal(fail.status,400);});
 
 test('monthly boundaries follow China calendar near UTC day boundary',()=>{assert.equal(new Date(monthAnniversary(Date.parse('2026-01-30T16:00:00Z'),1)).toISOString(),'2026-02-27T16:00:00.000Z');assert.equal(new Date(monthAnniversary(Date.parse('2026-01-30T16:00:00Z'),2)).toISOString(),'2026-03-30T16:00:00.000Z');});
 
@@ -45,4 +45,39 @@ test('first successful Key login activates delivered bundle once',async()=>{
 
 test('company wallets remain independent of personal memberships and packages',()=>{
  const db=fixture();db.workspaces[0].kind='company';assert.throws(()=>membershipSummary(db,scope),/企业/);assert.throws(()=>grantMembership(db,order(db,'company')),/企业/);assert.throws(()=>preparePayment(db,scope,'company-order-123456',{productId:'premium-monthly'},{appId:'app',mchId:'merchant'}),/企业/);assert.equal(db.powerAccounts[0].membershipPeriods,undefined);
+});
+
+
+test('authorized launch preserves both tenants wallets, holds, periods and pending legacy orders exactly',()=>{
+  const db=fixture();
+  grantMembership(db,order(db,'existing'));
+  db.settings.membershipBilling!.enabled=false;
+  db.settings.rechargeCnyPerPower=9;
+  reservePower(db,{...scope,amountMicros:1e6,holdId:'in-flight'});
+  db.powerAccounts[1].balanceMicros=23e6;
+  const old=preparePayment(db,{workspaceId:'wb',userId:'b'},'legacy-pending-123456',{amountFen:900},{appId:'app',mchId:'merchant'}).order;
+  const accounts=structuredClone(db.powerAccounts),orders=structuredClone(db.rechargeOrders);
+  assert.equal(activateMembershipTrial(db),true);
+  assert.deepEqual(db.powerAccounts,accounts);assert.deepEqual(db.rechargeOrders,orders);
+  assert.equal(old.cnyPerPowerSnapshot,9);
+  assert.equal(db.settings.rechargeCnyPerPower,7);
+  const offer=publicMembershipPlans(db);assert.equal(offer.enabled,true);assert.equal(offer.annualDiscountPercent,20);
+  assert.equal(offer.products.find(p=>p.id==='standard-annual')!.amountFen,95040);
+  assert.equal(offer.products.find(p=>p.id==='premium-annual')!.amountFen,287040);
+  assert.ok(!JSON.stringify(offer).includes('monthlyMicros'));
+  assert.ok(!JSON.stringify(offer).includes('paidBalanceMicros'));
+  // Normal verified callbacks still settle old orders at their frozen exchange rate.
+  settlePayment(db,remote(old));assert.equal(db.powerAccounts[1].balanceMicros,24e6);
+  assert.equal(db.powerAccounts[0].balanceMicros,accounts[0].balanceMicros);
+});
+test('persisted rollout is idempotent and respects later administrator decisions',()=>{
+  let db=fixture();activateMembershipTrial(db);
+  publishCatalog(db,'a',{enabled:false,standardMonthlyFen:10900});
+  db=JSON.parse(JSON.stringify(db));
+  const before=structuredClone(db);assert.equal(activateMembershipTrial(db),false);assert.deepEqual(db,before);
+});
+test('legacy extra allowance never expires when membership does',()=>{
+  const db=fixture(),at=Date.parse('2026-10-11T00:00:00Z');activateMembershipTrial(db);grantMembership(db,order(db,'month'),at);
+  assert.equal(membershipSummary(db,scope,Date.parse('2028-01-01T00:00:00Z')).active,null);
+  assert.equal(db.powerAccounts[0].balanceMicros,10e6);assert.equal(db.powerAccounts[0].paidBalanceMicros,10e6);
 });

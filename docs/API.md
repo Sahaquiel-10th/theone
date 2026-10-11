@@ -186,11 +186,12 @@ skill 元信息仅提取简单顶层 name/description/license 字符串和折叠
 
 ## 个人会员试行（2026-10-11）
 
+- `GET /api/membership/plans`：公开在售套餐、金额（分）、月份及年付折扣，禁止缓存；不包含用户、余额、后台额度或采购价格。
 - `GET /api/me/membership`：当前月额度百分比、更新时间、已购后续时间、待激活启动器套餐。使用认证绑定账号及空间，忽略浏览器提供的 userId/workspaceId。
 - `POST /api/me/payments/wechat` 新增 `productId`；productId、amountFen、power 三选一。套餐金额、月额度及期限由服务端确定，冻结进订单。
 - `POST /api/me/membership/activate`，`{orderId}`：仅激活当前账号已付款、已交付、有效绑定 Key 的套餐，重复请求不延长期限。对应 Key 首次兑换登录码亦自动激活。
 - `GET /api/admin/membership`：配置、计算后的套餐价格、最近 100 笔套餐订单；不读取个人聊天。
-- `PUT /api/admin/membership`：超管发布配置版本；价格为分、额度为微电力、折扣为基点，最多赠送 3 个月。旧数据库默认未开放购买，后台保存启用后生效；已购套餐保留快照。
+- `PUT /api/admin/membership`：超管发布配置版本；价格为分、额度为微电力、折扣为基点，最多赠送 3 个月。2026-10 试行上线时一次性启用；后续后台保存开关生效，重启不覆盖；已购套餐保留快照。
 - `POST /api/admin/membership/key-sales`：记录已核验到账的线下首购。operationId、userId、workspaceId、productId、paymentReference 必填；仅 Key 套餐，同一收款凭据只入账一次，不追加永久钱包余额。
 - `POST /api/admin/membership/orders/:id/fulfill`，`{deviceId}`：记录交付。设备必须绑定订单账号及空间，一枚设备只用于一笔首购；不创建物流、不自动发货。
 
