@@ -23,7 +23,9 @@ import {
   runTaskOrchestrator,
   type OrchestrationTool,
 } from "./taskOrchestrator.js";
-import { callModelWithTools, type ModelToolMessage } from "./modelGateway.js";
+import { callModel, callModelWithTools, type ModelToolMessage } from "./modelGateway.js";
+import { featureImageBytes } from "./featureImage.js";
+import { saveFeatureArtifact } from "./featureArtifacts.js";
 import { runBilledModel } from "./modelBilling.js";
 import {
   beginChatOperation,
@@ -105,7 +107,8 @@ function taskOf(db: Database, s: WorkScope, id: string) {
   if (!c) throw new CoordinatorError("事情不存在", 404);
   if (
     !c.executorProfileId &&
-    db.models.find((m) => m.id === c.modelId)?.kind !== "chat"
+    db.models.find((m) => m.id === c.modelId)?.kind !== "chat" &&
+    !db.chatOperations?.some(o => own(o,s) && o.conversationId===id && o.workRun?.kind==='image')
   )
     throw new CoordinatorError("图片任务请沿用原执行入口", 400);
   return c;
@@ -184,7 +187,10 @@ function assertWork(
   const current = db.chatOperations?.find((o) => o.id === id && own(o, s));
   if (current?.workRun?.state !== "running")
     throw new CoordinatorError("任务已停止");
-  resolveExecutor(db, job.executorId, modelOf(db, job.modelId));
+  if (job.kind === 'image') {
+    const model=db.models.find(m=>m.id===job.modelId && m.kind==='image' && m.enabled && m.apiKey);
+    if(!model)throw new CoordinatorError('图片模型已停用');
+  } else resolveExecutor(db, job.executorId, modelOf(db, job.modelId));
   assertSources(db, s, job.sources);
   verifyCredentialBindings(db, s, job.credentials);
   for (const skill of job.skills)
@@ -317,7 +323,21 @@ export class CoordinatorService {
         if (!local && !job) continue;
         const taskId = local?.conversationId ?? job!.conversationId!, task = taskOf(d, s, taskId), reportId = `${id}${local?.reportRound ? `_${local.reportRound}` : ''}`, mid = `report_${reportId}`;
         if (!(d.chatOperations ?? []).some(o => own(o, s) && o.id === `notice_${reportId}`) && !main.messages.some(m => m.id === mid)) {
-          const result = local?.lastError || local?.finalResponse || (job?.workRun?.resultMessageId ? task.messages.find(m => m.id === job.workRun!.resultMessageId)?.content : "");
+          if(job?.workRun?.kind==='image' && job.workRun.state==='completed') {
+            const result=task.messages.find(m=>m.id===job.workRun!.resultMessageId);
+            if(result?.imageUrl) {
+              for(const summary of result.attachments??[]) {
+                const file=d.attachments.find(a=>own(a,s)&&a.id===summary.id);
+                if(file)file.sharedConversationIds=[...new Set([...(file.sharedConversationIds??[]),main.id])];
+              }
+              saveMessage(d,s,main,{id:mid,role:'assistant',content:'图片好了。',imageUrl:result.imageUrl,attachments:result.attachments,modelId:result.modelId,requestId:result.requestId,createdAt:at()});
+              d.chatOperations??=[];
+              d.chatOperations.push({id:`notice_${reportId}`,...s,operationId:`notice_${reportId}`,payloadHash:'result-reference',requestId:'result_notice',status:'completed',conversationId:main.id,dispatchedTaskId:taskId,assistantMessageId:mid,createdAt:at(),updatedAt:at()});
+              job.workRun.unread=false;
+              continue;
+            }
+          }
+          const result = local?.lastError || local?.finalResponse || job?.workRun?.error || (job?.workRun?.resultMessageId ? task.messages.find(m => m.id === job.workRun!.resultMessageId)?.content : "");
           const success = local ? local.status === "completed" : job!.workRun!.state === "completed";
           const cancelled = local?.status==='cancelled'||job?.workRun?.state==='cancelled';
           const status = cancelled ? '这轮已停止，已发生的修改不会自动撤销' : success ? (local ? "本机这轮执行已结束" : "这轮结果好了") : "这轮需要你看一下";
@@ -473,6 +493,7 @@ export class CoordinatorService {
     let localRequested = input.localExecution === true;
     let localAccepted = false;
     let dispatched: string | undefined,
+      imageTask: string | undefined,
       trace: ExecutionTraceStep[] = [],
       sections: ContextTraceSection[] = [];
     const progressKey=this.progressKey(s,input.operationId);
@@ -662,6 +683,18 @@ export class CoordinatorService {
         return { id: c.id, title: c.title, messages: c.messages.slice(-20).map(m => ({ role: m.role, content: m.content.slice(-4000) })), executionReceipts: executionReceipts(d, s.workspaceId, s.userId, id), handoffs: (d.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === id && o.workRun).slice(-5).map(o => o.workRun!.instruction) };
       }};
       const referenceTools:OrchestrationTool[]=[];
+      const imageTool: OrchestrationTool = {
+        name: 'generate_image',
+        description: config.values.toolDescriptions?.generate_image || '用户要求作图时使用；将已经确定的画面、文字和限制整理为提示词。每次生成一张 1K 图片，独立入队，文字回答无需等待图片。关键内容尚未确定时先询问，不猜测。',
+        run: async prompt => {
+          await verify();
+          if(imageTask)return {taskId:imageTask,status:'queued',alreadyQueued:true};
+          imageTask=await this.enqueueImage(s,{operationId:`${input.operationId}_image`,parentOperationId:input.operationId,text:content,prompt:text(prompt,4000,'图片要求'),originConversationId:cid,originMessageId:mid,budget:workerBudget},verifyKey);
+          // Start durable work without waiting for the image before replying.
+          await this.resume(s,verifyKey);
+          return {taskId:imageTask,status:'queued',message:'图片已单独入队，尚未生成。可先回答文字，图片完成后会回到此对话。'};
+        },
+      };
       if(authorizedSources.length)referenceTools.push({name:'knowledge_search',description:config.values.toolDescriptions?.knowledge_search,run:async query=>{await verify();const result=await this.knowledge.recallWithDiagnostics(s.workspaceId,query,5,authorizedSources.map(source=>source.id),s.userId);await verify();return result;}});
       if(input.webSearch&&this.deps.webSearch)referenceTools.push({name:'web_search',description:config.values.toolDescriptions?.web_search,run:async query=>{await verify();return this.deps.webSearch!(query);}});
       const messages: ModelToolMessage[] = [
@@ -679,17 +712,17 @@ export class CoordinatorService {
       const result = await runTaskOrchestrator({
         entryPoint: "workspace",
         messages,
-        tools: [tool, ...(executeLocal ? [localTool] : []), searchTool, readTool, ...referenceTools].filter(t => config.values.tools.includes(t.name) && (!answerOnly || ['search_tasks','read_task','knowledge_search','web_search'].includes(t.name))),
+        tools: [tool, ...(executeLocal ? [localTool] : []), searchTool, readTool, imageTool, ...referenceTools].filter(t => config.values.tools.includes(t.name) && (!answerOnly || ['search_tasks','read_task','knowledge_search','web_search'].includes(t.name))),
         maxSteps: config.values.maxSteps,
         beforeStep: verify,
         onTrace: (t) => (trace = t),
         onStage: (stage,name)=>{
           const item=this.progress.get(progressKey);if(!item)return;
-          const labels:Record<string,string>={knowledge_search:'正在查找已授权知识库',web_search:'正在查找公开资料',search_tasks:'正在定位相关任务',read_task:'正在核对任务上下文',delegate_task:'正在交接任务',execute_local_task:'正在交给本机执行'};
+          const labels:Record<string,string>={knowledge_search:'正在查找已授权知识库',web_search:'正在查找公开资料',search_tasks:'正在定位相关任务',read_task:'正在核对任务上下文',delegate_task:'正在交接任务',execute_local_task:'正在交给本机执行',generate_image:'正在交接图片任务'};
           item.phase=stage==='model'?'正在等待模型回答':stage==='tool_returned'?'已取得工具反馈，正在整理回答':labels[name||'']||'正在调用已授权工具';
         },
         call: (messages, offeredTools) => {
-          const tools = dispatched ? [] : offeredTools;
+          const tools = offeredTools.filter(t=>!((dispatched && ['delegate_task','execute_local_task'].includes(t.function.name)) || (imageTask && t.function.name==='generate_image')));
           return runBilledModel(
             this.store,
             {
@@ -761,14 +794,14 @@ export class CoordinatorService {
     } catch (error) {
       // A worker was already committed. Never turn a lost final acknowledgement
       // into a fresh submission that could duplicate the user's task.
-      if (dispatched)
+      if (dispatched || imageTask)
         return this.finishDispatch(
           s,
           scope.operationId,
           cid,
           requestId,
           content,
-          localRequested ? "事情和交接已保存。本机执行状态请查看这件事；尚不能确认已开始或完成，不会自动重复执行。" : "这件事已接住并入队。执行结果会在事情里保留。",
+          imageTask && !dispatched ? "图片任务已入队，完成后会回到此对话。文字回答这轮未完整返回，不会自动重复调用。" : localRequested ? "事情和交接已保存。本机执行状态请查看这件事；尚不能确认已开始或完成，不会自动重复执行。" : "这件事已接住并入队。执行结果会在事情里保留。",
           config.model.id,
           trace,
           dispatched,
@@ -886,6 +919,37 @@ export class CoordinatorService {
         verifyKey,
       ),
     };
+  }
+  private async enqueueImage(s:WorkScope,input:{operationId:string;parentOperationId:string;text:string;prompt:string;originConversationId:string;originMessageId:string;budget:number},verifyKey:()=>Promise<void>) {
+    await verifyKey();
+    const db=await this.store.read();
+    featureMember(db,s);
+    const selected=db.settings.aiTasks?.image_generation?.published;
+    const fallback=db.models.find(m=>m.id===selected?.modelId && m.kind==='image' && m.enabled && m.apiKey);
+    if(!fallback || !this.deps.artifactDirectory)throw new CoordinatorError('作图尚未配置，请管理员配置图片模型和按张额度');
+    const config=resolveAiTask(db.settings,db.models,'image_generation',fallback);
+    const price=config.model.imagePowerPerCall,cost=config.model.costImagePowerPerCall;
+    if(typeof price!=='number'||!Number.isFinite(price)||price<=0||typeof cost!=='number'||!Number.isFinite(cost)||cost<0)throw new CoordinatorError('图片额度尚未配置');
+    if(price>input.budget)throw new CoordinatorError('本轮图片额度上限不足');
+    const check=(d:Database)=>{
+      featureMember(d,s);
+      if(!d.chatOperations?.some(o=>own(o,s)&&o.operationId===input.parentOperationId&&o.status==='pending'))throw new CoordinatorError('调度已停止，未创建图片任务');
+      if(!d.conversations.some(c=>own(c,s)&&c.id===input.originConversationId&&c.messages.some(m=>m.id===input.originMessageId)))throw new CoordinatorError('图片任务来源不可用');
+      if((d.chatOperations??[]).filter(o=>own(o,s)&&o.status==='pending'&&o.workRun).length>=20)throw new CoordinatorError('待处理任务已满');
+    };
+    const claim=await beginChatOperation(this.store,{...s,operationId:input.operationId,requestId:uid('image'),payload:{kind:'image',...input},beforeClaim:check});
+    if(claim.kind==='completed')return claim.operation.conversationId!;
+    try{return await this.store.mutate(d=>{
+      check(d);
+      const cid=uid('cnv'),mid=uid('msg'),time=at();
+      const c:Conversation={...s,id:cid,title:`作图 · ${input.prompt.slice(0,36)}`,modelId:config.model.id,archived:false,messages:[],createdAt:time,updatedAt:time};
+      d.conversations.push(c);
+      saveMessage(d,s,c,{id:mid,role:'user',content:input.text,createdAt:time});
+      const op=d.chatOperations!.find(o=>o.id===claim.operation.id)!;
+      op.conversationId=cid;
+      op.workRun={kind:'image',state:'queued',executorId:'image_generation',executorVersion:config.version,values:{...config.values,name:'图片生成',description:'独立生成一张图片',featureIds:[]},modelId:config.model.id,modelPrompt:config.model.systemPrompt,instruction:input.prompt,inputMessageId:mid,originConversationId:input.originConversationId,originMessageId:input.originMessageId,budget:input.budget,webSearch:false,sources:[],skills:[],credentials:[],imagePrice:price,imageCost:cost};
+      return cid;
+    });}catch(error){await failChatOperation(this.store,{...s,operationId:input.operationId});throw error;}
   }
   private async enqueue(
     s: WorkScope,
@@ -1193,6 +1257,32 @@ export class CoordinatorService {
         assertWork(await this.store.read(), s, id, job, cid);
       };
       await verify();
+      if(job.kind==='image') {
+        const d=await this.store.read();
+        const model=d.models.find(m=>m.id===job.modelId && m.kind==='image')!;
+        const result=await runBilledModel(this.store,{...s,conversationId:cid,model:{...model,systemPrompt:job.modelPrompt,imagePowerPerCall:job.imagePrice,costImagePowerPerCall:job.imageCost},requestId:op.requestId,activity:'image_generation',input:{prompt:job.instruction,taskVersion:job.executorVersion,originConversationId:job.originConversationId,originMessageId:job.originMessageId},beforeReserve:db=>assertWork(db,s,id,job,cid)},async selected=>{
+          const result=await (this.deps.imageCall??callModel)(selected,[{role:'user',content:job.instruction,createdAt:at()}],d.settings.safetyRules,op!.requestId);
+          const bytes=await featureImageBytes(result.imageUrl||'');
+          await verify();
+          const file=await saveFeatureArtifact(this.store,{...s,conversationId:cid},this.deps.artifactDirectory!,'ONE生成图片'+bytes.extension,bytes.data,bytes.mimeType,'image',db=>assertWork(db,s,id,job,cid));
+          return {...result,imageUrl:`/api/attachments/${file.id}/content`,raw:undefined};
+        });
+        await verify();
+        await this.store.mutate(db=>{
+          assertWork(db,s,id,job,cid);
+          const target=taskOf(db,s,cid),o=db.chatOperations!.find(o=>o.id===id)!;
+          const mid=uid('msg');
+          const file=db.attachments.find(a=>own(a,s)&&a.conversationId===cid&&result.imageUrl===`/api/attachments/${a.id}/content`);
+          if(!file)throw new CoordinatorError('图片成果尚未保存');
+          file.messageId=mid;
+          saveMessage(db,s,target,{id:mid,role:'assistant',content:'图片好了。',imageUrl:result.imageUrl,attachments:[publicAttachmentSummary(file)],modelId:model.id,requestId:o.requestId,createdAt:at()});
+          completeChatOperation(db,{...s,operationId:o.operationId},{conversationId:cid,assistantMessageId:mid});
+          o.workRun!.state='completed';o.workRun!.unread=true;o.workRun!.resultMessageId=mid;
+        });
+        this.active.delete(id);
+        await this.resume(s,verifyKey);
+        return;
+      }
       const db = await this.store.read(),
         c = taskOf(db, s, cid),
         m = {

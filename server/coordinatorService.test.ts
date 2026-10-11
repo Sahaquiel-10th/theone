@@ -295,6 +295,80 @@ function fixture() {
   };
 }
 const key = async () => {};
+const imageFixturePng='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jF1sAAAAASUVORK5CYII=';
+async function imageFixture(imageCall:NonNullable<import('./featureRuns.js').FeatureRunDependencies['imageCall']>) {
+  const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-image-queue-'));
+  await f.store.mutate(d=>{
+    d.models.push({...d.models[0],id:'image-model',kind:'image',imagePowerPerCall:0.1,costImagePowerPerCall:0.02});
+    updateTaskConfig(d.settings,d.models,'image_generation',{revision:0,action:'draft',values:{...defaultTaskValues('image_generation'),modelId:'image-model'}},'a','now');
+    updateTaskConfig(d.settings,d.models,'image_generation',{revision:1,action:'publish'},'a','now');
+  });
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{artifactDirectory:directory,imageCall,modelCall:async(_model,messages)=>messages.at(-1)?.role==='tool'?answer('活动文案先给你；图片正在制作。'):{...answer(''),toolCalls:[{id:'draw',type:'function',function:{name:'generate_image',arguments:JSON.stringify({query:'蓝色圆圈，没有文字'})}}]}});
+  return {...f,service,directory};
+}
+test('chat image task is independent, private, billed once and returns to the same chat exactly once',async()=>{
+  let release!:()=>void,calls=0;
+  const gate=new Promise<void>(r=>release=r);
+  const f=await imageFixture(async()=>{calls++;await gate;return {content:'生成完成',imageUrl:imageFixturePng};});
+  try {
+    const request=input('operation_image_parallel_01','给活动写文案并画图');
+    const reply=await f.service.dispatch(a,request,key);
+    assert.match(reply.message.content,/文案先/);
+    const db=await f.store.read(),job=db.chatOperations!.find(o=>o.workRun?.kind==='image')!;
+    assert.ok(['queued','running'].includes(job.workRun!.state));
+    await assert.rejects(()=>f.service.task(b,job.conversationId!),/不存在/);
+    await f.service.resume(a,key);await waitFor(async()=>calls===1);
+    assert.equal((await f.service.task(a,job.conversationId!)).jobs[0].state,'running');
+    await f.service.dispatch(a,request,key);assert.equal(calls,1,'replayed submission does not duplicate the image');
+    release();await waitFor(async()=>(await f.service.task(a,job.conversationId!)).jobs[0].state==='completed');
+    const done=await f.store.read(),image=done.attachments[0];
+    assert.equal(image.workspaceId,a.workspaceId);assert.equal(image.userId,a.userId);
+    assert.equal(done.modelUsageRecords.filter(r=>r.activity==='image_generation').length,1);
+    assert.equal(done.modelUsageRecords.find(r=>r.activity==='image_generation')!.chargedMicros,100000);
+    await f.service.report(b,[job.id],key);assert.equal((await f.store.read()).conversations.find(c=>c.coordinatorMain)!.messages.filter(m=>m.imageUrl).length,0);
+    await f.service.report(a,[job.id],key);await f.service.report(a,[job.id],key);
+    const main=(await f.store.read()).conversations.find(c=>c.coordinatorMain)!;
+    assert.equal(main.messages.filter(m=>m.imageUrl).length,1);
+    assert.equal(main.messages.find(m=>m.imageUrl)!.imageUrl,`/api/attachments/${image.id}/content`);
+  }finally{release?.();rmSync(f.directory,{recursive:true,force:true});}
+});
+test('cancelled or invalid image output never claims completion or charges an image quota',async()=>{
+  for(const cancel of [true,false]) {
+    let release!:()=>void,started=false;
+    const gate=new Promise<void>(r=>release=r);
+    const f=await imageFixture(async()=>{started=true;await gate;return {content:'生成完成',imageUrl:cancel?imageFixturePng:'data:image/png;base64,bm90LWltYWdl'};});
+    try {
+      await f.service.dispatch(a,input(`operation_image_failure_${cancel}`,'画图'),key);
+      const job=(await f.store.read()).chatOperations!.find(o=>o.workRun?.kind==='image')!;
+      await f.service.resume(a,key);await waitFor(async()=>started);
+      if(cancel)await f.service.cancelTask(a,job.conversationId!,key);
+      release();await waitFor(async()=>(await f.store.read()).modelUsageRecords.some(r=>r.activity==='image_generation'&&r.status==='failed'));
+      const db=await f.store.read();assert.equal(db.attachments.length,0);
+      assert.equal(db.modelUsageRecords.find(r=>r.activity==='image_generation')!.chargedMicros,0);
+      assert.equal(db.chatOperations!.find(o=>o.id===job.id)!.workRun!.state,cancel?'cancelled':'failed');
+      assert.match(db.conversations.find(c=>c.coordinatorMain)!.messages.at(-1)!.content,/文案先/);
+    }finally{release?.();rmSync(f.directory,{recursive:true,force:true});}
+  }
+});
+test('one dispatcher can queue a text worker and an image worker under the same original request',async()=>{
+  const f=await imageFixture(async()=>({content:'完成',imageUrl:imageFixturePng}));
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{artifactDirectory:f.directory,imageCall:async()=>({content:'完成',imageUrl:imageFixturePng}),modelCall:async(model,messages)=>model.id!=='router'?answer('文字产物'):messages.at(-1)?.role==='tool'?answer('文字和图片都已入队'):{...answer(''),toolCalls:[{id:'write',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'活动文案',instruction:'活动文案，折扣8折',executorId:'general'})}},{id:'draw',type:'function',function:{name:'generate_image',arguments:JSON.stringify({query:'活动海报，折扣8折'})}}]}});
+  try {
+    await service.dispatch(a,input('operation_image_text_pair_01','活动文案和海报，8折'),key);
+    const jobs=(await f.store.read()).chatOperations!.filter(o=>o.workRun);
+    assert.equal(jobs.length,2);assert.equal(new Set(jobs.map(o=>o.workRun!.originMessageId)).size,1);
+    await service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.filter(o=>o.workRun?.state==='completed').length===2);
+    const db=await f.store.read();assert.ok(db.modelUsageRecords.some(r=>r.activity==='task_worker'));assert.ok(db.modelUsageRecords.some(r=>r.activity==='image_generation'));
+  }finally{rmSync(f.directory,{recursive:true,force:true});}
+});
+test('unconfigured image price cannot create or bill an image task',async()=>{
+  let calls=0;const f=await imageFixture(async()=>{calls++;return {content:'不该调用',imageUrl:imageFixturePng};});
+  try {
+    await f.store.mutate(d=>{d.models.find(m=>m.id==='image-model')!.imagePowerPerCall=0;});
+    await assert.rejects(()=>f.service.dispatch(a,input('operation_image_unpriced_01','画图'),key));
+    const db=await f.store.read();assert.equal(calls,0);assert.equal(db.chatOperations!.filter(o=>o.workRun?.kind==='image').length,0);assert.equal(db.modelUsageRecords.filter(r=>r.activity==='image_generation').length,0);
+  }finally{rmSync(f.directory,{recursive:true,force:true});}
+});
 test('coordinator knowledge tools retrieve only exact authorized sources and answer without delegated work',async()=>{
  const f=fixture();
  await f.store.mutate(d=>{

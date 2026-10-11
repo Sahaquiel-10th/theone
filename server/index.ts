@@ -995,7 +995,7 @@ installCompanyRoutes(app, keyAuth, admin, store, oneKeyService);
 installPublicCommerceRoutes(app,keyAuth,admin,store);
 installProductMetricsRoutes(app,admin,store);
 installAiTaskRoutes(app, admin, store);
-installCoordinatorRoutes(app,keyAuth,admin,store,confirmKeyBeforeModel,knowledgeService,{webSearch:query=>webSearchEnabled()?searchWeb(query):Promise.resolve({status:'unavailable'}),
+installCoordinatorRoutes(app,keyAuth,admin,store,confirmKeyBeforeModel,knowledgeService,{artifactDirectory:uploadDir,webSearch:query=>webSearchEnabled()?searchWeb(query):Promise.resolve({status:'unavailable'}),
   executeLocal: async (req, res, cid, mid, operationId) => { const result = await startLocalExecution(req, res, cid, mid, operationId); return { id: result.task.id, status: result.task.status }; }});
 installOfficialFeaturePilotRoutes(app, admin, store);
 installFeatureTrialRoutes(app, admin, store, confirmKeyBeforeModel);

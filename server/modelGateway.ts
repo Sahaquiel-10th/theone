@@ -555,10 +555,10 @@ async function callImageModel(
 
   const first = payload?.data?.[0];
   const imageUrl =
-    typeof first?.url === "string"
-      ? first.url
-      : typeof first?.b64_json === "string"
-        ? `data:image/png;base64,${first.b64_json}`
+    typeof first?.b64_json === "string"
+      ? `data:image/png;base64,${first.b64_json}`
+      : typeof first?.url === "string"
+        ? first.url
         : typeof payload?.output?.[0]?.url === "string"
           ? payload.output[0].url
           : typeof payload?.output?.[0]?.b64_json === "string"

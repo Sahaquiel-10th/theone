@@ -2,6 +2,9 @@ import type { ExecutorValues } from "./executorProfiles.js";
 import type { OfficialFeatureValues } from "./officialFeatures.js";
 import type { CredentialBinding } from "./featureCredentials.js";
 export type WorkRun = {
+  kind?: "image";
+  imagePrice?: number;
+  imageCost?: number;
   state:
     "queued" | "running" | "completed" | "failed" | "interrupted" | "cancelled" | "prepared";
   executorId: string;
