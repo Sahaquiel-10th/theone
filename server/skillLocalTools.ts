@@ -4,7 +4,7 @@ import type { OrchestrationTool } from './taskOrchestrator.js';
 
 export const localSkillPresets = [
   {id:'oneFinance',name:'金额与收益测算',description:'依据用户确认的数据计算收益或报价。operation=profit、promotion、quote；dataJson 是 JSON 对象。金额字段为元，税率／渠道费率为 0–1 小数。不猜测缺失价格与成本。'},
-  {id:'oneTable',name:'表格整理与导出',description:'清洗用户的 CSV 或本次选中的表格附件。operation=clean 或 customers；dataJson 包含 csv、keyColumns、trim、deduplicate，customers 另含 referenceDate、inactiveDays。attachmentId 仅限本次选中附件；未授权时不能读取。'}
+  {id:'oneTable',name:'表格整理与导出',description:'清洗用户的 CSV 或本次选中的表格附件。operation=clean、customers 或 merge；merge 使用 attachmentIds 数组且表头一致，其他操作使用 attachmentId 或 csv；dataJson 可包含 keyColumns、trim、deduplicate，customers 另含 referenceDate、inactiveDays。attachmentId 仅限本次选中附件；未授权时不能读取。'}
 ];
 export type SkillLocalContext = {
   quoteCurrency?:string;
