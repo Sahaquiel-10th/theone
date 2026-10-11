@@ -7,6 +7,12 @@ import { aiTaskCatalog } from "./aiTaskCatalog.js";
 const model = { id: "a", enabled: true, kind: "chat", systemPrompt: "base", apiKey: "not-for-client" } as ModelConfig;
 const second = { ...model, id: "b" };
 const settings = (): SystemSettings => ({ safetyRules: "immutable", rechargeCnyPerPower: 7 });
+test("binding a task is context, not an instruction to delegate", () => {
+ const prompt = defaultTaskValues("coordinator").prompt;
+ assert.match(prompt, /绑定事情仅用于定位上下文，不代表要求执行/);
+ assert.doesNotMatch(prompt, /用户绑定事情时也应实际调用 delegate_task/);
+ assert.match(prompt, /用户要求分析附件必须调用 delegate_task/);
+});
 test("coordinator attachment handoff guidance stays editable, without replacing published prompts", () => {
   const preset = defaultTaskValues("coordinator");
   assert.match(preset.prompt, /attachmentsRequireDelegation=true/);
