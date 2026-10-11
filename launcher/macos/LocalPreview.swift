@@ -7,6 +7,8 @@ final class LocalPreview: @unchecked Sendable {
     private var listener: NWListener?
     private var timer: DispatchSourceTimer?
     private var clients: [ObjectIdentifier: NWConnection] = [:]
+    // Accessed only on queue, like listener and clients.
+    private var startupReplied = false
     private let files: MacLocalFiles
     private let entry: String
     private let prefix: String
@@ -44,12 +46,11 @@ final class LocalPreview: @unchecked Sendable {
                     parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
                     let server = try NWListener(using: parameters)
                     listener = server
-                    var replied = false
                     server.stateUpdateHandler = { [weak self, weak server] state in
                         guard let self, let server else { return }
                         switch state {
                         case .ready:
-                            guard !replied, let port = server.port else { return }; replied = true
+                            guard !startupReplied, let port = server.port else { return }; startupReplied = true
                             let clock = DispatchSource.makeTimerSource(queue: queue)
                             clock.schedule(deadline: .now() + 2, repeating: 2)
                             clock.setEventHandler { [weak self] in if let self, !self.present() || Date() > self.expires { self.close() } }
@@ -57,9 +58,9 @@ final class LocalPreview: @unchecked Sendable {
                             let name = entry.addingPercentEncoding(withAllowedCharacters: CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"))!
                             continuation.resume(returning: "http://127.0.0.1:\(port.rawValue)/\(token)/\(name)")
                         case .failed(let error):
-                            if !replied { replied = true; continuation.resume(throwing: error) }; close()
+                            if !startupReplied { startupReplied = true; continuation.resume(throwing: error) }; close()
                         case .cancelled:
-                            if !replied { replied = true; continuation.resume(throwing: LocalFileFailure.message("预览已停止")) }
+                            if !startupReplied { startupReplied = true; continuation.resume(throwing: LocalFileFailure.message("预览已停止")) }
                         default: break
                         }
                     }
@@ -72,7 +73,7 @@ final class LocalPreview: @unchecked Sendable {
                         queue.asyncAfter(deadline: .now() + 5) { [self] in self.clients.removeValue(forKey: ObjectIdentifier(connection)); connection.cancel() }
                     }
                     server.start(queue: queue)
-                    queue.asyncAfter(deadline: .now() + 10) { if !replied { server.cancel() } }
+                    queue.asyncAfter(deadline: .now() + 10) { [weak self] in if self?.startupReplied == false { server.cancel() } }
                 } catch { continuation.resume(throwing: error) }
             }
         }
