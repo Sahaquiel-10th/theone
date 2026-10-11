@@ -25,14 +25,14 @@
 
 ## 发布与真实页面验收
 
-更新包 output/theone-runtime-0.4.13.tar.gz，约 4.1 MB，不包含新的 Codex 工具包、私钥、供应商凭据或用户资料。SHA-256 为 82838d02187dceacd698a9105fff07a5db08e2f6e991db0c67ed670be70afd2a。
+更新包 output/theone-runtime-0.4.13.tar.gz，约 4.1 MB，不包含新的 Codex 工具包、私钥、供应商凭据或用户资料。最终包 SHA-256 为 cd8321594471209261554d6a8acd62eac6721cd5872b8a5cf4109994e0c4585b。使用修正后串行启动状态的构建，已通过 Swift 6 严格编译和本机 HTTP 测试；先前上传但未发布的包不得安装。
 
 上传到服务器 /home/ubuntu 后执行：
 
 ```bash
 (
 set -e
-printf '%s\n' '82838d02187dceacd698a9105fff07a5db08e2f6e991db0c67ed670be70afd2a  /home/ubuntu/theone-runtime-0.4.13.tar.gz' | sha256sum -c -
+printf '%s\n' 'cd8321594471209261554d6a8acd62eac6721cd5872b8a5cf4109994e0c4585b  /home/ubuntu/theone-runtime-0.4.13.tar.gz' | sha256sum -c -
 release_stage=$(mktemp -d /tmp/theone-runtime-0.4.13.XXXXXX)
 tar -xzf /home/ubuntu/theone-runtime-0.4.13.tar.gz -C "$release_stage"
 sudo bash /srv/theone/current/deploy/install-runtime-update.sh "$release_stage/one-runtime-0.4.13"
