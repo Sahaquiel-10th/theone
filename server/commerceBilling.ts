@@ -12,23 +12,25 @@ export function reserveCommerce(db:Database,row:ModelUsageRecord,s:PublicCommerc
   if(row.workspaceId!==s.publisherWorkspaceId||row.userId!==s.publisherUserId||!Number.isFinite(s.multiplier)||s.multiplier<=0||s.multiplier>10||!Number.isInteger(s.publisherShareBps)||s.publisherShareBps<0||s.publisherShareBps>10000)throw new Error('公开服务计费绑定无效');
   activeAccount(db,s.payerWorkspaceId,s.payerUserId);activeAccount(db,s.publisherWorkspaceId,s.publisherUserId);
   const a=amounts(base,s.multiplier);
-  reservePower(db,{workspaceId:s.payerWorkspaceId,userId:s.payerUserId,amountMicros:a.payer});
-  if(a.publisher)reservePower(db,{workspaceId:s.publisherWorkspaceId,userId:s.publisherUserId,amountMicros:a.publisher});
+  reservePower(db,{workspaceId:s.payerWorkspaceId,userId:s.payerUserId,amountMicros:a.payer,holdId:`${row.id}:payer`});
+  if(a.publisher)reservePower(db,{workspaceId:s.publisherWorkspaceId,userId:s.publisherUserId,amountMicros:a.publisher,holdId:`${row.id}:publisher`});
   row.commercial={snapshot:structuredClone(s),payerReservedMicros:a.payer,publisherReservedMicros:a.publisher,status:'pending'};
 }
 export function releaseCommerce(db:Database,row:ModelUsageRecord){
   const c=row.commercial;if(!c||c.status!=='pending')return;
-  const s=c.snapshot;releasePower(db,{workspaceId:s.payerWorkspaceId,userId:s.payerUserId,amountMicros:c.payerReservedMicros});
-  if(c.publisherReservedMicros)releasePower(db,{workspaceId:s.publisherWorkspaceId,userId:s.publisherUserId,amountMicros:c.publisherReservedMicros});
+  const s=c.snapshot;releasePower(db,{workspaceId:s.payerWorkspaceId,userId:s.payerUserId,amountMicros:c.payerReservedMicros,holdId:`${row.id}:payer`});
+  if(c.publisherReservedMicros)releasePower(db,{workspaceId:s.publisherWorkspaceId,userId:s.publisherUserId,amountMicros:c.publisherReservedMicros,holdId:`${row.id}:publisher`});
   c.payerReservedMicros=0;c.publisherReservedMicros=0;
 }
 export function settleCommerce(db:Database,row:ModelUsageRecord,base:number){
   const c=row.commercial;if(!c||c.status!=='pending')return;
   const s=c.snapshot,a=amounts(base,s.multiplier);
   const payer=Math.min(a.payer,c.payerReservedMicros),publisher=Math.min(a.publisher,c.publisherReservedMicros);
-  releaseCommerce(db,row);
-  const entry=chargePower(db,{workspaceId:s.payerWorkspaceId,userId:s.payerUserId,amountMicros:payer,modelId:row.modelId,usageRecordId:row.id,title:'分身问答'});
-  if(publisher)chargePower(db,{workspaceId:s.publisherWorkspaceId,userId:s.publisherUserId,amountMicros:publisher,modelId:row.modelId,usageRecordId:row.id,title:'分身补贴'});
+  const tracked=powerAccount(db,s.payerWorkspaceId,s.payerUserId)?.powerHolds?.some(h=>h.id===`${row.id}:payer`);
+  if(!tracked)releaseCommerce(db,row);
+  const entry=chargePower(db,{workspaceId:s.payerWorkspaceId,userId:s.payerUserId,amountMicros:payer,modelId:row.modelId,usageRecordId:row.id,holdId:`${row.id}:payer`,title:'分身问答'});
+  if(publisher)chargePower(db,{workspaceId:s.publisherWorkspaceId,userId:s.publisherUserId,amountMicros:publisher,modelId:row.modelId,usageRecordId:row.id,holdId:`${row.id}:publisher`,title:'分身补贴'});
+  c.payerReservedMicros=0;c.publisherReservedMicros=0;
   // Only the fraction funded by verified recharge principal creates revenue.
   const markup=Math.max(0,payer-base),paid=entry.paidPrincipalMicros;
   const eligible=payer?Number(BigInt(markup)*BigInt(paid)/BigInt(payer)):0;

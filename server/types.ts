@@ -54,7 +54,7 @@ export type Attachment = {
 };
 export type AttachmentSummary = Pick<Attachment, "id" | "originalName" | "mimeType" | "kind" | "size" | "status" | "uploadedBytes" | "parseError" | "textChars" | "segmentCount">;
 export type SearchSource = { title: string; url: string; snippet: string };
-export type SystemSettings = { executorProfiles?: import('./executorProfiles.js').ExecutorProfile[]; safetyRules: string; rechargeCnyPerPower: number; aiTasks?: import("./aiTaskConfig.js").AiTaskConfigs; officialFeatures?: import("./officialFeatures.js").OfficialFeatureRecord[];publicCommercePolicy?:import('./publicSharingTypes.js').PublicCommercePolicy };
+export type SystemSettings = { membershipBilling?: import("./memberships.js").MembershipCatalog; executorProfiles?: import('./executorProfiles.js').ExecutorProfile[]; safetyRules: string; rechargeCnyPerPower: number; aiTasks?: import("./aiTaskConfig.js").AiTaskConfigs; officialFeatures?: import("./officialFeatures.js").OfficialFeatureRecord[];publicCommercePolicy?:import('./publicSharingTypes.js').PublicCommercePolicy };
 
 export type UserSavedMemory = {
   id: string; workspaceId: string; userId: string; conversationId?: string; sourceMessageId?: string;
@@ -109,6 +109,8 @@ export type ModelUsageRecord = {
 };
 
 export type PowerAccount = {
+  membershipPeriods?: import("./memberships.js").MembershipPeriod[];
+  powerHolds?: import("./memberships.js").PowerHold[];
   paidBalanceMicros?: number;
   id: string; workspaceId: string; userId: string; balanceMicros: number;
   /** Funds held by pending calls and calls awaiting explicit billing review. */
@@ -116,6 +118,7 @@ export type PowerAccount = {
   createdAt: string; updatedAt: string;
 };
 export type PowerLedgerEntry = {
+  membershipMicros?: number;
   actorUserId?: string;
   paidPrincipalMicros?:number;bonusMicros?:number;
   id: string; workspaceId: string; userId: string; type: "gift" | "recharge" | "usage" | "adjustment" | "refund";
@@ -123,6 +126,10 @@ export type PowerLedgerEntry = {
   modelId?: string; usageRecordId?: string; createdByUserId?: string; createdAt: string;
 };
 export type RechargeOrder = {
+  product?: import("./memberships.js").MembershipProduct;
+  fulfilledDeviceId?: string;
+  externalPaymentReference?: string;
+  membershipActivatedAt?: string;
   corporatePayment?: { agreementRef: string; bankReference: string; recordedBy: string };
   id: string; workspaceId: string; userId: string; requestedMicros: number; amountCny: number; cnyPerPowerSnapshot: number;
   status: "pending" | "paid" | "cancelled"; createdAt: string; paidAt?: string;

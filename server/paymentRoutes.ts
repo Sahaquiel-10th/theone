@@ -43,13 +43,13 @@ export function installPaymentRoutes(app: Express, keyAuth: readonly RequestHand
     try {
       if (!wechatReady()) return res.status(503).json({ error: "微信支付尚未配置" });
       const scope = { workspaceId: req.workspaceId!, userId: req.user!.id }, c = wechatConfig();
-      if (req.body.amountFen !== undefined && req.body.power !== undefined) throw new Error("请只选择一种充值方式");
-      const intent = req.body.amountFen !== undefined ? { amountFen: req.body.amountFen } : req.body.power;
+      if ([req.body.amountFen,req.body.power,req.body.productId].filter(v=>v!==undefined).length!==1) throw new Error("请只选择一种充值方式");
+      const intent = req.body.productId !== undefined ? {productId:String(req.body.productId)} : req.body.amountFen !== undefined ? { amountFen: req.body.amountFen } : req.body.power;
       const prepared = await store.mutate(db => preparePayment(db, scope, String(req.body.operationId ?? ""), intent, c));
       const order = prepared.order, p = order.payment!;
       if (prepared.created) {
         try {
-          const remote = await wechatRequest("POST", "/v3/pay/transactions/native", { appid: p.appId, mchid: p.mchId, description: `ONE ${order.requestedMicros / 1e6} 电力`,
+          const remote = await wechatRequest("POST", "/v3/pay/transactions/native", { appid: p.appId, mchid: p.mchId, description: order.product?.label ?? `ONE 充值 ¥${order.amountCny}`,
             out_trade_no: order.id, time_expire: p.expiresAt, notify_url: c.notifyUrl, amount: { total: p.amountFen, currency: "CNY" } });
           if (typeof remote.code_url !== "string" || !remote.code_url.startsWith("weixin://wxpay/")) throw new Error("无效二维码");
           await store.mutate(db => { const current = db.rechargeOrders.find(o => o.id === order.id)!; if (current.status === "pending") { current.payment!.codeUrl = remote.code_url; current.payment!.state = "pending"; } });

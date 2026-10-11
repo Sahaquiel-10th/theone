@@ -1,4 +1,5 @@
 import { CachePrices, CacheUsage, Database, ModelConfig } from "./types.js";
+import { activePeriod } from "./memberships.js";
 import { uid } from "./security.js";
 import { billingAccountUserId } from "./enterprisePolicy.js";
 
@@ -46,7 +47,15 @@ export function powerAccount(db: Database, workspaceId: string, userId: string) 
 
 export function availablePowerMicros(db: Database, workspaceId: string, userId: string) {
   const account = powerAccount(db, workspaceId, userId);
-  return account ? Math.max(0, account.balanceMicros - (account.reservedMicros ?? 0)) : 0;
+  if (!account) return 0;
+  const current=activePeriod(account);
+  // Holds against expired/paused periods cannot reduce the newly issued allowance.
+  const holds=account.powerHolds??[];
+  const walletHeld=holds.reduce((n,h)=>n+h.walletMicros,0);
+  const tracked=holds.reduce((n,h)=>n+h.walletMicros+h.periods.reduce((sum,p)=>sum+p.amountMicros,0),0);
+  const legacyHeld=Math.max(0,(account.reservedMicros??0)-tracked);
+  const periodHeld=current?holds.flatMap(h=>h.periods).filter(p=>p.id===current.id).reduce((n,p)=>n+p.amountMicros,0):0;
+  return Math.max(0,account.balanceMicros-walletHeld-legacyHeld)+Math.max(0,(current?.remainingMicros??0)-periodHeld);
 }
 
 export function estimateTokenCeiling(value: unknown) {
@@ -56,23 +65,34 @@ export function estimateTokenCeiling(value: unknown) {
 }
 
 export function reservePower(db: Database, params: {
-  workspaceId: string; userId: string; amountMicros: number;
+  workspaceId: string; userId: string; amountMicros: number; holdId?: string;
 }) {
   const account = powerAccount(db, params.workspaceId, params.userId);
   if (!account) throw new Error("电力账户不存在");
   if (!Number.isSafeInteger(params.amountMicros) || params.amountMicros < 0) throw new Error("预占电力必须是非负整数");
   if (availablePowerMicros(db, params.workspaceId, params.userId) < params.amountMicros) throw new Error("电力不足，请先充值");
+  if(params.holdId) {
+    const holds=account.powerHolds??=[];
+    if(holds.some(h=>h.id===params.holdId))throw new Error("请求已预占");
+    const period=activePeriod(account);
+    const periodHeld=period?holds.flatMap(h=>h.periods).filter(p=>p.id===period.id).reduce((n,p)=>n+p.amountMicros,0):0;
+    const monthly=Math.min(params.amountMicros,Math.max(0,(period?.remainingMicros??0)-periodHeld));
+    holds.push({id:params.holdId,walletMicros:params.amountMicros-monthly,periods:monthly&&period?[{id:period.id,amountMicros:monthly}]:[]});
+  }
   account.reservedMicros = (account.reservedMicros ?? 0) + params.amountMicros;
   account.updatedAt = new Date().toISOString();
   return params.amountMicros;
 }
 
 export function releasePower(db: Database, params: {
-  workspaceId: string; userId: string; amountMicros: number;
+  workspaceId: string; userId: string; amountMicros: number; holdId?: string;
 }) {
   const account = powerAccount(db, params.workspaceId, params.userId);
   if (!account) throw new Error("电力账户不存在");
-  account.reservedMicros = Math.max(0, (account.reservedMicros ?? 0) - Math.max(0, params.amountMicros));
+  const hold=params.holdId?account.powerHolds?.find(h=>h.id===params.holdId):undefined;
+  const released=hold?hold.walletMicros+hold.periods.reduce((n,p)=>n+p.amountMicros,0):params.amountMicros;
+  if(hold)account.powerHolds=account.powerHolds!.filter(h=>h.id!==hold.id);
+  account.reservedMicros = Math.max(0, (account.reservedMicros ?? 0) - Math.max(0, released));
   account.updatedAt = new Date().toISOString();
 }
 
@@ -95,19 +115,36 @@ export function creditPower(db: Database, params: {
 }
 
 export function chargePower(db: Database, params: {
-  workspaceId: string; userId: string; amountMicros: number; modelId: string; usageRecordId: string; title: string;
+  workspaceId: string; userId: string; amountMicros: number; modelId: string; usageRecordId: string; title: string; holdId?: string;
 }) {
   const account = powerAccount(db, params.workspaceId, params.userId);
   if (!account) throw new Error("电力账户不存在");
   if (!Number.isSafeInteger(params.amountMicros) || params.amountMicros < 0) throw new Error("扣费必须是有效的非负整数");
-  if (availablePowerMicros(db, params.workspaceId, params.userId) < params.amountMicros) throw new Error("电力不足，请先充值");
+  const hold=params.holdId?account.powerHolds?.find(h=>h.id===params.holdId):undefined;
+  const held=hold?hold.walletMicros+hold.periods.reduce((n,p)=>n+p.amountMicros,0):0;
+  if (hold ? held<params.amountMicros : availablePowerMicros(db,params.workspaceId,params.userId)<params.amountMicros) throw new Error("电力不足，请先充值");
+  let membershipMicros=0, left=params.amountMicros;
+  if(hold) {
+    for(const source of hold.periods) {
+      const period=account.membershipPeriods?.find(p=>p.id===source.id);
+      const take=Math.min(left,source.amountMicros);
+      if(!period||period.remainingMicros<take)throw new Error("会员预占不一致");
+      period.remainingMicros-=take;left-=take;membershipMicros+=take;
+    }
+    releasePower(db,{...params,amountMicros:held});
+  } else {
+    const period=activePeriod(account);
+    const reserved=period?(account.powerHolds??[]).flatMap(h=>h.periods).filter(p=>p.id===period.id).reduce((n,p)=>n+p.amountMicros,0):0;
+    membershipMicros=period?Math.min(left,Math.max(0,period.remainingMicros-reserved)):0;
+    if(period)period.remainingMicros-=membershipMicros;left-=membershipMicros;
+  }
   const before = account.balanceMicros;
   const paidBefore=Math.max(0,Math.min(before,account.paidBalanceMicros??0)),bonusBefore=before-paidBefore;
-  const bonusMicros=Math.min(params.amountMicros,bonusBefore),paidPrincipalMicros=params.amountMicros-bonusMicros;
-  account.balanceMicros -= params.amountMicros;
+  const bonusMicros=Math.min(left,bonusBefore),paidPrincipalMicros=left-bonusMicros;
+  account.balanceMicros -= left;
   account.paidBalanceMicros=paidBefore-paidPrincipalMicros;
   account.updatedAt = new Date().toISOString();
-  const entry = { id: uid("pwl"), workspaceId: params.workspaceId, userId: account.userId, actorUserId: params.userId, type: "usage" as const, amountMicros: -params.amountMicros,paidPrincipalMicros,bonusMicros, balanceBeforeMicros: before, balanceAfterMicros: account.balanceMicros, title: params.title, modelId: params.modelId, usageRecordId: params.usageRecordId, createdAt: account.updatedAt };
+  const entry = { id: uid("pwl"), workspaceId: params.workspaceId, userId: account.userId, actorUserId: params.userId, type: "usage" as const, amountMicros: -params.amountMicros,membershipMicros,paidPrincipalMicros,bonusMicros:bonusMicros+membershipMicros, balanceBeforeMicros: before, balanceAfterMicros: account.balanceMicros, title: params.title, modelId: params.modelId, usageRecordId: params.usageRecordId, createdAt: account.updatedAt };
   db.powerLedger.push(entry);
   return entry;
 }

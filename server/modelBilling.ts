@@ -104,8 +104,8 @@ export function settleBillingRecord(db: Database, scope: BillingScope, usage: Mo
   const held = row.reservedMicros ?? 0;
   const charged = Math.min(held, calculated.chargedMicros);
   if(row.commercial)settleCommerce(db,row,charged);
-  else {releasePower(db, { workspaceId: row.workspaceId, userId: row.userId, amountMicros: held });
-  chargePower(db, { workspaceId: row.workspaceId, userId: row.userId, amountMicros: charged, modelId: row.modelId, usageRecordId: row.id, title: row.activity || "模型调用" });}
+  else {if(!powerAccount(db,row.workspaceId,row.userId)?.powerHolds?.some(h=>h.id===row.id))releasePower(db, { workspaceId: row.workspaceId, userId: row.userId, amountMicros: held });
+  chargePower(db, { workspaceId: row.workspaceId, userId: row.userId, amountMicros: charged, modelId: row.modelId, usageRecordId: row.id, holdId:row.id, title: row.activity || "模型调用" });}
   row.chargedMicros = charged; row.calculatedChargeMicros = calculated.chargedMicros; row.costMicros = calculated.costMicros;
   row.billingCapped = charged < calculated.chargedMicros; row.reservedMicros = 0; row.status = "success"; row.reviewReason = undefined;
   return row;
@@ -142,7 +142,7 @@ export async function runBilledModel<T extends { usage?: ModelUsage; finishReaso
       if(db.modelUsageRecords.some(r=>r.workspaceId===params.workspaceId&&r.payerUserId===row.payerUserId&&r.status==='needs_review'))throw new BillingReviewRequiredError();
     }
     if(params.commerce)reserveCommerce(db,row,params.commerce,amountMicros);
-    else reservePower(db, { ...params, amountMicros });
+    else reservePower(db, { ...params, amountMicros, holdId:row.id });
     db.modelUsageRecords.push(row);
   });
   const scope = { usageId: row.id, workspaceId: row.workspaceId, userId: row.userId };
@@ -155,7 +155,7 @@ export async function runBilledModel<T extends { usage?: ModelUsage; finishReaso
         const failed = scopedRecord(db, scope);
         if (failed.status !== "pending") return;
         if(failed.commercial){releaseCommerce(db,failed);failed.commercial.status='released';}
-        else releasePower(db, { ...params, amountMicros: failed.reservedMicros ?? 0 });
+        else releasePower(db, { ...params, amountMicros: failed.reservedMicros ?? 0, holdId:failed.id });
         failed.status = "failed"; failed.reservedMicros = 0; failed.chargedMicros = 0;
         failed.durationMs = Date.now() - startedAt; failed.completedAt = new Date().toISOString();
         failed.reviewReason = "upstream_failed_cost_unknown";
@@ -195,7 +195,7 @@ export function resolveBillingReview(db: Database, params: BillingScope & { acti
   if (row.status !== "needs_review") throw new Error("这笔用量不需要人工核对");
   if (params.action === "waive") {
     if(row.commercial){releaseCommerce(db,row);row.commercial.status='released';}
-    else releasePower(db, { workspaceId: row.workspaceId, userId: row.userId, amountMicros: row.reservedMicros ?? 0 });
+    else releasePower(db, { workspaceId: row.workspaceId, userId: row.userId, amountMicros: row.reservedMicros ?? 0, holdId:row.id });
     row.status = "waived"; row.reservedMicros = 0; row.chargedMicros = 0; row.completedAt = new Date().toISOString();
     row.reviewReason = "admin_waived";
     return row;
@@ -211,7 +211,10 @@ export function resolveBillingReview(db: Database, params: BillingScope & { acti
 
 /** Single-process startup recovery: unknown calls keep their funds reserved for review. */
 export function reconcileInterruptedBilling(db: Database) {
-  for (const account of db.powerAccounts) account.reservedMicros = 0;
+  for (const account of db.powerAccounts) {
+    account.reservedMicros=0;
+    account.powerHolds=account.powerHolds?.filter(h=>db.modelUsageRecords.some(r=>(r.status==='pending'||r.status==='needs_review')&&(h.id===r.id||h.id===`${r.id}:payer`||h.id===`${r.id}:publisher`)));
+  }
   for (const row of db.modelUsageRecords) {
     if (row.status === "pending") { row.status = "needs_review"; row.reviewReason = "server_restarted_before_settlement"; }
     if (row.status !== "needs_review") continue;

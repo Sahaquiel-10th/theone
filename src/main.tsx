@@ -108,6 +108,7 @@ import { EnterpriseKnowledgeCard, FlomoConnectionNotice } from "./EnterpriseConn
 import { FeishuConnection } from "./FeishuConnection";
 import { CacheUsageDetails } from "./CacheUsageDetails";
 import { PricingCatalog } from "./PricingPanel";
+import { MembershipAdminPanel } from "./MembershipPanel";
 import { GiftBatchHistory } from "./GiftBatchHistory";
 import { runtimeUpdateView, runtimeUpdateConfirmed, runtimeRecoveryMessage, type RuntimeUpdateStatus } from "./runtimeUpdateState";
 
@@ -2667,7 +2668,7 @@ function AdminPanel({ actorId, refreshModels, onOpenSidebar }: { actorId: string
           {tab === "models" ? <ModelsTab models={models} reload={async () => { await load(); await refreshModels(); }} /> : null}
           {tab === "ai-tasks" ? <AiTaskPanel api={api} models={models} /> : null}
           {tab === "official-features" ? <OfficialFeaturePanel api={api} /> : null}
-          {tab === "billing" ? <div className="admin-pricing-center"><nav className="settings-tabs"><button aria-pressed={billingSection === "pricing"} onClick={() => setBillingSection("pricing")}>模型与定价</button><button aria-pressed={billingSection === "accounts"} onClick={() => setBillingSection("accounts")}>充值、赠送与汇率</button></nav>{billingSection === "pricing" ? <PricingCatalog api={api} models={models} reload={load} /> : <AdminBilling actorId={actorId} users={users} operations={operations} reload={load} />}</div> : null}
+          {tab === "billing" ? <div className="admin-pricing-center"><nav className="settings-tabs"><button aria-pressed={billingSection === "pricing"} onClick={() => setBillingSection("pricing")}>模型与定价</button><button aria-pressed={billingSection === "accounts"} onClick={() => setBillingSection("accounts")}>充值、赠送与汇率</button><button aria-pressed={billingSection === "membership"} onClick={() => setBillingSection("membership")}>会员与启动器</button></nav>{billingSection === "pricing" ? <PricingCatalog api={api} models={models} reload={load} /> : billingSection === "membership" ? <MembershipAdminPanel api={api} users={users} /> : <AdminBilling actorId={actorId} users={users} operations={operations} reload={load} />}</div> : null}
           {tab === "usage" ? <AdminUsage summaries={operations?.userUsage || []} reload={load} /> : null}
           {tab === "contexts" ? <AdminContexts traces={contextTraces} /> : null}
           {tab === "logs" ? <AdminLogs logs={operations?.logs || []} /> : null}

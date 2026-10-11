@@ -1,0 +1,18 @@
+.membership-panel { padding: 20px; border: 1px solid var(--border, #ddd); border-radius: 16px; margin-bottom: 18px; }
+.membership-heading { display: flex; justify-content: space-between; gap: 12px; }
+.membership-panel p { font-size: 13px; line-height: 1.7; }
+.membership-panel progress { width: 100%; height: 12px; margin-top: 16px; accent-color: #31966b; }
+.membership-panel progress.premium { accent-color: #3575d3; }
+.membership-plans,.membership-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; margin: 16px 0; }
+.membership-plans article { padding: 16px; border: 1px solid var(--border,#ddd); border-radius: 12px; }
+.membership-plans strong,.membership-plans b { display: block; margin-bottom: 12px; }
+.membership-plans b { font-size: 25px; }
+.membership-plans small { font-size: 13px; font-weight: normal; }
+.membership-fields label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.membership-panel input:not([type=checkbox]) { width: 100%; max-width: 340px; padding: 9px; border-radius: 8px; border: 1px solid var(--border,#ddd); background: transparent; color: inherit; }
+.membership-panel table { width: 100%; font-size: 13px; margin: 18px 0; border-collapse: collapse; }
+.membership-panel th,.membership-panel td { text-align: left; padding: 10px 4px; border-bottom: 1px solid var(--border,#ddd); }
+@media(max-width:600px) { .membership-plans,.membership-fields { grid-template-columns: 1fr; } .membership-panel { padding: 14px; } }
+
+.membership-toggle { display: flex; align-items: center; gap: 10px; }
+.membership-toggle input[type=checkbox] { width: auto; margin: 0; flex: none; }

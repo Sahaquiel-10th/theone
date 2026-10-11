@@ -54,6 +54,8 @@ import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs
 import { adminUsageSummaries, adminUserUsageDetail } from "./adminUsage.js";
 import { operationsHealth } from "./operationsHealth.js";
 import { batchGift } from "./batchGift.js";
+import { catalog as membershipCatalog } from "./memberships.js";
+import { installMembershipRoutes } from "./membershipRoutes.js";
 import { installAdminPaymentRoutes, installPaymentCallback, installPaymentRoutes } from "./paymentRoutes.js";
 import { effectiveModel, publishPricing, cancelScheduledPricing, publicPrices } from "./modelPricing.js";
 import { publicPayment } from "./payments.js";
@@ -330,7 +332,7 @@ app.get("/api/me/billing", ...keyAuth, asyncRoute(async (req, res) => {
   const ledger = db.powerLedger.filter((item) => item.workspaceId === req.workspaceId && (item.actorUserId ?? item.userId) === req.user!.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 50);
   const orders = db.rechargeOrders.filter((item) => item.workspaceId === req.workspaceId && item.userId === req.user!.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 20).map(publicPayment);
   const usage = db.modelUsageRecords.filter((item) => item.workspaceId === req.workspaceId && item.userId === req.user!.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 50);
-  res.json({ balanceMicros: account?.balanceMicros ?? 0, reservedMicros: account?.reservedMicros ?? 0, availableMicros: availablePowerMicros(db, req.workspaceId!, req.user!.id), ledger, orders, usage: usage.map(publicUsageRecord), rechargeCnyPerPower: db.settings.rechargeCnyPerPower });
+  res.json({ balanceMicros: account?.balanceMicros ?? 0, reservedMicros: account?.reservedMicros ?? 0, availableMicros: availablePowerMicros(db, req.workspaceId!, req.user!.id), ledger, orders, usage: usage.map(publicUsageRecord), rechargeCnyPerPower: membershipCatalog(db).enabled ? 7 : db.settings.rechargeCnyPerPower });
 }));
 app.post("/api/me/recharge-orders", ...keyAuth, asyncRoute(async (req, res) => {
   const power = Number(req.body.power); if (!Number.isFinite(power) || power <= 0 || power > 100000 || Math.round(power * MICROS_PER_POWER) !== power * MICROS_PER_POWER) throw new Error("充值电力必须大于 0，最多保留 6 位小数");
@@ -1009,6 +1011,7 @@ app.post("/api/admin/models/:id/pricing", ...admin, asyncRoute(async (req, res) 
   if (typeof req.body.explanation !== "string" || !req.body.explanation.trim()) throw new Error("请填写给用户的调价说明");
   const pricing = await store.mutate(db => publishPricing(db, String(req.params.id), req.user!.id, req.body)); res.json({ pricing });
 }));
+installMembershipRoutes(app, keyAuth, admin, store);
 app.get("/api/pricing", ...keyAuth, asyncRoute(async (_req, res) => {
   res.json({ prices: publicPrices((await store.read()).models) });
 }));
@@ -1150,12 +1153,12 @@ app.get("/api/admin/power/gift-batches/:id", ...admin, asyncRoute(async (req, re
 }));
 app.post("/api/admin/recharge-orders/:id/approve", ...admin, asyncRoute(async (req, res) => {
   if ((await store.read()).rechargeOrders.some(o => o.id === req.params.id && o.payment)) return res.status(409).json({ error: "微信订单只能通过微信核验入账" });
-  const order = await store.mutate((db) => { const target = db.rechargeOrders.find((item) => item.id === req.params.id); if (!target) throw new Error("充值订单不存在"); if (target.status !== "pending") throw new Error("充值订单已处理"); creditPower(db, { workspaceId: target.workspaceId, userId: target.userId, amountMicros: target.requestedMicros, type: "recharge", title: "充值入账", createdByUserId: req.user!.id }); target.status = "paid"; target.paidAt = now(); db.auditLogs.push({ id: uid("aud"), workspaceId: target.workspaceId, actorUserId: req.user!.id, action: "admin.recharge.approved", targetType: "recharge_order", targetId: target.id, details: { requestedMicros: target.requestedMicros }, requestId: res.locals.requestId, createdAt: target.paidAt }); return target; });
+  const order = await store.mutate((db) => { const target = db.rechargeOrders.find((item) => item.id === req.params.id); if (!target) throw new Error("充值订单不存在"); if (target.product) throw new Error("会员订单不能按充值入账"); if (target.status !== "pending") throw new Error("充值订单已处理"); creditPower(db, { workspaceId: target.workspaceId, userId: target.userId, amountMicros: target.requestedMicros, type: "recharge", title: "充值入账", createdByUserId: req.user!.id }); target.status = "paid"; target.paidAt = now(); db.auditLogs.push({ id: uid("aud"), workspaceId: target.workspaceId, actorUserId: req.user!.id, action: "admin.recharge.approved", targetType: "recharge_order", targetId: target.id, details: { requestedMicros: target.requestedMicros }, requestId: res.locals.requestId, createdAt: target.paidAt }); return target; });
   res.json({ order });
 }));
 app.patch("/api/admin/settings/billing", ...admin, asyncRoute(async (req, res) => {
   const rechargeCnyPerPower = Number(req.body.rechargeCnyPerPower); if (!Number.isFinite(rechargeCnyPerPower) || rechargeCnyPerPower <= 0 || rechargeCnyPerPower > 100000) throw new Error("人民币汇率必须大于 0");
-  await store.mutate((db) => { db.settings.rechargeCnyPerPower = Math.round(rechargeCnyPerPower * 100) / 100; db.auditLogs.push({ id: uid("aud"), actorUserId: req.user!.id, action: "admin.billing.rate.updated", targetType: "system_settings", details: { rechargeCnyPerPower: db.settings.rechargeCnyPerPower }, requestId: res.locals.requestId, createdAt: now() }); });
+  await store.mutate((db) => { if(membershipCatalog(db).enabled && rechargeCnyPerPower!==7) throw new Error("会员方案的充值比例固定为 7 元 / 电力"); db.settings.rechargeCnyPerPower = Math.round(rechargeCnyPerPower * 100) / 100; db.auditLogs.push({ id: uid("aud"), actorUserId: req.user!.id, action: "admin.billing.rate.updated", targetType: "system_settings", details: { rechargeCnyPerPower: db.settings.rechargeCnyPerPower }, requestId: res.locals.requestId, createdAt: now() }); });
   res.json({ rechargeCnyPerPower: Math.round(rechargeCnyPerPower * 100) / 100 });
 }));
 app.get("/api/admin/models", ...admin, asyncRoute(async (_req, res) => { const db = await store.read(); res.json({ models: db.models.map(adminModel) }); }));

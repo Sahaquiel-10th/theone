@@ -1,3 +1,4 @@
+import { activateKeyMembership } from "./memberships.js";
 import crypto from "node:crypto";
 import type { Store } from "./db.js";
 import type { Database } from "./types.js";
@@ -87,6 +88,7 @@ export class OneKeyService {
       const user = db.users.find((item) => item.id === code.userId && item.enabled);
       const member = db.workspaceMembers.find((item) => item.workspaceId === code.workspaceId && item.userId === code.userId && item.status !== "disabled");
       if (!device || !user || !member || !db.workspaces.some(w=>w.id===code.workspaceId&&w.status==='active')) return { error: "ONE Key 绑定已失效" } as const;
+      for(const order of (db.rechargeOrders??[]).filter(o=>o.workspaceId===code.workspaceId&&o.userId===code.userId&&o.status==='paid'&&o.product?.kind==='key'&&o.fulfilledDeviceId===device.id&&!o.membershipActivatedAt))activateKeyMembership(db,{workspaceId:code.workspaceId,userId:code.userId},order.id);
       code.usedAt = now();
       return { userId: user.id, role: user.role, workspaceId: code.workspaceId, deviceId: device.id, installationId } as const;
     });

@@ -1,41 +1,42 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ChevronRight, Wallet, Zap } from "lucide-react";
 import type { api as apiType } from "./oneApi";
+import { MembershipPanel } from "./MembershipPanel";
+import type { MembershipProduct } from "../server/memberships";
 import { SettingsDialog } from "./SettingsControls";
 import { PriceNotices } from "./PriceNotices";
 import { CacheUsageDetails } from "./CacheUsageDetails";
-type Order = { id: string; status: string; requestedMicros: number; amountCny: number; createdAt: string; expiresAt?: string };
+type Order = { product?: {label:string;kind:string}; id: string; status: string; requestedMicros: number; amountCny: number; createdAt: string; expiresAt?: string };
 const power = (n = 0) => (n / 1e6).toLocaleString("zh-CN", { maximumFractionDigits: 6 });
 const date = (s: string) => new Date(s).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 
 export function PaymentPanel({ api, userId, rate, balance = 0, reserved = 0, onPaid }: { api: typeof apiType; userId: string; rate: number; balance?: number; reserved?: number; onPaid: () => Promise<void> }) {
   const [open, setOpen] = useState(false), [pricesOpen, setPricesOpen] = useState(false), [revision, setRevision] = useState(0);
-  const [spent, setSpent] = useState<number | null>(null), [kind, setKind] = useState("usage");
-  useEffect(() => { const abort = new AbortController(); api<{ spentMicros: number }>("/api/me/billing/summary", { signal: abort.signal }).then(r => setSpent(r.spentMicros)).catch(() => setSpent(null)); return () => abort.abort(); }, [api, revision]);
+  const [product,setProduct]=useState<MembershipProduct|undefined>();
+  const [kind, setKind] = useState("usage");
   const refresh = useCallback(async () => { await onPaid(); setRevision(n => n + 1); }, [onPaid]);
-  const percent = spent === null ? null : balance + spent > 0 ? Math.max(0, Math.min(100, balance / (balance + spent) * 100)) : 0;
   return <div className="power-dashboard">
+    <MembershipPanel api={api} revision={revision} onChanged={refresh} onPurchase={p=>{setProduct(p);setOpen(true);}} />
 
-    <section className="power-overview"><div className="power-overview-top"><span><Zap size={17} />我的电力 <PriceNotices key={userId} api={api} userId={userId} /></span><button type="button" className="power-price-link" onClick={() => setPricesOpen(true)}>计费价格<ChevronRight size={14} /></button></div><div className="power-overview-main"><div><strong>{power(balance)}</strong><span>电力余额</span></div><button type="button" className="primary" onClick={() => setOpen(true)}><Wallet size={17} />充值</button></div>
-      {percent !== null ? <><progress aria-label="电力余额占余额与累计消耗的比例" max={100} value={percent} /><div className="power-overview-foot"><span>累计消耗 {power(spent!)} 电力</span><span>剩余 {percent > 0 && percent < 0.1 ? "< 0.1" : percent.toFixed(1)}%</span></div></> : null}
-      {reserved > 0 ? <p className="power-reserved">处理中 {power(reserved)} · 当前可用 {power(Math.max(0, balance - reserved))} 电力</p> : null}
+    <section className="power-overview"><div className="power-overview-top"><span><Zap size={17} />充值余额 <PriceNotices key={userId} api={api} userId={userId} /></span><button type="button" className="power-price-link" onClick={() => setPricesOpen(true)}>计费价格<ChevronRight size={14} /></button></div><div className="power-overview-main"><div><strong>¥{(balance*rate/1e6).toFixed(2)}</strong><span>可用充值余额</span></div><button type="button" className="primary" onClick={() => {setProduct(undefined);setOpen(true);}}><Wallet size={17} />充值</button></div>
+      <p className="power-reserved">充值余额长期保留，不延长会员有效期。处理中额度会暂时预留。</p>
     </section>
     <section className="power-history"><div className="settings-tabs" aria-label="账单类型">{[["usage", "消耗明细"], ["orders", "充值记录"], ["ledger", "电力流水"]].map(([id, label]) => <button type="button" key={id} aria-pressed={kind === id} onClick={() => setKind(id)}>{label}</button>)}</div><BillingHistory key={kind} api={api} kind={kind} revision={revision} onPaid={refresh} /></section>
-    {open ? <RechargeDialog api={api} rate={rate} onPaid={refresh} onClose={() => setOpen(false)} /> : null}
+    {open ? <RechargeDialog api={api} rate={rate} product={product} onPaid={refresh} onClose={() => setOpen(false)} /> : null}
     {pricesOpen ? <SettingsDialog title="当前计费价格" onClose={() => setPricesOpen(false)}><CurrentPrices api={api} /></SettingsDialog> : null}
   </div>;
 }
 
-function RechargeDialog({ api, rate, onPaid, onClose }: { api: typeof apiType; rate: number; onPaid: () => Promise<void>; onClose: () => void }) {
-  const [amount, setAmount] = useState("5"), [custom, setCustom] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState("");
+function RechargeDialog({ api, rate, product, onPaid, onClose }: { api: typeof apiType; rate: number; product?: MembershipProduct; onPaid: () => Promise<void>; onClose: () => void }) {
+  const [amount, setAmount] = useState("30"), [custom, setCustom] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [payment, setPayment] = useState<{ order: Order; qrCode: string | null } | null>(null);
-  const pending = useRef<{ operationId: string; amountFen: number } | null>(null), checking = useRef(false), credited = useRef(false);
+  const pending = useRef<{ operationId: string; amountFen?: number; productId?: string } | null>(null), checking = useRef(false), credited = useRef(false);
   const yuan = amount === "custom" ? custom : amount;
-  const valid = /^\d+(\.\d{1,2})?$/.test(yuan) && Number(yuan) >= 0.01 && Number(yuan) <= 10000 && rate > 0;
+  const valid = !!product || /^\d+(\.\d{1,2})?$/.test(yuan) && Number(yuan) >= 0.01 && Number(yuan) <= 10000 && rate > 0;
   async function create() {
     if (busy || (!pending.current && !valid)) return;
     setBusy(true); setError("");
-    pending.current ??= { operationId: crypto.randomUUID(), amountFen: Math.round(Number(yuan) * 100) };
+    pending.current ??= { operationId: crypto.randomUUID(), ...(product?{productId:product.id}:{amountFen:Math.round(Number(yuan)*100)}) };
     try { setPayment(await api("/api/me/payments/wechat", { method: "POST", body: JSON.stringify(pending.current) })); }
     catch (e) { setError(e instanceof Error ? e.message : "暂时无法生成付款码，请重试"); } finally { setBusy(false); }
   }
@@ -54,11 +55,11 @@ function RechargeDialog({ api, rate, onPaid, onClose }: { api: typeof apiType; r
     const timer = window.setInterval(() => { if (!document.hidden && (!payment.order.expiresAt || Date.parse(payment.order.expiresAt) > Date.now())) void check(); }, 5000);
     return () => window.clearInterval(timer);
   }, [payment, check]);
-  return <SettingsDialog title="充值电力" onClose={onClose}>
+  return <SettingsDialog title={product?.label??"充值额度"} onClose={onClose}>
 
-    {!payment ? <><p className="settings-caption">选择充值金额（元）</p><div className="recharge-amount-grid">{["5", "10", "15", "20", "50", "100", "custom"].map(n => <button type="button" key={n} disabled={!!pending.current} aria-pressed={amount === n} onClick={() => setAmount(n)}>{n === "custom" ? "自定义" : <><small>¥</small>{n}</>}</button>)}</div>{amount === "custom" ? <label className="recharge-custom">充值金额<input autoFocus type="number" min="0.01" max="10000" step="0.01" placeholder="最低 ¥0.01" value={custom} disabled={!!pending.current} onChange={e => setCustom(e.target.value)} /></label> : null}<div className="recharge-preview"><span>预计到账</span><strong>{valid ? power(Math.floor(Math.round(Number(yuan) * 100) * 10000 / rate)) : "—"}<small> 电力</small></strong></div><p className="settings-caption">¥{rate} / 电力 · 优惠按实际消耗计费</p><button type="button" className="primary recharge-pay-button" disabled={busy || (!pending.current && !valid)} onClick={() => void create()}>{busy ? "正在生成付款码…" : pending.current ? "重试生成付款码" : "微信支付"}</button></>
-      : payment.order.status === "paid" ? <div className="recharge-success"><span><Check size={30} /></span><h3>充值成功</h3><p>{power(payment.order.requestedMicros)} 电力已到账</p><button type="button" className="primary recharge-pay-button" onClick={onClose}>完成</button></div>
-      : <div className="recharge-qr"><strong>¥{payment.order.amountCny.toFixed(2)}</strong><p>到账 {power(payment.order.requestedMicros)} 电力</p>{payment.qrCode ? <img src={payment.qrCode} width={208} height={208} alt="微信付款二维码" /> : <p className="settings-empty">付款码暂未生成，请核对订单状态</p>}<p className="settings-caption">打开微信扫一扫</p><button type="button" className="secondary" disabled={busy} onClick={() => void check(true)}>{busy ? "正在核对…" : "我已支付"}</button><p className="settings-caption">关闭后可在充值记录中核对订单</p></div>}
+    {!payment ? <>{product?<p>{product.label} · ¥{(product.amountFen/100).toFixed(2)}{product.kind==="key"?" · 交付并绑定后激活":" · 按月发放，未使用月额度不累计"}</p>:<><p className="settings-caption">选择充值金额（元）</p><div className="recharge-amount-grid">{["30", "100", "300", "custom"].map(n => <button type="button" key={n} disabled={!!pending.current} aria-pressed={amount === n} onClick={() => setAmount(n)}>{n === "custom" ? "自定义" : <><small>¥</small>{n}</>}</button>)}</div>{amount === "custom" ? <label className="recharge-custom">充值金额<input autoFocus type="number" min="0.01" max="10000" step="0.01" placeholder="最低 ¥0.01" value={custom} disabled={!!pending.current} onChange={e => setCustom(e.target.value)} /></label> : null}<div className="recharge-preview"><span>到账充值余额</span><strong>¥{valid?Number(yuan).toFixed(2):"—"}</strong></div><p className="settings-caption">充值余额长期保留 · 按实际消耗计费</p></>}<button type="button" className="primary recharge-pay-button" disabled={busy || (!pending.current && !valid)} onClick={() => void create()}>{busy ? "正在生成付款码…" : pending.current ? "重试生成付款码" : "微信支付"}</button></>
+      : payment.order.status === "paid" ? <div className="recharge-success"><span><Check size={30} /></span><h3>支付成功</h3><p>{payment.order.product?payment.order.product.kind==="key"?"等待启动器交付，绑定后激活会员":"会员已生效，后续时间可在会员详情查看":"充值余额已到账"}</p><button type="button" className="primary recharge-pay-button" onClick={onClose}>完成</button></div>
+      : <div className="recharge-qr"><strong>¥{payment.order.amountCny.toFixed(2)}</strong><p>{payment.order.product?.label??`到账充值余额 ¥${payment.order.amountCny.toFixed(2)}`}</p>{payment.qrCode ? <img src={payment.qrCode} width={208} height={208} alt="微信付款二维码" /> : <p className="settings-empty">付款码暂未生成，请核对订单状态</p>}<p className="settings-caption">打开微信扫一扫</p><button type="button" className="secondary" disabled={busy} onClick={() => void check(true)}>{busy ? "正在核对…" : "我已支付"}</button><p className="settings-caption">关闭后可在充值记录中核对订单</p></div>}
     {error ? <p className="settings-inline-error" role="status">{error}</p> : null}
   </SettingsDialog>;
 }
@@ -85,5 +86,5 @@ function BillingHistory({ api, kind, revision, onPaid }: { api: typeof apiType; 
     catch (e) { setError(e instanceof Error ? e.message : "核对失败"); } finally { setBusy(false); }
   }
   const statuses: Record<string, string> = { pending: "处理中", success: "已完成", failed: "未完成", needs_review: "待核对", waived: "未扣费", paid: "已支付", cancelled: "已取消" };
-  return <div className="billing-history">{error ? <p className="settings-inline-error" role="status">{error}</p> : null}{!data ? <p className="settings-empty">{error ? "账单暂不可用" : "正在加载…"}</p> : !data.items.length ? <p className="settings-empty">{kind === "usage" ? "还没有消耗记录" : kind === "orders" ? "还没有充值记录" : "还没有电力流水"}</p> : data.items.map(row => <details className="billing-row" key={row.id}><summary><span><strong>{kind === "orders" ? "微信充值" : row.title || row.modelNameSnapshot || "模型调用"}</strong><small>{date(row.createdAt)}{row.status ? ` · ${statuses[row.status] || "已结算"}` : ""}</small></span><span className="billing-row-amount">{kind === "orders" ? `¥${row.amountCny.toFixed(2)}` : `${power(row.amountMicros ?? row.chargedMicros)} 电力`}<ChevronRight size={15} /></span></summary><div className="billing-row-detail">{kind === "usage" ? <CacheUsageDetails row={row} /> : null}{kind === "orders" ? <><p>到账 {power(row.requestedMicros)} 电力</p>{row.status === "pending" ? <button type="button" className="secondary" disabled={busy} onClick={() => void check(row.id)}>核对支付</button> : null}</> : null}<p className="billing-order-id">编号 {row.id}</p></div></details>)}{data ? <Pagination page={page} total={data.total} size={data.pageSize} onChange={setPage} /> : null}</div>;
+  return <div className="billing-history">{error ? <p className="settings-inline-error" role="status">{error}</p> : null}{!data ? <p className="settings-empty">{error ? "账单暂不可用" : "正在加载…"}</p> : !data.items.length ? <p className="settings-empty">{kind === "usage" ? "还没有消耗记录" : kind === "orders" ? "还没有充值记录" : "还没有电力流水"}</p> : data.items.map(row => <details className="billing-row" key={row.id}><summary><span><strong>{kind === "orders" ? row.product?.label??"微信充值" : row.title || row.modelNameSnapshot || "模型调用"}</strong><small>{date(row.createdAt)}{row.status ? ` · ${statuses[row.status] || "已结算"}` : ""}</small></span><span className="billing-row-amount">{kind === "orders" ? `¥${row.amountCny.toFixed(2)}` : `${power(row.amountMicros ?? row.chargedMicros)} 电力`}<ChevronRight size={15} /></span></summary><div className="billing-row-detail">{kind === "usage" ? <CacheUsageDetails row={row} /> : null}{kind === "orders" ? <><p>{row.product?`${row.product.label}${row.membershipActivatedAt?" · 已激活":""}`:`到账充值余额 ¥${row.amountCny.toFixed(2)}`}</p>{row.status === "pending" ? <button type="button" className="secondary" disabled={busy} onClick={() => void check(row.id)}>核对支付</button> : null}</> : null}<p className="billing-order-id">编号 {row.id}</p></div></details>)}{data ? <Pagination page={page} total={data.total} size={data.pageSize} onChange={setPage} /> : null}</div>;
 }
