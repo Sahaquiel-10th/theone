@@ -13,18 +13,35 @@ import { callModelWithTools } from "./modelGateway.js";
 import { runBilledModel } from "./modelBilling.js";
 import { beginChatOperation, bindChatOperationConversation, completeChatOperation, failChatOperation, ChatOperationError, type ChatOperation } from "./chatOperations.js";
 import { uid } from "./security.js";
+import { activeMember, canReadKnowledge, featureEntitled, featureRelease } from "./enterprisePolicy.js";
 
 export type FeatureScope = { workspaceId: string; userId: string };
 export function featureMember(db: Database, scope: FeatureScope) {
-  if (!db.users.some(u => u.id === scope.userId && u.enabled) || !db.workspaces.some(w => w.id === scope.workspaceId && w.status === "active") || !db.workspaceMembers.some(m => m.userId === scope.userId && m.workspaceId === scope.workspaceId)) throw new FeatureConfigError("账号或个人空间不可用", 403);
+  if (!db.users.some(u => u.id === scope.userId && u.enabled) || !db.workspaces.some(w => w.id === scope.workspaceId && w.status === "active") || !activeMember(db, scope)) throw new FeatureConfigError("账号或空间不可用", 403);
 }
 export function availableFeature(db: Database, scope: FeatureScope, id: string, releaseId?: string) {
   featureMember(db, scope);
   const f = db.settings.officialFeatures?.find(f => f.id === id);
-  if (!f || f.status !== "approved" || !f.release?.userIds.includes(scope.userId) || (releaseId && f.release.id !== releaseId)) throw new FeatureConfigError("功能未开放、已下架或版本已变更", 403);
-  const version = f.history.find(v => v.version === f.release!.version);
+  const release=f&&featureRelease(db,scope,f);
+  if (!f || f.status !== "approved" || !release || !featureEntitled(db, scope, f) || (releaseId && release.id !== releaseId)) throw new FeatureConfigError("功能未开放、已下架或版本已变更", 403);
+  const version = f.history.find(v => v.version === release.version);
   if (!version) throw new FeatureConfigError("发布版本不可用", 409);
-  return { record: f, version };
+  return { record: {...f,release}, version };
+}
+export function releaseCompanyFeature(db: Database, id: string, workspaceId: string, input: {revision:number;enabled:boolean;version?:number}, actor: string) {
+  if(!db.users.some(u=>u.id===actor&&u.enabled&&u.role==='admin'))throw new FeatureConfigError('无权交付企业功能',403);
+  if(!db.workspaces.some(w=>w.id===workspaceId&&w.kind==='company'&&w.status==='active'))throw new FeatureConfigError('公司不可用',404);
+  const f=db.settings.officialFeatures?.find(f=>f.id===id);
+  if(!f||f.revision!==input.revision)throw new FeatureConfigError('功能配置已更新',409);
+  if(f.workspaceId&&f.workspaceId!==workspaceId)throw new FeatureConfigError('私有功能不能交付其他公司',403);
+  if(input.enabled){
+    const version=f.history.find(v=>v.version===(input.version??f.current?.version));
+    if(f.status!=='approved'||!version||!db.models.some(m=>m.id===version.values.modelId&&m.enabled&&m.kind==='chat'&&m.apiKey))throw new FeatureConfigError('请先认定可用功能版本');
+    f.companyReleases=[...(f.companyReleases??[]).filter(r=>r.workspaceId!==workspaceId),{workspaceId,id:uid('frel'),version:version.version,publishedAt:new Date().toISOString(),publishedBy:actor}];
+  }else f.companyReleases=(f.companyReleases??[]).filter(r=>r.workspaceId!==workspaceId);
+  f.revision++;
+  db.auditLogs.push({id:uid('aud'),workspaceId,actorUserId:actor,action:'company.feature.released',targetType:'official_feature',targetId:id,details:{enabled:input.enabled,version:f.companyReleases?.find(r=>r.workspaceId===workspaceId)?.version},createdAt:new Date().toISOString()});
+  return f;
 }
 export function releaseFeature(db: Database, id: string, body: any, actor: string) {
   if (!db.users.some(u => u.id === actor && u.enabled && u.role === "admin")) throw new FeatureConfigError("无权发布", 403);
@@ -33,6 +50,7 @@ export function releaseFeature(db: Database, id: string, body: any, actor: strin
   if (body.action === "unpublish") delete f.release;
   else {
     if (body.action !== "publish" || body.confirmed !== true || f.status !== "approved" || !f.current || body.version !== f.current.version) throw new FeatureConfigError("请先认定配置，并确认上架版本");
+    if(f.workspaceId)throw new FeatureConfigError("企业私有功能请从公司交付入口上架",403);
     if (!Array.isArray(body.userIds) || !body.userIds.length || body.userIds.length > 100 || body.userIds.some((id: unknown) => typeof id !== "string" || !db.users.some(u => u.id === id && u.enabled))) throw new FeatureConfigError("请选择 1–100 个有效内测账号");
     const values = featureValues(f.current.values);
     if (!db.models.some(m => m.id === values.modelId && m.enabled && m.kind === "chat" && m.apiKey)) throw new FeatureConfigError("请先配置可用模型");
@@ -67,7 +85,7 @@ export function featureRunResult(db: Database, scope: FeatureScope, operationId:
 function verifySources(db: Database, scope: FeatureScope, sources: NonNullable<ChatOperation["featureRun"]>["sources"]) {
   for (const s of sources) {
     const c = db.knowledgeConnections.find(c => c.id === s.id && c.workspaceId === scope.workspaceId && ["connected", "error"].includes(c.status));
-    if (!c || sourceBinding(c) !== s.binding) throw new FeatureConfigError("所选知识授权已变化，请重新选择后发起新任务", 409);
+    if (!c || !canReadKnowledge(db, scope, c.id) || sourceBinding(c) !== s.binding) throw new FeatureConfigError("所选知识授权已变化，请重新选择后发起新任务", 409);
   }
 }
 export type FeatureRunDependencies = { modelCall?: typeof callModelWithTools; transport?: JsonTransport; exchange?: ToolExchange };
@@ -130,7 +148,7 @@ export async function executeFeatureRun(store: Store, scope: FeatureScope, opera
     const snapshot = structuredClone(model);
     const tools: OrchestrationTool[] = executableFeatureTools(store,scope,values.tools??[],verify,deps);
     if (meta.sources.length) tools.push({ name: "knowledge_search", description: "当任务需要用户自己的资料时，检索本次用户明确选择的知识来源。query 填具体问题。没有结果不能声称资料中存在答案。", run: async query => {
-      await verify(); const found = await knowledge.recallWithDiagnostics(scope.workspaceId, query, 5, meta.sources.map(s => s.id)); await verify(); return found;
+      await verify(); const found = await knowledge.recallWithDiagnostics(scope.workspaceId, query, 5, meta.sources.map(s => s.id), scope.userId); await verify(); return found;
     } });
     const prompt = db.conversations.find(c => c.id === conversationId && c.workspaceId === scope.workspaceId && c.userId === scope.userId)?.messages.find(m => m.role === "user")?.content;
     if (!prompt) throw new FeatureConfigError("任务内容已移除");

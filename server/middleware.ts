@@ -47,6 +47,8 @@ export function auth(secret: string, injected?: AuthDependencies, options?: { ru
     const requestedWorkspace = payload.workspaceId || req.headers["x-workspace-id"]?.toString();
     const access = resolveWorkspaceAccess(db, user, requestedWorkspace);
     if (!access) return res.status(403).json({ error: "Workspace 不存在或无权访问" });
+    const expectedWorkspace = req.headers["x-one-workspace"];
+    if (expectedWorkspace && expectedWorkspace !== access.workspaceId) return res.status(409).json({ error: "所在空间已切换，请重新确认当前页面", code: "SESSION_CHANGED" });
 
     req.user = user;
     req.workspaceId = access.workspaceId;

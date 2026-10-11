@@ -1,0 +1,11 @@
+.company-panel { max-width: 960px; margin: 0 auto; padding: 24px; }
+.company-panel form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; padding: 16px 0; }
+.company-panel label { display: grid; gap: 6px; min-width: 0; }
+.company-panel input, .company-panel select { max-width: 100%; }
+.company-panel .company-check { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.company-panel .company-check input { width: auto; }
+.company-panel fieldset { flex: 1 1 240px; min-width: 0; padding: 12px; }
+.company-panel .company-overview { display: flex; gap: 16px; flex-wrap: wrap; padding: 16px 0; }
+.company-panel li { padding: 6px 0; overflow-wrap: anywhere; }
+.company-panel details { margin-bottom: 16px; }
+@media (max-width: 600px) { .company-panel { padding: 16px; } .company-panel form > label { width: 100%; } }

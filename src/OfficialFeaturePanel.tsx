@@ -25,6 +25,8 @@ export function OfficialFeaturePanel({api}:{api:typeof Api}){
 function FeatureEditor({api,featureId,onChanged}:{api:typeof Api;featureId:string;onChanged:()=>void}){
   const [id,setId]=useState(featureId),[saved,setSaved]=useState(!!featureId),[detail,setDetail]=useState<Detail>(),[values,setValues]=useState<OfficialFeatureValues>(initial),[evidence,setEvidence]=useState(""),[confirmed,setConfirmed]=useState(false),[busy,setBusy]=useState(false),[notice,setNotice]=useState(""),[page,setPage]=useState(1);
   const [history,setHistory]=useState<Detail>();
+  const [companyId,setCompanyId]=useState(""),[companies,setCompanies]=useState<{id:string;name:string}[]>([]);
+  useEffect(()=>{let live=true;void api<{items:{id:string;name:string}[]}>("/api/admin/companies").then(r=>{if(live)setCompanies(r.items);}).catch(()=>{});return()=>{live=false;};},[api]);
   const [imported,setImported]=useState<{files:string[];warnings:string[]}>();
   async function uploadSkill(file:File){
     if(file.size>2*1024*1024){setNotice('skill 文件不能超过 2MB');return;}
@@ -35,10 +37,10 @@ function FeatureEditor({api,featureId,onChanged}:{api:typeof Api;featureId:strin
       setNotice('已填入编辑区，请填写作者、使用边界并检查依赖，然后保存草稿。');
     }catch(e){setNotice(e instanceof Error?e.message:'导入失败');}finally{setBusy(false);}
   }
-  useEffect(()=>{if(!featureId)return;let live=true;void api<Detail>(`/api/admin/official-features/${featureId}`).then(d=>{if(live){setDetail(d);setHistory(d);setValues(d.draft);}}).catch(e=>{if(live)setNotice(e.message);});return()=>{live=false;};},[api,featureId]);
+  useEffect(()=>{if(!featureId)return;let live=true;void api<Detail>(`/api/admin/official-features/${featureId}`).then(d=>{if(live){setDetail(d);setHistory(d);setValues(d.draft);setCompanyId(d.workspaceId??"");}}).catch(e=>{if(live)setNotice(e.message);});return()=>{live=false;};},[api,featureId]);
   useEffect(()=>{if(!saved)return;let live=true;void api<Detail>(`/api/admin/official-features/${id}?page=${page}`).then(d=>{if(live)setHistory(d);}).catch(e=>{if(live)setNotice(e.message);});return()=>{live=false;};},[api,id,saved,page]);
   async function act(action:string,version?:number){setBusy(true);setNotice("");try{
-    await api(`/api/admin/official-features/${id}`,{method:"POST",body:JSON.stringify({revision:detail?.revision??0,action,values,evidence,confirmed,version})});
+    await api(`/api/admin/official-features/${id}`,{method:"POST",body:JSON.stringify({revision:detail?.revision??0,action,values,evidence,confirmed,version,...(action==="save"&&companyId&&!detail?.history.length?{workspaceId:companyId}:{})})});
     const next=await api<Detail>(`/api/admin/official-features/${id}`);setDetail(next);setHistory(next);setValues(next.draft);setSaved(true);setPage(1);setConfirmed(false);setEvidence("");onChanged();setNotice(action==="approve"?"新版本已认定；请在上架区选择是否发布或替换线上版本":"已保存");
   }catch(e){setNotice(e instanceof Error?e.message:"未能完成");}finally{setBusy(false);}}
   const changed=!!detail&&JSON.stringify(detail.draft)!==JSON.stringify(values);
@@ -46,6 +48,7 @@ function FeatureEditor({api,featureId,onChanged}:{api:typeof Api;featureId:strin
     <label>从 skill 文件导入<input type="file" accept=".md,.zip" disabled={busy|| (!!featureId&&!detail)} onChange={e=>{const file=e.target.files?.[0];e.target.value='';if(file&&(!values.instructions||confirm('导入会替换编辑区的名称、用途和执行要求，继续？')))void uploadSkill(file);}}/></label>
     <p className="hint">支持 Markdown 或包含单个 SKILL.md 的 ZIP，最大 2MB。Markdown 参考资料一起导入；带脚本或其他素材的包需要单独适配。</p>
     {imported?<details><summary>导入文件与检查事项</summary>{imported.warnings.map(w=><p key={w}>{w}</p>)}{imported.files.map(f=><p key={f}>{f}</p>)}</details>:null}
+    <label>所属范围<select value={companyId} disabled={busy||!!detail?.history.length||!!detail?.workspaceId} onChange={e=>setCompanyId(e.target.value)}><option value="">行业通用功能</option>{companies.map(c=><option key={c.id} value={c.id}>{c.name}专属</option>)}</select></label>
     <label>功能标识<input value={id} disabled={saved||busy} placeholder="例如 industry-report" maxLength={64} onChange={e=>setId(e.target.value)}/></label>
     <label>功能分类<SearchPicker label="分类" value={values.category??'general'} options={featureCategories.map(c=>({value:c.id,label:c.name}))} onChange={category=>setValues({...values,category:category as OfficialFeatureValues['category']})}/></label>
     {([['name','名称',60],['author','作者或合作方',100],['description','用途',500],['instructions','执行要求',12000],['limitations','适用边界与限制',2000]] as const).map(([key,label,max])=><label key={key}>{label}{key==='name'||key==='author'?<input value={values[key]} maxLength={max} disabled={busy} onChange={e=>setValues({...values,[key]:e.target.value})}/>:<textarea rows={key==='instructions'?5:3} value={values[key]} maxLength={max} disabled={busy} onChange={e=>setValues({...values,[key]:e.target.value})}/>}</label>)}
@@ -53,8 +56,8 @@ function FeatureEditor({api,featureId,onChanged}:{api:typeof Api;featureId:strin
     <FeatureBuilder api={api} values={values} onChange={setValues} disabled={busy}/>
     <button type="button" className="primary" disabled={busy|| (!!featureId&&!detail)} onClick={()=>void act("save")}>保存草稿</button>
     {saved&&detail?<FeatureTrial key={`${id}:${detail.revision}`} api={api} id={id} revision={detail.revision} disabled={busy||changed||!values.modelId||detail.status==='paused'}/>:null}
-    {saved&&detail?<FeatureRelease key={`release:${detail.revision}`} api={api} record={detail} disabled={busy||changed} onChanged={async()=>{const next=await api<Detail>(`/api/admin/official-features/${id}`);setDetail(next);setHistory(next);setValues(next.draft);onChanged();}}/>:null}
-    {saved&&detail?<><details><summary>官方认定</summary><p>认定已保存的配置版本，不会自动接入服务或上架。请勿填写客户私密资料、密钥或凭证。</p><label>验收记录<textarea rows={4} value={evidence} maxLength={4000} onChange={e=>setEvidence(e.target.value)} placeholder="测试范围、结果、局限及维护责任，至少 20 字"/></label><label className="sharing-check"><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>确认只认定配置，不代表已开放运行</label><button type="button" disabled={busy||changed||!confirmed||evidence.trim().length<20} onClick={()=>void act("approve")}>认定保存的版本</button>{changed?<p>请先保存当前修改。</p>:null}</details>
+    {saved&&detail&&!detail.workspaceId?<FeatureRelease key={`release:${detail.revision}`} api={api} record={detail} disabled={busy||changed} onChanged={async()=>{const next=await api<Detail>(`/api/admin/official-features/${id}`);setDetail(next);setHistory(next);setValues(next.draft);onChanged();}}/>:null}
+    {saved&&detail?<><details><summary>官方认定</summary><p>认定已保存的配置版本，不会自动上架。企业专属配置从企业管理入口交付；不要填写密钥或凭证。</p><label>验收记录<textarea rows={4} value={evidence} maxLength={4000} onChange={e=>setEvidence(e.target.value)} placeholder="测试范围、结果、局限及维护责任，至少 20 字"/></label><label className="sharing-check"><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>确认只认定配置，不代表已开放运行</label><button type="button" disabled={busy||changed||!confirmed||evidence.trim().length<20} onClick={()=>void act("approve")}>认定保存的版本</button>{changed?<p>请先保存当前修改。</p>:null}</details>
       {detail.current?<button type="button" disabled={busy||detail.status==='paused'} onClick={()=>{if(confirm("停用当前认定版本？历史记录会保留。"))void act("pause");}}>停用当前版本</button>:null}
       <details><summary>版本记录 · {history?.total??0}</summary>{history?.history.map(v=><article key={v.version}><strong>v{v.version} · {v.values.name}</strong><p>{new Date(v.approvedAt).toLocaleString()}</p><details><summary>配置与验收</summary><p style={{whiteSpace:'pre-wrap'}}>{v.values.instructions}</p><p>{v.values.limitations}</p><p style={{whiteSpace:'pre-wrap'}}>{v.evidence}</p></details><button type="button" disabled={busy} onClick={()=>{if(confirm("恢复此版本到草稿？当前未保存的修改将被替换，不会自动重新启用。"))void act("restore",v.version);}}>恢复到草稿</button></article>)}<Pagination page={page} total={history?.total??0} size={5} onChange={setPage}/></details></>:null}
     {notice?<p role="status">{notice}</p>:null}

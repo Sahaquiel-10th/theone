@@ -6,6 +6,7 @@ import { uid } from "./security.js";
 import { effectiveModel } from "./modelPricing.js";
 import {reserveCommerce,releaseCommerce,settleCommerce,restoreCommerceHolds} from './commerceBilling.js';
 import type {PublicCommerceSnapshot} from './publicSharingTypes.js';
+import { activeMember, billingAccountUserId, companyWorkspace } from './enterprisePolicy.js';
 
 export type ModelUsage = { inputTokens: number; outputTokens: number; totalTokens: number; cacheUsage?: CacheUsage; source: string };
 type BillingParams = { workspaceId: string; userId: string; conversationId?: string; model: ModelConfig; input: unknown; activity: string; requestId: string; beforeReserve?: (db: Database, amountMicros: number) => void;commerce?:PublicCommerceSnapshot };
@@ -126,12 +127,20 @@ export async function runBilledModel<T extends { usage?: ModelUsage; finishReaso
   };
   await store.mutate((db) => {
     if (!db.users.some((item) => item.id === params.userId && item.enabled)
-      || !db.workspaceMembers.some((item) => item.userId === params.userId && item.workspaceId === params.workspaceId)
+      || !activeMember(db, params)
       || !db.workspaces.some((item) => item.id === params.workspaceId && item.status === "active")) throw new Error("账号或个人空间不可用");
     if (!db.models.some((item) => item.id === model.id && item.enabled)) throw new Error("模型已停用，请重新选择");
     const payers=[{workspaceId:params.workspaceId,userId:params.userId},...(params.commerce?[{workspaceId:params.commerce.payerWorkspaceId,userId:params.commerce.payerUserId}]:[])];
     if (db.modelUsageRecords.some(item=>item.status==='needs_review'&&payers.some(p=>(item.workspaceId===p.workspaceId&&item.userId===p.userId)||(item.commercial?.snapshot.payerWorkspaceId===p.workspaceId&&item.commercial?.snapshot.payerUserId===p.userId)))) throw new BillingReviewRequiredError();
     params.beforeReserve?.(db, amountMicros);
+    if(companyWorkspace(db,params.workspaceId)) {
+      if(params.commerce)throw new Error('企业费用不能通过公开分享支付');
+      row.payerUserId=billingAccountUserId(db,params.workspaceId,params.userId);
+      const limit=activeMember(db,params)?.permissions?.powerLimitMicros;
+      const used=db.modelUsageRecords.filter(r=>r.workspaceId===params.workspaceId&&r.userId===params.userId).reduce((sum,r)=>sum+(r.chargedMicros??0)+(r.reservedMicros??0),0);
+      if(limit!==undefined&&used+amountMicros>limit)throw new Error('本次调用超过公司为你设置的累计电力额度');
+      if(db.modelUsageRecords.some(r=>r.workspaceId===params.workspaceId&&r.payerUserId===row.payerUserId&&r.status==='needs_review'))throw new BillingReviewRequiredError();
+    }
     if(params.commerce)reserveCommerce(db,row,params.commerce,amountMicros);
     else reservePower(db, { ...params, amountMicros });
     db.modelUsageRecords.push(row);

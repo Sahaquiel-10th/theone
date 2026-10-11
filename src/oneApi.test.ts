@@ -25,6 +25,20 @@ function browserFor(t: TestContext, fetcher: typeof fetch) {
 
 const json = (body: unknown, status = 200, headers: HeadersInit = {}) => new Response(JSON.stringify(body), { status, headers });
 
+test("same-user company switches reject old continuations and discard late private results", async t => {
+  let finish!: (response: Response) => void;
+  let calls = 0;
+  browserFor(t, () => { calls++; return new Promise(resolve => { finish = resolve; }); });
+  expectUser("user-a", "company-a");
+  const old = apiForUser("user-a", "company-a");
+  const pending = old("/api/conversations");
+  expectUser("user-a", "company-b");
+  finish(json({ privateText: "COMPANY_A_SENTINEL" }));
+  await assert.rejects(pending, error => error instanceof ApiError && error.code === "SESSION_CHANGED");
+  await assert.rejects(old("/api/chat", {method:"POST",body:"{}"}), error => error instanceof ApiError && error.code === "SESSION_CHANGED");
+  assert.equal(calls,1);
+});
+
 test("private requests send the expected account and preserve same-origin credentials", async t => {
   let sent: RequestInit | undefined;
   browserFor(t, async (_path, options) => { sent = options; return json({ ok: true }); });

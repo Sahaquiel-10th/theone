@@ -28,7 +28,7 @@ export class ChatOperationError extends Error {
 function authorize(db: Database, scope: ChatOperationScope) {
   if (!db.users.some(user => user.id === scope.userId && user.enabled)
     || !db.workspaces.some(workspace => workspace.id === scope.workspaceId && workspace.status === "active")
-    || !db.workspaceMembers.some(member => member.workspaceId === scope.workspaceId && member.userId === scope.userId)) {
+    || !db.workspaceMembers.some(member => member.status !== "disabled" && member.workspaceId === scope.workspaceId && member.userId === scope.userId)) {
     throw new ChatOperationError("CHAT_OPERATION_FORBIDDEN", "账号或个人空间不可用", 403);
   }
   if (!/^[A-Za-z0-9_-]{16,128}$/.test(scope.operationId)) {

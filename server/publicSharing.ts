@@ -1,3 +1,4 @@
+import { publicSharingAllowed } from "./enterprisePolicy.js";
 import { createHash, randomBytes } from "node:crypto";
 import type { Database, KnowledgeConnection } from "./types.js";
 import type { Publication, PublicSession, PublicRun } from "./publicSharingTypes.js";
@@ -19,7 +20,8 @@ export function sourceBinding(c: KnowledgeConnection) {
     c.providerUserId || c.providerSpaceId ? null : [c.encryptedApiKey, c.encryptedAccessToken]]));
 }
 function ownerActive(db: Database, p: { workspaceId: string; userId: string }) {
-  if (!db.users.some(u => u.id === p.userId && u.enabled) || !db.workspaces.some(w => w.id === p.workspaceId && w.status === "active") || !db.workspaceMembers.some(m => m.workspaceId === p.workspaceId && m.userId === p.userId && m.role === "owner")) throw new SharingError("分享已停止", 410);
+  if(!publicSharingAllowed(db,p.workspaceId))throw new SharingError("企业空间暂不开放对外分享和 API",403);
+  if (!db.users.some(u => u.id === p.userId && u.enabled) || !db.workspaces.some(w => w.id === p.workspaceId && w.status === "active") || !db.workspaceMembers.some(m => m.status !== "disabled" && m.workspaceId === p.workspaceId && m.userId === p.userId && m.role === "owner")) throw new SharingError("分享已停止", 410);
 }
 export function activePublication(db: Database, id: string): Publication {
   requireSharing(db);

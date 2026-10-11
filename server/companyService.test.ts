@@ -1,0 +1,126 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { Database } from "./types.js";
+import { createCompany, addCompanyMember, updateCompanyMember, companyManager, companySummary, recordBankTransfer } from "./companyService.js";
+import { activeMember, canReadKnowledge, featureEntitled, identityAccess, publicSharingAllowed } from "./enterprisePolicy.js";
+import { availableFeature, releaseCompanyFeature } from "./featureRuns.js";
+import { updateOfficialFeature } from "./officialFeatures.js";
+import { runBilledModel, reconcileInterruptedBilling, resolveBillingReview } from "./modelBilling.js";
+import { KnowledgeService } from "./knowledge/knowledgeService.js";
+import { resolveWorkspaceAccess } from "./workspaceAccess.js";
+import express from 'express';
+import { once } from 'node:events';
+import { auth, requireRole, requireOneKeySession } from './middleware.js';
+import { signToken } from './security.js';
+import { installCompanyRoutes } from './companyRoutes.js';
+import { OneKeyService } from './oneKeyService.js';
+import { ConnectorRegistry } from './connectors/registry.js';
+
+export function companyFixture() {
+  const db={users:[{id:'platform',username:'platform',role:'admin',enabled:true,defaultWorkspaceId:'personal'}],workspaces:[{id:'personal',status:'active'}],workspaceMembers:[{workspaceId:'personal',userId:'platform',role:'owner'}],models:[{id:'model',kind:'chat',name:'test',enabled:true,apiKey:'synthetic',systemPrompt:'',inputPowerPerMillion:1,outputPowerPerMillion:1,costInputPowerPerMillion:1,costOutputPowerPerMillion:1}],knowledgeConnections:[],oneKeyDevices:[],oneTimeLoginCodes:[],deviceChallenges:[],executionTasks:[],executionEvents:[],powerAccounts:[],powerLedger:[],rechargeOrders:[],modelUsageRecords:[],auditLogs:[],conversations:[],messages:[],contextTraces:[],settings:{safetyRules:'',officialFeatures:[]}} as unknown as Database;
+  const a=createCompany(db,'platform',{name:'A',agreementRef:'contract-a',ownerUsername:'owner-a'});
+  const b=createCompany(db,'platform',{name:'B',agreementRef:'contract-b',ownerUsername:'owner-b'});
+  const scope={workspaceId:a.company.id,userId:a.owner.id};
+  const employee=addCompanyMember(db,scope,{username:'employee-a'});
+  db.knowledgeConnections.push({id:'ka',workspaceId:a.company.id,provider:'notion',clientId:'a',status:'connected',createdAt:'t',updatedAt:'t'},{id:'kb',workspaceId:b.company.id,provider:'notion',clientId:'b',status:'connected',createdAt:'t',updatedAt:'t'});
+  const values={name:'Test',description:'Test',author:'ONE',instructions:'Read',limitations:'Read only',integration:'question_answer',modelId:'model'};
+  updateOfficialFeature(db.settings,'test-feature',{revision:0,action:'save',values},'platform','t');
+  updateOfficialFeature(db.settings,'test-feature',{revision:1,action:'approve',confirmed:true,evidence:'Synthetic validation evidence sufficient length'},'platform','t');
+  releaseCompanyFeature(db,'test-feature',a.company.id,{revision:2,enabled:true},'platform');
+  return{db,a,b,scope,employee,employeeScope:{workspaceId:a.company.id,userId:employee.id},values};
+}
+test('company identities and administration never grant platform access or cross company membership',()=>{
+  const f=companyFixture();assert.equal(f.db.users.find(u=>u.id===f.a.owner.id)?.role,'user');
+  assert.equal(identityAccess(f.db,f.scope).role,'company_admin');assert.equal(identityAccess(f.db,f.employeeScope).role,'employee');
+  assert.throws(()=>companyManager(f.db,{workspaceId:f.b.company.id,userId:f.a.owner.id}));assert.throws(()=>companyManager(f.db,f.employeeScope));
+  assert.equal(resolveWorkspaceAccess(f.db,f.db.users.find(u=>u.id===f.employee.id)!,f.b.company.id),null);
+  assert.equal(publicSharingAllowed(f.db,f.a.company.id),false);assert.equal(publicSharingAllowed(f.db,'personal'),true);
+  const serialized=JSON.stringify(companySummary(f.db,f.a.company.id));assert.doesNotMatch(serialized,/passwordHash|encrypted|apiKey|messages|owner-b/);
+});
+test('knowledge and feature grants default deny, reject other-company resources and take effect immediately',()=>{
+  const f=companyFixture();assert.equal(canReadKnowledge(f.db,f.employeeScope,'ka'),false);assert.equal(featureEntitled(f.db,f.employeeScope,f.db.settings.officialFeatures![0]),false);
+  assert.throws(()=>updateCompanyMember(f.db,f.scope,f.employee.id,{revision:1,permissions:{knowledgeConnectionIds:['kb'],featureIds:[]}}));
+  updateCompanyMember(f.db,f.scope,f.employee.id,{revision:1,permissions:{knowledgeConnectionIds:['ka'],featureIds:['test-feature']}});
+  assert.equal(canReadKnowledge(f.db,f.employeeScope,'ka'),true);assert.equal(canReadKnowledge(f.db,f.employeeScope,'kb'),false);assert.equal(availableFeature(f.db,f.employeeScope,'test-feature').version.version,1);
+  updateCompanyMember(f.db,f.scope,f.employee.id,{revision:2,permissions:{knowledgeConnectionIds:[],featureIds:[]}});
+  assert.equal(canReadKnowledge(f.db,f.employeeScope,'ka'),false);assert.throws(()=>availableFeature(f.db,f.employeeScope,'test-feature'));
+  assert.throws(()=>updateCompanyMember(f.db,f.scope,f.employee.id,{revision:2,status:'disabled'}));
+});
+test('company releases pin independent versions and private definitions cannot be delivered elsewhere',()=>{
+  const f=companyFixture();const id=f.db.settings.officialFeatures![0].companyReleases![0].id;
+  updateOfficialFeature(f.db.settings,'test-feature',{revision:3,action:'save',values:{...f.values,instructions:'new'}},'platform','t');
+  updateOfficialFeature(f.db.settings,'test-feature',{revision:4,action:'approve',confirmed:true,evidence:'Synthetic validation evidence sufficient length'},'platform','t');
+  releaseCompanyFeature(f.db,'test-feature',f.b.company.id,{revision:5,enabled:true},'platform');
+  assert.equal(availableFeature(f.db,f.scope,'test-feature',id).version.version,1);
+  assert.equal(availableFeature(f.db,{workspaceId:f.b.company.id,userId:f.b.owner.id},'test-feature').version.version,2);
+  f.db.settings.officialFeatures![0].workspaceId=f.a.company.id;
+  assert.throws(()=>availableFeature(f.db,{workspaceId:f.b.company.id,userId:f.b.owner.id},'test-feature'));
+  assert.throws(()=>releaseCompanyFeature(f.db,'test-feature',f.b.company.id,{revision:6,enabled:true},'platform'));
+});
+test('membership disable revokes company Keys and work while protecting the final administrator',()=>{
+  const f=companyFixture();assert.throws(()=>updateCompanyMember(f.db,f.scope,f.a.owner.id,{revision:1,status:'disabled'}));
+  f.db.oneKeyDevices.push({id:'key',workspaceId:f.a.company.id,userId:f.employee.id,status:'active'} as any);
+  f.db.oneTimeLoginCodes.push({workspaceId:f.a.company.id,userId:f.employee.id} as any);
+  f.db.executionTasks.push({id:'task',workspaceId:f.a.company.id,userId:f.employee.id,status:'running'} as any);
+  updateCompanyMember(f.db,f.scope,f.employee.id,{revision:1,status:'disabled'});
+  assert.equal(activeMember(f.db,f.employeeScope),undefined);assert.equal(f.db.oneKeyDevices[0].status,'revoked');assert.equal(f.db.executionTasks[0].status,'cancelled');assert.ok(f.db.oneTimeLoginCodes[0].usedAt);
+  assert.throws(()=>addCompanyMember(f.db,f.employeeScope,{username:'attacker'}));
+});
+test('corporate bank receipt is platform-only and idempotent; shared payer preserves employee usage and holds',async()=>{
+  const f=companyFixture(),bank={bankReference:'bank-1',amountFen:10000,amountMicros:1000000,confirmed:true};
+  assert.throws(()=>recordBankTransfer(f.db,f.scope,bank));
+  const p={workspaceId:f.a.company.id,userId:'platform'};
+  assert.equal(recordBankTransfer(f.db,p,bank).replay,false);assert.equal(recordBankTransfer(f.db,p,bank).replay,true);
+  assert.throws(()=>recordBankTransfer(f.db,{workspaceId:f.b.company.id,userId:'platform'},bank));assert.equal(f.db.powerLedger.length,1);
+  const store={read:async()=>f.db,mutate:async<T>(fn:(db:Database)=>T)=>fn(f.db)};
+  const params={...f.employeeScope,model:f.db.models[0],input:'hi',activity:'test',requestId:'r'};
+  const call=()=>Promise.resolve({usage:{inputTokens:10,outputTokens:5,totalTokens:15,source:'provider'}});
+  await runBilledModel(store,params,call);
+  assert.equal(f.db.modelUsageRecords[0].userId,f.employee.id);assert.equal(f.db.modelUsageRecords[0].payerUserId,`company:${f.a.company.id}`);
+  assert.equal(f.db.powerLedger[1].actorUserId,f.employee.id);assert.equal(f.db.powerLedger[1].userId,`company:${f.a.company.id}`);
+  assert.equal(companySummary(f.db,f.b.company.id).billing.balanceMicros,0);
+  updateCompanyMember(f.db,f.scope,f.employee.id,{revision:1,permissions:{knowledgeConnectionIds:[],featureIds:[],powerLimitMicros:0}});
+  await assert.rejects(runBilledModel(store,params,call),/累计电力额度/);
+  delete f.db.workspaceMembers.find(m=>m.userId===f.employee.id)!.permissions!.powerLimitMicros;
+  await runBilledModel(store,{...params,requestId:'unknown'},()=>Promise.resolve({}));
+  const unknown=f.db.modelUsageRecords.at(-1)!;assert.equal(unknown.status,'needs_review');reconcileInterruptedBilling(f.db);
+  const held=companySummary(f.db,f.a.company.id).billing.reservedMicros;assert.ok(held>0);
+  resolveBillingReview(f.db,{workspaceId:f.a.company.id,userId:f.employee.id,usageId:unknown.id,action:'waive'});
+  assert.equal(companySummary(f.db,f.a.company.id).billing.reservedMicros,0);
+});
+test('enterprise recall requires employee identity and rejects unauthorized source even without a live connector',async()=>{
+  const f=companyFixture(),service=new KnowledgeService({read:async()=>f.db,mutate:async fn=>fn(f.db)});
+  await assert.rejects(service.recallWithDiagnostics(f.a.company.id,'question'),/员工身份/);
+  await assert.rejects(service.recallWithDiagnostics(f.a.company.id,'question',5,['ka'],f.employee.id),/无权/);
+  assert.equal((await service.recallWithDiagnostics(f.a.company.id,'question',5,undefined,f.employee.id)).status,'not_connected');
+});
+test('knowledge permission revoked during retrieval prevents returned snippets and does not poison the shared connection',async()=>{
+  const f=companyFixture();updateCompanyMember(f.db,f.scope,f.employee.id,{revision:1,permissions:{knowledgeConnectionIds:['ka'],featureIds:[]}});
+  let finish!:(value:any)=>void,started!:()=>void;
+  const entered=new Promise<void>(resolve=>{started=resolve;});
+  const registry=new ConnectorRegistry([{kind:'knowledge',manifest:{id:'notion',kind:'knowledge',version:'1.0.0',name:'Test',capabilities:['knowledge.search'],auth:'oauth_pkce',security:{trust:'untrusted_reference',transport:'fixed_https',access:'read_only',allowedHosts:['example.com']}},status:()=>({state:'configured',code:'TEST',message:'Test',evidence:'stored'}),recall:async()=>{started();return await new Promise(resolve=>{finish=resolve;});}}]);
+  const service=new KnowledgeService({read:async()=>f.db,mutate:async fn=>fn(f.db)},registry);
+  const pending=service.recallWithDiagnostics(f.a.company.id,'question',5,['ka'],f.employee.id);await entered;
+  updateCompanyMember(f.db,f.scope,f.employee.id,{revision:2,permissions:{knowledgeConnectionIds:[],featureIds:[]}});
+  finish([{title:'private',content:'PRIVATE_SENTINEL'}]);await assert.rejects(pending,/授权已撤销/);
+  assert.equal(f.db.knowledgeConnections[0].status,'connected');
+});
+test('company HTTP routes require Key, reject platform escalation, bind grants and Key provisioning to exact company',async t=>{
+  const f=companyFixture();let db=f.db;
+  const store={read:async()=>db,mutate:async<T>(fn:(db:Database)=>T)=>{const before=structuredClone(db);try{return fn(db);}catch(e){db=before;throw e;}}};
+  const keyAuth=[auth('secret',{store,oneKeyPresence:{requireProof:async()=>{},runtimeStatus:async()=>({}) as any}}),requireOneKeySession];
+  const app=express();app.use(express.json());installCompanyRoutes(app,keyAuth,[...keyAuth,requireRole('admin')],store,new OneKeyService(store));
+  const server=app.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
+  const url=`http://127.0.0.1:${(server.address() as any).port}`;
+  const headers=(userId:string,workspaceId:string,key=true)=>({'Content-Type':'application/json',Authorization:`Bearer ${signToken({sub:userId,workspaceId,...(key?{deviceId:'synthetic',installationId:'installation-test'}:{})},'secret')}`});
+  const request=(path:string,userId:string,workspaceId:string,body?:unknown,key=true)=>fetch(url+path,{method:body?'POST':'GET',headers:headers(userId,workspaceId,key),...(body?{body:JSON.stringify(body)}:{})});
+  assert.equal((await request('/api/company',f.a.owner.id,f.a.company.id,undefined,false)).status,428);
+  assert.equal((await request('/api/admin/companies',f.a.owner.id,f.a.company.id)).status,403);
+  assert.equal((await request('/api/company',f.employee.id,f.a.company.id)).status,403);
+  const own=await (await request('/api/company',f.a.owner.id,f.a.company.id)).json();assert.equal(own.company.id,f.a.company.id);assert.doesNotMatch(JSON.stringify(own),/owner-b|encrypted|passwordHash/);
+  assert.equal((await request('/api/company/keys',f.a.owner.id,f.a.company.id,{userId:f.b.owner.id,serialNumber:'FOREIGN-KEY',workspaceId:f.b.company.id})).status,403);
+  const key=await request('/api/company/keys',f.a.owner.id,f.a.company.id,{userId:f.employee.id,serialNumber:'COMPANY-A-KEY',workspaceId:f.b.company.id});assert.equal(key.status,201);
+  assert.equal((await key.json()).device.workspaceId,f.a.company.id);
+  const forged=await fetch(url+'/api/company',{headers:{...headers(f.a.owner.id,f.a.company.id),'X-ONE-Workspace':f.b.company.id}});assert.equal(forged.status,409);
+  const bank=await request(`/api/admin/companies/${f.a.company.id}/payments`,'platform','personal',{confirmed:true,bankReference:'http-bank',amountFen:100,amountMicros:1000});assert.equal(bank.status,200);
+});

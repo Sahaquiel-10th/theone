@@ -26,7 +26,7 @@ export class BetaInputError extends Error {
 export function accountInScope(db: Database, scope: AccountScope): User & { profile?: AccountProfile } {
   const user = db.users.find((item) => item.id === scope.userId && item.enabled && item.defaultWorkspaceId === scope.workspaceId);
   const workspace = db.workspaces.find((item) => item.id === scope.workspaceId && item.status === "active");
-  const membership = db.workspaceMembers.some((item) => item.userId === scope.userId && item.workspaceId === scope.workspaceId);
+  const membership = db.workspaceMembers.some((item) => item.status !== "disabled" && item.userId === scope.userId && item.workspaceId === scope.workspaceId);
   if (!user || !workspace || !membership) throw new BetaInputError("账号空间不存在或无权访问", 403, "WORKSPACE_FORBIDDEN");
   return user;
 }

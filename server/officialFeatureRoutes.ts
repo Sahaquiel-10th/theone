@@ -39,6 +39,11 @@ export function installOfficialFeatureRoutes(app: Express, admin: readonly Reque
   router.post("/:id",asyncRoute(async(req,res)=>{
     const revision=await store.mutate(db=>{
       const r=updateOfficialFeature(db.settings,String(req.params.id),req.body,req.user!.id,new Date().toISOString());
+      if (req.body.action === 'save' && req.body.workspaceId !== undefined) {
+        if (r.history.length) throw new FeatureConfigError('已认定功能不能更换所属公司',409);
+        if (typeof req.body.workspaceId !== 'string' || !db.workspaces.some(w=>w.id===req.body.workspaceId&&w.kind==='company'&&w.status==='active')) throw new FeatureConfigError('所属公司无效');
+        r.workspaceId=req.body.workspaceId;
+      }
       db.auditLogs.push({id:uid("aud"),actorUserId:req.user!.id,action:`admin.official_feature.${req.body.action}`,targetType:"official_feature",targetId:r.id,details:{revision:r.revision,version:r.current?.version??0},createdAt:new Date().toISOString(),requestId:res.locals.requestId});
       return r.revision;
     });res.json({ok:true,revision});

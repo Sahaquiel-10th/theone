@@ -6,6 +6,7 @@ import { FeatureConfigError } from "./officialFeatures.js";
 import { ChatOperationError } from "./chatOperations.js";
 import { availableFeature, executeFeatureRun, featureMember, featureRunResult, featureSummary, startFeatureRun, type FeatureRunDependencies } from "./featureRuns.js";
 import {featureCategories} from './featureCategories.js';
+import { featureEntitled, canReadKnowledge } from "./enterprisePolicy.js";
 
 export function installFeatureRunRoutes(app: Express, keyAuth: readonly RequestHandler[], store: Store, verifyKey: (req: express.Request) => Promise<void>, knowledge: Pick<KnowledgeService, "recallWithDiagnostics">, deps: FeatureRunDependencies = {}) {
   const router = express.Router();
@@ -17,7 +18,7 @@ export function installFeatureRunRoutes(app: Express, keyAuth: readonly RequestH
     const db = await store.read(), s = scope(req); featureMember(db, s);
     const q = String(req.query.q ?? "").slice(0,100).toLowerCase(), page = pageOf(req.query.page);
     const category=String(req.query.category??'all');if(category!=='all'&&!featureCategories.some(c=>c.id===category))throw new FeatureConfigError('功能分类无效');
-    const items = (db.settings.officialFeatures ?? []).filter(f => f.status === "approved" && f.release?.userIds.includes(s.userId)).map(featureSummary).filter(f => `${f.name} ${f.description} ${f.author}`.toLowerCase().includes(q)&&(category==='all'||f.category===category));
+    const items = (db.settings.officialFeatures ?? []).filter(f => f.status === "approved" && featureEntitled(db, s, f)).map(f=>featureSummary(availableFeature(db,s,f.id).record)).filter(f => `${f.name} ${f.description} ${f.author}`.toLowerCase().includes(q)&&(category==='all'||f.category===category));
     res.json({ items: items.slice((page-1)*10,page*10), total: items.length });
   }));
   router.get("/runs", asyncRoute(async (req,res) => {
@@ -29,7 +30,7 @@ export function installFeatureRunRoutes(app: Express, keyAuth: readonly RequestH
   router.get("/runs/:operationId", asyncRoute(async (req,res) => { res.json(featureRunResult(await store.read(),scope(req),String(req.params.operationId))); }));
   router.get("/:id", asyncRoute(async (req,res) => {
     const db = await store.read(), s = scope(req), { record } = availableFeature(db,s,String(req.params.id));
-    res.json({ ...featureSummary(record), sources: db.knowledgeConnections.filter(c => c.workspaceId === s.workspaceId && c.status === "connected").map(c => ({ id: c.id, name: c.providerSpaceName || c.provider })) });
+    res.json({ ...featureSummary(record), sources: db.knowledgeConnections.filter(c => c.workspaceId === s.workspaceId && c.status === "connected" && canReadKnowledge(db,s,c.id)).map(c => ({ id: c.id, name: c.providerSpaceName || c.provider })) });
   }));
   router.post("/:id/runs", asyncRoute(async (req,res) => {
     const s = scope(req), started = await startFeatureRun(store,s,String(req.params.id),req.body,() => verifyKey(req));

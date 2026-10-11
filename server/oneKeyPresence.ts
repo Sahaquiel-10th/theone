@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { activeMember, companyWorkspace } from "./enterprisePolicy.js";
 import type { Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import type { Store } from "./db.js";
@@ -130,6 +131,8 @@ export class OneKeyPresence {
   async requireProof(params: { deviceId: string; installationId?: string; userId: string; workspaceId: string; method: string; path: string }) {
     if (!validInstallationId(params.installationId)) throw new OneKeyPresenceError("请更新 ONE Key 启动器，再从 U 盘双击 ONE 图标登录", "ONE_KEY_UPGRADE_REQUIRED");
     const db = await this.store.read();
+    const company = companyWorkspace(db, params.workspaceId);
+    if (company && (company.status !== "active" || !activeMember(db, params) || !db.users.some(u=>u.id===params.userId&&u.enabled))) throw new OneKeyPresenceError("公司或成员授权已停止");
     const device = db.oneKeyDevices.find((item) => item.id === params.deviceId && item.status === "active");
     if (!device || device.userId !== params.userId || device.workspaceId !== params.workspaceId) {
       throw new OneKeyPresenceError("ONE Key 已挂失或不属于当前账号");

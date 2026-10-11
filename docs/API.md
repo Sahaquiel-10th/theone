@@ -176,3 +176,10 @@ ONE 通过官方托管 MCP 只调用 `notion-fetch`、`notion-search` 和 `notio
 ZIP 必须只含一个 `SKILL.md`；Markdown 参考资料合并到执行说明，LICENSE/NOTICE 文本保存在可编辑的 `skillAttribution` 中，随草稿和认定版本保留，不进入模型的任务指令。说明与参考资料合计上限 12000 字，许可记录上限 30000 字；超限明确拒绝，不截断。最多 100 条目、单文件解压 128KB、合计解压 512KB；路径穿越、符号链接、非 UTF-8、脚本及非文本素材包拒绝导入并说明需适配。当前不支持 RAR、tar.gz、多技能整库 ZIP 或任意脚本执行。
 
 skill 元信息仅提取简单顶层 name/description/license 字符串和折叠/字面多行文本，不从上传内容推导模型、工具、凭证或发布配置。上传者仍须核对作者、来源、商用授权和依赖；导入不构成许可审查或运行验收。该入口不新增用户数据存储路径；已有功能授权、workspace 隔离和版本上架流程保持独立验证。
+
+
+## 2026-10-10 企业基础准备
+
+新增持 Key 的平台公司接口 /api/admin/companies（开户、状态、成员、Key、功能交付、对公入账）及公司接口 /api/company（本公司成员、权限、Key、资源与费用摘要）。/api/me 和 Key 兑换增加 access。X-ONE-Workspace 为预期身份检查，不授予空间权限。详见企业准备文档。
+
+详细边界见 [企业基础准备](./ENTERPRISE-PREPARATION.md)。

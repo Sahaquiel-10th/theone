@@ -6,12 +6,13 @@ import { credentialOwner, credentialStatuses, setFeatureCredential, revokeFeatur
 import { featureAllowedEndpoints, featureMcpEndpoints, featureToolEndpoint } from './featureTools.js';
 import { openFeatureMcp, mcpDefinition } from './connectors/featureMcp.js';
 import type { ToolExchange } from './connectors/boundedHttps.js';
+import { featureEntitled, featureRelease } from './enterprisePolicy.js';
 
 export function credentialEndpointAllowed(db: Database, scope: {workspaceId:string;userId:string}, endpoint:string, auth:string) {
   const user=credentialOwner(db,scope);
   if(!['bearer','api_key'].includes(auth))return false;
   if(user.role==='admin')return [...featureAllowedEndpoints(),...featureMcpEndpoints()].includes(endpoint);
-  return (db.settings.officialFeatures??[]).some(f=>f.status==='approved'&&f.release?.userIds.includes(user.id)&&f.history.find(v=>v.version===f.release!.version)?.values.tools?.some(t=>{
+  return (db.settings.officialFeatures??[]).some(f=>f.status==='approved'&&featureEntitled(db,scope,f)&&f.history.find(v=>v.version===featureRelease(db,scope,f)?.version)?.values.tools?.some(t=>{
     try{return t.auth===auth&&featureToolEndpoint(t)===endpoint;}catch{return false;}
   }));
 }

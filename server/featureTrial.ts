@@ -15,13 +15,13 @@ type Scope = { workspaceId: string; userId: string };
 function authorize(db: Database, scope: Scope, id: string, revision?: number) {
   if (!db.users.some(u => u.id === scope.userId && u.enabled && u.role === "admin") ||
     !db.workspaces.some(w => w.id === scope.workspaceId && w.status === "active") ||
-    !db.workspaceMembers.some(m => m.workspaceId === scope.workspaceId && m.userId === scope.userId)) throw new FeatureConfigError("无权试运行", 403);
+    !db.workspaceMembers.some(m => m.status !== "disabled" && m.workspaceId === scope.workspaceId && m.userId === scope.userId)) throw new FeatureConfigError("无权试运行", 403);
   const record = db.settings.officialFeatures?.find(f => f.id === id);
   if (!record || record.status === "paused" || (revision !== undefined && record.revision !== revision)) throw new FeatureConfigError("配置已变化或停用，请重新打开", 409);
   return record;
 }
 export function trialResult(db: Database, scope: Scope, operationId: string) {
-  if (!db.users.some(u => u.id === scope.userId && u.enabled && u.role === "admin") || !db.workspaceMembers.some(m=>m.workspaceId===scope.workspaceId&&m.userId===scope.userId) || !db.workspaces.some(w=>w.id===scope.workspaceId&&w.status==='active')) throw new FeatureConfigError("无权查看",403);
+  if (!db.users.some(u => u.id === scope.userId && u.enabled && u.role === "admin") || !db.workspaceMembers.some(m=>m.status !== "disabled" && m.workspaceId===scope.workspaceId&&m.userId===scope.userId) || !db.workspaces.some(w=>w.id===scope.workspaceId&&w.status==='active')) throw new FeatureConfigError("无权查看",403);
   const op = db.chatOperations?.find(o=>o.operationId===operationId&&o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.requestId.startsWith('ftrial'));
   if (!op) throw new FeatureConfigError("试运行不存在",404);
   if (op.status==='failed' || op.status==='interrupted') {

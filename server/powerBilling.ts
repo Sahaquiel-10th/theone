@@ -1,5 +1,6 @@
 import { CachePrices, CacheUsage, Database, ModelConfig } from "./types.js";
 import { uid } from "./security.js";
+import { billingAccountUserId } from "./enterprisePolicy.js";
 
 export const MICROS_PER_POWER = 1_000_000;
 
@@ -39,7 +40,8 @@ export function contextPricedModel(model: ModelConfig, inputTokens: number, cach
 }
 
 export function powerAccount(db: Database, workspaceId: string, userId: string) {
-  return db.powerAccounts.find((item) => item.workspaceId === workspaceId && item.userId === userId);
+  const payer = billingAccountUserId(db, workspaceId, userId);
+  return db.powerAccounts.find((item) => item.workspaceId === workspaceId && item.userId === payer);
 }
 
 export function availablePowerMicros(db: Database, workspaceId: string, userId: string) {
@@ -81,6 +83,7 @@ export function creditPower(db: Database, params: {
   const account = powerAccount(db, params.workspaceId, params.userId);
   if (!account) throw new Error("电力账户不存在");
   if (!Number.isSafeInteger(params.amountMicros) || params.amountMicros <= 0 || !Number.isSafeInteger(account.balanceMicros + params.amountMicros)) throw new Error("电力数量必须为有效正数");
+  if (account.userId !== params.userId) throw new Error("企业额度请通过公司对公到账入口入账");
   const before = account.balanceMicros;
   const paidBefore=Math.max(0,Math.min(before,account.paidBalanceMicros??0));
   account.balanceMicros += params.amountMicros;
@@ -104,7 +107,7 @@ export function chargePower(db: Database, params: {
   account.balanceMicros -= params.amountMicros;
   account.paidBalanceMicros=paidBefore-paidPrincipalMicros;
   account.updatedAt = new Date().toISOString();
-  const entry = { id: uid("pwl"), workspaceId: params.workspaceId, userId: params.userId, type: "usage" as const, amountMicros: -params.amountMicros,paidPrincipalMicros,bonusMicros, balanceBeforeMicros: before, balanceAfterMicros: account.balanceMicros, title: params.title, modelId: params.modelId, usageRecordId: params.usageRecordId, createdAt: account.updatedAt };
+  const entry = { id: uid("pwl"), workspaceId: params.workspaceId, userId: account.userId, actorUserId: params.userId, type: "usage" as const, amountMicros: -params.amountMicros,paidPrincipalMicros,bonusMicros, balanceBeforeMicros: before, balanceAfterMicros: account.balanceMicros, title: params.title, modelId: params.modelId, usageRecordId: params.usageRecordId, createdAt: account.updatedAt };
   db.powerLedger.push(entry);
   return entry;
 }

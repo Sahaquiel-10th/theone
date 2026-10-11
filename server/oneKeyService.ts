@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { Store } from "./db.js";
+import type { Database } from "./types.js";
 import { uid } from "./security.js";
 import { requireInstallationId } from "./oneKeyInstallation.js";
 
@@ -13,15 +14,16 @@ function tokenHash(value: string) { return crypto.createHash("sha256").update(va
 export class OneKeyService {
   constructor(private store: Store) {}
 
-  async provision(params: { workspaceId: string; userId: string; serialNumber: string }) {
+  async provision(params: { workspaceId: string; userId: string; serialNumber: string }, authorize?: (db: Database)=>void) {
     const pair = crypto.generateKeyPairSync("ed25519");
     const publicKey = pair.publicKey.export({ type: "spki", format: "pem" }).toString();
     const privateJwk = pair.privateKey.export({ format: "jwk" });
     if (!privateJwk.d || !privateJwk.x) throw new Error("无法生成 ONE Key 设备凭证");
     const device = await this.store.mutate((db) => {
+      authorize?.(db);
       if (!db.workspaces.some((item) => item.id === params.workspaceId && item.status === "active")) throw new Error("Workspace 不存在或已停用");
       if (!db.users.some((item) => item.id === params.userId && item.enabled)) throw new Error("用户不存在或已停用");
-      if (!db.workspaceMembers.some((item) => item.workspaceId === params.workspaceId && item.userId === params.userId)) throw new Error("用户不属于目标 Workspace");
+      if (!db.workspaceMembers.some((item) => item.status !== "disabled" && item.workspaceId === params.workspaceId && item.userId === params.userId)) throw new Error("用户不属于目标 Workspace");
       if (db.oneKeyDevices.some((item) => item.serialNumber === params.serialNumber && item.status === "active")) throw new Error("ONE Key 序列号已存在");
       const created = { id: uid("dev"), serialNumber: params.serialNumber, workspaceId: params.workspaceId, userId: params.userId, status: "active" as const, publicKey, createdAt: now() };
       db.oneKeyDevices.push(created);
@@ -83,8 +85,8 @@ export class OneKeyService {
       const installationId = requireInstallationId(code.installationId);
       const device = db.oneKeyDevices.find((item) => item.id === code.deviceId && item.status === "active");
       const user = db.users.find((item) => item.id === code.userId && item.enabled);
-      const member = db.workspaceMembers.find((item) => item.workspaceId === code.workspaceId && item.userId === code.userId);
-      if (!device || !user || !member) return { error: "ONE Key 绑定已失效" } as const;
+      const member = db.workspaceMembers.find((item) => item.workspaceId === code.workspaceId && item.userId === code.userId && item.status !== "disabled");
+      if (!device || !user || !member || !db.workspaces.some(w=>w.id===code.workspaceId&&w.status==='active')) return { error: "ONE Key 绑定已失效" } as const;
       code.usedAt = now();
       return { userId: user.id, role: user.role, workspaceId: code.workspaceId, deviceId: device.id, installationId } as const;
     });
@@ -92,8 +94,9 @@ export class OneKeyService {
     return outcome;
   }
 
-  async revoke(deviceId: string) {
+  async revoke(deviceId: string, authorize?: (db: Database)=>void) {
     return this.store.mutate((db) => {
+      authorize?.(db);
       const device = db.oneKeyDevices.find((item) => item.id === deviceId);
       if (!device) throw new Error("ONE Key 不存在");
       device.status = "revoked";

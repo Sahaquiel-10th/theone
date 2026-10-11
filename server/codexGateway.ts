@@ -40,7 +40,7 @@ export class CodexGateway {
       && item.userId === grant.userId && item.deviceId === grant.deviceId && item.installationId === grant.installationId);
     if (!task || task.provider !== "codex" || executionTerminal(task.status) || (task.reportRound ?? 0) !== grant.round
       || !db.users.some(item => item.id === grant.userId && item.enabled)
-      || !db.workspaceMembers.some(item => item.userId === grant.userId && item.workspaceId === grant.workspaceId)
+      || !db.workspaceMembers.some(item => item.status !== "disabled" && item.userId === grant.userId && item.workspaceId === grant.workspaceId)
       || !db.workspaces.some(item => item.id === grant.workspaceId && item.status === "active")
       || !db.oneKeyDevices.some(item => item.id === grant.deviceId && item.userId === grant.userId && item.workspaceId === grant.workspaceId && item.status === "active")) throw unavailable();
     return task;

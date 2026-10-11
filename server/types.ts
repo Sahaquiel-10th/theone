@@ -1,8 +1,8 @@
 export type Role = "admin" | "user";
 
 export type User = { id: string; username: string; passwordHash: string; role: Role; defaultWorkspaceId: string; profile?: import("./betaProfile.js").AccountProfile; preferredModelId?: string; enabled: boolean; createdAt: string; featureCredentials?: import("./featureCredentials.js").FeatureCredential[]; registrationOrigin?:'visitor'; visitorAuthVersion?:number;analyticsExcluded?:boolean };
-export type Workspace = { id: string; name: string; slug: string; status: "active" | "suspended"; createdAt: string; updatedAt: string };
-export type WorkspaceMember = { id: string; workspaceId: string; userId: string; role: "owner" | "member"; createdAt: string };
+export type Workspace = { id: string; name: string; slug: string; kind?: "personal" | "company"; revision?: number; status: "active" | "suspended"; company?: { agreementRef: string; billing: "bank_transfer"; allowPublicSharing: boolean }; createdAt: string; updatedAt: string };
+export type WorkspaceMember = { id: string; workspaceId: string; userId: string; role: "owner" | "member"; status?: "active" | "disabled"; permissions?: { knowledgeConnectionIds: string[]; featureIds: string[]; powerLimitMicros?: number }; createdAt: string };
 export type ConversationFolder = { id: string; workspaceId: string; userId: string; name: string; createdAt: string };
 
 export type ModelConfig = {
@@ -85,6 +85,8 @@ export type ExecutionTraceStep = {
 };
 
 export type ModelUsageRecord = {
+  /** Company payer snapshot; userId remains the employee who performed the work. */
+  payerUserId?: string;
   commercial?:import('./publicSharingTypes.js').CommercialUsage;
   finishReason?: import("./modelGateway.js").ModelFinishReason;
   aiTaskVersion?: number;
@@ -114,12 +116,14 @@ export type PowerAccount = {
   createdAt: string; updatedAt: string;
 };
 export type PowerLedgerEntry = {
+  actorUserId?: string;
   paidPrincipalMicros?:number;bonusMicros?:number;
   id: string; workspaceId: string; userId: string; type: "gift" | "recharge" | "usage" | "adjustment" | "refund";
   amountMicros: number; balanceBeforeMicros: number; balanceAfterMicros: number; title: string; batchId?: string;
   modelId?: string; usageRecordId?: string; createdByUserId?: string; createdAt: string;
 };
 export type RechargeOrder = {
+  corporatePayment?: { agreementRef: string; bankReference: string; recordedBy: string };
   id: string; workspaceId: string; userId: string; requestedMicros: number; amountCny: number; cnyPerPowerSnapshot: number;
   status: "pending" | "paid" | "cancelled"; createdAt: string; paidAt?: string;
   payment?: { channel: "wechat"; amountMode?: "cny" | "power"; appId: string; mchId: string; amountFen: number; expiresAt: string; codeUrl?: string; transactionId?: string; state: "creating" | "pending" | "uncertain" | "paid" };

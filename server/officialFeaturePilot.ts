@@ -9,7 +9,7 @@ const denied = () => { throw new StandardToolError("PILOT_NOT_AUTHORIZED"); };
 function authorize(db: Database, scope: PilotScope, binding: PilotBinding) {
   if (!db.users.some(u => u.id === scope.userId && u.enabled && u.role === "admin") ||
     !db.workspaces.some(w => w.id === scope.workspaceId && w.status === "active") ||
-    !db.workspaceMembers.some(m => m.workspaceId === scope.workspaceId && m.userId === scope.userId)) denied();
+    !db.workspaceMembers.some(m => m.status !== "disabled" && m.workspaceId === scope.workspaceId && m.userId === scope.userId)) denied();
   const feature = db.settings.officialFeatures?.find(f => f.id === binding.featureId);
   if (feature?.status !== "approved" || feature.current?.version !== binding.featureVersion || feature.current.values.integration !== "openapi" ||
     binding.cost !== "free_test_only" || binding.approvedDigest !== binding.tool.digest) denied();

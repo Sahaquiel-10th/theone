@@ -13,7 +13,7 @@ type Options = { fetch?: typeof fetch; appId?: string; appSecret?: string; origi
 const connection = (db: Database, workspaceId: string) => db.knowledgeConnections.find(c => c.workspaceId === workspaceId && c.provider === "feishu");
 const context = (workspaceId: string, field: string) => knowledgeCredentialContext(workspaceId, "feishu", field);
 function owner(db: Database, scope: Scope) {
-  if (!db.users.some(u => u.id === scope.userId && u.enabled) || !db.workspaces.some(w => w.id === scope.workspaceId && w.status === "active") || !db.workspaceMembers.some(m => m.workspaceId === scope.workspaceId && m.userId === scope.userId && m.role === "owner")) throw new Error("无权操作此连接");
+  if (!db.users.some(u => u.id === scope.userId && u.enabled) || !db.workspaces.some(w => w.id === scope.workspaceId && w.status === "active") || !db.workspaceMembers.some(m => m.status !== "disabled" && m.workspaceId === scope.workspaceId && m.userId === scope.userId && m.role === "owner")) throw new Error("无权操作此连接");
 }
 function text(value: unknown, max: number) { if (typeof value !== "string" || !value.trim() || value.length > max) throw new Error("飞书响应或输入无效"); return value; }
 function id(value: unknown) { const s = text(value, 200); if (!/^[a-zA-Z0-9_-]+$/.test(s)) throw new Error("飞书文档标识无效"); return s; }

@@ -1,3 +1,5 @@
+import { CompanyPanel } from "./CompanyPanel";
+import type { identityAccess } from "../server/enterprisePolicy";
 import React, { FormEvent, createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AiTaskPanel } from "./AiTaskPanel";
 import { OfficialFeaturePanel } from "./OfficialFeaturePanel";
@@ -112,6 +114,7 @@ type Role = "admin" | "user";
 const PrivateApiContext = createContext<typeof api>(api);
 
 type User = {
+  access?: ReturnType<typeof identityAccess>;
   id: string;
   defaultWorkspaceId: string;
   username: string;
@@ -604,7 +607,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [view, setView] = useState<"chat" | "things" | "admin" | "account" | "features" | "agents" | "agentEditor">(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "account" : "chat"; });
+  const [view, setView] = useState<"chat" | "things" | "admin" | "company" | "account" | "features" | "agents" | "agentEditor">(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "account" : user.access?.role === "company_admin" ? "company" : user.role === "admin" ? "admin" : "chat"; });
   const [accountSection, setAccountSection] = useState(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "knowledge" : "profile"; });
   const interfaceTransition = useRef<OneViewTransition | null>(null);
   const interfaceAnimations = useRef<Animation[]>([]);
@@ -1116,7 +1119,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     requestAnimationFrame(() => document.getElementById("one-studio-input")?.focus());
   }
 
-  function openSurface(next: "chat" | "things" | "admin" | "knowledge" | "account" | "features") {
+  function openSurface(next: "chat" | "things" | "admin" | "company" | "knowledge" | "account" | "features") {
     transitionInterface(() => {
       if(next==='chat'&&preview.enabled){setPreviewHome(false);setActiveId('');setFocusedTask(false);preview.dispatch({type:'select',taskId:null});preview.dispatch({type:'bind',taskId:null});}
       if (next === "knowledge") setAccountSection("knowledge");
@@ -1735,6 +1738,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <FeatureNav quiet={!canPeekAtFeatures(view!=='chat'||studioIdle,isWaiting,content)} active={view==='features'} onClick={()=>openSurface('features')}/>
           <button type="button" aria-current={view === "account" ? "page" : undefined} onClick={() => openSurface("account")}>设置</button>
           {user.role === "admin" ? <button type="button" aria-current={view === "admin" ? "page" : undefined} onClick={() => openSurface("admin")}>管理</button> : null}
+          {user.access?.role === "company_admin" ? <button type="button" aria-current={view === "company" ? "page" : undefined} onClick={() => openSurface("company")}>公司管理</button> : null}
         </nav>
         <div className="one-chrome-actions">
           <button className="one-chrome-button knowledge" type="button" title="知识来源" onClick={() => openSurface("knowledge")}>
@@ -1820,6 +1824,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           onStop={source=>cancelExecution(source,thingExecutionTask)} /> : null}
         hasMore={hasMoreConversations||(coordinator.enabled&&(coordinator.snapshot?.total??0)>coordinator.state.tasks.length)}
         onMore={()=>void loadMoreConversations()} loadingMore={loadingMoreConversations}/>
+        : view === "company" && user.access?.role === "company_admin" ? (
+        <CompanyPanel api={api}/>
+      )
         : view === "admin" && user.role === "admin" ? (
         <AdminPanel actorId={user.id} refreshModels={refresh} onOpenSidebar={() => setHistoryOpen(true)} />
       ) : view === "features" ? (
@@ -1892,7 +1899,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       </section>
 
       <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 指挥台">
-        {view === "chat" && !hasSubmittedChat && !conversations.length && !profile.onboarding.completedAt ? <Onboarding profile={profile} knowledgeConnected={[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected")} onSave={saveProfile} onOpenKnowledge={() => openSurface("knowledge")} onStartQuestion={suggestion => { setContent(suggestion); setComposeNew(true); setView("chat"); }} /> : null}
+        {view === "chat" && !hasSubmittedChat && !conversations.length && !profile.onboarding.completedAt && user.access?.kind !== "company" ? <Onboarding profile={profile} knowledgeConnected={[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected")} onSave={saveProfile} onOpenKnowledge={() => openSurface("knowledge")} onStartQuestion={suggestion => { setContent(suggestion); setComposeNew(true); setView("chat"); }} /> : null}
         <div className="studio-presence">
           <OneHeroEye mood={heroMood} label={view==='features'?'收起功能，回到 ONE':'打开功能'} onActivate={()=>openSurface(view==='features'?'chat':'features')}/>
           <div className="studio-presence-copy"><span className="studio-eyebrow">ONE IS WITH YOU</span>
@@ -2342,7 +2349,7 @@ function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onM
       </header>
       <nav className="settings-tabs account-settings-tabs" aria-label="设置栏目">{[["profile", "个人设置"], ["knowledge", "知识连接"], ["power", "电力与账单"]].map(([id, label]) => <button type="button" key={id} aria-pressed={section === id} onClick={() => setSection(id)}>{label}</button>)}</nav>
       <div className="account-body settings-account-body">
-        {section === "knowledge" ? knowledge : section === "power" ? billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载电力账户…</p> : <>
+        {section === "knowledge" ? knowledge : section === "power" ? user.access?.kind === "company" ? <div className="settings-empty"><p>费用由公司按协议对公打款承担，无需个人充值。</p><p>公司可用电力：{((billing?.availableMicros??0)/1e6).toFixed(3)}；个人额度由公司管理员配置。</p></div> : billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载电力账户…</p> : <>
         <section className="account-panel"><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
         <LocalDeviceSettings key={user.id} api={api} />
         <section className="account-panel">
@@ -2601,7 +2608,7 @@ function KnowledgePage({
 function AdminPanel({ actorId, refreshModels, onOpenSidebar }: { actorId: string; refreshModels: () => Promise<void>; onOpenSidebar: () => void }) {
   const api = useContext(PrivateApiContext);
   const [billingSection, setBillingSection] = useState("pricing");
-  const [tab, setTab] = useState<"overview" | "users" | "keys" | "models" | "billing" | "usage" | "contexts" | "logs" | "ai-tasks" | "official-features">("overview");
+  const [tab, setTab] = useState<"overview" | "users" | "keys" | "models" | "billing" | "usage" | "contexts" | "logs" | "ai-tasks" | "official-features" | "companies">("overview");
   const [users, setUsers] = useState<User[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [devices, setDevices] = useState<OneKeyDevice[]>([]);
@@ -2639,6 +2646,7 @@ function AdminPanel({ actorId, refreshModels, onOpenSidebar }: { actorId: string
         <nav className="tabs">
           <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}><ShieldCheck size={16} />总览</button>
           <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={16} />账号</button>
+          <button className={tab === "companies" ? "active" : ""} onClick={() => setTab("companies")}><Users size={16}/>企业</button>
           <button className={tab === "keys" ? "active" : ""} onClick={() => setTab("keys")}><Usb size={16} />ONE Key</button>
           <button className={tab === "models" ? "active" : ""} onClick={() => setTab("models")}><Bot size={16} />模型</button>
           <button className={tab === "ai-tasks" ? "active" : ""} onClick={() => setTab("ai-tasks")}><Bot size={16} />AI 任务</button>
@@ -2651,6 +2659,7 @@ function AdminPanel({ actorId, refreshModels, onOpenSidebar }: { actorId: string
         {notice ? <div className="notice">{notice}</div> : null}
         <div className="admin-body">
           {tab === "overview" ? <><ProductMetricsPanel api={api} accounts={users}/><details className="quiet-details"><summary>系统与账务状态</summary><AdminOverview operations={operations}/></details></> : null}
+          {tab === "companies" ? <CompanyPanel api={api} platform/> : null}
           {tab === "users" ? <UsersTab users={users} reload={load} /> : null}
           {tab === "keys" ? <OneKeysTab users={users} devices={devices} reload={load} /> : null}
           {tab === "models" ? <ModelsTab models={models} reload={async () => { await load(); await refreshModels(); }} /> : null}
@@ -3141,7 +3150,7 @@ function ModelsTab({ models, reload }: { models: Model[]; reload: () => Promise<
 
 function App() {
   const [user, setUser] = useState<User | null>(null);
-  const privateApi = useMemo(() => user ? apiForUser(user.id) : api, [user?.id]);
+  const privateApi = useMemo(() => user ? apiForUser(user.id,user.access?.workspaceId??user.defaultWorkspaceId) : api, [user?.id,user?.access?.workspaceId]);
   const [booting, setBooting] = useState(true);
   const [bootMessage, setBootMessage] = useState("加载中…");
   const [bootError, setBootError] = useState("");
@@ -3158,9 +3167,9 @@ function App() {
     if (loginCode) window.history.replaceState({}, "", `${window.location.pathname}${window.location.search}`);
     try {
       setBootMessage(loginCode ? "正在验证 ONE Key…" : "正在连接…");
-      const result = loginCode ? await api<{ user: User }>("/api/auth/one-key/redeem", { method: "POST", body: JSON.stringify({ loginCode }) }) : await api<{ user: User }>("/api/me");
+      const result = loginCode ? await api<{ user: User; access?: ReturnType<typeof identityAccess> }>("/api/auth/one-key/redeem", { method: "POST", body: JSON.stringify({ loginCode }) }) : await api<{ user: User; access?: ReturnType<typeof identityAccess> }>("/api/me");
       if (generation !== bootGeneration.current) return;
-      expectUser(result.user.id); setUser(result.user); setRecoveryLogin(false); setUpdateRecovery("");
+      expectUser(result.user.id,result.access?.workspaceId??result.user.defaultWorkspaceId); setUser({...result.user,access:result.access}); setRecoveryLogin(false); setUpdateRecovery("");
       if (loginCode) announceSessionChange();
     } catch (error) {
       if (generation !== bootGeneration.current) return;
@@ -3180,7 +3189,7 @@ function App() {
     const checkIdentity = () => {
       if (document.visibilityState !== "visible") return;
       if (!currentUser.current) { void boot(); return; }
-      void api<{ user: User }>("/api/me").then(result => { if (result.user.id !== currentUser.current?.id) void boot(); }).catch(error => {
+      void api<{ user: User; access?: ReturnType<typeof identityAccess> }>("/api/me").then(result => { if (result.user.id !== currentUser.current?.id || JSON.stringify(result.access)!==JSON.stringify(currentUser.current?.access)) void boot(); }).catch(error => {
         if (error instanceof ApiError && error.status === 401) void boot();
       });
     };
@@ -3198,10 +3207,10 @@ function App() {
   }, [user, updateRecovery, recoveryLogin]);
 
   if (booting) return <div className="boot">{bootMessage}</div>;
-  if (!user) return recoveryLogin ? <><Login onDone={next => { expectUser(next.id); setUser(next); announceSessionChange(); }} /><button className="one-login-back" onClick={() => setRecoveryLogin(false)}>返回 ONE Key 登录</button></> : <main className="one-key-welcome"><OneEye size="hero" /><h1>{updateRecovery ? "重新打开 ONE，完成更新" : "插入 ONE Key"}</h1><p role="status">{updateRecovery || bootError}</p><button className="primary" onClick={() => void boot()}>{updateRecovery ? "我已重新打开，检查连接" : "重新连接"}</button><details><summary>连接帮助</summary><p>{updateRecovery ? "网页不能替你启动本机程序。打开 U 盘，双击 ONE；如果出现系统权限提示，请按提示处理。若确实拔出了 Key，请插回同一枚。" : "检查 ONE Key、网络和启动器版本。Key 已挂失请联系管理员。"}</p><button className="secondary" onClick={() => setRecoveryLogin(true)}>超管登录</button></details></main>;
+  if (!user) return recoveryLogin ? <><Login onDone={next => { expectUser(next.id,next.defaultWorkspaceId); setUser(next); announceSessionChange(); }} /><button className="one-login-back" onClick={() => setRecoveryLogin(false)}>返回 ONE Key 登录</button></> : <main className="one-key-welcome"><OneEye size="hero" /><h1>{updateRecovery ? "重新打开 ONE，完成更新" : "插入 ONE Key"}</h1><p role="status">{updateRecovery || bootError}</p><button className="primary" onClick={() => void boot()}>{updateRecovery ? "我已重新打开，检查连接" : "重新连接"}</button><details><summary>连接帮助</summary><p>{updateRecovery ? "网页不能替你启动本机程序。打开 U 盘，双击 ONE；如果出现系统权限提示，请按提示处理。若确实拔出了 Key，请插回同一枚。" : "检查 ONE Key、网络和启动器版本。Key 已挂失请联系管理员。"}</p><button className="secondary" onClick={() => setRecoveryLogin(true)}>超管登录</button></details></main>;
   return (
     <PrivateApiContext.Provider value={privateApi}><ChatApp
-      key={user.id}
+      key={`${user.id}:${user.access?.workspaceId??user.defaultWorkspaceId}:${user.access?.role??user.role}`}
       user={user}
       onLogout={() => {
         void privateApi("/api/auth/logout", { method: "POST" }).then(() => { expectUser(""); setUser(null); setBootError("已退出。插入 Key 后可以重新打开 ONE。"); announceSessionChange(); }).catch(error => setBootError(error.message));

@@ -19,6 +19,9 @@ export type OfficialFeatureVersion = {
   approvedBy: string; approvedAt: string;
 };
 export type OfficialFeatureRecord = {
+  /** Omitted for shared platform templates; set for private company definitions. */
+  workspaceId?: string;
+  companyReleases?: { workspaceId: string; id: string; version: number; publishedAt: string; publishedBy: string }[];
   id: string; revision: number; draft: OfficialFeatureValues;
   status: "draft" | "approved" | "paused";
   current?: OfficialFeatureVersion; history: OfficialFeatureVersion[];
@@ -65,6 +68,7 @@ export function updateOfficialFeature(settings: SystemSettings, id: string, inpu
     if (!next.current) throw new FeatureConfigError("尚无已认定版本");
     next.status="paused";
     delete next.release;
+    delete next.companyReleases;
   } else if (body.action === "restore") {
     const version=next.history.find(v=>v.version===body.version);
     if (!version) throw new FeatureConfigError("历史版本不存在",404);

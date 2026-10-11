@@ -13,8 +13,8 @@ export function batchGift(db: Database, actorUserId: string, operationId: string
     if (existing.details?.amountMicros !== amountMicros || existing.details?.title !== title) throw new Error("重试参数与原赠送不一致");
     return { batchId, recipientCount: Number(existing.details.recipientCount), amountMicros };
   }
-  const recipients = db.users.filter(u => u.enabled && db.workspaces.some(w => w.id === u.defaultWorkspaceId && w.status === "active")
-    && db.workspaceMembers.some(m => m.userId === u.id && m.workspaceId === u.defaultWorkspaceId));
+  const recipients = db.users.filter(u => u.enabled && db.workspaces.some(w => w.id === u.defaultWorkspaceId && w.status === "active" && w.kind !== "company")
+    && db.workspaceMembers.some(m => m.status !== "disabled" && m.userId === u.id && m.workspaceId === u.defaultWorkspaceId));
   if (!recipients.length) throw new Error("没有可赠送的启用成员");
   if (!Number.isSafeInteger(amountMicros * recipients.length)) throw new Error("批次总额过大");
   for (const user of recipients) {

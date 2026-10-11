@@ -142,3 +142,10 @@ GetNote 设备授权码使用官方 `expires_in`，当前真实接口返回 600 
 ## 后续兼容
 
 V2 可以为 Connector 增加 `listDocuments/getDocument/sync`，把外部资料定期复制到 ONE 自有知识库。但首版接口和表不假装同步已经存在，也不提前建设 Source/Memory/RAG 系统。
+
+
+## 2026-10-10 企业基础准备
+
+企业身份复用 Workspace/Membership/Key 精确绑定；公司管理员仍是普通 User，公司权限来自有效 owner 成员。公司功能各自固定发布版本，所有知识检索传入员工身份；浏览器请求同时绑定用户、空间和身份代次。保持单实例模块化单体。
+
+详细边界见 [企业基础准备](./ENTERPRISE-PREPARATION.md)。

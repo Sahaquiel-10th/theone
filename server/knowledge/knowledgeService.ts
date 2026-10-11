@@ -3,6 +3,7 @@ import type { KnowledgeConnection } from "../types.js";
 import { ConnectorRegistry } from "../connectors/registry.js";
 import { getnoteConnector } from "../connectors/getnote.js";
 import type { KnowledgeChunk } from "./provider.js";
+import { canReadKnowledge, companyWorkspace } from "../enterprisePolicy.js";
 
 const maxConnectorChunkChars = 24_000;
 
@@ -66,9 +67,15 @@ export class KnowledgeService {
     return result.chunks;
   }
 
-  async recallWithDiagnostics(workspaceId: string, query: string, topK = 5, allowedConnectionIds?: readonly string[]): Promise<KnowledgeRecallResult> {
+  async recallWithDiagnostics(workspaceId: string, query: string, topK = 5, allowedConnectionIds?: readonly string[], userId?: string): Promise<KnowledgeRecallResult> {
     topK = Number.isFinite(topK) ? Math.max(1, Math.min(10, Math.floor(topK))) : 5;
     const db = await this.store.read();
+    if (companyWorkspace(db, workspaceId)) {
+      if (!userId) throw new Error("企业知识检索缺少员工身份");
+      const permitted = db.knowledgeConnections.filter(c => c.workspaceId === workspaceId && ["connected", "error"].includes(c.status) && canReadKnowledge(db, {workspaceId,userId}, c.id)).map(c => c.id);
+      if (allowedConnectionIds?.some(id => !permitted.includes(id))) throw new Error("无权访问所选企业知识");
+      allowedConnectionIds = allowedConnectionIds === undefined ? permitted : allowedConnectionIds;
+    }
     const selected = allowedConnectionIds === undefined ? undefined : db.knowledgeConnections.filter(c => c.workspaceId === workspaceId && allowedConnectionIds.includes(c.id) && ["connected", "error"].includes(c.status));
     if (selected && (new Set(allowedConnectionIds).size !== selected.length)) throw new Error("授权知识来源已失效");
     // A reviewed adapter owns provider-specific credentials and authorization.
@@ -91,6 +98,7 @@ export class KnowledgeService {
       } catch (error) {
         failure = safeFailure(adapter.manifest.id, error);
       }
+      if (userId && companyWorkspace(db, workspaceId) && (!snapshot || !canReadKnowledge(await this.store.read(), {workspaceId,userId}, snapshot.id))) throw new Error("企业知识授权已撤销");
       // A persistence failure is an application failure, not a knowledge-provider
       // error. Let the chat request abort before model billing in that case.
       await this.recordOutcome(snapshot, startedAt, failure);

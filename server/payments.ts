@@ -1,3 +1,4 @@
+import { companyWorkspace } from "./enterprisePolicy.js";
 import crypto from "node:crypto";
 import type { Database, RechargeOrder } from "./types.js";
 import { creditPower } from "./powerBilling.js";
@@ -9,7 +10,8 @@ export function preparePayment(db: Database, scope: { workspaceId: string; userI
   const power = typeof intent === "number" ? intent : 0;
   const fen = custom ? intent.amountFen : 0;
   if (custom ? !Number.isSafeInteger(fen) || fen < 1 || fen > 1000000 : !Number.isInteger(power) || power < 1 || power > 10000) throw new Error("请输入 ¥0.01 至 ¥10000，或选择 1 至 10000 整数电力");
-  if (!db.users.some(u => u.id === scope.userId && u.enabled) || !db.workspaceMembers.some(m => m.userId === scope.userId && m.workspaceId === scope.workspaceId)
+  if (companyWorkspace(db,scope.workspaceId)) throw new Error("企业费用通过协议及对公打款入账，请联系公司管理员");
+  if (!db.users.some(u => u.id === scope.userId && u.enabled) || !db.workspaceMembers.some(m => m.status !== "disabled" && m.userId === scope.userId && m.workspaceId === scope.workspaceId)
     || !db.workspaces.some(w => w.id === scope.workspaceId && w.status === "active")) throw new Error("电力账户不可用");
   const digest = crypto.createHash("sha256").update(JSON.stringify([scope.workspaceId, scope.userId, operationId])).digest("hex");
   // WeChat merchant order numbers share a namespace across our applications.

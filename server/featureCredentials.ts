@@ -9,7 +9,7 @@ type Scope={workspaceId:string;userId:string};
 const context=(s:Scope,endpoint:string,auth:string)=>JSON.stringify(['feature-tool',s.workspaceId,s.userId,endpoint,auth]);
 export function credentialOwner(db:Database,s:Scope){
   const user=db.users.find(u=>u.id===s.userId&&u.enabled);
-  if(!user||!db.workspaceMembers.some(m=>m.workspaceId===s.workspaceId&&m.userId===s.userId)||!db.workspaces.some(w=>w.id===s.workspaceId&&w.status==='active'))throw new Error('无权访问工具凭证');
+  if(!user||!db.workspaceMembers.some(m=>m.status !== "disabled" && m.workspaceId===s.workspaceId&&m.userId===s.userId)||!db.workspaces.some(w=>w.id===s.workspaceId&&w.status==='active'))throw new Error('无权访问工具凭证');
   return user;
 }
 export function credentialStatuses(db:Database,s:Scope){return (credentialOwner(db,s).featureCredentials??[]).filter(c=>c.workspaceId===s.workspaceId&&c.userId===s.userId).map(c=>({endpoint:c.endpoint,auth:c.auth,revision:c.revision,updatedAt:c.updatedAt}));}

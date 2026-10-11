@@ -319,10 +319,15 @@ function migrateDatabase(raw: Record<string, any>): Database {
   const powerAccounts = collection("powerAccounts");
   const powerLedger = collection("powerLedger");
   for (const user of users) {
+    if (workspaces.some(w=>w.id===user.defaultWorkspaceId&&w.kind==='company')) continue;
     if (powerAccounts.some((item: any) => item.workspaceId === user.defaultWorkspaceId && item.userId === user.id)) continue;
     const amount = 10_000_000;
     powerAccounts.push({ id: uid("pwa"), workspaceId: user.defaultWorkspaceId, userId: user.id, balanceMicros: amount, reservedMicros: 0, createdAt, updatedAt: createdAt });
     powerLedger.push({ id: uid("pwl"), workspaceId: user.defaultWorkspaceId, userId: user.id, type: "gift", amountMicros: amount, balanceBeforeMicros: 0, balanceAfterMicros: amount, title: "初始体验电力", createdAt });
+  }
+  for (const workspace of workspaces.filter(w=>w.kind==='company')) {
+    const payer=`company:${workspace.id}`;
+    if(!powerAccounts.some((a:any)=>a.workspaceId===workspace.id&&a.userId===payer))powerAccounts.push({id:uid('pwa'),workspaceId:workspace.id,userId:payer,balanceMicros:0,reservedMicros:0,paidBalanceMicros:0,createdAt,updatedAt:createdAt});
   }
 
   const database: Database = {

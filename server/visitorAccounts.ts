@@ -4,7 +4,7 @@ import {SharingError} from './publicSharing.js';
 export type VisitorIdentity={userId:string;workspaceId:string};
 export function visitorUser(db:Database,s:VisitorIdentity){
   const u=db.users.find(u=>u.id===s.userId&&u.enabled&&u.defaultWorkspaceId===s.workspaceId);
-  if(!u||!db.workspaces.some(w=>w.id===s.workspaceId&&w.status==='active')||!db.workspaceMembers.some(m=>m.userId===u.id&&m.workspaceId===s.workspaceId))throw new SharingError('账号不可用',401);
+  if(!u||!db.workspaces.some(w=>w.id===s.workspaceId&&w.status==='active')||!db.workspaceMembers.some(m=>m.status !== "disabled" && m.userId===u.id&&m.workspaceId===s.workspaceId))throw new SharingError('账号不可用',401);
   return u;
 }
 export function registerVisitor(db:Database,input:any):User{

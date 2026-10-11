@@ -125,3 +125,10 @@
 - 每次业务变更在单个 InnoDB 事务内提交；失败时内存状态同步回滚。
 - 首次切换自动从现有 `db.json` 导入；原文件和切换前环境配置保留为回退快照。
 - 后续迁移只能通过追加 `schema_migrations` 版本完成，逐步把高频查询字段从 JSON 提升为普通列。
+
+
+## 2026-10-10 企业基础准备
+
+追加兼容字段：Workspace.kind/revision/company；WorkspaceMember.status/permissions；OfficialFeatureRecord.workspaceId/companyReleases；ModelUsageRecord.payerUserId；PowerLedgerEntry.actorUserId；RechargeOrder.corporatePayment。沿用 record_json 持久化，不重写历史迁移。公司账户主体 company:<workspaceId>，员工重启时不生成个人体验余额。
+
+详细边界见 [企业基础准备](./ENTERPRISE-PREPARATION.md)。

@@ -1,3 +1,5 @@
+import { identityAccess, companyWorkspace } from "./enterprisePolicy.js";
+import { installCompanyRoutes } from "./companyRoutes.js";
 import express, { Request, RequestHandler, Response } from "express";
 import "dotenv/config";
 import fs from "node:fs";
@@ -145,7 +147,7 @@ function messageRecord(message: Message, params: { workspaceId: string; userId: 
 }
 function requireWorkspaceOwner(req: Request, res: Response, next: () => void) {
   store.read().then((db) => {
-    const member = db.workspaceMembers.find((item) => item.workspaceId === req.workspaceId && item.userId === req.user?.id);
+    const member = db.workspaceMembers.find((item) => item.status !== "disabled" && item.workspaceId === req.workspaceId && item.userId === req.user?.id);
     if (member?.role !== "owner") return res.status(403).json({ error: "只有 Workspace 所有者可以执行此操作", code: "WORKSPACE_OWNER_REQUIRED" });
     next();
   }).catch(next);
@@ -255,13 +257,13 @@ app.post("/api/auth/one-key/redeem", asyncRoute(async (req, res) => {
   await store.mutate((mutable) => mutable.auditLogs.push({ id: uid("aud"), workspaceId: binding.workspaceId, actorUserId: user.id, action: "auth.key.login", targetType: "one_key", targetId: binding.deviceId, requestId: res.locals.requestId, createdAt: now() }));
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
   res.setHeader("Set-Cookie", `one_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${oneKeySessionSeconds}${secure}`);
-  res.json({ user: publicUser(user), workspaceId: binding.workspaceId });
+  res.json({ user: publicUser(user), workspaceId: binding.workspaceId, access: identityAccess(db, binding) });
 }));
 
 app.get("/api/me", auth(jwtSecret), asyncRoute(async (req, res) => {
   const db = await store.read();
   const workspace = db.workspaces.find((item) => item.id === req.workspaceId)!;
-  res.json({ user: publicUser(req.user!), workspace });
+  res.json({ user: publicUser(req.user!), workspace, access: identityAccess(db, {workspaceId:req.workspaceId!,userId:req.user!.id}) });
 }));
 app.get("/api/runtime/update", auth(jwtSecret, undefined, { runtimeStatusOnly: true }), requireOneKeySession, asyncRoute(async (req, res) => {
   const connected = await oneKeyPresence.runtimeStatus({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, userId: req.user!.id, workspaceId: req.workspaceId! });
@@ -325,7 +327,7 @@ app.patch("/api/me/model", ...keyAuth, asyncRoute(async (req, res) => {
 }));
 app.get("/api/me/billing", ...keyAuth, asyncRoute(async (req, res) => {
   const db = await store.read(); const account = powerAccount(db, req.workspaceId!, req.user!.id);
-  const ledger = db.powerLedger.filter((item) => item.workspaceId === req.workspaceId && item.userId === req.user!.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 50);
+  const ledger = db.powerLedger.filter((item) => item.workspaceId === req.workspaceId && (item.actorUserId ?? item.userId) === req.user!.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 50);
   const orders = db.rechargeOrders.filter((item) => item.workspaceId === req.workspaceId && item.userId === req.user!.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 20).map(publicPayment);
   const usage = db.modelUsageRecords.filter((item) => item.workspaceId === req.workspaceId && item.userId === req.user!.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 50);
   res.json({ balanceMicros: account?.balanceMicros ?? 0, reservedMicros: account?.reservedMicros ?? 0, availableMicros: availablePowerMicros(db, req.workspaceId!, req.user!.id), ledger, orders, usage: usage.map(publicUsageRecord), rechargeCnyPerPower: db.settings.rechargeCnyPerPower });
@@ -333,6 +335,7 @@ app.get("/api/me/billing", ...keyAuth, asyncRoute(async (req, res) => {
 app.post("/api/me/recharge-orders", ...keyAuth, asyncRoute(async (req, res) => {
   const power = Number(req.body.power); if (!Number.isFinite(power) || power <= 0 || power > 100000 || Math.round(power * MICROS_PER_POWER) !== power * MICROS_PER_POWER) throw new Error("充值电力必须大于 0，最多保留 6 位小数");
   const order = await store.mutate((db) => {
+    if(companyWorkspace(db,req.workspaceId!))throw new Error("企业费用按协议对公打款入账，请联系公司管理员");
     const createdAt = now(); const created = { id: uid("rch"), workspaceId: req.workspaceId!, userId: req.user!.id, requestedMicros: Math.round(power * MICROS_PER_POWER), amountCny: Math.round(power * db.settings.rechargeCnyPerPower * 100) / 100, cnyPerPowerSnapshot: db.settings.rechargeCnyPerPower, status: "pending" as const, createdAt };
     db.rechargeOrders.push(created); db.auditLogs.push({ id: uid("aud"), workspaceId: req.workspaceId, actorUserId: req.user!.id, action: "recharge.requested", targetType: "recharge_order", targetId: created.id, details: { requestedMicros: created.requestedMicros, amountCny: created.amountCny }, requestId: res.locals.requestId, createdAt }); return created;
   });
@@ -448,7 +451,7 @@ app.post("/api/chat", ...keyAuth, asyncRoute(async (req, res) => {
   // the same durable operation; it never resubmits the paid model calls.
   if (executionModel.kind === "chat" && fullDocumentIntent(content) && contextAttachments.reduce((n, item) => n + (item.textChars ?? item.extractedText.length), 0) > attachmentContextChars - 2500) res.status(202).json({ pending: true, operationId: scope.operationId });
   let [recall, searchSources] = await Promise.all([
-    !useOrchestrator && executionModel.kind === "chat" ? knowledgeService.recallWithDiagnostics(req.workspaceId!, content, 5) : undefined,
+    !useOrchestrator && executionModel.kind === "chat" ? knowledgeService.recallWithDiagnostics(req.workspaceId!, content, 5, undefined, req.user!.id) : undefined,
     !useOrchestrator && wantsWebSearch ? searchWeb(content) : [] as Awaited<ReturnType<typeof searchWeb>>
   ]);
   let orchestrated: Awaited<ReturnType<typeof runTaskOrchestrator>> | undefined;
@@ -468,7 +471,7 @@ app.post("/api/chat", ...keyAuth, asyncRoute(async (req, res) => {
       beforeStep: verifyScope,
       tools: [
         ...(config.values.tools.includes("knowledge_search") ? [{ name: "knowledge_search", description: config.values.toolDescriptions?.knowledge_search, run: async (query: string) => {
-          const found = await knowledgeService.recallWithDiagnostics(scope.workspaceId, query, 5);
+          const found = await knowledgeService.recallWithDiagnostics(scope.workspaceId, query, 5, undefined, scope.userId);
           recall = recall ? { ...found, chunks: [...recall.chunks, ...found.chunks].slice(0, 15), failures: [...recall.failures, ...found.failures], status: recall.chunks.length || found.chunks.length ? (recall.failures.length || found.failures.length ? "partial" : "used") : found.status } : found;
           return found;
         } }] : []),
@@ -829,7 +832,7 @@ app.get("/api/executions/:id/stream", ...keyAuth, asyncRoute(async (req, res) =>
     const database = await store.read();
     if (!database.users.some((item) => item.id === req.user!.id && item.enabled)
       || !database.workspaces.some((item) => item.id === req.workspaceId && item.status === "active")
-      || !database.workspaceMembers.some((item) => item.userId === req.user!.id && item.workspaceId === req.workspaceId)
+      || !database.workspaceMembers.some((item) => item.status !== "disabled" && item.userId === req.user!.id && item.workspaceId === req.workspaceId)
       || !oneKeyPresence.isConnected(req.oneKeyDeviceId!, req.oneKeyInstallationId)) { res.end(); return; }
     const task = database.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
     if (!task) { res.write("event: error\ndata: {\"error\":\"执行任务不存在\"}\n\n"); res.end(); return; }
@@ -986,6 +989,7 @@ app.post("/api/executions/:id/cancel", ...keyAuth, asyncRoute(async (req, res) =
 }));
 
 const admin = [...keyAuth, requireRole("admin")] as const;
+installCompanyRoutes(app, keyAuth, admin, store, oneKeyService);
 installPublicCommerceRoutes(app,keyAuth,admin,store);
 installProductMetricsRoutes(app,admin,store);
 installAiTaskRoutes(app, admin, store);

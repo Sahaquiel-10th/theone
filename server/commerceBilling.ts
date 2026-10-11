@@ -1,3 +1,4 @@
+import { companyWorkspace } from "./enterprisePolicy.js";
 import type {Database,ModelUsageRecord} from './types.js';
 import type {PublicCommerceSnapshot} from './publicSharingTypes.js';
 import {reservePower,releasePower,chargePower,powerAccount} from './powerBilling.js';
@@ -6,7 +7,7 @@ function amounts(base:number,multiplier:number){
   if(!Number.isSafeInteger(payer)||payer<0||!Number.isSafeInteger(publisher))throw new Error('公开服务费用超出范围');
   return {payer,publisher};
 }
-function activeAccount(db:Database,workspaceId:string,userId:string){if(!db.users.some(u=>u.id===userId&&u.enabled)||!db.workspaceMembers.some(m=>m.userId===userId&&m.workspaceId===workspaceId)||!db.workspaces.some(w=>w.id===workspaceId&&w.status==='active'))throw new Error('付款账号不可用');}
+function activeAccount(db:Database,workspaceId:string,userId:string){if(companyWorkspace(db,workspaceId))throw new Error("企业账户不用于公开服务付款");if(!db.users.some(u=>u.id===userId&&u.enabled)||!db.workspaceMembers.some(m=>m.status !== "disabled" && m.userId===userId&&m.workspaceId===workspaceId)||!db.workspaces.some(w=>w.id===workspaceId&&w.status==='active'))throw new Error('付款账号不可用');}
 export function reserveCommerce(db:Database,row:ModelUsageRecord,s:PublicCommerceSnapshot,base:number){
   if(row.workspaceId!==s.publisherWorkspaceId||row.userId!==s.publisherUserId||!Number.isFinite(s.multiplier)||s.multiplier<=0||s.multiplier>10||!Number.isInteger(s.publisherShareBps)||s.publisherShareBps<0||s.publisherShareBps>10000)throw new Error('公开服务计费绑定无效');
   activeAccount(db,s.payerWorkspaceId,s.payerUserId);activeAccount(db,s.publisherWorkspaceId,s.publisherUserId);
