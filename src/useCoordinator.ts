@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { api as Api } from "./oneApi";
 import { ApiError } from "./oneApi";
+import { coordinatorMessage } from './coordinatorMessage';
 import {chatSubmission,forgetChatSubmission} from './chatSubmission';
 import type { Conversation } from "../server/types";
 import type {
@@ -327,9 +328,7 @@ export function useCoordinator(
       id: meta.id,
       title: meta.title,
       messages: (detail?.conversation.messages ?? []).map((m) => ({
-        id: m.id!,
-        role: m.role === "user" ? "user" : "assistant",
-        text: m.content,
+        ...coordinatorMessage(m),
         status:
           jobs.find((j) => j.inputMessageId === m.id)?.state === "queued"
             ? "queued"
@@ -355,13 +354,7 @@ export function useCoordinator(
   const state: PreviewState = {
     tasks,
     dialogue: [...(snapshot?.conversation?.messages ?? []).map((m) => ({
-      id: m.id!,
-      role: m.role === "user" ? "user" as const : "assistant" as const,
-      text: m.content,
-      files: m.attachments?.map((file) => ({
-        id: file.id,
-        originalName: file.originalName,
-      })),
+      ...coordinatorMessage(m),
       taskId: snapshot?.links?.find((l) => l.messageId === m.id)?.taskId,
       taskIds: [...new Set(snapshot?.links?.filter(l => l.messageId === m.id).map(l => l.taskId) ?? [])],
     })), ...(outgoing && !snapshot?.conversation?.messages.some(m=>m.role==='user'&&!outgoing.priorIds.includes(m.id!)&&m.content===outgoing.text) ? [{id:`outgoing_${outgoing.id}`,role:'user' as const,text:outgoing.text,status:outgoing.failed?'failed' as const:undefined,featureName:outgoing.failed?'发送状态待确认 · 原话保留':'发送中'}] : [])],
