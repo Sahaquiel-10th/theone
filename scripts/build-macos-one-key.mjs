@@ -87,7 +87,7 @@ fs.mkdirSync(moduleCache, { recursive: true });
 const source = fs.readFileSync(path.join(root, "launcher/macos/ONEKeyLauncher.swift"), "utf8");
 if (!source.includes("__ONE_UPDATE_PUBLIC_KEY__") || !source.includes("__ONE_RUNTIME_VERSION__")) throw new Error("Mac 启动器缺少版本或更新公钥占位符");
 fs.writeFileSync(generatedSource, source.replaceAll("__ONE_UPDATE_PUBLIC_KEY__", updatePublicKey).replaceAll("__ONE_EXECUTOR_PUBLIC_KEY__", executorPublicKey).replaceAll("__ONE_RUNTIME_VERSION__", runtimeVersion));
-const helpers = ['RuntimeInstallation.swift','RuntimeRecovery.swift','ResidentTakeover.swift','KeyDiscovery.swift','CodexRuntime.swift','CodexGatewayConfiguration.swift','ManagedCodex.swift','MachineResident.swift','MacLocalFiles.swift'].map(snapshot);
+const helpers = ['RuntimeInstallation.swift','RuntimeRecovery.swift','ResidentTakeover.swift','KeyDiscovery.swift','CodexRuntime.swift','CodexGatewayConfiguration.swift','ManagedCodex.swift','MachineResident.swift','MacLocalFiles.swift','LocalPreview.swift'].map(snapshot);
 const slices = ["arm64", "x86_64"].map((architecture) => {
   const slice = path.join(buildWorkspace, `ONE-${architecture}`);
   const compileArgs = ["-target", `${architecture}-apple-macosx13.0`, "-parse-as-library", "-O", generatedSource, fatSafeOperationsSource, ...helpers, "-o", slice];

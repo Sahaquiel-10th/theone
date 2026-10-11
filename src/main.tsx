@@ -1,4 +1,5 @@
 import { CompanyPanel } from "./CompanyPanel";
+import {StaticPreviewPanel} from './StaticPreviewPanel';
 import type { identityAccess } from "../server/enterprisePolicy";
 import React, { FormEvent, createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AiTaskPanel } from "./AiTaskPanel";
@@ -533,6 +534,7 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
       <div className="execution-disclosure-clip" inert={!expanded} aria-hidden={!expanded}>
         <div id="one-execution-content" className="execution-disclosure-body">
           {task?.targetName ? <p className="execution-current-step">工作文件夹：{task.targetName}（可在设置 → 本机执行中更换）</p> : null}
+          {task && !busy && task.targetName ? <StaticPreviewPanel key={task.id} taskId={task.id} request={(action, path) => api(`/api/executions/${encodeURIComponent(task.id)}/preview`, {method: 'POST', body: JSON.stringify({action, path})})}/> : null}
           {!busy && executionNeedsReview(task) ? <><p className="execution-problem">执行器已结束，过程中有工具报错。请按最终回执核对目标是否完成；不会自动重跑。</p><MessageMarkdown>{task!.finalResponse!}</MessageMarkdown></> : !busy && task?.status === "failed" ? <p className="execution-problem">{task.lastError || "执行未完成。"}</p> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><MessageMarkdown>{task.finalResponse}</MessageMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接本机…" : task?.status === "cancelled" ? "已停止。" : latestStep || "等待本机反馈…"}</p>}
           {steps.length > 0 ? <details className="execution-step-history"><summary>过程记录 · {steps.length} 条</summary><ol>{steps.slice(-30).map(event => <li key={event.id} className={event.kind}>{event.text}</li>)}</ol>{steps.length > 30 ? <small>最近 30 条</small> : null}</details> : null}
           {task ? <details className="execution-step-history" onToggle={async event => {

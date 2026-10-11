@@ -51,13 +51,14 @@ struct SocketMessage: Decodable {
     let arguments: LocalFileArguments?
     let envelope: SignedRuntimeUpdate?
     let gateway: CodexGatewayConfiguration?
+    let previewPath: String?
 }
 struct SocketResponse: Encodable { let type: String; let challengeId: String; let signature: String }
 struct SocketAuthResponse: Encodable {
     let type: String
     let challengeId: String
     let signature: String
-    let capabilities = ["runtime_update_v1", "local_configuration_v1", "local_tools_v1", "codex_exec_v1", "execution_round_v1", "codex_gateway_v1", "managed_codex_v1"]
+    let capabilities = ["runtime_update_v1", "local_configuration_v1", "local_tools_v1", "codex_exec_v1", "execution_round_v1", "codex_gateway_v1", "managed_codex_v1", "static_preview_v1"]
     let platform = "macos"
     let architecture: String
     let launcherVersion: String
@@ -914,6 +915,8 @@ final class MacLocalExecutor {
 }
 
 func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: String) async throws -> URL? {
+    var previews: [String: LocalPreview] = [:]
+    defer { for preview in previews.values { preview.stop() } }
     let execution = CodexExecutionRunner(socket: task, deviceId: deviceId, credentialUrl: credentialUrl)
     let localExecutor = await MacLocalExecutor(deviceId: deviceId, credentialUrl: credentialUrl)
     var installJob: Task<URL, Error>?
@@ -936,7 +939,32 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
             try await task.send(.string(String(decoding: try JSONEncoder().encode(response), as: UTF8.self)))
         } else if message.type == "runtime_recovery_ack", let requestId = message.requestId {
             try? acknowledgeMacRecovery(credential: credentialUrl, journal: macRecoveryJournal(deviceId: deviceId), requestId: requestId)
+        } else if ["preview_start", "preview_stop"].contains(message.type), let requestId = message.requestId, let taskId = message.taskId {
+            do {
+                previews.removeValue(forKey: taskId)?.stop()
+                var output = ""
+                if message.type == "preview_start" {
+                    for previous in previews.values { previous.stop() }; previews.removeAll()
+                    guard let root = oneDefaults().string(forKey: "one.execution.project.\(deviceId)"), let path = message.previewPath else { throw LocalFileFailure.message("请先在设置中授权工作文件夹") }
+                    let preview = try LocalPreview(root: root, entry: path, present: {
+                        (try? signNonce(Data("one-static-preview".utf8).base64EncodedString(), credentialUrl: credentialUrl, deviceId: deviceId)) != nil
+                    })
+                    previews[taskId] = preview
+                    output = try await preview.start()
+                    var request = URLRequest(url: URL(string: output)!)
+                    request.timeoutInterval = 3
+                    let (_, checked) = try await URLSession.shared.data(for: request)
+                    guard (checked as? HTTPURLResponse)?.statusCode == 200 else { throw LocalFileFailure.message("本机网页未通过访问验证") }
+                }
+                let response = LocalConfigurationResponse(type: "local_ready", taskId: taskId, requestId: requestId, targetName: nil, output: output, error: nil)
+                try await task.send(.string(String(decoding: try JSONEncoder().encode(response), as: UTF8.self)))
+            } catch {
+                previews.removeValue(forKey: taskId)?.stop()
+                let response = LocalConfigurationResponse(type: "local_error", taskId: taskId, requestId: requestId, targetName: nil, output: "", error: error.localizedDescription)
+                try? await task.send(.string(String(decoding: try JSONEncoder().encode(response), as: UTF8.self)))
+            }
         } else if message.type == "local_configuration", let requestId = message.requestId {
+            if message.change == true { for preview in previews.values { preview.stop() }; previews.removeAll() }
             Task { @MainActor in
                 let selected = message.change == true ? executionProject(deviceId: deviceId, change: true) : oneDefaults().string(forKey: "one.execution.project.\(deviceId)")
                 let response = LocalConfigurationResponse(type: message.change == true && selected == nil ? "local_error" : "local_ready", taskId: "device_settings", requestId: requestId, targetName: selected, output: selected ?? "", error: message.change == true && selected == nil ? "已取消选择，原授权目录保持不变" : nil)

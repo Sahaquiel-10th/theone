@@ -277,6 +277,32 @@ export class OneKeyPresence {
     });
   }
 
+  async staticPreview(scope: { deviceId: string; installationId?: string; workspaceId: string; userId: string }, taskId: string, action: 'start' | 'stop', path?: string) {
+    await this.requireProof({ ...scope, method: 'POST', path: `/api/executions/${taskId}/preview` });
+    if (action !== 'start' && action !== 'stop') throw new OneKeyPresenceError('无效预览操作');
+    const socket = await this.ownedSocket(scope), state = this.states.get(socket)!;
+    const task = (await this.store.read()).executionTasks.find(t => t.id === taskId && t.workspaceId === scope.workspaceId && t.userId === scope.userId && t.deviceId === scope.deviceId && t.installationId === scope.installationId);
+    if (!task) throw new OneKeyPresenceError('执行任务不存在或不属于当前电脑');
+    if (!executionTerminal(task.status)) throw new OneKeyPresenceError('请等本机任务结束后再打开预览');
+    if (!state.capabilities.has('static_preview_v1')) throw new OneKeyPresenceError('请升级 ONE 启动器后使用静态网页预览');
+    if (action === 'start' && (typeof path !== 'string' || path.length > 500 || path.startsWith('/') || path.includes('\\') || path.includes('\0') || path.split('/').some(p => !p || p.startsWith('.')) || !/\.html?$/i.test(path))) throw new OneKeyPresenceError('请输入授权目录内的 HTML 相对路径');
+    if ([...this.pendingLocal.values()].some(p => p.socket === socket && p.configuration && p.change)) throw new OneKeyPresenceError('本机正在更换目录或准备工具');
+    const requestId = uid('preview');
+    const result = await new Promise<{targetName?: string; output?: string}>((resolve, reject) => {
+      const timeout = setTimeout(() => { this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError('预览请求未确认，请重试停止或重新连接')); }, 15_000);
+      this.pendingLocal.set(requestId, {deviceId: scope.deviceId, socket, taskId, configuration: true, workspaceId: scope.workspaceId, userId: scope.userId, resolve, reject, timeout});
+      socket.send(JSON.stringify({type: action === 'start' ? 'preview_start' : 'preview_stop', taskId, requestId, previewPath: path}), error => {
+        if (error) { clearTimeout(timeout); this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError('本机连接已断开')); }
+      });
+    });
+    if (await this.ownedSocket(scope) !== socket || !(await this.store.read()).executionTasks.some(t => t.id === taskId && t.workspaceId === scope.workspaceId && t.userId === scope.userId && t.deviceId === scope.deviceId && t.installationId === scope.installationId)) throw new OneKeyPresenceError('预览确认期间本机连接或任务归属已变化');
+    if (action === 'stop') return {status: 'stopped' as const};
+    const url = result.output || '';
+    const address = /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/[a-f0-9]{32}\/[A-Za-z0-9._~%\-]+$/.exec(url);
+    if (!address || Number(address[1]) > 65535) throw new OneKeyPresenceError('本机未返回有效预览地址');
+    return {status: 'ready' as const, url};
+  }
+
   async managedExecutor(scope: { deviceId: string; installationId?: string; workspaceId: string; userId: string },
     catalog: (runtime: RuntimeIdentity) => { envelope: SignedRuntimeUpdate; version: string; size: number } | undefined, install = false) {
     await this.requireProof({ ...scope, method: install ? 'POST' : 'GET', path: '/api/me/executor' });
