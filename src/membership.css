@@ -22,3 +22,5 @@
 .membership-panel progress::-webkit-progress-bar { background: var(--border,#e7e7e7); border-radius: 8px; }
 .membership-panel progress::-webkit-progress-value { background: #31966b; border-radius: 8px; }
 .membership-panel progress.premium::-webkit-progress-value { background: #3575d3; }
+
+.membership-welcome { padding: 10px 12px; border-radius: 10px; background: rgba(49,150,107,.08); color: #287857; }

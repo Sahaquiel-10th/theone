@@ -56,7 +56,7 @@ import { adminUsageSummaries, adminUserUsageDetail } from "./adminUsage.js";
 import { operationsHealth } from "./operationsHealth.js";
 import { batchGift } from "./batchGift.js";
 import { catalog as membershipCatalog } from "./memberships.js";
-import { activateMembershipTrial } from "./memberships.js";
+import { activateMembershipTrial, activateMembershipOnly } from "./memberships.js";
 import { installMembershipRoutes } from "./membershipRoutes.js";
 import { installAdminPaymentRoutes, installPaymentCallback, installPaymentRoutes } from "./paymentRoutes.js";
 import { effectiveModel, publishPricing, cancelScheduledPricing, publicPrices } from "./modelPricing.js";
@@ -336,15 +336,9 @@ app.get("/api/me/billing", ...keyAuth, asyncRoute(async (req, res) => {
   const usage = db.modelUsageRecords.filter((item) => item.workspaceId === req.workspaceId && item.userId === req.user!.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 50);
   res.json({ balanceMicros: account?.balanceMicros ?? 0, reservedMicros: account?.reservedMicros ?? 0, availableMicros: availablePowerMicros(db, req.workspaceId!, req.user!.id), ledger, orders, usage: usage.map(publicUsageRecord), rechargeCnyPerPower: membershipCatalog(db).enabled ? 7 : db.settings.rechargeCnyPerPower });
 }));
-app.post("/api/me/recharge-orders", ...keyAuth, asyncRoute(async (req, res) => {
-  const power = Number(req.body.power); if (!Number.isFinite(power) || power <= 0 || power > 100000 || Math.round(power * MICROS_PER_POWER) !== power * MICROS_PER_POWER) throw new Error("充值电力必须大于 0，最多保留 6 位小数");
-  const order = await store.mutate((db) => {
-    if(companyWorkspace(db,req.workspaceId!))throw new Error("企业费用按协议对公打款入账，请联系公司管理员");
-    const createdAt = now(); const created = { id: uid("rch"), workspaceId: req.workspaceId!, userId: req.user!.id, requestedMicros: Math.round(power * MICROS_PER_POWER), amountCny: Math.round(power * db.settings.rechargeCnyPerPower * 100) / 100, cnyPerPowerSnapshot: db.settings.rechargeCnyPerPower, status: "pending" as const, createdAt };
-    db.rechargeOrders.push(created); db.auditLogs.push({ id: uid("aud"), workspaceId: req.workspaceId, actorUserId: req.user!.id, action: "recharge.requested", targetType: "recharge_order", targetId: created.id, details: { requestedMicros: created.requestedMicros, amountCny: created.amountCny }, requestId: res.locals.requestId, createdAt }); return created;
-  });
-  res.json({ order, paymentReady: false, message: "充值申请已创建；支付通道接入后可在这里直接完成付款。" });
-}));
+app.post("/api/me/recharge-orders", ...keyAuth, (_req, res) => {
+  res.status(410).json({error:"旧充值方式已停用，请在会员与额度页面选择会员套餐。原有额外额度长期有效。"});
+});
 app.get("/api/capabilities", ...keyAuth, (_req, res) => res.json({ attachments: { enabled: true, maxFiles: attachmentMaxFiles, maxBytes: attachmentMaxBytes, imageMaxBytes: ATTACHMENT_IMAGE_MAX_BYTES, extensions: ["png", "jpg", "jpeg", "webp", "gif", "pdf", "docx", "xls", "xlsx", "csv", "txt", "md", "json", "pptx"] }, webSearch: { enabled: webSearchEnabled(), provider: "tavily" }, knowledge: { providers: ["getnote", "notion", "yinxiang", "flowus", "flomo"] } }));
 
 app.get("/api/folders", ...keyAuth, asyncRoute(async (req, res) => { const db = await store.read(); res.json({ folders: db.conversationFolders.filter((item) => item.workspaceId === req.workspaceId && item.userId === req.user!.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)) }); }));
@@ -1195,7 +1189,7 @@ if (process.env.NODE_ENV === "production") {
   app.get(/.*/, (_req, res) => res.sendFile(path.join(root, "dist", "index.html")));
 }
 
-await store.mutate(db=>activateMembershipTrial(db));
+await store.mutate(db=>{activateMembershipTrial(db);activateMembershipOnly(db);});
 await store.mutate(db=>bootstrapOneSkills(db));
 const server = createServer(app);
 oneKeyPresence.attach(server);

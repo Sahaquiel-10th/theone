@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { api as apiType } from './oneApi';
 import type { MembershipCatalog, MembershipProduct } from '../server/memberships';
 import './membership.css';
-type Summary={enabled:boolean;annualDiscountPercent:number;products:MembershipProduct[];active:{tier:string;remainingPercent:number;resetsAt:string}|null;purchasedBalanceCny:number;pendingKeys:{id:string;label:string;ready:boolean}[];scheduled:{tier:string;startsAt:string;endsAt:string}[]};
+type Summary={welcomeGift?:{months:number;startsAt:string}|null;enabled:boolean;annualDiscountPercent:number;products:MembershipProduct[];active:{tier:string;remainingPercent:number;resetsAt:string}|null;purchasedBalanceCny:number;pendingKeys:{id:string;label:string;ready:boolean}[];scheduled:{tier:string;startsAt:string;endsAt:string}[]};
 export function MembershipPanel({api,revision,onPurchase,onChanged}:{api:typeof apiType;revision:number;onPurchase:(p:MembershipProduct)=>void;onChanged:()=>Promise<void>}) {
   const [data,setData]=useState<Summary|null>(null),[error,setError]=useState(''),[annual,setAnnual]=useState(false);
   useEffect(()=>{const c=new AbortController();api<Summary>('/api/me/membership',{signal:c.signal}).then(setData).catch(e=>{if(!c.signal.aborted)setError(e.message);});return()=>c.abort();},[api,revision]);
@@ -10,17 +10,18 @@ export function MembershipPanel({api,revision,onPurchase,onChanged}:{api:typeof 
   if(!data||(!data.enabled&&!data.active&&!data.pendingKeys.length))return error?<p role="status">{error}</p>:null;
   return <section className="membership-panel"><div className="membership-heading"><strong>{data.active?(data.active.tier==='premium'?'高级会员':'普通会员'):'会员与额度'}</strong><span>按月更新</span></div>
     {data.active?<><progress className={data.active.tier} aria-label="本月会员额度剩余" max={100} value={data.active.remainingPercent}/><p>剩余 {data.active.remainingPercent}% · {new Date(data.active.resetsAt).toLocaleDateString('zh-CN')} 更新</p></>:<p>暂未开通会员；额外额度仍可使用。</p>}
+    {data.welcomeGift?<p className="membership-welcome" role="status">已赠送 {data.welcomeGift.months} 个月普通会员 · {new Date(data.welcomeGift.startsAt).toLocaleDateString('zh-CN')} 起生效</p>:null}
     <p>先使用本月会员额度，用完后使用额外额度。未使用的月额度不累计，额外额度长期保留。</p>
     <div className="settings-tabs"><button aria-pressed={!annual} onClick={()=>setAnnual(false)}>月付</button><button aria-pressed={annual} onClick={()=>setAnnual(true)}>年付 · {data.annualDiscountPercent}% OFF</button></div>
     <div className="membership-plans">{data.products.filter(p=>p.kind==='membership'&&p.months===(annual?12:1)).map(p=><article key={p.id} className={p.tier}><strong>{p.tier==='premium'?'高级会员':'普通会员'}</strong><b>¥{(p.amountFen/100).toFixed(annual?2:0)}<small> / {annual?'年':'月'}</small></b><p>{annual?'12 次按月发放':'每月发放额度'}{p.tier==='premium'?'，适合较频繁使用':'，适合日常使用'}</p><button className="primary" onClick={()=>onPurchase(p)}>{data.active?'续费 / 升级':'开通会员'}</button></article>)}</div>
     <details><summary>ONE Key 首购套餐</summary><p>付款后安排启动器交付，绑定账号后激活会员。</p>{data.products.filter(p=>p.kind==='key').map(p=><p key={p.id}>{p.label} · ¥{p.amountFen/100} <button onClick={()=>onPurchase(p)}>购买</button></p>)}</details>
     {data.pendingKeys.map(o=><p key={o.id}>{o.label} · {o.ready?<button onClick={()=>void activate(o.id)}>激活会员</button>:'等待启动器交付'}</p>)}
-    {data.scheduled.length?<details><summary>已购买的后续会员时间</summary>{data.scheduled.map((p,i)=><p key={i}>{p.tier==='premium'?'高级会员':'普通会员'}：{new Date(p.startsAt).toLocaleDateString()} — {new Date(p.endsAt).toLocaleDateString()}</p>)}</details>:null}
+    {data.scheduled.length?<details><summary>后续会员时间</summary>{data.scheduled.map((p,i)=><p key={i}>{p.tier==='premium'?'高级会员':'普通会员'}：{new Date(p.startsAt).toLocaleDateString()} — {new Date(p.endsAt).toLocaleDateString()}</p>)}</details>:null}
     {error?<p role="status" className="settings-inline-error">{error}</p>:null}
   </section>;
 }
 export function MembershipAdminPanel({api,users}:{api:typeof apiType;users:{id:string;username:string;defaultWorkspaceId:string}[]}) {
-  const [data,setData]=useState<{config:MembershipCatalog;products:MembershipProduct[];orders:any[];accounts?:any[]}|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
+  const [data,setData]=useState<{config:MembershipCatalog;products:MembershipProduct[];orders:any[];rollout?:{giftedUsers:number;activatedAt:string}|null;accounts?:any[]}|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
   const [saleUser,setSaleUser]=useState(''),[saleProduct,setSaleProduct]=useState('standard-key'),[receipt,setReceipt]=useState('');
   const saleOperation=useRef<string|null>(null);
   const [deviceIds,setDeviceIds]=useState<Record<string,string>>({});
@@ -31,7 +32,7 @@ export function MembershipAdminPanel({api,users}:{api:typeof apiType;users:{id:s
   async function recordSale(){const user=users.find(u=>u.id===saleUser);if(!user)return;setBusy(true);setError('');saleOperation.current??=crypto.randomUUID();try{await api('/api/admin/membership/key-sales',{method:'POST',body:JSON.stringify({operationId:saleOperation.current,userId:user.id,workspaceId:user.defaultWorkspaceId,productId:saleProduct,paymentReference:receipt})});saleOperation.current=null;setReceipt('');await load();setMessage('首购订单已记录；交付启动器后，用户首次登录自动激活附赠会员。');}catch(e){setError(e instanceof Error?e.message:'记录失败');}finally{setBusy(false);}}
   const fields:[keyof MembershipCatalog,string,number][]=[['standardMonthlyFen','普通月付（元）',100],['premiumMonthlyFen','高级月付（元）',100],['standardMonthlyMicros','普通月额度（后台电力）',1e6],['premiumMonthlyMicros','高级月额度（后台电力）',1e6],['annualDiscountBps','年付优惠（% OFF）',100],['standardKeyFen','普通启动器套餐（元）',100],['premiumKeyFen','高级启动器套餐（元）',100],['includedMonths','启动器附赠月数',1]];
   if(!data)return <p>{error||'正在加载会员配置…'}</p>;
-  return <section className="membership-panel"><h3>会员与启动器套餐</h3><p>原有余额保留。会员额度按激活日每月更新，不累计；年付分 12 次发放。旧电力和后续充值均为长期有效的额外额度。充值固定 ¥7 / 电力，消耗沿用模型定价中的倍率，避免再次打折。</p><label className="membership-toggle"><input type="checkbox" checked={data.config.enabled} onChange={e=>setData({...data,config:{...data.config,enabled:e.target.checked}})}/>开放会员购买（保存后生效）</label>
+  return <section className="membership-panel"><h3>会员与启动器套餐</h3><p>原有余额保留。会员额度按激活日每月更新，不累计；年付分 12 次发放。仅保留会员及启动器套餐购买。旧账户余额为不限期额外额度，新充值已关闭；消耗沿用模型定价中的倍率，避免再次打折。</p>{data.rollout?<p role="status">老用户赠送已执行：{data.rollout.giftedUsers} 人，各 3 个月普通会员。赠送时长接在已购会员之后。</p>:null}<label className="membership-toggle"><input type="checkbox" checked={data.config.enabled} onChange={e=>setData({...data,config:{...data.config,enabled:e.target.checked}})}/>开放会员购买（保存后生效）</label>
     <div className="membership-fields">{fields.map(([k,label,scale])=><label key={k}>{label}<input type="number" min="0" step={scale===100?'0.01':scale===1e6?'0.000001':'1'} value={Number(data.config[k])/scale} onChange={e=>setData({...data,config:{...data.config,[k]:Math.round(Number(e.target.value)*scale)}})}/></label>)}</div>
     <button className="primary" disabled={busy} onClick={()=>void save()}>保存会员配置</button>{message?<p role="status">{message}</p>:null}{error?<p role="alert" className="settings-inline-error">{error}</p>:null}
     <table><thead><tr><th>套餐</th><th>实付</th><th>月额度</th><th>发放次数</th></tr></thead><tbody>{data.products.map(p=><tr key={p.id}><td>{p.label}</td><td>¥{(p.amountFen/100).toFixed(2)}</td><td>{p.monthlyMicros/1e6}</td><td>{p.months}</td></tr>)}</tbody></table>

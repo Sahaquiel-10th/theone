@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, ChevronRight, Wallet, Zap } from "lucide-react";
+import { Check, ChevronRight, Zap } from "lucide-react";
 import type { api as apiType } from "./oneApi";
 import { MembershipPanel } from "./MembershipPanel";
 import type { MembershipProduct } from "../server/memberships";
@@ -9,7 +9,7 @@ import { CacheUsageDetails } from "./CacheUsageDetails";
 type Order = { product?: {label:string;kind:string}; id: string; status: string; requestedMicros: number; amountCny: number; createdAt: string; expiresAt?: string };
 const date = (s: string) => new Date(s).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 
-export function PaymentPanel({ api, userId, rate, balance = 0, reserved = 0, onPaid }: { api: typeof apiType; userId: string; rate: number; balance?: number; reserved?: number; onPaid: () => Promise<void> }) {
+export function PaymentPanel({ api, userId, rate, balance = 0, reserved = 0, showPriceDetails = true, onPaid }: { api: typeof apiType; userId: string; rate: number; balance?: number; reserved?: number; showPriceDetails?: boolean; onPaid: () => Promise<void> }) {
   const [open, setOpen] = useState(false), [pricesOpen, setPricesOpen] = useState(false), [revision, setRevision] = useState(0);
   const [product,setProduct]=useState<MembershipProduct|undefined>();
   const [kind, setKind] = useState("usage");
@@ -17,49 +17,44 @@ export function PaymentPanel({ api, userId, rate, balance = 0, reserved = 0, onP
   return <div className="power-dashboard">
     <MembershipPanel api={api} revision={revision} onChanged={refresh} onPurchase={p=>{setProduct(p);setOpen(true);}} />
 
-    <section className="power-overview"><div className="power-overview-top"><span><Zap size={17} />额外额度 <PriceNotices key={userId} api={api} userId={userId} /></span><button type="button" className="power-price-link" onClick={() => setPricesOpen(true)}>计费价格<ChevronRight size={14} /></button></div><div className="power-overview-main"><div><strong>¥{(balance*rate/1e6).toFixed(2)}</strong><span>额外额度参考值</span></div><button type="button" className="primary" onClick={() => {setProduct(undefined);setOpen(true);}}><Wallet size={17} />补充额度</button></div>
-      <p className="power-reserved">原有电力及新充值均作为额外额度，长期有效。按当前费率折算，不能提现；处理中额度会暂时预留。</p>
-    </section>
+    {balance > 0 ? <section className="power-overview"><div className="power-overview-top"><span><Zap size={17} />额外额度 {showPriceDetails ? <PriceNotices key={userId} api={api} userId={userId} /> : null}</span>{showPriceDetails ? <button type="button" className="power-price-link" onClick={() => setPricesOpen(true)}>计费价格<ChevronRight size={14} /></button> : null}</div><div className="power-overview-main"><div><strong>¥{(balance*rate/1e6).toFixed(2)}</strong><span>额外额度参考值</span></div></div>
+      <p className="power-reserved">此前账户余额原样保留，无有效期限制。优先使用会员月额度；参考值不代表可提现现金。</p>
+    </section> : null}
     <section className="power-history"><div className="settings-tabs" aria-label="账单类型">{[["usage", "消耗明细"], ["orders", "支付记录"], ["ledger", "额度流水"]].map(([id, label]) => <button type="button" key={id} aria-pressed={kind === id} onClick={() => setKind(id)}>{label}</button>)}</div><BillingHistory key={kind} api={api} kind={kind} revision={revision} onPaid={refresh} /></section>
-    {open ? <RechargeDialog api={api} rate={rate} product={product} onPaid={refresh} onClose={() => setOpen(false)} /> : null}
+    {open && product ? <MembershipCheckout api={api} product={product} onPaid={refresh} onClose={() => setOpen(false)} /> : null}
     {pricesOpen ? <SettingsDialog title="当前计费价格" onClose={() => setPricesOpen(false)}><CurrentPrices api={api} /></SettingsDialog> : null}
   </div>;
 }
 
-function RechargeDialog({ api, rate, product, onPaid, onClose }: { api: typeof apiType; rate: number; product?: MembershipProduct; onPaid: () => Promise<void>; onClose: () => void }) {
-  const [amount, setAmount] = useState("30"), [custom, setCustom] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState("");
-  const [payment, setPayment] = useState<{ order: Order; qrCode: string | null } | null>(null);
-  const pending = useRef<{ operationId: string; amountFen?: number; productId?: string } | null>(null), checking = useRef(false), credited = useRef(false);
-  const yuan = amount === "custom" ? custom : amount;
-  const valid = !!product || /^\d+(\.\d{1,2})?$/.test(yuan) && Number(yuan) >= 0.01 && Number(yuan) <= 10000 && rate > 0;
-  async function create() {
-    if (busy || (!pending.current && !valid)) return;
-    setBusy(true); setError("");
-    pending.current ??= { operationId: crypto.randomUUID(), ...(product?{productId:product.id}:{amountFen:Math.round(Number(yuan)*100)}) };
-    try { setPayment(await api("/api/me/payments/wechat", { method: "POST", body: JSON.stringify(pending.current) })); }
-    catch (e) { setError(e instanceof Error ? e.message : "暂时无法生成付款码，请重试"); } finally { setBusy(false); }
+function MembershipCheckout({ api, product, onPaid, onClose }: { api: typeof apiType; product: MembershipProduct; onPaid: () => Promise<void>; onClose: () => void }) {
+  const [busy,setBusy]=useState(false),[error,setError]=useState('');
+  const [payment,setPayment]=useState<{order:Order;qrCode:string|null}|null>(null);
+  const operationId=useRef(crypto.randomUUID()),checking=useRef(false),credited=useRef(false);
+  async function create(){
+    if(busy)return;setBusy(true);setError('');
+    try{setPayment(await api('/api/me/payments/wechat',{method:'POST',body:JSON.stringify({operationId:operationId.current,productId:product.id})}));}
+    catch(e){setError(e instanceof Error?e.message:'暂时无法生成付款码，请重试');}finally{setBusy(false);}
   }
-  const check = useCallback(async (manual = false) => {
-    if (!payment || checking.current || credited.current) return;
-    checking.current = true; if (manual) { setBusy(true); setError(""); }
-    try {
-      const r = await api<{ order: Order }>(`/api/me/payments/${encodeURIComponent(payment.order.id)}/check`, { method: "POST" });
-      if (r.order.status === "paid") { credited.current = true; setPayment(p => p ? { ...p, order: r.order } : p); setError(""); await onPaid(); }
-      else if (manual) setError("暂未收到付款，稍后再试");
-    } catch (e) { if (manual) setError(e instanceof Error ? e.message : "暂时无法核对，请稍后重试"); }
-    finally { checking.current = false; if (manual) setBusy(false); }
-  }, [api, payment, onPaid]);
-  useEffect(() => {
-    if (!payment || payment.order.status !== "pending") return;
-    const timer = window.setInterval(() => { if (!document.hidden && (!payment.order.expiresAt || Date.parse(payment.order.expiresAt) > Date.now())) void check(); }, 5000);
-    return () => window.clearInterval(timer);
-  }, [payment, check]);
-  return <SettingsDialog title={product?.label??"充值额度"} onClose={onClose}>
-
-    {!payment ? <>{product?<p>{product.label} · ¥{(product.amountFen/100).toFixed(2)}{product.kind==="key"?" · 交付并绑定后激活":" · 按月发放，未使用月额度不累计"}</p>:<><p className="settings-caption">选择充值金额（元）</p><div className="recharge-amount-grid">{["30", "100", "300", "custom"].map(n => <button type="button" key={n} disabled={!!pending.current} aria-pressed={amount === n} onClick={() => setAmount(n)}>{n === "custom" ? "自定义" : <><small>¥</small>{n}</>}</button>)}</div>{amount === "custom" ? <label className="recharge-custom">充值金额<input autoFocus type="number" min="0.01" max="10000" step="0.01" placeholder="最低 ¥0.01" value={custom} disabled={!!pending.current} onChange={e => setCustom(e.target.value)} /></label> : null}<div className="recharge-preview"><span>到账额外额度</span><strong>¥{valid?Number(yuan).toFixed(2):"—"}</strong></div><p className="settings-caption">额外额度长期有效 · 先用会员额度，再用额外额度 · 不延长会员有效期</p></>}<button type="button" className="primary recharge-pay-button" disabled={busy || (!pending.current && !valid)} onClick={() => void create()}>{busy ? "正在生成付款码…" : pending.current ? "重试生成付款码" : "微信支付"}</button></>
-      : payment.order.status === "paid" ? <div className="recharge-success"><span><Check size={30} /></span><h3>支付成功</h3><p>{payment.order.product?payment.order.product.kind==="key"?"等待启动器交付，绑定后激活会员":"会员已生效，后续时间可在会员详情查看":"额外额度已到账"}</p><button type="button" className="primary recharge-pay-button" onClick={onClose}>完成</button></div>
-      : <div className="recharge-qr"><strong>¥{payment.order.amountCny.toFixed(2)}</strong><p>{payment.order.product?.label??`到账额外额度 ¥${payment.order.amountCny.toFixed(2)}`}</p>{payment.qrCode ? <img src={payment.qrCode} width={208} height={208} alt="微信付款二维码" /> : <p className="settings-empty">付款码暂未生成，请核对订单状态</p>}<p className="settings-caption">打开微信扫一扫</p><button type="button" className="secondary" disabled={busy} onClick={() => void check(true)}>{busy ? "正在核对…" : "我已支付"}</button><p className="settings-caption">关闭后可在支付记录中核对订单</p></div>}
-    {error ? <p className="settings-inline-error" role="status">{error}</p> : null}
+  const check=useCallback(async(manual=false)=>{
+    if(!payment||checking.current||credited.current)return;
+    checking.current=true;if(manual){setBusy(true);setError('');}
+    try{
+      const r=await api<{order:Order}>(`/api/me/payments/${encodeURIComponent(payment.order.id)}/check`,{method:'POST'});
+      if(r.order.status==='paid'){credited.current=true;setPayment(p=>p?{...p,order:r.order}:p);setError('');await onPaid();}
+      else if(manual)setError('暂未收到付款，稍后再试');
+    }catch(e){if(manual)setError(e instanceof Error?e.message:'暂时无法核对，请稍后重试');}
+    finally{checking.current=false;if(manual)setBusy(false);}
+  },[api,payment,onPaid]);
+  useEffect(()=>{
+    if(!payment||payment.order.status!=='pending')return;
+    const timer=window.setInterval(()=>{if(!document.hidden&&(!payment.order.expiresAt||Date.parse(payment.order.expiresAt)>Date.now()))void check();},5000);
+    return()=>window.clearInterval(timer);
+  },[payment,check]);
+  return <SettingsDialog title={product.label} onClose={onClose}>
+    {!payment?<><p>{product.label} · ¥{(product.amountFen/100).toFixed(2)}</p><p className="settings-caption">{product.kind==='key'?'交付并绑定后激活附赠会员':'按月发放额度，未用完的月额度不累计。续费接在已有会员之后；升级高级会员时暂停普通会员剩余时间。'}</p><button type="button" className="primary recharge-pay-button" disabled={busy} onClick={()=>void create()}>{busy?'正在生成付款码…':'微信支付'}</button></>
+      :payment.order.status==='paid'?<div className="recharge-success"><span><Check size={30}/></span><h3>支付成功</h3><p>{payment.order.product?.kind==='key'?'等待启动器交付，绑定后激活会员':'会员购买成功，生效时间可在会员详情查看'}</p><button type="button" className="primary recharge-pay-button" onClick={onClose}>完成</button></div>
+      :<div className="recharge-qr"><strong>¥{payment.order.amountCny.toFixed(2)}</strong><p>{payment.order.product?.label??product.label}</p>{payment.qrCode?<img src={payment.qrCode} width={208} height={208} alt="微信付款二维码"/>:<p className="settings-empty">付款码暂未生成，请核对订单状态</p>}<p className="settings-caption">打开微信扫一扫</p><button type="button" className="secondary" disabled={busy} onClick={()=>void check(true)}>{busy?'正在核对…':'我已支付'}</button><p className="settings-caption">关闭后可在支付记录中核对订单</p></div>}
+    {error?<p className="settings-inline-error" role="status">{error}</p>:null}
   </SettingsDialog>;
 }
 

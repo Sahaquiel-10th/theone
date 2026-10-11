@@ -6,16 +6,9 @@ import { publicPayment } from './payments.js';
 
 export function installMembershipRoutes(app:Express, auth:readonly RequestHandler[], admin:readonly RequestHandler[], store:Store) {
   app.get('/api/membership/plans',async(_req,res)=>{res.set('Cache-Control','no-store').json(publicMembershipPlans(await store.read()));});
-  app.get('/api/me/membership',...auth,async(req,res)=>{
-    try {res.json(membershipSummary(await store.read(),{workspaceId:req.workspaceId!,userId:req.user!.id}));}
-    catch {res.status(400).json({error:'当前账户不使用个人会员'});}
-  });
-  app.post('/api/me/membership/activate',...auth,async(req,res)=>{
-    try {const order=await store.mutate(db=>activateKeyMembership(db,{workspaceId:req.workspaceId!,userId:req.user!.id},String(req.body.orderId??'')));res.json({order:publicPayment(order)});}
-    catch {res.status(400).json({error:'套餐未交付，或启动器未绑定当前账号'});}
-  });
+  installMemberAccountRoutes(app,auth,store);
   app.get('/api/admin/membership',...admin,async(_req,res)=>{
-    const db=await store.read();res.json({accounts:db.powerAccounts.filter(a=>a.membershipPeriods?.length).flatMap(a=>{try{const summary=membershipSummary(db,a);return [{userId:a.userId,workspaceId:a.workspaceId,username:db.users.find(u=>u.id===a.userId)?.username??a.userId,active:summary.active,scheduled:summary.scheduled}];}catch{return [];}}),config:catalog(db),products:products(catalog(db)),orders:db.rechargeOrders.filter(o=>o.product).slice(-100).reverse().map(o=>({...publicPayment(o),workspaceId:o.workspaceId,userId:o.userId,fulfilledDeviceId:o.fulfilledDeviceId}))});
+    const db=await store.read();res.json({rollout:db.settings.membershipOnlyRollout??null,accounts:db.powerAccounts.filter(a=>a.membershipPeriods?.length).flatMap(a=>{try{const summary=membershipSummary(db,a);return [{userId:a.userId,workspaceId:a.workspaceId,username:db.users.find(u=>u.id===a.userId)?.username??a.userId,active:summary.active,scheduled:summary.scheduled,welcomeGift:summary.welcomeGift}];}catch{return [];}}),config:catalog(db),products:products(catalog(db)),orders:db.rechargeOrders.filter(o=>o.product).slice(-100).reverse().map(o=>({...publicPayment(o),workspaceId:o.workspaceId,userId:o.userId,fulfilledDeviceId:o.fulfilledDeviceId}))});
   });
   app.post('/api/admin/membership/key-sales',...admin,async(req,res)=>{
     try {const order=await store.mutate(db=>recordKeySale(db,req.user!.id,req.body));res.json({order:publicPayment(order)});}
@@ -37,5 +30,16 @@ export function installMembershipRoutes(app:Express, auth:readonly RequestHandle
         db.auditLogs.push({id:uid('aud'),workspaceId:order.workspaceId,actorUserId:req.user!.id,action:'membership.key.fulfilled',targetType:'recharge_order',targetId:order.id,details:{deviceId:device.id},createdAt:new Date().toISOString()});return order;
       });res.json({order:publicPayment(result)});
     } catch {res.status(400).json({error:'只能交付给订单所属账号的有效启动器'});}
+  });
+}
+
+export function installMemberAccountRoutes(app:Express,auth:readonly RequestHandler[],store:Store,prefix="/api/me") {
+  app.get(`${prefix}/membership`,...auth,async(req,res)=>{
+    try {res.json(membershipSummary(await store.read(),{workspaceId:req.workspaceId!,userId:req.user!.id}));}
+    catch {res.status(400).json({error:'当前账户不使用个人会员'});}
+  });
+  app.post(`${prefix}/membership/activate`,...auth,async(req,res)=>{
+    try {const order=await store.mutate(db=>activateKeyMembership(db,{workspaceId:req.workspaceId!,userId:req.user!.id},String(req.body.orderId??'')));res.json({order:publicPayment(order)});}
+    catch {res.status(400).json({error:'套餐未交付，或启动器未绑定当前账号'});}
   });
 }

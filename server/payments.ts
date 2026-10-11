@@ -24,6 +24,7 @@ export function preparePayment(db: Database, scope: { workspaceId: string; userI
     if (productId ? existing.product?.id !== productId : existing.product ? true : custom ? existing.payment?.amountMode !== "cny" || existing.payment.amountFen !== fen : existing.payment?.amountMode === "cny" || existing.requestedMicros !== power * 1e6) throw new Error("订单重试金额不一致");
     return { order: structuredClone(existing), created: false };
   }
+  if(db.settings.membershipOnlyRollout&&!productId)throw new Error("旧充值方式已停用，请选择会员套餐");
   const product=productId?products(catalog(db)).find(p=>p.id===productId):undefined;
   if(productId && (!catalog(db).enabled||!product))throw new Error('会员套餐未开放');
   const requestedFen = product ? product.amountFen : fen;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import { once } from 'node:events';
 import type { Database, RechargeOrder, ModelConfig } from './types.js';
-import { activateKeyMembership, activateMembershipTrial, publicMembershipPlans, activePeriod, grantMembership, membershipSummary, monthAnniversary, products, publishCatalog, recordKeySale, trialCatalog } from './memberships.js';
+import { activateKeyMembership, activateMembershipTrial, activateMembershipOnly, publicMembershipPlans, activePeriod, grantMembership, membershipSummary, monthAnniversary, products, publishCatalog, recordKeySale, trialCatalog } from './memberships.js';
 import { availablePowerMicros, chargePower, reservePower, releasePower } from './powerBilling.js';
 import { preparePayment, settlePayment } from './payments.js';
 import { reconcileInterruptedBilling, runBilledModel } from './modelBilling.js';
@@ -80,4 +80,60 @@ test('legacy extra allowance never expires when membership does',()=>{
   const db=fixture(),at=Date.parse('2026-10-11T00:00:00Z');activateMembershipTrial(db);grantMembership(db,order(db,'month'),at);
   assert.equal(membershipSummary(db,scope,Date.parse('2028-01-01T00:00:00Z')).active,null);
   assert.equal(db.powerAccounts[0].balanceMicros,10e6);assert.equal(db.powerAccounts[0].paidBalanceMicros,10e6);
+});
+
+
+test('membership-only launch gifts each existing person three calendar months and leaves legacy wallet untouched',()=>{
+ const db=fixture(),at=Date.parse('2026-10-11T00:00:00Z'),wallets=db.powerAccounts.map(a=>[a.balanceMicros,a.paidBalanceMicros,a.reservedMicros]);
+ assert.equal(activateMembershipOnly(db,at),true);
+ assert.equal(db.settings.membershipOnlyRollout!.giftedUsers,2);
+ for(const a of db.powerAccounts){assert.equal(a.membershipPeriods!.length,3);assert.deepEqual(a.membershipPeriods!.map(p=>p.grantedMicros),[20e6,20e6,20e6]);assert.equal(a.membershipPeriods![0].startsAt,'2026-10-11T00:00:00.000Z');assert.equal(a.membershipPeriods![2].endsAt,'2027-01-11T00:00:00.000Z');}
+ assert.deepEqual(db.powerAccounts.map(a=>[a.balanceMicros,a.paidBalanceMicros,a.reservedMicros]),wallets);
+ assert.equal(db.rechargeOrders.length,0);assert.equal(db.powerLedger.length,0);
+ const before=structuredClone(db);assert.equal(activateMembershipOnly(db,at+86400000),false);assert.deepEqual(db,before);
+ assert.equal(publicMembershipPlans(db).billingMode,'membership-only');
+});
+test('welcome gift preserves purchased premium periods and queues behind them',()=>{
+ const db=fixture(),at=Date.parse('2026-10-11T00:00:00Z');grantMembership(db,order(db,'paid','premium-monthly'),at);
+ db.powerAccounts[0].membershipPeriods![0].remainingMicros=12e6;
+ const existing=structuredClone(db.powerAccounts[0].membershipPeriods![0]);activateMembershipOnly(db,at);
+ assert.deepEqual(db.powerAccounts[0].membershipPeriods![0],existing);
+ assert.equal(db.powerAccounts[0].membershipWelcomeGift!.startsAt,existing.endsAt);
+ assert.equal(membershipSummary(db,scope,at).active!.tier,'premium');
+});
+test('welcome campaign is once per person, isolated to an owned personal workspace, and does not recur for future users',()=>{
+ const db=fixture();db.users[0].defaultWorkspaceId='wb';
+ db.workspaces.push({id:'wa2',status:'active'} as any);db.workspaceMembers.push({userId:'a',workspaceId:'wa2'} as any);db.powerAccounts.push({id:'pa2',userId:'a',workspaceId:'wa2',balanceMicros:5e6} as any);
+ db.users[1].enabled=false;activateMembershipOnly(db);
+ assert.equal(db.powerAccounts[0].membershipPeriods!.length,3);assert.equal(db.powerAccounts[1].membershipPeriods!.length,3);
+ assert.equal(db.powerAccounts[2].membershipPeriods,undefined);
+ db.users.push({id:'new',enabled:true} as any);db.workspaces.push({id:'new-ws',status:'active'} as any);db.workspaceMembers.push({workspaceId:'new-ws',userId:'new'} as any);db.powerAccounts.push({id:'new-account',userId:'new',workspaceId:'new-ws',balanceMicros:0} as any);
+ const persisted=JSON.parse(JSON.stringify(db));activateMembershipOnly(persisted);
+ assert.equal(persisted.powerAccounts[3].membershipPeriods,undefined);
+ const company=fixture();company.workspaces[1].kind='company';activateMembershipOnly(company);assert.equal(company.settings.membershipOnlyRollout!.giftedUsers,1);assert.equal(company.powerAccounts[1].membershipPeriods,undefined);
+});
+test('membership-only policy rejects new yuan and power recharge while honoring prior pending orders and new memberships',()=>{
+ const db=fixture();const old=preparePayment(db,scope,'old-payment-before-close',{amountFen:700},{appId:'app',mchId:'merchant'}).order;
+ activateMembershipOnly(db);
+ assert.throws(()=>preparePayment(db,scope,'new-yuan-after-close-123',{amountFen:700},{appId:'app',mchId:'merchant'}),/旧充值方式已停用/);
+ assert.throws(()=>preparePayment(db,scope,'new-power-after-close-123',1,{appId:'app',mchId:'merchant'}),/旧充值方式已停用/);
+ assert.equal(preparePayment(db,scope,'old-payment-before-close',{amountFen:700},{appId:'app',mchId:'merchant'}).created,false);
+ settlePayment(db,remote(old));assert.equal(db.powerAccounts[0].balanceMicros,11e6);
+ assert.equal(preparePayment(db,scope,'new-membership-after-close',{productId:'standard-monthly'},{appId:'app',mchId:'merchant'}).order.payment!.amountFen,9900);
+});
+
+
+test('visitor membership entry requires its own session and ignores foreign workspace parameters',async t=>{
+ const db=fixture();db.users[0].defaultWorkspaceId='wa';db.users[1].defaultWorkspaceId='wb';activateMembershipOnly(db);
+ const {installVisitorRoutes}=await import('./visitorRoutes.js'),{signToken}=await import('./security.js');
+ const secret='membership-visitor-fixture-secret';const app=express();app.use(express.json());installVisitorRoutes(app,{read:async()=>db,mutate:async fn=>fn(db)},secret);
+ const server=app.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});
+ const base=`http://127.0.0.1:${(server.address() as any).port}`;
+ const cookie='one_visitor='+encodeURIComponent(signToken({sub:'a',scope:'visitor',workspaceId:'wa',version:0},secret));
+ assert.equal((await fetch(base+'/api/visitors/membership')).status,401);
+ const reply=await(await fetch(base+'/api/visitors/membership?workspaceId=wb&userId=b',{headers:{cookie}})).json() as any;
+ assert.equal(reply.welcomeGift.months,3);assert.equal(reply.active.tier,'standard');assert.equal(reply.purchasedBalanceCny,70);
+ assert.equal((await fetch(base+'/api/visitors/membership',{headers:{cookie,'X-ONE-Visitor':'b'}})).status,409);
+ const forged='one_visitor='+encodeURIComponent(signToken({sub:'a',scope:'visitor',workspaceId:'wb',version:0},secret));
+ assert.equal((await fetch(base+'/api/visitors/membership',{headers:{cookie:forged}})).status,401);
 });

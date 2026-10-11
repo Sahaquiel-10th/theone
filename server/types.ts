@@ -54,7 +54,7 @@ export type Attachment = {
 };
 export type AttachmentSummary = Pick<Attachment, "id" | "originalName" | "mimeType" | "kind" | "size" | "status" | "uploadedBytes" | "parseError" | "textChars" | "segmentCount">;
 export type SearchSource = { title: string; url: string; snippet: string };
-export type SystemSettings = { membershipTrialRollout?: string; membershipBilling?: import("./memberships.js").MembershipCatalog; executorProfiles?: import('./executorProfiles.js').ExecutorProfile[]; safetyRules: string; rechargeCnyPerPower: number; aiTasks?: import("./aiTaskConfig.js").AiTaskConfigs; officialFeatures?: import("./officialFeatures.js").OfficialFeatureRecord[];publicCommercePolicy?:import('./publicSharingTypes.js').PublicCommercePolicy };
+export type SystemSettings = { membershipOnlyRollout?: { id: string; activatedAt: string; giftedUsers: number }; membershipTrialRollout?: string; membershipBilling?: import("./memberships.js").MembershipCatalog; executorProfiles?: import('./executorProfiles.js').ExecutorProfile[]; safetyRules: string; rechargeCnyPerPower: number; aiTasks?: import("./aiTaskConfig.js").AiTaskConfigs; officialFeatures?: import("./officialFeatures.js").OfficialFeatureRecord[];publicCommercePolicy?:import('./publicSharingTypes.js').PublicCommercePolicy };
 
 export type UserSavedMemory = {
   id: string; workspaceId: string; userId: string; conversationId?: string; sourceMessageId?: string;
@@ -109,6 +109,7 @@ export type ModelUsageRecord = {
 };
 
 export type PowerAccount = {
+  membershipWelcomeGift?: { campaignId: string; months: number; startsAt: string };
   membershipPeriods?: import("./memberships.js").MembershipPeriod[];
   powerHolds?: import("./memberships.js").PowerHold[];
   paidBalanceMicros?: number;

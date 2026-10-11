@@ -23,7 +23,7 @@ export function activateMembershipTrial(db: Database) {
 /** Public offer contains no account data, procurement prices or payment credentials. */
 export function publicMembershipPlans(db: Database) {
   const config = catalog(db);
-  return { enabled: config.enabled, version: config.version, annualDiscountPercent: config.annualDiscountBps / 100,
+  return { billingMode: db.settings.membershipOnlyRollout ? 'membership-only' : 'membership-and-topup', welcomeCampaign: db.settings.membershipOnlyRollout ? {months:3,activatedAt:db.settings.membershipOnlyRollout.activatedAt} : null, enabled: config.enabled, version: config.version, annualDiscountPercent: config.annualDiscountBps / 100,
     products: config.enabled ? products(config).map(({ id, label, kind, tier, months, amountFen }) => ({ id, label, kind, tier, months, amountFen })) : [] };
 }
 export function catalog(db: Database): MembershipCatalog { return db.settings.membershipBilling ?? { ...trialCatalog }; }
@@ -70,10 +70,8 @@ export function monthAnniversary(anchor: number, months: number) {
   const date=new Date(anchor+offset), day=date.getUTCDate();date.setUTCDate(1);date.setUTCMonth(date.getUTCMonth()+months);
   const last=new Date(Date.UTC(date.getUTCFullYear(),date.getUTCMonth()+1,0)).getUTCDate();date.setUTCDate(Math.min(day,last));return date.getTime()-offset;
 }
-export function grantMembership(db: Database, order: RechargeOrder, at=Date.now()) {
-  const product=order.product;if(!product)throw new Error('订单不包含会员');
-  const account=membershipAccount(db,order);
-  if(account.membershipPeriods?.some(p=>p.orderId===order.id))return;
+function appendMembershipPeriods(account: PowerAccount, product: MembershipProduct, sourceId: string, at: number) {
+  if(account.membershipPeriods?.some(p=>p.orderId===sourceId))return;
   const periods=account.membershipPeriods??=[];
   // Renewals queue behind the same tier; lower tiers queue behind already purchased premium.
   const starts=Math.max(at,...periods.filter(p=>product.tier==='standard'||p.tier==='premium').map(p=>Date.parse(p.endsAt)));
@@ -85,9 +83,39 @@ export function grantMembership(db: Database, order: RechargeOrder, at=Date.now(
       p.endsAt=new Date(end+duration).toISOString();
     }
   }
-  for(let i=0;i<product.months;i++) periods.push({id:`${order.id}:${i}`,orderId:order.id,tier:product.tier,startsAt:new Date(monthAnniversary(starts,i)).toISOString(),endsAt:new Date(monthAnniversary(starts,i+1)).toISOString(),grantedMicros:product.monthlyMicros,remainingMicros:product.monthlyMicros,version:product.version});
-  account.updatedAt=new Date(at).toISOString();order.membershipActivatedAt=account.updatedAt;
+  for(let i=0;i<product.months;i++) periods.push({id:`${sourceId}:${i}`,orderId:sourceId,tier:product.tier,startsAt:new Date(monthAnniversary(starts,i)).toISOString(),endsAt:new Date(monthAnniversary(starts,i+1)).toISOString(),grantedMicros:product.monthlyMicros,remainingMicros:product.monthlyMicros,version:product.version});
+  account.updatedAt=new Date(at).toISOString();
+  return starts;
+}
+export function grantMembership(db: Database, order: RechargeOrder, at=Date.now()) {
+  const product=order.product;if(!product)throw new Error('订单不包含会员');
+  const account=membershipAccount(db,order);
+  const starts=appendMembershipPeriods(account,product,order.id,at);
+  if(starts===undefined)return;
+  order.membershipActivatedAt=account.updatedAt;
   db.auditLogs.push({id:uid('aud'),workspaceId:order.workspaceId,action:'membership.activated',targetType:'recharge_order',targetId:order.id,details:{productId:product.id,startsAt:new Date(starts).toISOString(),months:product.months},createdAt:account.updatedAt});
+}
+/** One gift per existing person, in one owned personal wallet. No fake purchase or wallet credit. */
+export function activateMembershipOnly(db: Database, at=Date.now()) {
+  const campaignId='2026-10-membership-only-welcome';
+  if(db.settings.membershipOnlyRollout)return false;
+  let giftedUsers=0;
+  for(const user of db.users) {
+    const eligible=db.powerAccounts.filter(a=>a.userId===user.id && !companyWorkspace(db,a.workspaceId)
+      && db.workspaces.some(w=>w.id===a.workspaceId&&w.status==='active')
+      && db.workspaceMembers.some(m=>m.userId===user.id&&m.workspaceId===a.workspaceId&&m.status!=='disabled'));
+    const account=eligible.find(a=>a.workspaceId===user.defaultWorkspaceId)??eligible[0];
+    if(!account||account.membershipWelcomeGift?.campaignId===campaignId)continue;
+    const product:MembershipProduct={...products(catalog(db)).find(p=>p.id==='standard-monthly')!,id:campaignId,label:'老用户赠送 · 3个月普通会员',months:3,amountFen:0};
+    const starts=appendMembershipPeriods(account,product,`${campaignId}:${user.id}`,at)!;
+    account.membershipWelcomeGift={campaignId,months:3,startsAt:new Date(starts).toISOString()};
+    giftedUsers++;
+    db.auditLogs.push({id:uid('aud'),workspaceId:account.workspaceId,action:'membership.welcome.granted',targetType:'power_account',targetId:account.id,
+      details:{userId:user.id,campaignId,months:3,startsAt:account.membershipWelcomeGift.startsAt},createdAt:new Date(at).toISOString()});
+  }
+  db.settings.membershipOnlyRollout={id:campaignId,activatedAt:new Date(at).toISOString(),giftedUsers};
+  db.auditLogs.push({id:uid('aud'),action:'membership.only.launched',targetType:'settings',details:{...db.settings.membershipOnlyRollout,legacyBalancesPreserved:true},createdAt:new Date(at).toISOString()});
+  return true;
 }
 export function activateKeyMembership(db:Database, scope:{workspaceId:string;userId:string}, orderId:string, at=Date.now()) {
   const order=db.rechargeOrders.find(o=>o.id===orderId&&o.workspaceId===scope.workspaceId&&o.userId===scope.userId);
@@ -100,7 +128,7 @@ export function membershipSummary(db:Database, scope:{workspaceId:string;userId:
   const reserved=current ? (account.powerHolds??[]).flatMap(h=>h.periods).filter(p=>p.id===current.id).reduce((n,p)=>n+p.amountMicros,0):0;
   const remaining=current?Math.max(0,current.remainingMicros-reserved):0;
   const config=catalog(db);
-  return {enabled:config.enabled,products:config.enabled?products(config):[],annualDiscountPercent:config.annualDiscountBps/100,active:current?{tier:current.tier,remainingPercent:Math.round(remaining/current.grantedMicros*1000)/10,resetsAt:current.endsAt}:null,
+  return {welcomeGift:account.membershipWelcomeGift??null,enabled:config.enabled,products:config.enabled?products(config):[],annualDiscountPercent:config.annualDiscountBps/100,active:current?{tier:current.tier,remainingPercent:Math.round(remaining/current.grantedMicros*1000)/10,resetsAt:current.endsAt}:null,
     purchasedBalanceCny:Math.floor(account.balanceMicros*7/1e4)/100,
     scheduled:account.membershipPeriods?.filter(p=>Date.parse(p.startsAt)>at).map(p=>({tier:p.tier,startsAt:p.startsAt,endsAt:p.endsAt}))??[],
     pendingKeys:db.rechargeOrders.filter(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.product?.kind==='key'&&o.status==='paid'&&!o.membershipActivatedAt).map(o=>({id:o.id,label:o.product!.label,ready:!!o.fulfilledDeviceId}))};

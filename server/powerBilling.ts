@@ -70,7 +70,7 @@ export function reservePower(db: Database, params: {
   const account = powerAccount(db, params.workspaceId, params.userId);
   if (!account) throw new Error("电力账户不存在");
   if (!Number.isSafeInteger(params.amountMicros) || params.amountMicros < 0) throw new Error("预占电力必须是非负整数");
-  if (availablePowerMicros(db, params.workspaceId, params.userId) < params.amountMicros) throw new Error("电力不足，请先充值");
+  if (availablePowerMicros(db, params.workspaceId, params.userId) < params.amountMicros) throw new Error(db.settings?.membershipOnlyRollout ? "额度不足，请升级会员或等待下月额度更新" : "电力不足，请先充值");
   if(params.holdId) {
     const holds=account.powerHolds??=[];
     if(holds.some(h=>h.id===params.holdId))throw new Error("请求已预占");
@@ -122,7 +122,7 @@ export function chargePower(db: Database, params: {
   if (!Number.isSafeInteger(params.amountMicros) || params.amountMicros < 0) throw new Error("扣费必须是有效的非负整数");
   const hold=params.holdId?account.powerHolds?.find(h=>h.id===params.holdId):undefined;
   const held=hold?hold.walletMicros+hold.periods.reduce((n,p)=>n+p.amountMicros,0):0;
-  if (hold ? held<params.amountMicros : availablePowerMicros(db,params.workspaceId,params.userId)<params.amountMicros) throw new Error("电力不足，请先充值");
+  if (hold ? held<params.amountMicros : availablePowerMicros(db,params.workspaceId,params.userId)<params.amountMicros) throw new Error(db.settings?.membershipOnlyRollout ? "额度不足，请升级会员或等待下月额度更新" : "电力不足，请先充值");
   let membershipMicros=0, left=params.amountMicros;
   if(hold) {
     for(const source of hold.periods) {

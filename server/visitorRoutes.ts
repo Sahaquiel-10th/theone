@@ -5,6 +5,7 @@ import {signToken,verifyToken,hashPassword,verifyPassword,uid} from './security.
 import {loginVisitor,registerVisitor,visitorUser,type VisitorIdentity} from './visitorAccounts.js';
 import {availablePowerMicros,powerAccount} from './powerBilling.js';
 import {SharingError} from './publicSharing.js';
+import {installMemberAccountRoutes} from './membershipRoutes.js';
 import {installPaymentRoutes} from './paymentRoutes.js';
 declare global{namespace Express{interface Request{visitor?:VisitorIdentity;}}}
 export function visitorIdentity(db:Awaited<ReturnType<Store['read']>>,req:express.Request,secret:string):VisitorIdentity|undefined{
@@ -36,5 +37,6 @@ export function installVisitorRoutes(app:Express,store:Store,secret:string){
   }));
   router.use((e:unknown,_req:express.Request,res:express.Response,_next:express.NextFunction)=>res.status(e instanceof SharingError?e.status:400).json({error:e instanceof SharingError?e.message:'未能完成账号操作'}));app.use('/api/visitors',router);
   installPaymentRoutes(app,[requireVisitor],store,'/api/visitors');
+  installMemberAccountRoutes(app,[requireVisitor],store,'/api/visitors');
   return requireVisitor;
 }
