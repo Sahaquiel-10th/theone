@@ -1856,7 +1856,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           </div>
         </header>
         <div className="messages">
-          {coordinator.enabled&&(coordinator.snapshot?.tasks.find(t=>t.id===activeId)?.paused||active?.workPaused)?<p role="status">此前处理未完成，任务已暂停，不会继续等待模型。原话、附件和用量保留。<button type="button" onClick={()=>{if(confirm('仅处理尚未执行的补充，不重跑失败轮次；会产生新的用量。继续？'))void coordinator.resumeTask(active!.id).then(()=>refresh()).catch(e=>setError(e.message));}}>继续处理待办</button></p>:null}
+          {coordinator.enabled&&(coordinator.snapshot?.tasks.find(t=>t.id===activeId)?.paused||active?.workPaused)?<p role="status">此前处理未完成，任务已暂停，不会继续等待模型。原话、附件和用量保留。<button type="button" onClick={()=>{if(confirm('仅处理最新待办？较早待办保留历史但停止处理，不重跑失败轮次；会产生新的用量。'))void coordinator.resumeTask(active!.id,true).then(()=>refresh()).catch(e=>setError(e.message));}}>仅处理最新要求</button><button type="button" onClick={()=>{if(confirm('继续所有尚未执行的补充，不重跑失败轮次；会产生新的用量。继续？'))void coordinator.resumeTask(active!.id).then(()=>refresh()).catch(e=>setError(e.message));}}>继续全部待办</button></p>:null}
           {(active?.messages ?? []).length ? (
             active!.messages.map((message, index) => (
               <React.Fragment key={`${message.createdAt}-${index}`}>

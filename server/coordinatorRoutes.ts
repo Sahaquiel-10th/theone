@@ -132,7 +132,8 @@ export function installCoordinatorRoutes(
         (typeof taskId !== "string" || req.body?.confirmed !== true)
       )
         throw new CoordinatorError("继续失败后的补充需明确确认", 400);
-      res.json(await service.resume(scope(req), () => verifyKey(req), taskId));
+      if(req.body?.latestOnly!==undefined && (typeof req.body.latestOnly!=='boolean'||!taskId))throw new CoordinatorError('仅处理最新要求需指定任务',400);
+      res.json(await service.resume(scope(req), () => verifyKey(req), taskId, req.body?.latestOnly===true));
     }),
   );
   router.post(

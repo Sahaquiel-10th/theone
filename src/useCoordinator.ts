@@ -310,10 +310,10 @@ export function useCoordinator(
         : old,
     );
   }
-  async function resumeTask(id: string) {
+  async function resumeTask(id: string, latestOnly = false) {
     await api("/api/coordinator/resume", {
       method: "POST",
-      body: JSON.stringify({ continueTaskId: id, confirmed: true }),
+      body: JSON.stringify({ continueTaskId: id, confirmed: true, latestOnly }),
     });
     await load(id);
     await refresh();

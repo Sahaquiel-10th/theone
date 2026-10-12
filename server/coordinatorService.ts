@@ -1259,11 +1259,19 @@ export class CoordinatorService {
     s: WorkScope,
     verifyKey: () => Promise<void>,
     continueTaskId?: string,
+    latestOnly = false,
   ) {
     await verifyKey();
     if (continueTaskId)
       await this.store.mutate((d) => {
-        taskOf(d, s, continueTaskId).workPaused = false;
+        const task=taskOf(d, s, continueTaskId);
+        if(latestOnly){
+          const queued=(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===continueTaskId&&o.status==='pending'&&o.workRun?.state==='queued').sort((a,b)=>a.createdAt.localeCompare(b.createdAt));
+          for(const op of queued.slice(0,-1)){
+            op.workRun!.state='cancelled';op.workRun!.unread=false;op.status='interrupted';op.updatedAt=at();
+          }
+        }
+        task.workPaused = false;task.updatedAt=at();
       });
     const db = await this.store.read();
     featureMember(db, s);

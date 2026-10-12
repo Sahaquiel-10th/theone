@@ -1072,6 +1072,19 @@ test('task deletion is scoped, preserves originals, cancels queue and restore ne
   assert.equal(f.calls.filter(c=>c.modelId==='worker').length,0);
   assert.equal((await f.service.task(a,r.taskId!)).jobs[0].state,'cancelled');
 });
+
+test('explicit latest-only resume retains older inputs without executing or billing them',async()=>{
+ const f=fixture(),r=await f.service.dispatch(a,input('operation_latest_001','UI 第一条'),key);
+ await f.service.direct(a,r.taskId!,{operationId:'operation_latest_002',text:'最新修改要求'},key);
+ await f.store.mutate(d=>{d.conversations.find(c=>c.id===r.taskId)!.workPaused=true;});
+ await assert.rejects(()=>f.service.resume(b,key,r.taskId,true),/不存在/);
+ await f.service.resume(a,key,r.taskId,true);
+ await waitFor(async()=>(await f.service.task(a,r.taskId!)).jobs[1].state==='completed');
+ const detail=await f.service.task(a,r.taskId!);
+ assert.equal(detail.jobs[0].state,'cancelled');assert.equal(detail.jobs[0].charges.length,0);
+ assert.ok(detail.conversation.messages.some(m=>m.content==='UI 第一条'));
+ assert.equal(f.calls.filter(c=>c.modelId==='worker').length,1);
+});
 test("knowledge revocation is checked before worker billing; public credentials and private prompt snapshots stay off task receipts", async () => {
   const f = fixture();
   await f.store.mutate((d) =>
