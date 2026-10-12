@@ -115,6 +115,8 @@ export type PowerAccount = {
   membershipPeriods?: import("./memberships.js").MembershipPeriod[];
   powerHolds?: import("./memberships.js").PowerHold[];
   paidBalanceMicros?: number;
+  /** Settled, withdrawal-eligible power; subset of permanent balance, never inferred from topups/gifts. */
+  withdrawableBalanceMicros?: number;
   id: string; workspaceId: string; userId: string; balanceMicros: number;
   /** Funds held by pending calls and calls awaiting explicit billing review. */
   reservedMicros?: number;
@@ -172,6 +174,7 @@ export type ExecutionTask = {
   provider: "codex" | "local_agent"; status: ExecutionTaskStatus; instruction: string; deviceId: string;
   installationId?: string; targetName?: string; providerThreadId?: string; finalResponse?: string; lastError?: string;
   dispatchOperationId?: string;
+  preparationOperationId?: string;
   reportedToCoordinatorAt?: string;
   noticeReadRound?: number;
   reportRound?: number;

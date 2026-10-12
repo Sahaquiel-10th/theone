@@ -129,6 +129,9 @@ export function membershipSummary(db:Database, scope:{workspaceId:string;userId:
   const remaining=current?Math.max(0,current.remainingMicros-reserved):0;
   const config=catalog(db);
   return {welcomeGift:account.membershipWelcomeGift??null,enabled:config.enabled,products:config.enabled?products(config):[],annualDiscountPercent:config.annualDiscountBps/100,active:current?{tier:current.tier,remainingPercent:Math.round(remaining/current.grantedMicros*1000)/10,resetsAt:current.endsAt}:null,
+    permanentPowerMicros:account.balanceMicros,
+    withdrawablePowerMicros:Math.max(0,Math.min(account.balanceMicros-(account.paidBalanceMicros??0),account.withdrawableBalanceMicros??0)),
+    withdrawalsEnabled:false,
     purchasedBalanceCny:Math.floor(account.balanceMicros*7/1e4)/100,
     scheduled:account.membershipPeriods?.filter(p=>Date.parse(p.startsAt)>at).map(p=>({tier:p.tier,startsAt:p.startsAt,endsAt:p.endsAt}))??[],
     pendingKeys:db.rechargeOrders.filter(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.product?.kind==='key'&&o.status==='paid'&&!o.membershipActivatedAt).map(o=>({id:o.id,label:o.product!.label,ready:!!o.fulfilledDeviceId}))};

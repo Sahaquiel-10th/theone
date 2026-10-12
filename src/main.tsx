@@ -207,6 +207,8 @@ type KnowledgeConnection = {
 
 type ExecutionTask = {
   id: string;
+  dispatchOperationId?: string;
+  preparationOperationId?: string;
   workspaceId: string;
   userId: string;
   conversationId: string;
@@ -533,7 +535,7 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
         <span><strong>{executionNeedsReview(task) ? '本轮已结束，结果待核对' : executionStatusLabel(task, preparing)}</strong><small>{preparing ? "正在连接本机…" : executionNeedsReview(task) ? '有工具报错，请核对最终回执' : task?.status === "completed" ? "查看结果" : task?.status === "failed" ? "查看问题" : latestStep || "查看过程"}</small></span>
         <span className="execution-expand-label">{expanded ? "收起" : "展开"}</span><ChevronDown size={15} />
       </button>
-      {isExecutionRunning(task) ? <button className="execution-stop" type="button" onClick={event => onStop(event.currentTarget)}><Square size={10} />停止</button> : null}
+      {busy ? <button className="execution-stop" type="button" onClick={event => onStop(event.currentTarget)}><Square size={10} />停止</button> : null}
     </div>
     <div className="execution-disclosure-grid" data-open={expanded}>
       <div className="execution-disclosure-clip" inert={!expanded} aria-hidden={!expanded}>
@@ -674,6 +676,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [executionMode, setExecutionMode] = useState(false);
   const [awaitingExecutionOperationId, setAwaitingExecutionOperationId] = useState('');
   const [preparingExecution, setPreparingExecution] = useState(false);
+  const executionPreparationRef = useRef<{cancelled:boolean;operationId?:string;coordinator?:boolean}|null>(null);
+  const stoppedPreparationIdsRef = useRef(new Set<string>());
   const [preparingConversationId, setPreparingConversationId] = useState("");
   const [executionSourceMessageId, setExecutionSourceMessageId] = useState("");
   const [takeoverTaskId, setTakeoverTaskId] = useState("");
@@ -742,6 +746,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     if (!previous) return;
     const fresh = executionTasks.find(t=>!previous.has(t.id) && isExecutionRunning(t));
     if (fresh) {
+      if(stoppedPreparationIdsRef.current.has(fresh.dispatchOperationId||'')||stoppedPreparationIdsRef.current.has(fresh.preparationOperationId||''))return;
       setTakeoverTaskId(fresh.id);
       if (!executionMode && !preparingExecution) transitionExecutionMode(true, executionOriginRef.current);
     }
@@ -1319,14 +1324,18 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         let confirmedExternal=false;
         if(features.length){const details=await Promise.all(features.map(f=>api<{name:string;usageMultiplier:number;destinations:string[]}>(`/api/features/${encodeURIComponent(f.id)}`)));confirmedExternal=confirm(`使用 ${details.map(f=>`${f.name}（${f.usageMultiplier??.6} 倍）`).join('、')}。\n${details.flatMap(f=>f.destinations).length?'任务所需内容将发送至：'+[...new Set(details.flatMap(f=>f.destinations))].join('、'):'按需使用你已连接的知识来源'}\n各功能按实际用量分别扣除 ONE 额度，再相加。是否继续？`);if(!confirmedExternal)return false;}
         const featureApprovals=features.length||coordinator.state.boundTask?await approveFeaturePrices(api,features.map(f=>f.id),coordinator.state.boundTask||undefined):[];
+        if(localExecution&&executionPreparationRef.current?.cancelled)return false;
         setError('');setPreviewHome(false);setHasSubmittedChat(true);
         if (!localExecution) executionOriginRef.current = pointFromElement(document.getElementById('one-studio-send'));
         // Capture the sent content now; a new draft must never be cleared by a late receipt.
         if(currentDraftRef.current.content===rawText)setContent('');
         setPendingAttachments(old=>old.filter(file=>!files.some(sent=>sent.id===file.id)));setFeatureForNext(old=>old.filter(feature=>!features.some(sent=>sent.id===feature.id)));
-        const operationId = await coordinator.submit({operationId:crypto.randomUUID(),text,localExecution,outputDestination:localExecution?undefined:outputDestination==='notion'?'notion':'chat',modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),featureApprovals,confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
+        if(localExecution&&executionPreparationRef.current?.cancelled)return false;
+        const submissionId=crypto.randomUUID();
+        if(localExecution&&executionPreparationRef.current){executionPreparationRef.current.operationId=submissionId;executionPreparationRef.current.coordinator=true;}
+        const operationId = await coordinator.submit({operationId:submissionId,text,localExecution,outputDestination:localExecution?undefined:outputDestination==='notion'?'notion':'chat',modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),featureApprovals,confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
         coordinatorFailedDraft.current=null;
-        if (localExecution) setAwaitingExecutionOperationId(operationId);
+        if (localExecution && !executionPreparationRef.current?.cancelled) setAwaitingExecutionOperationId(operationId);
         return true;
       }catch(err){setError(err instanceof Error?err.message:'暂时无法确认，请检查状态；不会重复执行');if(localExecution)throw err;}return false;
     }
@@ -1553,6 +1562,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   async function executeFromMessage(message: Message, source?: HTMLElement | null, conversationId = active?.id) {
     if (!conversationId || conversationId.startsWith("tmp_") || !message.id || preparingExecution || executionBusy || loadingByConversation[conversationId] || taskStatusUnavailable) return;
     const origin = pointFromElement(source);
+    const preparation={cancelled:false,operationId:undefined as string|undefined};executionPreparationRef.current=preparation;
     executionOriginRef.current = origin;
     setPreparingExecution(true);
     setPreparingConversationId(conversationId);
@@ -1562,10 +1572,13 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setError("");
     transitionExecutionMode(true, origin);
     try {
+      preparation.operationId=await chatSubmission(`execution:${user.id}`, { conversationId, sourceMessageId: message.id });
+      if(preparation.cancelled)return;
       const result = await api<{ task: ExecutionTask; events: ExecutionEvent[] }>("/api/executions/from-message", {
         method: "POST",
-        body: JSON.stringify({ conversationId, sourceMessageId: message.id, operationId: await chatSubmission(`execution:${user.id}`, { conversationId, sourceMessageId: message.id }) })
+        body: JSON.stringify({ conversationId, sourceMessageId: message.id, operationId: preparation.operationId })
       });
+      if(preparation.cancelled){return;}
       setTakeoverTaskId(result.task.id);
       setSelectedExecutionId(result.task.id);
       rememberExecution(result.task, result.events);
@@ -1581,12 +1594,13 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   async function executeDraft(rawText: string, source: HTMLElement, conversationId?: string) {
     if (!rawText.trim() || preparingExecution || executionBusy || taskStatusUnavailable) return;
     executionOriginRef.current = pointFromElement(source);
+    const preparation={cancelled:false,operationId:undefined as string|undefined,coordinator:false};executionPreparationRef.current=preparation;
     if (!conversationId && coordinator.enabled) {
       setTakeoverTaskId(''); setPreparingExecution(true);
       transitionExecutionMode(true, executionOriginRef.current);
       try {
         if (!await sendMessage(rawText, true)) transitionExecutionMode(false, executionOriginRef.current);
-        else await refreshExecutionTasks();
+        else if(!preparation.cancelled)await refreshExecutionTasks();
       }
       catch { transitionExecutionMode(false, executionOriginRef.current); }
       finally { setPreparingExecution(false); }
@@ -1597,7 +1611,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     transitionExecutionMode(true, executionOriginRef.current);
     try {
       const operationId = await chatSubmission(`execution-input:${user.id}`, { conversationId, content: rawText.trim() });
+      preparation.operationId=operationId;if(preparation.cancelled)return;
       const result = await api<{task:ExecutionTask;events:ExecutionEvent[]}>('/api/executions/from-input', { method:'POST', body:JSON.stringify({conversationId,content:rawText.trim(),operationId}) });
+      if(preparation.cancelled)return;
       rememberExecution(result.task,result.events); setTakeoverTaskId(result.task.id); setSelectedExecutionId(result.task.id);
       if (view === 'things') { setThingDrafts(old => ({...old,[conversationId]:old[conversationId] === rawText ? '' : old[conversationId]})); }
       else if (currentDraftRef.current.content === rawText) setContent('');
@@ -1610,6 +1626,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const text = rawText.trim();
     if (!executionTask || !text || executionBusy || preparingExecution || taskStatusUnavailable) return;
     const originalDraftKey = composeKeyRef.current;
+    const preparation={cancelled:false,operationId:crypto.randomUUID()};executionPreparationRef.current=preparation;
     setContent("");
     setError("");
     setPreparingExecution(true);
@@ -1618,8 +1635,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     try {
       const result = await api<{ task: ExecutionTask }>(`/api/executions/${encodeURIComponent(executionTask.id)}/messages`, {
         method: "POST",
-        body: JSON.stringify({ content: text })
+        body: JSON.stringify({ content: text,operationId:preparation.operationId })
       });
+      if(preparation.cancelled)return;
       setTakeoverTaskId(result.task.id);
       rememberExecution(result.task);
       setEventsByTask(items => ({ ...items, [result.task.id]: [] }));
@@ -1639,7 +1657,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   async function cancelExecution(source?: HTMLElement | null, task = executionTask) {
+    const preparation=executionPreparationRef.current;
+    if((preparingExecution||awaitingExecutionOperationId)&&preparation){
+      preparation.cancelled=true;if(preparation.operationId)stoppedPreparationIdsRef.current.add(preparation.coordinator?`local_${preparation.operationId}`:preparation.operationId);setAwaitingExecutionOperationId('');transitionExecutionMode(false,pointFromElement(source));
+      try{if(preparation.operationId){if(preparation.coordinator)await api(`/api/coordinator/messages/${encodeURIComponent(preparation.operationId)}/stop`,{method:'POST'});else await api(`/api/executions/preparation/${encodeURIComponent(preparation.operationId)}/cancel`,{method:'POST'});}setNotice('已请求停止，原始要求保留；已产生的修改不会自动撤销。');}
+      catch(err){setError(err instanceof Error?err.message:'停止未确认，请检查任务状态');}
+      return;
+    }
     if (!task || !isExecutionRunning(task)) return;
+    transitionExecutionMode(false, pointFromElement(source));
     try {
       await api(`/api/executions/${encodeURIComponent(task.id)}/cancel`, { method: "POST" });
       transitionExecutionMode(false, pointFromElement(source));
@@ -1719,6 +1745,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {user.access?.role === "company_admin" ? <button type="button" aria-current={view === "company" ? "page" : undefined} onClick={() => openSurface("company")}>公司管理</button> : null}
         </nav>
         <div className="one-chrome-actions">
+          {preparingExecution||awaitingExecutionOperationId||executionBusy?<button type="button" className="one-chrome-button" onClick={event=>void cancelExecution(event.currentTarget)}><Square size={12}/>停止执行</button>:null}
           <button className="one-chrome-button knowledge" type="button" title="知识来源" onClick={() => openSurface("knowledge")}>
             <span className={`connection-dot ${[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "connected" : "disconnected"}`} />
             <span>{[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "知识已连接" : "连接知识"}</span>

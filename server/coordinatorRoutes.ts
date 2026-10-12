@@ -24,6 +24,7 @@ export function installCoordinatorRoutes(
   knowledge: Pick<KnowledgeService, "recallWithDiagnostics">,
   deps: FeatureRunDependencies & {
     notionDocuments?: NotionDocuments;
+    cancelLocal?: (req:express.Request,operationId:string)=>Promise<void>;
     webSearch?: (query: string) => Promise<unknown>;
     executeLocal?: (req: express.Request, res: express.Response, cid: string, mid: string, operationId: string) => Promise<{ id: string; status: string }>;
   } = {},
@@ -103,7 +104,7 @@ export function installCoordinatorRoutes(
       void service.resume(s, verify).catch(() => {});
     }),
   );
-  router.post('/messages/:operationId/stop', asyncRoute(async(req,res)=>res.json(await service.cancel(scope(req),String(req.params.operationId),()=>verifyKey(req)))));
+  router.post('/messages/:operationId/stop', asyncRoute(async(req,res)=>{const id=String(req.params.operationId);await verifyKey(req);await deps.cancelLocal?.(req,`local_${id}`);const result=await service.cancel(scope(req),id,()=>verifyKey(req));res.json(result);}));
   router.post('/tasks/:id/stop', asyncRoute(async(req,res)=>res.json(await service.cancelTask(scope(req),String(req.params.id),()=>verifyKey(req)))));
   router.post('/tasks/:id/notion/verify', asyncRoute(async(req,res)=>{
     if (!deps.notionDocuments) throw new CoordinatorError('Notion 保存尚未连接', 428);

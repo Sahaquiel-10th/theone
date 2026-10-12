@@ -141,6 +141,8 @@ export function chargePower(db: Database, params: {
   const before = account.balanceMicros;
   const paidBefore=Math.max(0,Math.min(before,account.paidBalanceMicros??0)),bonusBefore=before-paidBefore;
   const bonusMicros=Math.min(left,bonusBefore),paidPrincipalMicros=left-bonusMicros;
+  const withdrawable=Math.max(0,Math.min(bonusBefore,account.withdrawableBalanceMicros??0));
+  if(account.withdrawableBalanceMicros!==undefined)account.withdrawableBalanceMicros=withdrawable-Math.max(0,bonusMicros-(bonusBefore-withdrawable));
   account.balanceMicros -= left;
   account.paidBalanceMicros=paidBefore-paidPrincipalMicros;
   account.updatedAt = new Date().toISOString();

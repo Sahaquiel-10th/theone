@@ -62,6 +62,7 @@ import { activateMembershipTrial, activateMembershipOnly } from "./memberships.j
 import { installMembershipRoutes } from "./membershipRoutes.js";
 import { installAdminPaymentRoutes, installPaymentCallback, installPaymentRoutes } from "./paymentRoutes.js";
 import { effectiveModel, publishPricing, cancelScheduledPricing, publicPrices } from "./modelPricing.js";
+import {ExecutionPreparationStops} from './executionPreparation.js';
 import { publicPayment } from "./payments.js";
 import { runtimeUpdateWasCompleted } from "./runtimeUpdate.js";
 import { codexGateway, managedExecutorDistribution } from "./runtime.js";
@@ -862,6 +863,13 @@ app.get("/api/executions/:id/stream", ...keyAuth, asyncRoute(async (req, res) =>
   res.on("close", () => { closed = true; clearInterval(timer); });
 }));
 
+const executionPreparationStops=new ExecutionPreparationStops();
+async function stopLocalPreparation(req:express.Request,operationId:string){
+ const scope={workspaceId:req.workspaceId!,userId:req.user!.id,operationId};executionPreparationStops.cancel(scope);
+ const tasks=await store.mutate(db=>{const op=db.chatOperations?.find(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.operationId===operationId);if(op){op.executionCancelled=true;if(op.status==='pending')op.status='interrupted';op.updatedAt=now();}return db.executionTasks.filter(t=>t.workspaceId===scope.workspaceId&&t.userId===scope.userId&&(t.dispatchOperationId===operationId||t.preparationOperationId===operationId)&&!executionTerminal(t.status));});
+ for(const task of tasks)await connectorService.dispatch({workspaceId:scope.workspaceId,userId:scope.userId,deviceId:req.oneKeyDeviceId,installationId:req.oneKeyInstallationId},task.id,'cancel');
+}
+app.post('/api/executions/preparation/:operationId/cancel',...keyAuth,asyncRoute(async(req,res)=>{await stopLocalPreparation(req,String(req.params.operationId));res.status(202).json({ok:true});}));
 async function startLocalExecution(req: express.Request, res: express.Response, conversationId: string, sourceMessageId: string, operationId?: string) {
   if (operationId !== undefined && (typeof operationId !== 'string' || !/^[A-Za-z0-9_-]{16,100}$/.test(operationId))) throw new Error("执行编号无效");
   if (!req.oneKeyDeviceId || !oneKeyPresence.isConnected(req.oneKeyDeviceId, req.oneKeyInstallationId)) throw new Error("本机执行未连接，请插入 ONE Key 并双击 ONE 图标");
@@ -871,10 +879,12 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
   const model = db.models.find((item) => item.id === conversation.modelId && item.enabled && item.kind === "chat");
   if (!model) throw new Error("当前对话模型不能整理执行指令");
   const requestOperationId = operationId ?? uid("execution");
+  const preparationScope={workspaceId:req.workspaceId!,userId:req.user!.id,operationId:requestOperationId};executionPreparationStops.assertActive(preparationScope);
   const claim = await beginChatOperation(store, { workspaceId: req.workspaceId!, userId: req.user!.id,
     operationId: requestOperationId, conversationId, requestId: res.locals.requestId,
     payload: { kind: "local_execution", conversationId, sourceMessageId, deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId },
     beforeClaim: d => {
+      executionPreparationStops.assertActive(preparationScope);
       if (d.executionTasks.some(t => t.workspaceId === req.workspaceId && t.userId === req.user!.id && t.deviceId === req.oneKeyDeviceId && t.installationId === req.oneKeyInstallationId && ['queued','selecting_target','running'].includes(t.status)))
         throw new Error("本机还有任务正在执行。当前要求已保留，请等本轮结束后再执行；不会同时修改文件。");
     } });
@@ -887,6 +897,7 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
   try {
   const scope = { workspaceId: req.workspaceId!, userId: req.user!.id, deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId };
   const executionProvider = await connectorService.selectExecution(scope);
+  executionPreparationStops.assertActive(preparationScope);
   const prefix = messagesThrough(db.messages.filter(item => item.userId === req.user!.id), conversation.id, req.workspaceId!, sourceMessageId);
   const compilerRules = "你是 ONE 的执行交接编译器。只整理用户已经表达或确认的意图，不替用户扩大授权范围。";
   const compilerTask = resolveAiTask(db.settings, db.models, "execution_compile", model);
@@ -908,6 +919,8 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
     createdAt: timestamp, updatedAt: timestamp
   };
   await store.mutate((mutable) => {
+    executionPreparationStops.assertActive(preparationScope);
+    if(mutable.chatOperations?.some(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.operationId===requestOperationId&&o.executionCancelled))throw new Error('执行准备已停止');
     mutable.executionTasks.push(task);
     const c = mutable.conversations.find(c => c.id === conversationId && c.workspaceId === req.workspaceId && c.userId === req.user!.id)!;
     const receipt = { id: uid("msg"), role: "assistant" as const, content: "本机执行已受理，正在连接执行器。结果确认后会在这里保留。", createdAt: timestamp };
@@ -918,6 +931,7 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
     mutable.auditLogs.push({ id: uid("aud"), workspaceId: task.workspaceId, actorUserId: task.userId, action: useLocalAgent ? "execution.local_agent.created" : "execution.codex.created", targetType: "execution_task", targetId: task.id, details: { conversationId, sourceMessageId }, requestId: res.locals.requestId, createdAt: timestamp });
   });
   try {
+    executionPreparationStops.assertActive(preparationScope);
     await connectorService.dispatch(scope, task.id, "start");
   }
   catch (error) {
@@ -966,11 +980,15 @@ app.post("/api/me/local-device", ...keyAuth, asyncRoute(async (req, res) => {
 
 app.post("/api/executions/:id/messages", ...keyAuth, asyncRoute(async (req, res) => {
   const content = requiredString(req.body.content, "执行消息").slice(0, 12_000);
+  const preparationScope={workspaceId:req.workspaceId!,userId:req.user!.id,operationId:req.body.operationId??uid('execution')};
+  if(!/^[A-Za-z0-9_-]{16,128}$/.test(preparationScope.operationId))throw new Error('执行编号无效');
   const task = await store.mutate((database) => {
+    executionPreparationStops.assertActive(preparationScope);
     const target = database.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id && item.deviceId === req.oneKeyDeviceId && Boolean(item.installationId) && item.installationId === req.oneKeyInstallationId);
     if (!target) throw new Error("执行任务不存在");
     if (target.status === "queued" || target.status === "selecting_target" || target.status === "running") throw new Error("本机任务正在执行，请等待当前步骤完成");
     const timestamp = now(); target.status = "queued"; target.updatedAt = timestamp; target.startedAt = undefined; target.completedAt = undefined; target.lastError = undefined;
+    target.preparationOperationId=preparationScope.operationId;
     target.reportRound = (target.reportRound ?? 0) + 1; target.reportedToCoordinatorAt = undefined; target.finalResponse = undefined;
     appendExecutionEvent(database, { id: uid("exe"), workspaceId: target.workspaceId, userId: target.userId, taskId: target.id, kind: "user_message", text: content, createdAt: timestamp });
     return target;
@@ -1005,7 +1023,7 @@ installCompanyRoutes(app, keyAuth, admin, store, oneKeyService);
 installPublicCommerceRoutes(app,keyAuth,admin,store);
 installProductMetricsRoutes(app,admin,store);
 installAiTaskRoutes(app, admin, store);
-installCoordinatorRoutes(app,keyAuth,admin,store,confirmKeyBeforeModel,knowledgeService,{notionDocuments,artifactDirectory:uploadDir,webSearch:query=>webSearchEnabled()?searchWeb(query):Promise.resolve({status:'unavailable'}),
+installCoordinatorRoutes(app,keyAuth,admin,store,confirmKeyBeforeModel,knowledgeService,{cancelLocal:stopLocalPreparation,notionDocuments,artifactDirectory:uploadDir,webSearch:query=>webSearchEnabled()?searchWeb(query):Promise.resolve({status:'unavailable'}),
   executeLocal: async (req, res, cid, mid, operationId) => { const result = await startLocalExecution(req, res, cid, mid, operationId); return { id: result.task.id, status: result.task.status }; }});
 installOfficialFeaturePilotRoutes(app, admin, store);
 installFeatureTrialRoutes(app, admin, store, confirmKeyBeforeModel);

@@ -1,6 +1,6 @@
 import type { MembershipProduct } from '../server/memberships';
 
-export const allowanceRules = '先使用本月会员额度，用完后使用额外额度。未使用的月额度不累计，额外额度长期保留。参考金额用于说明可用额度，不是可提现现金。';
+export const allowanceRules = '先使用本期会员额度，用完后使用永久电力。未使用的本期额度不累计，永久电力长期保留。充值与赠送电力不可提现，可提现收益单独标明。';
 export function purchaseAction(product: MembershipProduct, currentTier?: string) {
   if (product.kind === 'key') return '购买启动器套餐';
   if (!currentTier) return '开通会员';

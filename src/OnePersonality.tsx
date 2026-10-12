@@ -11,7 +11,7 @@ export function pickPersonality(lines:readonly string[],eggs:readonly string[],h
  const next=choices[Math.floor(random()*choices.length)];history.push(next);if(history.length>12)history.shift();return next;
 }
 export function useOneGreeting(context=''){const [copy,setCopy]=useState(()=>pickPersonality(greetings,greetingEggs,greetingHistory));useEffect(()=>setCopy(pickPersonality(greetings,greetingEggs,greetingHistory)),[context]);return copy;}
-export function OneWaitingCopy(){
+export function OneWaitingCopy({compact=false}:{compact?:boolean}={}){
   const [copy,setCopy]=useState(()=>pickPersonality(waitingLines,waitingEggs,waitingHistory)),[slow,setSlow]=useState(false);
   useEffect(()=>{
     const reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -19,5 +19,5 @@ export function OneWaitingCopy(){
     let timer:ReturnType<typeof setTimeout>;let live=true;
     function schedule(){if(reduced)return;timer=setTimeout(()=>{if(document.visibilityState==='visible')setCopy(pickPersonality(waitingLines,waitingEggs,waitingHistory));if(live)schedule();},9000+Math.random()*9000);}schedule();return()=>{live=false;clearTimeout(timer);clearTimeout(slowTimer);};
   },[]);
-  return <div className="studio-wait one-waiting-copy" role="status" aria-label="正在准备当前事情的回复" aria-live="off"><span className="paper-wait-eye" aria-hidden="true">◉</span><div><small>{slow?'这次等待稍久，结果会显示在这里':'ONE · 正在准备回复'}</small><p key={copy}>{copy}</p></div></div>;
+  return <div className={`studio-wait one-waiting-copy ${compact?'is-compact':''}`} role="status" aria-label="正在准备当前事情的回复" aria-live="off">{!compact?<span className="paper-wait-eye" aria-hidden="true">◉</span>:null}<div>{!compact?<small>{slow?'这次等待稍久，结果会显示在这里':'ONE · 正在准备回复'}</small>:null}<p key={copy}>{copy}</p></div></div>;
 }

@@ -34,6 +34,7 @@
 .membership-picker{border:0;margin:0;padding:0}
 .membership-plan-value{font-weight:600;color:var(--studio-ink,#292d25)}
 .membership-checkout-price{font-size:30px;font-weight:600}
+.membership-permanent{display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:20px 0;margin-top:20px;border-top:1px solid var(--studio-line,#dddfd4)}.membership-permanent>div{display:grid;gap:10px}.membership-permanent>div>span{font-size:12px;color:var(--studio-muted,#76786c)}.membership-permanent strong{font-size:24px;font-weight:500;overflow-wrap:anywhere}.membership-permanent strong small{font-size:12px;margin-left:7px;font-weight:400;color:var(--studio-muted,#76786c)}.membership-permanent>p{grid-column:1/-1;display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;font-size:11px;color:var(--studio-muted,#76786c)}.membership-permanent>p span{padding:2px 7px;border-radius:5px;background:var(--studio-paper,#f3f3ed)}
 .one-info-hint{position:relative;display:inline-block;font-weight:normal;font-size:12px;vertical-align:middle;color:var(--studio-muted,#65705c)}
 .one-studio details.one-info-hint{padding:0;margin:0;border:0;background:transparent;box-shadow:none;border-radius:0;backdrop-filter:none;overflow:visible}
 .one-studio details.one-info-hint>summary{padding:3px;margin:0;min-width:0;min-height:0;background:transparent;border:0;border-radius:0;line-height:1}

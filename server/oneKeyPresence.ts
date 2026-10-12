@@ -598,6 +598,10 @@ export class OneKeyPresence {
 
   private async sendToDevice(deviceId: string, taskId: string, installationId: string | undefined, payload: Record<string, unknown>) {
     const socket = await this.executionSocket(deviceId, taskId, installationId);
+    if(payload.type==='execution_start'||payload.type==='execution_continue'){
+      const db=await this.store.read();const task=db.executionTasks.find(t=>t.id===taskId&&t.deviceId===deviceId&&t.installationId===installationId);
+      if(!task||executionTerminal(task.status))throw new OneKeyPresenceError('执行已停止或结束，不再启动本机操作');
+    }
     if (this.sockets.get(deviceId) !== socket || !this.isConnected(deviceId, installationId)) throw new OneKeyPresenceError("本机执行连接已变更，请重试");
     await new Promise<void>((resolve, reject) => socket.send(JSON.stringify(payload), (error) => error ? reject(new OneKeyPresenceError("本机执行连接已断开")) : resolve()));
     return socket;
