@@ -10,6 +10,33 @@ import { updateOfficialFeature } from "./officialFeatures.js";
 import { reconcileInterruptedChatOperations } from "./chatOperations.js";
 import type { Database } from "./types.js";
 import type { Store } from "./db.js";
+import { featureBudgetPolicy, saveFeatureBudgetPolicy, requireFeatureApproval } from './featurePricing.js';
+
+test('feature approval threshold is strict, workspace-bound and pins publication rate; rejection creates no usage',async()=>{
+  const f=fixture();const scope=f.scope;
+  assert.equal(featureBudgetPolicy(f.db(),scope),2);
+  saveFeatureBudgetPolicy(f.db(),scope,1);
+  assert.equal(featureBudgetPolicy(f.db(),{workspaceId:'wb',userId:'a'}),2);
+  const price={id:'research',name:'研究助手',releaseId:f.body.releaseId,version:1,multiplier:1};
+  requireFeatureApproval(f.db(),scope,[price],[]);
+  assert.throws(()=>requireFeatureApproval(f.db(),scope,[{...price,multiplier:1.2}],[]),/尚未执行/);
+  assert.throws(()=>requireFeatureApproval(f.db(),scope,[{...price,multiplier:1.2}],[{...price,multiplier:1.2,releaseId:'old'}]),/尚未执行/);
+  requireFeatureApproval(f.db(),scope,[{...price,multiplier:1.2}],[{...price,multiplier:1.2}]);
+  saveFeatureBudgetPolicy(f.db(),scope,.5);
+  await assert.rejects(startFeatureRun(f.store,scope,'research',f.body,async()=>{}),/超过/);
+  assert.equal(f.db().modelUsageRecords.length,0);assert.equal(f.db().chatOperations?.length,0);
+  await startFeatureRun(f.store,scope,'research',{...f.body,featureApprovals:[{...price,multiplier:.6}]},async()=>{});
+  assert.equal(f.db().chatOperations![0].featureRun!.price!.multiplier,.6);
+});
+
+test('feature default 0.6 is billed once; retry and unrelated tenant do not incur charges',async()=>{
+  const f=fixture();await startFeatureRun(f.store,f.scope,'research',f.body,async()=>{});
+  await executeFeatureRun(f.store,f.scope,f.body.operationId,async()=>{},noKnowledge,{modelCall:async()=>done});
+  assert.equal(f.db().modelUsageRecords[0].chargedMicros,24);
+  assert.equal(f.db().modelUsageRecords[0].featurePriceSnapshot?.multiplier,.6);
+  await executeFeatureRun(f.store,f.scope,f.body.operationId,async()=>{},noKnowledge,{modelCall:async()=>{assert.fail('no duplicate model call');}});
+  assert.equal(f.db().powerLedger.length,1);assert.equal(f.db().powerAccounts[1].balanceMicros,1000000);
+});
 
 const usage={inputTokens:10,outputTokens:5,totalTokens:15,source:'provider' as const};
 const done={content:'本人资料结果',toolCalls:[],usage,finishReason:'stop' as const};
@@ -92,6 +119,16 @@ test('HTTP consumer routes require Key, separate recipients and hide definitions
   const url=`http://127.0.0.1:${(server.address() as any).port}/api/features`,headers={'x-key':'present','content-type':'application/json'};
   for(const path of ['', '/runs','/research','/runs/'+f.body.operationId])assert.equal((await fetch(url+path)).status,428);
   const list=await(await fetch(url,{headers})).json();assert.equal(list.items.length,1);assert.equal(list.items[0].instructions,undefined);assert.equal(list.items[0].userIds,undefined);
+  assert.equal(list.items[0].usageMultiplier,.6);
+  assert.equal((await fetch(url+'/budget-policy')).status,428);
+  assert.equal((await fetch(url+'/budget-policy',{method:'POST',headers,body:JSON.stringify({approvalThreshold:.5,workspaceId:'wb',userId:'b'})})).status,200);
+  assert.equal((await(await fetch(url+'/budget-policy',{headers})).json()).approvalThreshold,.5);
+  assert.equal((await(await fetch(url+'/budget-policy',{headers:{...headers,'x-account':'b'}})).json()).approvalThreshold,2);
+  assert.equal((await fetch(url+'/budget-policy',{method:'POST',headers,body:JSON.stringify({approvalThreshold:-1})})).status,400);
+  const quote=await(await fetch(url+'/quote',{method:'POST',headers,body:JSON.stringify({featureIds:['research']})})).json();assert.equal(quote.features[0].multiplier,.6);
+  assert.equal((await fetch(url+'/quote',{method:'POST',headers:{...headers,'x-account':'b'},body:JSON.stringify({featureIds:['research']})})).status,403);
+  assert.equal((await fetch(url+'/quote',{method:'POST',headers,body:JSON.stringify({featureIds:[],taskId:'foreign'})})).status,403);
+  await fetch(url+'/budget-policy',{method:'POST',headers,body:JSON.stringify({approvalThreshold:2})});
   assert.equal((await(await fetch(url+'?category=general',{headers})).json()).items.length,1);
   assert.equal((await(await fetch(url+'?category=research',{headers})).json()).items.length,0);
   assert.equal((await fetch(url+'?category=unreviewed',{headers})).status,400);

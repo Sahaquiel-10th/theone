@@ -13,6 +13,7 @@ import {
   getChatOperationResult,
 } from "./chatOperations.js";
 import type { FeatureRunDependencies } from "./featureRuns.js";
+import { FeatureConfigError } from './officialFeatures.js';
 export function installCoordinatorRoutes(
   app: Express,
   keyAuth: readonly RequestHandler[],
@@ -207,7 +208,7 @@ export function installCoordinatorRoutes(
     if (res.headersSent) {
       return;
     }
-    if (e instanceof CoordinatorError || e instanceof ChatOperationError) {
+    if (e instanceof CoordinatorError || e instanceof ChatOperationError || e instanceof FeatureConfigError) {
       res.status(e.status).json({ error: e.message });
       return;
     }

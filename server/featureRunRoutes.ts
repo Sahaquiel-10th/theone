@@ -7,6 +7,7 @@ import { ChatOperationError } from "./chatOperations.js";
 import { availableFeature, continueFeatureRun, executeFeatureRun, featureMember, featureRunResult, featureSummary, startFeatureRun, type FeatureRunDependencies } from "./featureRuns.js";
 import {featureCategories} from './featureCategories.js';
 import { featureEntitled, canReadKnowledge } from "./enterprisePolicy.js";
+import { featureBudgetPolicy, saveFeatureBudgetPolicy } from './featurePricing.js';
 
 export function installFeatureRunRoutes(app: Express, keyAuth: readonly RequestHandler[], store: Store, verifyKey: (req: express.Request) => Promise<void>, knowledge: Pick<KnowledgeService, "recallWithDiagnostics">, deps: FeatureRunDependencies = {}) {
   const router = express.Router();
@@ -14,6 +15,22 @@ export function installFeatureRunRoutes(app: Express, keyAuth: readonly RequestH
   router.use((_req,res,next) => { res.setHeader("Cache-Control", "no-store"); next(); });
   const scope = (req: express.Request) => ({ workspaceId: req.workspaceId!, userId: req.user!.id });
   const pageOf = (n: unknown) => Math.max(1, Math.min(100000, Math.floor(Number(n) || 1)));
+  router.get('/budget-policy', asyncRoute(async(req,res) => { const db=await store.read(),s=scope(req);featureMember(db,s);res.json({approvalThreshold:featureBudgetPolicy(db,s)}); }));
+  router.post('/budget-policy', asyncRoute(async(req,res) => { await verifyKey(req);const s=scope(req);res.json(await store.mutate(db=>{featureMember(db,s);return saveFeatureBudgetPolicy(db,s,req.body?.approvalThreshold);})); }));
+  router.post('/quote', asyncRoute(async(req,res) => {
+    const db=await store.read(),s=scope(req);featureMember(db,s);
+    const ids=req.body?.featureIds??[];
+    if(!Array.isArray(ids)||ids.length>8||ids.some(id=>typeof id!=='string'))throw new FeatureConfigError('功能选择无效');
+    const chosen=new Set<string>(ids);
+    if(req.body?.taskId){
+      const c=db.conversations.find(c=>c.id===req.body.taskId&&c.workspaceId===s.workspaceId&&c.userId===s.userId);
+      if(!c)throw new FeatureConfigError('事情不可用',403);
+      const previous=db.chatOperations?.filter(o=>o.workspaceId===s.workspaceId&&o.userId===s.userId&&o.conversationId===c.id&&o.workRun).at(-1)?.workRun;
+      previous?.skills.forEach(f=>chosen.add(f.id));
+      db.settings.executorProfiles?.find(p=>p.id===c.executorProfileId)?.published?.featureIds.forEach(id=>chosen.add(id));
+    }
+    res.json({approvalThreshold:featureBudgetPolicy(db,s),features:[...chosen].map(id=>{const f=featureSummary(availableFeature(db,s,id).record);return {id:f.id,name:f.name,releaseId:f.releaseId,version:f.version,multiplier:f.usageMultiplier};})});
+  }));
   router.get("/", asyncRoute(async (req,res) => {
     const db = await store.read(), s = scope(req); featureMember(db, s);
     const q = String(req.query.q ?? "").slice(0,100).toLowerCase(), page = pageOf(req.query.page);

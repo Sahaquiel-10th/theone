@@ -4,6 +4,7 @@ import type { identityAccess } from "../server/enterprisePolicy";
 import React, { FormEvent, createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AiTaskPanel } from "./AiTaskPanel";
 import { OfficialFeaturePanel } from "./OfficialFeaturePanel";
+import { FeatureBudgetSettings, approveFeaturePrices } from './FeatureBudgetSettings';
 import { FeatureMarketplace } from "./FeatureMarketplace";
 import {ProductMetricsPanel} from './ProductMetricsPanel';
 import {OneWaitingCopy,useOneGreeting} from './OnePersonality';
@@ -1312,13 +1313,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       coordinatorFailedDraft.current={text,files,features};
       try{
         let confirmedExternal=false;
-        if(features.length){const details=await Promise.all(features.map(f=>api<{name:string;destinations:string[]}>(`/api/features/${encodeURIComponent(f.id)}`)));confirmedExternal=confirm(`使用 ${details.map(f=>f.name).join('、')}。\n${details.flatMap(f=>f.destinations).length?'任务所需内容将发送至：'+[...new Set(details.flatMap(f=>f.destinations))].join('、'):'按需使用你已连接的知识来源'}\n执行会按实际用量消耗 ONE 额度。是否继续？`);if(!confirmedExternal)return false;}
+        if(features.length){const details=await Promise.all(features.map(f=>api<{name:string;usageMultiplier:number;destinations:string[]}>(`/api/features/${encodeURIComponent(f.id)}`)));confirmedExternal=confirm(`使用 ${details.map(f=>`${f.name}（${f.usageMultiplier??.6} 倍）`).join('、')}。\n${details.flatMap(f=>f.destinations).length?'任务所需内容将发送至：'+[...new Set(details.flatMap(f=>f.destinations))].join('、'):'按需使用你已连接的知识来源'}\n各功能按实际用量分别扣除 ONE 额度，再相加。是否继续？`);if(!confirmedExternal)return false;}
+        const featureApprovals=features.length||coordinator.state.boundTask?await approveFeaturePrices(api,features.map(f=>f.id),coordinator.state.boundTask||undefined):[];
         setError('');setPreviewHome(false);setHasSubmittedChat(true);
         if (!localExecution) executionOriginRef.current = pointFromElement(document.getElementById('one-studio-send'));
         // Capture the sent content now; a new draft must never be cleared by a late receipt.
         if(currentDraftRef.current.content===rawText)setContent('');
         setPendingAttachments(old=>old.filter(file=>!files.some(sent=>sent.id===file.id)));setFeatureForNext(old=>old.filter(feature=>!features.some(sent=>sent.id===feature.id)));
-        const operationId = await coordinator.submit({operationId:crypto.randomUUID(),text,localExecution,modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
+        const operationId = await coordinator.submit({operationId:crypto.randomUUID(),text,localExecution,modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),featureApprovals,confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
         coordinatorFailedDraft.current=null;
         if (localExecution) setAwaitingExecutionOperationId(operationId);
         return true;
@@ -2333,6 +2335,7 @@ function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onM
       <div className="account-body settings-account-body">
         {section === "device" ? <LocalDeviceSettings key={user.id} api={api}/> : section === "knowledge" ? knowledge : section === "power" ? user.access?.kind === "company" ? <div className="settings-empty"><p>费用由公司按协议对公打款承担，无需个人充值。</p><p>公司可用电力：{((billing?.availableMicros??0)/1e6).toFixed(3)}；个人额度由公司管理员配置。</p></div> : billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载会员与额度…</p> : <>
         <section className="account-panel"><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
+        <FeatureBudgetSettings key={user.id} api={api}/>
         <section className="account-panel">
           <div className="account-panel-title"><Bot size={18} /><h3>默认模型</h3></div>
           <SearchPicker label="默认模型" value={selectedModelId} onChange={chooseModel} options={models.filter(model => model.kind === "chat").map(model => ({ value: model.id, label: model.name }))} />

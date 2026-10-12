@@ -4,7 +4,7 @@ import type {api as Api} from '../oneApi';
 import {SettingsDialog} from '../SettingsControls';
 import {SharingPanel} from '../PublicSharing';
 import {featureCategories} from '../../server/featureCategories';
-export type FeatureChoice={id:string;name:string;description:string;knowledgeMode?:string;category?:string;author?:string;access?:'purchased'|'free'|'enterprise'|'locked';purchaseLabel?:string;usageLabel?:string};
+export type FeatureChoice={usageMultiplier?:number;id:string;name:string;description:string;knowledgeMode?:string;category?:string;author?:string;access?:'purchased'|'free'|'enterprise'|'locked';purchaseLabel?:string;usageLabel?:string};
 /** Local selection UI. Production paid access and consent remain server-owned. */
 export function FeatureShelf({api,models,selected,onChoose}:{api:typeof Api;models:{id:string;name:string;kind:string}[];selected:string[];onChoose:(feature:FeatureChoice)=>void}) {
  const [query,setQuery]=useState(''),[page,setPage]=useState(1),[category,setCategory]=useState('all'),[scope,setScope]=useState<'mine'|'discover'|'personal'>('mine');
@@ -20,15 +20,15 @@ export function FeatureShelf({api,models,selected,onChoose}:{api:typeof Api;mode
   <nav className="feature-shelf-categories" aria-label="功能分类">{[{id:'all',name:'全部'},...featureCategories].map(item=><button key={item.id} type="button" aria-pressed={category===item.id} onClick={()=>{setCategory(item.id);setPage(1);}}>{item.name}</button>)}</nav>
   {loading?<p role="status">正在找功能…</p>:error?<div role="alert"><p>{error}</p><button type="button" onClick={()=>setRefresh(value=>value+1)}>重新加载</button></div>:<>
    <div className="feature-shelf-grid">{list.items.map(feature=><article className={`feature-shelf-card ${selected.includes(feature.id)?'is-selected':''}`} key={feature.id}>
-    <header><Sparkles size={17}/><span>{feature.author==='ONE'?'官方':feature.author||'精选'}</span><small>{feature.access==='purchased'?'已购':feature.access==='enterprise'?'企业已开通':feature.access==='locked'?'未开通':'可使用'}</small></header>
+    <header><Sparkles size={17}/><span>{feature.author==='ONE'?'官方':feature.author||'精选'} · {feature.access==='purchased'?'已购':feature.access==='enterprise'?'企业已开通':feature.access==='locked'?'未开通':'可使用'}</span><small title="仅对本功能实际用量计费">{feature.usageMultiplier??.6} 倍</small></header>
     <h3>{feature.name}</h3><p>{feature.description}</p>
-    <div className="feature-cost"><span>{feature.purchaseLabel||'已为你开放'}</span><small>{feature.usageLabel||'按实际用量消耗 ONE 额度'}</small></div>
+    <div className="feature-cost"><span>{feature.purchaseLabel||'已为你开放'}</span><small>{feature.usageMultiplier??.6} 倍 · 仅按实际调用用量扣除</small></div>
     <footer><button type="button" className="feature-detail-link" aria-label={`了解功能：${feature.name}`} onClick={()=>setDetail(feature)}>详情</button><button type="button" className="feature-shelf-item" aria-label={feature.access==='locked'?`了解开通：${feature.name}`:`${selected.includes(feature.id)?'取消选择':'选择功能'}：${feature.name}`} aria-pressed={feature.access==='locked'?undefined:selected.includes(feature.id)} onClick={()=>feature.access==='locked'?setDetail(feature):onChoose(feature)}>{feature.access==='locked'?'了解开通':selected.includes(feature.id)?<><Check size={14}/>已选</>:'下一条使用'}</button></footer>
    </article>)}</div>
    {!list.items.length?<div className="feature-empty"><p>{query||category!=='all'?'没有找到匹配的功能':'即将上线'}</p>{query||category!=='all'?<button type="button" onClick={()=>{setQuery('');setCategory('all');setPage(1);}}>清除筛选</button>:scope==='mine'?<button type="button" onClick={()=>changeScope('discover')}>看看官方功能</button>:null}</div>:null}
    {list.total>10?<footer className="feature-pagination"><button type="button" disabled={page===1} onClick={()=>setPage(page-1)}>上一页</button><span>{page} / {Math.ceil(list.total/10)} · {list.total} 项</span><button type="button" disabled={page*10>=list.total} onClick={()=>setPage(page+1)}>下一页</button></footer>:null}
   </>}
   </>}
-  {detail?<SettingsDialog title={detail.name} onClose={()=>setDetail(null)}><p>{detail.description}</p><p>{detail.purchaseLabel||'已为你开放'} · {detail.usageLabel||'按实际用量消耗 ONE 额度'}</p>{detail.access==='locked'?<p>尚未为你开通。开通方式以官方说明为准；查看详情不会扣款。</p>:<><p>加入下一条消息，ONE 会按你的要求安排；选择本身不会执行或扣费。</p><button type="button" onClick={()=>{if(!selected.includes(detail.id))onChoose(detail);setDetail(null);}}>下一条使用</button></>}</SettingsDialog>:null}
+  {detail?<SettingsDialog title={detail.name} onClose={()=>setDetail(null)}><p>{detail.description}</p><p>{detail.purchaseLabel||'已为你开放'} · 使用倍率 {detail.usageMultiplier??.6} 倍</p><p>各功能按各自实际用量分别计算后相加，不将倍率相乘。调度、汇总按当前模型价格计费。</p>{detail.access==='locked'?<p>尚未为你开通。开通方式以官方说明为准；查看详情不会扣款。</p>:<><p>加入下一条消息，ONE 会按你的要求安排；选择本身不会执行或扣费。</p><button type="button" onClick={()=>{if(!selected.includes(detail.id))onChoose(detail);setDetail(null);}}>下一条使用</button></>}</SettingsDialog>:null}
  </section>;
 }

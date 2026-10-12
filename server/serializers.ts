@@ -2,7 +2,7 @@ import { AdminModel, AuditLog, ModelConfig, ModelUsageRecord, PublicModel, Publi
 import { effectiveModel } from "./modelPricing.js";
 
 export function publicUser(user: User): PublicUser {
-  const { passwordHash, featureCredentials, visitorAuthVersion, ...safe } = user;
+  const { passwordHash, featureCredentials, visitorAuthVersion, featureBudgetPolicies, ...safe } = user;
   return safe;
 }
 
@@ -26,7 +26,7 @@ export function publicUsageRecord(record: ModelUsageRecord) {
   const reservedMicros=c?c.publisherReservedMicros+(samePayer?c.payerReservedMicros:0):record.reservedMicros;
   return { id, workspaceId, userId, conversationId, modelId, inputTokens, outputTokens, totalTokens,
     source, chargedMicros, inputPowerPerMillionSnapshot, outputPowerPerMillionSnapshot, requestId, status, createdAt,
-    reservedMicros, activity, durationMs, completedAt, billingCapped, imagePowerPerCallSnapshot, pricingSnapshot, modelNameSnapshot, cacheUsage, cachePricesSnapshot, contextPriceTier: record.contextPriceTier, promptTokens: record.promptTokens };
+    reservedMicros, activity, durationMs, completedAt, billingCapped, imagePowerPerCallSnapshot, pricingSnapshot, modelNameSnapshot, cacheUsage, cachePricesSnapshot, featurePriceSnapshot:record.featurePriceSnapshot, contextPriceTier: record.contextPriceTier, promptTokens: record.promptTokens };
 }
 
 /** Operational telemetry is deliberately content-free, including third-party error details. */

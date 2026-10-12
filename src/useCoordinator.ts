@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { api as Api } from "./oneApi";
 import { ApiError } from "./oneApi";
+import { approveFeaturePrices } from './FeatureBudgetSettings';
 import { coordinatorMessage } from './coordinatorMessage';
 import {chatSubmission,forgetChatSubmission} from './chatSubmission';
 import type { Conversation } from "../server/types";
@@ -43,6 +44,7 @@ type Job = {
 };
 type Detail = { conversation: Conversation; jobs: Job[] };
 export type CoordinatorSubmission = {
+  featureApprovals?: import('../server/featurePricing').FeatureApproval[];
   localExecution?: boolean;
   operationId: string;
   text: string;
@@ -262,6 +264,7 @@ export function useCoordinator(
   ) {
     setError("");
     const receiptKey = JSON.stringify([userId,id,text,attachmentIds]);
+    const featureApprovals=await approveFeaturePrices(api,[],id);
     const storageKey = `one-task-operation:${userId}:${id}`;
     let operationId = directReceipts.current.get(receiptKey);
     if(!operationId) {
@@ -275,7 +278,7 @@ export function useCoordinator(
     }
     await api(`/api/coordinator/tasks/${encodeURIComponent(id)}/messages`, {
       method: "POST",
-      body: JSON.stringify({ operationId, text, attachmentIds }),
+      body: JSON.stringify({ operationId, text, attachmentIds, featureApprovals }),
     });
     await load(id);
     await refresh();

@@ -30,10 +30,10 @@ export function FeatureBuilder({ api, values, onChange, disabled }: { api: typeo
     </details>{error ? <p role="alert">{error}</p> : null}
   </fieldset>;
 }
-export function FeatureTrial({ api, id, revision, disabled }: { api: typeof Api; id: string; revision: number; disabled: boolean }) {
+export function FeatureTrial({ api, id, revision, disabled, usageMultiplier=.6 }: { api: typeof Api; id: string; revision: number; disabled: boolean; usageMultiplier?:number }) {
   const [prompt, setPrompt] = useState(""), [budget, setBudget] = useState("0.5"), [busy, setBusy] = useState(false), [error, setError] = useState(""), [result, setResult] = useState<Result>(), [operationId, setOperationId] = useState("");
   async function execute(recover = false) {
-    if (!recover && !confirm(`试运行会从你的账户扣除实际模型用量，本次上限 ${budget} 电力。继续？`)) return;
+    if (!recover && !confirm(`此功能使用倍率 ${usageMultiplier} 倍。试运行会从你的账户扣除实际用量，本次上限 ${budget} 电力。继续？`)) return;
     setBusy(true); setError(""); if (!recover) setResult(undefined);
     const key = recover ? operationId : crypto.randomUUID(); setOperationId(key);
     try { setResult(await api<Result>(`/api/admin/official-features/${id}/trial${recover ? `/${key}` : ""}`, recover ? {} : { method: "POST", body: JSON.stringify({ revision, operationId: key, prompt, budget: Number(budget), confirmed: true }) })); }

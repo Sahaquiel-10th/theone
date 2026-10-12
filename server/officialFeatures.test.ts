@@ -8,6 +8,18 @@ import type { Database, SystemSettings } from "./types.js";
 import type { Store } from "./db.js";
 const values={name:"测试功能",description:"回答公开测试问题",author:"ONE",instructions:"仅根据用户提供的测试资料作答",limitations:"不做外部写入，不读取他人资料",integration:"question_answer"};
 const evidence="公开测试集通过；仅认定配置，实际接口接入与运行验证仍需下一阶段完成。";
+test('feature rates default to 0.6, reject invalid prices and preserve approved price during edits',()=>{
+  assert.equal(featureValues(values).usageMultiplier,.6);
+  for(const usageMultiplier of [0,-1,101,NaN,Infinity,'1.2',null])assert.throws(()=>featureValues({...values,usageMultiplier}));
+  const settings:SystemSettings={safetyRules:'safe',rechargeCnyPerPower:7};
+  updateOfficialFeature(settings,'rate-test',{revision:0,action:'save',values:{...values,usageMultiplier:1}},'admin','t1');
+  updateOfficialFeature(settings,'rate-test',{revision:1,action:'approve',evidence,confirmed:true},'admin','t2');
+  updateOfficialFeature(settings,'rate-test',{revision:2,action:'save',values:{...values,usageMultiplier:1.2}},'admin','t3');
+  assert.equal(settings.officialFeatures![0].current!.values.usageMultiplier,1);
+  updateOfficialFeature(settings,'rate-test',{revision:3,action:'approve',evidence,confirmed:true},'admin','t4');
+  assert.equal(settings.officialFeatures![0].current!.values.usageMultiplier,1.2);
+  assert.equal(settings.officialFeatures![0].history[0].values.usageMultiplier,1);
+});
 test("official versions are immutable; stale edits rejected; restore cannot re-enable paused features",()=>{
   const s:SystemSettings={safetyRules:"safe",rechargeCnyPerPower:7};
   updateOfficialFeature(s,"test-feature",{revision:0,action:"save",values},"admin","t1");

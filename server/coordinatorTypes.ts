@@ -2,6 +2,8 @@ import type { ExecutorValues } from "./executorProfiles.js";
 import type { OfficialFeatureValues } from "./officialFeatures.js";
 import type { CredentialBinding } from "./featureCredentials.js";
 export type WorkRun = {
+  featurePricingVersion?: 1;
+  featureApprovals?: import('./featurePricing.js').FeatureApproval[];
   kind?: "image";
   imagePrice?: number;
   imageCost?: number;

@@ -14,6 +14,35 @@ import { executorDefaults, updateExecutor } from "./executorProfiles.js";
 import { reconcileInterruptedChatOperations } from "./chatOperations.js";
 import type { ModelToolMessage, ModelToolDefinition, ToolChatResult } from "./modelGateway.js";
 
+test('worker independently invokes two priced features; third unused feature costs zero and repeated tool result is reused',async()=>{
+  const f=fixture();
+  await f.store.mutate(d=>{
+    d.settings.officialFeatures=[1,1.2,.6].map((rate,i)=>{
+      const values={name:`功能${i}`,author:'ONE',description:'分开处理明确部分',instructions:`feature-body-${i}`,limitations:'只读',integration:'question_answer' as const,modelId:'special',knowledgeMode:'none' as const,usageMultiplier:rate};
+      const version={version:1,values,evidence:'合成测试',approvedBy:'a',approvedAt:'now'};
+      return {id:`priced-${i}`,revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:`release-${i}`,version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}};
+    });
+    d.models.forEach(m=>{m.pricing={version:1,label:'基础',publishedAt:'now',multiplier:.6,referenceInput:2,referenceOutput:4};});
+  });
+  let parentCalls=0;
+  f.setWorker(async messages=>{
+    if(messages[0].content?.includes('feature-body-'))return answer('独立功能成果');
+    parentCalls++;
+    if(parentCalls===1)return {...answer(''),toolCalls:[0,1].map(i=>({id:`feature-call-${i}`,type:'function' as const,function:{name:`feature_${i}`,arguments:JSON.stringify({query:`只处理第${i}部分`})}}))};
+    if(parentCalls===2)return {...answer(''),toolCalls:[{id:'feature-reuse',type:'function',function:{name:'feature_0',arguments:JSON.stringify({query:'只处理第0部分'})}}]};
+    return answer('汇总完成');
+  });
+  const result=await f.service.dispatch(a,{...input('operation_features_sum_01','分开完成任务'),featureIds:['priced-0','priced-1','priced-2'],confirmedExternal:true},key);
+  await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,result.taskId!)).jobs[0].state==='completed');
+  const db=await f.store.read(),featureRows=db.modelUsageRecords.filter(r=>r.featurePriceSnapshot);
+  assert.deepEqual(featureRows.map(r=>r.chargedMicros),[60,72]);
+  assert.deepEqual(featureRows.map(r=>r.featurePriceSnapshot!.id),['priced-0','priced-1']);
+  assert.equal(db.powerAccounts[0].balanceMicros,100e6-db.modelUsageRecords.reduce((n,r)=>n+(r.chargedMicros??0),0));
+  assert.equal(db.powerAccounts[1].balanceMicros,100e6);
+  const detail=await f.service.task(a,result.taskId!);assert.equal(detail.jobs[0].charges.filter(c=>c.feature).length,2);
+  await f.service.resume(a,key);assert.equal((await f.store.read()).modelUsageRecords.filter(r=>r.featurePriceSnapshot).length,2);
+});
+
 test('legacy assistant restrictions remain enforced before accepting or charging a task supplement',async()=>{
  const f=fixture(),stamp=new Date().toISOString();
  await f.store.mutate(d=>{
@@ -296,6 +325,26 @@ function fixture() {
 }
 const key = async () => {};
 const imageFixturePng='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jF1sAAAAASUVORK5CYII=';
+test('image feature uses its image model and own rate, without changing base image price or tenant scope',async()=>{
+  const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-priced-image-'));
+  await f.store.mutate(d=>{
+    d.models.push({...d.models[0],id:'image-model',kind:'image',imagePowerPerCall:.1,costImagePowerPerCall:.02});
+    const values={name:'图片功能',author:'ONE',description:'生成测试图片',instructions:'绘制圆圈',limitations:'仅合成测试',integration:'question_answer' as const,modelId:'image-model',knowledgeMode:'none' as const,usageMultiplier:.6,experience:{mode:'image'} as any};
+    const version={version:1,values,evidence:'test',approvedBy:'a',approvedAt:'now'};
+    d.settings.officialFeatures=[{id:'priced-image',revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:'image-release',version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}}];
+  });
+  let imageCalls=0,workerCalls=0;
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{artifactDirectory:directory,imageCall:async model=>{imageCalls++;assert.equal(model.id,'image-model');assert.equal(model.imagePowerPerCall,.06);return {content:'图片成果',imageUrl:imageFixturePng};},modelCall:async()=>++workerCalls===1?{...answer(''),toolCalls:[{id:'feature-image',type:'function',function:{name:'feature_0',arguments:JSON.stringify({query:'生成圆圈'})}}]}:answer('图片已完成')});
+  try{
+    const result=await f.service.dispatch(a,{...input('operation_priced_image_1','UI 配图'),featureIds:['priced-image'],confirmedExternal:true},key);
+    await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='completed');
+    const db=await f.store.read(),row=db.modelUsageRecords.find(r=>r.featurePriceSnapshot)!;
+    assert.equal(imageCalls,1);assert.equal(row.chargedMicros,60000);assert.equal(row.costMicros,20000);
+    assert.equal(db.models.find(m=>m.id==='image-model')!.imagePowerPerCall,.1);
+    assert.equal(db.attachments[0].workspaceId,'wa');assert.equal(db.attachments[0].userId,'a');assert.equal(db.powerAccounts[1].balanceMicros,100e6);
+    await service.resume(a,key);assert.equal(imageCalls,1);
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
 async function imageFixture(imageCall:NonNullable<import('./featureRuns.js').FeatureRunDependencies['imageCall']>) {
   const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-image-queue-'));
   await f.store.mutate(d=>{

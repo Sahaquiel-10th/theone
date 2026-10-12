@@ -5,6 +5,31 @@ import type { Store } from "./db.js";
 import { modelReservationMicros, reconcileInterruptedBilling, resolveBillingReview, runBilledModel, settleBillingRecord } from "./modelBilling.js";
 import { publicUsageRecord } from "./serializers.js";
 
+test('feature rates replace base rate once; independent 1 and 1.2 calls add, costs and history stay frozen',async()=>{
+  const f=fixture();f.model.pricing={version:1,label:'base',publishedAt:'2026-01-01',multiplier:.6,referenceInput:2,referenceOutput:4};
+  const price=(multiplier:number)=>({id:`feature-${multiplier}`,name:'测试功能',releaseId:'r1',version:1,multiplier});
+  for(const multiplier of [.6,1,1.2])await runBilledModel(f.store,{...f.params,featurePrice:price(multiplier)},async model=>{assert.equal(model.inputPowerPerMillion,2*multiplier);return {usage};});
+  assert.deepEqual(f.db().modelUsageRecords.map(r=>r.chargedMicros),[24,40,48]);
+  assert.deepEqual(f.db().modelUsageRecords.map(r=>r.costMicros),[20,20,20]);
+  assert.equal(f.db().powerAccounts[0].balanceMicros,1000000-112);
+  const row=f.db().modelUsageRecords[1];f.model.pricing!.multiplier=9;
+  settleBillingRecord(f.db(),scope(row.id),usage,0);
+  assert.equal(row.chargedMicros,40);assert.equal(f.db().powerLedger.length,3);
+  assert.equal(f.db().powerAccounts[1].balanceMicros,1000000);
+  assert.equal(publicUsageRecord(row).featurePriceSnapshot?.multiplier,1);
+});
+
+test('feature long-context and cached prices use absolute rate; fixed images keep procurement unchanged',async()=>{
+  const f=fixture();f.db().powerAccounts[0].balanceMicros=100e6;
+  f.model.pricing={version:1,label:'base',publishedAt:'2026-01-01',multiplier:.6,referenceInput:2,referenceOutput:4,referenceCache:{read:.1,write:2.5,write1h:3},longContext:{thresholdInputTokens:272000,referenceInput:4,referenceOutput:8,referenceCache:{read:.2,write:5,write1h:6}}};
+  f.model.cacheCostPrices={read:.01,write:.25,write1h:.3};f.model.longContextCostPrices={input:.4,output:.8,cache:{read:.02,write:.5,write1h:.6}};
+  const featurePrice={id:'f',name:'f',releaseId:'r',version:1,multiplier:1.2};
+  await runBilledModel(f.store,{...f.params,input:'x'.repeat(300000),featurePrice},async()=>({usage:{inputTokens:1,outputTokens:10,totalTokens:272011,source:'provider',cacheUsage:{read:272000,write:0,write5m:0,write1h:0}}}));
+  const row=f.db().modelUsageRecords[0];assert.equal(row.chargedMicros,65381);assert.equal(row.costMicros,5449);assert.equal(row.contextPriceTier,'long');
+  await runBilledModel(f.store,{...f.params,model:{...f.model,kind:'image',imagePowerPerCall:.01,costImagePowerPerCall:.002},featurePrice:{...featurePrice,multiplier:.6}},async()=>({}));
+  assert.equal(f.db().modelUsageRecords[1].chargedMicros,6000);assert.equal(f.db().modelUsageRecords[1].costMicros,2000);
+});
+
 function fixture() {
   const model = { id: "model", kind: "chat", name: "Test", enabled: true, systemPrompt: "rule", inputPowerPerMillion: 2, outputPowerPerMillion: 4, costInputPowerPerMillion: 1, costOutputPowerPerMillion: 2 } as ModelConfig;
   let db = { users: [{ id: "a", enabled: true }, { id: "b", enabled: true }], workspaces: [{ id: "wa", status: "active" }, { id: "wb", status: "active" }], workspaceMembers: [{ userId: "a", workspaceId: "wa" }, { userId: "b", workspaceId: "wb" }], models: [model], modelUsageRecords: [], powerLedger: [], powerAccounts: [{ id: "pa", userId: "a", workspaceId: "wa", balanceMicros: 1_000_000 }, { id: "pb", userId: "b", workspaceId: "wb", balanceMicros: 1_000_000 }] } as unknown as Database;

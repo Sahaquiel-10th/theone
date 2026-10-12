@@ -7,9 +7,10 @@ import { effectiveModel } from "./modelPricing.js";
 import {reserveCommerce,releaseCommerce,settleCommerce,restoreCommerceHolds} from './commerceBilling.js';
 import type {PublicCommerceSnapshot} from './publicSharingTypes.js';
 import { activeMember, billingAccountUserId, companyWorkspace } from './enterprisePolicy.js';
+import { featurePricedModel, type FeaturePrice } from './featurePricing.js';
 
 export type ModelUsage = { inputTokens: number; outputTokens: number; totalTokens: number; cacheUsage?: CacheUsage; source: string };
-type BillingParams = { workspaceId: string; userId: string; conversationId?: string; model: ModelConfig; input: unknown; activity: string; requestId: string; beforeReserve?: (db: Database, amountMicros: number) => void;commerce?:PublicCommerceSnapshot };
+type BillingParams = { featurePrice?: FeaturePrice; workspaceId: string; userId: string; conversationId?: string; model: ModelConfig; input: unknown; activity: string; requestId: string; beforeReserve?: (db: Database, amountMicros: number) => void;commerce?:PublicCommerceSnapshot };
 type BillingScope = { usageId: string; workspaceId: string; userId: string };
 
 export class BillingReviewRequiredError extends Error {
@@ -112,10 +113,11 @@ export function settleBillingRecord(db: Database, scope: BillingScope, usage: Mo
 }
 
 export async function runBilledModel<T extends { usage?: ModelUsage; finishReason?: import("./modelGateway.js").ModelFinishReason }>(store: Store, params: BillingParams, call: (modelSnapshot: ModelConfig) => Promise<T>): Promise<T> {
-  const model = effectiveModel(params.model);
+  const model = params.featurePrice ? featurePricedModel(params.model, params.featurePrice.multiplier) : effectiveModel(params.model);
   const amountMicros = modelReservationMicros(model, params.input);
   const timestamp = new Date().toISOString();
   const row: ModelUsageRecord = {
+    featurePriceSnapshot: params.featurePrice ? structuredClone(params.featurePrice) : undefined,
     aiTaskVersion: params.input && typeof params.input === "object" && "taskVersion" in params.input && Number.isSafeInteger(params.input.taskVersion) ? Number(params.input.taskVersion) : undefined,
     id: uid("use"), workspaceId: params.workspaceId, userId: params.userId, conversationId: params.conversationId ?? "",
     pricingSnapshot: structuredClone(model.pricing), longContextCostPricesSnapshot: structuredClone(model.longContextCostPrices), modelNameSnapshot: model.name, cachePricesSnapshot: structuredClone(model.cachePrices), cacheCostPricesSnapshot: structuredClone(model.cacheCostPrices),
