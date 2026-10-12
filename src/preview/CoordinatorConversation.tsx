@@ -5,9 +5,13 @@ import {Lightbulb} from 'lucide-react';
 import {MessageMarkdown} from '../MessageMarkdown';
 import {ResponseProgress} from '../ResponseProgress';
 import {privateImageUrl} from '../coordinatorMessage';
+import {useEffect,useRef,useState} from 'react';
 
 /** Local presentation prototype: a single assistant conversation, not another task dashboard. */
-export function CoordinatorConversation({messages,tasks,pending,onOpen,visible=true,progress,onStop,onRestore}:{messages:Message[];tasks:Task[];pending:boolean;onOpen:(id:string)=>void;visible?:boolean;progress?:{phase:string;startedAt:string}|null;onStop?:()=>Promise<void>;onRestore?:(text:string)=>void}) {
+export function CoordinatorConversation({messages,tasks,pending,onOpen,visible=true,progress,onStop,onRestore,completed=false}:{messages:Message[];tasks:Task[];pending:boolean;onOpen:(id:string)=>void;visible?:boolean;progress?:{phase:string;startedAt:string}|null;onStop?:()=>Promise<void>;onRestore?:(text:string)=>void;completed?:boolean}) {
+ const [retainProgress,setRetainProgress]=useState(pending),lastProgress=useRef(progress);
+ if(pending&&progress)lastProgress.current=progress;
+ useEffect(()=>{if(pending){setRetainProgress(true);return;}if(!completed){setRetainProgress(false);return;}const timer=setTimeout(()=>setRetainProgress(false),350);return()=>clearTimeout(timer);},[pending,completed]);
  const {scroll,newMessages,onScroll,showLatest}=useFollowLatest('coordinator',visible);
  return <div className="coordinator-conversation">
   <div ref={scroll} className="coordinator-messages" aria-label="与 ONE 的持续对话" role="log" aria-live="polite" onScroll={onScroll}>
@@ -18,7 +22,7 @@ export function CoordinatorConversation({messages,tasks,pending,onOpen,visible=t
     {message.status==='failed'&&onRestore?<button type="button" className="coordinator-task-link" disabled={pending} onClick={()=>onRestore(message.text)}>放回输入框</button>:null}
     {(message.taskIds?.length ? message.taskIds : message.taskId ? [message.taskId] : []).map(id=><button key={id} type="button" className="coordinator-task-link" aria-label={`打开任务：${tasks.find(task=>task.id===id)?.title || '查看事情'}`} onClick={()=>onOpen(id)}><Lightbulb size={13}/>{tasks.find(task=>task.id===id)?.title || '查看事情'} <span aria-hidden="true">↗</span></button>)}
    </article>)}
-   {pending?onStop?<ResponseProgress {...progress} onStop={onStop}/>:<OneWaitingCopy/>:null}
+   {pending||retainProgress?onStop?<ResponseProgress key={(progress||lastProgress.current)?.startedAt} {...(progress||lastProgress.current)} completed={!pending&&completed} onStop={onStop}/>:pending?<OneWaitingCopy/>:null:null}
   </div>
   {newMessages?<button className="coordinator-new-message" type="button" onClick={showLatest}>有新消息 ↓</button>:null}
  </div>;

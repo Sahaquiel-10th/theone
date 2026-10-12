@@ -4,6 +4,7 @@ import { ApiError } from "./oneApi";
 import { approveFeaturePrices } from './FeatureBudgetSettings';
 import { coordinatorMessage } from './coordinatorMessage';
 import {chatSubmission,forgetChatSubmission} from './chatSubmission';
+import {receiptMayBeMissing} from './responseProgressState';
 import type { Conversation } from "../server/types";
 import type {
   Action,
@@ -175,6 +176,7 @@ export function useCoordinator(
           try { status = await api(`/api/coordinator/messages/${encodeURIComponent(operation)}`); }
           catch(e) {
             if(e instanceof ApiError && e.status===404) {
+              if(!receiptMayBeMissing(sending.current,next.pendingOperationId,operation))return;
               try {localStorage.removeItem(pendingKey(userId));}catch{}
               setPending(null);
               setProgress(null);
@@ -243,6 +245,7 @@ export function useCoordinator(
         method: "POST",
         body: JSON.stringify(input),
       });
+      submissionError.current='';setError('');
       await refresh();
       return input.operationId;
     } catch (e) {

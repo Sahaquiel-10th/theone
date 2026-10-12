@@ -1915,7 +1915,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {demo.enabled?<ResultSignal tasks={lampTasks} busy={Boolean(content.trim()||preview.state.pending||view==='things')} ambient={view==='chat'&&!active} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)} onDismiss={closeResultLamp}/>:null}
         </div>
 
-        {preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation visible={view==='chat'||view==='features'||view==='account'} messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} progress={coordinator.enabled?coordinator.progress:null} onStop={coordinator.enabled?coordinator.stop:undefined} onRestore={text=>{
+{preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation visible={view==='chat'||view==='features'||view==='account'} messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} completed={coordinator.settlement?.status==='completed'&&!coordinator.error} progress={coordinator.enabled?coordinator.progress:null} onStop={coordinator.enabled?coordinator.stop:undefined} onRestore={text=>{
           if(currentDraftRef.current.content.trim()){setError('输入框已有新草稿，先保留或发送它，再恢复原话。');return;}
           setContent(text);const failed=coordinatorFailedDraft.current;
           if(failed?.text===text){
