@@ -35,7 +35,7 @@ export function createEyeMotion() {
         : !interrupted && route === 'overhead' ? overheadJourney(before, after) : null;
       if (journey) {
         Object.assign(node.style, {left:`${after.left}px`,top:`${after.top}px`,width:`${after.width}px`,height:`${after.height}px`});
-        animations = [node.animate([...journey.departure, ...journey.arrival].map(({offset: _offset, ...frame})=>frame), {duration:850,fill:'both',easing:'ease-in-out'})];
+        animations = [node.animate([...journey.departure, ...journey.arrival].map(({offset: _offset, ...frame})=>frame), {duration:1600,fill:'both',easing:'ease-in-out'})];
       } else animations = [node.animate(directJourney(before, after), {duration,fill:'both'})];
       const last = animations[0];
       last.finished.then(() => {if (ghost === node) clear();}).catch(()=>{});

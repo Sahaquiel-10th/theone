@@ -20,6 +20,7 @@ import {ResultSignal} from './preview/ResultSignal';
 import {useWorkspacePreview} from './preview/useWorkspacePreview';
 import {useCoordinator} from './useCoordinator';
 import {executionHandoffOutcome} from './executionHandoff';
+import { useComposerFeatures } from "./ComposerFeatures";
 import { LocalDeviceSettings } from './LocalDeviceSettings';
 import { waitingForOfficialApproval, officialApprovalLabel, officialApprovalHint } from "./knowledgeAvailability";
 import './preview/workspace-preview.css';
@@ -608,6 +609,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [defaultModelId, setDefaultModelId] = useState("");
   const [draftWorkspaceId, setDraftWorkspaceId] = useState("");
   const [content, setContent] = useState("");
+  const featurePicker = useComposerFeatures({api,text:content,setText:setContent,selected:featureForNext.map(f=>f.id),onChoose:feature=>setFeatureForNext(previous=>previous.some(f=>f.id===feature.id)?previous.filter(f=>f.id!==feature.id):previous.length<8?[...previous,feature]:previous)});
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -632,6 +634,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [pendingAttachments, setPendingAttachments] = useState<AttachmentSummary[]>([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyQuery, setHistoryQuery] = useState("");
   const [knowledgeConnection, setKnowledgeConnection] = useState<KnowledgeConnection>({
     provider: "getnote",
     status: "disconnected"
@@ -721,7 +724,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     ? ".png,.jpg,.jpeg,.webp"
     : capabilities.attachments.extensions.map((extension) => `.${extension}`).join(",");
   const canSearch = currentModel?.kind === "chat" && capabilities.webSearch.enabled && (!activeAgent || activeAgent.allowWebSearch);
-  const visibleConversations = conversations.filter((conversation) => conversation.archived === showArchived);
+  const visibleConversations = conversations.filter((conversation) => conversation.archived === showArchived && conversation.title.toLocaleLowerCase().includes(historyQuery.trim().toLocaleLowerCase())).sort((a,b)=>Date.parse(b.updatedAt)-Date.parse(a.updatedAt));
   const ungroupedConversations = visibleConversations.filter((conversation) => !conversation.folderId);
   const isWaiting = (preview.enabled && (Boolean(preview.state.pending) || preview.state.tasks.some(task=>task.status==='running'))) || Object.values(loadingByConversation).some(Boolean) || executionBusy || preparingExecution;
   const greeting=useOneGreeting(`${view}:${activeId}`);
@@ -1051,7 +1054,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     delete document.documentElement.dataset.oneExecutionTransition;
     delete document.documentElement.dataset.oneTransition;
     delete document.documentElement.dataset.oneRoute;
-    eyeMotion.current!.move(()=>flushSync(update), conversationShelfMove ? 'direct' : route, conversationShelfMove ? 420 : 560);
+    eyeMotion.current!.move(()=>flushSync(update), conversationShelfMove ? 'direct' : route, conversationShelfMove ? 700 : 1100);
     return Promise.resolve();
   }
 
@@ -1079,6 +1082,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   function openSurface(next: "chat" | "things" | "admin" | "company" | "knowledge" | "account" | "features") {
+    featurePicker.close();
     transitionInterface(() => {
       if(next==='chat'&&preview.enabled){setPreviewHome(false);setActiveId('');setFocusedTask(false);preview.dispatch({type:'select',taskId:null});preview.dispatch({type:'bind',taskId:null});}
       if (next === "knowledge") setAccountSection("knowledge");
@@ -1297,6 +1301,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }, [pendingAttachments, api]);
 
   async function sendMessage(rawText: string, localExecution = false) {
+    featurePicker.close();
     if (demo.enabled) { if (demo.state.pending || !rawText.trim()) return; setPreviewHome(false); demo.dispatch({type:'submit',text:rawText,features:featureForNext,id:crypto.randomUUID(),now:Date.now()});setFeatureForNext([]);setContent('');setHasSubmittedChat(true);return; }
     // Preserve specialized image and newly selected personal-assistant routes.
     // Neither is silently reinterpreted as a generic coordinator request.
@@ -1307,7 +1312,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       coordinatorFailedDraft.current={text,files,features};
       try{
         let confirmedExternal=false;
-        if(features.length){const details=await Promise.all(features.map(f=>api<{name:string;destinations:string[]}>(`/api/features/${encodeURIComponent(f.id)}`)));confirmedExternal=confirm(`使用 ${details.map(f=>f.name).join('、')}。\n${details.flatMap(f=>f.destinations).length?'任务所需内容将发送至：'+[...new Set(details.flatMap(f=>f.destinations))].join('、'):'按需使用你已连接的知识来源'}\n执行会按实际用量消耗电力。是否继续？`);if(!confirmedExternal)return false;}
+        if(features.length){const details=await Promise.all(features.map(f=>api<{name:string;destinations:string[]}>(`/api/features/${encodeURIComponent(f.id)}`)));confirmedExternal=confirm(`使用 ${details.map(f=>f.name).join('、')}。\n${details.flatMap(f=>f.destinations).length?'任务所需内容将发送至：'+[...new Set(details.flatMap(f=>f.destinations))].join('、'):'按需使用你已连接的知识来源'}\n执行会按实际用量消耗 ONE 额度。是否继续？`);if(!confirmedExternal)return false;}
         setError('');setPreviewHome(false);setHasSubmittedChat(true);
         if (!localExecution) executionOriginRef.current = pointFromElement(document.getElementById('one-studio-send'));
         // Capture the sent content now; a new draft must never be cleared by a late receipt.
@@ -1459,6 +1464,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   function handleComposerKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.defaultPrevented || featurePicker.keyDown(event)) return;
     if (event.key === "Enter" && !event.shiftKey && !isComposing && !event.nativeEvent.isComposing) {
       event.preventDefault();
       event.currentTarget.form?.requestSubmit();
@@ -1651,12 +1657,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const settledOthers = otherRows.filter(item => item.status !== "running" && item.status !== "thinking");
   const latestTurnStart = Math.max(0, (active?.messages || []).map(message => message.role).lastIndexOf("user"));
   const replyPending=waitingForCurrentReply(activeLoading,active?.messages??[]);
-  const currentStatus = activePreparing ? "正在连接" : currentRunningExecution ? "本机执行中" : activeLoading ? replyPending?'准备回复中':'正在回复' : failedTaskIds.has(activeId) ? "待重试" : executionTask?.status === "completed" ? "本机已完成" : executionTask?.status === "cancelled" ? "本机已停止" : executionTask?.status === "failed" ? "执行需要看一下" : "当前事情";
+  const currentStatus = activePreparing ? "正在连接" : currentRunningExecution ? "本机执行中" : activeLoading ? replyPending?'准备回复中':'正在回复' : failedTaskIds.has(activeId) ? "待重试" : executionTask?.status === "completed" ? "本机已完成" : executionTask?.status === "cancelled" ? "本机已停止" : executionTask?.status === "failed" ? "本轮未完成 · 查看原因" : "当前任务";
   const currentBusy = activePreparing || Boolean(currentRunningExecution) || activeLoading;
 
   function activityLabel(row: TaskActivityRow) {
     if (row.status !== "running" && row.status !== "thinking" && !failedTaskIds.has(row.conversationId) && row.unread && taskNotices.some(item => item.conversationId === row.conversationId && item.outcome === "reply")) return "有新回复";
-    return ({ running: "本机执行中", thinking: "准备回复中", failed: "需要看一下", completed: "已完成", cancelled: "已停止", recent: row.unread ? "有新回复" : "继续聊" })[row.status];
+    return ({ running: "本机执行中", thinking: "准备回复中", failed: "未完成", completed: "已完成", cancelled: "已停止", recent: row.unread ? "有新回复" : "继续聊" })[row.status];
   }
 
   async function openActivity(row: TaskActivityRow) {
@@ -1740,12 +1746,13 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
       {historyOpen ? (
         <>
-          <button className="one-popover-scrim" aria-label="关闭最近任务" onClick={() => setHistoryOpen(false)} />
+          <button className="one-popover-scrim" aria-label="关闭历史对话" onClick={() => setHistoryOpen(false)} />
           <section className="one-history-popover">
             <div className="one-popover-heading">
-              <div><small>YOUR FLOW</small><h3>{showArchived ? "已归档" : "最近任务"}</h3></div>
-              <button type="button" onClick={startNewChat}><Plus size={16} />新任务</button>
+              <div><small>YOUR FLOW</small><h3>{showArchived ? "已归档对话" : "历史对话"}</h3></div>
+              <button type="button" onClick={startNewChat}><Plus size={16} />新对话</button>
             </div>
+            <input className="one-history-search" type="search" aria-label="搜索已加载的历史对话" placeholder="搜索已加载的对话" value={historyQuery} onChange={e=>setHistoryQuery(e.target.value)}/>
             <div className="one-popover-list">
               {visibleConversations.length ? visibleConversations.map((conversation) => (
                 <div className={`one-history-row ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}>
@@ -1755,22 +1762,22 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                   </button>
                   <button type="button" title={conversation.archived ? "取消归档" : "归档"} disabled={conversation.id.startsWith("tmp_") || Boolean(loadingByConversation[conversation.id]) || runningExecutions.some(task => task.conversationId === conversation.id)} onClick={() => archiveConversation(conversation)}><Archive size={14} /></button>
                 </div>
-              )) : <div className="one-popover-empty">问我一件事。</div>}
+              )) : <div className="one-popover-empty">{historyQuery?"已加载的对话中没有匹配结果，可继续加载更早记录。":"还没有对话，从一句话开始吧。"}</div>}
             </div>
             {hasMoreConversations ? <button className="one-load-more" type="button" disabled={loadingMoreConversations} onClick={loadMoreConversations}>{loadingMoreConversations ? "加载中…" : "加载更多"}</button> : null}
             <footer className="one-popover-footer">
-              <button type="button" onClick={() => setShowArchived(!showArchived)}>{showArchived ? "返回最近任务" : "查看归档"}</button>
-              <button type="button" onClick={onLogout}><LogOut size={14} />退出</button>
+              <button type="button" onClick={() => setShowArchived(!showArchived)}>{showArchived ? "返回历史对话" : "查看归档"}</button>
+              <button type="button" onClick={onLogout}><LogOut size={14} />退出账号</button>
             </footer>
           </section>
         </>
       ) : null}
 
       <div className="studio-layout">
-      <section className="studio-surface" ref={taskScroll.scroll} onScroll={taskScroll.onScroll} aria-label={view === "chat" ? "当前事情" : "工作区内容"} hidden={studioIdle||(preview.enabled&&view==='chat'&&!active)}>
+      <section className="studio-surface" ref={taskScroll.scroll} onScroll={taskScroll.onScroll} aria-label={view === "chat" ? "当前任务" : "工作区内容"} hidden={studioIdle||(preview.enabled&&view==='chat'&&!active)}>
       {view === "things" ? <ThingsPanel
         one={<div className="studio-presence things-one"><OneHeroEye mood="idle" label="回到 ONE 工作台" onActivate={()=>openSurface('chat')}/></div>}
-        items={conversations.filter(c=>!coordinator.snapshot?.conversation||c.id!==coordinator.snapshot.conversation.id).map(c=>{const task=coordinator.snapshot?.tasks.find(t=>t.id===c.id);const local=executionTasks.find(t=>t.conversationId===c.id);const notice=coordinator.snapshot?.notices.find(n=>n.taskId===c.id);return {...c,taskState:(task?.running||task?.queued||local&&isExecutionRunning(local)?'active':notice?.state&&['failed','interrupted','cancelled'].includes(notice.state)?'review':task||local||c.executorProfileId?'ended':'history') as 'active'|'review'|'ended'|'history'};})} selectedId={thingId} drafts={thingDrafts}
+        items={conversations.filter(c=>!coordinator.snapshot?.conversation||c.id!==coordinator.snapshot.conversation.id).map(c=>{const task=coordinator.snapshot?.tasks.find(t=>t.id===c.id);const local=executionTasks.find(t=>t.conversationId===c.id);const notice=coordinator.snapshot?.notices.find(n=>n.taskId===c.id);return {...c,outcome:local?.status || notice?.state,taskState:(task?.running||task?.queued||local&&isExecutionRunning(local)?'active':notice?.state&&['failed','interrupted','cancelled'].includes(notice.state)?'review':task||local||c.executorProfileId?'ended':'history') as 'active'|'review'|'ended'|'history'};})} selectedId={thingId} drafts={thingDrafts}
         onDraftChange={(id,text)=>setThingDrafts(previous=>({...previous,[id]:text}))}
         onExecuteDraft={(id,text,source)=>executeDraft(text,source,id)}
         onSelect={id=>void selectThing(id)} onSend={continueThing}
@@ -1802,9 +1809,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <div><div className={`task-current-state ${currentBusy ? "is-active" : ""}`}><span className={`task-indicator ${currentBusy ? "running" : executionTask?.status || "recent"}`} aria-hidden="true" />{currentStatus}</div><h1>{active?.title || "从一个念头开始"}</h1></div>
           <div className="studio-task-controls">
             {preview.enabled&&active?<button type="button" onClick={()=>openSurface('chat')}>回到 ONE <X size={14}/></button>:null}
-            {preview.enabled && active ? <button type="button" className="studio-mode-switch" onClick={()=>{void selectThing(active.id);openSurface('things');}}>继续这件事</button> : null}
-            {executionShortcut ? <button type="button" onClick={() => { setSelectedExecutionId(executionShortcut.id); setExpandedExecutionId(executionShortcut.id); setRevealExecutionId(executionShortcut.id); void loadLatestExecution(activeId, executionShortcut.id); }} aria-label="查看本机执行"><Zap size={14} /><span>{currentRunningExecution ? "执行中" : "执行"}</span></button> : null}
-            <button type="button" aria-label={focusedTask ? "还原布局" : "放大当前事情"} aria-pressed={focusedTask} onClick={() => transitionInterface(() => setFocusedTask(value => !value))}>{focusedTask ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
+            {preview.enabled && active ? <button type="button" className="studio-mode-switch" onClick={()=>{void selectThing(active.id);openSurface('things');}}>继续此任务</button> : null}
+            {executionShortcut ? <button type="button" onClick={() => { setSelectedExecutionId(executionShortcut.id); setExpandedExecutionId(executionShortcut.id); setRevealExecutionId(executionShortcut.id); void loadLatestExecution(activeId, executionShortcut.id); }} aria-label="查看本机执行"><Zap size={14} /><span>{currentRunningExecution ? "查看执行进展" : "查看执行结果"}</span></button> : null}
+            <button type="button" aria-label={focusedTask ? "还原布局" : "放大当前任务"} aria-pressed={focusedTask} onClick={() => transitionInterface(() => setFocusedTask(value => !value))}>{focusedTask ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
           </div>
         </header>
         <div className="messages">
@@ -1821,7 +1828,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                         <div className="markdown-body">
                           <MessageMarkdown>{message.content}</MessageMarkdown>
                         </div>
-                        {message.finishReason === "length" ? <div className="message-completion-notice" role="status"><span>本次回答达到长度上限，尚未写完。</span>{index === active!.messages.length - 1 && !composeNew ? <button type="button" disabled={activeLoading || executionBusy || uploadingAttachments || !!pendingAttachments.length} onClick={() => { if (confirm("继续生成会产生新的电力消耗，是否继续？")) void sendMessage("请接着上一条未完成的回答继续，从中断处接上，不要重复前文。"); }}>继续生成</button> : null}</div> : message.finishReason === "filtered" ? <p className="message-completion-notice" role="status">模型服务未完整返回这次回答，请调整问题后再试。</p> : null}
+                        {message.finishReason === "length" ? <div className="message-completion-notice" role="status"><span>本次回答达到长度上限，尚未写完。</span>{index === active!.messages.length - 1 && !composeNew ? <button type="button" disabled={activeLoading || executionBusy || uploadingAttachments || !!pendingAttachments.length} onClick={() => { if (confirm("继续生成会产生新的额度消耗，是否继续？")) void sendMessage("请接着上一条未完成的回答继续，从中断处接上，不要重复前文。"); }}>继续生成</button> : null}</div> : message.finishReason === "filtered" ? <p className="message-completion-notice" role="status">模型服务未完整返回这次回答，请调整问题后再试。</p> : null}
                         <div className="message-actions">
                           <button title="复制" onClick={() => copyMarkdown(message.content)}>
                             <Copy size={14} />
@@ -1895,7 +1902,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
         <div className="attention-receipt-slot" aria-live="polite" aria-atomic="true">
           {visibleReceipt ? <div className={`attention-receipt ${visibleReceipt.outcome}`} key={visibleReceipt.id}>
-            {visibleReceipt.outcome === "failed" ? <span aria-hidden="true">!</span> : visibleReceipt.outcome === "cancelled" ? <Square size={10} aria-hidden="true" /> : <Check size={12} aria-hidden="true" />}<button type="button" onClick={() => openReceipt(visibleReceipt)} title={visibleReceipt.title}><span>{visibleReceipt.outcome === "reply" ? "回复好了" : visibleReceipt.outcome === "completed" ? "做好了" : visibleReceipt.outcome === "failed" ? "需要看一下" : "已停止"}</span><strong>{visibleReceipt.title}</strong></button>
+            {visibleReceipt.outcome === "failed" ? <span aria-hidden="true">!</span> : visibleReceipt.outcome === "cancelled" ? <Square size={10} aria-hidden="true" /> : <Check size={12} aria-hidden="true" />}<button type="button" onClick={() => openReceipt(visibleReceipt)} title={visibleReceipt.title}><span>{visibleReceipt.outcome === "reply" ? "回复已返回" : visibleReceipt.outcome === "completed" ? "已完成 · 查看结果" : visibleReceipt.outcome === "failed" ? "未完成 · 查看原因" : "已停止"}</span><strong>{visibleReceipt.title}</strong></button>
             <button type="button" aria-label="收起这条提醒" onClick={() => acknowledgeConversation(visibleReceipt.conversationId)}><X size={12} /></button>
           </div> : null}
         </div>
@@ -1904,7 +1911,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {preview.enabled&&featureForNext.length>0?<div className="selected-feature-list" aria-label="下一条使用的功能">{featureForNext.map(feature=><button key={feature.id} type="button" className="selected-feature-chip" aria-label={`取消功能：${feature.name}`} onClick={()=>setFeatureForNext(previous=>previous.filter(item=>item.id!==feature.id))}><Sparkles size={13}/><span>{feature.name}</span><X size={12}/></button>)}<small>下一条使用</small></div>:null}
           {!models.length ? <div className="chat-error"><span>模型未就绪，请联系管理员。</span><button type="button" onClick={() => void refresh()}>重试</button></div> : null}
           {pendingRequests.length ? <details className="one-pending-answers"><summary>有 {pendingRequests.length} 条消息待确认 · 查看原结果，不重复扣费</summary>{pendingRequests.map(item => <button type="button" key={item.operationId} onClick={() => void recoverAnswer(item.operationId)}>查看 {dateTime(item.createdAt)} 的结果</button>)}</details> : null}
-          {preview.enabled ? <div className="studio-compose-context"><span>{preview.state.boundTask ? `正在聊 · ${preview.state.tasks.find(task=>task.id===preview.state.boundTask)?.title}` : '交给 ONE'}</span>{preview.state.boundTask ? <button type="button" onClick={()=>preview.dispatch({type:'bind',taskId:null})}>取消指定 <X size={12}/></button> : null}</div> : !studioIdle ? <div className="studio-compose-context">
+          {preview.enabled ? <div className={`studio-compose-context ${preview.state.boundTask?'is-bound':''}`}><span>{preview.state.boundTask ? `发送到任务：${preview.state.tasks.find(task=>task.id===preview.state.boundTask)?.title || '当前任务'}` : '与 ONE 对话'}</span>{preview.state.boundTask ? <button type="button" onClick={()=>preview.dispatch({type:'bind',taskId:null})}>回到主对话 <X size={12}/></button> : null}</div> : !studioIdle ? <div className="studio-compose-context">
             <span title={composerTarget}>{composeMode === "execution" ? "继续执行" : composeNew || !active ? "新事情" : "继续聊"}{active && !composeNew ? ` · ${active.title}` : ""}</span>
             {active && composeNew ? <button type="button" onClick={() => { switchDraft(active.id); setComposeNew(false); }}>回到这件事</button> : active ? <button type="button" onClick={beginNewTask}><Plus size={12} />新事情</button> : null}
           </div> : null}
@@ -1925,12 +1932,17 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               <AttachmentList attachments={pendingAttachments} removable onRemove={removePendingAttachment} onRetry={retryAttachment} />
             </div>
           ) : null}
+          {preview.enabled && composeMode==="chat" ? featurePicker.panel : null}
           <div className="composer-row">
             <textarea
               id="one-studio-input"
+              ref={featurePicker.input}
+              aria-controls={featurePicker.isOpen?featurePicker.listId:undefined}
+              aria-expanded={featurePicker.isOpen}
+              aria-activedescendant={featurePicker.activeOption}
               aria-label="给 ONE 发消息"
               value={content}
-              onChange={(event) => setContent(event.target.value)}
+              onChange={(event) => {setContent(event.target.value);if(preview.enabled&&composeMode==="chat")featurePicker.update(event.target.value,event.target.selectionStart);}}
               onCompositionStart={() => setIsComposing(true)}
               onCompositionEnd={() => setIsComposing(false)}
               onKeyDown={handleComposerKeyDown}
@@ -1941,10 +1953,11 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             <button id="one-studio-send" className="primary send" type="submit" aria-label={composeMode === "execution" ? "发送并继续执行" : "发送消息"} title={targetLoading ? (preview.enabled ? "ONE 正在承接这句话，可以先编辑下一条" : "这件事正在回复，可以新开一件事") : "发送消息"} disabled={uploadingAttachments || pendingAttachments.some(a => a.status && a.status !== "ready") || (composeMode === "execution" ? taskStatusUnavailable || preparingExecution || executionBusy || !content.trim() || pendingAttachments.length > 0 : !activeModelId || targetLoading || (!content.trim() && !pendingAttachments.length))}>
               {composeMode === "execution" ? <Zap size={18} /> : <ArrowUp size={19} />}
             </button>
-            {composeMode==='chat' && !demo.enabled && currentModel?.kind==='chat' ? <button type="button" className="composer-execute" aria-label="发送并执行本机任务" title="把当前要求和相关上下文交给本机执行" disabled={!content.trim()||targetLoading||uploadingAttachments||pendingAttachments.length>0||preparingExecution||executionBusy||taskStatusUnavailable} onClick={event=>void executeDraft(content,event.currentTarget,coordinator.enabled?undefined:targetConversation?.id)}><Zap size={16}/><span>执行</span></button> : null}
+            {composeMode==='chat' && !demo.enabled && currentModel?.kind==='chat' ? <button type="button" className="composer-execute" aria-label="发送并执行本机任务" title="把当前要求和相关上下文交给本机执行" disabled={!content.trim()||targetLoading||uploadingAttachments||pendingAttachments.length>0||preparingExecution||executionBusy||taskStatusUnavailable} onClick={event=>void executeDraft(content,event.currentTarget,coordinator.enabled?undefined:targetConversation?.id)}><Zap size={16}/><span>本机执行</span></button> : null}
           </div>
           <div className="studio-compose-tools">
-            {canAttach && capabilities.attachments.enabled && composeMode === "chat" ? <label className="studio-attach" title="添加文件或图片"><Paperclip size={15} /><span>{uploadingAttachments ? "上传中" : "附件"}</span><input aria-label="添加附件" type="file" multiple accept={attachmentAccept} disabled={uploadingAttachments} onChange={event => { void uploadAttachments(event.target.files); event.target.value = ""; }} /></label> : <span />}
+            <div className="studio-compose-tools-left">{preview.enabled && composeMode==="chat"?<button type="button" className="composer-add-feature" aria-label="添加下一条使用的功能" aria-expanded={featurePicker.isOpen} onClick={featurePicker.open}><Plus size={16}/><span>功能</span></button>:null}
+            {canAttach && capabilities.attachments.enabled && composeMode === "chat" ? <label className="studio-attach" title="添加文件或图片"><Paperclip size={15} /><span>{uploadingAttachments ? "上传中" : "附件"}</span><input aria-label="添加附件" type="file" multiple accept={attachmentAccept} disabled={uploadingAttachments} onChange={event => { void uploadAttachments(event.target.files); event.target.value = ""; }} /></label> : <span />}</div>
             <span className="studio-keyboard-hint">Enter 发送 · ⇧ Enter 换行</span>
           </div>
           <div className="studio-composer-status">
@@ -2316,11 +2329,10 @@ function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onM
           <p>{profile.displayName || user.username} · {user.role === "admin" ? "管理员" : "ONE 用户"}</p>
         </div>
       </header>
-      <nav className="settings-tabs account-settings-tabs" aria-label="设置栏目">{[["profile", "个人设置"], ["knowledge", "知识连接"], ["power", "会员与额度"]].map(([id, label]) => <button type="button" key={id} aria-pressed={section === id} onClick={() => setSection(id)}>{label}</button>)}</nav>
+      <nav className="settings-tabs account-settings-tabs" aria-label="设置栏目">{[["profile", "个人设置"], ["device", "本机执行"], ["knowledge", "知识连接"], ["power", "会员与额度"]].map(([id, label]) => <button type="button" key={id} aria-pressed={section === id} onClick={() => setSection(id)}>{label}</button>)}</nav>
       <div className="account-body settings-account-body">
-        {section === "knowledge" ? knowledge : section === "power" ? user.access?.kind === "company" ? <div className="settings-empty"><p>费用由公司按协议对公打款承担，无需个人充值。</p><p>公司可用电力：{((billing?.availableMicros??0)/1e6).toFixed(3)}；个人额度由公司管理员配置。</p></div> : billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载会员与额度…</p> : <>
+        {section === "device" ? <LocalDeviceSettings key={user.id} api={api}/> : section === "knowledge" ? knowledge : section === "power" ? user.access?.kind === "company" ? <div className="settings-empty"><p>费用由公司按协议对公打款承担，无需个人充值。</p><p>公司可用电力：{((billing?.availableMicros??0)/1e6).toFixed(3)}；个人额度由公司管理员配置。</p></div> : billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载会员与额度…</p> : <>
         <section className="account-panel"><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
-        <LocalDeviceSettings key={user.id} api={api} />
         <section className="account-panel">
           <div className="account-panel-title"><Bot size={18} /><h3>默认模型</h3></div>
           <SearchPicker label="默认模型" value={selectedModelId} onChange={chooseModel} options={models.filter(model => model.kind === "chat").map(model => ({ value: model.id, label: model.name }))} />

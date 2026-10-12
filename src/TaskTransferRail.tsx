@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpRight, Check, Loader2, AlertCircle, ChevronDown } from "lucide-react";
+import { transferStateLabel } from './noviceUx';
 export type Transfer = { id: string; taskId: string; title: string; state: string };
 export const transferSettled = (state: string) => ["completed", "failed", "interrupted", "cancelled"].includes(state);
 export const newAutomaticReceiptIds = (tasks:Transfer[],seen:Set<string>,observed:Set<string>) => tasks.filter(t=>transferSettled(t.state)&&!seen.has(t.id)&&observed.has(t.taskId)).map(t=>t.id);
@@ -46,13 +47,13 @@ export function TaskTransferRail({ tasks, busy, onOpen, onReport, onStop }: { ta
   }, [key, busy, error, briefing]);
   if (!tasks.length) return null;
   return <aside className="task-transfer-rail" aria-label="正在处理的任务">
-    <button type="button" className="task-transfer-bubble" aria-expanded={expanded} onClick={() => setExpanded(v => !v)}><Loader2 size={14} className={visible.some(t=>!transferSettled(t.state))?'task-transfer-spinner':''}/><span><strong>任务 · {visible.length}</strong><small>{ready.length ? `${new Set(tasks.filter(t=>transferSettled(t.state)).map(t=>t.taskId)).size} 件有反馈` : '正在处理，随时查看'}</small></span><ChevronDown size={14}/></button>
+    <button type="button" className="task-transfer-bubble" aria-expanded={expanded} onClick={() => setExpanded(v => !v)}><Loader2 size={14} className={visible.some(t=>!transferSettled(t.state))?'task-transfer-spinner':''}/><span><strong>任务 · {visible.length}</strong><small>{ready.length ? `${new Set(tasks.filter(t=>transferSettled(t.state)).map(t=>t.taskId)).size} 件有反馈` : '查看进展或停止任务'}</small></span><ChevronDown size={14}/></button>
     {expanded ? visible.slice(Math.min(page, pages - 1) * 4, (Math.min(page, pages - 1) + 1) * 4).map(task => <div className="task-transfer-row" key={task.id}><button type="button" className={`task-transfer-bubble ${returning.includes(task.id) ? 'is-returning' : ''} ${transferSettled(task.state) ? 'is-settled' : ''}`} onClick={() => onOpen(task.taskId)}>
       {task.state === 'completed' ? <Check size={14}/> : transferSettled(task.state) ? <AlertCircle size={14}/> : <Loader2 size={14} className="task-transfer-spinner"/>}
-      <span><strong>{task.title}</strong><small>{task.state === 'queued' ? '等这一轮接着做' : task.state === 'selecting_target' ? '等你选择工作文件夹' : task.state === 'completed' ? '结果已返回' : transferSettled(task.state) ? '需要看一下' : '正在处理'}</small></span><ArrowUpRight size={12}/>
+      <span><strong>{task.title}</strong><small>{transferStateLabel(task.state)}</small></span><ArrowUpRight size={12}/>
     </button>{!transferSettled(task.state)&&onStop?<button type="button" className="task-transfer-more" disabled={stopping.includes(task.id)} onClick={event=>{const source=event.currentTarget;setStopping(old=>[...old,task.id]);void onStop(task,source).catch(e=>setStopError(e instanceof Error?e.message:'停止未确认')).finally(()=>setStopping(old=>old.filter(id=>id!==task.id)));}}>停止</button>:null}</div>) : null}
     {stopError?<small role="alert">{stopError}</small>:null}
-    {expanded && pages > 1 ? <button type="button" className="task-transfer-more" onClick={() => setPage((Math.min(page, pages - 1) + 1) % pages)}>其他事情 · {Math.min(page, pages - 1) + 1}/{pages}</button> : null}
+    {expanded && pages > 1 ? <button type="button" className="task-transfer-more" onClick={() => setPage((Math.min(page, pages - 1) + 1) % pages)}>更多任务 · {Math.min(page, pages - 1) + 1}/{pages}</button> : null}
     {expanded && ready.length > 0 ? <button type="button" className="task-transfer-more" disabled={busy || briefing} onClick={() => {manualBriefing.current=true; setError(false); setBriefing(true); }}>让 ONE 说说结果</button> : null}
     {error ? <button type="button" className="task-transfer-more" disabled={busy} onClick={() => { setError(false); setBriefing(true); }}>结果回流未确认 · 重试</button> : null}
   </aside>;

@@ -1,0 +1,17 @@
+.composer.studio-composer{position:relative;overflow:visible}
+.composer-feature-picker{position:absolute;bottom:calc(100% + 8px);left:0;width:min(460px,100%);max-height:min(430px,65dvh);overflow:auto;z-index:120;background:var(--studio-surface,#fffef8);color:var(--studio-ink,#292d25);border:1px solid var(--studio-line,#dce0d6);border-radius:16px;padding:14px;box-shadow:0 12px 40px rgb(0 0 0 / 12%)}
+.composer-feature-picker header,.composer-feature-picker footer{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.composer-feature-picker p,.composer-feature-picker small{font-size:12px;color:var(--studio-muted,#65705c);line-height:1.6}
+.one-studio .composer-feature-picker button{background:transparent;border:0;color:inherit;font:inherit;cursor:pointer;padding:9px;border-radius:10px}
+.composer-feature-picker [role=listbox]{display:grid;gap:3px}
+.one-studio .composer-feature-picker [role=option]{display:flex;align-items:center;justify-content:space-between;text-align:left;gap:10px;width:100%}
+.composer-feature-picker [role=option] strong,.composer-feature-picker [role=option] small{display:block}
+.composer-feature-picker [role=option] small{overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;margin-top:3px}
+.one-studio .composer-feature-picker [role=option]:is(:hover,:focus-visible,.is-highlighted){background:var(--studio-paper,#edf2e5)}
+.composer-feature-picker button:focus-visible{outline:2px solid #80996a;outline-offset:2px}
+.composer-feature-search{display:flex;align-items:center;gap:8px;margin:10px 0}
+.composer-feature-search input{min-width:0;width:100%;border:1px solid var(--studio-line,#dce0d6);border-radius:8px;padding:8px;background:transparent;color:inherit;font:inherit}
+.studio-compose-tools-left{display:flex;align-items:center;gap:14px}
+.one-studio .composer-add-feature{display:inline-flex;align-items:center;gap:5px;border:0;background:transparent;font:inherit;font-size:12px;color:var(--studio-muted,#65705c);cursor:pointer;padding:5px}
+.studio-compose-context.is-bound{border:1px solid var(--studio-line,#dce0d6);border-radius:10px;padding:9px 12px;background:var(--studio-paper,#edf2e5);margin-bottom:10px}
+.studio-compose-context.is-bound>span{font-size:12px;font-weight:600;color:var(--studio-ink,#292d25);overflow-wrap:anywhere}

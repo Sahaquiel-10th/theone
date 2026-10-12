@@ -2,6 +2,7 @@ import { useRef, useState, type ReactNode } from "react";
 import {useFollowLatest} from './useFollowLatest';
 import { MessageMarkdown } from "./MessageMarkdown";
 import "./things-panel.css";
+import { transferStateLabel } from "./noviceUx";
 import { Zap } from "lucide-react";
 
 type Thing = {
@@ -11,6 +12,7 @@ type Thing = {
   messages: { id?: string; role: string; content: string }[];
   messagesLoaded?: boolean;
   taskState?: 'active' | 'review' | 'ended' | 'history';
+  outcome?: string;
 };
 export function ThingsPanel({
   one,
@@ -53,7 +55,7 @@ export function ThingsPanel({
   const [page, setPage] = useState(1);
   const selected = items.find((item) => item.id === selectedId);
   const found = items.filter((item) =>
-    item.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) && (query.trim() || (item.taskState||'history')===category),
+    item.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) && (item.taskState||'history')===category,
   );
   const pages = Math.max(1, Math.ceil(found.length / 10)),
     current = Math.min(page, pages);
@@ -68,7 +70,7 @@ export function ThingsPanel({
         </header>
         <input
           aria-label="搜索任务和历史对话"
-          placeholder="搜索任务或对话"
+          placeholder="搜索当前列表"
           value={query}
           onChange={(event) => {
             setQuery(event.target.value);
@@ -86,11 +88,11 @@ export function ThingsPanel({
             >
               <strong>{item.title}</strong>
               <small>
-                {item.taskState==='active'?'正在处理 · ':item.taskState==='review'?'需要看一下 · ':item.taskState==='ended'?'分派任务 · ':'历史对话 · '}{new Date(item.updatedAt).toLocaleDateString("zh-CN")}
+                {item.taskState==='active'?'正在处理 · ':item.taskState==='review'||item.taskState==='ended'?`${item.outcome?transferStateLabel(item.outcome):'已结束 · 查看回执'} · `:'历史对话 · '}{new Date(item.updatedAt).toLocaleDateString("zh-CN")}
               </small>
             </button>
           ))}
-          {!found.length ? <p>{query?'没有找到匹配记录。':category==='active'?'目前没有进行中的任务。已完成的工作在“已结束”，普通聊天在“历史对话”。':'这里暂时没有记录。'}</p> : null}
+          {!found.length ? <p>{query?'已加载的当前列表中没有匹配记录。':category==='active'?'目前没有进行中的任务。已完成的工作在“已结束”，普通聊天在“历史对话”。':category==='review'?'没有需要你处理的记录。执行失败、中断或停止的任务会显示在这里。':'这里暂时没有记录。'}</p> : null}
         </div>
         {pages > 1 ? (
           <footer>
@@ -115,18 +117,18 @@ export function ThingsPanel({
         ) : null}
         {hasMore ? (
           <button type="button" disabled={loadingMore} onClick={onMore}>
-            {loadingMore ? "正在加载" : "加载更多记录"}
+            {loadingMore ? "正在加载" : "加载更早记录"}
           </button>
         ) : null}
       </aside>
-      <section className="things-thread" aria-label="事情完整对话">
+      <section className="things-thread" aria-label="任务完整对话">
         {selected ? (
           <>
             <header>
               <h2>{selected.title}</h2>
               <div className="things-thread-actions">
               <button type="button" onClick={() => onWorkbench(selected.id)}>
-                放到工作台 ↗
+                在工作台继续 ↗
               </button>
               </div>
             </header>
@@ -145,7 +147,7 @@ export function ThingsPanel({
                   </article>
                 ))
               ) : (
-                <p>这件事还没开始。</p>
+                <p>此任务还没有消息。</p>
               )}
             </div>
             {executionContent}
@@ -172,8 +174,8 @@ export function ThingsPanel({
                 }}
               >
                 <textarea
-                  aria-label="直接继续这件事"
-                  placeholder="继续这件事…"
+                  aria-label="直接继续此任务"
+                  placeholder="继续此任务…"
                   value={draft}
                   disabled={sending.includes(selected.id) || selected.messagesLoaded === false}
                   onChange={(event) =>
@@ -196,12 +198,12 @@ export function ThingsPanel({
                 >
                   {sending.includes(selected.id) ? "接收中" : "发送"}
                 </button>
-                {onExecuteDraft ? <button className="things-compose-execute" type="button" disabled={!draft.trim()||executionDisabled||executionPreparing||sending.includes(selected.id)||selected.messagesLoaded===false} onClick={event=>{setErrors(old=>({...old,[selected.id]:''}));void onExecuteDraft(selected.id,draft,event.currentTarget).catch(e=>setErrors(old=>({...old,[selected.id]:e instanceof Error?e.message:'执行未确认，草稿已保留'})));}}><Zap size={14} aria-hidden="true"/><span>执行</span></button> : null}
+                {onExecuteDraft ? <button className="things-compose-execute" type="button" disabled={!draft.trim()||executionDisabled||executionPreparing||sending.includes(selected.id)||selected.messagesLoaded===false} onClick={event=>{setErrors(old=>({...old,[selected.id]:''}));void onExecuteDraft(selected.id,draft,event.currentTarget).catch(e=>setErrors(old=>({...old,[selected.id]:e instanceof Error?e.message:'执行未确认，草稿已保留'})));}}><Zap size={14} aria-hidden="true"/><span>本机执行</span></button> : null}
               </form>
             )}
           </>
         ) : (
-          <div className="things-thread-empty">选一件事，接着聊。</div>
+          <div className="things-thread-empty">选择一个任务，查看结果或继续聊。</div>
         )}
       </section>
     </section>

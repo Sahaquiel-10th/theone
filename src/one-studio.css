@@ -160,6 +160,8 @@
 .one-studio .one-execution-details :is(summary,pre) { color: var(--studio-muted); font-size: 10px; }
 .one-studio .one-history-popover { top: 65px; right: 26px; width: min(390px, calc(100vw - 32px)); max-height: calc(100dvh - 90px); border: 1px solid var(--studio-line); border-radius: 14px; background: var(--studio-surface); box-shadow: 0 24px 80px rgb(10 15 5 / 12%); color: var(--studio-ink); }
 .one-studio .one-history-popover :is(button, h3, span) { color: var(--studio-ink); }
+.one-studio .one-history-popover .one-popover-heading>button{color:#fff;background:#262520}
+.one-studio .one-history-search{margin:8px 14px;width:calc(100% - 28px);padding:9px 12px;border:1px solid var(--studio-line);border-radius:9px;background:var(--studio-surface);color:var(--studio-ink);font:inherit;font-size:12px}
 .one-studio .one-history-popover :is(small,.one-popover-empty) { color: var(--studio-muted); }
 .one-studio .one-history-row.active { background: var(--studio-paper); }
 .one-studio .one-history-row:hover { background: var(--studio-paper); }

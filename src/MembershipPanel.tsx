@@ -2,21 +2,26 @@ import { useEffect, useRef, useState } from 'react';
 import type { api as apiType } from './oneApi';
 import type { MembershipCatalog, MembershipProduct } from '../server/memberships';
 import './membership.css';
+import { SettingsDialog } from './SettingsControls';
+import { InfoHint } from './InfoHint';
+import { allowanceRules, monthlyAllowanceComparison, purchaseAction, purchaseTiming } from './noviceUx';
 type Summary={welcomeGift?:{months:number;startsAt:string}|null;enabled:boolean;annualDiscountPercent:number;products:MembershipProduct[];active:{tier:string;remainingPercent:number;resetsAt:string}|null;purchasedBalanceCny:number;pendingKeys:{id:string;label:string;ready:boolean}[];scheduled:{tier:string;startsAt:string;endsAt:string}[]};
-export function MembershipPanel({api,revision,onPurchase,onChanged}:{api:typeof apiType;revision:number;onPurchase:(p:MembershipProduct)=>void;onChanged:()=>Promise<void>}) {
+export function MembershipPanel({api,revision,onPurchase,onChanged}:{api:typeof apiType;revision:number;onPurchase:(p:MembershipProduct,timing:string)=>void;onChanged:()=>Promise<void>}) {
   const [data,setData]=useState<Summary|null>(null),[error,setError]=useState(''),[annual,setAnnual]=useState(false);
+  const [plansOpen,setPlansOpen]=useState(false);
   useEffect(()=>{const c=new AbortController();api<Summary>('/api/me/membership',{signal:c.signal}).then(setData).catch(e=>{if(!c.signal.aborted)setError(e.message);});return()=>c.abort();},[api,revision]);
   async function activate(id:string){setError('');try{await api('/api/me/membership/activate',{method:'POST',body:JSON.stringify({orderId:id})});await onChanged();}catch(e){setError(e instanceof Error?e.message:'激活失败');}}
-  if(!data||(!data.enabled&&!data.active&&!data.pendingKeys.length))return error?<p role="status">{error}</p>:null;
-  return <section className="membership-panel"><div className="membership-heading"><strong>{data.active?(data.active.tier==='premium'?'高级会员':'普通会员'):'会员与额度'}</strong><span>按月更新</span></div>
-    {data.active?<><progress className={data.active.tier} aria-label="本月会员额度剩余" max={100} value={data.active.remainingPercent}/><p>剩余 {data.active.remainingPercent}% · {new Date(data.active.resetsAt).toLocaleDateString('zh-CN')} 更新</p></>:<p>暂未开通会员；额外额度仍可使用。</p>}
-    {data.welcomeGift?<p className="membership-welcome" role="status">已赠送 {data.welcomeGift.months} 个月普通会员 · {new Date(data.welcomeGift.startsAt).toLocaleDateString('zh-CN')} 起生效</p>:null}
-    <p>先使用本月会员额度，用完后使用额外额度。未使用的月额度不累计，额外额度长期保留。</p>
-    <div className="settings-tabs"><button aria-pressed={!annual} onClick={()=>setAnnual(false)}>月付</button><button aria-pressed={annual} onClick={()=>setAnnual(true)}>年付 · {data.annualDiscountPercent}% OFF</button></div>
-    <div className="membership-plans">{data.products.filter(p=>p.kind==='membership'&&p.months===(annual?12:1)).map(p=><article key={p.id} className={p.tier}><strong>{p.tier==='premium'?'高级会员':'普通会员'}</strong><b>¥{(p.amountFen/100).toFixed(annual?2:0)}<small> / {annual?'年':'月'}</small></b><p>{annual?'12 次按月发放':'每月发放额度'}{p.tier==='premium'?'，适合较频繁使用':'，适合日常使用'}</p><button className="primary" onClick={()=>onPurchase(p)}>{data.active?'续费 / 升级':'开通会员'}</button></article>)}</div>
-    <details><summary>ONE Key 首购套餐</summary><p>付款后安排启动器交付，绑定账号后激活会员。</p>{data.products.filter(p=>p.kind==='key').map(p=><p key={p.id}>{p.label} · ¥{p.amountFen/100} <button onClick={()=>onPurchase(p)}>购买</button></p>)}</details>
+  if(!data)return <p role="status">{error || '正在读取会员状态…'}</p>;
+  if(!data.enabled&&!data.active&&!data.pendingKeys.length)return <p>暂未开放会员购买；已有额外额度仍可使用。</p>;
+  const endDates=[...(data.active?[data.active.resetsAt]:[]),...data.scheduled.map(p=>p.endsAt)];
+  const membershipUntil=endDates.length?new Date(Math.max(...endDates.map(Date.parse))).toLocaleDateString('zh-CN'):'';
+  function choose(p:MembershipProduct){setPlansOpen(false);onPurchase(p,purchaseTiming(p,data?.active?.tier));}
+  return <section className="membership-panel"><div className="membership-heading"><strong>{data.active?(data.active.tier==='premium'?'高级会员':'普通会员'):'尚未开通会员'}</strong>{data.enabled?<button type="button" className="primary membership-manage" onClick={()=>setPlansOpen(true)}>{data.active?'续费或升级':'查看会员套餐'}</button>:null}</div>
+    {data.active?<><div className="membership-remaining"><strong>{data.active.remainingPercent}%</strong><span>本月额度剩余 <InfoHint label="额度使用规则">{allowanceRules}</InfoHint></span></div><progress className={data.active.tier} aria-label="本月会员额度剩余" max={100} value={data.active.remainingPercent}/><div className="membership-dates"><span>本月额度更新：{new Date(data.active.resetsAt).toLocaleDateString('zh-CN')}</span><span>已安排会员至：{membershipUntil}</span></div></>:<p>额外额度仍可使用。</p>}
+    {data.welcomeGift?<details className="membership-gift"><summary>已赠送 {data.welcomeGift.months} 个月普通会员</summary><p>{new Date(data.welcomeGift.startsAt).toLocaleDateString('zh-CN')} 起生效，赠送时长已计入会员安排。</p></details>:null}
     {data.pendingKeys.map(o=><p key={o.id}>{o.label} · {o.ready?<button onClick={()=>void activate(o.id)}>激活会员</button>:'等待启动器交付'}</p>)}
-    {data.scheduled.length?<details><summary>后续会员时间</summary>{data.scheduled.map((p,i)=><p key={i}>{p.tier==='premium'?'高级会员':'普通会员'}：{new Date(p.startsAt).toLocaleDateString()} — {new Date(p.endsAt).toLocaleDateString()}</p>)}</details>:null}
+    {data.scheduled.length?<details><summary>查看后续会员安排</summary>{data.scheduled.map((p,i)=><p key={i}>{p.tier==='premium'?'高级会员':'普通会员'}：{new Date(p.startsAt).toLocaleDateString('zh-CN')} — {new Date(p.endsAt).toLocaleDateString('zh-CN')}</p>)}</details>:null}
+    {plansOpen?<SettingsDialog title="选择会员套餐" onClose={()=>setPlansOpen(false)}><div className="membership-panel membership-picker"><div className="settings-tabs"><button type="button" aria-pressed={!annual} onClick={()=>setAnnual(false)}>月付</button><button type="button" aria-pressed={annual} onClick={()=>setAnnual(true)}>年付{data.annualDiscountPercent?` · ${Number(((100-data.annualDiscountPercent)/10).toFixed(2))} 折`:''}</button></div><div className="membership-plans">{data.products.filter(p=>p.kind==='membership'&&p.months===(annual?12:1)).map(p=><article key={p.id} className={p.tier}><strong>{p.tier==='premium'?'高级会员':'普通会员'}</strong><b>¥{(p.amountFen/100).toFixed(2)}<small> / {annual?'年':'月'}</small></b><p className="membership-plan-value">{monthlyAllowanceComparison(p,data.products)}</p><p>{p.tier==='premium'?'适合高频使用、较长任务':'适合日常问答与轻量工作'}</p><p>{annual?'按月更新，共 12 次':'每月更新'} · 所有任务共用额度</p><button type="button" className="primary" onClick={()=>choose(p)}>{purchaseAction(p,data.active?.tier)}</button></article>)}</div><p className="settings-caption">月额度不累计；实际消耗取决于所用模型、资料量和任务内容。选择套餐不会立即扣款。</p><details><summary>另需购买 ONE Key？</summary><p>已有启动器无需再次购买。新购套餐在交付并绑定后激活附赠会员。</p>{data.products.filter(p=>p.kind==='key').map(p=><p key={p.id}>{p.label} · ¥{(p.amountFen/100).toFixed(2)} <button type="button" onClick={()=>choose(p)}>查看购买</button></p>)}</details></div></SettingsDialog>:null}
     {error?<p role="status" className="settings-inline-error">{error}</p>:null}
   </section>;
 }
