@@ -32,6 +32,7 @@ export function ThingsPanel({
   destinationPicker,
   sendLabel = '发送',
   onExecuteDraft,
+  onRemove,
 }: {
   one?: ReactNode;
   items: Thing[];
@@ -41,6 +42,7 @@ export function ThingsPanel({
   onSelect: (id: string) => void;
   onSend: (id: string, text: string) => void | Promise<void>;
   onWorkbench: (id: string) => void;
+  onRemove?: (id:string)=>Promise<void>;
   hasMore: boolean;
   onMore: () => void;
   loadingMore: boolean;
@@ -131,6 +133,7 @@ export function ThingsPanel({
             <header>
               <h2>{selected.title}</h2>
               <div className="things-thread-actions">
+              {onRemove?<button type="button" onClick={()=>{if(confirm('删除任务并停止待办？历史保留，可恢复；已发生的操作不会撤销。'))void onRemove(selected.id).catch(e=>setErrors(old=>({...old,[selected.id]:e.message})));}}>删除任务</button>:null}
               <button type="button" onClick={() => onWorkbench(selected.id)}>
                 在工作台继续 ↗
               </button>

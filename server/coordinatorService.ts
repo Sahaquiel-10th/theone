@@ -25,7 +25,7 @@ import {
   runTaskOrchestrator,
   type OrchestrationTool,
 } from "./taskOrchestrator.js";
-import { callModel, callModelWithTools, type ModelToolMessage } from "./modelGateway.js";
+import { callModel, callModelWithTools, ModelRequestError, type ModelToolMessage } from "./modelGateway.js";
 import { featureImageBytes } from "./featureImage.js";
 import { saveFeatureArtifact } from "./featureArtifacts.js";
 import { runBilledModel } from "./modelBilling.js";
@@ -108,7 +108,7 @@ function modelOf(db: Database, id?: string) {
 function taskOf(db: Database, s: WorkScope, id: string) {
   featureMember(db, s);
   const c = db.conversations.find(
-    (c) => c.id === id && own(c, s) && !c.coordinatorMain,
+    (c) => c.id === id && own(c, s) && !c.coordinatorMain && !c.archived,
   );
   if (!c) throw new CoordinatorError("事情不存在", 404);
   if (
@@ -231,6 +231,35 @@ export class CoordinatorService {
     });
     return {ok:true};
   }
+  async removeTask(s: WorkScope, id: string, verifyKey: () => Promise<void>) {
+    await verifyKey();
+    await this.store.mutate(d => {
+      const task = taskOf(d, s, id);
+      if ((d.executionTasks??[]).some(t => own(t, s) && t.conversationId === id && ['queued','selecting_target','running'].includes(t.status)))
+        throw new CoordinatorError('请先停止本机执行，再删除任务', 409);
+      task.archived = true;
+      task.workPaused = true;
+      task.updatedAt = at();
+      for (const op of d.chatOperations ?? []) if (own(op,s) && op.conversationId === id && op.workRun) {
+        if (['queued','running'].includes(op.workRun.state)) {
+          op.workRun.state = 'cancelled'; op.status = 'interrupted'; op.updatedAt = at();
+        }
+        op.workRun.unread = false;
+      }
+    });
+    return {ok:true};
+  }
+  async restoreTask(s: WorkScope, id: string, verifyKey: () => Promise<void>) {
+    await verifyKey();
+    await this.store.mutate(d => {
+      featureMember(d,s);
+      const task = d.conversations.find(c => own(c,s) && c.id === id && !c.coordinatorMain);
+      if (!task) throw new CoordinatorError('任务不存在',404);
+      task.archived = false; task.updatedAt = at();
+      // Deleted queued work stays cancelled; restoring never replays it.
+    });
+    return {ok:true};
+  }
   constructor(
     private store: Store,
     private knowledge: Pick<KnowledgeService, "recallWithDiagnostics">,
@@ -245,11 +274,12 @@ export class CoordinatorService {
         (c) =>
           own(c, s) &&
           !c.coordinatorMain &&
+          !c.archived &&
           (c.executorProfileId || db.chatOperations?.some(o=>own(o,s)&&o.conversationId===c.id&&o.workRun) || db.executionTasks?.some(t=>own(t,s)&&t.conversationId===c.id)),
       )
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     const operations = (db.chatOperations ?? []).filter(
-      (o) => own(o, s) && o.workRun,
+      (o) => own(o, s) && o.workRun && tasks.some(c => c.id === o.conversationId),
     );
     return {
       pendingOperationId: (db.chatOperations ?? []).find(
@@ -272,6 +302,7 @@ export class CoordinatorService {
         title: c.title,
         executorId: c.executorProfileId,
         updatedAt: c.updatedAt,
+        paused: c.workPaused === true,
         queued: operations.filter(
           (o) => o.conversationId === c.id && o.workRun?.state === "queued",
         ).length,
@@ -545,6 +576,7 @@ export class CoordinatorService {
           (c) =>
             own(c, s) &&
             !c.coordinatorMain &&
+            !c.archived &&
             (c.executorProfileId ||
               current.models.find((m) => m.id === c.modelId)?.kind === "chat"),
         )
@@ -684,7 +716,8 @@ export class CoordinatorService {
               )!;
               o.dispatchedTaskId = dispatched;
             });
-            return { status: local?.status ?? "queued", taskId: dispatched, title: v.title, executionId: local?.id };
+            const saved=(await this.store.read()).conversations.find(c=>own(c,s)&&c.id===dispatched);
+            return { status: local?.status ?? (saved?.workPaused?'paused':'queued'), taskId: dispatched, title: v.title, executionId: local?.id, ...(saved?.workPaused?{message:'此前处理失败，补充已保存但不会开始。请用户在任务中确认继续处理；不要宣称正在执行或即将完成。'}:{}) };
           },
         },
       };
@@ -1247,8 +1280,7 @@ export class CoordinatorService {
         o.workRun &&
         o.status === "pending" &&
         o.workRun.state === "queued" &&
-        !db.conversations.find((c) => c.id === o.conversationId && own(c, s))
-          ?.workPaused,
+        db.conversations.some(c => c.id === o.conversationId && own(c,s) && !c.workPaused && !c.archived),
     );
     let slots = Math.max(0, 2 - running.length);
     const ids = new Set(running.map((o) => o.conversationId));
@@ -1645,7 +1677,7 @@ export class CoordinatorService {
         o.status = "failed";
         o.workRun.state = "failed";
         o.workRun.unread = true;
-        o.workRun.error = error instanceof NotionDocumentError ? error.message :
+        o.workRun.error = error instanceof ModelRequestError ? `${error.message}。任务已暂停，原话和附件保留，不会自动重跑。` : error instanceof NotionDocumentError ? error.message :
           "本轮未完成，请检查授权、模型和电力；可能已有实际用量，不会自动重跑。";
         o.updatedAt = at();
         const c = d.conversations.find(

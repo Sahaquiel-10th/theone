@@ -737,7 +737,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const greeting=useOneGreeting(`${view}:${activeId}`);
   const lampTasks = preview.enabled ? preview.state.tasks.filter(task=>task.unread && !dismissedResults.includes(`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`)) : [];
   const lampKey=lampTasks.map(task=>`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`).join('|');
-  const transfers: Transfer[] = [...(coordinator.snapshot?.tasks ?? []).filter(t => t.running || t.queued).map(t => ({id:`work:${t.id}`,taskId:t.id,title:t.title,state:t.running?'running':'queued'})),
+  const transfers: Transfer[] = [...(coordinator.snapshot?.tasks ?? []).filter(t => t.running || t.queued).map(t => ({id:`work:${t.id}`,taskId:t.id,title:t.title,state:t.running?'running':t.paused?'paused':'queued'})),
     ...(coordinator.snapshot?.notices ?? []).map(n => ({id:n.id,taskId:n.taskId,title:n.title||conversations.find(c=>c.id===n.taskId)?.title||'这件事',state:n.state})),
     ...executionTasks.filter(t=>isExecutionRunning(t)).map(t=>({id:t.id,taskId:t.conversationId,title:conversations.find(c=>c.id===t.conversationId)?.title||'本机任务',state:t.status}))];
   const uniqueTransfers = [...new Map(transfers.map(t=>[t.id,t])).values()];
@@ -1821,6 +1821,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         destinationPicker={!demo.enabled ? <><NotionReceiptNotice key={thingId} api={api} taskId={thingId} receipt={coordinator.details[thingId]?.jobs.filter(j=>j.notionReceipt).at(-1)?.notionReceipt} onRefresh={()=>coordinator.load(thingId)} /><DocumentDestinationPicker api={api} value={outputDestination} onChange={setOutputDestination} localDisabled={taskStatusUnavailable || executionBusy || preparingExecution} onSettings={() => openSurface('knowledge')} /></> : undefined}
         onSelect={id=>void selectThing(id)} onSend={continueThing}
         onWorkbench={id=>{void openConversation(conversations.find(item=>item.id===id)!);setResultLampOpen(false);}}
+        onRemove={coordinator.enabled?async id=>{await coordinator.removeTask(id);setThingId('');await refresh();}:undefined}
         executionDisabled={taskStatusUnavailable || preparingExecution || executionBusy || Boolean(loadingByConversation[thingId])}
         executionPreparing={preparingExecution && preparingConversationId===thingId}
         executionContent={preparingExecution && preparingConversationId===thingId || thingExecutionTask ? <ExecutionDisclosure
@@ -1849,12 +1850,13 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <div className="studio-task-controls">
             {preview.enabled&&active?<button type="button" onClick={()=>openSurface('chat')}>回到 ONE <X size={14}/></button>:null}
             {preview.enabled && active ? <button type="button" className="studio-mode-switch" onClick={()=>{void selectThing(active.id);openSurface('things');}}>继续此任务</button> : null}
+            {coordinator.enabled&&active?<button type="button" onClick={()=>{if(confirm('删除此任务并停止尚未完成的云端处理？历史和用量会保留，可恢复；已发生的外部操作不会撤销。'))void coordinator.removeTask(active.id).then(()=>{openSurface('chat');return refresh();}).catch(e=>setError(e.message));}}>删除任务</button>:null}
             {executionShortcut ? <button type="button" onClick={() => { setSelectedExecutionId(executionShortcut.id); setExpandedExecutionId(executionShortcut.id); setRevealExecutionId(executionShortcut.id); void loadLatestExecution(activeId, executionShortcut.id); }} aria-label="查看本机执行"><Zap size={14} /><span>{currentRunningExecution ? "查看执行进展" : "查看执行结果"}</span></button> : null}
             <button type="button" aria-label={focusedTask ? "还原布局" : "放大当前任务"} aria-pressed={focusedTask} onClick={() => transitionInterface(() => setFocusedTask(value => !value))}>{focusedTask ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
           </div>
         </header>
         <div className="messages">
-          {coordinator.enabled&&active?.workPaused?<p role="status">这件事的后续补充已暂停，原话和用量保留。<button type="button" onClick={()=>{if(confirm('仅处理尚未执行的补充，不重跑失败轮次；会产生新的用量。继续？'))void coordinator.resumeTask(active.id).catch(e=>setError(e.message));}}>继续等待的补充</button></p>:null}
+          {coordinator.enabled&&(coordinator.snapshot?.tasks.find(t=>t.id===activeId)?.paused||active?.workPaused)?<p role="status">此前处理未完成，任务已暂停，不会继续等待模型。原话、附件和用量保留。<button type="button" onClick={()=>{if(confirm('仅处理尚未执行的补充，不重跑失败轮次；会产生新的用量。继续？'))void coordinator.resumeTask(active!.id).then(()=>refresh()).catch(e=>setError(e.message));}}>继续处理待办</button></p>:null}
           {(active?.messages ?? []).length ? (
             active!.messages.map((message, index) => (
               <React.Fragment key={`${message.createdAt}-${index}`}>
@@ -1884,7 +1886,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                     ) : (
                       <>
                         <pre>{message.content}</pre>
-                        {preview.enabled && preview.state.tasks.find(task=>task.id===activeId)?.messages.find(item=>item.id===message.id)?.status==='queued' ? <small>补充已收到 · 本轮完成后处理</small> : null}
+                        {preview.enabled && preview.state.tasks.find(task=>task.id===activeId)?.messages.find(item=>item.id===message.id)?.status==='queued' ? <small>{coordinator.snapshot?.tasks.find(t=>t.id===activeId)?.paused?'已保存 · 任务暂停，请确认继续处理':'已收到 · 等待处理'}</small> : null}
                         {!demo.enabled && active && message.id ? (
                           <div className="message-actions user-actions">
                             <button className="execution-trigger" title={taskStatusUnavailable ? "正在确认本机状态" : executionBusy ? "本机正在工作，完成后可执行下一件" : "交给 ONE 执行"} disabled={taskStatusUnavailable || preparingExecution || executionBusy || activeLoading || active.id.startsWith("tmp_")} onClick={(event) => executeFromMessage(message, event.currentTarget)}><Zap size={14} /></button>
@@ -1923,7 +1925,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             setFeatureForNext(old=>[...new Map([...old,...failed.features].map(feature=>[feature.id,feature])).values()]);
           }
         }} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)}/>:null}
-        {coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null}
+        {coordinator.removedTask?<p role="status">任务已删除，历史保留。<button type="button" onClick={()=>void coordinator.restoreTask().then(()=>refresh()).catch(e=>setError(e.message))}>恢复任务（不会自动重跑）</button></p>:null}
+        {coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onResume={async id=>{await coordinator.resumeTask(id);await refresh();}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null}
 
         {!preview.enabled && (otherRows.length > 0 || unreadNotices.length > 0 || taskStatusUnavailable) ? <section className="studio-activity attention-activity" aria-label="任务动态">
           {otherRows.length > 0 || unreadNotices.length > 0 ? <button className="attention-activity-toggle" type="button" aria-expanded={activityExpanded} aria-controls="attention-task-list" onClick={() => setActivityExpanded(value => !value)}>

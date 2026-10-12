@@ -45,6 +45,23 @@ export type ToolChatResult = {
 };
 
 const requestTimeoutMs = numberEnv("MODEL_REQUEST_TIMEOUT_MS", 150000);
+export class ModelRequestError extends Error {
+  constructor(readonly status:number, readonly reason:string) {
+    super(`模型服务请求未成功（${status}）：${reason}`);
+  }
+}
+// Never persist raw provider bodies, which may echo prompts or credentials.
+export function safeProviderReason(payload:unknown,status:number):string {
+  const p=payload as {error?:{message?:unknown}};
+  const message=typeof p?.error?.message==='string'?p.error.message:'';
+  if(status===400){
+    if(/tool.?choice|tools.*(empty|required)|without.*tools/i.test(message))return '工具调用参数不兼容，请检查功能接口';
+    if(/temperature/i.test(message))return '模型不支持当前温度参数，请检查接口配置';
+    if(/max.?tokens|context.*(length|limit)|too.*(long|tokens)/i.test(message))return '输入或输出长度超过模型限制，请调整任务范围';
+    if(/model.*(not found|invalid|unsupported)/i.test(message))return '配置的模型标识不可用，请检查后台模型';
+  }
+  return safeGatewayHint(status);
+}
 export type ModelFinishReason = "stop" | "length" | "filtered" | "tool_calls" | "unknown";
 export function modelFinishReason(value: unknown): ModelFinishReason {
   if (value === "length" || value === "max_tokens") return "length";
@@ -270,8 +287,7 @@ export async function callModelWithTools(
     }, requestTimeoutMs);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const detail = safeGatewayHint(response.status);
-      throw new Error(`Local Agent 模型调用失败（上游 ${response.status}）：${detail}`);
+      throw new ModelRequestError(response.status, safeProviderReason(payload,response.status));
     }
     const message = payload?.choices?.[0]?.message;
     if (!message || (message.content != null && typeof message.content !== "string")) throw new Error("Local Agent 模型响应格式不正确");
@@ -373,20 +389,19 @@ async function callAnthropicModelWithTools(
         model: model.model,
         system: system || undefined,
         messages: anthropicMessages,
-        tools: tools.map((tool) => ({
+        tools: tools.length ? tools.map((tool) => ({
           name: tool.function.name,
           description: tool.function.description,
           input_schema: tool.function.parameters
-        })),
-        tool_choice: options.requiredTool ? { type: "tool", name: options.requiredTool, disable_parallel_tool_use: true } : { type: "auto" },
+        })) : undefined,
+        tool_choice: tools.length ? (options.requiredTool ? { type: "tool", name: options.requiredTool, disable_parallel_tool_use: true } : { type: "auto" }) : undefined,
         temperature: 0.2,
         max_tokens: MODEL_MAX_OUTPUT_TOKENS
       })
     }, requestTimeoutMs);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const detail = safeGatewayHint(response.status);
-      throw new Error(`Local Agent 模型调用失败（上游 ${response.status}）：${detail}`);
+      throw new ModelRequestError(response.status, safeProviderReason(payload,response.status));
     }
     const blocks = Array.isArray(payload?.content) ? payload.content : [];
     const content = blocks

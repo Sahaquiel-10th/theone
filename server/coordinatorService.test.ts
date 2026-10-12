@@ -1030,6 +1030,7 @@ test("failed tasks pause their supplements; restart marks only in-flight work in
     async () => (await f.service.task(a, r.taskId!)).jobs[0].state === "failed",
   );
   assert.equal((await f.service.task(a, r.taskId!)).jobs[1].state, "queued");
+  assert.equal((await f.service.state(a)).tasks.find(t=>t.id===r.taskId)!.paused,true);
   await f.service.resume(a, key);
   assert.equal((await f.service.task(a, r.taskId!)).jobs[1].state, "queued");
   f.setWorker(undefined);
@@ -1055,6 +1056,21 @@ test("failed tasks pause their supplements; restart marks only in-flight work in
   const calls = f.calls.length;
   await f.service.resume(a, key);
   assert.equal(f.calls.length, calls);
+});
+
+test('task deletion is scoped, preserves originals, cancels queue and restore never replays work',async()=>{
+  const f=fixture(),r=await f.service.dispatch(a,input('operation_delete_001','UI 删除回归'),key);
+  const before=(await f.service.task(a,r.taskId!)).conversation.messages;
+  await assert.rejects(()=>f.service.removeTask(b,r.taskId!,key),/不存在/);
+  await assert.rejects(()=>f.service.restoreTask(b,r.taskId!,key),/不存在/);
+  await f.service.removeTask(a,r.taskId!,key);
+  assert.ok(!(await f.service.state(a)).tasks.some(t=>t.id===r.taskId));
+  assert.deepEqual((await f.store.read()).conversations.find(c=>c.id===r.taskId)!.messages,before);
+  await f.service.resume(a,key);assert.equal(f.calls.filter(c=>c.modelId==='worker').length,0);
+  await f.service.restoreTask(a,r.taskId!,key);
+  await f.service.resume(a,key,r.taskId);
+  assert.equal(f.calls.filter(c=>c.modelId==='worker').length,0);
+  assert.equal((await f.service.task(a,r.taskId!)).jobs[0].state,'cancelled');
 });
 test("knowledge revocation is checked before worker billing; public credentials and private prompt snapshots stay off task receipts", async () => {
   const f = fixture();

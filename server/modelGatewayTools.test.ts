@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
-import { callModelWithTools, fetchWithTimeout, parseProviderUsage } from "./modelGateway.js";
+import { callModelWithTools, fetchWithTimeout, parseProviderUsage, safeProviderReason } from "./modelGateway.js";
 import type { ModelConfig } from "./types.js";
 
 test("passes OpenAI function tools and returns tool calls", async () => {
@@ -105,9 +105,17 @@ test("translates Anthropic tool use and tool results", async () => {
     assert.deepEqual(result.usage, { inputTokens: 18, outputTokens: 7, totalTokens: 25, source: "provider" });
     await callModelWithTools(model, [{ role: "user", content: "明确读取" }], [{ type: "function", function: { name: "read_file", description: "read", parameters: { type: "object" } } }], "required-anthropic", { requiredTool: "read_file" });
     assert.deepEqual(received.tool_choice, { type: "tool", name: "read_file", disable_parallel_tool_use: true });
+    await callModelWithTools(model,[{role:'user',content:'仅回答，不调用工具'}],[],'anthropic-no-tools');
+    assert.equal(received.tools,undefined);
+    assert.equal(received.tool_choice,undefined);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
+});
+
+test('provider diagnostics use reviewed reasons and never echo secrets or user content',()=>{
+  assert.match(safeProviderReason({error:{message:'tool_choice requires tools sk-secret user-private'}},400),/工具调用/);
+  assert.doesNotMatch(safeProviderReason({error:{message:'sk-secret user-private https://private'}},400),/sk-secret|user-private|https/);
 });
 
 test("leaves usage unknown when a gateway omits token counts instead of inventing a charge", async () => {

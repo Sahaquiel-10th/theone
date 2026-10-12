@@ -29,5 +29,5 @@ export function withoutFeatureMention(text: string, mention: ReturnType<typeof f
   return text.slice(0, mention.start) + text.slice(mention.end);
 }
 export function transferStateLabel(state: string) {
-  return ({ queued: '已排队，尚未开始', selecting_target: '请在电脑上选择工作文件夹', completed: '已完成，查看结果', failed: '未完成，查看原因', interrupted: '执行中断，结果待核对', cancelled: '已停止，不会自动重跑' } as Record<string,string>)[state] || '正在处理，可随时停止';
+  return ({ paused: '任务已暂停，请确认继续处理', queued: '已排队，尚未开始', selecting_target: '请在电脑上选择工作文件夹', completed: '已完成，查看结果', failed: '未完成，查看原因', interrupted: '执行中断，结果待核对', cancelled: '已停止，不会自动重跑' } as Record<string,string>)[state] || '正在处理，可随时停止';
 }

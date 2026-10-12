@@ -19,6 +19,7 @@ type Meta = {
   executorId?: string;
   queued: number;
   running: boolean;
+  paused?: boolean;
 };
 type Notice = {
   id: string;
@@ -84,6 +85,8 @@ export function useCoordinator(
     directReceipts = useRef(new Map<string, string>()),
     submissionError = useRef(""),
     resumeKey = useRef("");
+  const resumeAt = useRef(0);
+  const [removedTask,setRemovedTask] = useState<string|null>(null);
   snapshotRef.current = snapshot;
   detailsRef.current = details;
   selectedRef.current = selected;
@@ -153,11 +156,12 @@ export function useCoordinator(
           affected.map((id) => load(id).catch(() => undefined)),
         );
         const queued = next.tasks
-          .filter((t) => t.queued > 0)
+          .filter((t) => t.queued > 0 && !t.paused)
           .map((t) => `${t.id}:${t.queued}:${t.updatedAt}`)
           .join("|");
-        if (next.enabled && queued && queued !== resumeKey.current) {
+        if (next.enabled && queued && (queued !== resumeKey.current || Date.now()-resumeAt.current >= 15000)) {
           resumeKey.current = queued;
+          resumeAt.current = Date.now();
           void api("/api/coordinator/resume", {
             method: "POST",
             body: "{}",
@@ -351,6 +355,7 @@ export function useCoordinator(
       round: jobs.length,
       status: meta.running
         ? "running"
+        : meta.paused ? "failed"
         : notice?.state === "failed" || notice?.state === "interrupted"
           ? "failed"
           : jobs.some((j) => j.state === "completed")
@@ -397,6 +402,13 @@ export function useCoordinator(
     acknowledge,
     report: async (ids: string[]) => { await api("/api/coordinator/reports", { method: "POST", body: JSON.stringify({ ids }) }); await refresh(); },
     resumeTask,
+    removedTask,
+    removeTask: async (id:string) => {
+      await api(`/api/coordinator/tasks/${encodeURIComponent(id)}`,{method:'DELETE'});
+      setRemovedTask(id); if(selectedRef.current===id)setSelected(null);if(bound===id)setBound(null);
+      setDetails(old=>{const next={...old};delete next[id];return next;});await refresh();
+    },
+    restoreTask: async () => {if(!removedTask)return;await api(`/api/coordinator/tasks/${encodeURIComponent(removedTask)}/restore`,{method:'POST',body:'{}'});setRemovedTask(null);await refresh();},
     error,
     settlement,
     clearError: () => setError(""),
