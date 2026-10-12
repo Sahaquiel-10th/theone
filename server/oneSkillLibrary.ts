@@ -5,7 +5,7 @@ export const oneSkillLibrary = manifest.map(item=>({...item,values:featureValues
 /** Add missing first-party drafts only. Existing user edits and approved versions are preserved. */
 export function installOneSkillLibrary(db:Database,actor:string,selection:string[]=oneSkillLibrary.map(s=>s.id),modelIds:{text?:string;image?:string}={}){
   if(!db.users.some(u=>u.id===actor&&u.enabled&&u.role==='admin'))throw new FeatureConfigError('无权安装功能',403);
-  if(!Array.isArray(selection)||!selection.length||selection.length>24||new Set(selection).size!==selection.length||selection.some(id=>!oneSkillLibrary.some(s=>s.id===id)))throw new FeatureConfigError('请选择有效的内置功能');
+  if(!Array.isArray(selection)||!selection.length||selection.length>oneSkillLibrary.length||new Set(selection).size!==selection.length||selection.some(id=>!oneSkillLibrary.some(s=>s.id===id)))throw new FeatureConfigError('请选择有效的内置功能');
   const added:string[]=[],existing:string[]=[];
   for(const id of selection){
     if(db.settings.officialFeatures?.some(f=>f.id===id)){existing.push(id);continue;}

@@ -16,7 +16,7 @@ export function OfficialFeaturePanel({api}:{api:typeof Api}){
   const [data,setData]=useState<{items:Row[];total:number}>({items:[],total:0}),[q,setQ]=useState(""),[page,setPage]=useState(1),[refresh,setRefresh]=useState(0),[selected,setSelected]=useState<string|null>(null),[error,setError]=useState("");
   const [library,setLibrary]=useState(false);
   useEffect(()=>{let live=true;void api<typeof data>(`/api/admin/official-features?page=${page}&q=${encodeURIComponent(q)}`).then(d=>{if(live)setData(d);}).catch(e=>{if(live)setError(e.message);});return()=>{live=false;};},[api,page,q,refresh]);
-  return <section className="official-feature-admin"><header className="section-toolbar"><h3>官方智能体</h3><button type="button" onClick={()=>setLibrary(true)}>ONE 内置功能 · 24 项</button><button className="primary" type="button" onClick={()=>setSelected("")}>＋ 新增功能</button></header>
+  return <section className="official-feature-admin"><header className="section-toolbar"><h3>官方智能体</h3><button type="button" onClick={()=>setLibrary(true)}>ONE 内置功能</button><button className="primary" type="button" onClick={()=>setSelected("")}>＋ 新增功能</button></header>
     {library?<SettingsDialog title="添加 ONE 内置功能" onClose={()=>setLibrary(false)}><OneSkillLibrary api={api} onInstalled={()=>setRefresh(n=>n+1)}/></SettingsDialog>:null}
     <PublicCommercePolicyPanel api={api}/>
     <input type="search" aria-label="搜索官方功能" placeholder="搜索名称、作者或标识" value={q} onChange={e=>{setQ(e.target.value);setPage(1);}}/>
