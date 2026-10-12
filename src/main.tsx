@@ -23,6 +23,7 @@ import {useCoordinator} from './useCoordinator';
 import {executionHandoffOutcome} from './executionHandoff';
 import { useComposerFeatures } from "./ComposerFeatures";
 import { LocalDeviceSettings } from './LocalDeviceSettings';
+import { DocumentDestinationPicker, NotionWritingSettings, NotionReceiptNotice, type DocumentDestination } from './DocumentDestination';
 import { waitingForOfficialApproval, officialApprovalLabel, officialApprovalHint } from "./knowledgeAvailability";
 import './preview/workspace-preview.css';
 import './task-transfer.css';
@@ -668,6 +669,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [executionTasks, setExecutionTasks] = useState<ExecutionTask[]>([]);
   const [eventsByTask, setEventsByTask] = useState<Record<string, ExecutionEvent[]>>({});
   const [taskStatusUnavailable, setTaskStatusUnavailable] = useState(true);
+  const [outputDestination, setOutputDestination] = useState<DocumentDestination>('chat');
   const [selectedExecutionId, setSelectedExecutionId] = useState("");
   const [executionMode, setExecutionMode] = useState(false);
   const [awaitingExecutionOperationId, setAwaitingExecutionOperationId] = useState('');
@@ -759,10 +761,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     if (demo.enabled) { demo.dispatch({type:'task-send',taskId:id,text,id:crypto.randomUUID(),now:Date.now()}); return; }
     const task = conversations.find(conversation => conversation.id === id);
     if (!task) throw new Error('这件事已不可用，请重新打开');
+    if (outputDestination === 'local') { await executeDraft(text, document.getElementById('one-things-send')!, id); return; }
     if (coordinator.enabled && models.find(model => model.id === task.modelId)?.kind !== 'image') {
-      await coordinator.direct(id, text);
+      await coordinator.direct(id, text, [], outputDestination === 'notion' ? 'notion' : 'chat');
       return;
     }
+    if (outputDestination === 'notion') throw new Error('Notion 写入需要启用 ONE 持续对话');
     const conversation = await sendThingMessage<Conversation>(api, user.id, {conversationId:id,modelId:task.modelId,agentId:task.agentId,content:text.trim()});
     setConversations(old => old.map(item => item.id === id ? {...conversation,messagesLoaded:true} : item));
     setPendingRequests(pendingChatSubmissions(user.id));
@@ -1320,7 +1324,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         // Capture the sent content now; a new draft must never be cleared by a late receipt.
         if(currentDraftRef.current.content===rawText)setContent('');
         setPendingAttachments(old=>old.filter(file=>!files.some(sent=>sent.id===file.id)));setFeatureForNext(old=>old.filter(feature=>!features.some(sent=>sent.id===feature.id)));
-        const operationId = await coordinator.submit({operationId:crypto.randomUUID(),text,localExecution,modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),featureApprovals,confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
+        const operationId = await coordinator.submit({operationId:crypto.randomUUID(),text,localExecution,outputDestination:localExecution?undefined:outputDestination==='notion'?'notion':'chat',modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),featureApprovals,confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
         coordinatorFailedDraft.current=null;
         if (localExecution) setAwaitingExecutionOperationId(operationId);
         return true;
@@ -1448,6 +1452,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   async function send(event: FormEvent) {
     event.preventDefault();
+    if (composeMode === 'chat' && outputDestination === 'local') {
+      await executeDraft(content, document.getElementById('one-studio-send')!, coordinator.enabled ? undefined : targetConversation?.id); return;
+    }
+    if (outputDestination === 'notion' && !coordinator.enabled) { setError('Notion 写入需要启用 ONE 持续对话，请管理员检查配置'); return; }
     if (preview.enabled) { await sendMessage(content); return; }
     if (uploadingAttachments) return;
     const text = content;
@@ -1781,7 +1789,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         one={<div className="studio-presence things-one"><OneHeroEye mood="idle" label="回到 ONE 工作台" onActivate={()=>openSurface('chat')}/></div>}
         items={conversations.filter(c=>!coordinator.snapshot?.conversation||c.id!==coordinator.snapshot.conversation.id).map(c=>{const task=coordinator.snapshot?.tasks.find(t=>t.id===c.id);const local=executionTasks.find(t=>t.conversationId===c.id);const notice=coordinator.snapshot?.notices.find(n=>n.taskId===c.id);return {...c,outcome:local?.status || notice?.state,taskState:(task?.running||task?.queued||local&&isExecutionRunning(local)?'active':notice?.state&&['failed','interrupted','cancelled'].includes(notice.state)?'review':task||local||c.executorProfileId?'ended':'history') as 'active'|'review'|'ended'|'history'};})} selectedId={thingId} drafts={thingDrafts}
         onDraftChange={(id,text)=>setThingDrafts(previous=>({...previous,[id]:text}))}
-        onExecuteDraft={(id,text,source)=>executeDraft(text,source,id)}
+        onExecuteDraft={outputDestination === 'notion' ? undefined : (id,text,source)=>executeDraft(text,source,id)}
+        sendLabel={outputDestination === 'notion' ? '写到 Notion' : outputDestination === 'local' ? '本机执行' : '发送'}
+        destinationPicker={!demo.enabled ? <><NotionReceiptNotice key={thingId} api={api} taskId={thingId} receipt={coordinator.details[thingId]?.jobs.filter(j=>j.notionReceipt).at(-1)?.notionReceipt} onRefresh={()=>coordinator.load(thingId)} /><DocumentDestinationPicker api={api} value={outputDestination} onChange={setOutputDestination} localDisabled={taskStatusUnavailable || executionBusy || preparingExecution} onSettings={() => openSurface('knowledge')} /></> : undefined}
         onSelect={id=>void selectThing(id)} onSend={continueThing}
         onWorkbench={id=>{void openConversation(conversations.find(item=>item.id===id)!);setResultLampOpen(false);}}
         executionDisabled={taskStatusUnavailable || preparingExecution || executionBusy || Boolean(loadingByConversation[thingId])}
@@ -1910,6 +1920,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </div>
 
         <form className="composer studio-composer" onSubmit={send}>
+          {!demo.enabled && composeMode === 'chat' && currentModel?.kind === 'chat' ? <DocumentDestinationPicker api={api} value={outputDestination} onChange={setOutputDestination} localDisabled={taskStatusUnavailable || executionBusy || preparingExecution} onSettings={() => openSurface('knowledge')} /> : null}
           {preview.enabled&&featureForNext.length>0?<div className="selected-feature-list" aria-label="下一条使用的功能">{featureForNext.map(feature=><button key={feature.id} type="button" className="selected-feature-chip" aria-label={`取消功能：${feature.name}`} onClick={()=>setFeatureForNext(previous=>previous.filter(item=>item.id!==feature.id))}><Sparkles size={13}/><span>{feature.name}</span><X size={12}/></button>)}<small>下一条使用</small></div>:null}
           {!models.length ? <div className="chat-error"><span>模型未就绪，请联系管理员。</span><button type="button" onClick={() => void refresh()}>重试</button></div> : null}
           {pendingRequests.length ? <details className="one-pending-answers"><summary>有 {pendingRequests.length} 条消息待确认 · 查看原结果，不重复扣费</summary>{pendingRequests.map(item => <button type="button" key={item.operationId} onClick={() => void recoverAnswer(item.operationId)}>查看 {dateTime(item.createdAt)} 的结果</button>)}</details> : null}
@@ -1955,7 +1966,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             <button id="one-studio-send" className="primary send" type="submit" aria-label={composeMode === "execution" ? "发送并继续执行" : "发送消息"} title={targetLoading ? (preview.enabled ? "ONE 正在承接这句话，可以先编辑下一条" : "这件事正在回复，可以新开一件事") : "发送消息"} disabled={uploadingAttachments || pendingAttachments.some(a => a.status && a.status !== "ready") || (composeMode === "execution" ? taskStatusUnavailable || preparingExecution || executionBusy || !content.trim() || pendingAttachments.length > 0 : !activeModelId || targetLoading || (!content.trim() && !pendingAttachments.length))}>
               {composeMode === "execution" ? <Zap size={18} /> : <ArrowUp size={19} />}
             </button>
-            {composeMode==='chat' && !demo.enabled && currentModel?.kind==='chat' ? <button type="button" className="composer-execute" aria-label="发送并执行本机任务" title="把当前要求和相关上下文交给本机执行" disabled={!content.trim()||targetLoading||uploadingAttachments||pendingAttachments.length>0||preparingExecution||executionBusy||taskStatusUnavailable} onClick={event=>void executeDraft(content,event.currentTarget,coordinator.enabled?undefined:targetConversation?.id)}><Zap size={16}/><span>本机执行</span></button> : null}
+            {composeMode==='chat' && !demo.enabled && outputDestination !== 'notion' && currentModel?.kind==='chat' ? <button type="button" className="composer-execute" aria-label="发送并执行本机任务" title="把当前要求和相关上下文交给本机执行" disabled={!content.trim()||targetLoading||uploadingAttachments||pendingAttachments.length>0||preparingExecution||executionBusy||taskStatusUnavailable} onClick={event=>void executeDraft(content,event.currentTarget,coordinator.enabled?undefined:targetConversation?.id)}><Zap size={16}/><span>本机执行</span></button> : null}
           </div>
           <div className="studio-compose-tools">
             <div className="studio-compose-tools-left">{preview.enabled && composeMode==="chat"?<button type="button" className="composer-add-feature" aria-label="添加下一条使用的功能" aria-expanded={featurePicker.isOpen} onClick={featurePicker.open}><Plus size={16}/><span>功能</span></button>:null}
@@ -2580,7 +2591,7 @@ function KnowledgePage({
           return <SettingsDialog key={provider.id} title={provider.label} onClose={() => setSelectedProvider("")}><section className="knowledge-connection-detail">
             <div className="knowledge-provider-head"><div className="provider-icon"><FileText size={19} /></div><div><h3>{provider.label}</h3></div><span className={`provider-status ${item.status}`}>{awaitingApproval ? officialApprovalLabel : item.status === "connected" ? "已连接" : item.status === "pending" ? "授权中" : item.status === "error" ? "需重连" : "未连接"}</span></div>
             {provider.id === "flomo" ? <FlomoConnectionNotice /> : null}
-            {item.status === "connected" ? <><div className="notice">工作区：{item.providerSpaceName || provider.label}</div><p className="hint">只读：ONE 会按需搜索相关内容，不会修改或删除内容。</p><button className="danger" type="button" onClick={() => void disconnectRemote(provider.id, provider.label)}>断开连接</button></>
+            {item.status === "connected" ? <><div className="notice">工作区：{item.providerSpaceName || provider.label}</div><p className="hint">{provider.id === 'notion' ? '知识检索按需读取、不调用 Notion AI；写入需要下方单独授权与设置。' : '只读：ONE 会按需搜索相关内容，不会修改或删除内容。'}</p>{provider.id === 'notion' ? <NotionWritingSettings api={api} /> : null}<button className="danger" type="button" onClick={() => void disconnectRemote(provider.id, provider.label)}>断开连接</button></>
               : <><button className="primary" type="button" disabled={!remoteConfigured[provider.id] || Boolean(remoteBusy)} onClick={() => void connectRemote(provider.id)}>{awaitingApproval ? officialApprovalLabel : remoteBusy === provider.id ? `正在打开 ${provider.label}…` : `连接 ${provider.label}`}</button>{!remoteConfigured[provider.id] ? <p className="hint">{awaitingApproval ? officialApprovalHint : `${provider.label} 连接暂未开通，请联系管理员。`}</p> : null}</>}
           </section>{notice ? <p role="status">{notice}</p> : null}</SettingsDialog>;
         })}

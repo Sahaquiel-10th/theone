@@ -17,6 +17,8 @@ import { runTaskOrchestrator } from "./taskOrchestrator.js";
 import { resolveAiTask } from "./aiTaskConfig.js";
 import { installAiTaskRoutes } from "./aiTaskRoutes.js";
 import { installCoordinatorRoutes } from './coordinatorRoutes.js';
+import { NotionDocuments } from './notionDocuments.js';
+import { CoordinatorError } from './executorProfiles.js';
 import { installOfficialFeatureRoutes } from "./officialFeatureRoutes.js";
 import { installFeatureConnectionRoutes } from "./featureConnectionRoutes.js";
 import { installOfficialFeaturePilotRoutes } from "./officialFeaturePilotRoutes.js";
@@ -724,7 +726,15 @@ app.get("/api/knowledge/connections/notion", ...keyAuth, asyncRoute(async (req, 
 }));
 app.post("/api/knowledge/connections/notion/oauth/start", ...keyAuth, requireWorkspaceOwner, asyncRoute(async (req, res) => {
   const appOrigin = process.env.APP_ORIGIN?.trim() || `${req.protocol}://${req.get("host")}`;
-  res.json(await notionMcpService.beginAuthorization({ workspaceId: req.workspaceId!, userId: req.user!.id, appOrigin }));
+  if (req.body?.enableWriting !== undefined && typeof req.body.enableWriting !== 'boolean') throw new CoordinatorError('Notion 授权类型无效', 400);
+  if (req.body?.enableWriting === true && req.body?.confirmed !== true) throw new CoordinatorError('请确认新增创建草稿与修改 ONE 草稿权限', 400);
+  res.json(await notionMcpService.beginAuthorization({ workspaceId: req.workspaceId!, userId: req.user!.id, appOrigin, enableWriting: req.body?.enableWriting === true }));
+}));
+const notionDocuments = new NotionDocuments(store, notionMcpService);
+app.get('/api/knowledge/connections/notion/writing', ...keyAuth, asyncRoute(async (req, res) => res.json(await notionDocuments.settings({ workspaceId: req.workspaceId!, userId: req.user!.id }))));
+app.put('/api/knowledge/connections/notion/writing', ...keyAuth, requireWorkspaceOwner, asyncRoute(async (req, res) => {
+  await confirmKeyBeforeModel(req);
+  res.json(await notionDocuments.configure({ workspaceId: req.workspaceId!, userId: req.user!.id }, req.body));
 }));
 app.get("/api/knowledge/connections/notion/oauth/callback", asyncRoute(async (req, res) => {
   const appOrigin = safeAppOrigin(process.env.APP_ORIGIN?.trim() || `${req.protocol}://${req.get("host")}`);
@@ -995,7 +1005,7 @@ installCompanyRoutes(app, keyAuth, admin, store, oneKeyService);
 installPublicCommerceRoutes(app,keyAuth,admin,store);
 installProductMetricsRoutes(app,admin,store);
 installAiTaskRoutes(app, admin, store);
-installCoordinatorRoutes(app,keyAuth,admin,store,confirmKeyBeforeModel,knowledgeService,{artifactDirectory:uploadDir,webSearch:query=>webSearchEnabled()?searchWeb(query):Promise.resolve({status:'unavailable'}),
+installCoordinatorRoutes(app,keyAuth,admin,store,confirmKeyBeforeModel,knowledgeService,{notionDocuments,artifactDirectory:uploadDir,webSearch:query=>webSearchEnabled()?searchWeb(query):Promise.resolve({status:'unavailable'}),
   executeLocal: async (req, res, cid, mid, operationId) => { const result = await startLocalExecution(req, res, cid, mid, operationId); return { id: result.task.id, status: result.task.status }; }});
 installOfficialFeaturePilotRoutes(app, admin, store);
 installFeatureTrialRoutes(app, admin, store, confirmKeyBeforeModel);

@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import type { Store } from "./db.js";
 import type { Database, ModelConfig } from "./types.js";
 import { CoordinatorService } from "./coordinatorService.js";
+import { NotionDocuments } from './notionDocuments.js';
+import type { NotionMcpService } from './knowledge/notionMcpService.js';
 import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
 import { executorDefaults, updateExecutor } from "./executorProfiles.js";
 import { reconcileInterruptedChatOperations } from "./chatOperations.js";
@@ -324,6 +326,32 @@ function fixture() {
   };
 }
 const key = async () => {};
+test('Notion dispatcher and queued continuation create once, revise the same document, keep original words and scoped receipts',async()=>{
+  const f=fixture(),parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',pageId='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:'a',authorizedAt:'now',parentId}}));
+  let body='',release!:()=>void;const hold=new Promise<void>(resolve=>release=resolve);const mutations:string[]=[];
+  const mcp={readDocument:async(ws:string)=>{assert.equal(ws,'wa');return {text:body||'保存目录'};},callDocumentTool:async(ws:string,cid:string,grant:string,user:string,name:string,args:any)=>{
+    assert.deepEqual([ws,cid,grant,user],['wa','notion','grant','a']);mutations.push(name);
+    if(name==='notion-create-pages'){await hold;body=args.pages[0].content;return {pages:[{id:pageId}]};}
+    body=body.replace(args.content_updates[0].old_str,args.content_updates[0].new_str);return {id:pageId};
+  }} as unknown as NotionMcpService;
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages,tools)=>{
+    if(messages.at(-1)?.role==='tool')return answer('已收到真实工具回执。');
+    if(model.id==='router')return {...answer(''),toolCalls:[{id:'route',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'专栏草稿',instruction:'请写专栏并保存到已授权的 Notion 目录',executorId:'general'})}}]};
+    assert.ok(tools.some(t=>t.function.name==='save_notion_draft'));
+    return {...answer(''),toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify(body?{old_str:'第一段',new_str:'修改后的第一段'}:{title:'专栏',content:'第一段'})}}]};
+  }});
+  await assert.rejects(()=>service.dispatch(b,{...input('operation_notion_foreign','写篇文章'),outputDestination:'notion'},key));
+  const result=await service.dispatch(a,{...input('operation_notion_first','讨论之后请写专栏'),outputDestination:'notion'},key);
+  await service.resume(a,key);await waitFor(async()=>mutations.length===1);
+  await service.direct(a,result.taskId!,{operationId:'operation_notion_second',text:'第一段改一下'},key);
+  release();await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.every(j=>j.state==='completed'));
+  assert.deepEqual(mutations,['notion-create-pages','notion-update-page']);assert.equal(body,'修改后的第一段');
+  const task=await service.task(a,result.taskId!);
+  assert.equal(task.conversation.notionDocument?.pageId,pageId);assert.match(JSON.stringify(task.conversation.messages),/讨论之后请写专栏|第一段改一下|已保存到 Notion/);
+  assert.ok(task.jobs.every(j=>j.notionReceipt?.state==='verified'));
+  await assert.rejects(()=>service.task(b,result.taskId!));
+});
 const imageFixturePng='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jF1sAAAAASUVORK5CYII=';
 test('image feature uses its image model and own rate, without changing base image price or tenant scope',async()=>{
   const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-priced-image-'));

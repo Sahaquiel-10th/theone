@@ -109,7 +109,21 @@ Launcher 声明设备与 installationId 后完成签名认证。每次受保护�
 - `GET /api/knowledge/connections/notion/oauth/callback`：使用只存哈希的短时、单次 state 完成 code 交换，真实执行一次只读检查后，把加密凭据绑定到发起授权的 Workspace，再无感返回 ONE。应用重启不会丢失尚未完成的回调。
 - `DELETE /api/knowledge/connections/notion`：清除当前 Workspace 的用户令牌并停止 Notion 召回。
 
-ONE 通过官方托管 MCP 只调用 `notion-fetch`、`notion-search` 和 `notion-ai-search`。即使 MCP 服务返回其他工具，它们也不会进入允许列表或模型工具面；首版不能创建、编辑、评论、移动或删除 Notion 内容。
+知识检索只调用 `notion-fetch`、`notion-search`，搜索使用 `sort: last_edited` 的工作区检索，不调用 Notion AI。知识适配器仍为只读。用户于 2026-10-12 单独批准 Notion 草稿写入，写入通过下列独立权限和路径执行，不扩大其他知识连接器的权限。
+
+### Notion 草稿写入
+
+- `POST /api/knowledge/connections/notion/oauth/start`：原只读流程保持不变；请求 `{enableWriting:true, confirmed:true}` 才创建写入升级授权。OAuth 完成后验证官方创建和更新工具可用，授予绑定到连接、发起用户和新授权编号的写入许可。不静默沿用旧许可；升级失败或取消保留原连接。
+- `GET /api/knowledge/connections/notion/writing`：返回本人是否可写、保存页面与参考文章编号，不返回令牌。未授权者只能看到连接状态。
+- `PUT /api/knowledge/connections/notion/writing`：仅所有者可设置 `{parent:普通页面链接, references:参考文章链接数组}`。重新核对页面访问权限；最多五篇参考文章。第一版不支持数据库作为创建位置。
+- `POST /api/coordinator/messages` 和 `POST /api/coordinator/tasks/:id/messages`：支持 `outputDestination: notion`，由服务端选择实际授权目录；不接受客户端任意 MCP 工具或目标页编号。
+- `POST /api/coordinator/tasks/:id/notion/verify`：只回读已知页面，与原保存意图核对；成功解除写入暂停，但不改变失败或取消终态，也不自动恢复队列。没有已知页面编号时不能盲目重建。
+
+写作模型与默认提示词在管理后台的「Notion 写作模型与提示词」配置。ONE 模型生成正文，Notion MCP 只保存数据；不调用 Notion AI、Custom Agent 或 AI Search，沿用 ONE 的模型实际用量计费。
+
+首次写入仅在指定父页面下创建一篇草稿。对应任务绑定页面编号；同一任务排队的补充在真正执行时解析已创建的页面，不另建一篇。后续只允许精确替换本轮读取的原文；正文结构标签不能借机移动子页面、数据库或关联内容。
+
+保存前持久化本轮意图，返回页面编号后立即绑定任务，回读正文核对后保存 verified 回执。失败、超时、断连或停止可能留下 uncertain 回执和已知页面位置；不得自动重跑，也不能用文字宣称已保存。未确定结果的旧任务暂停后续写入。参考文章按需读取，不执行整库同步。
 
 ## Chat（当前，已调整）
 

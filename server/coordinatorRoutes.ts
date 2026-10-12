@@ -14,6 +14,7 @@ import {
 } from "./chatOperations.js";
 import type { FeatureRunDependencies } from "./featureRuns.js";
 import { FeatureConfigError } from './officialFeatures.js';
+import type { NotionDocuments } from './notionDocuments.js';
 export function installCoordinatorRoutes(
   app: Express,
   keyAuth: readonly RequestHandler[],
@@ -22,6 +23,7 @@ export function installCoordinatorRoutes(
   verifyKey: (req: express.Request) => Promise<void>,
   knowledge: Pick<KnowledgeService, "recallWithDiagnostics">,
   deps: FeatureRunDependencies & {
+    notionDocuments?: NotionDocuments;
     webSearch?: (query: string) => Promise<unknown>;
     executeLocal?: (req: express.Request, res: express.Response, cid: string, mid: string, operationId: string) => Promise<{ id: string; status: string }>;
   } = {},
@@ -103,6 +105,10 @@ export function installCoordinatorRoutes(
   );
   router.post('/messages/:operationId/stop', asyncRoute(async(req,res)=>res.json(await service.cancel(scope(req),String(req.params.operationId),()=>verifyKey(req)))));
   router.post('/tasks/:id/stop', asyncRoute(async(req,res)=>res.json(await service.cancelTask(scope(req),String(req.params.id),()=>verifyKey(req)))));
+  router.post('/tasks/:id/notion/verify', asyncRoute(async(req,res)=>{
+    if (!deps.notionDocuments) throw new CoordinatorError('Notion 保存尚未连接', 428);
+    res.json(await deps.notionDocuments.reconcile(scope(req), String(req.params.id), () => verifyKey(req)));
+  }));
   router.post(
     "/tasks/:id/messages",
     asyncRoute(async (req, res) => {

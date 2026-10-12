@@ -13,7 +13,7 @@ const MCP_URL = "https://mcp.notion.com/mcp";
 const AUTHORIZATION_URL = "https://mcp.notion.com/authorize";
 const TOKEN_URL = "https://mcp.notion.com/token";
 const REGISTRATION_URL = "https://mcp.notion.com/register";
-const readOnlyTools = new Set(["notion-fetch", "notion-search", "notion-ai-search"]);
+const readOnlyTools = new Set(["notion-fetch", "notion-search"]);
 const flowLifetimeMs = 10 * 60 * 1000;
 const maxChunkChars = 24_000;
 const maxToolTextChars = 256_000;
@@ -22,6 +22,7 @@ const mcpTimeoutMs = Math.max(3_000, Number(process.env.NOTION_MCP_TIMEOUT_MS ??
 
 type OAuthClient = { clientId: string; clientSecret?: string; tokenAuthMethod: "none" | "client_secret_post" };
 type OAuthFlow = OAuthClient & {
+  enableWriting?: boolean;
   workspaceId: string;
   userId: string;
   connectionId?: string;
@@ -199,7 +200,7 @@ export class NotionMcpService {
     return { state: "configured" as const, code: "CREDENTIAL_STORED", message: "已保存 Notion 授权", evidence: "stored" as const };
   }
 
-  async beginAuthorization(params: { workspaceId: string; userId: string; appOrigin: string }) {
+  async beginAuthorization(params: { workspaceId: string; userId: string; appOrigin: string; enableWriting?: boolean }) {
     const redirectUri = `${safeOrigin(params.appOrigin)}/api/knowledge/connections/notion/oauth/callback`;
     const db = await this.store.read();
     const client = await this.oauthClient(db, redirectUri);
@@ -208,7 +209,7 @@ export class NotionMcpService {
     const verifier = crypto.randomBytes(48).toString("base64url");
     await this.authorizationSessions.create({
       workspaceId: params.workspaceId, userId: params.userId, connectorId: "notion", protocol: "oauth_pkce", state,
-      payload: { ...client, connectionId: previous?.id, previousStatus: previous?.status === "pending" ? undefined : previous?.status, redirectUri, verifier },
+      payload: { ...client, enableWriting: params.enableWriting === true, connectionId: previous?.id, previousStatus: previous?.status === "pending" ? undefined : previous?.status, redirectUri, verifier },
       expiresAt: Date.now() + flowLifetimeMs
     });
     await this.store.mutate(mutable => {
@@ -244,6 +245,13 @@ export class NotionMcpService {
       token = await this.exchangeToken(flow, code);
       await this.authorizationSessions.markVerifying(claimed.session.id);
       await this.verifyAccessToken(token.access_token);
+      if (flow.enableWriting) {
+        const client = await withinDeadline(this.createClient(token.access_token), 'Notion 写入连接超时');
+        try {
+          const listed = await withinDeadline(client.listTools(), 'Notion 工具查询超时');
+          if (!['notion-create-pages', 'notion-update-page'].every(name => listed.tools.some(tool => tool.name === name))) throw new Error('当前 Notion 连接不支持写入，原只读连接保留');
+        } finally { await closeClient(client); }
+      }
     } catch (error) {
       await this.authorizationSessions.finish(claimed.session.id);
       await this.restoreFlow(flow);
@@ -257,6 +265,8 @@ export class NotionMcpService {
         db.knowledgeConnections.push(target);
       }
       target.status = "connected";
+      // New credentials never inherit a writing grant from another account.
+      target.notionWriting = flow.enableWriting ? { grantId: uid('nwgrant'), userId: flow.userId, authorizedAt: timestamp } : undefined;
       target.clientId = token.client_id || flow.clientId;
       target.encryptedClientSecret = flow.clientSecret ? protectConnectionSecret(flow.workspaceId, "client_secret", flow.clientSecret) : undefined;
       target.oauthTokenAuthMethod = flow.tokenAuthMethod;
@@ -293,6 +303,7 @@ export class NotionMcpService {
       const connection = connectionFor(db, workspaceId);
       if (!connection) return;
       connection.status = "revoked";
+      connection.notionWriting = undefined;
       connection.encryptedAccessToken = undefined;
       connection.encryptedRefreshToken = undefined;
       connection.providerSpaceId = undefined;
@@ -316,21 +327,10 @@ export class NotionMcpService {
     try {
       const listed = await withinDeadline(client.listTools(), "Notion MCP 工具查询超时");
       const available = new Set(listed.tools.map(tool => tool.name).filter(name => readOnlyTools.has(name)));
-      let aiSearchAvailable = false;
-      if (available.has("notion-fetch") && available.has("notion-ai-search")) {
-        try {
-          const self = await withinDeadline(client.callTool({ name: "notion-fetch", arguments: { id: "self" } }), "Notion MCP 读取超时");
-          this.assertToolResult(self);
-          const selfText = textContent(self);
-          aiSearchAvailable = /["']?ai_search["']?[\s\S]{0,300}["']?status["']?\s*:\s*["']available["']/i.test(selfText);
-        } catch (error) {
-          if (this.isAuthorizationError(error)) throw error;
-          // Keyword search remains the safe baseline.
-        }
-      }
-      const searchTool = aiSearchAvailable ? "notion-ai-search" : available.has("notion-search") ? "notion-search" : "";
+      const searchTool = available.has("notion-search") ? "notion-search" : "";
       if (!searchTool) throw new Error("Notion MCP 当前没有可用的只读搜索工具");
-      const searchResult = await withinDeadline(client.callTool({ name: searchTool, arguments: { query } }), "Notion MCP 搜索超时");
+      // Non-relevance ordering forces workspace search, never Notion AI search.
+      const searchResult = await withinDeadline(client.callTool({ name: searchTool, arguments: { query, sort: 'last_edited' } }), "Notion MCP 搜索超时");
       this.assertToolResult(searchResult);
       const searchText = textContent(searchResult);
       const candidates = searchCandidates(jsonContent(searchText)).slice(0, topK);
@@ -368,6 +368,26 @@ export class NotionMcpService {
     } finally {
       await closeClient(client);
     }
+  }
+
+  async readDocument(workspaceId: string, id: string) {
+    return this.withRefresh(workspaceId, connection => this.callReadOnly(connection, 'notion-fetch', { id }));
+  }
+
+  /** Internal reviewed writer only. Never exposed as an arbitrary browser tool proxy.
+   * Refresh before sending; an uncertain mutation is NEVER replayed after 401/timeout. */
+  async callDocumentTool(workspaceId: string, connectionId: string, grantId: string, userId: string, name: string, args: Record<string, unknown>) {
+    if (!['notion-create-pages', 'notion-update-page', 'notion-get-async-task'].includes(name)) throw new Error('Notion 写入工具未授权');
+    const connection = await this.connected(workspaceId);
+    if (connection.id !== connectionId || connection.status !== 'connected' || connection.notionWriting?.grantId !== grantId || connection.notionWriting.userId !== userId) throw new Error('Notion 写入授权已改变，请重新确认');
+    const client = await this.clientFor(connection);
+    try {
+      const listed = await withinDeadline(client.listTools(), 'Notion 写入工具查询超时');
+      if (!listed.tools.some(tool => tool.name === name)) throw new Error('Notion 写入工具不可用');
+      const result = await withinDeadline(client.callTool({ name, arguments: args }), 'Notion 写入结果未知，请在 Notion 核对；不会自动重跑');
+      this.assertToolResult(result);
+      return result;
+    } finally { await closeClient(client); }
   }
 
   private async verifyAccessToken(accessToken: string) {
@@ -487,6 +507,7 @@ export class NotionMcpService {
     if (previousStatus !== undefined && !["pending", "connected", "error", "revoked"].includes(String(previousStatus))) throw new Error("Notion 原连接状态无效");
     return {
       workspaceId: session.workspaceId, userId: session.userId, clientId: required("clientId"),
+      enableWriting: payload.enableWriting === true,
       clientSecret: typeof payload.clientSecret === "string" ? payload.clientSecret : undefined,
       tokenAuthMethod: method,
       connectionId: typeof payload.connectionId === "string" ? payload.connectionId : undefined,

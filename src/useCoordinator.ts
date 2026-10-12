@@ -36,6 +36,7 @@ type Snapshot = {
   links?: { messageId: string; taskId: string }[];
 };
 type Job = {
+  notionReceipt?: { state: 'pending' | 'verified' | 'uncertain'; url?: string; error?: string };
   id: string;
   operationId: string;
   state: string;
@@ -44,6 +45,7 @@ type Job = {
 };
 type Detail = { conversation: Conversation; jobs: Job[] };
 export type CoordinatorSubmission = {
+  outputDestination?: 'chat' | 'notion';
   featureApprovals?: import('../server/featurePricing').FeatureApproval[];
   localExecution?: boolean;
   operationId: string;
@@ -261,9 +263,10 @@ export function useCoordinator(
     id: string,
     text: string,
     attachmentIds: string[] = [],
+    outputDestination?: 'chat' | 'notion',
   ) {
     setError("");
-    const receiptKey = JSON.stringify([userId,id,text,attachmentIds]);
+    const receiptKey = JSON.stringify([userId,id,text,attachmentIds,outputDestination]);
     const featureApprovals=await approveFeaturePrices(api,[],id);
     const storageKey = `one-task-operation:${userId}:${id}`;
     let operationId = directReceipts.current.get(receiptKey);
@@ -278,7 +281,7 @@ export function useCoordinator(
     }
     await api(`/api/coordinator/tasks/${encodeURIComponent(id)}/messages`, {
       method: "POST",
-      body: JSON.stringify({ operationId, text, attachmentIds, featureApprovals }),
+      body: JSON.stringify({ operationId, text, attachmentIds, featureApprovals, outputDestination }),
     });
     await load(id);
     await refresh();

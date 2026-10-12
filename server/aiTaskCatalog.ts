@@ -9,7 +9,8 @@ export const aiTaskCatalog = [
   { id: "image_generation", name: "图片生成", modelKind: "image", toolCapable: false, implementation: "existing" },
   { id: "orchestrator", name: "检索与工具调度（原聊天）", modelKind: "chat", toolCapable: true, implementation: "existing" },
   { id: "coordinator", name: "ONE 持续对话与任务分派", modelKind: "chat", toolCapable: true, implementation: "existing" },
-  { id: "task_worker", name: "通用事情执行 AI", modelKind: "chat", toolCapable: true, implementation: "existing" }
+  { id: "task_worker", name: "通用事情执行 AI", modelKind: "chat", toolCapable: true, implementation: "existing" },
+  { id: 'notion_writer', name: 'Notion 写作模型与提示词', modelKind: 'chat', toolCapable: false, implementation: 'existing' }
 ] as const;
 
 export type AiTaskKind = typeof aiTaskCatalog[number]["id"];

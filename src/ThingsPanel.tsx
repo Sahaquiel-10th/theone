@@ -29,6 +29,8 @@ export function ThingsPanel({
   executionDisabled = false,
   executionPreparing = false,
   executionContent,
+  destinationPicker,
+  sendLabel = '发送',
   onExecuteDraft,
 }: {
   one?: ReactNode;
@@ -45,6 +47,8 @@ export function ThingsPanel({
   executionDisabled?: boolean;
   executionPreparing?: boolean;
   executionContent?: ReactNode;
+  destinationPicker?: ReactNode;
+  sendLabel?: string;
   onExecuteDraft?: (id: string, text: string, source: HTMLElement) => Promise<void>;
 }) {
   const [sending, setSending] = useState<string[]>([]),
@@ -151,6 +155,7 @@ export function ThingsPanel({
               )}
             </div>
             {executionContent}
+            {destinationPicker}
             {errors[selectedId] ? <p className="things-send-error" role="alert">{errors[selectedId]}</p> : null}
             {(
               <form
@@ -193,10 +198,11 @@ export function ThingsPanel({
                   }}
                 />
                 <button
+                  id="one-things-send"
                   type="submit"
                   disabled={!draft.trim() || sending.includes(selected.id) || selected.messagesLoaded === false}
                 >
-                  {sending.includes(selected.id) ? "接收中" : "发送"}
+                  {sending.includes(selected.id) ? "接收中" : sendLabel}
                 </button>
                 {onExecuteDraft ? <button className="things-compose-execute" type="button" disabled={!draft.trim()||executionDisabled||executionPreparing||sending.includes(selected.id)||selected.messagesLoaded===false} onClick={event=>{setErrors(old=>({...old,[selected.id]:''}));void onExecuteDraft(selected.id,draft,event.currentTarget).catch(e=>setErrors(old=>({...old,[selected.id]:e instanceof Error?e.message:'执行未确认，草稿已保留'})));}}><Zap size={14} aria-hidden="true"/><span>本机执行</span></button> : null}
               </form>

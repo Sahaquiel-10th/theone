@@ -2,6 +2,8 @@ import type { ExecutorValues } from "./executorProfiles.js";
 import type { OfficialFeatureValues } from "./officialFeatures.js";
 import type { CredentialBinding } from "./featureCredentials.js";
 export type WorkRun = {
+  notionTarget?: NonNullable<import('./types.js').Conversation['notionDocument']> & { referenceIds: string[] };
+  notionReceipt?: { state: 'pending' | 'verified' | 'uncertain'; pageId?: string; url?: string; asyncTaskId?: string; expectedDigest?: string; digest?: string; error?: string };
   featurePricingVersion?: 1;
   featureApprovals?: import('./featurePricing.js').FeatureApproval[];
   kind?: "image";

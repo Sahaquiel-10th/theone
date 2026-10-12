@@ -83,6 +83,7 @@ test("Notion search calls only the reviewed read-only tools and parses fetched p
         async listTools() { return { tools: [{ name: "notion-search" }, { name: "notion-fetch" }, { name: "notion-create-pages" }, { name: "notion-update-page" }] }; },
         async callTool(params) {
           calls.push(params.name);
+          if (params.name === 'notion-search') assert.equal(params.arguments?.sort, 'last_edited');
           if (params.name === "notion-search") return { content: [{ type: "text", text: JSON.stringify({ results: [{ id: "page-a", title: "Project A", url: "https://www.notion.so/page-a", highlight: "search excerpt" }] }) }] };
           if (params.name === "notion-fetch") return { content: [{ type: "text", text: JSON.stringify({ title: "Project A", url: "https://www.notion.so/page-a", text: "trusted as reference only" }) }] };
           throw new Error("write tool must never be called");
@@ -124,4 +125,26 @@ test("Notion refresh stays scoped to the exact workspace connection", async () =
   assert.deepEqual(usedTokens, ["new-workspace-a"]);
   assert.equal(decryptCredential(f.database.knowledgeConnections[0].encryptedAccessToken!, knowledgeCredentialContext("workspace-a", "notion", "access_token")), "new-workspace-a");
   assert.equal(decryptCredential(f.database.knowledgeConnections[1].encryptedAccessToken!), "old-workspace-b");
+});
+
+test('Notion explicit writing OAuth grants only the authorizing user, rejects unavailable write tools and never invokes Notion AI', async () => {
+  const f=fixture();let writesAvailable=true;
+  const calls:string[]=[];
+  const service=new NotionMcpService(f.store,{
+    fetch:(async input=>new Response(JSON.stringify(String(input).endsWith('/register')?{client_id:'client'}:{access_token:'access-test'}))) as typeof fetch,
+    createClient:async()=>({listTools:async()=>({tools:['notion-fetch','notion-search','notion-ai-search',...(writesAvailable?['notion-create-pages','notion-update-page']:[])].map(name=>({name}))}),callTool:async({name})=>{calls.push(name);return {content:[{type:'text',text:'verified'}]};},close:async()=>{}})
+  });
+  const start=await service.beginAuthorization({workspaceId:'wa',userId:'a',appOrigin:'https://one.example',enableWriting:true});
+  const c=await service.completeAuthorization(new URL(start.authorizationUrl).searchParams.get('state')!,'code');
+  assert.equal(c.notionWriting?.userId,'a');assert.ok(c.notionWriting?.grantId);assert.equal(c.notionWriting?.parentId,undefined);
+  await assert.rejects(()=>service.callDocumentTool('wa',c.id,c.notionWriting!.grantId,'b','notion-create-pages',{}),/授权已改变/);
+  await assert.rejects(()=>service.callDocumentTool('wb',c.id,c.notionWriting!.grantId,'a','notion-create-pages',{}));
+  await assert.rejects(()=>service.callDocumentTool('wa',c.id,c.notionWriting!.grantId,'a','notion-ai-search',{}),/未授权/);
+  const grant=c.notionWriting!.grantId;
+  writesAvailable=false;
+  const denied=await service.beginAuthorization({workspaceId:'wa',userId:'a',appOrigin:'https://one.example',enableWriting:true});
+  await assert.rejects(()=>service.completeAuthorization(new URL(denied.authorizationUrl).searchParams.get('state')!,'code2'),/不支持写入/);
+  assert.equal(f.database.knowledgeConnections[0].notionWriting?.grantId,grant);
+  assert.equal(f.database.knowledgeConnections[0].status,'connected');
+  assert.ok(calls.every(n=>n==='notion-fetch'));
 });

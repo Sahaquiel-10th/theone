@@ -1,0 +1,8 @@
+.document-destination{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:8px 0;color:var(--muted,#72756b);font-size:12px}
+.document-destination label{display:flex;gap:8px;align-items:center}
+.document-destination select{max-width:240px;padding:6px 10px;border:1px solid var(--border,#dadfd1);border-radius:8px;background:transparent;color:inherit}
+.document-destination button{font-size:12px;padding:4px 0;border:0;background:transparent;text-decoration:underline;color:inherit}
+.notion-writing-settings{border-top:1px solid var(--border,#dadfd1);margin-top:18px;padding-top:12px}
+.notion-writing-settings label{display:flex;flex-direction:column;gap:8px;margin:14px 0}
+.notion-writing-settings input,.notion-writing-settings textarea{width:100%;padding:10px;border:1px solid var(--border,#dadfd1);border-radius:10px;color:inherit;background:transparent}
+.notion-writing-settings p,.notion-writing-settings details{font-size:13px;line-height:1.7}
