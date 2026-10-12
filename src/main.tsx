@@ -1920,7 +1920,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </div>
 
         <form className="composer studio-composer" onSubmit={send}>
-          {!demo.enabled && composeMode === 'chat' && currentModel?.kind === 'chat' ? <DocumentDestinationPicker api={api} value={outputDestination} onChange={setOutputDestination} localDisabled={taskStatusUnavailable || executionBusy || preparingExecution} onSettings={() => openSurface('knowledge')} /> : null}
           {preview.enabled&&featureForNext.length>0?<div className="selected-feature-list" aria-label="下一条使用的功能">{featureForNext.map(feature=><button key={feature.id} type="button" className="selected-feature-chip" aria-label={`取消功能：${feature.name}`} onClick={()=>setFeatureForNext(previous=>previous.filter(item=>item.id!==feature.id))}><Sparkles size={13}/><span>{feature.name}</span><X size={12}/></button>)}<small>下一条使用</small></div>:null}
           {!models.length ? <div className="chat-error"><span>模型未就绪，请联系管理员。</span><button type="button" onClick={() => void refresh()}>重试</button></div> : null}
           {pendingRequests.length ? <details className="one-pending-answers"><summary>有 {pendingRequests.length} 条消息待确认 · 查看原结果，不重复扣费</summary>{pendingRequests.map(item => <button type="button" key={item.operationId} onClick={() => void recoverAnswer(item.operationId)}>查看 {dateTime(item.createdAt)} 的结果</button>)}</details> : null}
@@ -1971,6 +1970,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <div className="studio-compose-tools">
             <div className="studio-compose-tools-left">{preview.enabled && composeMode==="chat"?<button type="button" className="composer-add-feature" aria-label="添加下一条使用的功能" aria-expanded={featurePicker.isOpen} onClick={featurePicker.open}><Plus size={16}/><span>功能</span></button>:null}
             {canAttach && capabilities.attachments.enabled && composeMode === "chat" ? <label className="studio-attach" title="添加文件或图片"><Paperclip size={15} /><span>{uploadingAttachments ? "上传中" : "附件"}</span><input aria-label="添加附件" type="file" multiple accept={attachmentAccept} disabled={uploadingAttachments} onChange={event => { void uploadAttachments(event.target.files); event.target.value = ""; }} /></label> : <span />}</div>
+            {!demo.enabled && composeMode === 'chat' && currentModel?.kind === 'chat' ? <DocumentDestinationPicker api={api} value={outputDestination} onChange={setOutputDestination} localDisabled={taskStatusUnavailable || executionBusy || preparingExecution} onSettings={() => openSurface('knowledge')} /> : null}
             <span className="studio-keyboard-hint">Enter 发送 · ⇧ Enter 换行</span>
           </div>
           <div className="studio-composer-status">
