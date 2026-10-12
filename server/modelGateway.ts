@@ -395,7 +395,6 @@ async function callAnthropicModelWithTools(
           input_schema: tool.function.parameters
         })) : undefined,
         tool_choice: tools.length ? (options.requiredTool ? { type: "tool", name: options.requiredTool, disable_parallel_tool_use: true } : { type: "auto" }) : undefined,
-        temperature: 0.2,
         max_tokens: MODEL_MAX_OUTPUT_TOKENS
       })
     }, requestTimeoutMs);
@@ -480,7 +479,6 @@ async function callAnthropicModel(
         messages: messages
           .filter((message) => message.role === "user" || message.role === "assistant")
           .map((message) => ({ role: message.role, content: message.content })),
-        temperature: 0.7,
         max_tokens: MODEL_MAX_OUTPUT_TOKENS
       })
     }, requestTimeoutMs);

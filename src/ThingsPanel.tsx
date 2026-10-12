@@ -9,6 +9,7 @@ type Thing = {
   id: string;
   title: string;
   updatedAt: string;
+  archived?: boolean;
   messages: { id?: string; role: string; content: string }[];
   messagesLoaded?: boolean;
   taskState?: 'active' | 'review' | 'ended' | 'history';
@@ -33,6 +34,7 @@ export function ThingsPanel({
   sendLabel = '发送',
   onExecuteDraft,
   onRemove,
+  taskNotice,
 }: {
   one?: ReactNode;
   items: Thing[];
@@ -43,6 +45,7 @@ export function ThingsPanel({
   onSend: (id: string, text: string) => void | Promise<void>;
   onWorkbench: (id: string) => void;
   onRemove?: (id:string)=>Promise<void>;
+  taskNotice?: ReactNode;
   hasMore: boolean;
   onMore: () => void;
   loadingMore: boolean;
@@ -59,9 +62,9 @@ export function ThingsPanel({
   const [query, setQuery] = useState("");
   const [category,setCategory]=useState<'active'|'review'|'ended'|'history'>('active');
   const [page, setPage] = useState(1);
-  const selected = items.find((item) => item.id === selectedId);
+  const selected = items.find((item) => item.id === selectedId && !item.archived);
   const found = items.filter((item) =>
-    item.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) && (item.taskState||'history')===category,
+    !item.archived && item.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) && (item.taskState||'history')===category,
   );
   const pages = Math.max(1, Math.ceil(found.length / 10)),
     current = Math.min(page, pages);
@@ -139,6 +142,7 @@ export function ThingsPanel({
               </button>
               </div>
             </header>
+            {taskNotice}
             <div className="things-thread-messages" ref={messagesRef} onScroll={onScroll}>
               {selected.messagesLoaded === false ? (
                 <p>正在打开…</p>

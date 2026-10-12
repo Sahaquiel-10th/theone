@@ -1071,6 +1071,7 @@ test('task deletion is scoped, preserves originals, cancels queue and restore ne
   await f.service.resume(a,key,r.taskId);
   assert.equal(f.calls.filter(c=>c.modelId==='worker').length,0);
   assert.equal((await f.service.task(a,r.taskId!)).jobs[0].state,'cancelled');
+  await assert.rejects(()=>f.service.resume(a,key,r.taskId,true),/没有尚未开始的待办/);
 });
 
 test('explicit latest-only resume retains older inputs without executing or billing them',async()=>{

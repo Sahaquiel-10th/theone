@@ -756,6 +756,19 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setThingId(id);
     await loadThingMessages(id);
   }
+  async function removeCoordinatorTask(id:string) {
+    await coordinator.removeTask(id);
+    setConversations(old=>old.map(c=>c.id===id?{...c,archived:true}:c));
+    if(activeId===id)setActiveId('');
+    if(thingId===id)setThingId('');
+    await refresh();
+  }
+  function taskPauseNotice(id:string) {
+    const task=coordinator.snapshot?.tasks.find(t=>t.id===id);
+    const conversation=coordinator.details[id]?.conversation||conversations.find(c=>c.id===id);
+    if(!coordinator.enabled||!(task?.paused||conversation?.workPaused))return null;
+    return <p role="status">此前处理未完成，任务已暂停。原话、附件和用量保留，不会自动重跑。<button type="button" onClick={()=>{if(confirm('仅处理最新待办？较早待办保留历史但停止处理，不重跑失败轮次；会产生新的用量。'))void coordinator.resumeTask(id,true).then(()=>refresh()).catch(e=>setError(e.message));}}>仅处理最新要求</button><button type="button" onClick={()=>{if(confirm('继续所有尚未执行的补充，不重跑失败轮次；会产生新的用量。继续？'))void coordinator.resumeTask(id).then(()=>refresh()).catch(e=>setError(e.message));}}>继续全部待办</button></p>;
+  }
   async function loadThingMessages(id:string, force=false) {
     const item=conversations.find(conversation=>conversation.id===id);
     if(coordinator.enabled){try{await coordinator.load(id);}catch(err){setError(err instanceof Error?err.message:'暂时无法打开');}return;}
@@ -1814,14 +1827,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       <section className="studio-surface" ref={taskScroll.scroll} onScroll={taskScroll.onScroll} aria-label={view === "chat" ? "当前任务" : "工作区内容"} hidden={studioIdle||(preview.enabled&&view==='chat'&&!active)}>
       {view === "things" ? <ThingsPanel
         one={<div className="studio-presence things-one"><OneHeroEye mood="idle" label="回到 ONE 工作台" onActivate={()=>openSurface('chat')}/></div>}
-        items={conversations.filter(c=>!coordinator.snapshot?.conversation||c.id!==coordinator.snapshot.conversation.id).map(c=>{const task=coordinator.snapshot?.tasks.find(t=>t.id===c.id);const local=executionTasks.find(t=>t.conversationId===c.id);const notice=coordinator.snapshot?.notices.find(n=>n.taskId===c.id);return {...c,outcome:local?.status || notice?.state,taskState:(task?.running||task?.queued||local&&isExecutionRunning(local)?'active':notice?.state&&['failed','interrupted','cancelled'].includes(notice.state)?'review':task||local||c.executorProfileId?'ended':'history') as 'active'|'review'|'ended'|'history'};})} selectedId={thingId} drafts={thingDrafts}
+        items={conversations.filter(c=>!coordinator.snapshot?.conversation||c.id!==coordinator.snapshot.conversation.id).map(c=>{const task=coordinator.snapshot?.tasks.find(t=>t.id===c.id);const local=executionTasks.find(t=>t.conversationId===c.id);const notice=coordinator.snapshot?.notices.find(n=>n.taskId===c.id);const paused=task?.paused||c.workPaused;return {...c,outcome:paused?'paused':local?.status || notice?.state,taskState:(paused?'review':task?.running||task?.queued||local&&isExecutionRunning(local)?'active':notice?.state&&['failed','interrupted','cancelled'].includes(notice.state)?'review':task||local||c.executorProfileId?'ended':'history') as 'active'|'review'|'ended'|'history'};})} selectedId={thingId} drafts={thingDrafts}
         onDraftChange={(id,text)=>setThingDrafts(previous=>({...previous,[id]:text}))}
         onExecuteDraft={outputDestination === 'notion' ? undefined : (id,text,source)=>executeDraft(text,source,id)}
         sendLabel={outputDestination === 'notion' ? '写到 Notion' : outputDestination === 'local' ? '本机执行' : '发送'}
         destinationPicker={!demo.enabled ? <><NotionReceiptNotice key={thingId} api={api} taskId={thingId} receipt={coordinator.details[thingId]?.jobs.filter(j=>j.notionReceipt).at(-1)?.notionReceipt} onRefresh={()=>coordinator.load(thingId)} /><DocumentDestinationPicker api={api} value={outputDestination} onChange={setOutputDestination} localDisabled={taskStatusUnavailable || executionBusy || preparingExecution} onSettings={() => openSurface('knowledge')} /></> : undefined}
         onSelect={id=>void selectThing(id)} onSend={continueThing}
         onWorkbench={id=>{void openConversation(conversations.find(item=>item.id===id)!);setResultLampOpen(false);}}
-        onRemove={coordinator.enabled?async id=>{await coordinator.removeTask(id);setThingId('');await refresh();}:undefined}
+        onRemove={coordinator.enabled?removeCoordinatorTask:undefined}
+        taskNotice={taskPauseNotice(thingId)}
         executionDisabled={taskStatusUnavailable || preparingExecution || executionBusy || Boolean(loadingByConversation[thingId])}
         executionPreparing={preparingExecution && preparingConversationId===thingId}
         executionContent={preparingExecution && preparingConversationId===thingId || thingExecutionTask ? <ExecutionDisclosure
@@ -1850,13 +1864,13 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <div className="studio-task-controls">
             {preview.enabled&&active?<button type="button" onClick={()=>openSurface('chat')}>回到 ONE <X size={14}/></button>:null}
             {preview.enabled && active ? <button type="button" className="studio-mode-switch" onClick={()=>{void selectThing(active.id);openSurface('things');}}>继续此任务</button> : null}
-            {coordinator.enabled&&active?<button type="button" onClick={()=>{if(confirm('删除此任务并停止尚未完成的云端处理？历史和用量会保留，可恢复；已发生的外部操作不会撤销。'))void coordinator.removeTask(active.id).then(()=>{openSurface('chat');return refresh();}).catch(e=>setError(e.message));}}>删除任务</button>:null}
+            {coordinator.enabled&&active?<button type="button" onClick={()=>{if(confirm('删除此任务并停止尚未完成的云端处理？历史和用量会保留，可恢复；已发生的外部操作不会撤销。'))void removeCoordinatorTask(active.id).then(()=>openSurface('chat')).catch(e=>setError(e.message));}}>删除任务</button>:null}
             {executionShortcut ? <button type="button" onClick={() => { setSelectedExecutionId(executionShortcut.id); setExpandedExecutionId(executionShortcut.id); setRevealExecutionId(executionShortcut.id); void loadLatestExecution(activeId, executionShortcut.id); }} aria-label="查看本机执行"><Zap size={14} /><span>{currentRunningExecution ? "查看执行进展" : "查看执行结果"}</span></button> : null}
             <button type="button" aria-label={focusedTask ? "还原布局" : "放大当前任务"} aria-pressed={focusedTask} onClick={() => transitionInterface(() => setFocusedTask(value => !value))}>{focusedTask ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
           </div>
         </header>
         <div className="messages">
-          {coordinator.enabled&&(coordinator.snapshot?.tasks.find(t=>t.id===activeId)?.paused||active?.workPaused)?<p role="status">此前处理未完成，任务已暂停，不会继续等待模型。原话、附件和用量保留。<button type="button" onClick={()=>{if(confirm('仅处理最新待办？较早待办保留历史但停止处理，不重跑失败轮次；会产生新的用量。'))void coordinator.resumeTask(active!.id,true).then(()=>refresh()).catch(e=>setError(e.message));}}>仅处理最新要求</button><button type="button" onClick={()=>{if(confirm('继续所有尚未执行的补充，不重跑失败轮次；会产生新的用量。继续？'))void coordinator.resumeTask(active!.id).then(()=>refresh()).catch(e=>setError(e.message));}}>继续全部待办</button></p>:null}
+          {taskPauseNotice(activeId)}
           {(active?.messages ?? []).length ? (
             active!.messages.map((message, index) => (
               <React.Fragment key={`${message.createdAt}-${index}`}>

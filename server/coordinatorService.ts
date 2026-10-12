@@ -1267,6 +1267,7 @@ export class CoordinatorService {
         const task=taskOf(d, s, continueTaskId);
         if(latestOnly){
           const queued=(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===continueTaskId&&o.status==='pending'&&o.workRun?.state==='queued').sort((a,b)=>a.createdAt.localeCompare(b.createdAt));
+          if(!queued.length)throw new CoordinatorError('没有尚未开始的待办。已失败或停止的轮次不会自动重跑；如需重新处理，请在此任务中发送最新要求。',409);
           for(const op of queued.slice(0,-1)){
             op.workRun!.state='cancelled';op.workRun!.unread=false;op.status='interrupted';op.updatedAt=at();
           }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
-import { callModelWithTools, fetchWithTimeout, parseProviderUsage, safeProviderReason } from "./modelGateway.js";
+import { callModel, callModelWithTools, fetchWithTimeout, parseProviderUsage, safeProviderReason } from "./modelGateway.js";
 import type { ModelConfig } from "./types.js";
 
 test("passes OpenAI function tools and returns tool calls", async () => {
@@ -108,6 +108,9 @@ test("translates Anthropic tool use and tool results", async () => {
     await callModelWithTools(model,[{role:'user',content:'仅回答，不调用工具'}],[],'anthropic-no-tools');
     assert.equal(received.tools,undefined);
     assert.equal(received.tool_choice,undefined);
+    assert.equal(received.temperature,undefined);
+    await callModel(model,[{role:'user',content:'仅回答',createdAt:new Date().toISOString()}],'','anthropic-plain');
+    assert.equal(received.temperature,undefined);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
