@@ -45,7 +45,7 @@ type Job = {
   inputMessageId: string;
   error?: string;
 };
-type Detail = { conversation: Conversation; jobs: Job[] };
+type Detail = { conversation: Conversation; jobs: Job[]; recovery?: import('./taskRecovery').TaskRecovery };
 export type CoordinatorSubmission = {
   outputDestination?: 'chat' | 'notion';
   featureApprovals?: import('../server/featurePricing').FeatureApproval[];
@@ -87,6 +87,7 @@ export function useCoordinator(
     resumeKey = useRef("");
   const resumeAt = useRef(0);
   const retrying=useRef(new Set<string>());
+  const [retryingTasks,setRetryingTasks]=useState<string[]>([]);
   const [removedTask,setRemovedTask] = useState<string|null>(null);
   snapshotRef.current = snapshot;
   detailsRef.current = details;
@@ -322,13 +323,15 @@ export function useCoordinator(
   async function retryTask(id:string) {
     if(retrying.current.has(id))return;
     retrying.current.add(id);
+    setRetryingTasks([...retrying.current]);
     try{
     const detail=await load(id),job=detail.jobs.at(-1);
     if(!job)throw new Error('此任务没有可重新处理的要求');
+    if(!detail.recovery||!['retry','resume'].includes(detail.recovery.kind))throw new Error(detail.recovery?.message||'请刷新后查看任务恢复方式');
     const featureApprovals=await approveFeaturePrices(api,[],id);
     await api(`/api/coordinator/tasks/${encodeURIComponent(id)}/retry`,{method:'POST',body:JSON.stringify({sourceJobId:job.id,confirmed:true,featureApprovals})});
     await load(id);await refresh();
-    }finally{retrying.current.delete(id);}
+    }finally{retrying.current.delete(id);if(live.current)setRetryingTasks([...retrying.current]);}
   }
   function dispatch(action: Action) {
     if (action.type === "select") {
@@ -415,6 +418,7 @@ export function useCoordinator(
     report: async (ids: string[]) => { await api("/api/coordinator/reports", { method: "POST", body: JSON.stringify({ ids }) }); await refresh(); },
     resumeTask,
     retryTask,
+    retryingTasks,
     removedTask,
     removeTask: async (id:string) => {
       await api(`/api/coordinator/tasks/${encodeURIComponent(id)}`,{method:'DELETE'});

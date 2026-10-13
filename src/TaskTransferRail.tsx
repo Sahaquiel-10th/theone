@@ -15,7 +15,7 @@ export function visibleTransfers(tasks: Transfer[]) {
 }
 
 /** Motion follows persisted receipts, never predicts success or takes input focus. */
-export function TaskTransferRail({ tasks, busy, onOpen, onReport, onStop, onResume }: { tasks: Transfer[]; busy: boolean; onOpen: (id: string) => void; onReport: (ids: string[]) => Promise<void>;onStop?:(task:Transfer,source:HTMLElement)=>Promise<void>;onResume?:(id:string)=>Promise<void> }) {
+export function TaskTransferRail({ tasks, busy, onOpen, onReport, onStop }: { tasks: Transfer[]; busy: boolean; onOpen: (id: string) => void; onReport: (ids: string[]) => Promise<void>;onStop?:(task:Transfer,source:HTMLElement)=>Promise<void> }) {
   const [returning, setReturning] = useState<string[]>([]), [error, setError] = useState(false), [page, setPage] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [briefing, setBriefing] = useState(false);
@@ -51,7 +51,7 @@ export function TaskTransferRail({ tasks, busy, onOpen, onReport, onStop, onResu
     {expanded ? visible.slice(Math.min(page, pages - 1) * 4, (Math.min(page, pages - 1) + 1) * 4).map(task => <div className="task-transfer-row" key={task.id}><button type="button" className={`task-transfer-bubble ${returning.includes(task.id) ? 'is-returning' : ''} ${transferSettled(task.state) ? 'is-settled' : ''}`} onClick={() => onOpen(task.taskId)}>
       {task.state === 'completed' ? <Check size={14}/> : transferSettled(task.state)||task.state==='paused' ? <AlertCircle size={14}/> : <Loader2 size={14} className="task-transfer-spinner"/>}
       <span><strong>{task.title}</strong><small>{transferStateLabel(task.state)}</small></span><ArrowUpRight size={12}/>
-    </button>{task.state==='paused'&&onResume?<button type="button" className="task-transfer-more" disabled={stopping.includes(task.id)} onClick={()=>{if(!confirm('继续尚未执行的待办？不会重跑失败轮次，会产生新的用量。'))return;setStopping(old=>[...old,task.id]);void onResume(task.taskId).catch(e=>setStopError(e.message)).finally(()=>setStopping(old=>old.filter(id=>id!==task.id)));}}>继续处理</button>:null}{!transferSettled(task.state)&&onStop?<button type="button" className="task-transfer-more" disabled={stopping.includes(task.id)} onClick={event=>{const source=event.currentTarget;setStopping(old=>[...old,task.id]);void onStop(task,source).catch(e=>setStopError(e instanceof Error?e.message:'停止未确认')).finally(()=>setStopping(old=>old.filter(id=>id!==task.id)));}}>停止</button>:null}</div>) : null}
+    </button>{task.state==='paused'?<button type="button" className="task-transfer-more" onClick={()=>onOpen(task.taskId)}>查看恢复方式</button>:null}{!transferSettled(task.state)&&onStop?<button type="button" className="task-transfer-more" disabled={stopping.includes(task.id)} onClick={event=>{const source=event.currentTarget;setStopping(old=>[...old,task.id]);void onStop(task,source).catch(e=>setStopError(e instanceof Error?e.message:'停止未确认')).finally(()=>setStopping(old=>old.filter(id=>id!==task.id)));}}>停止</button>:null}</div>) : null}
     {stopError?<small role="alert">{stopError}</small>:null}
     {expanded && pages > 1 ? <button type="button" className="task-transfer-more" onClick={() => setPage((Math.min(page, pages - 1) + 1) % pages)}>更多任务 · {Math.min(page, pages - 1) + 1}/{pages}</button> : null}
     {expanded && ready.length > 0 ? <button type="button" className="task-transfer-more" disabled={busy || briefing} onClick={() => {manualBriefing.current=true; setError(false); setBriefing(true); }}>让 ONE 说说结果</button> : null}

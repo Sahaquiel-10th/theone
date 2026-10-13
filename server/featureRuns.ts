@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import {composeFeatureTask} from './featureExperience.js';
 import {selectedFeatureFiles,selectedTableCsv,saveFeatureArtifact} from './featureArtifacts.js';
 import {prepareAttachmentContext} from './attachmentRetrieval.js';
@@ -15,9 +16,9 @@ import type { ToolExchange } from "./connectors/boundedHttps.js";
 import { executableFeatureTools } from "./featureToolExecution.js";
 import { credentialBindings, verifyCredentialBindings } from "./featureCredentials.js";
 import { runTaskOrchestrator, type OrchestrationTool } from "./taskOrchestrator.js";
-import { callModel, callModelWithTools } from "./modelGateway.js";
+import { callModel, callModelWithTools, ModelRequestError } from "./modelGateway.js";
 import { runBilledModel } from "./modelBilling.js";
-import { beginChatOperation, bindChatOperationConversation, completeChatOperation, failChatOperation, ChatOperationError, type ChatOperation } from "./chatOperations.js";
+import { beginChatOperation, bindChatOperationConversation, completeChatOperation, failChatOperation, failChatOperationInMutation, ChatOperationError, type ChatOperation } from "./chatOperations.js";
 import { uid } from "./security.js";
 import { activeMember, canReadKnowledge, featureEntitled, featureRelease } from "./enterprisePolicy.js";
 import { featureMultiplier, requireFeatureApproval } from './featurePricing.js';
@@ -82,13 +83,65 @@ function ownRun(db: Database, scope: FeatureScope, operationId: string) {
 export function featureRunResult(db: Database, scope: FeatureScope, operationId: string, detail = true) {
   const op = ownRun(db, scope, operationId);
   const conv = db.conversations.find(c => c.id === op.conversationId && c.workspaceId === scope.workspaceId && c.userId === scope.userId);
-  const trace = db.contextTraces.find(t => t.workspaceId === scope.workspaceId && t.userId === scope.userId && t.conversationId === conv?.id);
+  const trace = conv ? db.contextTraces.find(t => t.workspaceId === scope.workspaceId && t.userId === scope.userId && t.conversationId === conv.id) : undefined;
   const usage = db.modelUsageRecords.filter(u => !!op.conversationId && u.workspaceId === scope.workspaceId && u.userId === scope.userId && u.conversationId === op.conversationId);
+  const prompt = conv?.messages.find(m => m.role === 'user')?.content ?? (!op.conversationId ? op.featureRun!.inputPrompt ?? '' : '');
   return { operationId, featureId:op.featureRun!.featureId, usageMultiplier:op.featureRun!.price?.multiplier, name: op.featureRun!.name, version: op.featureRun!.version, status: op.status, createdAt: op.createdAt, power: usage.reduce((n,u) => n + (u.chargedMicros ?? 0), 0) / 1e6,
-    ...(detail ? { prompt: conv?.messages.find(m => m.role === "user")?.content ?? "", content: conv?.messages.find(m => m.id === op.assistantMessageId)?.content ?? "", error: op.status === "failed" || op.status === "interrupted" ? trace?.responsePreview ?? "任务中断，可能已有用量；不会自动重跑。" : undefined,
+    ...(detail ? { prompt, content: conv?.messages.find(m => m.id === op.assistantMessageId)?.content ?? "", error: op.status === "failed" || op.status === "interrupted" ? trace?.responsePreview ?? "任务中断，可能已有用量；不会自动重跑。" : undefined,
+      recovery: featureRunRecovery(db, scope, op),
       finishReason: conv?.messages.find(m => m.id === op.assistantMessageId)?.finishReason,
       imageUrl: conv?.messages.find(m=>m.id===op.assistantMessageId)?.imageUrl, files: (db.attachments??[]).filter(a=>!!conv&&a.workspaceId===scope.workspaceId&&a.userId===scope.userId&&a.conversationId===conv.id).map(a=>({id:a.id,name:a.originalName,mimeType:a.mimeType})),
       trace: trace?.executionSteps ?? [], charges: usage.map(u => ({ feature: u.featurePriceSnapshot, model: u.modelNameSnapshot, power: (u.chargedMicros ?? 0) / 1e6, status: u.status })) } : {}) };
+}
+function featureRetryId(op: ChatOperation) {
+  return `feature_retry_${createHash('sha256').update(op.id).digest('hex')}`;
+}
+function originalFeatureInput(db: Database, scope: FeatureScope, op: ChatOperation) {
+  const meta = op.featureRun!;
+  let source = op;
+  const visited = new Set<string>();
+  // A retry can be claimed before the subsequent conversation-binding mutation
+  // fails. It has no conversationId yet; its original materials still belong to
+  // the parent receipt. Never recover through a deleted, previously bound chat.
+  for (let depth = 0; !source.conversationId && source.featureRun?.retryOf && depth < 8; depth++) {
+    if (visited.has(source.operationId)) break;
+    visited.add(source.operationId);
+    const parent = db.chatOperations?.find(o => o.operationId === source.featureRun!.retryOf && o.workspaceId === scope.workspaceId && o.userId === scope.userId && o.featureRun?.featureId === meta.featureId);
+    if (!parent) break;
+    source = parent;
+  }
+  const message = db.conversations.find(c => c.id === source.conversationId && c.workspaceId === scope.workspaceId && c.userId === scope.userId)?.messages.find(m => m.role === 'user');
+  if (!message) throw new FeatureConfigError('原任务材料已移除，请重新打开功能填写任务', 409);
+  if (meta.inputPrompt !== undefined) return { prompt: meta.inputPrompt, message };
+  // Older receipts only saved the composed task. Remove only the exact, known
+  // generated suffix; arbitrary user text containing the same heading is kept.
+  const version = db.settings.officialFeatures?.find(f => f.id === meta.featureId)?.history.find(v => v.version === meta.version);
+  if (!version) throw new FeatureConfigError('旧版任务选项不可用，请复制原话并重新打开功能', 409);
+  const suffix = composeFeatureTask(version.values.experience, '', meta.options, meta.actionId);
+  if (suffix && !message.content.endsWith(suffix)) throw new FeatureConfigError('旧版任务选项无法确认，请复制原话并重新打开功能', 409);
+  return { prompt: suffix ? message.content.slice(0, -suffix.length) : message.content, message };
+}
+/** A retry is a new, explicitly confirmed billable run of the saved input. */
+function featureRunRecovery(db: Database, scope: FeatureScope, op: ChatOperation): { allowed: boolean; reason?: string; operationId?: string; budget?: number; version?: number; usageMultiplier?: number; releaseId?: string } {
+  if (!['failed', 'interrupted'].includes(op.status)) return { allowed: false };
+  const operationId = featureRetryId(op);
+  if (db.chatOperations?.some(o => o.operationId === operationId && o.workspaceId === scope.workspaceId && o.userId === scope.userId && o.featureRun?.retryOf === op.operationId)) return { allowed: false, operationId, reason: '这条要求已重新提交，请查看该次结果。' };
+  try {
+    const meta = op.featureRun!, { record, version } = availableFeature(db, scope, meta.featureId);
+    const originalVersion = db.settings.officialFeatures?.find(f => f.id === meta.featureId)?.history.find(v => v.version === meta.version);
+    if (version.values.experience?.mode === 'image' || originalVersion?.values.experience?.mode === 'image') return { allowed: false, reason: '图片生成结果可能已产生。请先检查本轮图片和用量；需要再次生成时，重新打开功能发起新任务。' };
+    if (db.attachments?.some(a => !!op.conversationId && a.conversationId === op.conversationId && a.workspaceId === scope.workspaceId && a.userId === scope.userId)) return { allowed: false, reason: '本轮已有成果文件，请先下载核对。需要继续修改时，重新打开功能并附上要修改的成果，避免重复生成。' };
+    if (!originalVersion || JSON.stringify(originalVersion.values.tools ?? []) !== JSON.stringify(version.values.tools ?? [])) return { allowed: false, reason: '功能的工具或数据使用范围已更新，请重新打开功能确认范围后提交。' };
+    verifySources(db, scope, meta.sources);
+    try { verifyCredentialBindings(db, scope, meta.credentials ?? []); }
+    catch { throw new FeatureConfigError('工具授权已更换或撤销，请重新打开功能确认授权。', 409); }
+    const input = originalFeatureInput(db, scope, op);
+    if (input.message.attachments?.some(file => !db.attachments?.some(a => a.id === file.id && a.workspaceId === scope.workspaceId && a.userId === scope.userId && (!a.status || a.status === 'ready')))) return { allowed: false, reason: '原附件已不可用，请重新打开功能添加材料。' };
+    composeFeatureTask(version.values.experience, input.prompt, meta.options, meta.actionId);
+    return { allowed: true, budget: meta.budget, version: version.version, usageMultiplier: featureMultiplier(version.values), releaseId: record.release!.id };
+  } catch (error) {
+    return { allowed: false, reason: error instanceof FeatureConfigError ? error.message : '功能选项已变化，请复制原话并重新打开功能确认。' };
+  }
 }
 function verifySources(db: Database, scope: FeatureScope, sources: NonNullable<ChatOperation["featureRun"]>["sources"]) {
   for (const s of sources) {
@@ -99,7 +152,7 @@ function verifySources(db: Database, scope: FeatureScope, sources: NonNullable<C
 export type FeatureRunDependencies = { modelCall?: typeof callModelWithTools; transport?: JsonTransport; exchange?: ToolExchange; artifactDirectory?:string; imageCall?:typeof callModel };
 
 /** Claim once before sending an asynchronous receipt. No prompts in global settings or audit logs. */
-export async function startFeatureRun(store: Store, scope: FeatureScope, id: string, body: any, verifyKey: () => Promise<void>) {
+export async function startFeatureRun(store: Store, scope: FeatureScope, id: string, body: any, verifyKey: () => Promise<void>, retryOf?: string) {
   if (!body || body.confirmed !== true || typeof body.prompt !== "string" || !body.prompt.trim() || body.prompt.length > 4000 || typeof body.releaseId !== "string" || !Array.isArray(body.sourceIds) || body.sourceIds.length > 5 || body.sourceIds.some((id: unknown) => typeof id !== "string") || typeof body.budget !== "number" || !Number.isFinite(body.budget) || body.budget < .001 || body.budget > 10) throw new FeatureConfigError("请检查任务、来源及 0.001–10 电力上限，并确认费用与数据使用范围");
   await verifyKey();
   const db = await store.read();
@@ -123,8 +176,12 @@ export async function startFeatureRun(store: Store, scope: FeatureScope, id: str
   let claim;
   try {
     claim = await beginChatOperation(store, { ...scope, operationId: body.operationId, requestId: uid("frun"), payload: { id, releaseId: body.releaseId, prompt, sourceIds, budget: body.budget, ...(attachmentIds.length?{attachmentIds}:{}) },
-      featureRun: { price, featureId: id, name: version.values.name, version: version.version, releaseId: body.releaseId, budget: body.budget, sources, credentials, ...(version.values.experience?{options:body.options??{},actionId:body.actionId??version.values.experience.actions[0].id}: {}) },
+      featureRun: { inputPrompt: body.prompt, ...(retryOf ? { retryOf } : {}), price, featureId: id, name: version.values.name, version: version.version, releaseId: body.releaseId, budget: body.budget, sources, credentials, ...(version.values.experience?{options:body.options??{},actionId:body.actionId??version.values.experience.actions[0].id}: {}) },
       beforeClaim: d => {
+        if (retryOf) {
+          const recovery = featureRunRecovery(d, scope, ownRun(d, scope, retryOf));
+          if (!recovery.allowed) throw new FeatureConfigError(recovery.reason ?? '原任务状态已变化，请刷新查看', 409);
+        }
         availableFeature(d, scope, id, body.releaseId); verifySources(d, scope, sources);
         requireFeatureApproval(d, scope, [price], body.featureApprovals);
         for(const file of files)if(!d.attachments.some(a=>a.id===file.id&&a.workspaceId===scope.workspaceId&&a.userId===scope.userId&&(!a.status||a.status==='ready')))throw new FeatureConfigError('附件已变化',409);
@@ -202,9 +259,29 @@ export async function executeFeatureRun(store: Store, scope: FeatureScope, opera
       completeChatOperation(d, operationScope, { conversationId, assistantMessageId: message.id });
     });
   } catch (e) {
-    await store.mutate(d => { if (d.conversations.some(c => c.id === conversationId && c.workspaceId === scope.workspaceId && c.userId === scope.userId)) d.contextTraces.push({ id: uid("ctx"), ...scope, conversationId, assistantMessageId: "", modelId: "", requestId: op.requestId, query: "", responsePreview: e instanceof FeatureConfigError ? e.message : "任务未完成，可能已有模型用量；请查看明细，不会自动重跑。", sections: [], executionSteps: trace, createdAt: new Date().toISOString() }); });
-    await failChatOperation(store, operationScope);
+    await store.mutate(d => {
+      if (d.chatOperations?.find(o => o.operationId === operationId && o.workspaceId === scope.workspaceId && o.userId === scope.userId)?.status !== 'pending') return;
+      if (d.conversations.some(c => c.id === conversationId && c.workspaceId === scope.workspaceId && c.userId === scope.userId)) d.contextTraces.push({ id: uid("ctx"), ...scope, conversationId, assistantMessageId: "", modelId: "", requestId: op.requestId, query: "", responsePreview: e instanceof FeatureConfigError || e instanceof ModelRequestError ? e.message : "任务未完成，可能已有模型用量；请查看明细，不会自动重跑。", sections: [], executionSteps: trace, createdAt: new Date().toISOString() });
+      failChatOperationInMutation(d, operationScope);
+    });
   }
+}
+
+export async function retryFeatureRun(store: Store, scope: FeatureScope, operationId: string, body: any, verifyKey: () => Promise<void>) {
+  await verifyKey();
+  const db = await store.read(), parent = ownRun(db, scope, operationId), meta = parent.featureRun!;
+  if (body?.confirmed !== true) throw new FeatureConfigError('请确认重新处理原要求，并承担本轮实际用量');
+  const recovery = featureRunRecovery(db, scope, parent);
+  if (recovery.operationId) return { created: false, result: featureRunResult(db, scope, recovery.operationId) };
+  if (!recovery.allowed) throw new FeatureConfigError(recovery.reason ?? '只能重新处理未完成或中断的任务', 409);
+  const { record } = availableFeature(db, scope, meta.featureId), input = originalFeatureInput(db, scope, parent);
+  if (body.releaseId !== record.release!.id) throw new FeatureConfigError('功能配置已更新，请先检查状态并确认当前版本和用量倍率。', 409);
+  return startFeatureRun(store, scope, meta.featureId, {
+    operationId: featureRetryId(parent), prompt: input.prompt, releaseId: record.release!.id,
+    sourceIds: meta.sources.map(s => s.id), options: meta.options, actionId: meta.actionId,
+    attachmentIds: input.message.attachments?.map(a => a.id), budget: body.budget,
+    confirmed: true, featureApprovals: body.featureApprovals
+  }, verifyKey, operationId);
 }
 
 /** A continuation gets a new billed receipt, carrying only this owner's last exchange. */

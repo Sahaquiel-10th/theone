@@ -2,11 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import express from "express";
 import { once } from "node:events";
-import { availableFeature, executeFeatureRun, featureRunResult, releaseFeature, startFeatureRun } from "./featureRuns.js";
+import { availableFeature, executeFeatureRun, featureRunResult, releaseFeature, retryFeatureRun, startFeatureRun } from "./featureRuns.js";
+import { ModelRequestError } from './modelGateway.js';
 import { installFeatureRunRoutes } from "./featureRunRoutes.js";
 import { installOfficialFeatureRoutes } from "./officialFeatureRoutes.js";
 import { requireRole } from "./middleware.js";
-import { updateOfficialFeature } from "./officialFeatures.js";
+import { FeatureConfigError, updateOfficialFeature } from "./officialFeatures.js";
 import { reconcileInterruptedChatOperations } from "./chatOperations.js";
 import type { Database } from "./types.js";
 import type { Store } from "./db.js";
@@ -49,6 +50,151 @@ function fixture(){
   return {store,db:()=>db,scope:{workspaceId:'wa',userId:'a'},body:{releaseId:db.settings.officialFeatures![0].release!.id,prompt:'查我的资料',sourceIds:['ka'],budget:.1,confirmed:true,operationId:'operation_1234567890'}};
 }
 const noKnowledge={recallWithDiagnostics:async()=>{assert.fail('unexpected knowledge access');}};
+test('direct feature failures preserve safe model cause, input and usage, but not raw errors',async()=>{
+  for (const failure of [new ModelRequestError(408,'等待模型回复超时（150 秒）'),new Error('upstream leaked-secret=should-not-be-visible')]) {
+    const f=fixture();await startFeatureRun(f.store,f.scope,'research',f.body,async()=>{});
+    await executeFeatureRun(f.store,f.scope,f.body.operationId,async()=>{},noKnowledge,{modelCall:async()=>{throw failure;}});
+    const receipt=featureRunResult(f.db(),f.scope,f.body.operationId);
+    assert.equal(receipt.status,'failed');assert.equal(receipt.prompt,f.body.prompt);assert.equal(receipt.recovery?.allowed,true);
+    if(failure instanceof ModelRequestError)assert.match(receipt.error??'',/408.*150 秒/);
+    else assert.doesNotMatch(JSON.stringify(receipt),/leaked-secret|should-not-be-visible/);
+    assert.equal(receipt.charges?.length,1);assert.equal(f.db().chatOperations!.length,1);
+  }
+});
+test('explicit retry keeps saved input and attachments, uses current release and bills one child despite concurrent clicks',async()=>{
+  const f=fixture();f.db().attachments=[{id:'source-file',...f.scope,originalName:'资料.txt',mimeType:'text/plain',kind:'document',storagePath:'/synthetic/source',size:3,extractedText:'只用原附件',status:'ready',createdAt:'t'}];
+  await startFeatureRun(f.store,f.scope,'research',{...f.body,attachmentIds:['source-file']},async()=>{});
+  await executeFeatureRun(f.store,f.scope,f.body.operationId,async()=>{},noKnowledge,{modelCall:async()=>{throw new ModelRequestError(400,'模型参数不兼容');}});
+  const original=structuredClone(f.db().conversations[0]),firstOperation=structuredClone(f.db().chatOperations![0]);
+  const record=f.db().settings.officialFeatures![0],values={...record.current!.values,modelId:'new-model'};
+  f.db().models.push({...f.db().models[0],id:'new-model'});
+  record.history.push({...record.current!,version:2,values});record.current=record.history.at(-1)!;
+  releaseFeature(f.db(),'research',{action:'publish',revision:record.revision,version:2,userIds:['a'],confirmed:true},'b');
+  await assert.rejects(retryFeatureRun(f.store,f.scope,f.body.operationId,{budget:.1},async()=>{}),/确认/);
+  await assert.rejects(retryFeatureRun(f.store,f.scope,f.body.operationId,{confirmed:true,budget:.1,releaseId:f.body.releaseId},async()=>{}),/配置已更新/);
+  const body={confirmed:true,budget:.1,releaseId:record.release!.id,prompt:'tampered',attachmentIds:['foreign'],sourceIds:['kb'],operationId:'forged_operation_id'};
+  const results=await Promise.all([retryFeatureRun(f.store,f.scope,f.body.operationId,body,async()=>{}),retryFeatureRun(f.store,f.scope,f.body.operationId,body,async()=>{})]);
+  assert.equal(results.filter(r=>r.created).length,1);assert.equal(results[0].result.operationId,results[1].result.operationId);
+  const retryId=results[0].result.operationId,next=f.db().chatOperations!.find(o=>o.operationId===retryId)!;
+  assert.equal(next.featureRun!.retryOf,f.body.operationId);assert.equal(next.featureRun!.version,2);
+  assert.equal(results[0].result.prompt,f.body.prompt);
+  const nextConversation=f.db().conversations.find(c=>c.id===next.conversationId)!;
+  assert.deepEqual(nextConversation.messages[0].attachments?.map(a=>a.id),['source-file']);
+  assert.deepEqual(next.featureRun!.sources,firstOperation.featureRun!.sources);
+  assert.deepEqual(f.db().conversations[0],original);assert.deepEqual(f.db().chatOperations![0],firstOperation);
+  let calls=0;await executeFeatureRun(f.store,f.scope,retryId,async()=>{},noKnowledge,{modelCall:async model=>{calls++;assert.equal(model.id,'new-model');return done;}});
+  assert.equal(calls,1);assert.equal(featureRunResult(f.db(),f.scope,retryId).status,'completed');
+  assert.equal((await retryFeatureRun(f.store,f.scope,f.body.operationId,body,async()=>{})).created,false);
+  assert.equal(featureRunResult(f.db(),f.scope,f.body.operationId).recovery?.operationId,retryId);
+  assert.equal(f.db().chatOperations!.length,2);assert.equal(f.db().powerLedger.length,1);
+});
+test('retry rejects foreign owner, Key loss, changed knowledge binding and newly expanded tools',async()=>{
+  const f=fixture();await startFeatureRun(f.store,f.scope,'research',f.body,async()=>{});reconcileInterruptedChatOperations(f.db());
+  const body={confirmed:true,budget:.1};
+  await assert.rejects(retryFeatureRun(f.store,{workspaceId:'wb',userId:'b'},f.body.operationId,body,async()=>{}),/不存在/);
+  await assert.rejects(retryFeatureRun(f.store,{workspaceId:'wb',userId:'a'},f.body.operationId,body,async()=>{}),/不可用/);
+  await assert.rejects(retryFeatureRun(f.store,f.scope,f.body.operationId,body,async()=>{throw new Error('Key absent');}),/Key absent/);
+  f.db().knowledgeConnections[0].providerUserId='another-account';
+  await assert.rejects(retryFeatureRun(f.store,f.scope,f.body.operationId,body,async()=>{}),/知识授权已变化/);
+  f.db().knowledgeConnections[0].providerUserId='remote-a';
+  const record=f.db().settings.officialFeatures![0];record.history.push({...record.current!,version:2,values:{...record.current!.values,tools:[{id:'oneFinance',description:'计算用户给出的费用'}]}});record.current=record.history.at(-1)!;
+  releaseFeature(f.db(),'research',{action:'publish',revision:record.revision,version:2,userIds:['a'],confirmed:true},'b');
+  await assert.rejects(retryFeatureRun(f.store,f.scope,f.body.operationId,body,async()=>{}),/工具或数据使用范围/);
+  assert.equal(f.db().chatOperations!.length,1);assert.equal(f.db().modelUsageRecords.length,0);
+});
+test('retry validates high multiplier approval for current publication before claiming',async()=>{
+  const f=fixture();await startFeatureRun(f.store,f.scope,'research',f.body,async()=>{});reconcileInterruptedChatOperations(f.db());
+  saveFeatureBudgetPolicy(f.db(),f.scope,.5);
+  await assert.rejects(retryFeatureRun(f.store,f.scope,f.body.operationId,{confirmed:true,budget:.1,releaseId:f.body.releaseId},async()=>{}),/超过/);
+  assert.equal(f.db().chatOperations!.length,1);
+  const record=f.db().settings.officialFeatures![0],featureApprovals=[{id:'research',releaseId:record.release!.id,version:1,multiplier:.6}];
+  assert.equal((await retryFeatureRun(f.store,f.scope,f.body.operationId,{confirmed:true,budget:.1,releaseId:f.body.releaseId,featureApprovals},async()=>{})).created,true);
+});
+test('a retry claimed before binding fails can explicitly recover its owned original input once',async()=>{
+  const f=fixture();f.db().attachments=[{id:'source-file',...f.scope,originalName:'资料.txt',mimeType:'text/plain',kind:'document',storagePath:'/synthetic/source',size:3,extractedText:'原材料',status:'ready',createdAt:'t'}];
+  await startFeatureRun(f.store,f.scope,'research',{...f.body,attachmentIds:['source-file']},async()=>{});reconcileInterruptedChatOperations(f.db());
+  const originalConversation=structuredClone(f.db().conversations[0]),release=f.db().settings.officialFeatures![0].release!;
+  let mutations=0;
+  const interruptedStore:Store={read:f.store.read,mutate:fn=>{
+    mutations++;
+    if(mutations===2){delete f.db().settings.officialFeatures![0].release;return Promise.reject(new FeatureConfigError('功能授权在创建对话前发生变化',403));}
+    return f.store.mutate(fn);
+  }};
+  const body={confirmed:true,budget:.1,releaseId:release.id};
+  await assert.rejects(retryFeatureRun(interruptedStore,f.scope,f.body.operationId,body,async()=>{}),/创建对话前/);
+  assert.equal(f.db().chatOperations!.length,2);
+  const child=f.db().chatOperations![1];assert.equal(child.status,'failed');assert.equal(child.conversationId,undefined);
+  assert.equal(child.featureRun!.retryOf,f.body.operationId);assert.equal(f.db().modelUsageRecords.length,0);
+  f.db().settings.officialFeatures![0].release=release;
+  f.db().contextTraces.push({id:'unrelated-unbound-trace',...f.scope,responsePreview:'别的请求错误'} as any);
+  assert.equal(featureRunResult(f.db(),f.scope,child.operationId).recovery?.allowed,true);
+  assert.equal(featureRunResult(f.db(),f.scope,child.operationId).prompt,f.body.prompt);
+  assert.doesNotMatch(featureRunResult(f.db(),f.scope,child.operationId).error??'',/别的请求/);
+  const retried=await retryFeatureRun(f.store,f.scope,child.operationId,body,async()=>{});
+  const grandchild=f.db().chatOperations!.find(o=>o.operationId===retried.result.operationId)!;
+  const conversation=f.db().conversations.find(c=>c.id===grandchild.conversationId)!;
+  assert.equal(retried.result.prompt,f.body.prompt);assert.deepEqual(conversation.messages[0].attachments?.map(a=>a.id),['source-file']);
+  assert.deepEqual(f.db().conversations[0],originalConversation);assert.equal(child.status,'failed');
+  assert.equal((await retryFeatureRun(f.store,f.scope,child.operationId,body,async()=>{})).created,false);
+  let calls=0;await executeFeatureRun(f.store,f.scope,retried.result.operationId,async()=>{},noKnowledge,{modelCall:async()=>{calls++;return done;}});
+  assert.equal(calls,1);assert.equal(f.db().chatOperations!.length,3);assert.equal(f.db().modelUsageRecords.length,1);
+});
+test('retry input fallback rejects foreign ancestry, cycles and a deleted bound conversation',async()=>{
+  for(const reason of ['foreign','cycle','deleted']){
+    const f=fixture();await startFeatureRun(f.store,f.scope,'research',f.body,async()=>{});reconcileInterruptedChatOperations(f.db());
+    const root=f.db().chatOperations![0];
+    if(reason==='deleted')f.db().conversations=[];
+    else{
+      const child={...structuredClone(root),id:'child_record',operationId:'child_operation_12345',conversationId:undefined,featureRun:{...root.featureRun!,retryOf:reason==='cycle'?'child_operation_12345':root.operationId}};
+      if(reason==='foreign')root.workspaceId='wb';
+      f.db().chatOperations!.push(child);
+    }
+    const source=f.db().chatOperations!.at(-1)!;
+    assert.equal(featureRunResult(f.db(),f.scope,source.operationId).recovery?.allowed,false);
+    await assert.rejects(retryFeatureRun(f.store,f.scope,source.operationId,{confirmed:true,budget:.1,releaseId:f.body.releaseId},async()=>{}),/材料已移除/);
+    assert.equal(f.db().modelUsageRecords.length,0);
+  }
+});
+test('legacy option-bearing input is recovered exactly; image and produced artifacts require review rather than retry',async()=>{
+  const f=fixture(),record=f.db().settings.officialFeatures![0];record.history[0].values.experience={inputs:[],actions:[{id:'make',label:'生成',instruction:'仅输出文字'}]};
+  const prompt='用户原话\n\n本次选择：这也是用户自己的内容';
+  await startFeatureRun(f.store,f.scope,'research',{...f.body,prompt},async()=>{});reconcileInterruptedChatOperations(f.db());
+  delete f.db().chatOperations![0].featureRun!.inputPrompt;
+  const r=await retryFeatureRun(f.store,f.scope,f.body.operationId,{confirmed:true,budget:.1,releaseId:f.body.releaseId},async()=>{});
+  assert.equal(f.db().chatOperations!.find(o=>o.operationId===r.result.operationId)!.featureRun!.inputPrompt,prompt);
+  assert.equal(r.result.prompt,f.db().conversations[0].messages[0].content);
+  for(const reason of ['image','artifact']){
+    const g=fixture();await startFeatureRun(g.store,g.scope,'research',g.body,async()=>{});reconcileInterruptedChatOperations(g.db());
+    if(reason==='image')g.db().settings.officialFeatures![0].history[0].values.experience={mode:'image',inputs:[],actions:[{id:'draw',label:'画图',instruction:'画图'}]};
+    else g.db().attachments=[{id:'output',...g.scope,conversationId:g.db().chatOperations![0].conversationId} as any];
+    const receipt=featureRunResult(g.db(),g.scope,g.body.operationId);
+    assert.equal(receipt.recovery?.allowed,false);assert.match(receipt.recovery?.reason??'',reason==='image'?/图片.*检查/:/成果文件.*核对/);
+    await assert.rejects(retryFeatureRun(g.store,g.scope,g.body.operationId,{confirmed:true,budget:.1},async()=>{}));assert.equal(g.db().chatOperations!.length,1);
+  }
+});
+test('late runner failure cannot overwrite an interrupted terminal receipt',async()=>{
+  const f=fixture();await startFeatureRun(f.store,f.scope,'research',f.body,async()=>{});
+  await executeFeatureRun(f.store,f.scope,f.body.operationId,async()=>{},noKnowledge,{modelCall:async()=>{
+    reconcileInterruptedChatOperations(f.db());throw new ModelRequestError(503,'late failure');
+  }});
+  const receipt=featureRunResult(f.db(),f.scope,f.body.operationId);
+  assert.equal(receipt.status,'interrupted');assert.doesNotMatch(receipt.error??'',/late failure/);assert.equal(f.db().contextTraces.length,0);
+});
+test('HTTP retry needs Key and owner, ignores client input substitution and returns the same receipt after a lost response',async t=>{
+  const f=fixture();await startFeatureRun(f.store,f.scope,'research',f.body,async()=>{});reconcileInterruptedChatOperations(f.db());
+  const app=express();app.use(express.json());let calls=0;
+  installFeatureRunRoutes(app,[(req,res,next)=>{if(req.headers['x-key']!=='present'){res.sendStatus(428);return;}const b=req.headers['x-account']==='b';req.user={id:b?'b':'a'} as any;req.workspaceId=b?'wb':'wa';next();}],f.store,async()=>{},noKnowledge,{modelCall:async()=>{calls++;return done;}});
+  const server=app.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});
+  const base=`http://127.0.0.1:${(server.address() as any).port}/api/features/runs`,url=`${base}/${f.body.operationId}/retry`,headers={'x-key':'present','content-type':'application/json'},body=JSON.stringify({confirmed:true,budget:.1,releaseId:f.body.releaseId,prompt:'forged unrelated input',workspaceId:'wb',userId:'b'});
+  assert.equal((await fetch(url,{method:'POST',body,headers:{'content-type':'application/json'}})).status,428);
+  assert.equal((await fetch(url,{method:'POST',body,headers:{...headers,'x-account':'b'}})).status,404);
+  const created=await fetch(url,{method:'POST',body,headers});assert.equal(created.status,202);const first=await created.json();
+  const repeated=await fetch(url,{method:'POST',body,headers});assert.equal(repeated.status,200);assert.equal((await repeated.json()).operationId,first.operationId);
+  let receipt;
+  for(let i=0;i<30;i++){receipt=await(await fetch(`${base}/${first.operationId}`,{headers})).json();if(receipt.status!=='pending')break;await new Promise(resolve=>setTimeout(resolve,5));}
+  assert.equal(receipt.status,'completed');assert.equal(receipt.prompt,f.body.prompt);assert.equal(calls,1);
+  assert.equal(f.db().chatOperations!.length,2);assert.equal(f.db().modelUsageRecords.length,1);assert.equal(f.db().powerAccounts[1].balanceMicros,1000000);
+});
 test('publication requires approval/admin; immutable released version survives drafts; pause does not auto-resume',()=>{
   const f=fixture(),record=f.db().settings.officialFeatures![0];
   assert.throws(()=>availableFeature(f.db(),{workspaceId:'wb',userId:'b'},'research'));

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { installCoordinatorRoutes } from "./coordinatorRoutes.js";
 import assert from "node:assert/strict";
+import {createHash} from 'node:crypto';
 import type { Store } from "./db.js";
 import type { Database, ModelConfig } from "./types.js";
 import { CoordinatorService } from "./coordinatorService.js";
@@ -1104,16 +1105,100 @@ test('explicit retry preserves original, uses current configuration and deduplic
 });
 test('task lookup accepts unique exact title, rejects unknown IDs without failing routing or leaking other workspaces',async()=>{
  const f=fixture(),r=await f.service.dispatch(a,input('operation_lookup_001','UI 原话'),key);
+ await f.store.mutate(d=>{
+   d.messages.push({...a,id:'execution_receipt_owned',conversationId:r.taskId!,role:'assistant',content:'实测产物：已保存结果.html',createdAt:new Date().toISOString()});
+   d.messages.push({...b,id:'execution_receipt_foreign',conversationId:r.taskId!,role:'assistant',content:'跨空间秘密',createdAt:new Date().toISOString()});
+ });
  let query='UI 设计';
  f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('已核对'):({...answer(''),toolCalls:[{id:'read',type:'function',function:{name:'read_task',arguments:JSON.stringify({query})}}]}));
  await f.service.dispatch(a,input('operation_lookup_002','请查看任务'),key);
  const result=f.calls.at(-1)!.messages.at(-1)!.content!;assert.match(result, new RegExp(r.taskId!));
+ assert.match(result,/实测产物：已保存结果.html/);assert.doesNotMatch(result,/跨空间秘密/);
+ assert.ok(JSON.parse(result).handoffs.length,'resolved title also loads the correct handoff');
  query='cnv_guessed_not_real';
  await f.service.dispatch(a,input('operation_lookup_003','请查看任务'),key);
  assert.match(f.calls.at(-1)!.messages.at(-1)!.content!,/not_found/);
  await f.service.dispatch(a,{...input('operation_lookup_004','请查看任务'),boundTaskId:r.taskId!},key);
  assert.match(f.calls.at(-1)!.messages.at(-1)!.content!,new RegExp(r.taskId!));
+ assert.match(f.calls.at(-1)!.messages.at(-1)!.content!,/实测产物：已保存结果.html/);
  assert.ok(f.calls.at(-1)!.messages.some(m=>m.content?.includes('当前输入框明确绑定的任务与最近成果')));
+});
+test('latest-only recovery releases a full paused queue without running superseded inputs',async()=>{
+ const f=fixture(),r=await f.service.dispatch(a,input('operation_fullqueue_001','UI 首次要求'),key);
+ for(let i=1;i<10;i++)await f.service.direct(a,r.taskId!,{operationId:`operation_fullqueue_${100+i}`,text:`UI 最新补充 ${i}`},key);
+ await f.store.mutate(d=>{d.conversations.find(c=>c.id===r.taskId)!.workPaused=true;});
+ const before=await f.service.task(a,r.taskId!);
+ await f.service.retryLatest(a,r.taskId!,before.jobs.at(-1)!.id,undefined,key);
+ const detail=await f.service.task(a,r.taskId!);
+ assert.equal(detail.jobs.filter(j=>j.state==='queued').length,1);
+ assert.equal(detail.jobs.filter(j=>j.state==='cancelled').length,10);
+ assert.equal(detail.conversation.messages.filter(m=>m.role==='user').length,11);
+ await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,r.taskId!)).jobs.at(-1)?.state==='completed');
+ assert.equal(f.calls.filter(c=>c.modelId==='worker').length,1);
+});
+test('a new supplement arriving during retry validation remains queued and is not cancelled',async()=>{
+ const f=fixture(),r=await f.service.dispatch(a,input('operation_retry_race1','UI 原要求'),key);
+ const source=(await f.service.task(a,r.taskId!)).jobs[0];
+ await f.store.mutate(d=>{d.conversations.find(c=>c.id===r.taskId)!.workPaused=true;});
+ let checks=0;
+ const changingKey=async()=>{if(++checks===2)await f.service.direct(a,r.taskId!,{operationId:'operation_retry_race2',text:'刚到的新要求'},key);};
+ await assert.rejects(()=>f.service.retryLatest(a,r.taskId!,source.id,undefined,changingKey),/新的要求/);
+ const detail=await f.service.task(a,r.taskId!);
+ assert.equal(detail.jobs.length,2);assert.ok(detail.jobs.every(j=>j.state==='queued'));assert.equal(detail.conversation.workPaused,true);
+ assert.equal(f.calls.filter(c=>c.modelId==='worker').length,0);
+});
+test('stop during recovery validation takes precedence over the earlier retry click',async()=>{
+ const f=fixture(),r=await f.service.dispatch(a,input('operation_retry_stop1','UI 原要求'),key);
+ const source=(await f.service.task(a,r.taskId!)).jobs[0];let checks=0;
+ const changingKey=async()=>{if(++checks===2)await f.service.cancelTask(a,r.taskId!,key);};
+ await assert.rejects(()=>f.service.retryLatest(a,r.taskId!,source.id,undefined,changingKey),/状态已变化/);
+ const detail=await f.service.task(a,r.taskId!);
+ assert.equal(detail.jobs.length,1);assert.equal(detail.jobs[0].state,'cancelled');assert.equal(detail.conversation.workPaused,true);
+ await f.service.resume(a,key);assert.equal(f.calls.filter(c=>c.modelId==='worker').length,0);
+});
+test('a failed retry admission with no work or usage can be explicitly retried once',async()=>{
+ const f=fixture(),r=await f.service.dispatch(a,input('operation_retry_admit1','UI 原要求'),key);
+ const source=(await f.service.task(a,r.taskId!)).jobs[0];
+ await f.store.mutate(d=>{
+   const original=d.chatOperations!.find(o=>o.id===source.id)!;
+   original.status='failed';original.workRun!.state='failed';d.conversations.find(c=>c.id===r.taskId)!.workPaused=true;
+   d.chatOperations!.push({...structuredClone(original),id:'failed_admission',operationId:`retry_${createHash('sha256').update(source.id).digest('hex')}`,requestId:'no_model_admission',workRun:undefined,conversationId:undefined});
+ });
+ await f.service.retryLatest(a,r.taskId!,source.id,undefined,key);
+ await f.service.retryLatest(a,r.taskId!,source.id,undefined,key);
+ const detail=await f.service.task(a,r.taskId!);
+ assert.equal(detail.jobs.length,2);assert.equal(detail.jobs[1].state,'queued');
+ await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,r.taskId!)).jobs[1].state==='completed');
+ assert.equal(f.calls.filter(c=>c.modelId==='worker').length,1);
+});
+test('a lost acknowledgement after saving a paused task supplement explains the required recovery',async()=>{
+ const f=fixture(),r=await f.service.dispatch(a,input('operation_paused_ack1','UI 原要求'),key);
+ await f.store.mutate(d=>{d.conversations.find(c=>c.id===r.taskId)!.workPaused=true;});
+ f.setRoute(messages=>{
+   if(messages.at(-1)?.role==='tool')throw new Error('model acknowledgement timeout');
+   return {...answer(''),toolCalls:[{id:'supplement',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:r.taskId,title:'UI 设计',instruction:'UI 追加要求',executorId:'general'})}}]};
+ });
+ await f.service.dispatch(a,{...input('operation_paused_ack2','UI 追加要求'),boundTaskId:r.taskId},key);
+ const db=await f.store.read();const main=db.conversations.find(c=>c.coordinatorMain&&c.userId===a.userId)!;
+ assert.match(main.messages.at(-1)!.content,/任务仍暂停/);assert.doesNotMatch(main.messages.at(-1)!.content,/结果会回到/);
+ await f.service.resume(a,key);assert.equal(f.calls.filter(c=>c.modelId==='worker').length,0);
+});
+test('uncertain Notion saves block replay while verified saves allow explicit latest queued continuation',async()=>{
+ const f=fixture(),r=await f.service.dispatch(a,input('operation_notion_recover1','UI 保存要求'),key);
+ await f.service.direct(a,r.taskId!,{operationId:'operation_notion_recover2',text:'最新修改'},key);
+ await f.store.mutate(d=>{
+   const jobs=d.chatOperations!.filter(o=>o.workRun);
+   jobs[0].status='failed';jobs[0].workRun!.state='failed';jobs[0].workRun!.notionReceipt={state:'uncertain'};
+   jobs[1].workRun!.notionTarget={connectionId:'notion',parentPageId:'parent',title:'test',referenceIds:[]} as any;
+   d.conversations.find(c=>c.id===r.taskId)!.workPaused=true;
+ });
+ let detail=await f.service.task(a,r.taskId!);const latest=detail.jobs.at(-1)!;
+ assert.equal(detail.recovery.kind,'review_notion');
+ await assert.rejects(()=>f.service.retryLatest(a,r.taskId!,latest.id,undefined,key),/核对 Notion/);
+ await f.store.mutate(d=>{d.chatOperations!.find(o=>o.workRun?.notionReceipt)!.workRun!.notionReceipt!.state='verified';});
+ detail=await f.service.task(a,r.taskId!);assert.equal(detail.recovery.kind,'resume');
+ await f.service.retryLatest(a,r.taskId!,latest.id,undefined,key);
+ detail=await f.service.task(a,r.taskId!);assert.equal(detail.jobs.length,2);assert.equal(detail.conversation.workPaused,false);assert.equal(detail.jobs.at(-1)!.state,'queued');
 });
 test("knowledge revocation is checked before worker billing; public credentials and private prompt snapshots stay off task receipts", async () => {
   const f = fixture();

@@ -112,10 +112,8 @@ export class NotionDocuments {
       const own = d.chatOperations?.find(o => o.id === op!.id && o.workspaceId === s.workspaceId && o.userId === s.userId && o.conversationId === cid);
       if (!own?.workRun?.notionReceipt || own.workRun.notionReceipt.expectedDigest !== receipt.expectedDigest || own.workRun.state === 'running') throw new NotionDocumentError('保存记录已改变，请重新检查');
       own.workRun.notionReceipt.state = 'verified'; own.workRun.notionReceipt.digest = hash(body); own.workRun.notionReceipt.error = undefined;
-      const c = d.conversations.find(c => c.id === cid && c.workspaceId === s.workspaceId && c.userId === s.userId)!;
-      c.workPaused = false;
       // This reconciles the save only. Never change cancelled/failed task state
-      // or automatically resume other queued work.
+      // or lift the pause: the connected client resumes any unpaused queue.
     });
     return { state: 'verified', url: receipt.url };
   }

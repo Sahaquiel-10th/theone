@@ -4,7 +4,7 @@ import type { KnowledgeService } from "./knowledge/knowledgeService.js";
 import { asyncRoute } from "./middleware.js";
 import { FeatureConfigError } from "./officialFeatures.js";
 import { ChatOperationError } from "./chatOperations.js";
-import { availableFeature, continueFeatureRun, executeFeatureRun, featureMember, featureRunResult, featureSummary, startFeatureRun, type FeatureRunDependencies } from "./featureRuns.js";
+import { availableFeature, continueFeatureRun, executeFeatureRun, featureMember, featureRunResult, featureSummary, retryFeatureRun, startFeatureRun, type FeatureRunDependencies } from "./featureRuns.js";
 import {featureCategories} from './featureCategories.js';
 import { featureEntitled, canReadKnowledge } from "./enterprisePolicy.js";
 import { featureBudgetPolicy, saveFeatureBudgetPolicy } from './featurePricing.js';
@@ -45,6 +45,7 @@ export function installFeatureRunRoutes(app: Express, keyAuth: readonly RequestH
     res.json({ items: rows.slice((page-1)*10,page*10).map(o => featureRunResult(db,s,o.operationId,false)), total: rows.length });
   }));
   router.get("/runs/:operationId", asyncRoute(async (req,res) => { res.json(featureRunResult(await store.read(),scope(req),String(req.params.operationId))); }));
+  router.post("/runs/:operationId/retry",asyncRoute(async(req,res)=>{const s=scope(req),started=await retryFeatureRun(store,s,String(req.params.operationId),req.body,()=>verifyKey(req));if(started.created)void executeFeatureRun(store,s,started.result.operationId,()=>verifyKey(req),knowledge,deps).catch(()=>{});res.status(started.created?202:200).json(started.result);}));
   router.post("/runs/:operationId/continue",asyncRoute(async(req,res)=>{const s=scope(req),started=await continueFeatureRun(store,s,String(req.params.operationId),req.body,()=>verifyKey(req));if(started.created)void executeFeatureRun(store,s,started.result.operationId,()=>verifyKey(req),knowledge,deps).catch(()=>{});res.status(started.created?202:200).json(started.result);}));
   router.get("/:id", asyncRoute(async (req,res) => {
     const db = await store.read(), s = scope(req), { record } = availableFeature(db,s,String(req.params.id));

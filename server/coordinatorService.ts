@@ -1,6 +1,7 @@
 import { canReadKnowledge } from "./enterprisePolicy.js";
 import type { Store } from "./db.js";
 import { executionReceipts } from "./executionService.js";
+import { taskRecovery } from '../src/taskRecovery.js';
 import {discussionOnly} from './executionIntent.js';
 import type {
   Database,
@@ -225,7 +226,7 @@ export class CoordinatorService {
   async cancelTask(s: WorkScope, id: string, verifyKey: () => Promise<void>) {
     await verifyKey();
     await this.store.mutate(d=>{
-      taskOf(d,s,id);
+      const task=taskOf(d,s,id);task.workPaused=true;task.updatedAt=at();
       for(const op of d.chatOperations??[])if(own(op,s)&&op.conversationId===id&&op.workRun&&['queued','running'].includes(op.workRun.state)) {
         op.workRun.state='cancelled';op.workRun.unread=true;op.status='interrupted';op.updatedAt=at();
       }
@@ -331,6 +332,7 @@ export class CoordinatorService {
       c = taskOf(db, s, id);
     return {
       conversation: c,
+      recovery: taskRecovery((db.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === id && o.workRun).map(o => ({ id: o.id, ...o.workRun! }))),
       jobs: (db.chatOperations ?? [])
         .filter((o) => own(o, s) && o.conversationId === id && o.workRun)
         .slice(-50)
@@ -740,7 +742,7 @@ export class CoordinatorService {
         const matches=exact?[exact]:available.filter(c=>c.title===id.trim());
         if(matches.length!==1)return {status:matches.length?'ambiguous':'not_found',message:'未定位到唯一可用任务。请用 search_tasks 返回的真实编号定位；不要猜测编号，也不要宣称已开始。',candidates:matches.map(c=>({id:c.id,title:c.title}))};
         const c=matches[0];
-        return { id: c.id, title: c.title, messages: c.messages.slice(-20).map(m => ({ role: m.role, content: m.content.slice(-4000) })), executionReceipts: executionReceipts(d, s.workspaceId, s.userId, id), handoffs: (d.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === id && o.workRun).slice(-5).map(o => o.workRun!.instruction) };
+        return { id: c.id, title: c.title, messages: c.messages.slice(-20).map(m => ({ role: m.role, content: m.content.slice(-4000) })), executionReceipts: executionReceipts(d, s.workspaceId, s.userId, c.id), handoffs: (d.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === c.id && o.workRun).slice(-5).map(o => o.workRun!.instruction) };
       }};
       const referenceTools:OrchestrationTool[]=[];
       const imageTool: OrchestrationTool = {
@@ -856,19 +858,21 @@ export class CoordinatorService {
     } catch (error) {
       // A worker was already committed. Never turn a lost final acknowledgement
       // into a fresh submission that could duplicate the user's task.
-      if (dispatched || imageTask)
+      if (dispatched || imageTask) {
+        const paused=dispatched&&(await this.store.read()).conversations.some(c=>own(c,s)&&c.id===dispatched&&c.workPaused);
         return this.finishDispatch(
           s,
           scope.operationId,
           cid,
           requestId,
           content,
-          imageTask && !dispatched ? "图片任务已入队，完成后会回到此对话。文字回答这轮未完整返回，不会自动重复调用。" : localRequested ? "事情和交接已保存。本机执行状态请查看这件事；尚不能确认已开始或完成，不会自动重复执行。" : "任务已排队，尚未完成。结果会回到此对话，也可在任务中查看进展。",
+          imageTask && !dispatched ? "图片任务已入队，完成后会回到此对话。文字回答这轮未完整返回，不会自动重复调用。" : localRequested ? "事情和交接已保存。本机执行状态请查看这件事；尚不能确认已开始或完成，不会自动重复执行。" : paused ? "补充已保存，任务仍暂停，尚未开始处理。请打开任务查看恢复方式，确认后只处理最新要求。" : "任务已排队，尚未完成。结果会回到此对话，也可在任务中查看进展。",
           config.model.id,
           trace,
           dispatched,
           sections,
         );
+      }
       // Failed routing is still a real, possibly billed attempt. Keep the same
       // owner's diagnostic record even when no worker was created. Never store
       // raw gateway/transport exceptions, which can contain credentials.
@@ -991,23 +995,41 @@ export class CoordinatorService {
     const db=await this.store.read(),c=taskOf(db,s,taskId);
     const source=db.chatOperations?.find(o=>own(o,s)&&o.conversationId===taskId&&o.id===sourceJobId&&o.workRun);
     if(!source)throw new CoordinatorError('原要求不可用，请重新打开任务',404);
-    const operationId=`retry_${createHash('sha256').update(source.id).digest('hex')}`;
-    const existing=db.chatOperations?.find(o=>own(o,s)&&o.operationId===operationId);
-    if(existing)return {taskId,status:existing.workRun?.state};
+    let operationId=`retry_${createHash('sha256').update(source.id).digest('hex')}`;
+    // Failed admission has no worker or model usage. A fresh explicit attempt
+    // can advance past that tombstone, while all concurrent clicks share one ID.
+    for(let attempts=0;;attempts++){
+      const existing=db.chatOperations?.find(o=>own(o,s)&&o.operationId===operationId);
+      if(!existing)break;
+      if(existing.workRun)return {taskId,status:existing.workRun.state};
+      if(existing.status==='pending')throw new CoordinatorError('恢复请求正在确认，请稍后查看任务状态',409);
+      if(attempts>=20||!['failed','interrupted'].includes(existing.status)||db.modelUsageRecords.some(u=>own(u,s)&&u.requestId===existing.requestId))throw new CoordinatorError('上次恢复未确认，请先核对任务记录后发送新要求',409);
+      operationId=`retry_${createHash('sha256').update(`${source.id}:${existing.id}`).digest('hex')}`;
+    }
     const jobs=(db.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===taskId&&o.workRun);
     if(jobs.at(-1)?.id!==source.id)throw new CoordinatorError('任务有新的要求，请刷新后处理最新要求');
     if(jobs.some(o=>o.workRun?.state==='running'))throw new CoordinatorError('任务正在处理，无需重复启动');
     const job=source.workRun!;
-    if(!['queued','failed','cancelled'].includes(job.state)||job.kind==='image'||job.notionTarget)throw new CoordinatorError('本轮不适合直接重新处理，请先核对已产生的结果');
+    const recovery=taskRecovery(jobs.map(o=>({id:o.id,...o.workRun!})));
+    if(recovery.kind==='resume'){
+      await this.store.mutate(d=>{
+        const task=taskOf(d,s,taskId);
+        const current=(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===taskId&&o.workRun);
+        if(current.at(-1)?.id!==source.id||current.at(-1)?.updatedAt!==source.updatedAt||task.updatedAt!==c.updatedAt||taskRecovery(current.map(o=>({id:o.id,...o.workRun!}))).kind!=='resume')throw new CoordinatorError('任务状态已变化，请刷新后确认最新要求',409);
+        featureMember(d,s);assertSources(d,s,job.sources);verifyCredentialBindings(d,s,job.credentials);
+        const prices=job.skills.map(f=>{availableFeature(d,s,f.id,f.releaseId);return{id:f.id,name:f.values.name,releaseId:f.releaseId,version:f.version,multiplier:featureMultiplier(f.values)};});
+        requireFeatureApproval(d,s,prices,featureApprovals);
+        task.workPaused=false;task.updatedAt=at();
+        for(const older of current)if(older.id!==source.id&&older.workRun!.state==='queued'){
+          older.workRun!.state='cancelled';older.workRun!.unread=false;older.status='interrupted';older.updatedAt=at();
+        }
+      });
+      return {taskId,status:'queued'};
+    }
+    if(recovery.kind!=='retry')throw new CoordinatorError(recovery.message);
     const original=c.messages.find(m=>m.id===job.inputMessageId);
     if(!original)throw new CoordinatorError('原话不可用');
-    await this.enqueue(s,{operationId,text:original.content,instruction:job.instruction,title:c.title,taskId,executorId:c.executorProfileId||'general',features:job.skills.map(f=>f.id),budget:job.budget,webSearch:job.webSearch,confirmedExternal:true,featureApprovals,originConversationId:taskId,originMessageId:original.id,attachmentIds:original.attachments?.map(a=>a.id),outputDestination:'chat'},verifyKey);
-    await this.store.mutate(d=>{
-      const task=taskOf(d,s,taskId);task.workPaused=false;task.updatedAt=at();
-      for(const op of d.chatOperations??[])if(own(op,s)&&op.conversationId===taskId&&op.operationId!==operationId&&op.workRun?.state==='queued'){
-        op.workRun.state='cancelled';op.workRun.unread=false;op.status='interrupted';op.updatedAt=at();
-      }
-    });
+    await this.enqueue(s,{operationId,text:original.content,instruction:job.instruction,title:c.title,taskId,executorId:c.executorProfileId||'general',features:job.skills.map(f=>f.id),budget:job.budget,webSearch:job.webSearch,confirmedExternal:true,featureApprovals,originConversationId:taskId,originMessageId:original.id,attachmentIds:original.attachments?.map(a=>a.id),outputDestination:'chat',retrySourceJobId:source.id,retrySourceVersion:{state:job.state,updatedAt:source.updatedAt,taskUpdatedAt:c.updatedAt}},verifyKey);
     return {taskId,status:'queued'};
   }
   private async enqueueImage(s:WorkScope,input:{operationId:string;parentOperationId:string;text:string;prompt:string;originConversationId:string;originMessageId:string;budget:number},verifyKey:()=>Promise<void>) {
@@ -1063,6 +1085,8 @@ export class CoordinatorService {
       localExecution?: boolean;
       outputDestination?: 'chat' | 'notion';
       parentOperationId?: string;
+      retrySourceJobId?: string;
+      retrySourceVersion?: {state:string;updatedAt:string;taskUpdatedAt:string};
     },
     verifyKey: () => Promise<void>,
   ) {
@@ -1162,6 +1186,15 @@ export class CoordinatorService {
       s,
       skills.flatMap((f) => f.values.tools ?? []),
     );
+    const verifyRetry = (d: Database) => {
+      if (!input.retrySourceJobId) return;
+      const task=taskOf(d, s, input.taskId!);
+      const jobs=(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===input.taskId&&o.workRun);
+      if(jobs.at(-1)?.id!==input.retrySourceJobId)throw new CoordinatorError('任务已有新的要求或恢复记录，请刷新后处理最新要求',409);
+      if(jobs.at(-1)?.workRun?.state!==input.retrySourceVersion?.state||jobs.at(-1)?.updatedAt!==input.retrySourceVersion?.updatedAt||task.updatedAt!==input.retrySourceVersion?.taskUpdatedAt)throw new CoordinatorError('任务状态已变化，请刷新后确认最新要求',409);
+      const recovery=taskRecovery(jobs.map(o=>({id:o.id,...o.workRun!})));
+      if(recovery.kind!=='retry')throw new CoordinatorError(recovery.message,409);
+    };
     const claim = await beginChatOperation(this.store, {
       ...s,
       operationId: input.operationId,
@@ -1169,10 +1202,11 @@ export class CoordinatorService {
       payload: { kind: "worker", ...input },
       beforeClaim: (d) => {
         featureMember(d, s);
+        verifyRetry(d);
         requireFeatureApproval(d,s,prices,input.featureApprovals);
         if(input.parentOperationId&&!d.chatOperations?.some(o=>own(o,s)&&o.operationId===input.parentOperationId&&o.status==='pending'))throw new CoordinatorError('调度已停止，未创建新任务',409);
         const queued = (d.chatOperations ?? []).filter(
-          (o) => own(o, s) && o.status === "pending" && o.workRun,
+          (o) => own(o, s) && o.status === "pending" && o.workRun && !(input.retrySourceJobId && o.conversationId===input.taskId && o.workRun.state==='queued'),
         );
         if (
           queued.length >= 20 ||
@@ -1185,6 +1219,7 @@ export class CoordinatorService {
     try {
       return await this.store.mutate((d) => {
         featureMember(d, s);
+        verifyRetry(d);
         if(input.parentOperationId&&!d.chatOperations?.some(o=>own(o,s)&&o.operationId===input.parentOperationId&&o.status==='pending'))throw new CoordinatorError('调度已停止，未创建新任务',409);
         resolveExecutor(d, executorId, modelOf(d, config.model.id));
         assertSources(d, s, sources);
@@ -1255,6 +1290,12 @@ export class CoordinatorService {
           createdAt: at(),
         });
         const op = d.chatOperations!.find((o) => o.id === claim.operation.id)!;
+        if(input.retrySourceJobId){
+          c.workPaused=false;
+          for(const older of d.chatOperations??[])if(own(older,s)&&older.conversationId===c.id&&older.id!==op.id&&older.workRun?.state==='queued'){
+            older.workRun.state='cancelled';older.workRun.unread=false;older.status='interrupted';older.updatedAt=at();
+          }
+        }
         op.conversationId = c.id;
         op.workRun = {
           notionTarget,

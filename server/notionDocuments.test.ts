@@ -96,3 +96,27 @@ test('Notion uncertain save can be reconciled by readback only without restartin
   assert.equal(f.db.chatOperations![0].workRun!.state,'cancelled');
   assert.equal(f.db.chatOperations![0].workRun!.notionReceipt!.state,'verified');
 });
+test('Notion readback keeps a paused task paused and its queued supplements ineligible to resume',async()=>{
+  const f=fixture(),job=f.job();
+  const read=f.mcp.readDocument.bind(f.mcp);
+  f.mcp.readDocument=async()=>{throw new Error('readback disconnected');};
+  const tool=f.docs.tool(s,'op','task',job,async()=>{});
+  await assert.rejects(()=>tool.structured!.run({title:'测试',content:'已经保存的文章'}),/未确认/);
+  job.state='failed';
+  f.db.conversations[0].workPaused=true;
+  const supplement=f.job('queued-supplement',pageId);
+  supplement.state='queued';
+  f.db.chatOperations![1].status='pending';
+  const queuedBefore=structuredClone(f.db.chatOperations![1]);
+  f.mcp.readDocument=read;
+
+  await assert.rejects(()=>f.docs.reconcile({workspaceId:'wb',userId:'b'},'task',async()=>{}));
+  assert.equal(f.db.chatOperations![0].workRun!.notionReceipt!.state,'uncertain');
+  const result=await f.docs.reconcile(s,'task',async()=>{});
+
+  assert.equal(result.state,'verified');
+  assert.equal(f.calls.length,1,'verification must not issue another write');
+  assert.equal(job.state,'failed','verified save does not mean the whole task completed');
+  assert.equal(f.db.conversations[0].workPaused,true,'readback must not make the client auto-resume supplements');
+  assert.deepEqual(f.db.chatOperations![1],queuedBefore);
+});

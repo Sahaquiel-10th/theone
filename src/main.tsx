@@ -767,9 +767,21 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const task=coordinator.snapshot?.tasks.find(t=>t.id===id);
     const conversation=coordinator.details[id]?.conversation||conversations.find(c=>c.id===id);
     if(!coordinator.enabled||!(task?.paused||conversation?.workPaused))return null;
-    const error=coordinator.details[id]?.jobs.at(-1)?.error;
+    const detail=coordinator.details[id];
+    const error=detail?.jobs.filter(job=>job.error).at(-1)?.error;
+    const recovery=detail?.recovery;
     const latest=conversation?.messages.filter(m=>m.role==='user').at(-1)?.content;
-    return <section className="task-recovery" role="status"><strong>这次没有完成</strong><p>{error||'任务已暂停，尚未开始处理新的要求。'}</p><p>原话和附件仍在。重新处理会使用当前配置，只处理最新要求；较早待办保留历史，不再执行。</p><button type="button" onClick={()=>{if(confirm(`重新处理最新要求：${latest?.slice(0,240)||'查看原要求'}\n将沿用原附件和功能，可能产生新用量；不会重复执行较早待办。`))void coordinator.retryTask(id).then(()=>refresh()).catch(e=>setError(e.message));}}>重新处理最新要求</button></section>;
+    const retrying=coordinator.retryingTasks.includes(id);
+    const actionLabel=recovery?.kind==='resume'?'开始处理最新要求':'重新处理最新要求';
+    return <section className="task-recovery" role="status">
+      <strong>任务已暂停</strong><p>{error||'新补充已保存，尚未开始处理。'}</p>
+      <p>{recovery?.message||'正在读取恢复方式…'}</p>
+      {recovery&&['retry','resume'].includes(recovery.kind)?<button type="button" disabled={retrying} onClick={()=>{
+        if(confirm(`${actionLabel}：${latest?.slice(0,240)||'查看原要求'}\n将沿用原附件和功能，可能产生新用量；不会重复执行较早待办。`))void coordinator.retryTask(id).then(()=>refresh()).catch(e=>setError(e.message));
+      }}>{retrying?'正在恢复…':actionLabel}</button>:null}
+      {recovery?.kind==='review_notion'?<NotionReceiptNotice api={api} taskId={id} receipt={detail?.jobs.filter(j=>j.notionReceipt).at(-1)?.notionReceipt} onRefresh={()=>coordinator.load(id)} />:null}
+      {!detail?<button type="button" onClick={()=>void coordinator.load(id).catch(e=>setError(e.message))}>查看恢复方式</button>:null}
+    </section>;
   }
   async function loadThingMessages(id:string, force=false) {
     const item=conversations.find(conversation=>conversation.id===id);
@@ -1942,7 +1954,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           }
         }} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)}/>:null}
         {coordinator.removedTask?<p role="status">任务已删除，历史保留。<button type="button" onClick={()=>void coordinator.restoreTask().then(()=>refresh()).catch(e=>setError(e.message))}>恢复任务（不会自动重跑）</button></p>:null}
-        {coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onResume={async id=>{await coordinator.resumeTask(id);await refresh();}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null}
+        {coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null}
 
         {!preview.enabled && (otherRows.length > 0 || unreadNotices.length > 0 || taskStatusUnavailable) ? <section className="studio-activity attention-activity" aria-label="任务动态">
           {otherRows.length > 0 || unreadNotices.length > 0 ? <button className="attention-activity-toggle" type="button" aria-expanded={activityExpanded} aria-controls="attention-task-list" onClick={() => setActivityExpanded(value => !value)}>
@@ -1966,6 +1978,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </div>
 
         <form className="composer studio-composer" onSubmit={send}>
+          {coordinator.enabled&&coordinator.state.boundTask&&coordinator.state.boundTask!==activeId?taskPauseNotice(coordinator.state.boundTask):null}
           {preview.enabled&&featureForNext.length>0?<div className="selected-feature-list" aria-label="下一条使用的功能">{featureForNext.map(feature=><button key={feature.id} type="button" className="selected-feature-chip" aria-label={`取消功能：${feature.name}`} onClick={()=>setFeatureForNext(previous=>previous.filter(item=>item.id!==feature.id))}><Sparkles size={13}/><span>{feature.name}</span><X size={12}/></button>)}<small>下一条使用</small></div>:null}
           {!models.length ? <div className="chat-error"><span>模型未就绪，请联系管理员。</span><button type="button" onClick={() => void refresh()}>重试</button></div> : null}
           {pendingRequests.length ? <details className="one-pending-answers"><summary>有 {pendingRequests.length} 条消息待确认 · 查看原结果，不重复扣费</summary>{pendingRequests.map(item => <button type="button" key={item.operationId} onClick={() => void recoverAnswer(item.operationId)}>查看 {dateTime(item.createdAt)} 的结果</button>)}</details> : null}

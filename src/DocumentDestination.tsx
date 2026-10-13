@@ -7,7 +7,7 @@ export function NotionReceiptNotice({ api, taskId, receipt, onRefresh }: { api: 
   const [busy,setBusy]=useState(false),[notice,setNotice]=useState('');
   if (!receipt || receipt.state === 'verified') return null;
   return <section className="notion-writing-settings" aria-label="Notion 保存回执"><p>Notion 保存尚未确认，不会自动重复写入。</p>{receipt.url ? <a href={receipt.url} target="_blank" rel="noreferrer">打开原页面核对 ↗</a> : <p>暂未取得页面编号，请在 Notion 检查草稿目录。</p>}
-    {receipt.url ? <button type="button" disabled={busy} onClick={async()=>{setBusy(true);setNotice('');try{await api(`/api/coordinator/tasks/${encodeURIComponent(taskId)}/notion/verify`,{method:'POST'});setNotice('已重新回读，保存内容一致。可以继续提出修改要求。');await onRefresh();}catch(e){setNotice(e instanceof Error?e.message:'暂未确认，没有重发保存请求');}finally{setBusy(false);}}}>{busy?'正在回读核对…':'核对保存结果（不重写）'}</button> : null}
+    {receipt.url ? <button type="button" disabled={busy} onClick={async()=>{setBusy(true);setNotice('');try{await api(`/api/coordinator/tasks/${encodeURIComponent(taskId)}/notion/verify`,{method:'POST'});setNotice('已重新回读，保存内容一致。待办仍保持暂停，可确认处理最新要求。');await onRefresh();}catch(e){setNotice(e instanceof Error?e.message:'暂未确认，没有重发保存请求');}finally{setBusy(false);}}}>{busy?'正在回读核对…':'核对保存结果（不重写）'}</button> : null}
     {notice ? <p role="status">{notice}</p> : null}</section>;
 }
 type WritingSettings = { connected: boolean; writeAuthorized: boolean; ready: boolean; parentId: string; referenceIds: string[] };
