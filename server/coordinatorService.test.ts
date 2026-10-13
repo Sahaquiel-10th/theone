@@ -1111,6 +1111,9 @@ test('task lookup accepts unique exact title, rejects unknown IDs without failin
  query='cnv_guessed_not_real';
  await f.service.dispatch(a,input('operation_lookup_003','请查看任务'),key);
  assert.match(f.calls.at(-1)!.messages.at(-1)!.content!,/not_found/);
+ await f.service.dispatch(a,{...input('operation_lookup_004','请查看任务'),boundTaskId:r.taskId!},key);
+ assert.match(f.calls.at(-1)!.messages.at(-1)!.content!,new RegExp(r.taskId!));
+ assert.ok(f.calls.at(-1)!.messages.some(m=>m.content?.includes('当前输入框明确绑定的任务与最近成果')));
 });
 test("knowledge revocation is checked before worker billing; public credentials and private prompt snapshots stay off task receipts", async () => {
   const f = fixture();
