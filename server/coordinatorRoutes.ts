@@ -108,6 +108,12 @@ export function installCoordinatorRoutes(
   router.post('/tasks/:id/stop', asyncRoute(async(req,res)=>res.json(await service.cancelTask(scope(req),String(req.params.id),()=>verifyKey(req)))));
   router.delete('/tasks/:id', asyncRoute(async(req,res)=>res.json(await service.removeTask(scope(req),String(req.params.id),()=>verifyKey(req)))));
   router.post('/tasks/:id/restore', asyncRoute(async(req,res)=>res.json(await service.restoreTask(scope(req),String(req.params.id),()=>verifyKey(req)))));
+  router.post('/tasks/:id/retry',asyncRoute(async(req,res)=>{
+    if(req.body?.confirmed!==true||typeof req.body?.sourceJobId!=='string')throw new CoordinatorError('重新处理需确认最新要求',400);
+    const verify=()=>verifyKey(req),s=scope(req);
+    res.status(202).json(await service.retryLatest(s,String(req.params.id),req.body.sourceJobId,req.body.featureApprovals,verify));
+    void service.resume(s,verify).catch(()=>{});
+  }));
   router.post('/tasks/:id/notion/verify', asyncRoute(async(req,res)=>{
     if (!deps.notionDocuments) throw new CoordinatorError('Notion 保存尚未连接', 428);
     res.json(await deps.notionDocuments.reconcile(scope(req), String(req.params.id), () => verifyKey(req)));

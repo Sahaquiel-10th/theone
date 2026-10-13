@@ -134,9 +134,9 @@ export async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs
     return new Response(bytes, { status: response.status, statusText: response.statusText, headers: response.headers });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(`模型响应超时（已等待 ${Math.max(1, Math.round(timeoutMs / 1000))} 秒），请缩短问题或稍后重试`);
+      throw new ModelRequestError(408,`模型响应超时，已等待 ${Math.max(1, Math.round(timeoutMs / 1000))} 秒；没有收到完整结果`);
     }
-    throw new Error("无法连接模型服务，请稍后重试");
+    throw new ModelRequestError(503,"无法连接模型服务，请稍后重试");
   } finally {
     clearTimeout(timeout);
   }

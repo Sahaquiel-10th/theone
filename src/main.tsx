@@ -767,7 +767,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const task=coordinator.snapshot?.tasks.find(t=>t.id===id);
     const conversation=coordinator.details[id]?.conversation||conversations.find(c=>c.id===id);
     if(!coordinator.enabled||!(task?.paused||conversation?.workPaused))return null;
-    return <p role="status">此前处理未完成，任务已暂停。原话、附件和用量保留，不会自动重跑。<button type="button" onClick={()=>{if(confirm('仅处理最新待办？较早待办保留历史但停止处理，不重跑失败轮次；会产生新的用量。'))void coordinator.resumeTask(id,true).then(()=>refresh()).catch(e=>setError(e.message));}}>仅处理最新要求</button><button type="button" onClick={()=>{if(confirm('继续所有尚未执行的补充，不重跑失败轮次；会产生新的用量。继续？'))void coordinator.resumeTask(id).then(()=>refresh()).catch(e=>setError(e.message));}}>继续全部待办</button></p>;
+    const error=coordinator.details[id]?.jobs.at(-1)?.error;
+    const latest=conversation?.messages.filter(m=>m.role==='user').at(-1)?.content;
+    return <section className="task-recovery" role="status"><strong>这次没有完成</strong><p>{error||'任务已暂停，尚未开始处理新的要求。'}</p><p>原话和附件仍在。重新处理会使用当前配置，只处理最新要求；较早待办保留历史，不再执行。</p><button type="button" onClick={()=>{if(confirm(`重新处理最新要求：${latest?.slice(0,240)||'查看原要求'}\n将沿用原附件和功能，可能产生新用量；不会重复执行较早待办。`))void coordinator.retryTask(id).then(()=>refresh()).catch(e=>setError(e.message));}}>重新处理最新要求</button></section>;
   }
   async function loadThingMessages(id:string, force=false) {
     const item=conversations.find(conversation=>conversation.id===id);

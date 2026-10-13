@@ -86,6 +86,7 @@ export function useCoordinator(
     submissionError = useRef(""),
     resumeKey = useRef("");
   const resumeAt = useRef(0);
+  const retrying=useRef(new Set<string>());
   const [removedTask,setRemovedTask] = useState<string|null>(null);
   snapshotRef.current = snapshot;
   detailsRef.current = details;
@@ -176,7 +177,7 @@ export function useCoordinator(
         const operation = next.pendingOperationId || persisted;
         if (operation) {
           setPending(operation);
-          let status: {status:string;taskId?:string;progress?:{phase:string;startedAt:string}};
+          let status: {status:string;error?:string;taskId?:string;progress?:{phase:string;startedAt:string}};
           try { status = await api(`/api/coordinator/messages/${encodeURIComponent(operation)}`); }
           catch(e) {
             if(e instanceof ApiError && e.status===404) {
@@ -199,7 +200,7 @@ export function useCoordinator(
             setPending(null);
             forgetChatSubmission(`coordinator:${userId}`,operation);
             if (status.status !== "completed") {
-              submissionError.current = status.status==='interrupted' ? "回复已停止，原话保留；已经交出的任务可在任务区单独停止，不会自动重跑。" : "这条消息未完成，原话和已产生的用量保留；不会自动重跑。";
+              submissionError.current = status.status==='interrupted' ? "回复已停止，原话保留；已经交出的任务可在任务区单独停止，不会自动重跑。" : status.error ? `${status.error}。原话和已产生的用量保留；不会自动重跑。` : "这条消息未完成，原话和已产生的用量保留；不会自动重跑。";
               setError(submissionError.current);
             }
           } else setProgress(status.progress || {phase:'正在等待处理结果',startedAt:next.conversation?.messages.at(-1)?.createdAt || new Date().toISOString()});
@@ -318,6 +319,17 @@ export function useCoordinator(
     await load(id);
     await refresh();
   }
+  async function retryTask(id:string) {
+    if(retrying.current.has(id))return;
+    retrying.current.add(id);
+    try{
+    const detail=await load(id),job=detail.jobs.at(-1);
+    if(!job)throw new Error('此任务没有可重新处理的要求');
+    const featureApprovals=await approveFeaturePrices(api,[],id);
+    await api(`/api/coordinator/tasks/${encodeURIComponent(id)}/retry`,{method:'POST',body:JSON.stringify({sourceJobId:job.id,confirmed:true,featureApprovals})});
+    await load(id);await refresh();
+    }finally{retrying.current.delete(id);}
+  }
   function dispatch(action: Action) {
     if (action.type === "select") {
       setSelected(action.taskId);
@@ -402,6 +414,7 @@ export function useCoordinator(
     acknowledge,
     report: async (ids: string[]) => { await api("/api/coordinator/reports", { method: "POST", body: JSON.stringify({ ids }) }); await refresh(); },
     resumeTask,
+    retryTask,
     removedTask,
     removeTask: async (id:string) => {
       await api(`/api/coordinator/tasks/${encodeURIComponent(id)}`,{method:'DELETE'});

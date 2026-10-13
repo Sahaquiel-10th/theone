@@ -41,6 +41,7 @@ import type { KnowledgeService } from "./knowledge/knowledgeService.js";
 import { appendOwnerContextTrace } from "./contextTrace.js";
 import type { FeatureRunDependencies } from "./featureRuns.js";
 import fs from "node:fs/promises";
+import {createHash} from 'node:crypto';
 import { NotionDocuments, NotionDocumentError, writingTarget } from './notionDocuments.js';
 import {
   publicAttachmentSummary,
@@ -731,7 +732,12 @@ export class CoordinatorService {
         return found.map(c => ({ id: c.id, title: c.title, updatedAt: c.updatedAt, recent: c.messages.slice(-2).map(m => m.content.slice(0, 500)) }));
       }};
       const readTool: OrchestrationTool = { name: "read_task", description: config.values.toolDescriptions?.read_task || "用已定位的事情 ID 读取该事情的最近原文和交接，核对目标与限制。", run: async id => {
-        await verify(); const d = await this.store.read(), c = taskOf(d, s, id);
+        await verify(); const d = await this.store.read();
+        const available=d.conversations.filter(c=>own(c,s)&&!c.coordinatorMain&&!c.archived);
+        const exact=available.find(c=>c.id===id);
+        const matches=exact?[exact]:available.filter(c=>c.title===id.trim());
+        if(matches.length!==1)return {status:matches.length?'ambiguous':'not_found',message:'未定位到唯一可用任务。请用 search_tasks 返回的真实编号定位；不要猜测编号，也不要宣称已开始。',candidates:matches.map(c=>({id:c.id,title:c.title}))};
+        const c=matches[0];
         return { id: c.id, title: c.title, messages: c.messages.slice(-20).map(m => ({ role: m.role, content: m.content.slice(-4000) })), executionReceipts: executionReceipts(d, s.workspaceId, s.userId, id), handoffs: (d.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === id && o.workRun).slice(-5).map(o => o.workRun!.instruction) };
       }};
       const referenceTools:OrchestrationTool[]=[];
@@ -868,12 +874,12 @@ export class CoordinatorService {
         appendOwnerContextTrace(d, {
           id: uid("ctx"), ...s, conversationId: cid, assistantMessageId: "",
           modelId: config.model.id, requestId, query: content,
-          responsePreview: error instanceof CoordinatorError || error instanceof FeatureConfigError ? error.message.slice(0, 500) : "本次未完成分派，可能已有模型用量；不会自动重试",
+          responsePreview: error instanceof CoordinatorError || error instanceof FeatureConfigError || error instanceof ModelRequestError ? error.message.slice(0, 500) : "本次未完成分派，可能已有模型用量；不会自动重试",
           sections, executionSteps: trace, createdAt: at(),
         });
       });
       await failChatOperation(this.store, scope);
-      throw error instanceof CoordinatorError || error instanceof FeatureConfigError
+      throw error instanceof CoordinatorError || error instanceof FeatureConfigError || error instanceof ModelRequestError
         ? error
         : new CoordinatorError(
             "本次未完成分派，可能已有模型用量；不会自动重试",
@@ -976,6 +982,30 @@ export class CoordinatorService {
         verifyKey,
       ),
     };
+  }
+  async retryLatest(s:WorkScope,taskId:string,sourceJobId:string,featureApprovals:FeatureApproval[]|undefined,verifyKey:()=>Promise<void>) {
+    await verifyKey();
+    const db=await this.store.read(),c=taskOf(db,s,taskId);
+    const source=db.chatOperations?.find(o=>own(o,s)&&o.conversationId===taskId&&o.id===sourceJobId&&o.workRun);
+    if(!source)throw new CoordinatorError('原要求不可用，请重新打开任务',404);
+    const operationId=`retry_${createHash('sha256').update(source.id).digest('hex')}`;
+    const existing=db.chatOperations?.find(o=>own(o,s)&&o.operationId===operationId);
+    if(existing)return {taskId,status:existing.workRun?.state};
+    const jobs=(db.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===taskId&&o.workRun);
+    if(jobs.at(-1)?.id!==source.id)throw new CoordinatorError('任务有新的要求，请刷新后处理最新要求');
+    if(jobs.some(o=>o.workRun?.state==='running'))throw new CoordinatorError('任务正在处理，无需重复启动');
+    const job=source.workRun!;
+    if(!['queued','failed','cancelled'].includes(job.state)||job.kind==='image'||job.notionTarget)throw new CoordinatorError('本轮不适合直接重新处理，请先核对已产生的结果');
+    const original=c.messages.find(m=>m.id===job.inputMessageId);
+    if(!original)throw new CoordinatorError('原话不可用');
+    await this.enqueue(s,{operationId,text:original.content,instruction:job.instruction,title:c.title,taskId,executorId:c.executorProfileId||'general',features:job.skills.map(f=>f.id),budget:job.budget,webSearch:job.webSearch,confirmedExternal:true,featureApprovals,originConversationId:taskId,originMessageId:original.id,attachmentIds:original.attachments?.map(a=>a.id),outputDestination:'chat'},verifyKey);
+    await this.store.mutate(d=>{
+      const task=taskOf(d,s,taskId);task.workPaused=false;task.updatedAt=at();
+      for(const op of d.chatOperations??[])if(own(op,s)&&op.conversationId===taskId&&op.operationId!==operationId&&op.workRun?.state==='queued'){
+        op.workRun.state='cancelled';op.workRun.unread=false;op.status='interrupted';op.updatedAt=at();
+      }
+    });
+    return {taskId,status:'queued'};
   }
   private async enqueueImage(s:WorkScope,input:{operationId:string;parentOperationId:string;text:string;prompt:string;originConversationId:string;originMessageId:string;budget:number},verifyKey:()=>Promise<void>) {
     await verifyKey();
@@ -1686,7 +1716,7 @@ export class CoordinatorService {
         o.status = "failed";
         o.workRun.state = "failed";
         o.workRun.unread = true;
-        o.workRun.error = error instanceof ModelRequestError ? `${error.message}。任务已暂停，原话和附件保留，不会自动重跑。` : error instanceof NotionDocumentError ? error.message :
+        o.workRun.error = error instanceof ModelRequestError ? `${error.message}。任务已暂停，原话和附件保留，不会自动重跑。` : error instanceof NotionDocumentError || error instanceof CoordinatorError || error instanceof FeatureConfigError ? error.message :
           "本轮未完成，请检查授权、模型和电力；可能已有实际用量，不会自动重跑。";
         o.updatedAt = at();
         const c = d.conversations.find(

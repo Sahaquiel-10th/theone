@@ -1086,6 +1086,32 @@ test('explicit latest-only resume retains older inputs without executing or bill
  assert.ok(detail.conversation.messages.some(m=>m.content==='UI 第一条'));
  assert.equal(f.calls.filter(c=>c.modelId==='worker').length,1);
 });
+test('explicit retry preserves original, uses current configuration and deduplicates repeated clicks',async()=>{
+ const f=fixture(),r=await f.service.dispatch(a,input('operation_retry_001','UI 原始要求'),key);
+ const source=(await f.service.task(a,r.taskId!)).jobs[0];
+ await f.store.mutate(d=>{const o=d.chatOperations!.find(o=>o.id===source.id)!;o.status='failed';o.workRun!.state='failed';d.conversations.find(c=>c.id===r.taskId)!.workPaused=true;
+ updateTaskConfig(d.settings,d.models,'task_worker',{revision:2,action:'draft',values:{...defaultTaskValues('task_worker'),modelId:'special'}},'a','now');
+ updateTaskConfig(d.settings,d.models,'task_worker',{revision:3,action:'publish'},'a','now');});
+ await assert.rejects(()=>f.service.retryLatest(b,r.taskId!,source.id,undefined,key),/不存在/);
+ await f.service.retryLatest(a,r.taskId!,source.id,undefined,key);
+ await f.service.retryLatest(a,r.taskId!,source.id,undefined,key);
+ const before=await f.service.task(a,r.taskId!);
+ assert.equal(before.jobs.length,2);assert.equal(before.jobs[0].state,'failed');assert.equal(before.jobs[1].modelId,'special');assert.equal(before.conversation.workPaused,false);
+ assert.equal(before.conversation.messages.filter(m=>m.content==='UI 原始要求').length,2);
+ await f.service.resume(a,key);
+ await waitFor(async()=>(await f.service.task(a,r.taskId!)).jobs[1].state==='completed');
+ assert.equal(f.calls.filter(c=>c.modelId==='special').length,1);
+});
+test('task lookup accepts unique exact title, rejects unknown IDs without failing routing or leaking other workspaces',async()=>{
+ const f=fixture(),r=await f.service.dispatch(a,input('operation_lookup_001','UI 原话'),key);
+ let query='UI 设计';
+ f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('已核对'):({...answer(''),toolCalls:[{id:'read',type:'function',function:{name:'read_task',arguments:JSON.stringify({query})}}]}));
+ await f.service.dispatch(a,input('operation_lookup_002','请查看任务'),key);
+ const result=f.calls.at(-1)!.messages.at(-1)!.content!;assert.match(result, new RegExp(r.taskId!));
+ query='cnv_guessed_not_real';
+ await f.service.dispatch(a,input('operation_lookup_003','请查看任务'),key);
+ assert.match(f.calls.at(-1)!.messages.at(-1)!.content!,/not_found/);
+});
 test("knowledge revocation is checked before worker billing; public credentials and private prompt snapshots stay off task receipts", async () => {
   const f = fixture();
   await f.store.mutate((d) =>
