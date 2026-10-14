@@ -182,6 +182,14 @@ export type ExecutionTask = {
   reportedRound?: number;
   noticeReadRound?: number;
   reportRound?: number;
+  /** Private delivery binding, issued by the server before sending a local round. */
+  deliveryAttempt?: { id: string; round: number; issuedAt: string };
+  transportInterruption?: { attemptId: string; round: number;
+    reason: 'proof_timeout' | 'heartbeat_timeout' | 'socket_close' | 'socket_error' | 'connection_replaced' | 'local_storage' | 'cancellation_pending';
+    at: string; closeCode?: number };
+  terminalReceipt?: { id: string; hash: string; attemptId: string; round: number; receivedAt: string;
+    outcome: 'completed' | 'failed' | 'cancelled'; disposition: 'accepted' | 'supplemental'; receiptMessageId?: string };
+  executionSafetyHold?: 'launcher_interrupted';
   createdAt: string; updatedAt: string; startedAt?: string; completedAt?: string;
 };
 export type ExecutionEvent = {

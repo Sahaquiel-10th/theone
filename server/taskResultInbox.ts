@@ -1,6 +1,7 @@
 import type { Attachment, AttachmentSummary, Conversation, Database, ExecutionTask, Message } from './types.js';
 import type { ChatOperation } from './chatOperations.js';
 import { createHash } from 'node:crypto';
+import { localExecutionResultId } from './executionService.js';
 
 export type TaskResultScope = { workspaceId: string; userId: string };
 export type TaskResultOutcome = 'completed' | 'returned' | 'failed' | 'partial' | 'needs_input' | 'cancelled' | 'interrupted';
@@ -79,8 +80,10 @@ function localResult(db: Database, scope: TaskResultScope, execution: ExecutionT
   const task = ownedTask(db, scope, execution.conversationId);
   if (!task || !terminal.has(execution.status)) return;
   const round = execution.reportRound ?? 0;
-  const id = `${execution.id}${round ? `_${round}` : ''}`;
-  const receiptId = `execution_receipt_${execution.id}_${round}`;
+  const receiptId = execution.terminalReceipt?.round === round
+    ? execution.terminalReceipt.receiptMessageId ?? `execution_receipt_${execution.id}_${round}`
+    : `execution_receipt_${execution.id}_${round}`;
+  const id = localExecutionResultId(execution.id, round, receiptId);
   const persisted = db.messages.find(m => own(m, scope) && m.conversationId === task.id && m.id === receiptId);
   const answer = execution.finalResponse?.trim() ?? '', error = execution.lastError?.trim() ?? '';
   const result = answer && error.startsWith(answer) ? error : error && answer.startsWith(error) ? answer : [error, answer].filter(Boolean).join('\n');
@@ -88,9 +91,11 @@ function localResult(db: Database, scope: TaskResultScope, execution: ExecutionT
     : execution.status === 'failed' && answer ? 'partial' : execution.status as TaskResultOutcome;
   const reported = Boolean(marker(db, scope, id) || (execution.reportedToCoordinatorAt
     && (execution.reportedRound === round || execution.reportedRound === undefined && round === 0)));
+  const summary = persisted?.content || result || '没有可确认的执行结果，请查看本轮过程。';
   return { id, sourceId: execution.id, source: 'local', taskId: task.id, title: clip(task.title, 120), outcome, state: outcome,
-    summary: clip(persisted?.content || result || (outcome === 'cancelled' ? '本轮已停止，已产生的修改不会自动撤销。' : '没有可确认的执行结果，请查看本轮过程。'), max),
-    createdAt: execution.completedAt ?? execution.updatedAt, resultMessageId: persisted?.id, attachments: [],
+    summary: clip(outcome === 'cancelled' ? `本轮已停止，已产生的修改不会自动撤销。\n${summary}` : summary, max),
+    createdAt: execution.terminalReceipt?.round === round ? execution.terminalReceipt.receivedAt : execution.completedAt ?? execution.updatedAt,
+    resultMessageId: persisted?.id, attachments: [],
     location: clip(execution.targetName, 500) || undefined, round, reported, reviewed: execution.noticeReadRound === round };
 }
 function allResults(db: Database, scope: TaskResultScope, max: number) {
@@ -139,10 +144,14 @@ export function capturedTaskResultsForReport(db: Database, scope: TaskResultScop
       && latest.round === result.round) return latest.reported ? [] : [latest];
     if (result.source !== 'local' || !Number.isInteger(result.round) || result.round! < 0 || result.imageUrl || result.attachments.length) return [];
     const task = db.executionTasks.find(task => own(task, scope) && task.id === result.sourceId && task.conversationId === result.taskId);
-    const expectedId = `${result.sourceId}${result.round ? `_${result.round}` : ''}`, expectedMessage = `execution_receipt_${result.sourceId}_${result.round}`;
+    const expectedMessage = result.resultMessageId;
+    const prefix = `execution_receipt_${result.sourceId}_${result.round}`;
+    const validMessage = expectedMessage === prefix || Boolean(expectedMessage?.startsWith(`${prefix}_recovery_`)
+      && /^[a-f0-9]{24}$/.test(expectedMessage.slice(`${prefix}_recovery_`.length)));
     const evidence = capture.localEvidence;
-    if (!task || (task.reportRound ?? 0) <= result.round! || result.id !== expectedId || result.resultMessageId !== expectedMessage
-      || evidence?.messageId !== expectedMessage || !ownedTask(db, scope, result.taskId) || marker(db, scope, result.id)) return [];
+    if (!task || (task.reportRound ?? 0) < result.round! || !validMessage
+      || result.id !== localExecutionResultId(result.sourceId, result.round!, expectedMessage)
+      || !evidence || evidence.messageId !== expectedMessage || !ownedTask(db, scope, result.taskId) || marker(db, scope, result.id)) return [];
     const persisted = db.messages.find(message => own(message, scope) && message.conversationId === result.taskId
       && message.id === expectedMessage && message.role === 'assistant');
     if (!persisted || persisted.createdAt !== evidence.createdAt
@@ -193,7 +202,7 @@ export function markTaskResultsReported(db: Database, scope: TaskResultScope, in
       run.reportedToCoordinatorAt = timestamp; run.reportMessageId = input.assistantMessageId;
     } else {
       const task = db.executionTasks.find(t => own(t, scope) && t.id === result.sourceId)!;
-      if ((task.reportRound ?? 0) === result.round) {
+      if ((task.reportRound ?? 0) === result.round && localResult(db, scope, task, 1200)?.id === result.id) {
         task.reportedToCoordinatorAt = timestamp; task.reportMessageId = input.assistantMessageId; task.reportedRound = result.round;
       }
     }

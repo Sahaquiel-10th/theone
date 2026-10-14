@@ -150,6 +150,8 @@ test("execution dispatch enforces membership, owner, device and original runtime
   assert.deepEqual(f.calls, ["start:da:ta", "continue:da:ta", "cancel:da:ta"]);
   f.online(false);
   await assert.rejects(f.service.dispatch(scope, "ta", "continue", "test"));
+  await f.service.dispatch(scope, 'ta', 'cancel');
+  assert.equal(f.calls.at(-1), 'cancel:da:ta', 'owned cancellation remains available while offline');
   f.online(true); f.local(true);
   assert.equal(await f.service.selectExecution(scope), "local_agent");
   await assert.rejects(f.service.dispatch(scope, "ta", "continue", "test"));

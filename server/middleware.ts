@@ -4,6 +4,7 @@ import { Role, User } from "./types.js";
 import { resolveWorkspaceAccess } from "./workspaceAccess.js";
 import type { Store } from "./db.js";
 import type { OneKeyPresence } from "./oneKeyPresence.js";
+import { validInstallationId } from './oneKeyInstallation.js';
 
 declare global {
   namespace Express {
@@ -18,7 +19,7 @@ declare global {
 
 type AuthDependencies = { store: Pick<Store, "read">; oneKeyPresence: Pick<OneKeyPresence, "requireProof" | "runtimeStatus"> };
 
-export function auth(secret: string, injected?: AuthDependencies, options?: { runtimeStatusOnly: true }) {
+export function auth(secret: string, injected?: AuthDependencies, options?: { runtimeStatusOnly: true } | { executionStopOnly: true }) {
   return async (req: Request, res: Response, next: NextFunction) => {
     const header = req.headers.authorization;
     const cookieToken = req.headers.cookie
@@ -61,7 +62,19 @@ export function auth(secret: string, injected?: AuthDependencies, options?: { ru
         // metadata-only route still checks the exact owner, Key and computer.
         // During hand-off it may return a bounded, explicitly disconnected
         // journal entry. That entry is never accepted as business-request proof.
-        if (options?.runtimeStatusOnly && req.method === "GET" && req.path === "/api/runtime/update") {
+        const stop = options && 'executionStopOnly' in options && options.executionStopOnly && req.method === 'POST'
+          && /^\/api\/executions\/[A-Za-z0-9_-]+\/cancel$/.test(req.path);
+        if (stop) {
+          const device = db.oneKeyDevices.find(d => d.id === payload!.deviceId && d.status === 'active'
+            && d.workspaceId === access.workspaceId && d.userId === user.id);
+          const taskId = req.path.split('/')[3];
+          const task = db.executionTasks.find(t => t.id === taskId && t.workspaceId === access.workspaceId && t.userId === user.id
+            && t.deviceId === payload!.deviceId && t.installationId === payload!.installationId);
+          // Only reduce an existing, exactly bound task. No private read,
+          // new execution or arbitrary endpoint gains a proof exemption.
+          if (!device || !validInstallationId(payload.installationId) || !task)
+            return res.status(403).json({ error: '无法停止：任务不属于当前账号或这台电脑', code: 'EXECUTION_STOP_FORBIDDEN' });
+        } else if (options && 'runtimeStatusOnly' in options && options.runtimeStatusOnly && req.method === "GET" && req.path === "/api/runtime/update") {
           await dependencies.oneKeyPresence.runtimeStatus(binding);
         } else {
           await dependencies.oneKeyPresence.requireProof({ ...binding, method: req.method, path: req.originalUrl });

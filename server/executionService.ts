@@ -6,6 +6,30 @@ const maxCompilerContextChars = 36_000;
 
 export const executionTerminal = (status: string) => ["completed", "failed", "cancelled"].includes(status);
 
+/** A disconnected process may still be changing files. Do not dispatch another round until stopped or acknowledged. */
+export function executionDeliveryPending(task: ExecutionTask) {
+  return Boolean(task.executionSafetyHold) || ['failed', 'cancelled'].includes(task.status) && Boolean(task.deliveryAttempt && task.transportInterruption
+    && task.deliveryAttempt.id === task.transportInterruption.attemptId
+    && task.deliveryAttempt.round === (task.reportRound ?? 0)
+    && task.transportInterruption.round === (task.reportRound ?? 0)
+    && !(task.terminalReceipt?.attemptId === task.deliveryAttempt.id && task.terminalReceipt.round === task.deliveryAttempt.round));
+}
+export function assertLocalExecutionAvailable(database: Database, scope: Pick<ExecutionTask, 'workspaceId' | 'userId' | 'deviceId' | 'installationId'>) {
+  if (database.executionTasks.some(t => t.workspaceId === scope.workspaceId && t.userId === scope.userId
+    && t.deviceId === scope.deviceId && t.installationId === scope.installationId && ['queued','selecting_target','running'].includes(t.status)))
+    throw new Error('本机还有任务正在执行。当前要求已保留，请等本轮结束后再执行；不会同时修改文件。');
+  if (database.executionTasks.some(t => t.workspaceId === scope.workspaceId && t.userId === scope.userId
+    && t.deviceId === scope.deviceId && t.installationId === scope.installationId && executionDeliveryPending(t)))
+    throw new Error('上一轮本机连接中断，正在等待执行结果补回；为避免重复操作，先不要重新执行。你可以先停止上一轮，再安排新任务。');
+}
+
+/** Distinguish a recovered receipt from the earlier disconnect notice without exposing delivery tokens. */
+export function localExecutionResultId(taskId: string, round: number, messageId?: string) {
+  const base = `${taskId}${round ? `_${round}` : ''}`;
+  return messageId && messageId !== `execution_receipt_${taskId}_${round}`
+    ? `local_result_${createHash('sha256').update(JSON.stringify([taskId, round, messageId])).digest('hex').slice(0, 40)}` : base;
+}
+
 /** Append a source-labelled, per-round receipt, never replace the user's history. */
 export function saveExecutionReceipt(database: Database, task: ExecutionTask) {
   if (!executionTerminal(task.status)) return;
@@ -132,8 +156,9 @@ export function buildExecutionCompilerMessages(records: MessageRecord[], sourceM
 }
 
 export function publicExecutionTask(task: ExecutionTask) {
-  const { instruction: _instruction, deviceId: _deviceId, ...safe } = task;
-  return safe;
+  const { instruction: _instruction, deviceId: _deviceId, deliveryAttempt: _attempt,
+    terminalReceipt: _receipt, transportInterruption: _transport, executionSafetyHold: _hold, ...safe } = task;
+  return { ...safe, resultDeliveryPending: executionDeliveryPending(task) };
 }
 
 export function taskEvents(database: Database, task: ExecutionTask) {

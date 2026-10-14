@@ -10,6 +10,7 @@ import { appendExecutionEvent, executionTerminal, saveExecutionReceipt } from ".
 import { validInstallationId } from "./oneKeyInstallation.js";
 import { compareRuntimeVersions, validRuntimeVersion, type RuntimeArchitecture, type RuntimeIdentity, type RuntimePlatform, type SignedRuntimeUpdate } from "./runtimeUpdate.js";
 import { recoverRuntimeUpdate, disconnectedRuntimeUpdate, confirmedRuntimeUpdate, runtimeRecoveryReceipt, type UpdateOwner } from './runtimeUpdateRecovery.js';
+import { acceptTerminalReceipt, maxTerminalReceiptBytes, parseTerminalReceipt, recordExecutionAttempt, terminalReceiptCapability } from './executionTerminalReceipt.js';
 
 const proofTimeoutMs = 2000;
 const authTimeoutMs = 5000;
@@ -64,7 +65,10 @@ type SocketState = {
   updateStartedAt?: number;
   updateLoaded?: boolean;
   executorPreparationError?: string;
+  removed?: boolean;
 };
+
+type DisconnectReason = 'proof_timeout' | 'heartbeat_timeout' | 'socket_close' | 'socket_error' | 'connection_replaced';
 
 function verifySignature(publicKey: string, nonce: string, signature: string) {
   try {
@@ -121,7 +125,7 @@ export class OneKeyPresence {
         // Some launchers install synchronously and cannot consume WebSocket pong frames
         // while replacing themselves. Keep only an explicitly requested update alive for
         // a bounded window; ordinary unplug detection still uses the normal heartbeat.
-        if (!state.alive && !updateInProgress) { socket.terminate(); continue; }
+        if (!state.alive && !updateInProgress) { this.remove(socket, 'heartbeat_timeout'); socket.terminate(); continue; }
         state.alive = false;
         socket.ping();
       }
@@ -152,7 +156,7 @@ export class OneKeyPresence {
         // Still reject the protected request. Do not destroy an install just
         // because an older synchronous launcher cannot sign during replacement.
         if (!this.preserveUpdateTransport(this.states.get(socket))) {
-          this.remove(socket);
+          this.remove(socket, 'proof_timeout');
           socket.terminate();
         }
         reject(new OneKeyPresenceError("ONE Key 未响应，请确认 U 盘仍然插着"));
@@ -162,6 +166,7 @@ export class OneKeyPresence {
         if (!error) return;
         clearTimeout(timeout);
         this.pending.delete(challengeId);
+        this.remove(socket, 'socket_error');
         reject(new OneKeyPresenceError("ONE Key 连接已断开"));
       });
     });
@@ -374,15 +379,28 @@ export class OneKeyPresence {
   }
 
   async cancelExecution(deviceId: string, taskId: string, installationId?: string) {
-    const socket = await this.executionSocket(deviceId, taskId, installationId);
+    if (!validInstallationId(installationId)) throw new OneKeyPresenceError('请更新 ONE Key 启动器');
+    const socket = this.sockets.get(deviceId);
+    let cancellation: { attemptId?: string; round: number } | undefined;
     await this.store.mutate(db => {
       const task = db.executionTasks.find(t => t.id === taskId && t.deviceId === deviceId && t.installationId === installationId);
-      if (!task || executionTerminal(task.status)) return;
+      const device = db.oneKeyDevices.find(d => d.id === deviceId && d.status === 'active');
+      if (!device || !task || task.workspaceId !== device.workspaceId || task.userId !== device.userId) throw new OneKeyPresenceError('执行任务不属于当前 ONE Key 或这台电脑');
+      const recoveryPending = task.status === 'failed' && task.transportInterruption?.attemptId === task.deliveryAttempt?.id
+        && task.transportInterruption?.round === (task.reportRound ?? 0)
+        && task.terminalReceipt?.attemptId !== task.deliveryAttempt?.id;
+      if (executionTerminal(task.status) && !recoveryPending) return;
       task.status = "cancelled"; task.updatedAt = task.completedAt = new Date().toISOString();
       task.lastError = "停止请求已提交；已经产生的文件修改不会自动撤销。";
+      if (task.deliveryAttempt && task.deliveryAttempt.round === (task.reportRound ?? 0)
+        && task.terminalReceipt?.attemptId !== task.deliveryAttempt.id) task.transportInterruption = {
+        attemptId: task.deliveryAttempt.id, round: task.deliveryAttempt.round,
+        reason: 'cancellation_pending', at: task.updatedAt
+      };
       saveExecutionReceipt(db, task);
+      cancellation = { attemptId: task.deliveryAttempt?.id, round: task.reportRound ?? 0 };
     });
-    socket.send(JSON.stringify({ type: "execution_cancel", taskId }));
+    if (cancellation && socket && this.isConnected(deviceId, installationId)) socket.send(JSON.stringify({ type: "execution_cancel", taskId, ...cancellation }));
     for (const [id, pending] of this.pendingLocal) if (pending.socket === socket && pending.taskId === taskId) {
       clearTimeout(pending.timeout); this.pendingLocal.delete(id); pending.reject(new Error("执行已停止"));
     }
@@ -421,8 +439,8 @@ export class OneKeyPresence {
     this.states.set(socket, state);
     socket.on("pong", () => { state.alive = true; });
     socket.on("message", (data) => void this.message(socket, data.toString()));
-    socket.on("close", () => this.remove(socket));
-    socket.on("error", () => this.remove(socket));
+    socket.on("close", code => this.remove(socket, 'socket_close', code));
+    socket.on("error", () => this.remove(socket, 'socket_error'));
     socket.send(JSON.stringify({ type: "auth_challenge", challengeId: authChallengeId, nonce: authNonce }));
   }
 
@@ -433,7 +451,7 @@ export class OneKeyPresence {
       type?: string; challengeId?: string; signature?: string; taskId?: string;
       kind?: string; text?: string; providerThreadId?: string; targetName?: string; status?: string; round?: number;
       requestId?: string; ok?: boolean; output?: string; error?: string; capabilities?: unknown;
-      platform?: unknown; architecture?: unknown; launcherVersion?: unknown; updateProtocol?: unknown; version?: unknown;
+      platform?: unknown; architecture?: unknown; launcherVersion?: unknown; updateProtocol?: unknown; version?: unknown; attemptId?: string;
     };
     try { message = JSON.parse(raw); } catch { socket.close(4000, "Invalid message"); return; }
     if (message.type === "auth_response" && !state.authenticated && message.challengeId === state.authChallengeId && message.signature) {
@@ -481,7 +499,7 @@ export class OneKeyPresence {
         }
         if (socket.readyState !== WebSocket.OPEN) return;
         if (previousState) previousState.authenticated = false;
-        this.remove(previous);
+        this.remove(previous, 'connection_replaced');
         // Another launch on this same installation supersedes the old process.
         // A different computer must remain able to resume after reinsertion.
         previous.close(previousState?.installationId === state.installationId ? 4009 : 4001, "Another launcher connected");
@@ -492,7 +510,78 @@ export class OneKeyPresence {
         }));
       }
       this.sockets.set(state.deviceId, socket);
-      socket.send(JSON.stringify({ type: "ready", deviceId: state.deviceId }));
+      socket.send(JSON.stringify({ type: "ready", deviceId: state.deviceId, owner: { workspaceId: device.workspaceId, userId: device.userId } }));
+      // Replay only a scoped cancellation tombstone, never an execution start.
+      if (state.capabilities.has(terminalReceiptCapability)) {
+        const saved = await this.store.read();
+        if (state.authenticated && this.sockets.get(state.deviceId) === socket) {
+          for (const task of saved.executionTasks ?? []) if (task.status === 'cancelled' && task.deliveryAttempt
+            && task.deviceId === device.id && task.installationId === state.installationId
+            && task.workspaceId === device.workspaceId && task.userId === device.userId) {
+            socket.send(JSON.stringify({ type: 'execution_cancel', taskId: task.id, attemptId: task.deliveryAttempt.id, round: task.deliveryAttempt.round }));
+          }
+        }
+      }
+      return;
+    }
+    if (message.type === 'execution_terminal_receipt') {
+      if (!state.authenticated || !state.capabilities.has(terminalReceiptCapability)
+        || this.sockets.get(state.deviceId) !== socket || Buffer.byteLength(raw, 'utf8') > maxTerminalReceiptBytes) return;
+      const receipt = parseTerminalReceipt(message);
+      if (!receipt) return;
+      // Acknowledgements mean durable acceptance, not merely receiving bytes.
+      // Mutation or commit failure must leave the launcher's outbox intact.
+      let ack;
+      try {
+        ack = await this.store.mutate(database => {
+          if (!state.authenticated || this.sockets.get(state.deviceId) !== socket) return;
+          const device = database.oneKeyDevices.find(d => d.id === state.deviceId && d.status === 'active');
+          if (!device) return;
+          const company = companyWorkspace(database, device.workspaceId);
+          if (company && (company.status !== 'active' || !activeMember(database, { userId: device.userId, workspaceId: device.workspaceId }))) return;
+          return acceptTerminalReceipt(database, { deviceId: device.id, installationId: state.installationId,
+            workspaceId: device.workspaceId, userId: device.userId }, receipt);
+        });
+      } catch { return; }
+      if (ack && state.authenticated && this.sockets.get(state.deviceId) === socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(ack), () => { /* A lost ACK is repaired by idempotent receipt replay. */ });
+      }
+      return;
+    }
+    if (message.type === 'execution_delivery_error') {
+      if (!state.authenticated || !state.capabilities.has(terminalReceiptCapability)
+        || this.sockets.get(state.deviceId) !== socket) return;
+      const value = message as unknown as Record<string, unknown>;
+      if (value.code !== 'outbox_unavailable' || !['not_started', 'result_not_persisted'].includes(String(value.phase))) return;
+      try {
+        await this.store.mutate(database => {
+          if (!state.authenticated || this.sockets.get(state.deviceId) !== socket) return;
+          const device = database.oneKeyDevices.find(d => d.id === state.deviceId && d.status === 'active');
+          if (!device || value.deviceId !== device.id || value.installationId !== state.installationId
+            || value.workspaceId !== device.workspaceId || value.userId !== device.userId) return;
+          const task = database.executionTasks.find(t => t.id === value.taskId && t.deviceId === device.id
+            && t.installationId === state.installationId && t.workspaceId === device.workspaceId && t.userId === device.userId);
+          if (!task || !task.deliveryAttempt || task.deliveryAttempt.id !== value.attemptId
+            || task.deliveryAttempt.round !== value.round || (task.reportRound ?? 0) !== value.round
+            || executionTerminal(task.status) && !(task.status === 'failed'
+              && task.transportInterruption?.attemptId === value.attemptId)) return;
+          if (!database.users.some(u => u.id === device.userId && u.enabled)
+            || !database.workspaces.some(w => w.id === device.workspaceId && w.status === 'active')
+            || !activeMember(database, device)) return;
+          const timestamp = new Date().toISOString();
+          task.status = 'failed'; task.updatedAt = task.completedAt = timestamp;
+          task.lastError = value.phase === 'not_started'
+            ? '本机结果存储暂时不可用，这次尚未开始操作。请检查本机存储后再试，不会自动重跑。'
+            : '本机操作可能已结束，但结果尚未安全保存。请先检查文件或停止这轮，不会自动重跑。';
+          if (value.phase === 'result_not_persisted') task.transportInterruption = {
+            attemptId: task.deliveryAttempt.id, round: task.deliveryAttempt.round, reason: 'local_storage', at: timestamp
+          };
+          appendExecutionEvent(database, { id: `exe_storage_${task.deliveryAttempt.id}_${value.phase}`,
+            taskId: task.id, workspaceId: task.workspaceId, userId: task.userId, round: task.deliveryAttempt.round,
+            kind: 'error', text: task.lastError, createdAt: timestamp });
+          saveExecutionReceipt(database, task);
+        });
+      } catch { /* A storage error report does not authorize replay or result ACK. */ }
       return;
     }
     if (message.type === 'runtime_recovery_event' && state.authenticated && state.runtime && message.requestId
@@ -570,7 +659,7 @@ export class OneKeyPresence {
       return;
     }
     if (message.type === "execution_event" && state.authenticated && message.taskId && message.kind) {
-      await this.executionEvent(socket, state, { taskId: message.taskId, kind: message.kind, text: message.text, providerThreadId: message.providerThreadId, targetName: message.targetName, status: message.status, round: message.round });
+      await this.executionEvent(socket, state, { taskId: message.taskId, kind: message.kind, text: message.text, providerThreadId: message.providerThreadId, targetName: message.targetName, status: message.status, round: message.round, attemptId: message.attemptId });
     }
   }
 
@@ -601,9 +690,26 @@ export class OneKeyPresence {
     if(payload.type==='execution_start'||payload.type==='execution_continue'){
       const db=await this.store.read();const task=db.executionTasks.find(t=>t.id===taskId&&t.deviceId===deviceId&&t.installationId===installationId);
       if(!task||executionTerminal(task.status))throw new OneKeyPresenceError('执行已停止或结束，不再启动本机操作');
+      if (this.states.get(socket)?.capabilities.has(terminalReceiptCapability)) {
+        await this.store.mutate(database => {
+          if (this.sockets.get(deviceId) !== socket || !this.states.get(socket)?.authenticated) throw new OneKeyPresenceError('本机执行连接已变更');
+          const active = database.executionTasks.find(t => t.id === taskId && t.deviceId === deviceId && t.installationId === installationId);
+          const device = database.oneKeyDevices.find(d => d.id === deviceId && d.status === 'active');
+          if (!active || !device || active.workspaceId !== device.workspaceId || active.userId !== device.userId
+            || executionTerminal(active.status) || (active.reportRound ?? 0) !== payload.round) throw new OneKeyPresenceError('执行已停止或轮次已变更');
+          const attempt = active.deliveryAttempt?.round === (active.reportRound ?? 0) ? active.deliveryAttempt.id : uid('attempt');
+          recordExecutionAttempt(database, active, attempt, new Date().toISOString());
+          payload.attemptId = attempt;
+          payload.owner = { workspaceId: active.workspaceId, userId: active.userId };
+        });
+      }
     }
     if (this.sockets.get(deviceId) !== socket || !this.isConnected(deviceId, installationId)) throw new OneKeyPresenceError("本机执行连接已变更，请重试");
-    await new Promise<void>((resolve, reject) => socket.send(JSON.stringify(payload), (error) => error ? reject(new OneKeyPresenceError("本机执行连接已断开")) : resolve()));
+    await new Promise<void>((resolve, reject) => socket.send(JSON.stringify(payload), (error) => {
+      if (!error) { resolve(); return; }
+      // Queue the interruption checkpoint before the route's failure handler.
+      this.remove(socket, 'socket_error'); reject(new OneKeyPresenceError("本机执行连接已断开"));
+    }));
     return socket;
   }
 
@@ -625,7 +731,7 @@ export class OneKeyPresence {
   }
 
   private async executionEvent(socket: WebSocket, state: SocketState, message: {
-    taskId: string; kind: string; text?: string; providerThreadId?: string; targetName?: string; status?: string; round?: number;
+    taskId: string; kind: string; text?: string; providerThreadId?: string; targetName?: string; status?: string; round?: number; attemptId?: string;
   }) {
     const allowedKinds = new Set(["status", "message", "command", "file_change", "error"]);
     const kind = allowedKinds.has(message.kind) ? message.kind as "status" | "message" | "command" | "file_change" | "error" : "status";
@@ -636,6 +742,12 @@ export class OneKeyPresence {
       const task = database.executionTasks.find((item) => item.id === message.taskId && item.deviceId === state.deviceId && item.installationId === state.installationId);
       if (!device || !task || task.workspaceId !== device.workspaceId || task.userId !== device.userId) return;
       if (state.capabilities.has("execution_round_v1") && message.round !== (task.reportRound ?? 0)) return;
+      if (state.capabilities.has(terminalReceiptCapability)) {
+        if (!task.deliveryAttempt || message.attemptId !== task.deliveryAttempt.id || message.round !== task.deliveryAttempt.round) return;
+        // Complete answers go through the durable receipt/ACK protocol. A late
+        // legacy status frame must not win the race against that full answer.
+        if (message.status && executionTerminal(message.status)) return;
+      }
       // A terminal is immutable until an explicit continuation starts a new round.
       if (executionTerminal(task.status)) return;
       const timestamp = new Date().toISOString();
@@ -660,9 +772,11 @@ export class OneKeyPresence {
     });
   }
 
-  private remove(socket: WebSocket) {
+  private remove(socket: WebSocket, reason: DisconnectReason = 'socket_close', closeCode?: number) {
     const state = this.states.get(socket);
-    if (!state) return;
+    if (!state || state.removed) return;
+    state.removed = true;
+    state.authenticated = false;
     clearTimeout(state.authTimeout);
     const current = this.sockets.get(state.deviceId) === socket;
     if (current) this.sockets.delete(state.deviceId);
@@ -675,13 +789,21 @@ export class OneKeyPresence {
     if (current && typeof this.store.mutate === "function") void this.store.mutate(db => {
       // A reconnect is not permission to replay a task. A replaced socket must
       // not fail work on the newly authenticated connection.
-      if (this.sockets.has(state.deviceId)) return;
       const device = db.oneKeyDevices.find(d => d.id === state.deviceId && d.status === "active");
       if (!device) return;
+      db.auditLogs ??= [];
+      db.auditLogs.push({ id: uid('aud'), workspaceId: device.workspaceId, actorUserId: device.userId,
+        action: 'one_key.connection.disconnected', targetType: 'one_key_device', targetId: device.id,
+        details: { installationId: state.installationId, reason, closeCode }, createdAt: new Date().toISOString() });
+      if (this.sockets.has(state.deviceId)) return;
       for (const task of db.executionTasks ?? []) {
         if (task.deviceId !== state.deviceId || task.installationId !== state.installationId || task.workspaceId !== device.workspaceId || task.userId !== device.userId || executionTerminal(task.status)) continue;
         task.status = "failed"; task.updatedAt = task.completedAt = new Date().toISOString();
         task.lastError = "本机连接中断，执行结果尚未确认。可能已产生部分修改，请检查文件；不会自动重跑。";
+        if (state.capabilities.has(terminalReceiptCapability) && task.deliveryAttempt?.round === (task.reportRound ?? 0)) {
+          task.transportInterruption = { attemptId: task.deliveryAttempt.id, round: task.reportRound ?? 0,
+            reason, closeCode, at: task.completedAt };
+        }
         saveExecutionReceipt(db, task);
       }
     }).catch(() => { /* Store failure is handled by the next explicit status request. */ });

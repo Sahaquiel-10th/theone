@@ -58,6 +58,36 @@ function authFixture() {
   return { db, proofs, dependencies };
 }
 
+test('only an exactly owned stop may proceed offline; ordinary reads and executions still need live proof', async () => {
+  for (const [method,path,expected] of [['POST','/api/executions/task-own/cancel',undefined],
+    ['GET','/api/executions/task-own/cancel',428],['POST','/api/executions/task-own/messages',428],
+    ['GET','/api/executions/task-own',428],['POST','/api/chat',428],['POST','/api/executions/task-foreign/cancel',403]] as const) {
+    const {db,dependencies,proofs}=authFixture();
+    const installationId='a'.repeat(32);
+    db.oneKeyDevices=[{id:'user-key',workspaceId:'user-workspace',userId:'user',status:'active'}] as Database['oneKeyDevices'];
+    db.executionTasks=[{id:'task-own',workspaceId:'user-workspace',userId:'user',deviceId:'user-key',installationId},
+      {id:'task-foreign',workspaceId:'admin-workspace',userId:'admin',deviceId:'user-key',installationId}] as Database['executionTasks'];
+    dependencies.oneKeyPresence.requireProof=async p=>{proofs.push(p);throw new Error('本机断线');};
+    const token=signToken({sub:'user',deviceId:'user-key',workspaceId:'user-workspace',installationId},'test-secret');
+    const {recorded,response}=responseRecorder();let continued=false;
+    await auth('test-secret',dependencies,{executionStopOnly:true})({headers:{authorization:`Bearer ${token}`},method,path,originalUrl:path} as Request,response,()=>{continued=true;});
+    assert.equal(recorded.status,expected,`${method} ${path}`);assert.equal(continued,expected===undefined);
+    assert.equal(proofs.length,expected===428?1:0);
+  }
+});
+
+test('offline stop rejects revoked Key, changed installation and changed workspace without mutation', async()=>{
+  for(const mode of ['revoked','installation','workspace'] as const){
+    const {db,dependencies}=authFixture();const installationId='a'.repeat(32);
+    db.oneKeyDevices=[{id:'user-key',workspaceId:'user-workspace',userId:'user',status:mode==='revoked'?'revoked':'active'}] as Database['oneKeyDevices'];
+    db.executionTasks=[{id:'task-own',workspaceId:mode==='workspace'?'admin-workspace':'user-workspace',userId:'user',deviceId:'user-key',installationId:mode==='installation'?'b'.repeat(32):installationId}] as Database['executionTasks'];
+    const token=signToken({sub:'user',deviceId:'user-key',workspaceId:'user-workspace',installationId},'test-secret');
+    const {recorded,response}=responseRecorder();
+    await auth('test-secret',dependencies,{executionStopOnly:true})({headers:{authorization:`Bearer ${token}`},method:'POST',path:'/api/executions/task-own/cancel'} as Request,response,()=>assert.fail('must reject'));
+    assert.equal(recorded.status,403);
+  }
+});
+
 test("admin routes require both the admin's own live Key and current database role", async () => {
   for (const scenario of [
     { sub: "admin", deviceId: undefined, expectedStatus: 428 },

@@ -7,6 +7,49 @@ import { CoordinatorService } from './coordinatorService.js';
 import { acknowledgeTaskResults, acknowledgeAllTaskResults, appendTaskResultReport, markTaskResultsReported, pendingTaskResults, unreviewedTaskResults, taskResultIdsReportedInMessage, taskResultConversationContext, captureTaskResults, capturedTaskResultsForReport } from './taskResultInbox.js';
 import { saveExecutionReceipt } from './executionService.js';
 
+function recoverReceipt(db: Database, task: ExecutionTask) {
+  const id=`execution_receipt_${task.id}_0_recovery_${'a'.repeat(24)}`;
+  const message={...a,id,conversationId:task.conversationId,role:'assistant' as const,content:'连接恢复后，已补回本轮真实回答：/QA/result.md 回读正确',createdAt:'2026-10-14T02:00:00.000Z'};
+  db.messages.push(message);db.conversations.find(c=>c.id===task.conversationId)!.messages.push(message);
+  task.terminalReceipt={id:'receipt',hash:'hash',attemptId:'attempt',round:0,outcome:'completed',disposition:'accepted',receivedAt:message.createdAt,receiptMessageId:id};
+  task.status='completed';task.finalResponse=message.content;task.lastError=undefined;task.updatedAt=task.completedAt=message.createdAt;
+  task.reportedToCoordinatorAt=task.reportMessageId=undefined;task.reportedRound=task.noticeReadRound=undefined;
+  return id;
+}
+
+test('recovered answers remain new evidence after the disconnect notice was reported and read',()=>{
+  const db=fixture(),task=local(db,'recover');task.status='failed';task.finalResponse=undefined;task.lastError='本机连接中断，结果尚未确认';
+  saveExecutionReceipt(db,task);
+  const old=pendingTaskResults(db,a)[0];appendTaskResultReport(db,a);acknowledgeTaskResults(db,a,[old.id]);
+  const recoveredMessage=recoverReceipt(db,task),fresh=pendingTaskResults(db,a)[0];
+  assert.notEqual(fresh.id,old.id);assert.equal(fresh.resultMessageId,recoveredMessage);assert.match(fresh.summary,/回读正确/);
+  assert.equal(unreviewedTaskResults(db,a).length,1);assert.equal(pendingTaskResults(db,b).length,0);
+  assert.throws(()=>acknowledgeTaskResults(db,a,[old.id]),/不存在/);
+  appendTaskResultReport(db,a);assert.equal(pendingTaskResults(db,a).length,0);
+  assert.equal(db.messages.filter(m=>m.id===recoveredMessage).length,1);
+  acknowledgeTaskResults(db,a,[fresh.id]);assert.equal(unreviewedTaskResults(db,a).length,0);
+});
+
+test('a dispatcher reply that saw the old disconnect notice cannot consume a same-round recovered answer',()=>{
+  const db=fixture(),task=local(db,'in-flight');task.status='failed';task.finalResponse=undefined;task.lastError='连接中断';saveExecutionReceipt(db,task);
+  const old=pendingTaskResults(db,a)[0],captures=captureTaskResults(db,a,[old.id]);
+  recoverReceipt(db,task);const fresh=pendingTaskResults(db,a)[0];
+  assert.deepEqual(capturedTaskResultsForReport(db,a,captures).map(r=>r.id),[old.id]);
+  db.conversations.find(c=>c.id==='main-a')!.messages.push({id:'reply',role:'assistant',content:'我看到这一轮断线了',createdAt:timestamp});
+  markTaskResultsReported(db,a,{ids:[old.id],assistantMessageId:'reply',captures});
+  assert.equal(task.reportedRound,undefined);assert.equal(task.reportMessageId,undefined);
+  assert.deepEqual(pendingTaskResults(db,a).map(r=>r.id),[fresh.id]);
+  assert.deepEqual(taskResultIdsReportedInMessage(db,a,'reply'),[old.id]);
+  const tampered=structuredClone(captures);tampered[0].result.summary='编造结果';
+  assert.equal(capturedTaskResultsForReport(db,a,tampered).length,0);
+});
+
+test('cancellation remains explicit even when an earlier disconnect receipt exists',()=>{
+  const db=fixture(),task=local(db,'cancel-offline');task.status='failed';task.finalResponse=undefined;task.lastError='连接中断';saveExecutionReceipt(db,task);
+  task.status='cancelled';task.lastError='停止请求已提交';
+  assert.equal(pendingTaskResults(db,a)[0].outcome,'cancelled');assert.match(pendingTaskResults(db,a)[0].summary,/本轮已停止/);
+});
+
 const a = { workspaceId: 'wa', userId: 'a' }, b = { workspaceId: 'wb', userId: 'b' };
 const timestamp = '2026-10-14T01:00:00.000Z';
 function conversation(id: string, scope = a, main = false): Conversation {

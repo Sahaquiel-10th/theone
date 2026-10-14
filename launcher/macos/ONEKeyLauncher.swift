@@ -37,6 +37,8 @@ struct ChallengeResponse: Decodable { let challengeId: String; let nonce: String
 struct VerifyRequest: Encodable { let signature: String }
 struct VerifyResponse: Decodable { let loginCode: String }
 struct ApiFailure: Decodable { let error: String? }
+struct ExecutionOwner: Codable, Equatable { let workspaceId: String; let userId: String }
+struct AuthenticatedLauncherConnection { let task: URLSessionWebSocketTask; let owner: ExecutionOwner }
 struct SocketMessage: Decodable {
     let type: String
     let challengeId: String?
@@ -52,13 +54,22 @@ struct SocketMessage: Decodable {
     let envelope: SignedRuntimeUpdate?
     let gateway: CodexGatewayConfiguration?
     let previewPath: String?
+    let owner: ExecutionOwner?
+    let workspaceId: String?
+    let userId: String?
+    let installationId: String?
+    let attemptId: String?
+    let receiptId: String?
+    let receiptHash: String?
+    let accepted: Bool?
+    let disposition: String?
 }
 struct SocketResponse: Encodable { let type: String; let challengeId: String; let signature: String }
 struct SocketAuthResponse: Encodable {
     let type: String
     let challengeId: String
     let signature: String
-    let capabilities = ["runtime_update_v1", "local_configuration_v1", "local_tools_v1", "codex_exec_v1", "execution_round_v1", "codex_gateway_v1", "managed_codex_v1", "static_preview_v1", "static_preview_status_v1"]
+    let capabilities = ["runtime_update_v1", "local_configuration_v1", "local_tools_v1", "codex_exec_v1", "execution_round_v1", "codex_gateway_v1", "managed_codex_v1", "static_preview_v1", "static_preview_status_v1", "execution_terminal_receipt_v1"]
     let platform = "macos"
     let architecture: String
     let launcherVersion: String
@@ -73,6 +84,7 @@ struct ExecutionEventResponse: Encodable {
     let targetName: String?
     let status: String?
     let round: Int
+    let attemptId: String?
 }
 struct LocalConfigurationResponse: Encodable {
     let type: String
@@ -305,7 +317,18 @@ func socketUrl(base: String, deviceId: String) throws -> URL {
     return url
 }
 
-func connectLauncher(base: String, credentialUrl: URL, deviceId: String) async throws -> URLSessionWebSocketTask {
+func terminalReceiptBaseDirectory() throws -> URL {
+    let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+    let root = support.appendingPathComponent("ONE/execution-receipts-v1", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    var info = stat()
+    guard lstat(root.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == getuid(), chmod(root.path, 0o700) == 0 else { throw LauncherError.message("本机结果存储尚未就绪，本轮不会执行。") }
+    return root
+}
+
+func connectLauncher(base: String, credentialUrl: URL, deviceId: String) async throws -> AuthenticatedLauncherConnection {
+    // Check private storage before advertising durable receipt capability.
+    _ = try terminalReceiptBaseDirectory()
     let task = URLSession.shared.webSocketTask(with: try socketUrl(base: base, deviceId: deviceId))
     var connected = false
     defer { if !connected { task.cancel(with: .goingAway, reason: nil) } }
@@ -332,10 +355,10 @@ func connectLauncher(base: String, credentialUrl: URL, deviceId: String) async t
     let response = SocketAuthResponse(type: "auth_response", challengeId: challengeId, signature: signature, architecture: architecture, launcherVersion: launcherVersion)
     try await task.send(.string(String(decoding: try JSONEncoder().encode(response), as: UTF8.self)))
     let ready = try JSONDecoder().decode(SocketMessage.self, from: Data(try await receiveText(task).utf8))
-    guard ready.type == "ready", ready.deviceId == deviceId else { throw LauncherError.message("ONE Key 在线验证失败") }
+    guard ready.type == "ready", ready.deviceId == deviceId, let owner = ready.owner else { throw LauncherError.message("ONE Key 在线验证失败，请先更新网站服务。") }
     try Task.checkCancellation()
     connected = true
-    return task
+    return AuthenticatedLauncherConnection(task: task, owner: owner)
 }
 
 func compareVersions(_ left: String, _ right: String) throws -> Int {
@@ -646,9 +669,11 @@ func executionEnvironment() -> [String: String] {
 }
 
 final class CodexExecutionRunner: @unchecked Sendable {
-    private let socket: URLSessionWebSocketTask
+    private var socket: URLSessionWebSocketTask?
     private let deviceId: String
-    private let credentialUrl: URL
+    private var credentialUrl: URL
+    let owner: ExecutionOwner
+    private let outbox: TerminalReceiptOutbox
     private let lock = NSLock()
     private var processes: [String: Process] = [:]
     private var threadIds: [String: String] = [:]
@@ -660,62 +685,131 @@ final class CodexExecutionRunner: @unchecked Sendable {
     private var rounds: [String: Int] = [:]
     private var outputBuffers: [String: String] = [:]
     private var errorBuffers: [String: String] = [:]
+    private var identities: [String: ExecutionReceiptIdentity] = [:]
+    private var unsavedTerminals: [String: ExecutionTerminalReceipt] = [:]
+    private var replayInFlight = false
 
-    init(socket: URLSessionWebSocketTask, deviceId: String, credentialUrl: URL) {
+    init(socket: URLSessionWebSocketTask, deviceId: String, credentialUrl: URL, owner: ExecutionOwner) throws {
         self.socket = socket
         self.deviceId = deviceId
         self.credentialUrl = credentialUrl
+        self.owner = owner
+        let digest = ExecutionTerminalReceipt.hash(fields: [owner.workspaceId, owner.userId, deviceId, installationId()])
+        outbox = try TerminalReceiptOutbox(root: terminalReceiptBaseDirectory().appendingPathComponent(digest, isDirectory: true), workspaceId: owner.workspaceId, userId: owner.userId, deviceId: deviceId, installationId: installationId())
+        try outbox.recoverInterrupted()
     }
 
-    func start(taskId: String, instruction: String, resume: Bool, round: Int = 0, gateway: CodexGatewayConfiguration? = nil) {
+    func matches(deviceId: String, owner: ExecutionOwner) -> Bool { self.deviceId == deviceId && self.owner == owner }
+
+    // Called only after a fresh authenticated ready for this exact owner/Key.
+    func attach(_ socket: URLSessionWebSocketTask, credentialUrl: URL) {
+        synchronized { self.socket = socket; self.credentialUrl = credentialUrl }
+    }
+
+    func detach(_ socket: URLSessionWebSocketTask) {
+        synchronized { if self.socket === socket { self.socket = nil } }
+    }
+
+    func replay() async {
+        guard synchronized({ if replayInFlight { return false }; replayInFlight = true; return true }) else { return }
+        defer { synchronized { replayInFlight = false } }
+        let awaitingStorage = synchronized { Array(unsavedTerminals.values) }
+        for receipt in awaitingStorage {
+            do {
+                _ = try outbox.persist(receipt)
+                synchronized { unsavedTerminals.removeValue(forKey: receipt.attemptId) }
+            } catch { receiptDiagnostic(.outboxBlocked); return }
+        }
+        do {
+            for receipt in try outbox.pending() {
+                receiptDiagnostic(.pendingReplay)
+                await transmitReceipt(receipt)
+            }
+        } catch { receiptDiagnostic(.outboxBlocked) }
+    }
+
+    func acknowledge(_ message: SocketMessage) {
+        guard let receiptId = message.receiptId, let receiptHash = message.receiptHash, let attemptId = message.attemptId, let taskId = message.taskId, let round = message.round, message.deviceId == deviceId, message.installationId == installationId(), message.workspaceId == owner.workspaceId, message.userId == owner.userId else { receiptDiagnostic(.acknowledgementRejected); return }
+        let identity = ExecutionReceiptIdentity(workspaceId: owner.workspaceId, userId: owner.userId, deviceId: deviceId, installationId: installationId(), attemptId: attemptId, taskId: taskId, round: round)
+        do {
+            let accepted = try outbox.acknowledge(ExecutionTerminalAcknowledgement(accepted: message.accepted == true, receiptId: receiptId, receiptHash: receiptHash, identity: identity, disposition: message.disposition ?? ""))
+            receiptDiagnostic(accepted ? .resultAcknowledged : .acknowledgementRejected)
+        } catch { receiptDiagnostic(.acknowledgementRejected) }
+    }
+
+    func start(taskId: String, instruction: String, resume: Bool, round: Int, attemptId: String, owner: ExecutionOwner, gateway: CodexGatewayConfiguration? = nil) {
+        guard self.owner == owner else { receiptDiagnostic(.acknowledgementRejected); return }
+        let identity = ExecutionReceiptIdentity(workspaceId: owner.workspaceId, userId: owner.userId, deviceId: deviceId, installationId: installationId(), attemptId: attemptId, taskId: taskId, round: round)
+        do {
+            guard synchronized({ unsavedTerminals.isEmpty }) else { throw TerminalOutboxFailure.persistence }
+            guard try outbox.reserve(identity) else { Task { await replay() }; return }
+        } catch {
+            receiptDiagnostic(.outboxBlocked)
+            Task { await deliveryError(identity: identity, phase: "not_started") }
+            return
+        }
         let accepted = synchronized { () -> Bool in
             if processes[taskId] != nil || preparing.contains(taskId) { return false }
-            preparing.insert(taskId); cancelled.remove(taskId); rounds[taskId] = round
+            preparing.insert(taskId); rounds[taskId] = round; identities[taskId] = identity
             return true
         }
         guard accepted else {
-            Task { await send(taskId: taskId, kind: "error", text: "上一轮的本机进程或授权窗口尚未退出，请关闭窗口后再执行；本次未启动，也不会自动重跑。", status: "failed", round: round) }
+            Task { await send(taskId: taskId, kind: "error", text: "上一轮的本机进程或授权窗口尚未退出，请关闭窗口后再执行；本次未启动，也不会自动重跑。", status: "failed", identity: identity) }
             return
         }
-        Task { await self.run(taskId: taskId, instruction: instruction, resume: resume, gateway: gateway) }
+        Task { await self.run(taskId: taskId, instruction: instruction, resume: resume, gateway: gateway, identity: identity) }
     }
 
-    func cancel(taskId: String) {
-        let (process, round) = synchronized { cancelled.insert(taskId); return (processes[taskId], rounds[taskId] ?? 0) }
-        process?.terminate()
-        Task { await send(taskId: taskId, kind: "status", text: "已提交停止请求；已产生的修改不会自动撤销", status: "cancelled", round: round) }
+    func cancel(taskId: String, attemptId: String, round: Int) {
+        let value = synchronized { () -> (Process?, ExecutionReceiptIdentity)? in
+            guard let identity = identities[taskId], identity.attemptId == attemptId, identity.round == round, processes[taskId] != nil || preparing.contains(taskId), (try? outbox.hasTerminal(identity)) != true, unsavedTerminals[attemptId] == nil else { return nil }
+            cancelled.insert(identity.attemptId)
+            return (processes[taskId], identity)
+        }
+        guard let (process, identity) = value else { return }
+        if let process {
+            process.terminate()
+            // The server makes the stop button effective immediately, but a
+            // terminal receipt is proof of process/pipe completion, not merely
+            // a signal sent. run() publishes it after the EOF barrier below.
+            return
+        }
+        Task { await send(taskId: taskId, kind: "status", text: "已停止；已产生的修改不会自动撤销。", status: "cancelled", identity: identity) }
     }
 
-    private func run(taskId: String, instruction: String, resume: Bool, gateway: CodexGatewayConfiguration?) async {
+    private func run(taskId: String, instruction: String, resume: Bool, gateway: CodexGatewayConfiguration?, identity: ExecutionReceiptIdentity) async {
+        func report(taskId: String, kind: String, text: String? = nil, providerThreadId: String? = nil, targetName: String? = nil, status: String? = nil) async {
+            await send(taskId: taskId, kind: kind, text: text, providerThreadId: providerThreadId, targetName: targetName, status: status, identity: identity)
+        }
         defer { synchronized { preparing.remove(taskId) } }
         let alreadyRunning = synchronized { processes[taskId] != nil }
-        if managedCodexActivity.isActive() { await send(taskId: taskId, kind: "error", text: "正在准备本机执行工具，本轮尚未操作文件，请准备完成后再执行", status: "failed"); return }
-        if alreadyRunning { await send(taskId: taskId, kind: "error", text: "Codex 正在执行当前任务", status: "failed"); return }
+        if managedCodexActivity.isActive() { await report(taskId: taskId, kind: "error", text: "正在准备本机执行工具，本轮尚未操作文件，请准备完成后再执行", status: "failed"); return }
+        if alreadyRunning { await report(taskId: taskId, kind: "error", text: "Codex 正在执行当前任务", status: "failed"); return }
         guard let executable = await codexExecutable(credentialUrl: credentialUrl, allowSelection: gateway == nil) else {
-            await send(taskId: taskId, kind: "error", text: gateway != nil ? "尚未找到执行工具。请在设置 → 本机执行中准备工具，然后重新执行；本轮未操作文件，不需要个人 Codex 登录。" : "尚未连接可用的 Codex，或已取消选择。请安装 Codex 并登录，或执行时选择已有应用。更新 ONE 不会自动安装 Codex。", status: "failed")
+            await report(taskId: taskId, kind: "error", text: gateway != nil ? "尚未找到执行工具。请在设置 → 本机执行中准备工具，然后重新执行；本轮未操作文件，不需要个人 Codex 登录。" : "尚未连接可用的 Codex，或已取消选择。请安装 Codex 并登录，或执行时选择已有应用。更新 ONE 不会自动安装 Codex。", status: "failed")
             return
         }
         let authenticated = gateway != nil ? true : await Task.detached { probeCodex(executable, arguments: ["login", "status"])?.status == 0 }.value
         guard authenticated else {
-            await send(taskId: taskId, kind: "error", text: "已找到 Codex，但无法确认登录状态。请先在 Codex 完成登录，再重新执行；ONE 不会读取或上传你的登录凭证。", status: "failed")
+            await report(taskId: taskId, kind: "error", text: "已找到 Codex，但无法确认登录状态。请先在 Codex 完成登录，再重新执行；ONE 不会读取或上传你的登录凭证。", status: "failed")
             return
         }
 
         var projectPath = synchronized { projectPaths[taskId] }
         let configuredPath = oneDefaults().string(forKey: "one.execution.project.\(deviceId)")
         if let projectPath, let configuredPath, projectPath != configuredPath {
-            await send(taskId: taskId, kind: "error", text: "授权目录已更换。请从这件事重新发起执行，不会复用旧目录或旧会话。", status: "failed")
+            await report(taskId: taskId, kind: "error", text: "授权目录已更换。请从这件事重新发起执行，不会复用旧目录或旧会话。", status: "failed")
             return
         }
         if projectPath == nil {
-            await send(taskId: taskId, kind: "status", text: configuredPath == nil ? "请在电脑上选择工作文件夹" : "正在确认已选择的工作目录：\(configuredPath!)", status: "selecting_target")
+            await report(taskId: taskId, kind: "status", text: configuredPath == nil ? "请在电脑上选择工作文件夹" : "正在确认已选择的工作目录：\(configuredPath!)", status: "selecting_target")
             projectPath = await executionProject(deviceId: deviceId)
         }
         guard let projectPath else {
-            await send(taskId: taskId, kind: "error", text: "没有选择执行文件夹", status: "cancelled")
+            await report(taskId: taskId, kind: "error", text: "没有选择执行文件夹", status: "cancelled")
             return
         }
-        if synchronized({ cancelled.contains(taskId) }) { return }
+        if synchronized({ cancelled.contains(identity.attemptId) }) { return }
         let threadId = synchronized { projectPaths[taskId] = projectPath; return threadIds[taskId] }
 
         let process = Process()
@@ -733,7 +827,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
                 process.environment = overrides.environment
                 arguments = overrides.arguments + arguments
             } catch {
-                await send(taskId: taskId, kind: "error", text: "无法准备 ONE 执行环境；本机尚未开始操作，不会使用个人 Codex 账号", status: "failed")
+                await report(taskId: taskId, kind: "error", text: "无法准备 ONE 执行环境；本机尚未开始操作，不会使用个人 Codex 账号", status: "failed")
                 return
             }
         }
@@ -746,8 +840,12 @@ final class CodexExecutionRunner: @unchecked Sendable {
 
         do {
             synchronized { lastResponses.removeValue(forKey: taskId); toolFailures.remove(taskId) }
-            try process.run()
-            synchronized { processes[taskId] = process }
+            let launched = try synchronized { () throws -> Bool in
+                guard !cancelled.contains(identity.attemptId) else { return false }
+                try process.run(); processes[taskId] = process
+                return true
+            }
+            guard launched else { return }
             // Read both pipes through EOF. Process exit alone is not an output
             // barrier; each event is awaited before publishing the terminal.
             try? stdout.fileHandleForWriting.close()
@@ -761,10 +859,10 @@ final class CodexExecutionRunner: @unchecked Sendable {
                     while let newline = pending.firstIndex(of: 10) {
                         let line = String(decoding: pending[..<newline], as: UTF8.self)
                         pending.removeSubrange(...newline)
-                        await consume(taskId: taskId, line: line, targetName: projectPath)
+                        await consume(taskId: taskId, line: line, targetName: projectPath, identity: identity)
                     }
                 }
-                if !pending.isEmpty { await consume(taskId: taskId, line: String(decoding: pending, as: UTF8.self), targetName: projectPath) }
+                if !pending.isEmpty { await consume(taskId: taskId, line: String(decoding: pending, as: UTF8.self), targetName: projectPath, identity: identity) }
             }
             let errorReader = Task.detached { [self] in
                 while true {
@@ -776,78 +874,146 @@ final class CodexExecutionRunner: @unchecked Sendable {
                     }
                 }
             }
-            await send(taskId: taskId, kind: "status", text: "\(resume ? "继续执行" : "开始执行") · 工作位置：\(projectPath)", targetName: projectPath, status: "running")
+            await report(taskId: taskId, kind: "status", text: "\(resume ? "继续执行" : "开始执行") · 工作位置：\(projectPath)", targetName: projectPath, status: "running")
             stdin.fileHandleForWriting.write(Data(instruction.utf8)); try? stdin.fileHandleForWriting.close()
             let exitCode = await processExit.value()
             await outputReader.value
             await errorReader.value
             let result = synchronized { () -> (Bool, String?, String) in
                 processes.removeValue(forKey: taskId)
-                let wasCancelled = cancelled.remove(taskId) != nil
+                let wasCancelled = cancelled.contains(identity.attemptId)
                 let finalResponse = lastResponses[taskId]
                 let errorText = errorBuffers.removeValue(forKey: taskId) ?? ""
                 outputBuffers.removeValue(forKey: taskId)
                 return (wasCancelled, finalResponse, errorText.trimmingCharacters(in: .whitespacesAndNewlines))
             }
             let (wasCancelled, finalResponse, errorText) = result
-            if wasCancelled { return }
+            if wasCancelled {
+                await report(taskId: taskId, kind: "status", text: "已停止；已产生的修改不会自动撤销。", status: "cancelled")
+                return
+            }
             if exitCode == 0 {
                 if let finalResponse, !finalResponse.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     let failed = synchronized { toolFailures.remove(taskId) != nil }
-                    await send(taskId: taskId, kind: failed ? "error" : "status", text: failed ? "\(finalResponse)\n\n本轮有工具执行失败，完成情况需检查，不会自动重跑。" : finalResponse, status: failed ? "failed" : "completed")
+                    await report(taskId: taskId, kind: failed ? "error" : "status", text: failed ? "\(finalResponse)\n\n本轮有工具执行失败，完成情况需检查，不会自动重跑。" : finalResponse, status: failed ? "failed" : "completed")
                 } else {
-                    await send(taskId: taskId, kind: "error", text: "执行器已退出，但没有返回本轮结果，任务是否完成尚未确认。请检查文件，不会自动重跑。", status: "failed")
+                    await report(taskId: taskId, kind: "error", text: "执行器已退出，但没有返回本轮结果，任务是否完成尚未确认。请检查文件，不会自动重跑。", status: "failed")
                 }
             } else {
-                await send(taskId: taskId, kind: "error", text: errorText.isEmpty ? "Codex 执行失败" : String(errorText.prefix(4000)), status: "failed")
+                let failure = errorText.isEmpty ? "Codex 执行失败" : String(errorText.prefix(4000))
+                await report(taskId: taskId, kind: "error", text: finalResponse.map { "\($0)\n\n本轮执行未正常完成：\(failure)" } ?? failure, status: "failed")
             }
         } catch {
             stdout.fileHandleForReading.readabilityHandler = nil
             stderr.fileHandleForReading.readabilityHandler = nil
             synchronized { processes.removeValue(forKey: taskId); outputBuffers.removeValue(forKey: taskId); errorBuffers.removeValue(forKey: taskId) }
-            await send(taskId: taskId, kind: "error", text: "无法启动 Codex：\(error.localizedDescription)", status: "failed")
+            await report(taskId: taskId, kind: "error", text: "无法启动 Codex：\(error.localizedDescription)", status: "failed")
         }
     }
 
-    private func consume(taskId: String, line: String, targetName: String) async {
+    private func consume(taskId: String, line: String, targetName: String, identity: ExecutionReceiptIdentity) async {
+        func report(taskId: String, kind: String, text: String? = nil, providerThreadId: String? = nil, targetName: String? = nil, status: String? = nil) async {
+            await send(taskId: taskId, kind: kind, text: text, providerThreadId: providerThreadId, targetName: targetName, status: status, identity: identity)
+        }
         guard let data = line.data(using: .utf8), let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let type = payload["type"] as? String else { return }
         if type == "thread.started", let id = payload["thread_id"] as? String {
             synchronized { threadIds[taskId] = id }
-            await send(taskId: taskId, kind: "status", text: "Codex 会话已建立", providerThreadId: id, targetName: targetName, status: "running")
+            await report(taskId: taskId, kind: "status", text: "Codex 会话已建立", providerThreadId: id, targetName: targetName, status: "running")
             return
         }
         if type == "turn.failed" || type == "error" {
             synchronized { toolFailures.insert(taskId) }
             let detail = (payload["error"] as? [String: Any])?["message"] as? String ?? payload["message"] as? String ?? "执行器返回错误"
-            await send(taskId: taskId, kind: "error", text: String(detail.prefix(4000)))
+            await report(taskId: taskId, kind: "error", text: String(detail.prefix(4000)))
             return
         }
         guard let item = payload["item"] as? [String: Any], let itemType = item["type"] as? String else { return }
         if type == "item.completed", itemType == "agent_message", let text = item["text"] as? String, !text.isEmpty {
-            synchronized { lastResponses[taskId] = text }
-            await send(taskId: taskId, kind: "message", text: text)
+            synchronized { lastResponses[taskId] = String(text.prefix(120000)) }
+            await report(taskId: taskId, kind: "message", text: String(text.prefix(120000)))
         } else if type == "item.started", itemType == "command_execution", let command = item["command"] as? String {
-            await send(taskId: taskId, kind: "command", text: "正在运行：\(String(command.prefix(600)))")
+            await report(taskId: taskId, kind: "command", text: "正在运行：\(String(command.prefix(600)))")
         } else if type == "item.completed", itemType == "command_execution" {
             let failed = (item["exit_code"] as? Int).map { $0 != 0 } ?? (item["status"] as? String == "failed")
             if failed { synchronized { toolFailures.insert(taskId) } }
             let output = item["aggregated_output"] as? String ?? "未返回文字输出"
-            await send(taskId: taskId, kind: failed ? "error" : "command", text: "工具返回\(failed ? " · 失败" : "")：\n\(String(output.prefix(6000)))")
+            await report(taskId: taskId, kind: failed ? "error" : "command", text: "工具返回\(failed ? " · 失败" : "")：\n\(String(output.prefix(6000)))")
         } else if type == "item.completed", itemType == "file_change" {
             let paths = (item["changes"] as? [[String: Any]])?.compactMap { $0["path"] as? String }.joined(separator: "\n") ?? ""
             if item["status"] as? String == "failed" { synchronized { toolFailures.insert(taskId) } }
-            await send(taskId: taskId, kind: "file_change", text: "执行器报告文件变更：\n\(String(paths.prefix(4000)))")
+            await report(taskId: taskId, kind: "file_change", text: "执行器报告文件变更：\n\(String(paths.prefix(4000)))")
         }
     }
 
-    private func send(taskId: String, kind: String, text: String? = nil, providerThreadId: String? = nil, targetName: String? = nil, status: String? = nil, round: Int? = nil) async {
-        let event = ExecutionEventResponse(taskId: taskId, kind: kind, text: text, providerThreadId: providerThreadId, targetName: targetName, status: status, round: round ?? synchronized { rounds[taskId] ?? 0 })
-        if let data = try? JSONEncoder().encode(event) { try? await socket.send(.string(String(decoding: data, as: UTF8.self))) }
+    private func send(taskId: String, kind: String, text: String? = nil, providerThreadId: String? = nil, targetName: String? = nil, status: String? = nil, identity: ExecutionReceiptIdentity) async {
+        if let status, ["completed", "failed", "cancelled"].contains(status) {
+            let result = synchronized { () -> (ExecutionTerminalReceipt?, Bool) in
+                // A second end/cancel callback after the exact ACK is not a
+                // storage failure and must not poison future work with a new
+                // unsaved receipt for an already-settled attempt.
+                if (try? outbox.isAcknowledged(identity)) == true { return (nil, false) }
+                let wasCancelled = cancelled.contains(identity.attemptId)
+                let candidate = unsavedTerminals[identity.attemptId] ?? ExecutionTerminalReceipt(identity: identity, outcome: wasCancelled ? "cancelled" : status, finalResponse: wasCancelled ? "已停止；已产生的修改不会自动撤销。" : (text ?? "执行器未返回结果，完成情况尚未确认。"), error: status == "failed" ? "execution_unconfirmed" : nil, targetName: targetName ?? projectPaths[taskId], providerThreadId: providerThreadId ?? threadIds[taskId])
+                do {
+                    let first = try outbox.persist(candidate)
+                    unsavedTerminals.removeValue(forKey: identity.attemptId)
+                    receiptDiagnostic(.resultPersisted)
+                    return (first, false)
+                } catch {
+                    // Never announce a delivered result or start another task
+                    // if persistence fails. Keep this exact immutable response
+                    // in memory and retry disk persistence on reconnection.
+                    unsavedTerminals[identity.attemptId] = candidate
+                    receiptDiagnostic(.outboxBlocked)
+                    return (nil, true)
+                }
+            }
+            guard let persisted = result.0 else {
+                if result.1 { await deliveryError(identity: identity, phase: "result_not_persisted") }
+                return
+            }
+            await transmitReceipt(persisted)
+            return
+        }
+        if synchronized({ cancelled.contains(identity.attemptId) }) { return }
+        await progress(taskId: taskId, kind: kind, text: text, providerThreadId: providerThreadId, targetName: targetName, status: status, identity: identity)
+    }
+
+    private func progress(taskId: String, kind: String, text: String? = nil, providerThreadId: String? = nil, targetName: String? = nil, status: String? = nil, identity: ExecutionReceiptIdentity) async {
+        let event = ExecutionEventResponse(taskId: taskId, kind: kind, text: text, providerThreadId: providerThreadId, targetName: targetName, status: status, round: identity.round, attemptId: identity.attemptId)
+        guard let data = try? JSONEncoder().encode(event) else { return }
+        await transmit(data)
+    }
+
+    private func transmitReceipt(_ receipt: ExecutionTerminalReceipt) async {
+        guard let data = try? JSONEncoder().encode(receipt) else { receiptDiagnostic(.outboxBlocked); return }
+        await transmit(data)
+    }
+
+    private func deliveryError(identity: ExecutionReceiptIdentity, phase: String) async {
+        let message: [String: Any] = ["type": "execution_delivery_error", "workspaceId": identity.workspaceId, "userId": identity.userId, "deviceId": identity.deviceId, "installationId": identity.installationId, "taskId": identity.taskId, "round": identity.round, "attemptId": identity.attemptId, "code": "outbox_unavailable", "phase": phase]
+        guard let bytes = try? JSONSerialization.data(withJSONObject: message) else { return }
+        await transmit(bytes)
+    }
+
+    private func transmit(_ bytes: Data) async {
+        guard let transport = synchronized({ socket }) else { receiptDiagnostic(.sendUnavailable); return }
+        do {
+            let _: Void = try await boundedRuntimeOperation(timeout: .seconds(3)) {
+                try await transport.send(.string(String(decoding: bytes, as: UTF8.self)))
+            }
+        } catch {
+            receiptDiagnostic(.sendUnavailable)
+            // A swallowed send error used to leave a dead connection marked
+            // ready forever. Wake the reader so its normal authenticated
+            // reconnect loop can attach this same runner and drain receipts.
+            transport.cancel(with: .goingAway, reason: nil)
+        }
     }
 
     @discardableResult
-    private func synchronized<T>(_ body: () -> T) -> T {
-        lock.lock(); defer { lock.unlock() }; return body()
+    private func synchronized<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock(); defer { lock.unlock() }; return try body()
     }
 
     private func appendOutput(taskId: String, data: Data) -> [String] {
@@ -914,10 +1080,17 @@ final class MacLocalExecutor {
     }
 }
 
-func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: String) async throws -> URL? {
+func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: String, execution: CodexExecutionRunner) async throws -> URL? {
     let previews = LocalPreviewManager()
     defer { Task { await previews.stopAll() } }
-    let execution = CodexExecutionRunner(socket: task, deviceId: deviceId, credentialUrl: credentialUrl)
+    execution.attach(task, credentialUrl: credentialUrl)
+    let receiptReplay = Task {
+        while !Task.isCancelled {
+            await execution.replay()
+            do { try await Task.sleep(for: .seconds(15)) } catch { return }
+        }
+    }
+    defer { receiptReplay.cancel(); execution.detach(task) }
     let localExecutor = await MacLocalExecutor(deviceId: deviceId, credentialUrl: credentialUrl)
     var installJob: Task<URL, Error>?
     do {
@@ -939,6 +1112,8 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
             try await task.send(.string(String(decoding: try JSONEncoder().encode(response), as: UTF8.self)))
         } else if message.type == "runtime_recovery_ack", let requestId = message.requestId {
             try? acknowledgeMacRecovery(credential: credentialUrl, journal: macRecoveryJournal(deviceId: deviceId), requestId: requestId)
+        } else if message.type == "execution_terminal_ack" {
+            execution.acknowledge(message)
         } else if ["preview_start", "preview_stop", "preview_status"].contains(message.type), let requestId = message.requestId, let taskId = message.taskId {
           Task {
             do {
@@ -1006,12 +1181,16 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
                     if let data = try? JSONEncoder().encode(response) { try? await task.send(.string(String(decoding: data, as: UTF8.self))) }
                 }
             }
-        } else if message.type == "execution_start", let taskId = message.taskId, let instruction = message.instruction {
-            execution.start(taskId: taskId, instruction: instruction, resume: false, round: message.round ?? 0, gateway: message.gateway)
-        } else if message.type == "execution_continue", let taskId = message.taskId, let instruction = message.instruction {
-            execution.start(taskId: taskId, instruction: instruction, resume: true, round: message.round ?? 0, gateway: message.gateway)
-        } else if message.type == "execution_cancel", let taskId = message.taskId {
-            execution.cancel(taskId: taskId)
+        } else if message.type == "execution_start", let taskId = message.taskId, let instruction = message.instruction, let round = message.round, let attemptId = message.attemptId, let owner = message.owner {
+            execution.start(taskId: taskId, instruction: instruction, resume: false, round: round, attemptId: attemptId, owner: owner, gateway: message.gateway)
+        } else if message.type == "execution_continue", let taskId = message.taskId, let instruction = message.instruction, let round = message.round, let attemptId = message.attemptId, let owner = message.owner {
+            execution.start(taskId: taskId, instruction: instruction, resume: true, round: round, attemptId: attemptId, owner: owner, gateway: message.gateway)
+        } else if message.type == "execution_cancel", let taskId = message.taskId, let attemptId = message.attemptId, let round = message.round {
+            execution.cancel(taskId: taskId, attemptId: attemptId, round: round)
+        } else if message.type == "execution_cancel", let taskId = message.taskId, message.attemptId == nil {
+            // Existing files-only Local Agent requests do not have a Codex
+            // delivery attempt. Do not route this legacy cancellation to the
+            // Codex runner or let an old Codex cancel stop a new file request.
             await localExecutor.cancel(taskId)
         } else if message.type == "local_prepare", let taskId = message.taskId, let requestId = message.requestId {
             Task { @MainActor in
@@ -1116,6 +1295,9 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private var credential: DeviceCredential?
     private var base = ""
     private var socket: URLSessionWebSocketTask?
+    // Lives beyond any one WebSocket connection. Reconnect must never create a
+    // second runner and lose ownership of the process already doing the work.
+    private var executionRunner: CodexExecutionRunner?
     private var sessionTask: Task<Void, Never>?
     private var removalTask: Task<Void, Never>?
     private var loginTask: Task<Void, Never>?
@@ -1312,13 +1494,18 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             credentialUrl = foundUrl
             credential = foundCredential
             base = foundBase
-            let connectedSocket = try await connectLauncher(base: foundBase, credentialUrl: foundUrl, deviceId: foundCredential.deviceId)
+            let connection = try await connectLauncher(base: foundBase, credentialUrl: foundUrl, deviceId: foundCredential.deviceId)
+            let connectedSocket = connection.task
             guard generation == sessionGeneration, !stopping else {
                 connectedSocket.cancel(with: .goingAway, reason: nil)
                 return
             }
 
             socket = connectedSocket
+            if executionRunner?.matches(deviceId: foundCredential.deviceId, owner: connection.owner) != true {
+                executionRunner = try CodexExecutionRunner(socket: connectedSocket, deviceId: foundCredential.deviceId, credentialUrl: foundUrl, owner: connection.owner)
+            }
+            guard let executionRunner else { throw LauncherError.message("本机执行连接尚未就绪") }
             ready = true
             // Pre-v2 residents may be offline and polling removable volumes
             // forever. Only retire the exact same Key after our server proof.
@@ -1339,7 +1526,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 openedLogin = true
             }
             failures = 0
-            if try await serveProofs(connectedSocket, credentialUrl: foundUrl, deviceId: foundCredential.deviceId) != nil {
+            if try await serveProofs(connectedSocket, credentialUrl: foundUrl, deviceId: foundCredential.deviceId, execution: executionRunner) != nil {
                 handingOff = true
                 // Release the per-Key lock before starting the new portable
                 // app so its updated resident can take over immediately.
@@ -1465,7 +1652,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             if let credentialUrl = findCredentialUrl(expectedDeviceId: deviceId, preferred: preferred),
                let credential = try? loadCredential(credentialUrl, expectedDeviceId: deviceId),
                let replacement = try? await connectLauncher(base: credential.serverBaseUrl, credentialUrl: credentialUrl, deviceId: deviceId) {
-                defer { replacement.cancel(with: .goingAway, reason: nil) }
+                defer { replacement.task.cancel(with: .goingAway, reason: nil) }
                 for _ in 0..<30 {
                     if let lock = try acquireResidentLock(deviceId: deviceId) {
                         residentLock = lock

@@ -64,7 +64,9 @@ export class ConnectorService {
     // Never silently move an existing task to another runtime or device.
     // Disabling new work must not remove the user's ability to stop running work.
     const health = adapter && (action === "cancel" ? adapter.status(db, scope) : this.health(adapter.manifest.id, db, scope));
-    if (!adapter || health?.state !== "transport_ready") throw new Error("任务原执行连接不可用，请恢复原连接后重试");
+    // Stopping is an owned state reduction: persist it even while the launcher is offline.
+    // The authenticated launcher receives only that cancellation after reconnecting.
+    if (!adapter || action !== 'cancel' && health?.state !== "transport_ready") throw new Error("任务原执行连接不可用，请恢复原连接后重试");
     if (action === "continue" && !instruction?.trim()) throw new Error("执行消息不能为空");
     await adapter.dispatch(action, task, instruction);
   }

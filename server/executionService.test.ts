@@ -2,7 +2,32 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Database, ExecutionTask, MessageRecord } from "./types.js";
 import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, saveExecutionInput, messagesThrough, publicExecutionTask, taskEvents, executionTrace, type ExecutionHandoff } from "./executionService.js";
-import { saveExecutionReceipt, executionReceipts } from './executionService.js';
+import { saveExecutionReceipt, executionReceipts, assertLocalExecutionAvailable, executionDeliveryPending } from './executionService.js';
+
+test('unacknowledged disconnected rounds block repeat work only for their exact owner and device', () => {
+  const scope = {workspaceId:'a', userId:'u', deviceId:'d', installationId:'i'};
+  const task = {...scope,id:'t',status:'failed',reportRound:1,
+    deliveryAttempt:{id:'attempt',round:1,issuedAt:'now'},
+    transportInterruption:{attemptId:'attempt',round:1,reason:'socket_close',at:'now'}} as ExecutionTask;
+  const db = {executionTasks:[task]} as Database;
+  assert.equal(executionDeliveryPending(task),true);
+  assert.throws(() => assertLocalExecutionAvailable(db,scope), /避免重复操作/);
+  for (const foreign of [{...scope,workspaceId:'b'},{...scope,userId:'v'},{...scope,deviceId:'e'},{...scope,installationId:'j'}])
+    assert.doesNotThrow(() => assertLocalExecutionAvailable(db,foreign));
+  task.status='cancelled'; assert.equal(executionDeliveryPending(task),true);
+  task.terminalReceipt={id:'receipt',hash:'h',attemptId:'attempt',round:1,outcome:'cancelled',disposition:'supplemental',receivedAt:'now'};
+  assert.equal(executionDeliveryPending(task),false);
+  assert.doesNotThrow(() => assertLocalExecutionAvailable(db,scope));
+});
+
+test('public execution snapshots omit private receipt and transport bindings', () => {
+  const task = {id:'t',instruction:'private',deviceId:'d',status:'failed',deliveryAttempt:{id:'secret-attempt',round:0,issuedAt:'now'},
+    transportInterruption:{attemptId:'secret-attempt',round:0,reason:'socket_error',at:'now'},
+    terminalReceipt:{id:'private-receipt',hash:'private-hash'}} as ExecutionTask;
+  const json=JSON.stringify(publicExecutionTask(task));
+  assert.doesNotMatch(json,/secret-attempt|private-receipt|private-hash|socket_error|deliveryAttempt|transportInterruption|terminalReceipt/);
+  assert.match(json,/resultDeliveryPending/);
+});
 
 test('execution receipts retain source and round, deduplicate and isolate workspace and owner', () => {
   const task = { id:'t', workspaceId:'a', userId:'u', conversationId:'c', provider:'codex', status:'completed', finalResponse:'创建 /QA/result.txt，回读 ONE_QA_OK', targetName:'/QA', updatedAt:'2026-10-07' } as ExecutionTask;

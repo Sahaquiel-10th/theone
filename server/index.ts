@@ -56,7 +56,7 @@ import { connectorRegistry, connectorService, notionMcpService, yinxiangService,
 import { installFeishuRoutes } from "./feishuRoutes.js";
 import { connectorRoutes } from "./connectorRoutes.js";
 import { AuthorizationSessionError, AuthorizationSessions } from "./connectors/authorizationSessions.js";
-import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, saveExecutionInput, messagesThrough, publicExecutionTask, taskEvents, executionTrace, executionReceipts, saveExecutionReceipt, executionTerminal } from "./executionService.js";
+import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, saveExecutionInput, messagesThrough, publicExecutionTask, taskEvents, executionTrace, executionReceipts, saveExecutionReceipt, executionTerminal, assertLocalExecutionAvailable } from "./executionService.js";
 import { adminUsageSummaries, adminUserUsageDetail } from "./adminUsage.js";
 import { operationsHealth } from "./operationsHealth.js";
 import { batchGift } from "./batchGift.js";
@@ -888,6 +888,7 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
     payload: { kind: "local_execution", conversationId, sourceMessageId, deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId },
     beforeClaim: d => {
       executionPreparationStops.assertActive(preparationScope);
+      assertLocalExecutionAvailable(d, { workspaceId: req.workspaceId!, userId: req.user!.id, deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId });
       if (d.executionTasks.some(t => t.workspaceId === req.workspaceId && t.userId === req.user!.id && t.deviceId === req.oneKeyDeviceId && t.installationId === req.oneKeyInstallationId && ['queued','selecting_target','running'].includes(t.status)))
         throw new Error("本机还有任务正在执行。当前要求已保留，请等本轮结束后再执行；不会同时修改文件。");
     } });
@@ -924,6 +925,7 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
   };
   await store.mutate((mutable) => {
     executionPreparationStops.assertActive(preparationScope);
+    assertLocalExecutionAvailable(mutable, { workspaceId: scope.workspaceId, userId: scope.userId, deviceId: scope.deviceId!, installationId: scope.installationId });
     if(mutable.chatOperations?.some(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.operationId===requestOperationId&&o.executionCancelled))throw new Error('执行准备已停止');
     if(prepared&&mutable.chatOperations?.some(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.conversationId===conversationId&&o.workRun?.inputMessageId===sourceMessageId&&o.workRun.state==='cancelled'))throw new Error('此任务已停止，未开始本机操作。');
     mutable.executionTasks.push(task);
@@ -991,12 +993,14 @@ app.post("/api/executions/:id/messages", ...keyAuth, asyncRoute(async (req, res)
     executionPreparationStops.assertActive(preparationScope);
     const target = database.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id && item.deviceId === req.oneKeyDeviceId && Boolean(item.installationId) && item.installationId === req.oneKeyInstallationId);
     if (!target) throw new Error("执行任务不存在");
+    assertLocalExecutionAvailable(database, { workspaceId: target.workspaceId, userId: target.userId, deviceId: target.deviceId, installationId: target.installationId });
     if (target.status === "queued" || target.status === "selecting_target" || target.status === "running") throw new Error("本机任务正在执行，请等待当前步骤完成");
     const timestamp = now(); target.status = "queued"; target.updatedAt = timestamp; target.startedAt = undefined; target.completedAt = undefined; target.lastError = undefined;
     target.preparationOperationId=preparationScope.operationId;
     // A user-authored follow-up is a new round, not a continuation of an old dispatch allowance.
     target.batchBudget=undefined;
     target.reportRound = (target.reportRound ?? 0) + 1; target.reportedToCoordinatorAt = undefined; target.finalResponse = undefined;
+    target.deliveryAttempt = undefined; target.terminalReceipt = undefined; target.transportInterruption = undefined;
     appendExecutionEvent(database, { id: uid("exe"), workspaceId: target.workspaceId, userId: target.userId, taskId: target.id, kind: "user_message", text: content, createdAt: timestamp });
     return target;
   });
@@ -1017,7 +1021,7 @@ app.post("/api/executions/:id/messages", ...keyAuth, asyncRoute(async (req, res)
   res.status(202).json({ task: publicExecutionTask(task) });
 }));
 
-app.post("/api/executions/:id/cancel", ...keyAuth, asyncRoute(async (req, res) => {
+app.post("/api/executions/:id/cancel", auth(jwtSecret, undefined, { executionStopOnly: true }), requireOneKeySession, asyncRoute(async (req, res) => {
   const db = await store.read();
   const task = db.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
   if (!task) return res.status(404).json({ error: "执行任务不存在", code: "EXECUTION_NOT_FOUND" });
