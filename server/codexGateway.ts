@@ -2,14 +2,14 @@ import crypto from "node:crypto";
 import type { Express } from "express";
 import type { Store } from "./db.js";
 import type { ExecutionTask, ModelConfig } from "./types.js";
-import { executionTerminal } from "./executionService.js";
+import { appendExecutionEvent, executionTerminal } from "./executionService.js";
 import { resolveAiTask } from "./aiTaskConfig.js";
 import { runBilledModel } from "./modelBilling.js";
 import { MODEL_MAX_OUTPUT_TOKENS, parseProviderUsage } from "./modelGateway.js";
 
 export type CodexGatewayConfiguration = { baseUrl: string; token: string; model: "one-executor" };
 type Grant = Pick<ExecutionTask, "id" | "workspaceId" | "userId" | "deviceId" | "installationId" | "conversationId" | "batchBudget"> & {
-  round: number; expiresAt: number; model: ModelConfig;
+  round: number; expiresAt: number; model: ModelConfig; attemptId?: string;
 };
 type Proof = (scope: { workspaceId: string; userId: string; deviceId: string; installationId?: string; method: string; path: string }) => Promise<void>;
 const digest = (value: string) => crypto.createHash("sha256").update(value).digest("hex");
@@ -35,14 +35,34 @@ export class CodexGateway {
   }) {}
   enabled() { return this.options.enabled; }
   private now() { return this.options.now?.() ?? Date.now(); }
-  private active(db: Awaited<ReturnType<Store["read"]>>, grant: Grant) {
+  private owned(db: Awaited<ReturnType<Store["read"]>>, grant: Grant) {
     const task = db.executionTasks.find(item => item.id === grant.id && item.workspaceId === grant.workspaceId
       && item.userId === grant.userId && item.deviceId === grant.deviceId && item.installationId === grant.installationId);
-    if (!task || task.provider !== "codex" || executionTerminal(task.status) || (task.reportRound ?? 0) !== grant.round
+    if (!task || task.provider !== "codex" || grant.expiresAt <= this.now() || (task.reportRound ?? 0) !== grant.round
+      || task.executionSafetyHold || task.terminalReceipt?.round === grant.round
+      || task.deliveryAttempt && task.deliveryAttempt.round !== grant.round
+      || grant.attemptId && task.deliveryAttempt?.id !== grant.attemptId
       || !db.users.some(item => item.id === grant.userId && item.enabled)
       || !db.workspaceMembers.some(item => item.status !== "disabled" && item.userId === grant.userId && item.workspaceId === grant.workspaceId)
       || !db.workspaces.some(item => item.id === grant.workspaceId && item.status === "active")
       || !db.oneKeyDevices.some(item => item.id === grant.deviceId && item.userId === grant.userId && item.workspaceId === grant.workspaceId && item.status === "active")) throw unavailable();
+    return task;
+  }
+  private recoverable(task: ExecutionTask, grant: Grant) {
+    if (!grant.attemptId || !task.deliveryAttempt || !task.transportInterruption) return false;
+    return task.status === "failed"
+      && task.deliveryAttempt.id === grant.attemptId && task.deliveryAttempt.round === grant.round
+      && task.transportInterruption.attemptId === grant.attemptId && task.transportInterruption.round === grant.round
+      && ["proof_timeout", "heartbeat_timeout", "socket_close", "socket_error"].includes(task.transportInterruption.reason);
+  }
+  private authorizable(db: Awaited<ReturnType<Store["read"]>>, grant: Grant) {
+    const task = this.owned(db, grant);
+    if (executionTerminal(task.status) && !this.recoverable(task, grant)) throw unavailable();
+    return task;
+  }
+  private active(db: Awaited<ReturnType<Store["read"]>>, grant: Grant) {
+    const task = this.owned(db, grant);
+    if (executionTerminal(task.status)) throw unavailable();
     return task;
   }
   async prepare(task: ExecutionTask): Promise<CodexGatewayConfiguration> {
@@ -70,7 +90,8 @@ export class CodexGateway {
     const grant = this.grants.get(digest(token));
     if (!this.enabled() || !grant || grant.expiresAt <= this.now()) throw unavailable();
     const current = await this.store.read();
-    this.active(current, grant);
+    const candidate = this.authorizable(current, grant);
+    const recoveryCheckpoint = this.recoverable(candidate, grant) ? { ...candidate.transportInterruption! } : undefined;
     const priced = current.models.find(model => model.id === grant.model.id && model.enabled);
     if (!priced || priced.model !== grant.model.model || priced.baseUrl !== grant.model.baseUrl || priced.protocol !== grant.model.protocol) throw unavailable();
     // Routing/prompt stay bound to the grant, but each new billable request
@@ -95,6 +116,27 @@ export class CodexGateway {
     const body = { ...forwarded, model: grant.model.model, store: false, max_output_tokens: MODEL_MAX_OUTPUT_TOKENS,
       prompt_cache_key: prefix, instructions: [grant.model.systemPrompt, input.instructions].filter(Boolean).join("\n\n") };
     const requestId = prefix + digest(canonical(body)).slice(0, 32);
+    const attemptId = await this.store.mutate(db => {
+      if (signal.aborted || !this.enabled() || this.grants.get(digest(token)) !== grant) throw unavailable();
+      const task = this.authorizable(db, grant);
+      const calls = db.modelUsageRecords.filter(row => row.workspaceId === grant.workspaceId && row.userId === grant.userId && row.requestId?.startsWith(prefix));
+      if (calls.some(row => row.requestId === requestId || row.status === "pending") || calls.length >= 64) throw unavailable();
+      if (this.recoverable(task, grant)) {
+        if (!recoveryCheckpoint || task.transportInterruption?.at !== recoveryCheckpoint.at
+          || task.transportInterruption.reason !== recoveryCheckpoint.reason
+          || task.transportInterruption.closeCode !== recoveryCheckpoint.closeCode) throw unavailable();
+        const timestamp = new Date(this.now()).toISOString();
+        task.status = "running"; task.updatedAt = timestamp;
+        task.completedAt = undefined; task.lastError = undefined;
+        appendExecutionEvent(db, { id: `exe_${crypto.randomBytes(12).toString("hex")}`, workspaceId: grant.workspaceId,
+          userId: grant.userId, taskId: grant.id, round: grant.round, kind: "status",
+          text: "本机连接已恢复，继续处理本轮；没有重新执行任务。", createdAt: timestamp });
+      }
+      return task.deliveryAttempt?.id;
+    });
+    // The attempt is issued after prepare(). Bind only after a normal request's
+    // fresh Key proof and durable revalidation; reconnects cannot replace it.
+    if (!grant.attemptId && attemptId) grant.attemptId = attemptId;
     let completed: Record<string, unknown> | undefined;
     let usage: ReturnType<typeof parseProviderUsage>;
     const controller = new AbortController();
