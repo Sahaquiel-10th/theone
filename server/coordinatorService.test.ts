@@ -118,10 +118,15 @@ test('truncated task output is not a completed result; own trace preserves actua
  const f=fixture();f.setWorker(async()=>({...answer('不完整成果'),finishReason:'length'}));
  const r=await f.service.dispatch(a,input('operation_truncate_1','UI'),key);await f.service.resume(a,key);
  await waitFor(async()=>(await f.service.task(a,r.taskId!)).jobs[0].state==='failed');
- const task=await f.service.task(a,r.taskId!);assert.equal(task.conversation.messages.filter(m=>m.role==='assistant').length,0);
+ const task=await f.service.task(a,r.taskId!),partial=task.conversation.messages.filter(m=>m.role==='assistant');
+ assert.equal(partial.length,1);assert.match(partial[0].content,/不完整成果/);assert.match(partial[0].content,/本轮未完成/);
+ assert.equal(partial[0].finishReason,'length');assert.equal(task.jobs[0].resultMessageId,partial[0].id);
+ assert.equal(task.conversation.workPaused,true);assert.match(task.jobs[0].error!,/上游输出达到本轮限额/);
  const db=await f.store.read(),trace=db.contextTraces.find(t=>t.conversationId===r.taskId)!;
  assert.equal(trace.workspaceId,a.workspaceId);assert.match(JSON.stringify(trace.sections),/本轮交接|用户原话/);
  assert.equal(db.contextTraces.filter(t=>t.workspaceId===b.workspaceId).length,0);
+ assert.equal(db.chatOperations!.find(o=>o.conversationId===r.taskId&&o.workRun)!.workRun!.resultOutcome,'partial');
+ const calls=f.calls.length;await f.service.resume(a,key);assert.equal(f.calls.length,calls,'partial output never auto-runs again');
 });
 
 const a = { workspaceId: "wa", userId: "a" },
@@ -1393,4 +1398,94 @@ test('a GPT chat credential powers a real image task while fixed picture pricing
     assert.equal(notice.reported,true);assert.equal(notice.read,false);
     assert.equal(imageCalls,1);
   } finally { release?.();rmSync(f.directory,{recursive:true,force:true}); }
+});
+
+test('truncated tool instructions preserve only returned text as partial and never execute the tool or claim completion', async()=>{
+  const f=fixture();await f.store.mutate(d=>d.knowledgeConnections.push({id:'source-partial',workspaceId:a.workspaceId,provider:'getnote',status:'connected',clientId:'fixture',encryptedApiKey:'fixture-encrypted',createdAt:'now',updatedAt:'now'}));
+  f.setWorker(async()=>({...answer('已经返回的真实短文片段'),finishReason:'length',toolCalls:[{id:'incomplete-read',type:'function',function:{name:'knowledge_search',arguments:JSON.stringify({query:'不能执行的截断指令'})}}]}));
+  const reply=await f.service.dispatch(a,input('operation_partial_tool_1','UI 写一段短文'),key);
+  await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,reply.taskId!)).jobs[0].state==='failed');
+  const detail=await f.service.task(a,reply.taskId!),db=await f.store.read(),job=db.chatOperations!.find(o=>o.conversationId===reply.taskId&&o.workRun)!;
+  assert.equal(f.recalls.length,0);assert.ok(f.calls.find(c=>c.modelId==='worker')!.tools.some(t=>t.function.name==='knowledge_search'));
+  assert.equal(job.workRun!.resultOutcome,'partial');assert.match(job.workRun!.error!,/截断的工具指令没有执行/);
+  assert.equal(detail.conversation.messages.filter(m=>m.role==='assistant').length,1);
+  assert.match(detail.conversation.messages.at(-1)!.content,/已经返回的真实短文片段/);
+  assert.equal(detail.conversation.messages.at(-1)!.finishReason,'length');
+  assert.equal(db.modelUsageRecords.find(u=>u.requestId===job.requestId)!.finishReason,'length');
+  await assert.rejects(()=>f.service.task(b,reply.taskId!));
+  await f.service.report(a,[job.id],key);await f.service.report(a,[job.id],key);
+  const main=(await f.service.state(a)).conversation!;
+  assert.equal(main.messages.filter(m=>m.id===`report_${job.id}`).length,1);
+  assert.match(main.messages.at(-1)!.content,/部分结果|部分文字/);assert.doesNotMatch(main.messages.at(-1)!.content,/已完成/);
+});
+
+test('filtered responses and length responses without text do not create fabricated partial messages', async()=>{
+  for(const filtered of [true,false]){
+    const f=fixture(),marker='FILTERED_PROVIDER_TEXT_MUST_NOT_SURFACE';
+    f.setWorker(async()=>({...answer(filtered?marker:''),finishReason:filtered?'filtered':'length',toolCalls:[{id:'incomplete',type:'function',function:{name:'knowledge_search',arguments:JSON.stringify({query:'不能执行'})}}]}));
+    const reply=await f.service.dispatch(a,input(`operation_partial_empty_${filtered?'filtered':'length'}`,'UI 不完整输出'),key);
+    await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,reply.taskId!)).jobs[0].state==='failed');
+    const detail=await f.service.task(a,reply.taskId!),db=await f.store.read();
+    assert.equal(detail.conversation.messages.filter(m=>m.role==='assistant').length,0);
+    assert.equal(detail.jobs[0].resultMessageId,undefined);assert.equal(db.chatOperations!.find(o=>o.conversationId===reply.taskId&&o.workRun)!.workRun!.resultOutcome,undefined);
+    assert.match(detail.jobs[0].error!,filtered?/过滤内容没有保存或展示/:/未返回可保留的正文/);
+    assert.doesNotMatch(JSON.stringify([...db.messages,...db.contextTraces]),new RegExp(marker));
+  }
+});
+
+test('cancelled task rejects late truncated text without changing terminal state or preserving it as a partial result',async()=>{
+  const f=fixture();let release!:(result:ToolChatResult)=>void;
+  f.setWorker(async()=>new Promise(resolve=>{release=resolve;}));
+  const reply=await f.service.dispatch(a,input('operation_partial_late_cancel','UI 写一个短文'),key);
+  await f.service.resume(a,key);await waitFor(async()=>Boolean(release));
+  await f.service.cancelTask(a,reply.taskId!,key);
+  release({...answer('CANCELLED_LATE_PARTIAL_NOT_SAVED'),finishReason:'length'});
+  await new Promise(resolve=>setTimeout(resolve,30));
+  const detail=await f.service.task(a,reply.taskId!),db=await f.store.read();
+  assert.equal(detail.jobs[0].state,'cancelled');assert.equal(detail.jobs[0].resultMessageId,undefined);
+  assert.equal(detail.conversation.messages.filter(m=>m.role==='assistant').length,0);
+  assert.doesNotMatch(JSON.stringify([...db.messages,...db.contextTraces]),/CANCELLED_LATE_PARTIAL_NOT_SAVED/);
+  assert.equal(db.chatOperations!.find(o=>o.conversationId===reply.taskId&&o.workRun)!.workRun!.resultOutcome,undefined);
+});
+
+test('revoked knowledge access suppresses in-flight partial text, including revocation after the fresh authorization read',async()=>{
+  for(const revokeAfterRead of [false,true]){
+    const f=fixture(),marker=`REVOKED_PARTIAL_NOT_SAVED_${revokeAfterRead}`;
+    await f.store.mutate(d=>d.knowledgeConnections.push({id:'partial-source',workspaceId:a.workspaceId,provider:'getnote',status:'connected',clientId:'fixture',encryptedApiKey:'fixture-encrypted',createdAt:'now',updatedAt:'now'}));
+    let release!:(result:ToolChatResult)=>void;
+    f.setWorker(async()=>new Promise(resolve=>{release=resolve;}));
+    const reply=await f.service.dispatch(a,input(`operation_partial_revoke_${revokeAfterRead?'transaction':'call'}`,'UI 写一段短文'),key);
+    await f.service.resume(a,key);await waitFor(async()=>Boolean(release));
+    if(revokeAfterRead){
+      const originalRead=f.store.read.bind(f.store);let armed=true;
+      f.store.read=async()=>{
+        const snapshot=await originalRead();
+        if(armed){armed=false;await f.store.mutate(d=>{d.knowledgeConnections[0].status='revoked';});}
+        return snapshot;
+      };
+    }else await f.store.mutate(d=>{d.knowledgeConnections[0].status='revoked';});
+    release({...answer(marker),finishReason:'length'});
+    await waitFor(async()=>(await f.service.task(a,reply.taskId!)).jobs[0].state==='failed');
+    const detail=await f.service.task(a,reply.taskId!),db=await f.store.read(),job=db.chatOperations!.find(o=>o.conversationId===reply.taskId&&o.workRun)!;
+    assert.equal(detail.conversation.workPaused,true);assert.match(detail.jobs[0].error!,/知识授权已变化/);
+    assert.equal(detail.jobs[0].resultMessageId,undefined);assert.equal(job.workRun!.resultOutcome,undefined);
+    assert.equal(detail.conversation.messages.filter(m=>m.role==='assistant').length,0);
+    assert.doesNotMatch(JSON.stringify([...db.messages,...db.contextTraces]),new RegExp(marker));
+    assert.equal(db.modelUsageRecords.find(u=>u.requestId===job.requestId)!.status,'success','paid provider result remains in the usage ledger even when its text is no longer authorized');
+  }
+});
+
+test('a lost Key proof suppresses late length text while keeping a failed authorization receipt and actual billed usage',async()=>{
+  const f=fixture(),marker='KEY_REVOKED_PARTIAL_NOT_SAVED';let connected=true,release!:(result:ToolChatResult)=>void;
+  const liveKey=async()=>{if(!connected)throw new Error('Key transport disconnected');};
+  f.setWorker(async()=>new Promise(resolve=>{release=resolve;}));
+  const reply=await f.service.dispatch(a,input('operation_partial_key_revoke','UI 写一个短文'),liveKey);
+  await f.service.resume(a,liveKey);await waitFor(async()=>Boolean(release));
+  connected=false;release({...answer(marker),finishReason:'length'});
+  await waitFor(async()=>(await f.service.task(a,reply.taskId!)).jobs[0].state==='failed');
+  const detail=await f.service.task(a,reply.taskId!),db=await f.store.read();
+  assert.equal(detail.conversation.workPaused,true);assert.match(detail.jobs[0].error!,/授权或连接已变化/);
+  assert.equal(detail.jobs[0].resultMessageId,undefined);assert.equal(detail.conversation.messages.filter(m=>m.role==='assistant').length,0);
+  assert.doesNotMatch(JSON.stringify([...db.messages,...db.contextTraces]),new RegExp(marker));
+  assert.ok(db.modelUsageRecords.some(row=>row.activity==='task_worker'&&row.finishReason==='length'&&row.status==='success'));
 });

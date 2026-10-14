@@ -1435,6 +1435,8 @@ export class CoordinatorService {
     verifyKey: () => Promise<void>,
   ) {
     const generatedArtifactIds:string[]=[];
+    let limitedResponse: { content: string; modelId: string; requestId: string; toolCalls: number } | undefined;
+    let filteredResponse = false;
     let trace: ExecutionTraceStep[] = [],
       sections: ContextTraceSection[] = [];
     let op: ChatOperation | undefined;
@@ -1726,9 +1728,9 @@ export class CoordinatorService {
         maxSteps: job.values.maxSteps,
         beforeStep: verify,
         onTrace: (t) => (trace = t),
-        call: (messages, tools) => {
+        call: async (messages, tools) => {
           sections = inputTrace(messages);
-          return runBilledModel(
+          const response = await runBilledModel(
             this.store,
             {
               ...s,
@@ -1756,6 +1758,14 @@ export class CoordinatorService {
                 op!.requestId,
               ),
           );
+          // Preserve actual user-facing text even when the orchestrator rejects
+          // an incomplete tool instruction before returning a final answer.
+          // Provider reasoning blocks and raw payloads never enter this receipt.
+          if (response.finishReason === 'length') limitedResponse = {
+            content: response.content, modelId: m.id, requestId: op!.requestId, toolCalls: response.toolCalls.length,
+          };
+          if (response.finishReason === 'filtered') { filteredResponse = true; limitedResponse = undefined; }
+          return response;
         },
       });
       if (
@@ -1822,24 +1832,53 @@ export class CoordinatorService {
       await this.resume(s, verifyKey);
     } catch (error) {
       if (!op) return;
+      let partialAuthorized = Boolean(limitedResponse?.content.trim() && !filteredResponse);
+      let partialAuthorizationError: unknown;
+      if (partialAuthorized) {
+        try {
+          await verifyKey();
+          assertWork(await this.store.read(), s, id, op.workRun!, op.conversationId!);
+        } catch (authorizationError) {
+          partialAuthorized = false;
+          partialAuthorizationError = authorizationError;
+        }
+      }
       await this.store.mutate((d) => {
         const o = d.chatOperations?.find((o) => o.id === id && own(o, s));
         if (!o?.workRun || o.workRun.state !== "running") return;
+        // The Key proof was refreshed above; serialized database checks close
+        // source, capability, membership and credential races before writing.
+        if (partialAuthorized) {
+          try { assertWork(d, s, id, op!.workRun!, op!.conversationId!); }
+          catch (authorizationError) { partialAuthorized = false; partialAuthorizationError = authorizationError; }
+        }
         o.status = "failed";
         o.workRun.state = "failed";
         o.workRun.unread = true;
-        o.workRun.error = error instanceof ModelRequestError ? `${error.message}。任务已暂停，原话和附件保留，不会自动重跑。` : error instanceof NotionDocumentError || error instanceof CoordinatorError || error instanceof FeatureConfigError ? error.message :
+        const authorizationReason = partialAuthorizationError instanceof CoordinatorError || partialAuthorizationError instanceof FeatureConfigError ? partialAuthorizationError.message : '本机连接或任务授权不可用';
+        o.workRun.error = partialAuthorizationError ? `授权或连接已变化，晚到的部分文字没有保存。${authorizationReason}。任务已暂停，不会自动重跑。`
+          : filteredResponse ? '本轮输出被模型过滤，过滤内容没有保存或展示。任务已暂停，不会自动重跑。'
+          : limitedResponse ? `上游输出达到本轮限额，任务未完成。${limitedResponse.content.trim() ? '已保留执行 AI 返回的部分文字，完整性与成果仍需核对。' : '未返回可保留的正文。'}${limitedResponse.toolCalls ? '截断的工具指令没有执行。' : ''}不会自动重跑。`
+          : error instanceof ModelRequestError ? `${error.message}。任务已暂停，原话和附件保留，不会自动重跑。` : error instanceof NotionDocumentError || error instanceof CoordinatorError || error instanceof FeatureConfigError ? error.message :
           "本轮未完成，请检查授权、模型和电力；可能已有实际用量，不会自动重跑。";
         o.updatedAt = at();
         const c = d.conversations.find(
           (c) => c.id === o.conversationId && own(c, s),
         );
         if (c) c.workPaused = true;
+        if (c && limitedResponse?.content.trim() && partialAuthorized && !filteredResponse) {
+          const partial = parseTaskOutcome(limitedResponse.content).content;
+          const mid = uid('msg');
+          saveMessage(d, s, c, { id: mid, role: 'assistant', content: `【本轮未完成 · 上游输出达到限额】\n以下是执行 AI 已返回的部分文字，尚未验证完整性，不代表任务已完成。\n\n${partial}`,
+            modelId: limitedResponse.modelId, requestId: limitedResponse.requestId, finishReason: 'length', createdAt: at() });
+          o.workRun.resultMessageId = mid;
+          o.workRun.resultOutcome = 'partial';
+        }
         appendOwnerContextTrace(d, {
           id: uid("ctx"),
           ...s,
           conversationId: o.conversationId!,
-          assistantMessageId: "",
+          assistantMessageId: o.workRun.resultMessageId ?? "",
           modelId: o.workRun.modelId,
           requestId: o.requestId,
           query: "",
