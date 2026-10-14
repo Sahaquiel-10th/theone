@@ -226,6 +226,7 @@ type ExecutionTask = {
   finalResponse?: string;
   lastError?: string;
   resultDeliveryPending?: boolean;
+  requiresExecutionCheck?: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -335,7 +336,8 @@ function localId(prefix: string) {
 function executionStatusLabel(task: ExecutionTask | null, preparing = false) {
   if (preparing) return "我在准备这件事";
   if (!task) return "准备开始";
-  if (task.resultDeliveryPending) return task.status === 'cancelled' ? '已请求停止，等待本机确认' : '连接断开了，正在等结果补回';
+  if (task.requiresExecutionCheck) return '本机工具还没确认结束，请核对操作记录';
+  if (task.resultDeliveryPending) return task.status === 'cancelled' ? '已请求停止，等待本机确认' : '本机结果还没确认，正在等反馈';
   if (task.status === "queued" || task.status === "selecting_target") return "正在连接本机";
   if (task.status === "running") return "正在替你工作";
   if (task.status === "completed") return "本轮结果已返回";
@@ -543,7 +545,7 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
         <span><strong>{executionNeedsReview(task) ? '这轮有个问题，结果需要核对' : executionStatusLabel(task, preparing)}</strong><small>{preparing ? "正在连接这台电脑…" : executionNeedsReview(task) ? '展开看看哪些做成了、哪些还没有' : task?.status === "completed" ? "看看做了什么" : task?.status === "failed" ? "看看卡在哪一步" : latestStep || "看看正在做什么"}</small></span>
         <span className="execution-expand-label">{expanded ? "收起" : "展开"}</span><ChevronDown size={15} />
       </button>
-      {busy || task?.resultDeliveryPending && task.status !== 'cancelled' ? <button className="execution-stop" type="button" onClick={event => onStop(event.currentTarget)}><Square size={10} />停止</button> : null}
+      {busy || task?.resultDeliveryPending && task.status !== 'cancelled' && !task.requiresExecutionCheck ? <button className="execution-stop" type="button" onClick={event => onStop(event.currentTarget)}><Square size={10} />停止</button> : null}
     </div>
     <div className="execution-disclosure-grid" data-open={expanded}>
       <div className="execution-disclosure-clip" inert={!expanded} aria-hidden={!expanded}>

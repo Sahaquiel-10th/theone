@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { acceptTerminalReceipt, maxTerminalReceiptBytes, parseTerminalReceipt, recordExecutionAttempt,
   terminalReceiptHash, type TerminalReceipt } from './executionTerminalReceipt.js';
-import { executionDeliveryPending } from './executionService.js';
+import { assertLocalExecutionAvailable, executionDeliveryPending } from './executionService.js';
 
 const now = '2026-10-14T06:00:00.000Z';
 const owner = { workspaceId: 'workspace-a', userId: 'user-a', deviceId: 'device-a', installationId: 'a'.repeat(32) };
@@ -137,4 +137,48 @@ test('recovered launcher reservation does not pretend the orphan process stopped
   assert.equal(task.status, 'failed'); assert.equal(task.executionSafetyHold, 'launcher_interrupted');
   assert.equal(executionDeliveryPending(task), true); assert.match(task.lastError, /是否仍在运行尚未确认/);
   assert.equal(acceptTerminalReceipt(db, owner, value, now)?.disposition, 'duplicate');
+});
+
+test('a final answer with unconfirmed commands is preserved but never completed or automatically dispatched again', () => {
+  for (const outcome of ['failed', 'completed'] as const) {
+    const { db, task } = fixture();
+    const actual = '已输出 QA_CANCEL_B_STARTED，指定命令正在授权目录内等待 sleep 180。';
+    const value = receipt({ outcome, error: 'command_unconfirmed', finalResponse: actual });
+    assert.equal(acceptTerminalReceipt(db, owner, value, now)?.disposition, 'accepted');
+    assert.equal(task.status, 'failed'); assert.equal(task.finalResponse, actual);
+    assert.equal(task.executionSafetyHold, 'command_unconfirmed'); assert.equal(executionDeliveryPending(task), true);
+    assert.match(task.lastError, /工具没有确认结束/);
+    assert.throws(() => assertLocalExecutionAvailable(db, owner), /上一轮/);
+    assert.equal(acceptTerminalReceipt(db, owner, value, now)?.disposition, 'duplicate');
+    assert.equal(task.executionSafetyHold, 'command_unconfirmed');
+    const later = receipt({ receiptId: 'later-result-after-unknown', finalResponse: 'late completed' });
+    assert.equal(acceptTerminalReceipt(db, owner, later, now)?.disposition, 'supplemental');
+    assert.equal(task.status, 'failed'); assert.equal(task.finalResponse, actual);
+    assert.equal(task.executionSafetyHold, 'command_unconfirmed'); assert.equal(executionDeliveryPending(task), true);
+  }
+});
+
+test('cancellation plus an unconfirmed command stays cancelled and blocked while preserving the actual reply', () => {
+  const { db, task } = fixture(); task.status = 'cancelled'; task.lastError = '停止请求已提交';
+  task.transportInterruption = { attemptId: 'attempt-a', round: 1, at: now, reason: 'cancellation_pending' };
+  const actual = '命令仍没有确认结束，已产生的修改不会自动撤销。';
+  const value = receipt({ outcome: 'cancelled', error: 'command_unconfirmed', finalResponse: actual });
+  assert.equal(acceptTerminalReceipt(db, owner, value, now)?.disposition, 'supplemental');
+  assert.equal(task.status, 'cancelled'); assert.equal(task.executionSafetyHold, 'command_unconfirmed');
+  assert.equal(executionDeliveryPending(task), true); assert.match(task.lastError, /已收到停止请求/);
+  assert.match(db.messages[0].content, new RegExp(actual));
+  assert.throws(() => assertLocalExecutionAvailable(db, owner));
+  assert.equal(acceptTerminalReceipt(db, owner, value, now)?.disposition, 'duplicate');
+  assert.equal(task.executionSafetyHold, 'command_unconfirmed');
+});
+
+test('old-round or foreign command warnings cannot set a hold on the current owned attempt', () => {
+  const { db, task } = fixture(); const old = receipt({ error: 'command_unconfirmed', outcome: 'failed' });
+  task.reportRound = 2; recordExecutionAttempt(db, task, 'attempt-new', now);
+  const before = JSON.stringify(task);
+  assert.equal(acceptTerminalReceipt(db, owner, old, now)?.disposition, 'supplemental');
+  assert.equal(JSON.stringify(task), before); assert.equal(task.executionSafetyHold, undefined);
+  const foreign = receipt({ userId: 'foreign-user', error: 'command_unconfirmed', outcome: 'failed' });
+  assert.equal(acceptTerminalReceipt(db, owner, foreign, now), undefined);
+  assert.equal(JSON.stringify(task), before);
 });

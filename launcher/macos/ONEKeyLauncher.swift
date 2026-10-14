@@ -680,6 +680,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
     private var projectPaths: [String: String] = [:]
     private var lastResponses: [String: String] = [:]
     private var toolFailures = Set<String>()
+    private var commandLifecycles: [String: CodexCommandLifecycle] = [:]
     private var cancelled = Set<String>()
     private var preparing = Set<String>()
     private var rounds: [String: Int] = [:]
@@ -751,6 +752,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
         let accepted = synchronized { () -> Bool in
             if processes[taskId] != nil || preparing.contains(taskId) { return false }
             preparing.insert(taskId); rounds[taskId] = round; identities[taskId] = identity
+            commandLifecycles[identity.attemptId] = CodexCommandLifecycle(attemptId: identity.attemptId)
             return true
         }
         guard accepted else {
@@ -761,12 +763,12 @@ final class CodexExecutionRunner: @unchecked Sendable {
     }
 
     func cancel(taskId: String, attemptId: String, round: Int) {
-        let value = synchronized { () -> (Process?, ExecutionReceiptIdentity)? in
+        let value = synchronized { () -> (Process?, ExecutionReceiptIdentity, Bool, String?)? in
             guard let identity = identities[taskId], identity.attemptId == attemptId, identity.round == round, processes[taskId] != nil || preparing.contains(taskId), (try? outbox.hasTerminal(identity)) != true, unsavedTerminals[attemptId] == nil else { return nil }
             cancelled.insert(identity.attemptId)
-            return (processes[taskId], identity)
+            return (processes[taskId], identity, commandLifecycles[identity.attemptId]?.hasUnconfirmedCommands == true, lastResponses[taskId])
         }
-        guard let (process, identity) = value else { return }
+        guard let (process, identity, commandUnconfirmed, finalResponse) = value else { return }
         if let process {
             process.terminate()
             // The server makes the stop button effective immediately, but a
@@ -774,14 +776,19 @@ final class CodexExecutionRunner: @unchecked Sendable {
             // a signal sent. run() publishes it after the EOF barrier below.
             return
         }
-        Task { await send(taskId: taskId, kind: "status", text: "已停止；已产生的修改不会自动撤销。", status: "cancelled", identity: identity) }
+        Task {
+            let terminal = CodexCommandLifecycle.unconfirmedTerminal(finalResponse: finalResponse, cancelled: true)
+            await send(taskId: taskId, kind: "status", text: commandUnconfirmed ? terminal.response
+                : "已停止；已产生的修改不会自动撤销。", status: "cancelled", identity: identity,
+                error: commandUnconfirmed ? terminal.error : nil)
+        }
     }
 
     private func run(taskId: String, instruction: String, resume: Bool, gateway: CodexGatewayConfiguration?, identity: ExecutionReceiptIdentity) async {
-        func report(taskId: String, kind: String, text: String? = nil, providerThreadId: String? = nil, targetName: String? = nil, status: String? = nil) async {
-            await send(taskId: taskId, kind: kind, text: text, providerThreadId: providerThreadId, targetName: targetName, status: status, identity: identity)
+        func report(taskId: String, kind: String, text: String? = nil, providerThreadId: String? = nil, targetName: String? = nil, status: String? = nil, error: String? = nil) async {
+            await send(taskId: taskId, kind: kind, text: text, providerThreadId: providerThreadId, targetName: targetName, status: status, identity: identity, error: error)
         }
-        defer { synchronized { preparing.remove(taskId) } }
+        defer { synchronized { preparing.remove(taskId); commandLifecycles.removeValue(forKey: identity.attemptId) } }
         let alreadyRunning = synchronized { processes[taskId] != nil }
         if managedCodexActivity.isActive() { await report(taskId: taskId, kind: "error", text: "正在准备本机执行工具，本轮尚未操作文件，请准备完成后再执行", status: "failed"); return }
         if alreadyRunning { await report(taskId: taskId, kind: "error", text: "Codex 正在执行当前任务", status: "failed"); return }
@@ -879,22 +886,29 @@ final class CodexExecutionRunner: @unchecked Sendable {
             let exitCode = await processExit.value()
             await outputReader.value
             await errorReader.value
-            let result = synchronized { () -> (Bool, String?, String) in
+            let result = synchronized { () -> (Bool, String?, String, Bool, Bool) in
                 processes.removeValue(forKey: taskId)
                 let wasCancelled = cancelled.contains(identity.attemptId)
                 let finalResponse = lastResponses[taskId]
                 let errorText = errorBuffers.removeValue(forKey: taskId) ?? ""
                 outputBuffers.removeValue(forKey: taskId)
-                return (wasCancelled, finalResponse, errorText.trimmingCharacters(in: .whitespacesAndNewlines))
+                let lifecycle = commandLifecycles[identity.attemptId]
+                return (wasCancelled, finalResponse, errorText.trimmingCharacters(in: .whitespacesAndNewlines),
+                        lifecycle?.hasUnconfirmedCommands == true, lifecycle?.hasFailedCommands == true)
             }
-            let (wasCancelled, finalResponse, errorText) = result
+            let (wasCancelled, finalResponse, errorText, commandUnconfirmed, confirmedCommandFailure) = result
+            if commandUnconfirmed {
+                let terminal = CodexCommandLifecycle.unconfirmedTerminal(finalResponse: finalResponse, cancelled: wasCancelled)
+                await report(taskId: taskId, kind: "error", text: terminal.response, status: terminal.outcome, error: terminal.error)
+                return
+            }
             if wasCancelled {
                 await report(taskId: taskId, kind: "status", text: "已停止；已产生的修改不会自动撤销。", status: "cancelled")
                 return
             }
             if exitCode == 0 {
                 if let finalResponse, !finalResponse.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    let failed = synchronized { toolFailures.remove(taskId) != nil }
+                    let failed = synchronized { toolFailures.remove(taskId) != nil } || confirmedCommandFailure
                     await report(taskId: taskId, kind: failed ? "error" : "status", text: failed ? "\(finalResponse)\n\n本轮有工具执行失败，完成情况需检查，不会自动重跑。" : finalResponse, status: failed ? "failed" : "completed")
                 } else {
                     await report(taskId: taskId, kind: "error", text: "执行器已退出，但没有返回本轮结果，任务是否完成尚未确认。请检查文件，不会自动重跑。", status: "failed")
@@ -915,7 +929,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
         func report(taskId: String, kind: String, text: String? = nil, providerThreadId: String? = nil, targetName: String? = nil, status: String? = nil) async {
             await send(taskId: taskId, kind: kind, text: text, providerThreadId: providerThreadId, targetName: targetName, status: status, identity: identity)
         }
-        guard let data = line.data(using: .utf8), let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let type = payload["type"] as? String else { return }
+        guard synchronized({ identities[taskId] == identity }), let data = line.data(using: .utf8), let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let type = payload["type"] as? String else { return }
         if type == "thread.started", let id = payload["thread_id"] as? String {
             synchronized { threadIds[taskId] = id }
             await report(taskId: taskId, kind: "status", text: "Codex 会话已建立", providerThreadId: id, targetName: targetName, status: "running")
@@ -928,6 +942,11 @@ final class CodexExecutionRunner: @unchecked Sendable {
             return
         }
         guard let item = payload["item"] as? [String: Any], let itemType = item["type"] as? String else { return }
+        synchronized {
+            var lifecycle = commandLifecycles[identity.attemptId] ?? CodexCommandLifecycle(attemptId: identity.attemptId)
+            lifecycle.observe(attemptId: identity.attemptId, eventType: type, item: item)
+            commandLifecycles[identity.attemptId] = lifecycle
+        }
         if type == "item.completed", itemType == "agent_message", let text = item["text"] as? String, !text.isEmpty {
             synchronized { lastResponses[taskId] = String(text.prefix(120000)) }
             await report(taskId: taskId, kind: "message", text: String(text.prefix(120000)))
@@ -945,7 +964,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
         }
     }
 
-    private func send(taskId: String, kind: String, text: String? = nil, providerThreadId: String? = nil, targetName: String? = nil, status: String? = nil, identity: ExecutionReceiptIdentity) async {
+    private func send(taskId: String, kind: String, text: String? = nil, providerThreadId: String? = nil, targetName: String? = nil, status: String? = nil, identity: ExecutionReceiptIdentity, error: String? = nil) async {
         if let status, ["completed", "failed", "cancelled"].contains(status) {
             let result = synchronized { () -> (ExecutionTerminalReceipt?, Bool) in
                 // A second end/cancel callback after the exact ACK is not a
@@ -953,7 +972,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
                 // unsaved receipt for an already-settled attempt.
                 if (try? outbox.isAcknowledged(identity)) == true { return (nil, false) }
                 let wasCancelled = cancelled.contains(identity.attemptId)
-                let candidate = unsavedTerminals[identity.attemptId] ?? ExecutionTerminalReceipt(identity: identity, outcome: wasCancelled ? "cancelled" : status, finalResponse: wasCancelled ? "已停止；已产生的修改不会自动撤销。" : (text ?? "执行器未返回结果，完成情况尚未确认。"), error: status == "failed" ? "execution_unconfirmed" : nil, targetName: targetName ?? projectPaths[taskId], providerThreadId: providerThreadId ?? threadIds[taskId])
+                let candidate = unsavedTerminals[identity.attemptId] ?? ExecutionTerminalReceipt(identity: identity, outcome: wasCancelled ? "cancelled" : status, finalResponse: wasCancelled && error != "command_unconfirmed" ? "已停止；已产生的修改不会自动撤销。" : (text ?? "执行器未返回结果，完成情况尚未确认。"), error: error ?? (status == "failed" ? "execution_unconfirmed" : nil), targetName: targetName ?? projectPaths[taskId], providerThreadId: providerThreadId ?? threadIds[taskId])
                 do {
                     let first = try outbox.persist(candidate)
                     unsavedTerminals.removeValue(forKey: identity.attemptId)

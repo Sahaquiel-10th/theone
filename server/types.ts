@@ -189,7 +189,7 @@ export type ExecutionTask = {
     at: string; closeCode?: number };
   terminalReceipt?: { id: string; hash: string; attemptId: string; round: number; receivedAt: string;
     outcome: 'completed' | 'failed' | 'cancelled'; disposition: 'accepted' | 'supplemental'; receiptMessageId?: string };
-  executionSafetyHold?: 'launcher_interrupted';
+  executionSafetyHold?: 'launcher_interrupted' | 'command_unconfirmed';
   createdAt: string; updatedAt: string; startedAt?: string; completedAt?: string;
 };
 export type ExecutionEvent = {

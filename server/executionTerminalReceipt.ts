@@ -124,18 +124,27 @@ export function acceptTerminalReceipt(database: Database, owner: TerminalOwner, 
   const oldReceipt = database.messages?.some(m => m.id === `execution_receipt_${task.id}_${receipt.round}`
     && m.workspaceId === owner.workspaceId && m.userId === owner.userId);
   const disposition: TerminalAck['disposition'] = canApply ? 'accepted' : receipt.finalResponse.trim() || receipt.error?.trim() ? 'supplemental' : 'superseded';
-  if (currentRound && firstForAttempt && receipt.error === 'launcher_interrupted') {
+  const safetyHold = receipt.error === 'launcher_interrupted' ? 'launcher_interrupted'
+    : receipt.error === 'command_unconfirmed' ? 'command_unconfirmed' : undefined;
+  if (currentRound && firstForAttempt && safetyHold) {
     // A restarted launcher cannot prove that its old child has stopped. Do not
     // turn a recovered reservation marker into authority to run again.
-    task.executionSafetyHold = 'launcher_interrupted';
+    task.executionSafetyHold = safetyHold;
+    if (safetyHold === 'command_unconfirmed') task.lastError = task.status === 'cancelled'
+      ? '已收到停止请求，但仍有工具没有确认结束。请先核对本机文件，不要重复操作；不会自动重跑。'
+      : '这轮还有工具没有确认结束，暂时不能算完成。请先核对本机文件，不要重复操作；不会自动重跑。';
   }
   if (canApply) {
     const meaningful = receipt.finalResponse.trim() && !/^Codex 本轮已结束/.test(receipt.finalResponse.trim());
-    task.status = receipt.error === 'launcher_interrupted' || receipt.outcome === 'completed' && !meaningful ? 'failed' : receipt.outcome;
+    task.status = receipt.outcome === 'cancelled' ? 'cancelled'
+      : safetyHold || receipt.outcome === 'completed' && !meaningful ? 'failed' : receipt.outcome;
     task.finalResponse = receipt.finalResponse || undefined;
     task.lastError = task.status === 'completed' ? undefined : receipt.error || (task.status === 'cancelled'
       ? '执行已取消；已产生的修改不会自动撤销。' : '执行器已退出，但没有返回可确认的结果。不会自动重跑。');
     if (receipt.error === 'launcher_interrupted') task.lastError = 'ONE 本机程序此前中断，原操作是否仍在运行尚未确认。请先核对本机文件与进程，不会自动重跑。';
+    if (receipt.error === 'command_unconfirmed') task.lastError = task.status === 'cancelled'
+      ? '已收到停止请求，但仍有工具没有确认结束。请先核对本机文件，不要重复操作；不会自动重跑。'
+      : '这轮还有工具没有确认结束，暂时不能算完成。请先核对本机文件，不要重复操作；不会自动重跑。';
     if (receipt.targetName) task.targetName = receipt.targetName;
     if (receipt.providerThreadId) task.providerThreadId = receipt.providerThreadId;
     task.updatedAt = task.completedAt = timestamp;
@@ -154,8 +163,8 @@ export function acceptTerminalReceipt(database: Database, owner: TerminalOwner, 
   } else if (disposition === 'supplemental') {
     const receiptMessageId = supplement(database, task, receipt, timestamp, currentRound);
     if (currentRound && firstForAttempt) {
-      // A late terminal confirms that this attempt is no longer running, but
-      // cancellation and genuine tool failure remain authoritative outcomes.
+      // A late terminal settles delivery, not an unknown child process. Keep
+      // cancellation, genuine tool failure and any safety hold authoritative.
       task.terminalReceipt = { id: receipt.receiptId, hash: receipt.receiptHash, attemptId: receipt.attemptId,
         round: receipt.round, outcome: receipt.outcome, receivedAt: timestamp, disposition: 'supplemental', receiptMessageId };
       task.updatedAt = timestamp;

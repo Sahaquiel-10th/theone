@@ -16,6 +16,9 @@ export function executionDeliveryPending(task: ExecutionTask) {
 }
 export function assertLocalExecutionAvailable(database: Database, scope: Pick<ExecutionTask, 'workspaceId' | 'userId' | 'deviceId' | 'installationId'>) {
   if (database.executionTasks.some(t => t.workspaceId === scope.workspaceId && t.userId === scope.userId
+    && t.deviceId === scope.deviceId && t.installationId === scope.installationId && t.executionSafetyHold))
+    throw new Error('上一轮还有本机操作没确认结束。请先核对文件与执行工具，不要重复操作；本轮不会自动重跑。');
+  if (database.executionTasks.some(t => t.workspaceId === scope.workspaceId && t.userId === scope.userId
     && t.deviceId === scope.deviceId && t.installationId === scope.installationId && ['queued','selecting_target','running'].includes(t.status)))
     throw new Error('本机还有任务正在执行。当前要求已保留，请等本轮结束后再执行；不会同时修改文件。');
   if (database.executionTasks.some(t => t.workspaceId === scope.workspaceId && t.userId === scope.userId
@@ -158,7 +161,7 @@ export function buildExecutionCompilerMessages(records: MessageRecord[], sourceM
 export function publicExecutionTask(task: ExecutionTask) {
   const { instruction: _instruction, deviceId: _deviceId, deliveryAttempt: _attempt,
     terminalReceipt: _receipt, transportInterruption: _transport, executionSafetyHold: _hold, ...safe } = task;
-  return { ...safe, resultDeliveryPending: executionDeliveryPending(task) };
+  return { ...safe, resultDeliveryPending: executionDeliveryPending(task), requiresExecutionCheck: Boolean(task.executionSafetyHold) };
 }
 
 export function taskEvents(database: Database, task: ExecutionTask) {

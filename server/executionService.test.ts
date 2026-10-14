@@ -20,6 +20,45 @@ test('unacknowledged disconnected rounds block repeat work only for their exact 
   assert.doesNotThrow(() => assertLocalExecutionAvailable(db,scope));
 });
 
+test('an uncertain launcher process blocks its exact device even after a terminal receipt without suggesting a false stop', () => {
+  const scope = { workspaceId:'a', userId:'u', deviceId:'d', installationId:'i' };
+  for (const status of ['completed','failed','cancelled'] as const) {
+    const task = { ...scope, id:'held', status, reportRound:1, executionSafetyHold:'launcher_interrupted',
+      deliveryAttempt:{id:'attempt',round:1,issuedAt:'now'},
+      terminalReceipt:{id:'receipt',hash:'hash',attemptId:'attempt',round:1,outcome:'failed',disposition:'accepted',receivedAt:'now'} } as ExecutionTask;
+    const db = { executionTasks:[task] } as Database;
+    assert.equal(executionDeliveryPending(task), true);
+    assert.throws(() => assertLocalExecutionAvailable(db,scope), error => {
+      assert.ok(error instanceof Error); assert.match(error.message,/核对文件与执行工具/);
+      assert.doesNotMatch(error.message,/先停止|停止上一轮|再安排新任务/); return true;
+    });
+    for (const foreign of [{...scope,workspaceId:'b'},{...scope,userId:'v'},{...scope,deviceId:'e'},
+      {...scope,installationId:'j'},{...scope,installationId:undefined}])
+      assert.doesNotThrow(() => assertLocalExecutionAvailable(db,foreign));
+  }
+});
+
+test('ordinary terminal tasks with no process safety hold allow new local work', () => {
+  const scope = { workspaceId:'a', userId:'u', deviceId:'d', installationId:'i' };
+  for (const status of ['completed','failed','cancelled'] as const) {
+    const task = { ...scope, id:'settled', status } as ExecutionTask;
+    assert.equal(executionDeliveryPending(task), false);
+    assert.doesNotThrow(() => assertLocalExecutionAvailable({executionTasks:[task]} as Database,scope));
+  }
+});
+
+test('public process-check flags are explicit booleans without leaking the private hold or attempt', () => {
+  const task = { id:'held', instruction:'private-instruction', deviceId:'private-device', status:'failed', reportRound:1,
+    deliveryAttempt:{id:'private-attempt',round:1,issuedAt:'now'},
+    terminalReceipt:{id:'private-receipt',hash:'private-hash',attemptId:'private-attempt',round:1,outcome:'failed',disposition:'accepted',receivedAt:'now'} } as ExecutionTask;
+  for (const held of [false,true]) {
+    const snapshot = publicExecutionTask({...task,executionSafetyHold:held ? 'launcher_interrupted' : undefined});
+    assert.equal(snapshot.requiresExecutionCheck,held); assert.equal(typeof snapshot.requiresExecutionCheck,'boolean');
+    assert.equal(snapshot.resultDeliveryPending,held);
+    assert.doesNotMatch(JSON.stringify(snapshot),/launcher_interrupted|executionSafetyHold|private-attempt|deliveryAttempt|private-receipt|private-hash|terminalReceipt|private-instruction|private-device/);
+  }
+});
+
 test('public execution snapshots omit private receipt and transport bindings', () => {
   const task = {id:'t',instruction:'private',deviceId:'d',status:'failed',deliveryAttempt:{id:'secret-attempt',round:0,issuedAt:'now'},
     transportInterruption:{attemptId:'secret-attempt',round:0,reason:'socket_error',at:'now'},
