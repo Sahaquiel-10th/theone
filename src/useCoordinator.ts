@@ -5,6 +5,7 @@ import { approveFeaturePrices } from './FeatureBudgetSettings';
 import { coordinatorMessage } from './coordinatorMessage';
 import {chatSubmission,forgetChatSubmission} from './chatSubmission';
 import {receiptMayBeMissing} from './responseProgressState';
+import {applyReviewedReceipts} from './taskTransferLifecycle';
 import type { Conversation } from "../server/types";
 import type {
   Action,
@@ -42,6 +43,7 @@ type Snapshot = {
   pendingOperationId?: string;
   links?: { messageId: string; taskId: string }[];
   transfers?: Meta[];
+  recentReportedReceiptIds?: string[];
 };
 type Job = {
   notionReceipt?: { state: 'pending' | 'verified' | 'uncertain'; url?: string; error?: string };
@@ -315,9 +317,14 @@ export function useCoordinator(
     });
     setSnapshot((old) =>
       old
-        ? { ...old, notices: old.notices.map((n) => ids.includes(n.id) ? {...n,read:true} : n).filter(n=>!n.read||!n.reported) }
+        ? { ...old, notices: applyReviewedReceipts(old.notices,ids) }
         : old,
     );
+  }
+  async function readAll() {
+    const result=await api<{ids:string[];count:number}>("/api/coordinator/notices/read-all",{method:"POST",body:"{}"});
+    setSnapshot(old=>old?{...old,notices:applyReviewedReceipts(old.notices,result.ids)}:old);
+    await refresh();
   }
   async function resumeTask(id: string, latestOnly = false) {
     await api("/api/coordinator/resume", {
@@ -422,6 +429,7 @@ export function useCoordinator(
     load,
     refresh,
     acknowledge,
+    readAll,
     report: async (ids: string[]) => { const result=await api<{deferred?:boolean}>("/api/coordinator/reports", { method: "POST", body: JSON.stringify({ ids }) }); await refresh(); return !result.deferred; },
     resumeTask,
     retryTask,

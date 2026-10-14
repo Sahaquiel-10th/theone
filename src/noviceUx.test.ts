@@ -33,11 +33,13 @@ test('selecting a feature removes only its mention, retains the original request
   assert.equal(withoutFeatureMention('请用 @办公 整理本周工作',mention),'请用 @办公 整理本周工作');
 });
 test('execution labels preserve queued, unknown, failed and cancelled meanings',()=>{
-  assert.match(transferStateLabel('queued'),/尚未开始/);
-  assert.match(transferStateLabel('failed'),/未完成/);
-  assert.match(transferStateLabel('interrupted'),/待核对/);
-  assert.match(transferStateLabel('cancelled'),/不会自动重跑/);
-  assert.match(transferStateLabel('selecting_target'),/选择工作文件夹/);
+  assert.match(transferStateLabel('queued'),/等开始/);
+  assert.match(transferStateLabel('failed'),/没做成/);
+  assert.match(transferStateLabel('interrupted'),/还要核对/);
+  assert.match(transferStateLabel('cancelled'),/不会自动再跑/);
+  assert.match(transferStateLabel('selecting_target'),/选一个工作文件夹/);
+  assert.match(transferStateLabel('returned'),/新反馈/);
+  assert.doesNotMatch(transferStateLabel('returned'),/做好|正在处理/);
 });
 test('feature picker only reads the scoped catalog; choosing cannot create a task or incur a charge',()=>{
   const source=readFileSync(new URL('./ComposerFeatures.tsx',import.meta.url),'utf8');

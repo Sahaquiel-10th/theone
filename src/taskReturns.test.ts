@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {newAutomaticReceiptIds,visibleTransfers,presentationTransfers,transferFeedbackLabel,type Transfer} from './TaskTransferRail';
-import {taskCategory} from './taskAttention';
+import {taskCategory,taskUiOutcome} from './taskAttention';
 test('unreported receipts survive refresh even without having observed the task running',()=>{
  const tasks:Transfer[]=[{id:'old',taskId:'ui',title:'UI',state:'completed',reported:true},{id:'new',taskId:'ui',title:'UI',state:'completed',reported:false},{id:'failed',taskId:'other',title:'Other',state:'failed',reported:false},{id:'running',taskId:'ui',title:'UI',state:'running',reportable:false}];
  assert.deepEqual(newAutomaticReceiptIds(tasks),['new','failed']);
@@ -16,6 +16,13 @@ test('reporting a result does not make it read; unviewed completed work remains 
  assert.equal(taskCategory({paused:true,active:true,isTask:true}),'review');
  assert.equal(taskCategory({outcome:'partial',isTask:true}),'review');
  assert.equal(taskCategory({}),'history');
+});
+test('local process completion cannot override an unknown or needs-confirmation receipt',()=>{
+ assert.equal(taskUiOutcome({localStatus:'completed',receiptOutcome:'needs_input'}),'needs_input');
+ assert.equal(taskUiOutcome({localStatus:'completed',receiptOutcome:'returned'}),'returned');
+ assert.equal(taskUiOutcome({localStatus:'completed'}),'returned');
+ assert.equal(taskUiOutcome({localStatus:'running',receiptOutcome:'returned'}),'running');
+ assert.equal(taskUiOutcome({paused:true,localStatus:'running'}),'paused');
 });
 test('acknowledged cards animate from a captured batch even after refreshed server flags hide them',()=>{
  const returning:Transfer={id:'fresh',taskId:'ui',title:'UI',state:'returned',reported:false};

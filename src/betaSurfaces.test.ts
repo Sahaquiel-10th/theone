@@ -25,10 +25,21 @@ test("knowledge onboarding is action-first and keeps only the required disclosur
   assert.ok(knowledge.includes("小马，连接你的知识"));
   assert.ok(knowledge.includes("连接知识来源"));
   assert.ok(!knowledge.includes("换电脑不用重来"));
-  const ready = renderToStaticMarkup(createElement(Onboarding, { ...props, profile: { ...profile, displayName: "小马", onboarding: { knowledgeChoice: "skipped", nameSetAt: "today" } } }));
+  const ready = renderToStaticMarkup(createElement(Onboarding, { ...props, handbookOffer: { available: true, pricePower: .012 }, profile: { ...profile, displayName: "小马", onboarding: { knowledgeChoice: "skipped", nameSetAt: "today" } } }));
   assert.ok(ready.includes("现在，问我一件事"));
   assert.ok(ready.includes("保持 ONE Key 插入"));
+  assert.ok(ready.includes("使用现有额度"));
+  assert.ok(ready.includes("不读取你的知识内容"));
+  assert.ok(ready.includes("先聊聊，不画指南"));
   assert.ok(!ready.includes("从一件真实的事开始"));
+});
+
+test("welcome guide shows the actual single-picture price and gracefully hides it if unconfigured", () => {
+  const props = { profile: { ...profile, displayName: "小马", onboarding: { knowledgeChoice: "skipped" as const, nameSetAt: "today" } }, knowledgeConnected: false, onSave: async () => undefined, onOpenKnowledge: () => undefined, onStartQuestion: () => undefined };
+  const priced = renderToStaticMarkup(createElement(Onboarding, { ...props, handbookOffer: { available: true, pricePower: .012 } }));
+  assert.ok(priced.includes("0.012 电力")); assert.ok(priced.includes("1 张图片"));
+  const unconfigured = renderToStaticMarkup(createElement(Onboarding, { ...props, handbookOffer: { available: false } }));
+  assert.ok(unconfigured.includes("准备好了")); assert.ok(!unconfigured.includes("开始，顺便画给我"));
 });
 
 test("profile names render as plain text and feedback does not reveal a saved shared comment before expanding", () => {

@@ -4,7 +4,8 @@ import type { Attachment, Conversation, Database, ExecutionTask } from './types.
 import type { ChatOperation } from './chatOperations.js';
 import type { WorkRun } from './coordinatorTypes.js';
 import { CoordinatorService } from './coordinatorService.js';
-import { acknowledgeTaskResults, appendTaskResultReport, markTaskResultsReported, pendingTaskResults, unreviewedTaskResults } from './taskResultInbox.js';
+import { acknowledgeTaskResults, acknowledgeAllTaskResults, appendTaskResultReport, markTaskResultsReported, pendingTaskResults, unreviewedTaskResults, taskResultIdsReportedInMessage, taskResultConversationContext, captureTaskResults, capturedTaskResultsForReport } from './taskResultInbox.js';
+import { saveExecutionReceipt } from './executionService.js';
 
 const a = { workspaceId: 'wa', userId: 'a' }, b = { workspaceId: 'wb', userId: 'b' };
 const timestamp = '2026-10-14T01:00:00.000Z';
@@ -195,4 +196,80 @@ test('an earlier local round finishing after a new prepared requirement cannot h
   state = await coordinator.state(a);
   assert.equal(state.transfers.find(t => t.id === task.id)?.localPrepared, false);
   assert.equal(state.transfers.find(t => t.id === task.id)?.queued, 1);
+});
+
+test('read-all acknowledges every current owned terminal result without reporting or touching running and future rounds', () => {
+  const db=fixture();
+  for(let i=0;i<55;i++)cloud(db,`own-${i}`,a,{text:`实际成果${i}`});
+  const failed=cloud(db,'failed',a,{state:'failed',text:'调用失败'});
+  const foreign=cloud(db,'foreign',b,{text:'其他空间成果'});
+  const running=cloud(db,'running',a,{state:'running'}),prepared=cloud(db,'prepared',a,{state:'prepared'});
+  const execution=local(db,'local-round');
+  const result=acknowledgeAllTaskResults(db,a);
+  assert.equal(result.count,57);assert.equal(result.ids.length,57);
+  assert.equal(unreviewedTaskResults(db,a).length,0);
+  assert.equal(failed.operation.workRun!.unread,false);
+  assert.equal(foreign.operation.workRun!.unread,true);
+  assert.equal(running.operation.workRun!.state,'running');assert.equal(running.operation.workRun!.unread,true);
+  assert.equal(prepared.operation.workRun!.state,'prepared');
+  assert.equal(db.conversations.find(c=>c.id==='main-a')!.messages.length,0);
+  assert.ok(db.chatOperations!.filter(o=>o.workRun).every(o=>!o.workRun!.reportedToCoordinatorAt));
+  assert.equal(acknowledgeAllTaskResults(db,a).count,0);
+  const refreshed=structuredClone(db);const next=refreshed.executionTasks.find(t=>t.id===execution.id)!;
+  next.reportRound=1;next.status='running';
+  assert.equal(acknowledgeAllTaskResults(refreshed,a).count,0);assert.equal(next.noticeReadRound,0);
+  next.status='completed';next.finalResponse='新一轮回读匹配';
+  assert.deepEqual(unreviewedTaskResults(refreshed,a).map(r=>r.id),['local-round_1']);
+  cloud(refreshed,'later',a,{text:'之后才完成'});
+  assert.deepEqual(unreviewedTaskResults(refreshed,a).map(r=>r.id),['later','local-round_1']);
+  refreshed.workspaceMembers[0].status='disabled';assert.throws(()=>acknowledgeAllTaskResults(refreshed,a),/不可用/);
+});
+
+test('reported receipt identity remains available for the exact owned answer after user review', () => {
+  const db=fixture();cloud(db,'first',a,{text:'真实正文'});const execution=local(db,'local-result');
+  const report=appendTaskResultReport(db,a);
+  acknowledgeAllTaskResults(db,a);
+  assert.equal(unreviewedTaskResults(db,a).length,0);
+  assert.deepEqual(taskResultIdsReportedInMessage(db,a,report.messageId),['first','local-result']);
+  assert.deepEqual(taskResultIdsReportedInMessage(db,b,report.messageId),[]);
+  assert.deepEqual(taskResultIdsReportedInMessage(db,a,'missing'),[]);
+  execution.reportRound=1;execution.finalResponse='第二轮尚未汇报';
+  assert.deepEqual(taskResultIdsReportedInMessage(db,a,report.messageId),['first','local-result'],'an exact already-reported old round remains tied to its saved answer');
+  assert.equal(pendingTaskResults(db,a)[0].id,'local-result_1');
+});
+
+test('friendly result context keeps actual failure and file evidence without quoting internal identifiers', () => {
+  const db=fixture();const execution=local(db,'secret-operation');execution.status='failed';execution.lastError='第二个文件写入失败';
+  const result=pendingTaskResults(db,a)[0];result.summary='【本机执行回执 · codex · 第 1 轮 · secret-operation】\n第二个文件写入失败；已创建 /QA/result.md';
+  const projected=taskResultConversationContext([result]),context=JSON.stringify(projected);
+  assert.doesNotMatch(context,/sourceId|resultMessageId/);
+  assert.doesNotMatch(projected[0].summary,/secret-operation/);
+  assert.match(context,/第二个文件写入失败/);assert.match(context,/\/QA\/result.md/);assert.match(context,/task=/);
+  assert.equal(result.id,'secret-operation','source identity remains intact server-side');
+});
+
+test('an owned captured old local round reports from immutable evidence without marking the current round', () => {
+  const db=fixture(),task=local(db,'same-local'),other=local(db,'foreign-local',b);
+  saveExecutionReceipt(db,task);saveExecutionReceipt(db,other);
+  const captures=captureTaskResults(db,a,['same-local','foreign-local']);assert.equal(captures.length,1);
+  task.reportRound=1;task.status='running';task.finalResponse=undefined;
+  assert.deepEqual(capturedTaskResultsForReport(db,a,captures).map(result=>result.id),['same-local']);
+  assert.deepEqual(capturedTaskResultsForReport(db,b,captures),[]);
+  assert.deepEqual(capturedTaskResultsForReport(db,a,[{...captures[0],workspaceId:'wb'}]),[]);
+  assert.deepEqual(capturedTaskResultsForReport(db,a,[{...captures[0],result:{...captures[0].result,taskId:'task-foreign-local'}}]),[]);
+  assert.deepEqual(capturedTaskResultsForReport(db,a,[{...captures[0],localEvidence:{...captures[0].localEvidence!,contentHash:'forged'}}]),[]);
+  assert.deepEqual(capturedTaskResultsForReport(db,a,[{...captures[0],result:{...captures[0].result,summary:'另一件事的秘密'}}]),[]);
+  const main=db.conversations.find(c=>c.id==='main-a')!;
+  main.messages.push({id:'captured-answer',role:'assistant',content:'上一轮文件的实际结果已返回。',createdAt:timestamp});
+  markTaskResultsReported(db,a,{ids:['same-local'],assistantMessageId:'captured-answer',captures});
+  assert.equal(db.chatOperations!.filter(o=>o.id==='notice_same-local').length,1);
+  assert.equal(task.reportedRound,undefined);assert.equal(task.reportedToCoordinatorAt,undefined);assert.equal(task.reportMessageId,undefined);
+  assert.equal(task.status,'running');assert.equal(task.reportRound,1);
+  assert.deepEqual(taskResultIdsReportedInMessage(db,a,'captured-answer'),['same-local']);
+  markTaskResultsReported(db,a,{ids:['same-local'],assistantMessageId:'captured-answer',captures});
+  assert.equal(db.chatOperations!.filter(o=>o.id==='notice_same-local').length,1);
+  task.status='completed';task.finalResponse='新一轮文件已回读';saveExecutionReceipt(db,task);
+  assert.deepEqual(pendingTaskResults(db,a).map(result=>result.id),['same-local_1']);
+  assert.deepEqual(unreviewedTaskResults(db,a).map(result=>result.id),['same-local_1']);
+  assert.equal(other.reportedToCoordinatorAt,undefined);
 });

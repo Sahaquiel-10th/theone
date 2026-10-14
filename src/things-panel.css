@@ -27,6 +27,10 @@
 .things-compose-execute svg{flex-shrink:0;align-self:flex-end}
 .things-thread-messages article small{font-size:10px;color:var(--studio-muted)}
 .things-thread-messages article p{white-space:pre-wrap;overflow-wrap:anywhere}
+.things-thread-messages .generated-image{display:block;width:min(100%,640px);max-height:70vh;object-fit:contain;border-radius:12px;margin:12px 0}
+.task-original-message{margin-top:12px;border-top:1px solid var(--studio-line,#e5e7dc);padding-top:8px;font-size:12px;color:var(--studio-muted,#73786c)}
+.task-original-message summary{cursor:pointer;list-style:none}.task-original-message summary::before{content:'＋ ';font-size:12px}.task-original-message[open] summary::before{content:'− '}
+.things-list button.things-read-all{font-size:11px;color:var(--studio-muted);padding:5px 0;align-self:flex-start;background:none;border:0;border-radius:0}
 .things-thread header,.things-thread form{flex-shrink:0}
 .things-thread form{display:flex;gap:12px;padding:20px 24px;border-top:1px solid var(--studio-line);align-items:flex-end}
 .things-send-error{margin:0;padding:8px 24px;font-size:12px;color:#9b4037;flex-shrink:0}

@@ -1,5 +1,6 @@
 import type { Attachment, AttachmentSummary, Conversation, Database, ExecutionTask, Message } from './types.js';
 import type { ChatOperation } from './chatOperations.js';
+import { createHash } from 'node:crypto';
 
 export type TaskResultScope = { workspaceId: string; userId: string };
 export type TaskResultOutcome = 'completed' | 'returned' | 'failed' | 'partial' | 'needs_input' | 'cancelled' | 'interrupted';
@@ -11,6 +12,9 @@ export type TaskResultReceipt = {
   location?: string; notionUrl?: string; round?: number; reported: boolean; reviewed: boolean;
 };
 export type TaskResultLimits = { count?: number; summaryChars?: number; totalChars?: number };
+/** Server-internal snapshot, never accepted from a browser. Old local rounds require durable message evidence. */
+export type TaskResultCapture = TaskResultScope & { result: TaskResultReceipt;
+  localEvidence?: { messageId: string; createdAt: string; contentHash: string } };
 
 export class TaskResultInboxError extends Error {
   constructor(message: string, readonly status = 403) { super(message); this.name = 'TaskResultInboxError'; }
@@ -115,20 +119,83 @@ export function unreviewedTaskResults(db: Database, scope: TaskResultScope, limi
   return bounded(allResults(db, scope, Math.max(100, Math.min(limits.summaryChars ?? 1200, 6000))).filter(r => !r.reviewed), limits);
 }
 
+export function captureTaskResults(db: Database, scope: TaskResultScope, ids: string[]): TaskResultCapture[] {
+  const wanted = new Set(ids);
+  return allResults(db, scope, 1200).filter(result => wanted.has(result.id) && !result.reported).map(result => {
+    const persisted = result.source === 'local' && result.resultMessageId
+      ? db.messages.find(message => own(message, scope) && message.conversationId === result.taskId && message.role === 'assistant' && message.id === result.resultMessageId) : undefined;
+    return { ...scope, result: structuredClone(result), ...(persisted ? { localEvidence: { messageId: persisted.id,
+      createdAt: persisted.createdAt, contentHash: createHash('sha256').update(persisted.content).digest('hex') } } : {}) };
+  });
+}
+
+/** Validate captured evidence against owned storage. A restarted execution cannot erase an already-read old receipt. */
+export function capturedTaskResultsForReport(db: Database, scope: TaskResultScope, captures: TaskResultCapture[]) {
+  const current = new Map(allResults(db, scope, 1200).map(result => [result.id, result]));
+  return captures.flatMap(capture => {
+    if (!own(capture, scope)) return [];
+    const result = capture.result, latest = current.get(result.id);
+    if (latest && latest.source === result.source && latest.sourceId === result.sourceId && latest.taskId === result.taskId
+      && latest.round === result.round) return latest.reported ? [] : [latest];
+    if (result.source !== 'local' || !Number.isInteger(result.round) || result.round! < 0 || result.imageUrl || result.attachments.length) return [];
+    const task = db.executionTasks.find(task => own(task, scope) && task.id === result.sourceId && task.conversationId === result.taskId);
+    const expectedId = `${result.sourceId}${result.round ? `_${result.round}` : ''}`, expectedMessage = `execution_receipt_${result.sourceId}_${result.round}`;
+    const evidence = capture.localEvidence;
+    if (!task || (task.reportRound ?? 0) <= result.round! || result.id !== expectedId || result.resultMessageId !== expectedMessage
+      || evidence?.messageId !== expectedMessage || !ownedTask(db, scope, result.taskId) || marker(db, scope, result.id)) return [];
+    const persisted = db.messages.find(message => own(message, scope) && message.conversationId === result.taskId
+      && message.id === expectedMessage && message.role === 'assistant');
+    if (!persisted || persisted.createdAt !== evidence.createdAt
+      || createHash('sha256').update(persisted.content).digest('hex') !== evidence.contentHash
+      || result.summary !== persisted.content.trim().slice(0, result.summary.length)) return [];
+    return [{ ...result, reported: false, reviewed: task.noticeReadRound === result.round }];
+  });
+}
+
+/** Exact receipt IDs tied to an owned saved reply, including already-reviewed results. */
+export function taskResultIdsReportedInMessage(db: Database, scope: TaskResultScope, messageId: string | undefined) {
+  authorize(db, scope);
+  if (!messageId || !db.conversations.some(c => own(c, scope) && c.coordinatorMain && !c.archived
+    && c.messages.some(m => m.id === messageId && m.role === 'assistant'))) return [];
+  const current = allResults(db, scope, 100).filter(result => {
+    if (marker(db, scope, result.id)?.assistantMessageId === messageId) return true;
+    if (result.source === 'cloud') return db.chatOperations?.find(o => own(o, scope) && o.id === result.sourceId)?.workRun?.reportMessageId === messageId;
+    const task = db.executionTasks.find(t => own(t, scope) && t.id === result.sourceId);
+    return task?.reportMessageId === messageId && (task.reportedRound === result.round || task.reportedRound === undefined && result.round === 0);
+  }).map(result => result.id);
+  const historical = (db.chatOperations ?? []).filter(operation => own(operation, scope) && operation.status === 'completed'
+    && operation.requestId === 'result_notice' && operation.id.startsWith('notice_') && operation.assistantMessageId === messageId
+    && db.conversations.some(main => own(main, scope) && main.coordinatorMain && !main.archived && main.id === operation.conversationId)
+    && ownedTask(db, scope, operation.dispatchedTaskId)).map(operation => operation.id.slice('notice_'.length));
+  return [...new Set([...current, ...historical])].slice(-10);
+}
+
+/** Model-facing feedback omits storage/operation IDs; its immutable IDs stay server-side for reporting. */
+export function taskResultConversationContext(results: TaskResultReceipt[]) {
+  return results.map(result => ({ title: result.title, outcome: result.outcome,
+    summary: result.summary.replace(/^【本机执行回执[^\n]*】\s*\n?/, ''),
+    taskUrl: `/?task=${encodeURIComponent(result.taskId)}`, imageUrl: result.imageUrl,
+    location: result.location, notionUrl: result.notionUrl,
+    attachments: result.attachments.map(file => ({ name: file.originalName, kind: file.kind })) }));
+}
+
 /** Call in the same transaction as saving the dispatcher answer. Only the captured result IDs are marked. */
-export function markTaskResultsReported(db: Database, scope: TaskResultScope, input: { ids: string[]; assistantMessageId: string; mainConversationId?: string; timestamp?: string }) {
+export function markTaskResultsReported(db: Database, scope: TaskResultScope, input: { ids: string[]; assistantMessageId: string; mainConversationId?: string; timestamp?: string; captures?: TaskResultCapture[] }) {
   authorize(db, scope);
   const main = db.conversations.find(c => own(c, scope) && c.coordinatorMain && !c.archived && (!input.mainConversationId || c.id === input.mainConversationId));
   if (!main?.messages.some(m => m.id === input.assistantMessageId && m.role === 'assistant')) throw new TaskResultInboxError('调度回复尚未保存，结果没有被标为已汇报', 409);
   const selected = new Set(input.ids), timestamp = input.timestamp ?? new Date().toISOString();
-  const results = allResults(db, scope, 1200).filter(result => selected.has(result.id) && !result.reported);
+  const results = [...new Map([...allResults(db, scope, 1200), ...capturedTaskResultsForReport(db, scope, input.captures ?? [])]
+    .map(result => [result.id, result])).values()].filter(result => selected.has(result.id) && !result.reported);
   for (const result of results) {
     if (result.source === 'cloud') {
       const run = db.chatOperations!.find(o => own(o, scope) && o.id === result.sourceId)!.workRun!;
       run.reportedToCoordinatorAt = timestamp; run.reportMessageId = input.assistantMessageId;
     } else {
       const task = db.executionTasks.find(t => own(t, scope) && t.id === result.sourceId)!;
-      task.reportedToCoordinatorAt = timestamp; task.reportMessageId = input.assistantMessageId; task.reportedRound = result.round;
+      if ((task.reportRound ?? 0) === result.round) {
+        task.reportedToCoordinatorAt = timestamp; task.reportMessageId = input.assistantMessageId; task.reportedRound = result.round;
+      }
     }
     db.chatOperations ??= [];
     db.chatOperations.push({ id: `notice_${result.id}`, ...scope, operationId: `notice_${result.id}`, payloadHash: 'result-reference',
@@ -146,7 +213,7 @@ const labels: Record<TaskResultOutcome, string> = {
   completed: '已完成', returned: '已返回结果，待你查看', failed: '未完成', partial: '部分结果已返回，需要核对',
   needs_input: '需要你确认', cancelled: '已停止', interrupted: '结果尚未确认',
 };
-/** Explicit or idle result delivery. Pending main-chat responses have priority; retries never duplicate messages. */
+/** Explicit compatibility delivery only. Completion/polling must not call this; pending replies take priority. */
 export function appendTaskResultReport(db: Database, scope: TaskResultScope, input: { ids?: string[]; assistantMessageId?: string; content?: string; mainConversationId?: string; timestamp?: string } = {}) {
   authorize(db, scope);
   if (db.chatOperations?.some(o => own(o, scope) && o.status === 'pending' && o.requestId.startsWith('coord_')))
@@ -161,7 +228,8 @@ export function appendTaskResultReport(db: Database, scope: TaskResultScope, inp
     const singleImage = results.length === 1 && results[0].imageUrl;
     const message: Message = { id: messageId, role: 'assistant', createdAt: timestamp,
       content: input.content ?? results.map(r => {
-        const preview = r.summary.split('\n').map(line => line.replace(/^\s*[#>*-]+\s*/, '').trim()).find(Boolean) ?? '';
+        const preview = r.summary.split('\n').filter(line => !/^【本机执行回执/.test(line))
+          .map(line => line.replace(/^\s*[#>*-]+\s*/, '').trim()).find(Boolean) ?? '';
         return `${r.title}：${labels[r.outcome]}。${preview ? ` ${preview.slice(0, 140)}${preview.length > 140 ? '…' : ''}` : ''}\n[查看结果](#task:${encodeURIComponent(r.taskId)})${r.imageUrl && !singleImage ? `\n![生成的图片](${r.imageUrl})` : ''}`;
       }).join('\n\n'),
       ...(singleImage ? { imageUrl: results[0].imageUrl, attachments: results[0].attachments } : {}) };
@@ -186,4 +254,11 @@ export function acknowledgeTaskResults(db: Database, scope: TaskResultScope, ids
       task.noticeReadRound = result.round;
     }
   }
+}
+
+/** Capture all currently visible terminal results in this transaction, never future rounds or running work. */
+export function acknowledgeAllTaskResults(db: Database, scope: TaskResultScope, timestamp = new Date().toISOString()) {
+  const ids = allResults(db, scope, 100).filter(result => !result.reviewed).map(result => result.id);
+  acknowledgeTaskResults(db, scope, ids, timestamp);
+  return { ids, count: ids.length };
 }

@@ -4,13 +4,14 @@ import { MessageMarkdown } from "./MessageMarkdown";
 import "./things-panel.css";
 import { transferStateLabel } from "./noviceUx";
 import { Zap } from "lucide-react";
+import { privateImageUrl } from './coordinatorMessage';
 
 type Thing = {
   id: string;
   title: string;
   updatedAt: string;
   archived?: boolean;
-  messages: { id?: string; role: string; content: string }[];
+  messages: { id?: string; role: string; content: string; originalContent?: string; imageUrl?: string; attachments?: {id:string; originalName:string}[] }[];
   messagesLoaded?: boolean;
   taskState?: 'active' | 'review' | 'ended' | 'history';
   outcome?: string;
@@ -36,6 +37,8 @@ export function ThingsPanel({
   onExecuteDraft,
   onRemove,
   taskNotice,
+  onReadAll,
+  unreadCount = 0,
 }: {
   one?: ReactNode;
   items: Thing[];
@@ -47,6 +50,8 @@ export function ThingsPanel({
   onWorkbench: (id: string) => void;
   onRemove?: (id:string)=>Promise<void>;
   taskNotice?: ReactNode;
+  onReadAll?: () => Promise<void>;
+  unreadCount?: number;
   hasMore: boolean;
   onMore: () => void;
   loadingMore: boolean;
@@ -63,6 +68,7 @@ export function ThingsPanel({
   const [query, setQuery] = useState("");
   const [category,setCategory]=useState<'active'|'review'|'ended'|'history'>('active');
   const [page, setPage] = useState(1);
+  const [readingAll, setReadingAll] = useState(false), [readError, setReadError] = useState('');
   const selected = items.find((item) => item.id === selectedId && !item.archived);
   const reviewUnread=items.filter(item=>!item.archived&&item.taskState==='review'&&item.unread).length;
   const found = items.filter((item) =>
@@ -89,6 +95,8 @@ export function ThingsPanel({
           }}
         />
         <nav className="task-category-tabs" aria-label="任务状态">{([['active','进行中'],['review','待确认'],['ended','已结束'],['history','历史对话']] as const).map(([id,label])=><button type="button" key={id} aria-pressed={category===id} onClick={()=>{setCategory(id);setPage(1);setQuery('');}}>{label}{id==='review'&&reviewUnread?<span className="task-review-dot" aria-label={`${reviewUnread} 个结果尚未查看`}/>:null}</button>)}</nav>
+        {onReadAll && unreadCount > 0 ? <button type="button" className="things-read-all" disabled={readingAll} onClick={()=>{setReadingAll(true);setReadError('');void onReadAll().catch(e=>setReadError(e instanceof Error?e.message:'暂时没能标为已读，稍后再试。')).finally(()=>setReadingAll(false));}}>{readingAll?'正在标为已读…':'全部标为已读'}</button> : null}
+        {readError ? <small role="alert">{readError}</small> : null}
         <div className="things-list-items">
           {found.slice((current - 1) * 10, current * 10).map((item) => (
             <button
@@ -151,12 +159,15 @@ export function ThingsPanel({
               ) : selected.messages.length ? (
                 selected.messages.map((message, index) => (
                   <article key={message.id || index} className={message.role}>
-                    <small>{message.role === "user" ? "你" : "ONE"}</small>
+                    <small>{message.originalContent ? 'ONE 交给这个任务的要求' : message.role === "user" ? "你" : "ONE"}</small>
                     {message.role === "assistant" ? (
                       <MessageMarkdown>{message.content}</MessageMarkdown>
                     ) : (
                       <p>{message.content}</p>
                     )}
+                    {message.originalContent ? <details className="task-original-message"><summary>看看我当时的原话</summary><p>{message.originalContent}</p></details> : null}
+                    {privateImageUrl(message.imageUrl) ? <><img className="generated-image" src={message.imageUrl} alt="这件任务生成的图片" loading="lazy"/><a className="one-task-result-link" href={message.imageUrl} download>保存图片 ↗</a></> : null}
+                    {message.attachments?.map(file=><a className="one-task-result-link" key={file.id} href={`/api/attachments/${encodeURIComponent(file.id)}/content`} download>{file.originalName} ↗</a>)}
                   </article>
                 ))
               ) : (

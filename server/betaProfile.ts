@@ -1,4 +1,17 @@
 import type { Database, User } from "./types.js";
+import { uid } from "./security.js";
+
+export type OnboardingHandbook = {
+  operationId: string;
+  status: "pending" | "preparing" | "queued" | "skipped" | "failed";
+  requestedAt: string;
+  updatedAt: string;
+  /** The price ceiling explicitly shown when the user starts the welcome task. */
+  maxPower: number;
+  taskId?: string;
+  pricePower?: number;
+  reason?: "not_configured" | "budget_required" | "insufficient_power" | "billing_review" | "unavailable";
+};
 
 export type AccountProfile = {
   workspaceId: string;
@@ -8,6 +21,8 @@ export type AccountProfile = {
     knowledgeChoice: "pending" | "connected" | "skipped";
     knowledgeStepAt?: string;
     completedAt?: string;
+    /** A new explicit welcome-flow choice, never inferred for existing accounts. */
+    handbook?: OnboardingHandbook;
   };
   updatedAt: string;
 };
@@ -16,6 +31,8 @@ export type AccountScope = { userId: string; workspaceId: string };
 export type ProfilePatch = {
   displayName?: unknown;
   onboardingAction?: unknown;
+  handbookChoice?: unknown;
+  handbookBudgetPower?: unknown;
 };
 
 export class BetaInputError extends Error {
@@ -83,9 +100,19 @@ export function updateAccountProfile(db: Database, scope: AccountScope, patch: P
       profile.onboarding.knowledgeStepAt = currentTime;
     } else {
       if (profile.onboarding.knowledgeChoice === "pending") throw new BetaInputError("请连接一个知识来源，或选择稍后连接");
+      if (patch.handbookChoice !== undefined && (typeof patch.handbookChoice !== "string" || !["create", "skip"].includes(patch.handbookChoice))) throw new BetaInputError("请选择是否制作你的图片指南");
+      if (patch.handbookChoice === "create" && (typeof patch.handbookBudgetPower !== "number" || !Number.isFinite(patch.handbookBudgetPower) || patch.handbookBudgetPower <= 0 || patch.handbookBudgetPower > .5)) throw new BetaInputError("图片指南的额度上限需要先确认");
+      // Existing accounts or users who already started a conversation must
+      // never receive a surprise paid task after this feature is deployed.
+      const firstWelcome = !profile.onboarding.completedAt && !(db.conversations ?? []).some(c => c.workspaceId === scope.workspaceId && c.userId === scope.userId);
+      if (firstWelcome && patch.handbookChoice === "create" && !profile.onboarding.handbook) {
+        profile.onboarding.handbook = { operationId: uid("welcome"), status: "pending", maxPower: patch.handbookBudgetPower as number, requestedAt: currentTime, updatedAt: currentTime };
+      }
       profile.onboarding.completedAt ||= currentTime;
     }
   }
+  if (patch.handbookChoice !== undefined && patch.onboardingAction !== "complete") throw new BetaInputError("图片指南只会在首次引导完成时安排");
+  if (patch.handbookBudgetPower !== undefined && (patch.onboardingAction !== "complete" || patch.handbookChoice !== "create")) throw new BetaInputError("图片指南的额度上限只用于这次首次引导");
   if (patch.displayName === undefined && patch.onboardingAction === undefined) throw new BetaInputError("没有要更新的资料");
   profile.updatedAt = currentTime;
   user.profile = profile;

@@ -16,8 +16,10 @@ import {useFollowLatest} from './useFollowLatest';
 import {runtimeNoticeSeen, rememberRuntimeNotice} from './runtimeNoticeMemory';
 import {executionNeedsReview} from './executionReview';
 import {TaskTransferRail, type Transfer} from './TaskTransferRail';
-import {taskCategory} from './taskAttention';
+import {taskCategory,taskUiOutcome} from './taskAttention';
 import {taskRetryScope} from './taskRetryScope';
+import {taskConversationView} from './taskConversationView';
+import {friendlyExecutionProgress,readCapturedNotices} from './friendlyTaskStatus';
 import {internalTaskId} from './taskLink';
 import {FeatureShelf,type FeatureChoice} from './preview/FeatureShelf';
 import {ResultSignal} from './preview/ResultSignal';
@@ -109,6 +111,7 @@ import { OneCompanionEye as OneHeroEye } from "./OneCompanionEye";
 import { api, apiForUser, ApiError, expectUser, announceSessionChange, SESSION_EVENT, SESSION_STORAGE_KEY } from "./oneApi";
 import { chatSubmission, forgetChatSubmission, pendingChatSubmissions } from "./chatSubmission";
 import { Onboarding, ProfileNameEditor, BetaFeedbackControls, type AccountProfile, type ProfilePatch } from "./Onboarding";
+import type { OnboardingHandbookOffer } from '../server/onboardingHandbook';
 import { getNotePollFailureAction, prepareGetNoteAuthorizationWindow } from "./getNoteAuthorization";
 import { PaymentPanel } from "./PaymentPanel";
 import { EnterpriseKnowledgeCard, FlomoConnectionNotice } from "./EnterpriseConnectionNotice";
@@ -329,13 +332,13 @@ function localId(prefix: string) {
 }
 
 function executionStatusLabel(task: ExecutionTask | null, preparing = false) {
-  if (preparing) return "正在接管任务";
+  if (preparing) return "我在准备这件事";
   if (!task) return "准备开始";
   if (task.status === "queued" || task.status === "selecting_target") return "正在连接本机";
   if (task.status === "running") return "正在替你工作";
   if (task.status === "completed") return "本轮结果已返回";
   if (task.status === "cancelled") return "任务已停止";
-  return "遇到了一点问题";
+  return "这一步还没做成";
 }
 
 function isExecutionRunning(task?: ExecutionTask | null) {
@@ -527,7 +530,7 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
 }) {
   const [trace, setTrace] = useState("");
   const steps = events.filter(event => event.kind !== "user_message");
-  const latestStep = steps[steps.length - 1]?.text;
+  const latestStep = friendlyExecutionProgress(steps[steps.length - 1]);
   const api = useContext(PrivateApiContext);
   const status = preparing ? "preparing" : task?.status || "preparing";
   const busy = preparing || isExecutionRunning(task);
@@ -535,7 +538,7 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
     <div className="execution-disclosure-header">
       <button className="execution-disclosure-toggle" type="button" aria-expanded={expanded} aria-controls="one-execution-content" onClick={onToggle}>
         <span className={`task-indicator ${busy ? "running" : status}`} aria-hidden="true">{status === "completed" ? <Check size={12} /> : null}</span>
-        <span><strong>{executionNeedsReview(task) ? '本轮已结束，结果待核对' : executionStatusLabel(task, preparing)}</strong><small>{preparing ? "正在连接本机…" : executionNeedsReview(task) ? '有工具报错，请核对最终回执' : task?.status === "completed" ? "查看结果" : task?.status === "failed" ? "查看问题" : latestStep || "查看过程"}</small></span>
+        <span><strong>{executionNeedsReview(task) ? '这轮有个问题，结果需要核对' : executionStatusLabel(task, preparing)}</strong><small>{preparing ? "正在连接这台电脑…" : executionNeedsReview(task) ? '展开看看哪些做成了、哪些还没有' : task?.status === "completed" ? "看看做了什么" : task?.status === "failed" ? "看看卡在哪一步" : latestStep || "看看正在做什么"}</small></span>
         <span className="execution-expand-label">{expanded ? "收起" : "展开"}</span><ChevronDown size={15} />
       </button>
       {busy ? <button className="execution-stop" type="button" onClick={event => onStop(event.currentTarget)}><Square size={10} />停止</button> : null}
@@ -545,7 +548,7 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
         <div id="one-execution-content" className="execution-disclosure-body">
           {task?.targetName ? <p className="execution-current-step">工作文件夹：{task.targetName}（可在设置 → 本机执行中更换）</p> : null}
           {task && !busy && task.targetName ? <StaticPreviewPanel key={task.id} taskId={task.id} request={(action, path) => api(`/api/executions/${encodeURIComponent(task.id)}/preview`, {method: 'POST', body: JSON.stringify({action, path})})}/> : null}
-          {!busy && executionNeedsReview(task) ? <><p className="execution-problem">执行器已结束，过程中有工具报错。请按最终回执核对目标是否完成；不会自动重跑。</p><MessageMarkdown>{task!.finalResponse!}</MessageMarkdown></> : !busy && task?.status === "failed" ? <p className="execution-problem">{task.lastError || "执行未完成。"}</p> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><MessageMarkdown>{task.finalResponse}</MessageMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接本机…" : task?.status === "cancelled" ? "已停止。" : latestStep || "等待本机反馈…"}</p>}
+          {!busy && executionNeedsReview(task) ? <><p className="execution-problem">这轮操作中有一步报错了。下面保留了实际返回的结果，我们先看看目标有没有做成；不会自动再跑一遍。</p><MessageMarkdown>{task!.finalResponse!}</MessageMarkdown></> : !busy && task?.status === "failed" ? <p className="execution-problem">{task.lastError || "这一步还没做完。"}</p> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><MessageMarkdown>{task.finalResponse}</MessageMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接这台电脑…" : task?.status === "cancelled" ? "停下来了。" : latestStep || "正在等这台电脑的反馈…"}</p>}
           {steps.length > 0 ? <details className="execution-step-history"><summary>过程记录 · {steps.length} 条</summary><ol>{steps.slice(-30).map(event => <li key={event.id} className={event.kind}>{event.text}</li>)}</ol>{steps.length > 30 ? <small>最近 30 条</small> : null}</details> : null}
           {task ? <details className="execution-step-history" onToggle={async event => {
             if (!event.currentTarget.open || trace) return;
@@ -569,10 +572,22 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const coordinator = useCoordinator(api,user.id,!demo.enabled);
   const preview = coordinator.enabled ? coordinator : demo;
   const [profile, setProfile] = useState<AccountProfile>(user.profile || { workspaceId: user.defaultWorkspaceId, displayName: "", onboarding: { knowledgeChoice: "pending" }, updatedAt: user.createdAt });
+  const [handbookOffer,setHandbookOffer]=useState<OnboardingHandbookOffer>(),[handbookNotice,setHandbookNotice]=useState('');
+  useEffect(()=>{
+    if(demo.enabled||profile.onboarding.completedAt||user.access?.kind==='company')return;
+    let live=true;
+    void api<{profile:AccountProfile;handbookOffer?:OnboardingHandbookOffer}>('/api/me/profile').then(result=>{if(live){setProfile(result.profile);setHandbookOffer(result.handbookOffer);}}).catch(()=>{});
+    return()=>{live=false;};
+  },[user.id,profile.workspaceId]);
   const [pendingRequests, setPendingRequests] = useState(() => pendingChatSubmissions(user.id));
   const [hasSubmittedChat, setHasSubmittedChat] = useState(false);
   const failedSubmissions = useRef(new Map<string, { content: string; attachmentIds: string[]; draftKey: string }>());
-  async function saveProfile(patch: ProfilePatch) { const result = await api<{ profile: AccountProfile }>("/api/me/profile", { method: "PATCH", body: JSON.stringify(patch) }); setProfile(result.profile); return result.profile; }
+  async function saveProfile(patch: ProfilePatch) {
+    const result = await api<{ profile: AccountProfile; handbookOffer?:OnboardingHandbookOffer; handbookNotice?:string }>("/api/me/profile", { method: "PATCH", body: JSON.stringify(patch) });
+    setProfile(result.profile);setHandbookOffer(result.handbookOffer);setHandbookNotice(result.handbookNotice||'');
+    if(patch.onboardingAction==='complete'&&result.profile.onboarding.handbook?.taskId)void coordinator.refresh();
+    return result.profile;
+  }
   async function recoverAnswer(operationId: string) {
     try {
       const result = await api<{ conversation: Conversation }>(`/api/chat/operations/${encodeURIComponent(operationId)}`);
@@ -744,7 +759,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const lampKey=lampTasks.map(task=>`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`).join('|');
   const coordinatorMetas = coordinator.snapshot?.transfers || coordinator.snapshot?.tasks || [];
   const transfers: Transfer[] = [...coordinatorMetas.filter(t => t.running || t.queued || t.localPrepared || t.state==='prepared_local').map(t => ({id:`work:${t.id}`,taskId:t.id,title:t.title,state:t.state||(t.running?'running':t.paused?'paused':t.localPrepared?'prepared_local':'queued'),reportable:false})),
-    ...(coordinator.snapshot?.notices ?? []).map(n => ({id:n.id,taskId:n.taskId,title:n.title||conversations.find(c=>c.id===n.taskId)?.title||'这件事',state:n.state,reported:n.reported,outcome:n.outcome,reportable:true})),
+    ...(coordinator.snapshot?.notices ?? []).map(n => ({id:n.id,taskId:n.taskId,title:n.title||conversations.find(c=>c.id===n.taskId)?.title||'这件事',state:n.state,reported:n.reported,read:n.read,outcome:n.outcome,reportable:true})),
     ...executionTasks.filter(t=>isExecutionRunning(t)).map(t=>({id:t.id,taskId:t.conversationId,title:conversations.find(c=>c.id===t.conversationId)?.title||'本机任务',state:t.status,local:true,reportable:false}))];
   const unviewedResultCount=new Set((coordinator.snapshot?.notices||[]).filter(n=>!n.read).map(n=>n.taskId)).size;
   const uniqueTransfers = [...new Map(transfers.map(t=>[t.id,t])).values()];
@@ -839,6 +854,13 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   function acknowledgeConversation(conversationId: string) {
     setTaskNotices(items => items.filter(item => item.conversationId !== conversationId));
+  }
+
+  async function readAllTaskMessages() {
+    const capturedNoticeIds=new Set(taskNotices.map(item=>item.id));
+    if (coordinator.enabled) await coordinator.readAll();
+    setTaskNotices(items => readCapturedNotices(items,capturedNoticeIds));
+    if (demo.enabled) closeResultLamp();
   }
 
   useEffect(() => {
@@ -1874,7 +1896,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       <section className="studio-surface" ref={taskScroll.scroll} onScroll={taskScroll.onScroll} aria-label={view === "chat" ? "当前任务" : "工作区内容"} hidden={studioIdle||(preview.enabled&&view==='chat'&&!active)}>
       {view === "things" ? <ThingsPanel
         one={<div className="studio-presence things-one"><OneHeroEye mood="idle" label="回到 ONE 工作台" onActivate={()=>openSurface('chat')}/></div>}
-        items={conversations.filter(c=>!coordinator.snapshot?.conversation||c.id!==coordinator.snapshot.conversation.id).map(c=>{const task=coordinatorMetas.find(t=>t.id===c.id)||coordinator.snapshot?.tasks.find(t=>t.id===c.id);const local=executionTasks.find(t=>t.conversationId===c.id);const notices=coordinator.snapshot?.notices.filter(n=>n.taskId===c.id)||[];const notice=notices.at(-1);const paused=task?.paused||c.workPaused;const unread=notices.some(n=>!n.read);const outcome=paused?'paused':local?.status||notice?.outcome||notice?.state;return {...c,outcome,unread,taskState:taskCategory({paused,active:Boolean(task?.running||task?.queued||task?.localPrepared||local&&isExecutionRunning(local)),unread,outcome,isTask:Boolean(task||local||c.executorProfileId)})};})} selectedId={thingId} drafts={thingDrafts}
+        items={conversations.filter(c=>!coordinator.snapshot?.conversation||c.id!==coordinator.snapshot.conversation.id).map(c=>{const task=coordinatorMetas.find(t=>t.id===c.id)||coordinator.snapshot?.tasks.find(t=>t.id===c.id);const local=executionTasks.find(t=>t.conversationId===c.id);const notices=coordinator.snapshot?.notices.filter(n=>n.taskId===c.id)||[];const notice=notices.at(-1);const paused=task?.paused||c.workPaused;const unread=notices.some(n=>!n.read);const outcome=taskUiOutcome({paused,localStatus:local?.status,receiptOutcome:notice?.outcome,receiptState:notice?.state});return {...c,messages:taskConversationView(c.messages,coordinator.details[c.id]?.jobs),outcome,unread,taskState:taskCategory({paused,active:Boolean(task?.running||task?.queued||task?.localPrepared||local&&isExecutionRunning(local)),unread,outcome,isTask:Boolean(task||local||c.executorProfileId)})};})} selectedId={thingId} drafts={thingDrafts}
+        onReadAll={readAllTaskMessages} unreadCount={unviewedResultCount || unreadNotices.length}
         onDraftChange={(id,text)=>setThingDrafts(previous=>({...previous,[id]:text}))}
         onExecuteDraft={outputDestination === 'notion' ? undefined : (id,text,source)=>executeDraft(text,source,id)}
         sendLabel={outputDestination === 'notion' ? '写到 Notion' : outputDestination === 'local' ? '本机执行' : '发送'}
@@ -1919,12 +1942,13 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         <div className="messages">
           {taskPauseNotice(activeId)}
           {(active?.messages ?? []).length ? (
-            active!.messages.map((message, index) => (
+            taskConversationView(active!.messages,coordinator.details[activeId]?.jobs).map((message, index) => (
               <React.Fragment key={`${message.createdAt}-${index}`}>
                 <article hidden={replyPending&&message.role==='assistant'&&!message.content.trim()} className={`message ${message.role} ${message.id && message.id === (executionTask?.sourceMessageId || executionSourceMessageId) && activeExecutionMode ? "execution-source" : ""}`}>
                   <div className="bubble">
-                    <div className="studio-message-author">{message.role === "assistant" ? "ONE" : "你"}</div>
+                    <div className="studio-message-author">{message.originalContent ? 'ONE 交给这个任务的要求' : message.role === "assistant" ? "ONE" : "你"}</div>
                     {message.attachments?.length ? <AttachmentList attachments={message.attachments} /> : null}
+                    {message.originalContent ? <details className="task-original-message"><summary>看看我当时的原话</summary><p>{message.originalContent}</p></details> : null}
                     {message.role === "assistant" ? (
                       <>
                         <div className="markdown-body">
@@ -1970,7 +1994,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       </section>
 
       <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 指挥台">
-        {view === "chat" && !hasSubmittedChat && !conversations.length && !profile.onboarding.completedAt && user.access?.kind !== "company" ? <Onboarding profile={profile} knowledgeConnected={[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected")} onSave={saveProfile} onOpenKnowledge={() => openSurface("knowledge")} onStartQuestion={suggestion => { setContent(suggestion); setComposeNew(true); setView("chat"); }} /> : null}
+        {view === "chat" && !hasSubmittedChat && !conversations.length && !profile.onboarding.completedAt && user.access?.kind !== "company" ? <Onboarding profile={profile} handbookOffer={handbookOffer} knowledgeConnected={[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected")} onSave={saveProfile} onOpenKnowledge={() => openSurface("knowledge")} onStartQuestion={suggestion => { if(!currentDraftRef.current.content.trim())setContent(suggestion);setComposeNew(true);setView("chat"); }} /> : null}
+        {handbookNotice && view==='chat' ? <p className="one-onboarding-handbook-notice" role="status">{handbookNotice}<button type="button" onClick={()=>setHandbookNotice('')} aria-label="收起说明">知道了</button></p> : null}
         <div className="studio-presence">
           <OneHeroEye mood={heroMood} label={view==='features'?'收起功能，回到 ONE':'打开功能'} onActivate={()=>openSurface(view==='features'?'chat':'features')}/>
           <div className="studio-presence-copy"><span className="studio-eyebrow">ONE IS WITH YOU</span>
@@ -1987,7 +2012,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           }
         }} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)}/>:null}
         {coordinator.removedTask?<p role="status">任务已删除，历史保留。<button type="button" onClick={()=>void coordinator.restoreTask().then(()=>refresh()).catch(e=>setError(e.message))}>恢复任务（不会自动重跑）</button></p>:null}
-        {coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null}
+        {coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} departureAnchor={()=>document.querySelector<HTMLElement>('[data-task-dispatch-anchor]') || document.querySelector<HTMLElement>('.studio-presence')} returnAnchor={()=>document.querySelector<HTMLElement>('[data-task-return-anchor]') || document.querySelector<HTMLElement>('.coordinator-message.assistant:last-of-type')} recentReportedReceiptIds={coordinator.snapshot?.recentReportedReceiptIds} onReadAll={readAllTaskMessages} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null}
 
         {!preview.enabled && (otherRows.length > 0 || unreadNotices.length > 0 || taskStatusUnavailable) ? <section className="studio-activity attention-activity" aria-label="任务动态">
           {otherRows.length > 0 || unreadNotices.length > 0 ? <button className="attention-activity-toggle" type="button" aria-expanded={activityExpanded} aria-controls="attention-task-list" onClick={() => setActivityExpanded(value => !value)}>
@@ -1995,6 +2020,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             <span>{unreadNotices.length > 0 ? <b className="attention-unread-count">{unreadNotices.length} 条更新</b> : <small>{otherRows.length}</small>}<ChevronDown size={14} /></span>
           </button> : null}
           <div id="attention-task-list" className="attention-task-list" hidden={!activityExpanded || otherRows.length === 0}>
+            {unreadNotices.length ? <button type="button" className="attention-all-tasks" onClick={()=>void readAllTaskMessages().catch(e=>setError(e.message))}>全部标为已读</button> : null}
             {activeOthers.length > 0 ? <section><h3>进行中</h3>{activeOthers.map(renderActivityRow)}</section> : null}
             {settledOthers.length > 0 ? <section><h3>{settledOthers.some(row => row.unread) ? "结果与最近" : "最近"}</h3>{settledOthers.slice(0, 5).map(renderActivityRow)}</section> : null}
             {otherRows.length === 0 ? <p className="attention-empty">当前没有其他事情。</p> : null}

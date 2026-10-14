@@ -79,6 +79,10 @@
 .one-studio .markdown-body table { display: block; overflow-x: auto; max-width: 100%; }
 .one-studio .markdown-body :is(th,td) { border-color: var(--studio-line); background: transparent; }
 .one-studio .markdown-body a, .one-studio .message-sources a { color: var(--studio-ink); text-decoration-color: var(--studio-muted); }
+.one-studio a.one-conversation-link{color:var(--studio-ink);text-decoration-color:var(--studio-muted);text-underline-offset:4px}
+.one-studio a.one-task-result-link{display:inline-flex;align-items:baseline;gap:5px;max-width:100%;margin:8px 5px 4px 0;padding:6px 11px;border:1px solid var(--studio-line,#e1e6d7);border-radius:18px;background:color-mix(in srgb,var(--studio-muted,#637950) 6%,var(--studio-paper,#fdfdf8));color:var(--studio-ink,#363c30);font:inherit;font-size:12px;line-height:1.6;text-decoration:none;overflow-wrap:anywhere}
+.one-studio a.one-task-result-link:hover{background:var(--studio-line,#e5e7dc)}.one-studio a.one-task-result-link:focus-visible{outline:2px solid var(--studio-muted);outline-offset:3px}
+.one-local-feedback>small{display:block;margin-bottom:8px;color:var(--studio-muted);font-size:11px}.one-result-evidence{margin-top:10px;color:var(--studio-muted);font-size:11px}.one-result-evidence summary{cursor:pointer}.one-result-evidence pre{max-height:240px;overflow:auto;white-space:pre-wrap}
 .one-studio .message-actions { margin-top: 14px; display: flex; gap: 8px; opacity: 1; }
 .one-studio .message-actions > button { width: 30px; height: 30px; min-height: 0; color: var(--studio-muted); background: transparent; border: 1px solid transparent; border-radius: 7px; }
 .one-studio .message-actions button:hover { background: var(--studio-paper); color: var(--studio-ink); border-color: var(--studio-line); }

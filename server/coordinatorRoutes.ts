@@ -169,6 +169,9 @@ export function installCoordinatorRoutes(
       res.json({ ok: true });
     }),
   );
+  router.post('/notices/read-all', asyncRoute(async (req, res) =>
+    res.json(await service.acknowledgeAll(scope(req), () => verifyKey(req))),
+  ));
   router.post("/reports", asyncRoute(async (req, res) => res.json(await service.report(scope(req), req.body?.ids, () => verifyKey(req)))));
   settings.get(
     "/",

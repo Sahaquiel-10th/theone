@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { ArrowUpRight, Check, MessageSquare, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ArrowUpRight, Check, Image, Lightbulb, MessageSquare, ThumbsDown, ThumbsUp } from "lucide-react";
 import type { AccountProfile, ProfilePatch } from "../server/betaProfile";
 import type { BetaFeedbackInput, OwnBetaFeedback } from "../server/betaFeedback";
+import type { OnboardingHandbookOffer } from "../server/onboardingHandbook";
 
 export type { AccountProfile, ProfilePatch, OwnBetaFeedback };
 
@@ -28,9 +29,10 @@ export function ProfileNameEditor({ profile, onSave }: { profile: AccountProfile
 }
 
 /** Inline welcome surface: navigating to knowledge settings must remain possible. */
-export function Onboarding({ profile, knowledgeConnected, onSave, onOpenKnowledge, onStartQuestion }: {
+export function Onboarding({ profile, knowledgeConnected, handbookOffer, onSave, onOpenKnowledge, onStartQuestion }: {
   profile: AccountProfile;
   knowledgeConnected: boolean;
+  handbookOffer?: OnboardingHandbookOffer;
   onSave: (patch: ProfilePatch) => Promise<unknown>;
   onOpenKnowledge: () => void;
   onStartQuestion: (suggestedQuestion: string) => void;
@@ -50,6 +52,9 @@ export function Onboarding({ profile, knowledgeConnected, onSave, onOpenKnowledg
   }
   function saveName(event: FormEvent) { event.preventDefault(); void save({ displayName: name }); }
   const connected = knowledgeConnected || profile.onboarding.knowledgeChoice === "connected";
+  const guidePrice = handbookOffer?.pricePower;
+  const canDraw = handbookOffer?.available === true && typeof guidePrice === "number" && Number.isFinite(guidePrice) && guidePrice > 0 && guidePrice <= .5;
+  function start(withGuide: boolean) { void save({ onboardingAction: "complete", handbookChoice: withGuide ? "create" : "skip", ...(withGuide ? { handbookBudgetPower: guidePrice } : {}) }, () => onStartQuestion(connected ? "请从我的知识中查找：" : "")); }
   return <section className="one-onboarding" aria-labelledby={`${id}-title`}>
     <div className="one-onboarding-top"><span aria-hidden="true" /><span>{step === "name" ? "01" : step === "knowledge" ? "02" : "03"} / 03</span></div>
     {step === "name" ? <>
@@ -67,11 +72,23 @@ export function Onboarding({ profile, knowledgeConnected, onSave, onOpenKnowledg
       </div>
     </> : <>
       <h2 id={`${id}-title`}>现在，问我一件事</h2>
-      <div className="one-onboarding-actions"><button disabled={busy} onClick={() => void save({ onboardingAction: "complete" }, () => onStartQuestion(connected ? "请从我的知识中查找：" : ""))}>开始<ArrowUpRight size={17} /></button></div>
+      <div className="one-onboarding-guide">
+        <Image size={22} aria-hidden="true" />
+        <div><strong>{canDraw ? "给你画一张自己的 ONE 小指南" : "准备好了，我们从一件小事开始"}</strong><p>{canDraw ? "里面会有你的称呼，还有你已经连接的知识来源。画好后会放进「任务」，你可以边聊边等，不用守着。" : "直接告诉我想做什么就好。需要独立完成的工作会放进「任务」，随时可以回来看看。"}</p>
+        {canDraw ? <small>{typeof guidePrice === "number" ? `1 张图片 · 使用现有额度 ${guidePrice.toLocaleString("zh-CN", { maximumFractionDigits: 6 })} 电力` : "生成 1 张图片，使用你现有的额度"} · 只用称呼与平台名称，不读取你的知识内容</small> : null}</div>
+      </div>
+      <div className="one-onboarding-actions"><button disabled={busy} onClick={() => start(canDraw)}>{busy ? "准备中…" : canDraw ? "开始，顺便画给我" : "开始"}<ArrowUpRight size={17} /></button>{canDraw ? <button className="one-onboarding-quiet" disabled={busy} onClick={() => start(false)}>先聊聊，不画指南</button> : null}</div>
       <small>保持 ONE Key 插入 · 问答按电力计费 · 问题与引用资料会交给 AI 服务处理</small>
     </>}
     {error ? <p className="one-onboarding-error" role="alert">{error}</p> : null}
   </section>;
+}
+
+/** Optional light welcome note. This is queue feedback, not a success claim. */
+export function OnboardingHandbookNotice({ profile, onOpenTask }: { profile: AccountProfile; onOpenTask?: (taskId: string) => void }) {
+  const guide = profile.onboarding.handbook;
+  if (!guide || guide.status !== "queued" || !guide.taskId) return null;
+  return <aside className="one-onboarding-handbook-note" role="status"><Lightbulb size={17} aria-hidden="true" /><span>你的个人小指南在「任务」里，想看进度或结果，随时去看看。</span>{onOpenTask ? <button type="button" onClick={() => onOpenTask(guide.taskId!)}>去看看<ArrowUpRight size={13} /></button> : null}</aside>;
 }
 
 export function BetaFeedbackControls({ messageId, requestId, feedback, onSave }: {
