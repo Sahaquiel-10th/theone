@@ -49,6 +49,7 @@ type Job = {
   operationId: string;
   state: string;
   inputMessageId: string;
+  instruction?: string;
   error?: string;
 };
 type Detail = { conversation: Conversation; jobs: Job[]; recovery?: import('./taskRecovery').TaskRecovery };

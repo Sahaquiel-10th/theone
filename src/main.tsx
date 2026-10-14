@@ -17,6 +17,7 @@ import {runtimeNoticeSeen, rememberRuntimeNotice} from './runtimeNoticeMemory';
 import {executionNeedsReview} from './executionReview';
 import {TaskTransferRail, type Transfer} from './TaskTransferRail';
 import {taskCategory} from './taskAttention';
+import {taskRetryScope} from './taskRetryScope';
 import {internalTaskId} from './taskLink';
 import {FeatureShelf,type FeatureChoice} from './preview/FeatureShelf';
 import {ResultSignal} from './preview/ResultSignal';
@@ -786,14 +787,16 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const detail=coordinator.details[id];
     const error=detail?.jobs.filter(job=>job.error).at(-1)?.error;
     const recovery=detail?.recovery;
-    const latest=conversation?.messages.filter(m=>m.role==='user').at(-1)?.content;
+    const latest=taskRetryScope(detail?.jobs||[],conversation?.messages.filter(m=>m.role==='user').at(-1)?.content);
+    const title=conversation?.title||task?.title||'当前任务';
     const retrying=coordinator.retryingTasks.includes(id);
     const actionLabel=recovery?.kind==='resume'?'开始处理最新要求':'重新处理最新要求';
     return <section className="task-recovery" role="status">
       <strong>任务已暂停</strong><p>{error||'新补充已保存，尚未开始处理。'}</p>
       <p>{recovery?.message||'正在读取恢复方式…'}</p>
+      {recovery&&['retry','resume'].includes(recovery.kind)?<p>本轮范围：{latest}</p>:null}
       {recovery&&['retry','resume'].includes(recovery.kind)?<button type="button" disabled={retrying} onClick={()=>{
-        if(confirm(`${actionLabel}：${latest?.slice(0,240)||'查看原要求'}\n将沿用原附件和功能，可能产生新用量；不会重复执行较早待办。`))void coordinator.retryTask(id).then(()=>refresh()).catch(e=>setError(e.message));
+        if(confirm(`${actionLabel} · ${title}\n本轮范围：${latest.slice(0,480)}\n将沿用原附件和功能，可能产生新用量；不会重复执行较早待办。`))void coordinator.retryTask(id).then(()=>refresh()).catch(e=>setError(e.message));
       }}>{retrying?'正在恢复…':actionLabel}</button>:null}
       {recovery?.kind==='review_notion'?<NotionReceiptNotice api={api} taskId={id} receipt={detail?.jobs.filter(j=>j.notionReceipt).at(-1)?.notionReceipt} onRefresh={()=>coordinator.load(id)} />:null}
       {!detail?<button type="button" onClick={()=>void coordinator.load(id).catch(e=>setError(e.message))}>查看恢复方式</button>:null}

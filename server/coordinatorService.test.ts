@@ -31,6 +31,71 @@ test('one request runs two tasks concurrently and feeds their durable results in
  await f.service.acknowledge(a,state.notices.map(n=>n.id));assert.equal((await f.service.state(a)).notices.length,0);
 });
 
+test('batch workers receive only their own handoff while exact source messages stay in durable history',async()=>{
+ const f=fixture(),original='一口气安排：画一张蓝色机器人图片；核算 3 件×12.5 元加 2 件×8 元；写 80 字以内的热茶短文。只用公开测试素材，不查知识库，不联网。';
+ const tasks=[
+  {taskId:null,title:'本轮核算',instruction:'只核算 3 件×12.5 元加 2 件×8 元，返回分项和 53.5 元合计，不处理图片或短文。',executorId:'general',outputKind:'text',featureIds:[],dependsOn:[]},
+  {taskId:null,title:'本轮短文',instruction:'只写 80 字以内的热茶短文，使用公开素材，不查知识库，不联网，不处理图片或核算。',executorId:'general',outputKind:'text',featureIds:[],dependsOn:[]},
+ ];
+ f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('两件独立文字任务已排队'):{...answer(''),toolCalls:[{id:'strict-scope-batch',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks})}}]});
+ f.setWorker(async messages=>{
+  const scopeMessage=messages.find(m=>m.role==='system'&&m.content?.startsWith('执行范围由服务端锁定：'))!;
+  assert.ok(scopeMessage);assert.match(scopeMessage.content!,/不要执行、重做、汇总或判断它们是否完成/);
+  assert.match(scopeMessage.content!,/不因缺少其他任务的工具而把本任务标成失败/);
+  assert.match(scopeMessage.content!,/不嵌入第二份结果 JSON/);
+  const scope=JSON.parse(scopeMessage.content!.split('\n').find(line=>line.startsWith('{'))!);
+  const task=tasks.find(t=>t.title===scope.title)!;assert.ok(task);
+  assert.equal(scope.instruction,task.instruction);assert.equal(scope.expectedOutput,'text');
+  assert.equal(messages.at(-1)!.content,`本轮交接：${task.instruction}`);
+  assert.doesNotMatch(JSON.stringify(messages),/一口气安排|蓝色机器人/);
+  assert.ok(!messages.some(message=>message.content?.includes(tasks.find(t=>t.title!==scope.title)!.instruction)));
+  return answer(JSON.stringify({outcome:'completed',content:scope.title==='本轮短文'?'忙完一天，捧起热茶，暖意缓缓散开。':'37.5＋16＝53.5 元。',summary:'只返回当前任务的成果'}));
+ });
+ const reply=await f.service.dispatch(a,input('operation_child_scope_01',original),key);
+ await f.service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.filter(o=>o.workRun?.state==='completed').length===2);
+ const db=await f.store.read();assert.equal(reply.taskIds.length,2);
+ for(const id of reply.taskIds){
+  const task=db.conversations.find(c=>c.id===id)!;assert.equal(task.messages.find(m=>m.role==='user')!.content,original);
+  const result=task.messages.find(m=>m.role==='assistant')!.content;assert.doesNotMatch(result,/图片|其他任务|\"outcome\"/);
+  assert.equal(db.chatOperations!.find(o=>o.conversationId===id&&o.workRun)!.workRun!.resultOutcome,'completed');
+ }
+ // A follow-up may use the previous task's actual answer and ordinary
+ // discussion, but must not reintroduce that round's multi-goal source text.
+ const shortId=reply.taskIds.find(id=>db.conversations.find(c=>c.id===id)!.title==='本轮短文')!;
+ await f.store.mutate(d=>{d.conversations.find(c=>c.id===shortId)!.messages.unshift({id:'ordinary-task-discussion',role:'user',content:'独立讨论：语气温暖，不要华丽辞藻。',createdAt:'fixture-before-work'});});
+ f.setWorker(async messages=>{
+  assert.doesNotMatch(JSON.stringify(messages),/一口气安排|蓝色机器人/);
+  assert.ok(messages.some(message=>message.role==='user'&&message.content===`本轮交接：${tasks[1].instruction}`));
+  assert.ok(messages.some(message=>message.content==='独立讨论：语气温暖，不要华丽辞藻。'));
+  assert.ok(messages.some(message=>message.content==='忙完一天，捧起热茶，暖意缓缓散开。'));
+  assert.equal(messages.at(-1)!.content,'本轮交接：只把热茶短文改得更口语，不处理其他事情。');
+  return answer(JSON.stringify({outcome:'completed',content:'忙完了，喝口热茶，慢慢歇一歇。',summary:'仅修改热茶短文'}));
+ });
+ await f.service.direct(a,shortId,{operationId:'operation_child_scope_follow_01',text:'只把热茶短文改得更口语，不处理其他事情。'},key);
+ await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,shortId)).jobs.at(-1)!.state==='completed');
+ assert.equal((await f.service.task(a,shortId)).conversation.messages.find(m=>m.id===(db.chatOperations!.find(o=>o.conversationId===shortId&&o.workRun)!.workRun!.inputMessageId))!.content,original);
+});
+
+test('explicit retry sends the saved narrow handoff rather than the multi-goal original',async()=>{
+ const f=fixture(),original='批次原话：创建蓝色机器人图，算订单金额，再写热茶短文。',instruction='只写 80 字以内的热茶短文，不处理其他任务。';
+ f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('短文已单独排队'):{...answer(''),toolCalls:[{id:'narrow-retry',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'只写热茶短文',instruction,executorId:'general'})}}]});
+ f.setWorker(async()=>{throw new Error('synthetic controlled provider failure');});
+ const reply=await f.service.dispatch(a,input('operation_child_scope_retry_01',original),key);
+ await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,reply.taskId!)).jobs[0].state==='failed');
+ const source=(await f.service.task(a,reply.taskId!)).jobs[0];
+ assert.equal(source.instruction,instruction);
+ f.setWorker(async messages=>{
+  assert.equal(messages.at(-1)!.content,`本轮交接：${instruction}`);
+  assert.doesNotMatch(JSON.stringify(messages),/批次原话|蓝色机器人|订单金额/);
+  return answer(JSON.stringify({outcome:'completed',content:'一杯热茶，替忙碌的一天收个温柔的尾。',summary:'本轮短文已返回'}));
+ });
+ await f.service.retryLatest(a,reply.taskId!,source.id,undefined,key);await f.service.resume(a,key);
+ await waitFor(async()=>(await f.service.task(a,reply.taskId!)).jobs.at(-1)!.state==='completed');
+ const detail=await f.service.task(a,reply.taskId!);assert.equal(detail.jobs.length,2);
+ assert.equal(detail.conversation.messages.filter(m=>m.role==='user'&&m.content===original).length,2);
+ assert.equal((await f.store.read()).chatOperations!.filter(o=>o.conversationId===reply.taskId&&o.workRun).every(o=>o.workRun!.instruction===instruction),true);
+});
+
 test('legacy drawing routes to actual images; an unavailable image blocks the whole proposed batch',async()=>{
  const f=await imageFixture(async()=>({content:'图片',imageUrl:imageFixturePng}));let worker=0;
  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{artifactDirectory:f.directory,imageCall:async()=>({content:'图片',imageUrl:imageFixturePng}),modelCall:async(model,messages)=>{if(model.id!=='router'){worker++;return answer('没有绘图能力');}return messages.at(-1)?.role==='tool'?answer('绘图已安排'):{...answer(''),toolCalls:[{id:'old-draw',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'绘制奥特曼大战孙悟空',instruction:'生成奥特曼大战孙悟空图片',executorId:'general'})}}]};}});

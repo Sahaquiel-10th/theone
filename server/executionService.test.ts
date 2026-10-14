@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Database, ExecutionTask, MessageRecord } from "./types.js";
-import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, saveExecutionInput, messagesThrough, publicExecutionTask, taskEvents, executionTrace } from "./executionService.js";
+import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, saveExecutionInput, messagesThrough, publicExecutionTask, taskEvents, executionTrace, type ExecutionHandoff } from "./executionService.js";
 import { saveExecutionReceipt, executionReceipts } from './executionService.js';
 
 test('execution receipts retain source and round, deduplicate and isolate workspace and owner', () => {
@@ -58,9 +58,14 @@ const records: MessageRecord[] = [
   { id: "foreign", workspaceId: "workspace-b", userId: "user-b", conversationId: "c1", role: "user", content: "别人的内容", createdAt: "2026-01-01T00:00:00.500Z" }
 ];
 
+const handoffFor = (record: MessageRecord, instruction: string): ExecutionHandoff => ({
+  workspaceId: record.workspaceId, userId: record.userId, conversationId: record.conversationId,
+  messageId: record.id, instruction,
+});
+
 test('long execution histories retain the original goal and latest handoff beside the recent context',()=>{
- const long=[{...records[0],content:'创建说明.md；只写荷叶饼好吃，一个5块，不加其他文字'},...Array.from({length:60},(_,i)=>({...records[1],id:`long-${i}`,content:'讨论细节'.repeat(200),createdAt:`2026-01-01T00:01:${String(i).padStart(2,'0')}.000Z`})),{...records[2],content:'OK，开搞'}];
- const result=buildExecutionCompilerMessages(long,'m3',undefined,[{messageId:'m3',instruction:'文档标题改成荷叶饼；保持原文和禁止事项'}])[0].content;
+ const long=[{...records[0],content:'创建说明.md；只写荷叶饼好吃，一个5块，不加其他文字'},...Array.from({length:60},(_,i)=>({...records[1],id:`long-${i}`,content:'讨论细节'.repeat(200),createdAt:`2026-01-01T00:01:${String(i).padStart(2,'0')}.000Z`})),{...records[2],content:'OK，开搞',createdAt:'2026-01-01T00:02:00.000Z'}];
+ const result=buildExecutionCompilerMessages(long,'m3',undefined,[handoffFor(long[0],'创建说明.md；只写荷叶饼好吃，一个5块；文档标题改成荷叶饼；保持原文和禁止事项')])[0].content;
  assert.match(result,/只写荷叶饼好吃，一个5块/);assert.match(result,/文档标题改成荷叶饼/);assert.match(result,/中间部分因长度未全部提供/);assert.match(result,/OK，开搞/);
 });
 
@@ -81,7 +86,8 @@ test("public execution task never exposes the compiled instruction or device id"
 
 test("confirmation retains the saved dispatch brief but excludes foreign and later handoffs", () => {
   const owned = records.filter(record => record.workspaceId === "workspace-a").map(record =>
-    record.id === "m1" ? { ...record, content: "OK，开搞" } : record);
+    record.id === "m1" ? { ...record, content: "画荷叶饼图片，再创建文档" }
+      : record.id === "m2" ? { ...record, role: 'user' as const, content: "OK，开搞" } : record);
   const prefix = messagesThrough(owned, "c1", "workspace-a", "m2");
   const operation = { workspaceId: "workspace-a", userId: "user-a", conversationId: "c1",
     workRun: { inputMessageId: "m1", instruction: "创建 .md 文档，内容只有：荷叶饼好吃，一个 5 块" } };
@@ -98,8 +104,62 @@ test("confirmation retains the saved dispatch brief but excludes foreign and lat
     assert.match(compiled, /OK，开搞/);
     assert.match(compiled, /荷叶饼好吃，一个 5 块/);
     assert.match(compiled, /不是额外授权/);
+    assert.doesNotMatch(compiled, /画荷叶饼图片/);
     assert.doesNotMatch(compiled, /秘密|未来修改/);
   }
+});
+
+test('local compiler only receives scoped current and earlier work turns while keeping raw history unchanged', () => {
+  const owned = records.filter(record => record.workspaceId === 'workspace-a').map(record =>
+    record.id === 'm1' ? { ...record, content: 'OLD_IMAGE_SIBLING：生成图片；另在本地创建 hello.md' }
+      : record.id === 'm3' ? { ...record, content: 'CURRENT_WRITING_SIBLING：撰写文章；另将 hello.md 标题改为 ONE' } : record);
+  const before = structuredClone(owned);
+  const handoffs = [handoffFor(owned[0], '仅在授权目录创建 hello.md，内容为 hello'),
+    handoffFor(owned[2], '只把 hello.md 标题改为 ONE；保留其余内容并回读')];
+  for (const prompt of [undefined, '按配置指令整理']) {
+    const compiled = buildExecutionCompilerMessages(owned, 'm3', prompt, handoffs)[0].content;
+    assert.match(compiled, /服务端确定的本轮执行目标/);
+    assert.match(compiled, /只把 hello.md 标题改为 ONE/);
+    assert.match(compiled, /仅在授权目录创建 hello.md/);
+    assert.match(compiled, /建议检查 session/);
+    assert.doesNotMatch(compiled, /OLD_IMAGE_SIBLING|CURRENT_WRITING_SIBLING|生成图片|撰写文章/);
+  }
+  assert.deepEqual(owned, before);
+});
+
+test('compiler rejects unbound and foreign handoffs and excludes later records even in truncated goal anchors', () => {
+  const first = { ...records[0], content: 'HISTORICAL_SIBLING：作图；另汇总本地订单' };
+  const focus = { ...records[2], content: 'FOCUS_SIBLING：写文章；另把订单总额写入 total.md' };
+  const long = [first, ...Array.from({length:60}, (_, i) => ({ ...records[1], id:`filler-${i}`,
+    content:'讨论订单字段'.repeat(200), createdAt:`2026-01-01T00:00:01.${String(i).padStart(3,'0')}Z` })), focus,
+    { ...focus, id:'future', content:'FUTURE_RAW', createdAt:'2026-01-01T00:00:03.000Z' },
+    { ...focus, id:'foreign-raw', workspaceId:'workspace-b', content:'FOREIGN_RAW', createdAt:'2026-01-01T00:00:01.500Z' },
+    { ...focus, id:'other-user-raw', userId:'user-b', content:'OTHER_USER_RAW', createdAt:'2026-01-01T00:00:01.500Z' },
+    { ...focus, id:'other-task-raw', conversationId:'other-task', content:'OTHER_TASK_RAW', createdAt:'2026-01-01T00:00:01.500Z' }];
+  const eligible = handoffFor(focus, '只汇总本地订单，并将实际总额写入 total.md');
+  const handoffs = [handoffFor(first, '仅读取订单，不改源文件'),
+    { ...eligible, workspaceId:'workspace-b', instruction:'FOREIGN_HANDOFF' },
+    { ...eligible, userId:'user-b', instruction:'OTHER_USER_HANDOFF' },
+    { ...eligible, conversationId:'other-task', instruction:'OTHER_TASK_HANDOFF' },
+    { ...eligible, messageId:'missing', instruction:'UNBOUND_HANDOFF' },
+    handoffFor(long.find(record=>record.id==='future')!, 'FUTURE_HANDOFF'), eligible];
+  const compiled = buildExecutionCompilerMessages(long, focus.id, undefined, handoffs)[0].content;
+  assert.match(compiled, /中间部分因长度未全部提供/);
+  assert.match(compiled, /仅读取订单，不改源文件/);
+  assert.match(compiled, /只汇总本地订单/);
+  assert.doesNotMatch(compiled, /SIBLING|FOREIGN_|OTHER_USER_|OTHER_TASK_|UNBOUND_|FUTURE_/);
+});
+
+test('ordinary local discussion and short confirmation preserve the original goal without a dispatch handoff', () => {
+  const discussion = records.filter(record => record.workspaceId === 'workspace-a').map(record =>
+    record.id === 'm1' ? { ...record, content:'创建 hello.md，正文只有你好；已有文件不得覆盖' }
+      : record.id === 'm2' ? { ...record, content:'确认将写入已授权的 test 目录，并回读内容' }
+      : { ...record, content:'OK，开搞' });
+  const compiled = buildExecutionCompilerMessages(discussion, 'm3')[0].content;
+  assert.match(compiled, /正文只有你好/);
+  assert.match(compiled, /已有文件不得覆盖/);
+  assert.match(compiled, /已授权的 test 目录/);
+  assert.match(compiled, /【执行焦点】用户：OK，开搞/);
 });
 
 test("task events are isolated by workspace and user", () => {
