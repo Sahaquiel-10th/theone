@@ -15,7 +15,32 @@ import type { NotionMcpService } from './knowledge/notionMcpService.js';
 import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
 import { executorDefaults, updateExecutor } from "./executorProfiles.js";
 import { reconcileInterruptedChatOperations } from "./chatOperations.js";
-import type { ModelToolMessage, ModelToolDefinition, ToolChatResult } from "./modelGateway.js";
+import { MODEL_MAX_OUTPUT_TOKENS, type ModelToolMessage, type ModelToolDefinition, type ToolChatResult } from "./modelGateway.js";
+
+test('one request runs two tasks concurrently and feeds their durable results into the next answer once',async()=>{
+ const f=fixture();
+ f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('两项已安排'):{...answer(''),toolCalls:[{id:'batch',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:['逻辑分析','写作草稿'].map(title=>({taskId:null,title,instruction:`只做${title}`,executorId:'general',outputKind:'text',featureIds:[],dependsOn:[]}))})}}]});
+ let started=0,release!:()=>void;const gate=new Promise<void>(r=>release=r);f.setWorker(async()=>{started++;await gate;return answer(JSON.stringify({outcome:'completed',content:'可核对的独立成果',summary:'成果已返回'}));});
+ const reply=await f.service.dispatch(a,input('operation_batch_two_001','分析和独立草稿同时做'),key);
+ assert.equal(reply.taskIds.length,2);await f.service.resume(a,key);await waitFor(async()=>started===2);release();
+ await waitFor(async()=>(await f.store.read()).chatOperations!.filter(o=>o.workRun?.state==='completed').length===2);
+ f.setRoute(messages=>{assert.match(JSON.stringify(messages),/刚返回、尚未向用户汇报/);assert.match(JSON.stringify(messages),/逻辑分析/);assert.match(JSON.stringify(messages),/写作草稿/);return answer('两项任务完成了。');});
+ const next=await f.service.dispatch(a,input('operation_batch_follow_01','现在做了吗？'),key);assert.match(next.message.content,/task=/);
+ const state=await f.service.state(a);assert.equal(state.notices.length,2);assert.ok(state.notices.every(n=>n.reported&&!n.read));
+ await f.service.report(a,state.notices.map(n=>n.id),key);assert.equal((await f.service.state(a)).conversation!.messages.length,state.conversation!.messages.length);
+ await f.service.acknowledge(a,state.notices.map(n=>n.id));assert.equal((await f.service.state(a)).notices.length,0);
+});
+
+test('legacy drawing routes to actual images; an unavailable image blocks the whole proposed batch',async()=>{
+ const f=await imageFixture(async()=>({content:'图片',imageUrl:imageFixturePng}));let worker=0;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{artifactDirectory:f.directory,imageCall:async()=>({content:'图片',imageUrl:imageFixturePng}),modelCall:async(model,messages)=>{if(model.id!=='router'){worker++;return answer('没有绘图能力');}return messages.at(-1)?.role==='tool'?answer('绘图已安排'):{...answer(''),toolCalls:[{id:'old-draw',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'绘制奥特曼大战孙悟空',instruction:'生成奥特曼大战孙悟空图片',executorId:'general'})}}]};}});
+ try{
+  const reply=await service.dispatch(a,input('operation_real_draw_001','画奥特曼大战孙悟空'),key);await service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.some(o=>o.workRun?.state==='completed'));assert.equal(worker,0);assert.ok((await f.store.read()).conversations.find(c=>c.id===reply.taskIds[0])!.messages.some(m=>m.imageUrl));
+  await f.store.mutate(d=>{d.settings.aiTasks!.image_generation!.published!.modelId='missing';});const before=(await f.store.read()).chatOperations!.filter(o=>o.workRun).length;
+  const denied=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{artifactDirectory:f.directory,modelCall:async()=>({...answer(''),toolCalls:[{id:'bad-batch',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'表',instruction:'战力表',executorId:'general',outputKind:'text',featureIds:[],dependsOn:[]},{taskId:null,title:'图',instruction:'图片',executorId:'image_generation',outputKind:'image',featureIds:[],dependsOn:[]}]})}}]})});
+  await assert.rejects(()=>denied.dispatch(a,input('operation_no_image_batch','图和表都做'),key),/图片生成尚未配置/);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,before);
+ }finally{rmSync(f.directory,{recursive:true,force:true});}
+});
 
 test('worker independently invokes two priced features; third unused feature costs zero and repeated tool result is reused',async()=>{
   const f=fixture();
@@ -377,7 +402,7 @@ test('image feature uses its image model and own rate, without changing base ima
 async function imageFixture(imageCall:NonNullable<import('./featureRuns.js').FeatureRunDependencies['imageCall']>) {
   const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-image-queue-'));
   await f.store.mutate(d=>{
-    d.models.push({...d.models[0],id:'image-model',kind:'image',imagePowerPerCall:0.1,costImagePowerPerCall:0.02});
+    d.models.push({...d.models[0],id:'image-model',kind:'image',protocol:'openai',imagePowerPerCall:0.1,costImagePowerPerCall:0.02});
     updateTaskConfig(d.settings,d.models,'image_generation',{revision:0,action:'draft',values:{...defaultTaskValues('image_generation'),modelId:'image-model'}},'a','now');
     updateTaskConfig(d.settings,d.models,'image_generation',{revision:1,action:'publish'},'a','now');
   });
@@ -432,10 +457,10 @@ test('one dispatcher can queue a text worker and an image worker under the same 
   const f=await imageFixture(async()=>({content:'完成',imageUrl:imageFixturePng}));
   const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{artifactDirectory:f.directory,imageCall:async()=>({content:'完成',imageUrl:imageFixturePng}),modelCall:async(model,messages)=>model.id!=='router'?answer('文字产物'):messages.at(-1)?.role==='tool'?answer('文字和图片都已入队'):{...answer(''),toolCalls:[{id:'write',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'活动文案',instruction:'活动文案，折扣8折',executorId:'general'})}},{id:'draw',type:'function',function:{name:'generate_image',arguments:JSON.stringify({query:'活动海报，折扣8折'})}}]}});
   try {
-    await service.dispatch(a,input('operation_image_text_pair_01','活动文案和海报，8折'),key);
+    await service.dispatch(a,{...input('operation_image_text_pair_01','活动文案和海报，8折'),budget:.2},key);
     const jobs=(await f.store.read()).chatOperations!.filter(o=>o.workRun);
     assert.equal(jobs.length,2);assert.equal(new Set(jobs.map(o=>o.workRun!.originMessageId)).size,1);
-    await service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.filter(o=>o.workRun?.state==='completed').length===2);
+    await service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.filter(o=>o.workRun?.state==='completed').length===2).catch(async()=>assert.fail(JSON.stringify((await f.store.read()).chatOperations!.filter(o=>o.workRun).map(o=>({state:o.workRun!.state,error:o.workRun!.error})))));
     const db=await f.store.read();assert.ok(db.modelUsageRecords.some(r=>r.activity==='task_worker'));assert.ok(db.modelUsageRecords.some(r=>r.activity==='image_generation'));
   }finally{rmSync(f.directory,{recursive:true,force:true});}
 });
@@ -520,10 +545,14 @@ test('local notices acknowledge their own execution round without suppressing a 
  await assert.rejects(()=>f.service.acknowledge(a,['notice-execution','missing']));
  assert.equal((await f.store.read()).executionTasks[0].noticeReadRound,undefined);
  await f.service.acknowledge(a,['notice-execution']); await f.service.acknowledge(a,['notice-execution']);
- assert.equal((await f.service.state(a)).notices.length,0);
+ const reviewed=await f.service.state(a);
+ assert.equal(reviewed.notices.length,1);
+ assert.equal(reviewed.notices[0].read,true);
+ assert.equal(reviewed.notices[0].reported,false);
  assert.equal((await f.store.read()).executionTasks[0].reportedToCoordinatorAt,undefined);
  await f.service.report(a,['notice-execution'],key);
  assert.ok((await f.store.read()).executionTasks[0].reportedToCoordinatorAt);
+ assert.equal((await f.service.state(a)).notices.length,0,'reviewed and reported result is fully acknowledged');
  await f.store.mutate(d=>{d.executionTasks[0].reportRound=1;d.executionTasks[0].reportedToCoordinatorAt=undefined;});
  assert.equal((await f.service.state(a)).notices.length,1);
 });
@@ -548,7 +577,8 @@ test('a batch briefing is one message with all task links and replays never dupl
  const state=await f.service.state(a), brief=state.conversation!.messages.filter(m=>m.id?.startsWith('report_'));
  assert.equal(brief.length,1);assert.match(brief[0].content,/one.*已创建/);assert.match(brief[0].content,/two.*已创建/);
  assert.deepEqual(state.links.filter(l=>l.messageId===brief[0].id).map(l=>l.taskId).sort(),['one','two']);
- assert.equal(state.notices.length,0);
+ assert.equal(state.notices.length,2);
+ assert.ok(state.notices.every(n=>n.reported&&!n.read),'main-chat briefing does not imply user reviewed either task');
 });
 test('local dispatch preserves the handoff, bypasses cloud worker and replay never executes twice', async () => {
   const f = fixture(), executed: string[] = [];
@@ -571,7 +601,10 @@ test('completed result returns to the main dialogue once and cannot leak another
   const main=(await f.store.read()).conversations.find(c=>c.userId==='a'&&c.coordinatorMain)!;
   assert.equal(main.messages.filter(m=>m.id===`report_${id}`).length,1);
   assert.match(main.messages.find(m=>m.id===`report_${id}`)!.content,/真实合成模型返回的成果/);
-  assert.equal((await f.service.state(a)).notices.length,0);
+  const reported=await f.service.state(a);
+  assert.equal(reported.notices.length,1);
+  assert.equal(reported.notices[0].reported,true);
+  assert.equal(reported.notices[0].read,false);
 });
 test("failed core routing preserves only its owner's safe diagnostic receipt", async () => {
   const f = fixture();
@@ -876,7 +909,11 @@ test("direct task continuation never changes the main conversation, and scoped r
     a,
     notices.map((n) => n.id),
   );
-  assert.equal((await f.service.state(a)).notices.length, 0);
+  const reviewed=await f.service.state(a);
+  assert.equal(reviewed.notices.length, notices.length,'task review does not drop unreported dispatcher feedback');
+  assert.ok(reviewed.notices.every(n=>n.read&&!n.reported));
+  await f.service.report(a,notices.map(n=>n.id),key);
+  assert.equal((await f.service.state(a)).notices.length,0);
   assert.equal((await f.service.state(b)).total, 0);
 });
 test("executor profiles use different models and immutable versions; stopping the profile stops further calls", async () => {
@@ -1230,4 +1267,130 @@ test("knowledge revocation is checked before worker billing; public credentials 
     JSON.stringify(await f.service.task(a, r.taskId!)),
     /PRIVATE_CREDENTIAL|本轮交接|modelPrompt|encryptedApiKey/,
   );
+});
+
+test('parallel workers sharing one dispatch budget reserve atomically and cannot each spend the full batch cap', async () => {
+  const f=fixture(), cap=MODEL_MAX_OUTPUT_TOKENS*1.5/1e6;
+  await f.store.mutate(d=>{for(const model of d.models){model.inputPowerPerMillion=0;model.outputPowerPerMillion=1;}});
+  f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('任务已保存'):({...answer(''),toolCalls:[{id:'dispatch-budget',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'独立预算任务',instruction:'返回一份独立结果',executorId:'general'})}}]}));
+  const first=await f.service.dispatch(a,{...input('operation_shared_cap_1','第一份独立分析'),budget:cap},key);
+  const second=await f.service.dispatch(a,{...input('operation_shared_cap_2','第二份独立分析'),budget:cap},key);
+  await f.store.mutate(d=>{for(const op of d.chatOperations??[])if(op.workRun)op.workRun.parentOperationId='fixture_shared_batch';});
+  let release!:(value:ToolChatResult)=>void;
+  const blocked=new Promise<ToolChatResult>(resolve=>{release=resolve;});
+  f.setWorker(async()=>blocked);
+  try {
+    await f.service.resume(a,key);
+    await waitFor(async()=>(await f.service.task(a,second.taskId!)).jobs[0].state==='failed');
+    assert.equal(f.calls.filter(c=>c.modelId==='worker').length,1,'only one provider call fits while its reservation is held');
+    const db=await f.store.read(), workerRows=db.modelUsageRecords.filter(u=>u.activity==='task_worker');
+    assert.equal(workerRows.length,1);assert.equal(workerRows[0].status,'pending');
+    assert.ok(workerRows.reduce((total,row)=>total+(row.reservedMicros??0)+(row.chargedMicros??0),0)<=Math.floor(cap*1e6));
+    assert.equal((await f.service.task(a,first.taskId!)).jobs[0].state,'running');
+  } finally { release(answer('已核对的合成测试结果')); }
+  await waitFor(async()=>(await f.service.task(a,first.taskId!)).jobs[0].state==='completed');
+  assert.equal((await f.service.task(a,second.taskId!)).jobs[0].state,'failed','failed admission does not automatically rerun after another worker releases its hold');
+  assert.equal((await f.store.read()).powerAccounts[1].balanceMicros,100e6);
+});
+
+test('dependent image dispatch receives its completed text prerequisite and returns owned actual image bytes', async () => {
+  let imageInput='',imageCalls=0;
+  const f=await imageFixture(async (_model,messages)=>{imageCalls++;imageInput=JSON.stringify(messages);return{content:'图片完成',imageUrl:imageFixturePng};});
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},
+    {artifactDirectory:f.directory,imageCall:async(_model,messages)=>{imageCalls++;imageInput=JSON.stringify(messages);return{content:'图片完成',imageUrl:imageFixturePng};},modelCall:async(model,messages)=>{
+      if(model.id!=='router')return answer(JSON.stringify({outcome:'completed',content:'实际分析结论：ONE_DEPENDENCY_SOURCE，主题是红色帐篷与蓝色湖面',summary:'已完成主题分析'}));
+      if(messages.at(-1)?.role==='tool')return answer('分析和配图已分别安排，图片会参考真实分析。');
+      return{...answer(''),toolCalls:[{id:'plan-dependency',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[
+        {taskId:null,title:'分析露营主题',instruction:'先分析活动主题',executorId:'general',outputKind:'text',featureIds:[],dependsOn:[]},
+        {taskId:null,title:'绘制露营海报',instruction:'按照前置分析结果生成图片',executorId:'image_generation',outputKind:'image',featureIds:[],dependsOn:[0]},
+      ]})}}]};
+    }});
+  try {
+    const result=await service.dispatch(a,{...input('operation_image_dependent','分析活动主题，再按分析结果画海报'),budget:.3},key);
+    assert.equal(result.taskIds.length,2);
+    await service.resume(a,key);
+    await waitFor(async()=>imageCalls===1);
+    assert.match(imageInput,/ONE_DEPENDENCY_SOURCE/);assert.match(imageInput,/红色帐篷与蓝色湖面/);
+    await waitFor(async()=>(await service.task(a,result.taskIds[1])).jobs[0].state==='completed');
+    const db=await f.store.read(),imageTask=await service.task(a,result.taskIds[1]),resultMessage=imageTask.conversation.messages.at(-1)!;
+    assert.match(resultMessage.imageUrl!,/^\/api\/attachments\//);
+    const imageFile=db.attachments.find(file=>file.id===resultMessage.attachments?.[0]?.id)!;
+    assert.equal(imageFile.workspaceId,a.workspaceId);assert.equal(imageFile.userId,a.userId);
+    await assert.rejects(()=>service.task(b,result.taskIds[1]));
+    assert.equal(imageCalls,1);
+  } finally { rmSync(f.directory,{recursive:true,force:true}); }
+});
+
+test('stopping one prepared task never cancels a sibling local execution sharing the same dispatcher parent', async () => {
+  const f=fixture(),stamp=new Date().toISOString(),parent='operation_stop_shared_parent';
+  await f.service.dispatch(a,input('operation_stop_setup','你好'),key);
+  await f.store.mutate(d=>{
+    for(const id of ['first-local-task','second-local-task'])d.conversations.push({...a,id,title:id,modelId:'worker',executorProfileId:'general',messages:[],archived:false,createdAt:stamp,updatedAt:stamp});
+    for(const [index,conversationId] of ['first-local-task','second-local-task'].entries())d.chatOperations!.push({...a,id:`prepared-${index}`,operationId:`operation_local_child_${index}`,requestId:`work_local_${index}`,payloadHash:'',status:'completed',conversationId,createdAt:stamp,updatedAt:stamp,
+      workRun:{state:'prepared',parentOperationId:parent,budget:.1,values:executorDefaults(),executorId:'general',executorVersion:0,modelId:'worker',modelPrompt:'',instruction:'保存本机任务',inputMessageId:`input_${index}`,webSearch:false,sources:[],skills:[],credentials:[]}});
+    d.chatOperations!.push({...a,id:'legacy-local-parent',operationId:`local_${parent}`,requestId:'local_execution',payloadHash:'',status:'pending',conversationId:'first-local-task',createdAt:stamp,updatedAt:stamp});
+    d.executionTasks=[];
+  });
+  const app=express(),cancellations:string[]=[];
+  app.use(express.json());
+  const auth:express.RequestHandler=(req,_res,next)=>{const user=String(req.headers['x-fixture-user']||'a');req.user={id:user,role:'user'} as any;req.workspaceId=user==='a'?'wa':'wb';next();};
+  installCoordinatorRoutes(app,[auth],[auth],f.store,key,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{cancelLocal:async(_req,id)=>{cancellations.push(id);}});
+  const server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server.once('listening',resolve));
+  const base=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
+  try {
+    const foreign=await fetch(`${base}/api/coordinator/tasks/second-local-task/stop`,{method:'POST',headers:{'x-fixture-user':'b'}});
+    assert.equal(foreign.status,404);assert.deepEqual(cancellations,[]);
+    const response=await fetch(`${base}/api/coordinator/tasks/second-local-task/stop`,{method:'POST'});
+    assert.equal(response.status,200);assert.deepEqual(cancellations,['local_operation_local_child_1']);
+    const db=await f.store.read();assert.equal(db.chatOperations!.find(o=>o.id==='prepared-0')!.workRun!.state,'prepared');
+    assert.equal(db.chatOperations!.find(o=>o.id==='prepared-1')!.workRun!.state,'cancelled');
+    assert.equal(db.chatOperations!.find(o=>o.id==='legacy-local-parent')!.status,'pending');
+  } finally { server.close(); }
+});
+
+test('a GPT chat credential powers a real image task while fixed picture pricing stays frozen and text model prices stay unchanged', async () => {
+  let release!:()=>void,imageCalls=0;
+  const gate=new Promise<void>(resolve=>{release=resolve;});
+  const f=await imageFixture(async model=>{
+    imageCalls++;assert.equal(model.id,'image-model');assert.equal(model.kind,'image');
+    assert.equal(model.imagePowerPerCall,.1);assert.equal(model.costImagePowerPerCall,.02);
+    assert.equal(model.inputPowerPerMillion,0);assert.equal(model.outputPowerPerMillion,0);
+    assert.equal(model.model,'gpt-image-2');
+    await gate;return {content:'生成完成',imageUrl:imageFixturePng};
+  });
+  let originalTextPrices:unknown;
+  await f.store.mutate(d=>{
+    const model=d.models.find(model=>model.id==='image-model')!;
+    model.kind='chat';model.protocol='openai';model.model='gpt-chat-fixture';
+    originalTextPrices=[model.inputPowerPerMillion,model.outputPowerPerMillion,model.costInputPowerPerMillion,model.costOutputPowerPerMillion];
+    const record=d.settings.aiTasks!.image_generation!;
+    updateTaskConfig(d.settings,d.models,'image_generation',{revision:record.revision,action:'draft',values:{...record.draft,imageRoute:'responses',imageServiceModel:'gpt-image-2',imagePowerPerCall:.1,costImagePowerPerCall:.02}},'a','before');
+    updateTaskConfig(d.settings,d.models,'image_generation',{revision:d.settings.aiTasks!.image_generation!.revision,action:'publish'},'a','before');
+  });
+  try {
+    const reply=await f.service.dispatch(a,{...input('operation_chat_credential_image','画一张实际测试图片'),budget:.3},key);
+    const queued=await f.store.read(),job=queued.chatOperations!.find(o=>o.workRun?.kind==='image')!;
+    assert.equal(reply.taskId,job.conversationId);assert.equal(job.workRun!.values.imageRoute,'responses');
+    await waitFor(async()=>imageCalls===1);
+    await f.store.mutate(d=>{
+      const record=d.settings.aiTasks!.image_generation!;
+      updateTaskConfig(d.settings,d.models,'image_generation',{revision:record.revision,action:'draft',values:{...record.draft,imagePowerPerCall:.2,costImagePowerPerCall:.04}},'a','during');
+      updateTaskConfig(d.settings,d.models,'image_generation',{revision:d.settings.aiTasks!.image_generation!.revision,action:'publish'},'a','during');
+    });
+    release();await waitFor(async()=>(await f.service.task(a,job.conversationId!)).jobs[0].state==='completed');
+    await f.service.report(a,[job.id],key);await f.service.report(a,[job.id],key);
+    const db=await f.store.read(),row=db.modelUsageRecords.find(r=>r.activity==='image_generation')!;
+    assert.equal(row.chargedMicros,100000);assert.equal(row.costMicros,20000);
+    assert.equal(row.imagePowerPerCallSnapshot,.1);assert.equal(row.costImagePowerPerCallSnapshot,.02);
+    assert.equal(db.settings.aiTasks!.image_generation!.published!.imagePowerPerCall,.2);
+    const original=db.models.find(model=>model.id==='image-model')!;
+    assert.equal(original.kind,'chat');assert.equal(original.model,'gpt-chat-fixture');
+    assert.deepEqual([original.inputPowerPerMillion,original.outputPowerPerMillion,original.costInputPowerPerMillion,original.costOutputPowerPerMillion],originalTextPrices);
+    const file=db.attachments[0],main=db.conversations.find(c=>c.coordinatorMain&&c.userId===a.userId)!;
+    assert.equal(main.messages.filter(m=>m.imageUrl===`/api/attachments/${file.id}/content`).length,1);
+    assert.ok(file.sharedConversationIds?.includes(main.id));assert.equal(file.workspaceId,a.workspaceId);
+    const notice=(await f.service.state(a)).notices.find(n=>n.id===job.id)!;
+    assert.equal(notice.reported,true);assert.equal(notice.read,false);
+    assert.equal(imageCalls,1);
+  } finally { release?.();rmSync(f.directory,{recursive:true,force:true}); }
 });

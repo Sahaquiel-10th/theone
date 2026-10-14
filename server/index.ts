@@ -17,6 +17,7 @@ import { runTaskOrchestrator } from "./taskOrchestrator.js";
 import { resolveAiTask } from "./aiTaskConfig.js";
 import { installAiTaskRoutes } from "./aiTaskRoutes.js";
 import { installCoordinatorRoutes } from './coordinatorRoutes.js';
+import {installCapabilityRoutes} from './capabilityRoutes.js';
 import { NotionDocuments } from './notionDocuments.js';
 import { CoordinatorError } from './executorProfiles.js';
 import { installOfficialFeatureRoutes } from "./officialFeatureRoutes.js";
@@ -63,6 +64,7 @@ import { installMembershipRoutes } from "./membershipRoutes.js";
 import { installAdminPaymentRoutes, installPaymentCallback, installPaymentRoutes } from "./paymentRoutes.js";
 import { effectiveModel, publishPricing, cancelScheduledPricing, publicPrices } from "./modelPricing.js";
 import {ExecutionPreparationStops} from './executionPreparation.js';
+import {workBatchBudget} from './executionBatchBudget.js';
 import { publicPayment } from "./payments.js";
 import { runtimeUpdateWasCompleted } from "./runtimeUpdate.js";
 import { codexGateway, managedExecutorDistribution } from "./runtime.js";
@@ -876,6 +878,10 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
   const db = await store.read();
   const conversation = db.conversations.find((item) => item.id === conversationId && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
   if (!conversation) throw new Error("对话不存在");
+  const preparedOperation=db.chatOperations?.find(o=>o.workspaceId===req.workspaceId&&o.userId===req.user!.id&&o.conversationId===conversationId&&o.workRun?.inputMessageId===sourceMessageId);
+  const prepared=preparedOperation?.workRun;
+  const batchBudget=workBatchBudget(db,{workspaceId:req.workspaceId!,userId:req.user!.id},preparedOperation);
+  if(prepared?.dependsOnOperationIds?.some(id=>!db.chatOperations?.some(o=>o.workspaceId===req.workspaceId&&o.userId===req.user!.id&&o.operationId===id&&o.workRun?.state==='completed'&&(!o.workRun.resultOutcome||['completed','returned'].includes(o.workRun.resultOutcome)))))throw new Error('前置任务尚未完成，请先核对前置结果再开始本机执行。');
   const model = db.models.find((item) => item.id === conversation.modelId && item.enabled && item.kind === "chat");
   if (!model) throw new Error("当前对话模型不能整理执行指令");
   const requestOperationId = operationId ?? uid("execution");
@@ -903,11 +909,12 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
   const compilerTask = resolveAiTask(db.settings, db.models, "execution_compile", model);
   const compilerMessages = buildExecutionCompilerMessages(prefix, sourceMessageId, compilerTask.replacesPrompt ? "按系统任务指令整理以下对话。" : undefined,
     executionHandoffs(db, prefix, req.workspaceId!, req.user!.id));
+  if(prepared)compilerMessages.unshift({role:'system',content:`本次仅执行这件任务已经保存的交接：${prepared.instruction}。原话中的其他任务只作背景，不得重复执行。前置任务成果：${JSON.stringify((prepared.dependsOnOperationIds??[]).map(id=>{const o=db.chatOperations?.find(o=>o.workspaceId===req.workspaceId&&o.userId===req.user!.id&&o.operationId===id);const c=db.conversations.find(c=>c.id===o?.conversationId&&c.workspaceId===req.workspaceId&&c.userId===req.user!.id);return {taskId:c?.id,title:c?.title,content:c?.messages.find(m=>m.id===o?.workRun?.resultMessageId)?.content.slice(0,6000)};}))}`,createdAt:now()});
   await confirmKeyBeforeModel(req);
   const compiled = await runBilledModel(store, {
     workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id,
     model: compilerTask.model, input: { safetyRules: compilerRules, messages: compilerMessages, taskVersion: compilerTask.version },
-    activity: "execution_compile", requestId: res.locals.requestId
+    activity: "execution_compile", requestId: res.locals.requestId, batchBudget
   }, (snapshot) => callModel(snapshot, compilerMessages, compilerRules, res.locals.requestId));
   const timestamp = now();
   if (compiled.finishReason === "length" || compiled.finishReason === "filtered") throw new Error("执行指令未完整生成，未发送到本机。请缩小任务范围后再试；本次模型用量已记录。");
@@ -916,11 +923,12 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
   const task: ExecutionTask = {
     id: uid("ext"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id,
     sourceMessageId, dispatchOperationId: requestOperationId, provider: executionProvider, status: "queued", instruction: compiled.content.trim(), deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId,
-    createdAt: timestamp, updatedAt: timestamp
+    createdAt: timestamp, updatedAt: timestamp, batchBudget
   };
   await store.mutate((mutable) => {
     executionPreparationStops.assertActive(preparationScope);
     if(mutable.chatOperations?.some(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.operationId===requestOperationId&&o.executionCancelled))throw new Error('执行准备已停止');
+    if(prepared&&mutable.chatOperations?.some(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.conversationId===conversationId&&o.workRun?.inputMessageId===sourceMessageId&&o.workRun.state==='cancelled'))throw new Error('此任务已停止，未开始本机操作。');
     mutable.executionTasks.push(task);
     const c = mutable.conversations.find(c => c.id === conversationId && c.workspaceId === req.workspaceId && c.userId === req.user!.id)!;
     const receipt = { id: uid("msg"), role: "assistant" as const, content: "本机执行已受理，正在连接执行器。结果确认后会在这里保留。", createdAt: timestamp };
@@ -989,6 +997,8 @@ app.post("/api/executions/:id/messages", ...keyAuth, asyncRoute(async (req, res)
     if (target.status === "queued" || target.status === "selecting_target" || target.status === "running") throw new Error("本机任务正在执行，请等待当前步骤完成");
     const timestamp = now(); target.status = "queued"; target.updatedAt = timestamp; target.startedAt = undefined; target.completedAt = undefined; target.lastError = undefined;
     target.preparationOperationId=preparationScope.operationId;
+    // A user-authored follow-up is a new round, not a continuation of an old dispatch allowance.
+    target.batchBudget=undefined;
     target.reportRound = (target.reportRound ?? 0) + 1; target.reportedToCoordinatorAt = undefined; target.finalResponse = undefined;
     appendExecutionEvent(database, { id: uid("exe"), workspaceId: target.workspaceId, userId: target.userId, taskId: target.id, kind: "user_message", text: content, createdAt: timestamp });
     return target;
@@ -1023,6 +1033,7 @@ installCompanyRoutes(app, keyAuth, admin, store, oneKeyService);
 installPublicCommerceRoutes(app,keyAuth,admin,store);
 installProductMetricsRoutes(app,admin,store);
 installAiTaskRoutes(app, admin, store);
+installCapabilityRoutes(app,admin,store,{imageStorageAvailable:true});
 installCoordinatorRoutes(app,keyAuth,admin,store,confirmKeyBeforeModel,knowledgeService,{cancelLocal:stopLocalPreparation,notionDocuments,artifactDirectory:uploadDir,webSearch:query=>webSearchEnabled()?searchWeb(query):Promise.resolve({status:'unavailable'}),
   executeLocal: async (req, res, cid, mid, operationId) => { const result = await startLocalExecution(req, res, cid, mid, operationId); return { id: result.task.id, status: result.task.status }; }});
 installOfficialFeaturePilotRoutes(app, admin, store);

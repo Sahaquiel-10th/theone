@@ -4,7 +4,7 @@ import { defaultTaskValues, editableTaskValues, resolveAiTask, updateTaskConfig,
 import type { ModelConfig, SystemSettings } from "./types.js";
 import { aiTaskCatalog } from "./aiTaskCatalog.js";
 
-const model = { id: "a", enabled: true, kind: "chat", systemPrompt: "base", apiKey: "not-for-client" } as ModelConfig;
+const model = { id: "a", enabled: true, kind: "chat", protocol: "openai", systemPrompt: "base", apiKey: "not-for-client" } as ModelConfig;
 const second = { ...model, id: "b" };
 const settings = (): SystemSettings => ({ safetyRules: "immutable", rechargeCnyPerPower: 7 });
 test("binding a task is context, not an instruction to delegate", () => {
@@ -79,7 +79,7 @@ test("draft, publish, immutable running snapshot, rollback and optimistic revisi
 });
 test("unknown/planned tasks, wrong model kind and arbitrary tools fail closed", () => {
   for (const id of ["__proto__", "unknown"]) assert.throws(() => validateTaskValues(id, defaultTaskValues(id), [model]));
-  assert.throws(() => validateTaskValues("image_generation", { ...defaultTaskValues("image_generation"), modelId: "a" }, [model]));
+  assert.throws(() => validateTaskValues("image_generation", { ...defaultTaskValues("image_generation"), modelId: "a" }, [{ ...model, protocol: "anthropic" }]));
   assert.throws(() => validateTaskValues("chat", { ...defaultTaskValues("chat"), tools: ["run_command"] }, [model]));
   assert.throws(() => validateTaskValues("local_agent", { ...defaultTaskValues("local_agent"), maxSteps: 999 }, [model]));
   assert.deepEqual(validateTaskValues("local_agent", { ...defaultTaskValues("local_agent"), tools: [] }, [model]).tools, []);

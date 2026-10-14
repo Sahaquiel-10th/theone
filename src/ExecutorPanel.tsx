@@ -113,7 +113,7 @@ export function ExecutorPanel({
     </section>
   );
 }
-function ExecutorEditor({
+export function ExecutorEditor({
   api,
   id,
   defaults,
@@ -216,7 +216,7 @@ function ExecutorEditor({
           />
         </label>
         <label>
-          适合处理什么
+          什么时候用
           <textarea
             rows={3}
             maxLength={1000}
@@ -238,7 +238,7 @@ function ExecutorEditor({
           onChange={(modelId) => setValues({ ...values, modelId })}
         />
         <label>
-          提示词
+          具体怎么做
           <textarea
             rows={10}
             style={{ width: "100%" }}

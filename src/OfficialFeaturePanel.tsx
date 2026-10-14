@@ -25,7 +25,7 @@ export function OfficialFeaturePanel({api}:{api:typeof Api}){
     {selected!==null?<SettingsDialog title={selected?"官方功能配置":"新增官方功能"} onClose={()=>setSelected(null)}><FeatureEditor key={selected} api={api} featureId={selected} onChanged={()=>setRefresh(n=>n+1)}/></SettingsDialog>:null}
   </section>;
 }
-function FeatureEditor({api,featureId,onChanged}:{api:typeof Api;featureId:string;onChanged:()=>void}){
+export function FeatureEditor({api,featureId,onChanged}:{api:typeof Api;featureId:string;onChanged:()=>void}){
   const [id,setId]=useState(featureId),[saved,setSaved]=useState(!!featureId),[detail,setDetail]=useState<Detail>(),[values,setValues]=useState<OfficialFeatureValues>(initial),[evidence,setEvidence]=useState(""),[confirmed,setConfirmed]=useState(false),[busy,setBusy]=useState(false),[notice,setNotice]=useState(""),[page,setPage]=useState(1);
   const [history,setHistory]=useState<Detail>();
   const [companyId,setCompanyId]=useState(""),[companies,setCompanies]=useState<{id:string;name:string}[]>([]);
@@ -55,7 +55,7 @@ function FeatureEditor({api,featureId,onChanged}:{api:typeof Api;featureId:strin
     <label>功能标识<input value={id} disabled={saved||busy} placeholder="例如 industry-report" maxLength={64} onChange={e=>setId(e.target.value)}/></label>
     <label>功能分类<SearchPicker label="分类" value={values.category??'general'} options={featureCategories.map(c=>({value:c.id,label:c.name}))} onChange={category=>setValues({...values,category:category as OfficialFeatureValues['category']})}/></label>
     <label>使用倍率<input aria-label="功能使用倍率" type="number" min="0.001" max="100" step="0.1" disabled={busy} value={values.usageMultiplier??.6} onChange={e=>setValues({...values,usageMultiplier:Number(e.target.value)})}/></label><p className="hint">默认 0.6 倍。替换模型售价倍率，不再叠乘；保存、认定并上架后只对新任务生效。</p>
-    {([['name','名称',60],['author','作者或合作方',100],['description','用途',500],['instructions','执行要求',12000],['limitations','适用边界与限制',2000]] as const).map(([key,label,max])=><label key={key}>{label}{key==='name'||key==='author'?<input value={values[key]} maxLength={max} disabled={busy} onChange={e=>setValues({...values,[key]:e.target.value})}/>:<textarea rows={key==='instructions'?5:3} value={values[key]} maxLength={max} disabled={busy} onChange={e=>setValues({...values,[key]:e.target.value})}/>}</label>)}
+    {([['name','名称',60],['author','作者或合作方',100],['description','什么时候用',500],['instructions','具体怎么做',12000],['limitations','适用边界与限制',2000]] as const).map(([key,label,max])=><label key={key}>{label}{key==='name'||key==='author'?<input value={values[key]} maxLength={max} disabled={busy} onChange={e=>setValues({...values,[key]:e.target.value})}/>:<textarea rows={key==='instructions'?5:3} value={values[key]} maxLength={max} disabled={busy} onChange={e=>setValues({...values,[key]:e.target.value})}/>}</label>)}
     {values.skillAttribution!==undefined?<label>来源、许可与署名记录<textarea rows={5} maxLength={30000} disabled={busy} value={values.skillAttribution} onChange={e=>setValues({...values,skillAttribution:e.target.value})}/></label>:null}
     {values.experience?.mode==='image'?<p className="hint">图片功能请认定后上架给自己，在功能入口上传参考图并验证；后台文字试运行不调用图片模型。</p>:null}
     <FeatureBuilder api={api} values={values} onChange={setValues} disabled={busy}/>

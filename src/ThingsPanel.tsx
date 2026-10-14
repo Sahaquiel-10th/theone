@@ -14,6 +14,7 @@ type Thing = {
   messagesLoaded?: boolean;
   taskState?: 'active' | 'review' | 'ended' | 'history';
   outcome?: string;
+  unread?: boolean;
 };
 export function ThingsPanel({
   one,
@@ -63,6 +64,7 @@ export function ThingsPanel({
   const [category,setCategory]=useState<'active'|'review'|'ended'|'history'>('active');
   const [page, setPage] = useState(1);
   const selected = items.find((item) => item.id === selectedId && !item.archived);
+  const reviewUnread=items.filter(item=>!item.archived&&item.taskState==='review'&&item.unread).length;
   const found = items.filter((item) =>
     !item.archived && item.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) && (item.taskState||'history')===category,
   );
@@ -86,7 +88,7 @@ export function ThingsPanel({
             setPage(1);
           }}
         />
-        <nav className="task-category-tabs" aria-label="任务状态">{([['active','进行中'],['review','待确认'],['ended','已结束'],['history','历史对话']] as const).map(([id,label])=><button type="button" key={id} aria-pressed={category===id} onClick={()=>{setCategory(id);setPage(1);setQuery('');}}>{label}</button>)}</nav>
+        <nav className="task-category-tabs" aria-label="任务状态">{([['active','进行中'],['review','待确认'],['ended','已结束'],['history','历史对话']] as const).map(([id,label])=><button type="button" key={id} aria-pressed={category===id} onClick={()=>{setCategory(id);setPage(1);setQuery('');}}>{label}{id==='review'&&reviewUnread?<span className="task-review-dot" aria-label={`${reviewUnread} 个结果尚未查看`}/>:null}</button>)}</nav>
         <div className="things-list-items">
           {found.slice((current - 1) * 10, current * 10).map((item) => (
             <button
@@ -95,13 +97,13 @@ export function ThingsPanel({
               aria-current={selectedId === item.id ? "true" : undefined}
               onClick={() => onSelect(item.id)}
             >
-              <strong>{item.title}</strong>
+              <strong>{item.title}{item.unread?<span className="task-review-dot" aria-label="结果尚未查看"/>:null}</strong>
               <small>
                 {item.taskState==='active'?'正在处理 · ':item.taskState==='review'||item.taskState==='ended'?`${item.outcome?transferStateLabel(item.outcome):'已结束 · 查看回执'} · `:'历史对话 · '}{new Date(item.updatedAt).toLocaleDateString("zh-CN")}
               </small>
             </button>
           ))}
-          {!found.length ? <p>{query?'已加载的当前列表中没有匹配记录。':category==='active'?'目前没有进行中的任务。已完成的工作在“已结束”，普通聊天在“历史对话”。':category==='review'?'没有需要你处理的记录。执行失败、中断或停止的任务会显示在这里。':'这里暂时没有记录。'}</p> : null}
+          {!found.length ? <p>{query?'已加载的当前列表中没有匹配记录。':category==='active'?'目前没有进行中的任务。新结果在“待确认”，看过的工作在“已结束”。':category==='review'?'没有待确认的结果。新成果和需要你处理的任务会显示在这里。':'这里暂时没有记录。'}</p> : null}
         </div>
         {pages > 1 ? (
           <footer>

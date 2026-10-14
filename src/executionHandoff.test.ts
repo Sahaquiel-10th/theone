@@ -9,4 +9,5 @@ test('only the current settled dispatch can close optimistic execution feedback'
  assert.equal(executionHandoffOutcome('current',{operationId:'current',status:'completed'}),'not_started');
  assert.equal(executionHandoffOutcome('current',{operationId:'current',status:'failed',taskId:'thing'}),'not_started');
  assert.equal(executionHandoffOutcome('current',{operationId:'current',status:'completed',taskId:'thing'}),'dispatched');
+ assert.equal(executionHandoffOutcome('current',{operationId:'current',status:'completed',taskIds:['image','local']}),'dispatched');
 });

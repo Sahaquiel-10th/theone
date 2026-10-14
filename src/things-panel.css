@@ -36,3 +36,4 @@
 .one-studio.studio-things .studio-assistant{display:none}
 @media(max-width:650px){.things-browser{grid-template-columns:115px minmax(0,1fr)}.things-list{padding:12px;gap:12px}.things-list-items button{padding:8px}.things-thread header{padding:14px;flex-wrap:wrap}.things-thread header h2{font-size:16px}.things-thread-messages{padding:12px}.things-thread form{padding:10px;gap:5px}.things-list footer{flex-wrap:wrap}.things-thread-messages{max-height:55vh}}
 .task-category-tabs{display:flex;flex-wrap:wrap;gap:5px;margin:10px 0}.things-list .task-category-tabs button{font:inherit;font-size:12px;border:0;border-radius:8px;padding:7px 9px;background:transparent;color:inherit;cursor:pointer}.things-list .task-category-tabs button[aria-pressed=true]{background:var(--studio-line,#e7ebdf)}
+.task-review-dot{display:inline-block;width:6px;height:6px;margin-left:6px;border-radius:50%;background:#ae4d3c;vertical-align:middle;flex-shrink:0}

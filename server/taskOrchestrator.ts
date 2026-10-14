@@ -44,7 +44,8 @@ export async function runTaskOrchestrator(input: {
       return { content: result.content, messages, trace, finishReason: result.finishReason };
     }
     if (step === steps) throw new Error("已达到调度步骤上限，未完成任务；请缩小问题范围");
-    if (result.toolCalls.length > 2 || new Set(result.toolCalls.map(call => call.id)).size !== result.toolCalls.length) throw new Error("调度模型返回了过多或重复的工具调用，已停止");
+    const maxCalls=input.entryPoint==='workspace'&&input.tools.some(t=>t.name==='delegate_tasks')?4:2;
+    if (result.toolCalls.length > maxCalls || new Set(result.toolCalls.map(call => call.id)).size !== result.toolCalls.length) throw new Error("调度模型返回了过多或重复的工具调用，已停止");
     messages.push({ role: "assistant", content: result.content || null, tool_calls: result.toolCalls });
     for (const call of result.toolCalls) {
       await input.beforeStep();

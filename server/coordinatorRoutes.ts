@@ -14,6 +14,8 @@ import {
 } from "./chatOperations.js";
 import type { FeatureRunDependencies } from "./featureRuns.js";
 import { FeatureConfigError } from './officialFeatures.js';
+import {TaskResultInboxError} from './taskResultInbox.js';
+import {ImageTaskConfigurationError} from './imageTaskConfiguration.js';
 import type { NotionDocuments } from './notionDocuments.js';
 export function installCoordinatorRoutes(
   app: Express,
@@ -77,6 +79,7 @@ export function installCoordinatorRoutes(
           requestId: operation.requestId,
           error: operation.status === "failed" ? db.contextTraces.find(t => t.workspaceId === s.workspaceId && t.userId === s.userId && t.requestId === operation.requestId)?.responsePreview.slice(0, 500) : undefined,
           taskId: operation.dispatchedTaskId,
+          taskIds:operation.dispatchedTaskIds,
           progress: operation.status==='pending' ? service.currentProgress(s,operation.operationId) : undefined,
         });
       res.json({
@@ -86,6 +89,7 @@ export function installCoordinatorRoutes(
           operationId: operation.operationId,
         }),
         taskId: operation.dispatchedTaskId,
+        taskIds:operation.dispatchedTaskIds,
       });
     }),
   );
@@ -105,7 +109,22 @@ export function installCoordinatorRoutes(
     }),
   );
   router.post('/messages/:operationId/stop', asyncRoute(async(req,res)=>{const id=String(req.params.operationId);await verifyKey(req);await deps.cancelLocal?.(req,`local_${id}`);const result=await service.cancel(scope(req),id,()=>verifyKey(req));res.json(result);}));
-  router.post('/tasks/:id/stop', asyncRoute(async(req,res)=>res.json(await service.cancelTask(scope(req),String(req.params.id),()=>verifyKey(req)))));
+  router.post('/tasks/:id/stop', asyncRoute(async(req,res)=>{
+    const id=String(req.params.id),s=scope(req);await service.cancelTask(s,id,()=>verifyKey(req));
+    const db=await store.read();
+    const jobs=db.chatOperations?.filter(o=>o.workspaceId===s.workspaceId&&o.userId===s.userId&&o.conversationId===id&&o.workRun)||[];
+    const localOperations=new Set(jobs.map(job=>`local_${job.operationId}`));
+    for(const task of (db.executionTasks??[]).filter(t=>t.workspaceId===s.workspaceId&&t.userId===s.userId&&t.conversationId===id)){
+      if(task.dispatchOperationId)localOperations.add(task.dispatchOperationId);
+      if(task.preparationOperationId)localOperations.add(task.preparationOperationId);
+    }
+    for(const job of jobs){
+      const legacy=`local_${job.workRun?.parentOperationId}`;
+      if(db.chatOperations?.some(o=>o.workspaceId===s.workspaceId&&o.userId===s.userId&&o.conversationId===id&&o.operationId===legacy))localOperations.add(legacy);
+    }
+    for(const operationId of localOperations)await deps.cancelLocal?.(req,operationId);
+    res.json({ok:true});
+  }));
   router.delete('/tasks/:id', asyncRoute(async(req,res)=>res.json(await service.removeTask(scope(req),String(req.params.id),()=>verifyKey(req)))));
   router.post('/tasks/:id/restore', asyncRoute(async(req,res)=>res.json(await service.restoreTask(scope(req),String(req.params.id),()=>verifyKey(req)))));
   router.post('/tasks/:id/retry',asyncRoute(async(req,res)=>{
@@ -224,7 +243,8 @@ export function installCoordinatorRoutes(
     if (res.headersSent) {
       return;
     }
-    if (e instanceof CoordinatorError || e instanceof ChatOperationError || e instanceof FeatureConfigError) {
+    if(e instanceof ImageTaskConfigurationError){res.status(428).json({error:e.message});return;}
+    if (e instanceof CoordinatorError || e instanceof ChatOperationError || e instanceof FeatureConfigError || e instanceof TaskResultInboxError) {
       res.status(e.status).json({ error: e.message });
       return;
     }

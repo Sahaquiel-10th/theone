@@ -6,7 +6,7 @@ import type { Conversation, Database, Message } from "./types.js";
  * private queued work additionally stores its immutable execution configuration. */
 export type ChatOperation = {
   executionCancelled?: boolean;
-  workRun?: import('./coordinatorTypes.js').WorkRun; dispatchedTaskId?: string;
+  workRun?: import('./coordinatorTypes.js').WorkRun; dispatchedTaskId?: string; dispatchedTaskIds?: string[];
   id: string; workspaceId: string; userId: string; operationId: string;
   payloadHash: string; requestId: string; status: "pending" | "completed" | "failed" | "interrupted";
   conversationId?: string; assistantMessageId?: string; knowledgeWarning?: string;

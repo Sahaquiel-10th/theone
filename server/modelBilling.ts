@@ -8,9 +8,10 @@ import {reserveCommerce,releaseCommerce,settleCommerce,restoreCommerceHolds} fro
 import type {PublicCommerceSnapshot} from './publicSharingTypes.js';
 import { activeMember, billingAccountUserId, companyWorkspace } from './enterprisePolicy.js';
 import { featurePricedModel, type FeaturePrice } from './featurePricing.js';
+import { reserveExecutionBatchBudget, type ExecutionBatchBudget } from './executionBatchBudget.js';
 
 export type ModelUsage = { inputTokens: number; outputTokens: number; totalTokens: number; cacheUsage?: CacheUsage; source: string };
-type BillingParams = { featurePrice?: FeaturePrice; workspaceId: string; userId: string; conversationId?: string; model: ModelConfig; input: unknown; activity: string; requestId: string; beforeReserve?: (db: Database, amountMicros: number) => void;commerce?:PublicCommerceSnapshot };
+type BillingParams = { batchBudget?: ExecutionBatchBudget; featurePrice?: FeaturePrice; workspaceId: string; userId: string; conversationId?: string; model: ModelConfig; input: unknown; activity: string; requestId: string; beforeReserve?: (db: Database, amountMicros: number) => void;commerce?:PublicCommerceSnapshot };
 type BillingScope = { usageId: string; workspaceId: string; userId: string };
 
 export class BillingReviewRequiredError extends Error {
@@ -135,6 +136,7 @@ export async function runBilledModel<T extends { usage?: ModelUsage; finishReaso
     const payers=[{workspaceId:params.workspaceId,userId:params.userId},...(params.commerce?[{workspaceId:params.commerce.payerWorkspaceId,userId:params.commerce.payerUserId}]:[])];
     if (db.modelUsageRecords.some(item=>item.status==='needs_review'&&payers.some(p=>(item.workspaceId===p.workspaceId&&item.userId===p.userId)||(item.commercial?.snapshot.payerWorkspaceId===p.workspaceId&&item.commercial?.snapshot.payerUserId===p.userId)))) throw new BillingReviewRequiredError();
     params.beforeReserve?.(db, amountMicros);
+    row.batchBudget = reserveExecutionBatchBudget(db, params, params.requestId, amountMicros, params.batchBudget);
     if(companyWorkspace(db,params.workspaceId)) {
       if(params.commerce)throw new Error('企业费用不能通过公开分享支付');
       row.payerUserId=billingAccountUserId(db,params.workspaceId,params.userId);

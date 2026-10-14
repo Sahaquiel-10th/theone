@@ -8,7 +8,7 @@ import { runBilledModel } from "./modelBilling.js";
 import { MODEL_MAX_OUTPUT_TOKENS, parseProviderUsage } from "./modelGateway.js";
 
 export type CodexGatewayConfiguration = { baseUrl: string; token: string; model: "one-executor" };
-type Grant = Pick<ExecutionTask, "id" | "workspaceId" | "userId" | "deviceId" | "installationId" | "conversationId"> & {
+type Grant = Pick<ExecutionTask, "id" | "workspaceId" | "userId" | "deviceId" | "installationId" | "conversationId" | "batchBudget"> & {
   round: number; expiresAt: number; model: ModelConfig;
 };
 type Proof = (scope: { workspaceId: string; userId: string; deviceId: string; installationId?: string; method: string; path: string }) => Promise<void>;
@@ -57,7 +57,7 @@ export class CodexGateway {
     const upstream = new URL(model.baseUrl);
     if (model.protocol !== "openai" || !model.apiKey || upstream.protocol !== "https:" || upstream.username || upstream.password || upstream.search || upstream.hash) throw unavailable();
     const grant: Grant = { id: task.id, workspaceId: task.workspaceId, userId: task.userId, conversationId: task.conversationId,
-      deviceId: task.deviceId, installationId: task.installationId, round: task.reportRound ?? 0, expiresAt: this.now() + 60 * 60_000, model: structuredClone(model) };
+      deviceId: task.deviceId, installationId: task.installationId, batchBudget: structuredClone(task.batchBudget), round: task.reportRound ?? 0, expiresAt: this.now() + 60 * 60_000, model: structuredClone(model) };
     if (!grant.installationId) throw unavailable();
     this.active(db, grant);
     for (const [key, saved] of this.grants) if (saved.expiresAt <= this.now() || (saved.id === grant.id && saved.workspaceId === grant.workspaceId && saved.userId === grant.userId)) this.grants.delete(key);
@@ -105,7 +105,7 @@ export class CodexGateway {
     const check = setInterval(() => void this.store.read().then(db => { try { this.active(db, grant); } catch { abort(); } }).catch(abort), 1000);
     try {
       await runBilledModel(this.store, { workspaceId: grant.workspaceId, userId: grant.userId, conversationId: grant.conversationId,
-        model: billingModel, input: { taskId: grant.id, round: grant.round, request: body }, activity: "codex_execution", requestId,
+        model: billingModel, batchBudget: grant.batchBudget, input: { taskId: grant.id, round: grant.round, request: body }, activity: "codex_execution", requestId,
         beforeReserve: db => {
           this.active(db, grant);
           const calls = db.modelUsageRecords.filter(row => row.workspaceId === grant.workspaceId && row.userId === grant.userId && row.requestId?.startsWith(prefix));

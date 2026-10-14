@@ -1,9 +1,10 @@
 import { aiTaskCatalog, findAiTaskDefinition, type AiTaskKind } from "./aiTaskCatalog.js";
 import type { ModelConfig, SystemSettings } from "./types.js";
 import { taskPrompts, taskToolDescriptions, taskToolNames } from "./aiTaskPresets.js";
+import { validateImageTaskFields, type ImageTaskFields } from "./imageTaskConfiguration.js";
 
 export const localTaskTools = ["list_files", "read_file", "search_text", "write_file", "replace_in_file", "run_command"] as const;
-export type AiTaskValues = { modelId: string; prompt: string; tools: string[]; maxSteps: number; promptMode?: "replace"; toolDescriptions?: Record<string, string>; enabled?: boolean };
+export type AiTaskValues = ImageTaskFields & { modelId: string; prompt: string; tools: string[]; maxSteps: number; promptMode?: "replace"; toolDescriptions?: Record<string, string>; enabled?: boolean };
 export type AiTaskVersion = AiTaskValues & { version: number; publishedAt: string; publishedBy: string };
 export type AiTaskRecord = { revision: number; draft: AiTaskValues; published?: AiTaskVersion; history: AiTaskVersion[] };
 export type AiTaskConfigs = Partial<Record<AiTaskKind, AiTaskRecord>>;
@@ -26,7 +27,9 @@ export function validateTaskValues(id: string, value: unknown, models: ModelConf
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("任务配置无效");
   const input = value as Record<string, unknown>;
   if (typeof input.modelId !== "string" || typeof input.prompt !== "string" || input.prompt.length > 12000) throw new Error("模型或提示词无效，提示词最多 12000 字符");
-  if (input.modelId && !models.some(model => model.id === input.modelId && model.enabled && model.kind === definition.modelKind)) throw new Error("请选择已启用且类型匹配的模型");
+  const imageFields = id === "image_generation" ? validateImageTaskFields(input) : {};
+  if (id !== "image_generation" && ["imageRoute", "imageServiceModel", "imagePowerPerCall", "costImagePowerPerCall"].some((field) => input[field] !== undefined)) throw new Error("图片接口与按张额度只能在图片生成能力中配置");
+  if (input.modelId && !models.some(model => model.id === input.modelId && model.enabled && (id === "image_generation" ? model.protocol === "openai" && (imageFields.imageRoute === "responses" ? model.kind === "chat" : ["chat", "image"].includes(model.kind)) : model.kind === definition.modelKind))) throw new Error("请选择已启用且类型匹配的模型");
   const allowed = taskToolNames(id);
   if (!Array.isArray(input.tools) || input.tools.some(tool => typeof tool !== "string" || !allowed.includes(tool))) throw new Error("存在不允许的工具");
   if (!Number.isInteger(input.maxSteps) || Number(input.maxSteps) < 1 || Number(input.maxSteps) > (id === "local_agent" ? 24 : ["orchestrator", "task_worker", "coordinator"].includes(id) ? 4 : 1)) throw new Error("执行步数无效");
@@ -40,7 +43,7 @@ export function validateTaskValues(id: string, value: unknown, models: ModelConf
   }
   if (input.promptMode !== undefined && input.promptMode !== "replace") throw new Error("提示词模式无效");
   if (input.enabled !== undefined && typeof input.enabled !== "boolean") throw new Error("启用状态无效");
-  return { modelId: input.modelId, prompt: input.prompt.trim(), tools: [...new Set(input.tools as string[])], maxSteps: Number(input.maxSteps), ...(["orchestrator", "coordinator"].includes(id) ? { enabled: input.enabled === true } : {}), ...(input.promptMode === "replace" ? { promptMode: "replace" as const } : {}), ...(input.toolDescriptions ? { toolDescriptions: descriptions } : {}) };
+  return { ...imageFields, modelId: input.modelId, prompt: input.prompt.trim(), tools: [...new Set(input.tools as string[])], maxSteps: Number(input.maxSteps), ...(["orchestrator", "coordinator"].includes(id) ? { enabled: input.enabled === true } : {}), ...(input.promptMode === "replace" ? { promptMode: "replace" as const } : {}), ...(input.toolDescriptions ? { toolDescriptions: descriptions } : {}) };
 }
 
 /** Global administrator-owned configuration, never a store for user context. */

@@ -86,6 +86,7 @@ export type ExecutionTraceStep = {
 };
 
 export type ModelUsageRecord = {
+  batchBudget?: import('./executionBatchBudget.js').ExecutionBatchBudget;
   featurePriceSnapshot?: import('./featurePricing.js').FeaturePrice;
   /** Company payer snapshot; userId remains the employee who performed the work. */
   payerUserId?: string;
@@ -170,12 +171,15 @@ export type ConnectorAuthorizationSession = {
 
 export type ExecutionTaskStatus = "queued" | "selecting_target" | "running" | "completed" | "failed" | "cancelled";
 export type ExecutionTask = {
+  batchBudget?: import('./executionBatchBudget.js').ExecutionBatchBudget;
   id: string; workspaceId: string; userId: string; conversationId: string; sourceMessageId: string;
   provider: "codex" | "local_agent"; status: ExecutionTaskStatus; instruction: string; deviceId: string;
   installationId?: string; targetName?: string; providerThreadId?: string; finalResponse?: string; lastError?: string;
   dispatchOperationId?: string;
   preparationOperationId?: string;
   reportedToCoordinatorAt?: string;
+  reportMessageId?: string;
+  reportedRound?: number;
   noticeReadRound?: number;
   reportRound?: number;
   createdAt: string; updatedAt: string; startedAt?: string; completedAt?: string;

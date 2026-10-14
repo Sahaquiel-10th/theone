@@ -2,7 +2,7 @@ import { CompanyPanel } from "./CompanyPanel";
 import {StaticPreviewPanel} from './StaticPreviewPanel';
 import type { identityAccess } from "../server/enterprisePolicy";
 import React, { FormEvent, createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AiTaskPanel } from "./AiTaskPanel";
+import { UnifiedCapabilityPanel } from "./UnifiedCapabilityPanel";
 import { OfficialFeaturePanel } from "./OfficialFeaturePanel";
 import { FeatureBudgetSettings, approveFeaturePrices } from './FeatureBudgetSettings';
 import { FeatureMarketplace } from "./FeatureMarketplace";
@@ -16,6 +16,8 @@ import {useFollowLatest} from './useFollowLatest';
 import {runtimeNoticeSeen, rememberRuntimeNotice} from './runtimeNoticeMemory';
 import {executionNeedsReview} from './executionReview';
 import {TaskTransferRail, type Transfer} from './TaskTransferRail';
+import {taskCategory} from './taskAttention';
+import {internalTaskId} from './taskLink';
 import {FeatureShelf,type FeatureChoice} from './preview/FeatureShelf';
 import {ResultSignal} from './preview/ResultSignal';
 import {useWorkspacePreview} from './preview/useWorkspacePreview';
@@ -678,6 +680,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [preparingExecution, setPreparingExecution] = useState(false);
   const executionPreparationRef = useRef<{cancelled:boolean;operationId?:string;coordinator?:boolean}|null>(null);
   const stoppedPreparationIdsRef = useRef(new Set<string>());
+  const stoppedExecutionIdsRef = useRef(new Set<string>());
   const [preparingConversationId, setPreparingConversationId] = useState("");
   const [executionSourceMessageId, setExecutionSourceMessageId] = useState("");
   const [takeoverTaskId, setTakeoverTaskId] = useState("");
@@ -692,6 +695,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [visibleReceiptId, setVisibleReceiptId] = useState("");
   const observedTasksRef = useRef<ExecutionTask[]>([]);
   const motionTasksRef = useRef<Set<string> | null>(null);
+  const initialTaskLinkRef = useRef(false);
   const executionOriginRef = useRef<TransitionPoint>({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
   const executionPointerRef = useRef<{element: HTMLElement; point: TransitionPoint} | null>(null);
   const draftsRef = useRef<Record<string, { content: string; attachments: AttachmentSummary[] }>>({});
@@ -737,23 +741,35 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const greeting=useOneGreeting(`${view}:${activeId}`);
   const lampTasks = preview.enabled ? preview.state.tasks.filter(task=>task.unread && !dismissedResults.includes(`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`)) : [];
   const lampKey=lampTasks.map(task=>`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`).join('|');
-  const transfers: Transfer[] = [...(coordinator.snapshot?.tasks ?? []).filter(t => t.running || t.queued).map(t => ({id:`work:${t.id}`,taskId:t.id,title:t.title,state:t.running?'running':t.paused?'paused':'queued'})),
-    ...(coordinator.snapshot?.notices ?? []).map(n => ({id:n.id,taskId:n.taskId,title:n.title||conversations.find(c=>c.id===n.taskId)?.title||'这件事',state:n.state})),
-    ...executionTasks.filter(t=>isExecutionRunning(t)).map(t=>({id:t.id,taskId:t.conversationId,title:conversations.find(c=>c.id===t.conversationId)?.title||'本机任务',state:t.status}))];
+  const coordinatorMetas = coordinator.snapshot?.transfers || coordinator.snapshot?.tasks || [];
+  const transfers: Transfer[] = [...coordinatorMetas.filter(t => t.running || t.queued || t.localPrepared || t.state==='prepared_local').map(t => ({id:`work:${t.id}`,taskId:t.id,title:t.title,state:t.state||(t.running?'running':t.paused?'paused':t.localPrepared?'prepared_local':'queued'),reportable:false})),
+    ...(coordinator.snapshot?.notices ?? []).map(n => ({id:n.id,taskId:n.taskId,title:n.title||conversations.find(c=>c.id===n.taskId)?.title||'这件事',state:n.state,reported:n.reported,outcome:n.outcome,reportable:true})),
+    ...executionTasks.filter(t=>isExecutionRunning(t)).map(t=>({id:t.id,taskId:t.conversationId,title:conversations.find(c=>c.id===t.conversationId)?.title||'本机任务',state:t.status,local:true,reportable:false}))];
+  const unviewedResultCount=new Set((coordinator.snapshot?.notices||[]).filter(n=>!n.read).map(n=>n.taskId)).size;
   const uniqueTransfers = [...new Map(transfers.map(t=>[t.id,t])).values()];
   useEffect(() => {
     const previous = motionTasksRef.current; motionTasksRef.current = new Set(executionTasks.map(t=>t.id));
-    if (!previous) return;
-    const fresh = executionTasks.find(t=>!previous.has(t.id) && isExecutionRunning(t));
+    const eligible=executionTasks.filter(t=>isExecutionRunning(t)&&!stoppedExecutionIdsRef.current.has(t.id)&&!stoppedPreparationIdsRef.current.has(t.dispatchOperationId||'')&&!stoppedPreparationIdsRef.current.has(t.preparationOperationId||''));
+    const current=eligible.find(t=>t.id===takeoverTaskId);
+    const fresh = current || eligible.find(t=>!previous?.has(t.id)) || eligible[0];
     if (fresh) {
-      if(stoppedPreparationIdsRef.current.has(fresh.dispatchOperationId||'')||stoppedPreparationIdsRef.current.has(fresh.preparationOperationId||''))return;
       setTakeoverTaskId(fresh.id);
-      if (!executionMode && !preparingExecution) transitionExecutionMode(true, executionOriginRef.current);
+      if (!executionMode && !preparingExecution) {
+        const note=document.querySelector<HTMLElement>(`[data-task-transfer-id="${CSS.escape(fresh.conversationId)}"]`);
+        transitionExecutionMode(true,note?pointFromElement(note):executionOriginRef.current);
+      }
     }
   }, [executionTasks]);
+  useEffect(()=>{
+    if(initialTaskLinkRef.current||!models.length)return;
+    initialTaskLinkRef.current=true;
+    const id=internalTaskId(window.location.href,window.location.href);
+    if(id)void openLinkedTask(id);
+  },[models.length,coordinator.enabled]);
   function closeResultLamp() { setResultLampOpen(false); if(coordinator.enabled)void coordinator.acknowledge().catch(e=>setError(e.message)); setDismissedResults(previous=>[...previous,...lampTasks.map(task=>`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`)]); }
   async function selectThing(id:string) {
     setThingId(id);
+    if(coordinator.enabled){try{await coordinator.load(id);await coordinator.acknowledge(id);}catch(e){setError(e instanceof Error?e.message:'暂时无法打开结果');}return;}
     await loadThingMessages(id);
   }
   async function removeCoordinatorTask(id:string) {
@@ -1185,6 +1201,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     }
   }
 
+  async function openLinkedTask(id:string) {
+    try {
+      const current=conversations.find(c=>c.id===id);
+      const conversation=current||((coordinator.enabled?await coordinator.load(id):await api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(id)}`)).conversation);
+      if(!current)setConversations(old=>[{...conversation,messagesLoaded:true},...old.filter(c=>c.id!==id)]);
+      await openConversation(conversation);
+    } catch(e) {setError(e instanceof Error?e.message:'无法打开此任务，请从任务列表查看');}
+  }
+
   async function openExecution(task: ExecutionTask) {
     setExpandedExecutionId(task.id);
     setRevealExecutionId(task.id);
@@ -1606,6 +1631,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         body: JSON.stringify({ conversationId, sourceMessageId: message.id, operationId: preparation.operationId })
       });
       if(preparation.cancelled){return;}
+      stoppedExecutionIdsRef.current.delete(result.task.id);
       setTakeoverTaskId(result.task.id);
       setSelectedExecutionId(result.task.id);
       rememberExecution(result.task, result.events);
@@ -1641,6 +1667,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       preparation.operationId=operationId;if(preparation.cancelled)return;
       const result = await api<{task:ExecutionTask;events:ExecutionEvent[]}>('/api/executions/from-input', { method:'POST', body:JSON.stringify({conversationId,content:rawText.trim(),operationId}) });
       if(preparation.cancelled)return;
+      stoppedExecutionIdsRef.current.delete(result.task.id);
       rememberExecution(result.task,result.events); setTakeoverTaskId(result.task.id); setSelectedExecutionId(result.task.id);
       if (view === 'things') { setThingDrafts(old => ({...old,[conversationId]:old[conversationId] === rawText ? '' : old[conversationId]})); }
       else if (currentDraftRef.current.content === rawText) setContent('');
@@ -1665,6 +1692,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         body: JSON.stringify({ content: text,operationId:preparation.operationId })
       });
       if(preparation.cancelled)return;
+      stoppedExecutionIdsRef.current.delete(result.task.id);
       setTakeoverTaskId(result.task.id);
       rememberExecution(result.task);
       setEventsByTask(items => ({ ...items, [result.task.id]: [] }));
@@ -1692,12 +1720,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       return;
     }
     if (!task || !isExecutionRunning(task)) return;
-    transitionExecutionMode(false, pointFromElement(source));
+    stoppedExecutionIdsRef.current.add(task.id);
+    const isCurrentTakeover=!takeoverTaskId||task.id===takeoverTaskId||!runningExecutions.some(t=>t.id!==task.id);
+    if(isCurrentTakeover)transitionExecutionMode(false,executionOriginRef.current);
     try {
       await api(`/api/executions/${encodeURIComponent(task.id)}/cancel`, { method: "POST" });
-      transitionExecutionMode(false, pointFromElement(source));
+      if(isCurrentTakeover)transitionExecutionMode(false,executionOriginRef.current);
       void refreshExecutionTasks();
-    } catch (err) { setError(err instanceof Error ? err.message : "无法停止执行"); }
+    } catch (err) { stoppedExecutionIdsRef.current.delete(task.id);setError(err instanceof Error ? err.message : "无法停止执行"); }
   }
 
   const visibleReceipt = taskNotices.find(item => item.id === visibleReceiptId);
@@ -1758,21 +1788,21 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   return (
-    <main onPointerDownCapture={event=>{if(event.target instanceof HTMLElement)executionPointerRef.current={element:event.target,point:{x:event.clientX,y:event.clientY}};else if(event.target instanceof SVGElement)executionPointerRef.current={element:event.target.closest('button')!,point:{x:event.clientX,y:event.clientY}};}} onKeyDownCapture={()=>{executionPointerRef.current=null;}} className={`app-shell one-shell one-studio attention-workspace ${preview.enabled&&(view==='chat'||view==='features'||view==='account')?`coordinator-preview ${view==='features'?'coordinator-tools-open':view==='account'?'coordinator-settings-open coordinator-task-open':active?'coordinator-task-open':''}`:''} ${view==='things'?'studio-things':''} ${view==='features'?'studio-discover':''} ${studioIdle ? "studio-idle" : "studio-open"} ${focusedTask && view === "chat" && !studioIdle ? "studio-focused" : ""} ${activeExecutionMode ? "execution-shell" : ""}`}>
+    <main onClickCapture={event=>{if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;const anchor=event.target instanceof Element?event.target.closest('a[href]'):null;if(!anchor||anchor.hasAttribute('download')||anchor.getAttribute('target')==='_blank')return;const id=internalTaskId(anchor.getAttribute('href')||'',window.location.href);if(id){event.preventDefault();void openLinkedTask(id);}}} onPointerDownCapture={event=>{if(event.target instanceof HTMLElement)executionPointerRef.current={element:event.target,point:{x:event.clientX,y:event.clientY}};else if(event.target instanceof SVGElement)executionPointerRef.current={element:event.target.closest('button')!,point:{x:event.clientX,y:event.clientY}};}} onKeyDownCapture={()=>{executionPointerRef.current=null;}} className={`app-shell one-shell one-studio attention-workspace ${preview.enabled&&(view==='chat'||view==='features'||view==='account')?`coordinator-preview ${view==='features'?'coordinator-tools-open':view==='account'?'coordinator-settings-open coordinator-task-open':active?'coordinator-task-open':''}`:''} ${view==='things'?'studio-things':''} ${view==='features'?'studio-discover':''} ${studioIdle ? "studio-idle" : "studio-open"} ${focusedTask && view === "chat" && !studioIdle ? "studio-focused" : ""} ${activeExecutionMode ? "execution-shell" : ""}`}>
       <header className="one-chrome">
         <button className="one-brand-button" type="button" onClick={startNewChat} title="回到 ONE">
           <OneWordmark inverse />
         </button>
         <nav className="studio-navigation" aria-label="工作区导航">
           <button type="button" aria-current={view === "chat" ? "page" : undefined} onClick={() => openSurface("chat")}>工作台</button>
-          <button type="button" aria-current={view === "things" ? "page" : undefined} onClick={() => openSurface("things")}>任务</button>
+          <button type="button" aria-current={view === "things" ? "page" : undefined} onClick={() => openSurface("things")}>任务{unviewedResultCount?<span className="task-review-dot" aria-label={`${unviewedResultCount} 个结果待确认`}/>:null}</button>
           <FeatureNav quiet={!canPeekAtFeatures(view!=='chat'||studioIdle,isWaiting,content)} active={view==='features'} onClick={()=>openSurface('features')}/>
           <button type="button" aria-current={view === "account" ? "page" : undefined} onClick={() => openSurface("account")}>设置</button>
           {user.role === "admin" ? <button type="button" aria-current={view === "admin" ? "page" : undefined} onClick={() => openSurface("admin")}>管理</button> : null}
           {user.access?.role === "company_admin" ? <button type="button" aria-current={view === "company" ? "page" : undefined} onClick={() => openSurface("company")}>公司管理</button> : null}
         </nav>
         <div className="one-chrome-actions">
-          {preparingExecution||awaitingExecutionOperationId||executionBusy?<button type="button" className="one-chrome-button" onClick={event=>void cancelExecution(event.currentTarget)}><Square size={12}/>停止执行</button>:null}
+          {preparingExecution||awaitingExecutionOperationId||executionBusy?<button type="button" className="one-chrome-button" onClick={event=>void cancelExecution(event.currentTarget,currentRunningExecution||runningExecutions[0]||executionTask)}><Square size={12}/>停止执行</button>:null}
           <button className="one-chrome-button knowledge" type="button" title="知识来源" onClick={() => openSurface("knowledge")}>
             <span className={`connection-dot ${[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "connected" : "disconnected"}`} />
             <span>{[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "知识已连接" : "连接知识"}</span>
@@ -1841,7 +1871,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       <section className="studio-surface" ref={taskScroll.scroll} onScroll={taskScroll.onScroll} aria-label={view === "chat" ? "当前任务" : "工作区内容"} hidden={studioIdle||(preview.enabled&&view==='chat'&&!active)}>
       {view === "things" ? <ThingsPanel
         one={<div className="studio-presence things-one"><OneHeroEye mood="idle" label="回到 ONE 工作台" onActivate={()=>openSurface('chat')}/></div>}
-        items={conversations.filter(c=>!coordinator.snapshot?.conversation||c.id!==coordinator.snapshot.conversation.id).map(c=>{const task=coordinator.snapshot?.tasks.find(t=>t.id===c.id);const local=executionTasks.find(t=>t.conversationId===c.id);const notice=coordinator.snapshot?.notices.find(n=>n.taskId===c.id);const paused=task?.paused||c.workPaused;return {...c,outcome:paused?'paused':local?.status || notice?.state,taskState:(paused?'review':task?.running||task?.queued||local&&isExecutionRunning(local)?'active':notice?.state&&['failed','interrupted','cancelled'].includes(notice.state)?'review':task||local||c.executorProfileId?'ended':'history') as 'active'|'review'|'ended'|'history'};})} selectedId={thingId} drafts={thingDrafts}
+        items={conversations.filter(c=>!coordinator.snapshot?.conversation||c.id!==coordinator.snapshot.conversation.id).map(c=>{const task=coordinatorMetas.find(t=>t.id===c.id)||coordinator.snapshot?.tasks.find(t=>t.id===c.id);const local=executionTasks.find(t=>t.conversationId===c.id);const notices=coordinator.snapshot?.notices.filter(n=>n.taskId===c.id)||[];const notice=notices.at(-1);const paused=task?.paused||c.workPaused;const unread=notices.some(n=>!n.read);const outcome=paused?'paused':local?.status||notice?.outcome||notice?.state;return {...c,outcome,unread,taskState:taskCategory({paused,active:Boolean(task?.running||task?.queued||task?.localPrepared||local&&isExecutionRunning(local)),unread,outcome,isTask:Boolean(task||local||c.executorProfileId)})};})} selectedId={thingId} drafts={thingDrafts}
         onDraftChange={(id,text)=>setThingDrafts(previous=>({...previous,[id]:text}))}
         onExecuteDraft={outputDestination === 'notion' ? undefined : (id,text,source)=>executeDraft(text,source,id)}
         sendLabel={outputDestination === 'notion' ? '写到 Notion' : outputDestination === 'local' ? '本机执行' : '发送'}
@@ -2703,7 +2733,7 @@ function AdminPanel({ actorId, refreshModels, onOpenSidebar }: { actorId: string
           <button className={tab === "companies" ? "active" : ""} onClick={() => setTab("companies")}><Users size={16}/>企业</button>
           <button className={tab === "keys" ? "active" : ""} onClick={() => setTab("keys")}><Usb size={16} />ONE Key</button>
           <button className={tab === "models" ? "active" : ""} onClick={() => setTab("models")}><Bot size={16} />模型</button>
-          <button className={tab === "ai-tasks" ? "active" : ""} onClick={() => setTab("ai-tasks")}><Bot size={16} />AI 任务</button>
+          <button className={tab === "ai-tasks" ? "active" : ""} onClick={() => setTab("ai-tasks")}><Bot size={16} />能力配置</button>
           <button className={tab === "official-features" ? "active" : ""} onClick={() => setTab("official-features")}><Bot size={16} />官方功能</button>
           <button className={tab === "billing" ? "active" : ""} onClick={() => setTab("billing")}><Wallet size={16} />电力与收费</button>
           <button className={tab === "usage" ? "active" : ""} onClick={() => setTab("usage")}><ReceiptText size={16} />用户用量</button>
@@ -2717,7 +2747,7 @@ function AdminPanel({ actorId, refreshModels, onOpenSidebar }: { actorId: string
           {tab === "users" ? <UsersTab users={users} reload={load} /> : null}
           {tab === "keys" ? <OneKeysTab users={users} devices={devices} reload={load} /> : null}
           {tab === "models" ? <ModelsTab models={models} reload={async () => { await load(); await refreshModels(); }} /> : null}
-          {tab === "ai-tasks" ? <AiTaskPanel api={api} models={models} /> : null}
+          {tab === "ai-tasks" ? <UnifiedCapabilityPanel api={api} models={models} /> : null}
           {tab === "official-features" ? <OfficialFeaturePanel api={api} /> : null}
           {tab === "billing" ? <div className="admin-pricing-center"><nav className="settings-tabs"><button aria-pressed={billingSection === "pricing"} onClick={() => setBillingSection("pricing")}>模型与定价</button><button aria-pressed={billingSection === "accounts"} onClick={() => setBillingSection("accounts")}>充值、赠送与汇率</button><button aria-pressed={billingSection === "membership"} onClick={() => setBillingSection("membership")}>会员与启动器</button></nav>{billingSection === "pricing" ? <PricingCatalog api={api} models={models} reload={load} /> : billingSection === "membership" ? <MembershipAdminPanel api={api} users={users} /> : <AdminBilling actorId={actorId} users={users} operations={operations} reload={load} />}</div> : null}
           {tab === "usage" ? <AdminUsage summaries={operations?.userUsage || []} reload={load} /> : null}

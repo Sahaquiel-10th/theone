@@ -20,6 +20,8 @@ type Meta = {
   queued: number;
   running: boolean;
   paused?: boolean;
+  state?: string;
+  localPrepared?: boolean;
 };
 type Notice = {
   id: string;
@@ -27,6 +29,9 @@ type Notice = {
   title?: string;
   state: string;
   resultMessageId?: string;
+  reported?: boolean;
+  read?: boolean;
+  outcome?: string;
 };
 type Snapshot = {
   enabled: boolean;
@@ -36,6 +41,7 @@ type Snapshot = {
   notices: Notice[];
   pendingOperationId?: string;
   links?: { messageId: string; taskId: string }[];
+  transfers?: Meta[];
 };
 type Job = {
   notionReceipt?: { state: 'pending' | 'verified' | 'uncertain'; url?: string; error?: string };
@@ -73,7 +79,7 @@ export function useCoordinator(
     [bound, setBound] = useState<string | null>(null),
     [localPending, setPending] = useState<string | null>(null),
     [error, setError] = useState(""),
-    [settlement, setSettlement] = useState<{operationId:string;status:string;taskId?:string} | null>(null),
+    [settlement, setSettlement] = useState<{operationId:string;status:string;taskId?:string;taskIds?:string[]} | null>(null),
     [page, setPage] = useState(1);
   const live = useRef(true),
     refreshing = useRef(false),
@@ -178,7 +184,7 @@ export function useCoordinator(
         const operation = next.pendingOperationId || persisted;
         if (operation) {
           setPending(operation);
-          let status: {status:string;error?:string;taskId?:string;progress?:{phase:string;startedAt:string}};
+          let status: {status:string;error?:string;taskId?:string;taskIds?:string[];progress?:{phase:string;startedAt:string}};
           try { status = await api(`/api/coordinator/messages/${encodeURIComponent(operation)}`); }
           catch(e) {
             if(e instanceof ApiError && e.status===404) {
@@ -299,7 +305,7 @@ export function useCoordinator(
   }
   async function acknowledge(taskId?: string) {
     const ids = (snapshotRef.current?.notices ?? [])
-      .filter((n) => !taskId || n.taskId === taskId)
+      .filter((n) => !n.read && (!taskId || n.taskId === taskId))
       .map((n) => n.id);
     if (!ids.length) return;
     await api("/api/coordinator/notices/read", {
@@ -308,7 +314,7 @@ export function useCoordinator(
     });
     setSnapshot((old) =>
       old
-        ? { ...old, notices: old.notices.filter((n) => !ids.includes(n.id)) }
+        ? { ...old, notices: old.notices.map((n) => ids.includes(n.id) ? {...n,read:true} : n).filter(n=>!n.read||!n.reported) }
         : old,
     );
   }
@@ -343,7 +349,7 @@ export function useCoordinator(
           .catch((e) => setError(e.message));
     } else if (action.type === "bind") setBound(action.taskId);
   }
-  const metas = [...(snapshot?.tasks ?? [])];
+  const metas = [...new Map([...(snapshot?.tasks ?? []),...(snapshot?.transfers ?? [])].map(t=>[t.id,t])).values()];
   for(const notice of snapshot?.notices ?? []) {
     const c=details[notice.taskId]?.conversation;
     if(c&&!metas.some(t=>t.id===c.id)) metas.push({id:c.id,title:c.title,updatedAt:c.updatedAt,queued:0,running:false});
@@ -377,7 +383,7 @@ export function useCoordinator(
             ? "completed"
             : "idle",
       result: "",
-      unread: !!notice,
+      unread: (snapshot?.notices ?? []).some(n=>n.taskId===meta.id&&!n.read),
     };
   });
   const state: PreviewState = {
@@ -415,7 +421,7 @@ export function useCoordinator(
     load,
     refresh,
     acknowledge,
-    report: async (ids: string[]) => { await api("/api/coordinator/reports", { method: "POST", body: JSON.stringify({ ids }) }); await refresh(); },
+    report: async (ids: string[]) => { const result=await api<{deferred?:boolean}>("/api/coordinator/reports", { method: "POST", body: JSON.stringify({ ids }) }); await refresh(); return !result.deferred; },
     resumeTask,
     retryTask,
     retryingTasks,
