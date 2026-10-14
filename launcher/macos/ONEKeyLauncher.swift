@@ -308,6 +308,99 @@ func receiveText(_ task: URLSessionWebSocketTask) async throws -> String {
     }
 }
 
+private enum ConnectionDiagnostic: String { case handshakeFailed = "handshake_failed", livenessFailed = "liveness_failed", loginFailed = "login_failed", receiverEnded = "receiver_ended" }
+private func connectionDiagnostic(_ category: ConnectionDiagnostic) { NSLog("ONE connection transport: %@", category.rawValue) }
+
+// One object belongs to exactly one authenticated socket and generation. It
+// cannot grant Key authority; ping/pong only detects stale network transport.
+final class LauncherLiveSocket: @unchecked Sendable {
+    let task: URLSessionWebSocketTask
+    let generation: UUID
+    private let token = UUID()
+    private let liveness: LauncherConnectionLiveness
+    private let pingLock = NSLock()
+    private var pendingPings: [UUID: Task<Void, Error>] = [:]
+    private var readerAnnounced = false
+    init(task: URLSessionWebSocketTask, generation: UUID) {
+        self.task = task; self.generation = generation
+        liveness = LauncherConnectionLiveness(sessionID: token, now: ProcessInfo.processInfo.systemUptime)
+    }
+    var active: Bool { liveness.isActive(sessionID: token) }
+    var fresh: Bool { liveness.isFresh(sessionID: token, now: ProcessInfo.processInfo.systemUptime) }
+    private func withPingLock<T>(_ body: () -> T) -> T { pingLock.lock(); defer { pingLock.unlock() }; return body() }
+    func invalidate() {
+        guard liveness.invalidate(sessionID: token) else { return }
+        withPingLock { pendingPings.values.forEach { $0.cancel() }; pendingPings = [:] }
+        task.cancel(with: .goingAway, reason: nil)
+    }
+    func receive(onStart: @escaping @Sendable () -> Void = {}) async throws -> String {
+        try Task.checkCancellation(); guard active else { throw LauncherConnectionError.staleSession }
+        do {
+            let text: String = try await launcherSessionOperation(operation: { [self] in
+                try Task.checkCancellation(); guard active else { throw LauncherConnectionError.staleSession }
+                return try await withCheckedThrowingContinuation { continuation in
+                    task.receive { result in
+                        switch result {
+                        case .failure(let error): continuation.resume(throwing: error)
+                        case .success(.string(let text)): continuation.resume(returning: text)
+                        case .success(.data(let data)): continuation.resume(returning: String(decoding: data, as: UTF8.self))
+                        @unknown default: continuation.resume(throwing: LauncherConnectionError.staleSession)
+                        }
+                    }
+                    let first = withPingLock { () -> Bool in if readerAnnounced { return false }; readerAnnounced = true; return true }
+                    if first { onStart() }
+                }
+            }, monitor: { [liveness, token] in try await liveness.waitForInvalidation(sessionID: token) })
+            try Task.checkCancellation(); guard active else { throw LauncherConnectionError.staleSession }
+            _ = liveness.recordEvidence(sessionID: token, now: ProcessInfo.processInfo.systemUptime)
+            return text
+        } catch { invalidate(); throw error }
+    }
+    func send(_ message: URLSessionWebSocketTask.Message) async throws {
+        try Task.checkCancellation(); guard active else { throw LauncherConnectionError.staleSession }
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        do {
+            let _: Void = try await boundedLauncherOperation(timeout: .seconds(3)) { [task] in try await task.send(message) }
+            try Task.checkCancellation(); guard active else { throw LauncherConnectionError.staleSession }
+            guard ProcessInfo.processInfo.systemUptime <= deadline else { throw LauncherConnectionError.timeout }
+        } catch { invalidate(); throw error }
+    }
+    func ping() async throws {
+        try Task.checkCancellation(); guard active else { throw LauncherConnectionError.staleSession }
+        // Every caller gets a new probe, including reopen. Never reuse an old
+        // resolved shared Task and mistake its cached result for a new pong.
+        let pingID = UUID(), socket = task
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        let work = Task<Void, Error> {
+                try await boundedLauncherOperation(timeout: .seconds(5)) {
+                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                        socket.sendPing { error in
+                            if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+                        }
+                    }
+                }
+                guard ProcessInfo.processInfo.systemUptime <= deadline else { throw LauncherConnectionError.timeout }
+        }
+        withPingLock { pendingPings[pingID] = work }
+        defer { _ = withPingLock { pendingPings.removeValue(forKey: pingID) } }
+        do {
+            try await work.value
+            try Task.checkCancellation(); guard active else { throw LauncherConnectionError.staleSession }
+            guard ProcessInfo.processInfo.systemUptime <= deadline else { throw LauncherConnectionError.timeout }
+            _ = liveness.recordEvidence(sessionID: token, now: ProcessInfo.processInfo.systemUptime)
+        } catch { invalidate(); throw error }
+    }
+    func monitor() async throws {
+        while active {
+            try await ping()
+            // Idle sockets need no text messages. Foundation handles pong
+            // outside receive(); a healthy idle connection is not a timeout.
+            try await Task.sleep(for: .seconds(10))
+        }
+        throw LauncherConnectionError.staleSession
+    }
+}
+
 func socketUrl(base: String, deviceId: String) throws -> URL {
     guard var components = URLComponents(string: base) else { throw LauncherError.message("ONE 服务地址无效") }
     components.scheme = components.scheme == "https" ? "wss" : "ws"
@@ -332,21 +425,18 @@ func connectLauncher(base: String, credentialUrl: URL, deviceId: String) async t
     let task = URLSession.shared.webSocketTask(with: try socketUrl(base: base, deviceId: deviceId))
     var connected = false
     defer { if !connected { task.cancel(with: .goingAway, reason: nil) } }
-    // A wake/mount event can cancel this generation during the handshake.
-    let cancellationWatch = Task {
-        while !Task.isCancelled {
-            do { try await Task.sleep(for: .seconds(8)) } catch { return }
-            task.cancel(with: .goingAway, reason: nil)
-            return
-        }
-    }
-    defer { cancellationWatch.cancel() }
     task.resume()
+    let deadline = ProcessInfo.processInfo.systemUptime + 8
+    do {
+    let result = try await boundedLauncherOperation(timeout: .seconds(8)) {
+    try Task.checkCancellation()
     let auth = try JSONDecoder().decode(SocketMessage.self, from: Data(try await receiveText(task).utf8))
+    try Task.checkCancellation()
     guard auth.type == "auth_challenge", let challengeId = auth.challengeId, let nonce = auth.nonce else {
         throw LauncherError.message("ONE 在线验证握手失败")
     }
     let signature = try signNonce(nonce, credentialUrl: credentialUrl, deviceId: deviceId)
+    try Task.checkCancellation()
     #if arch(arm64)
     let architecture = "arm64"
     #else
@@ -354,11 +444,16 @@ func connectLauncher(base: String, credentialUrl: URL, deviceId: String) async t
     #endif
     let response = SocketAuthResponse(type: "auth_response", challengeId: challengeId, signature: signature, architecture: architecture, launcherVersion: launcherVersion)
     try await task.send(.string(String(decoding: try JSONEncoder().encode(response), as: UTF8.self)))
+    try Task.checkCancellation()
     let ready = try JSONDecoder().decode(SocketMessage.self, from: Data(try await receiveText(task).utf8))
     guard ready.type == "ready", ready.deviceId == deviceId, let owner = ready.owner else { throw LauncherError.message("ONE Key 在线验证失败，请先更新网站服务。") }
     try Task.checkCancellation()
-    connected = true
     return AuthenticatedLauncherConnection(task: task, owner: owner)
+    }
+    try Task.checkCancellation()
+    guard ProcessInfo.processInfo.systemUptime <= deadline else { throw LauncherConnectionError.timeout }
+    connected = true; return result
+    } catch { connectionDiagnostic(.handshakeFailed); throw error }
 }
 
 func compareVersions(_ left: String, _ right: String) throws -> Int {
@@ -703,8 +798,11 @@ final class CodexExecutionRunner: @unchecked Sendable {
     func matches(deviceId: String, owner: ExecutionOwner) -> Bool { self.deviceId == deviceId && self.owner == owner }
 
     // Called only after a fresh authenticated ready for this exact owner/Key.
-    func attach(_ socket: URLSessionWebSocketTask, credentialUrl: URL) {
-        synchronized { self.socket = socket; self.credentialUrl = credentialUrl }
+    func attach(_ socket: URLSessionWebSocketTask, credentialUrl: URL, valid: () -> Bool) -> Bool {
+        synchronized {
+            guard valid() else { return false }
+            self.socket = socket; self.credentialUrl = credentialUrl; return true
+        }
     }
 
     func detach(_ socket: URLSessionWebSocketTask) {
@@ -1099,10 +1197,19 @@ final class MacLocalExecutor {
     }
 }
 
-func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: String, execution: CodexExecutionRunner) async throws -> URL? {
+func serveProofs(_ transport: LauncherLiveSocket, credentialUrl: URL, deviceId: String, execution: CodexExecutionRunner,
+    onReaderStarted: @escaping @Sendable () -> Void) async throws -> URL? {
+    try Task.checkCancellation()
+    guard transport.active else { throw LauncherConnectionError.staleSession }
+    let task = transport.task
     let previews = LocalPreviewManager()
     defer { Task { await previews.stopAll() } }
-    execution.attach(task, credentialUrl: credentialUrl)
+    guard execution.attach(task, credentialUrl: credentialUrl, valid: { transport.active }) else { throw LauncherConnectionError.staleSession }
+    let watchdog = Task {
+        do { try await transport.monitor() }
+        catch { if !Task.isCancelled { connectionDiagnostic(.livenessFailed) }; transport.invalidate() }
+    }
+    defer { watchdog.cancel(); transport.invalidate() }
     let receiptReplay = Task {
         while !Task.isCancelled {
             await execution.replay()
@@ -1116,54 +1223,64 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
     while true {
         let text: String
         if let installJob {
-            switch try await runtimeMessageOrInstallation(installation: installJob, receive: { try await receiveText(task) }) {
+            switch try await runtimeMessageOrInstallation(installation: installJob, receive: { try await transport.receive(onStart: onReaderStarted) }) {
             case .installed(let target):
                 runtimeInstallActivity.end()
                 task.cancel(with: .goingAway, reason: nil)
                 return target
             case .message(let received): text = received
             }
-        } else { text = try await receiveText(task) }
+        } else { text = try await transport.receive(onStart: onReaderStarted) }
+        // A cancelled receive may still deliver a Foundation callback later.
+        // Never dispatch its frame into a new generation or start local work.
+        try Task.checkCancellation()
+        guard transport.active else { throw LauncherConnectionError.staleSession }
         let message = try JSONDecoder().decode(SocketMessage.self, from: Data(text.utf8))
         if message.type == "request_challenge", let challengeId = message.challengeId, let nonce = message.nonce {
             let signature = try signNonce(nonce, credentialUrl: credentialUrl, deviceId: deviceId)
             let response = SocketResponse(type: "proof_response", challengeId: challengeId, signature: signature)
-            try await task.send(.string(String(decoding: try JSONEncoder().encode(response), as: UTF8.self)))
+            try Task.checkCancellation()
+            guard transport.active else { throw LauncherConnectionError.staleSession }
+            try await transport.send(.string(String(decoding: try JSONEncoder().encode(response), as: UTF8.self)))
         } else if message.type == "runtime_recovery_ack", let requestId = message.requestId {
             try? acknowledgeMacRecovery(credential: credentialUrl, journal: macRecoveryJournal(deviceId: deviceId), requestId: requestId)
         } else if message.type == "execution_terminal_ack" {
             execution.acknowledge(message)
         } else if ["preview_start", "preview_stop", "preview_status"].contains(message.type), let requestId = message.requestId, let taskId = message.taskId {
           Task {
+            guard transport.active, !Task.isCancelled else { return }
             do {
                 var output = ""
                 if message.type == "preview_start" {
                     guard let root = oneDefaults().string(forKey: "one.execution.project.\(deviceId)"), let path = message.previewPath else { throw LocalFileFailure.message("请先在设置中授权工作文件夹") }
                     output = try await previews.start(taskId, root: root, entry: path, present: {
-                        task.state == .running && (try? signNonce(Data("one-static-preview".utf8).base64EncodedString(), credentialUrl: credentialUrl, deviceId: deviceId)) != nil
+                        transport.active && (try? signNonce(Data("one-static-preview".utf8).base64EncodedString(), credentialUrl: credentialUrl, deviceId: deviceId)) != nil
                     })
                 } else if message.type == "preview_status" { output = await previews.status(taskId) }
                 else { await previews.stop(taskId) }
                 let response = LocalConfigurationResponse(type: "local_ready", taskId: taskId, requestId: requestId, targetName: nil, output: output, error: nil)
-                try await task.send(.string(String(decoding: try JSONEncoder().encode(response), as: UTF8.self)))
+                try await transport.send(.string(String(decoding: try JSONEncoder().encode(response), as: UTF8.self)))
             } catch {
                 let response = LocalConfigurationResponse(type: "local_error", taskId: taskId, requestId: requestId, targetName: nil, output: "", error: error.localizedDescription)
-                try? await task.send(.string(String(decoding: try JSONEncoder().encode(response), as: UTF8.self)))
+                try? await transport.send(.string(String(decoding: try JSONEncoder().encode(response), as: UTF8.self)))
             }
           }
         } else if message.type == "local_configuration", let requestId = message.requestId {
             if message.change == true { await previews.stopAll() }
             Task { @MainActor in
+                guard transport.active, !Task.isCancelled else { return }
                 let selected = message.change == true ? executionProject(deviceId: deviceId, change: true) : oneDefaults().string(forKey: "one.execution.project.\(deviceId)")
+                guard transport.active, !Task.isCancelled else { return }
                 let response = LocalConfigurationResponse(type: message.change == true && selected == nil ? "local_error" : "local_ready", taskId: "device_settings", requestId: requestId, targetName: selected, output: selected ?? "", error: message.change == true && selected == nil ? "已取消选择，原授权目录保持不变" : nil)
-                if let data = try? JSONEncoder().encode(response) { try? await task.send(.string(String(decoding: data, as: UTF8.self))) }
+                if let data = try? JSONEncoder().encode(response) { try? await transport.send(.string(String(decoding: data, as: UTF8.self))) }
             }
         } else if ["executor_status", "executor_prepare"].contains(message.type), let requestId = message.requestId {
             Task {
+                guard transport.active, !Task.isCancelled else { return }
                 do {
                     func reportPhase(_ phase: String) async {
                         let response = LocalConfigurationResponse(type: "executor_progress", taskId: "device_settings", requestId: requestId, targetName: nil, output: phase, error: nil)
-                        if let data = try? JSONEncoder().encode(response) { try? await task.send(.string(String(decoding:data,as:UTF8.self))) }
+                        if let data = try? JSONEncoder().encode(response) { try? await transport.send(.string(String(decoding:data,as:UTF8.self))) }
                     }
                     if message.type == "executor_prepare" {
                         guard !runtimeInstallActivity.active, managedCodexActivity.begin() else { throw ManagedCodexError.busy }
@@ -1177,8 +1294,10 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
                         if selected == nil || (selected!.source == "managed" && selected!.version.compare(release.version, options: .numeric) == .orderedAscending) {
                             await reportPhase("confirming")
                             guard await confirmManagedCodex(release) else { throw LauncherError.message("已取消准备，没有安装或启动任务") }
+                            guard transport.active, !Task.isCancelled else { throw LauncherConnectionError.staleSession }
                             await reportPhase("downloading")
                             let bytes = try await ManagedCodexDownload(expected: release.size).fetch(URL(string: release.url)!)
+                            guard transport.active, !Task.isCancelled else { throw LauncherConnectionError.staleSession }
                             await reportPhase("verifying")
                             // Require the same credential still present before committing. Unplug
                             // aborts preparation, but never corrupts the previous pointer.
@@ -1194,10 +1313,10 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
                     }
                     let selected = await oneGatewayCodex(credentialUrl: credentialUrl)
                     let response = LocalConfigurationResponse(type: "local_ready", taskId: "device_settings", requestId: requestId, targetName: selected?.source, output: selected?.version ?? "", error: nil)
-                    try await task.send(.string(String(decoding: JSONEncoder().encode(response), as: UTF8.self)))
+                    try await transport.send(.string(String(decoding: JSONEncoder().encode(response), as: UTF8.self)))
                 } catch {
                     let response = LocalConfigurationResponse(type: "local_error", taskId: "device_settings", requestId: requestId, targetName: nil, output: "", error: "工具准备未完成：\(error.localizedDescription)。未自动执行任务，可重新检查。")
-                    if let data = try? JSONEncoder().encode(response) { try? await task.send(.string(String(decoding: data, as: UTF8.self))) }
+                    if let data = try? JSONEncoder().encode(response) { try? await transport.send(.string(String(decoding: data, as: UTF8.self))) }
                 }
             }
         } else if message.type == "execution_start", let taskId = message.taskId, let instruction = message.instruction, let round = message.round, let attemptId = message.attemptId, let owner = message.owner {
@@ -1213,30 +1332,33 @@ func serveProofs(_ task: URLSessionWebSocketTask, credentialUrl: URL, deviceId: 
             await localExecutor.cancel(taskId)
         } else if message.type == "local_prepare", let taskId = message.taskId, let requestId = message.requestId {
             Task { @MainActor in
+                guard transport.active, !Task.isCancelled else { return }
                 do {
                     let root = try localExecutor.prepare(taskId)
+                    guard transport.active, !Task.isCancelled else { return }
                     let response = LocalConfigurationResponse(type: "local_ready", taskId: taskId, requestId: requestId, targetName: root, output: "files_only", error: nil)
-                    try await task.send(.string(String(decoding: JSONEncoder().encode(response), as: UTF8.self)))
+                    try await transport.send(.string(String(decoding: JSONEncoder().encode(response), as: UTF8.self)))
                 } catch {
                     let response = LocalConfigurationResponse(type: "local_error", taskId: taskId, requestId: requestId, targetName: nil, output: "", error: error.localizedDescription)
-                    if let data = try? JSONEncoder().encode(response) { try? await task.send(.string(String(decoding: data, as: UTF8.self))) }
+                    if let data = try? JSONEncoder().encode(response) { try? await transport.send(.string(String(decoding: data, as: UTF8.self))) }
                 }
             }
         } else if message.type == "tool_request", let taskId = message.taskId, let requestId = message.requestId, let tool = message.tool, let arguments = message.arguments {
             Task { @MainActor in
+                guard transport.active, !Task.isCancelled else { return }
                 do {
                     let output = try localExecutor.execute(taskId, tool: tool, args: arguments)
                     let response = LocalConfigurationResponse(type: "tool_result", taskId: taskId, requestId: requestId, targetName: nil, output: String(output.prefix(120000)), error: nil)
-                    try await task.send(.string(String(decoding: JSONEncoder().encode(response), as: UTF8.self)))
+                    try await transport.send(.string(String(decoding: JSONEncoder().encode(response), as: UTF8.self)))
                 } catch {
                     let response = LocalConfigurationResponse(type: "local_error", taskId: taskId, requestId: requestId, targetName: nil, output: "", error: error.localizedDescription)
-                    if let data = try? JSONEncoder().encode(response) { try? await task.send(.string(String(decoding: data, as: UTF8.self))) }
+                    if let data = try? JSONEncoder().encode(response) { try? await transport.send(.string(String(decoding: data, as: UTF8.self))) }
                 }
             }
         } else if message.type == "update_install", let requestId = message.requestId, let envelope = message.envelope {
             if managedCodexActivity.isActive() {
                 let response = UpdateEventResponse(requestId: requestId, status: "failed", error: "正在准备执行工具，请完成后再更新 ONE")
-                try? await task.send(.string(String(decoding:try JSONEncoder().encode(response),as:UTF8.self)))
+                try? await transport.send(.string(String(decoding:try JSONEncoder().encode(response),as:UTF8.self)))
                 continue
             }
             guard installJob == nil, runtimeInstallActivity.begin() else { continue }
@@ -1282,6 +1404,7 @@ func reportRuntimeProgress(_ socket: URLSessionWebSocketTask, requestId: String,
 
 func post<Request: Encodable, Response: Decodable>(_ url: URL, body: Request) async throws -> Response {
     var request = URLRequest(url: url)
+    request.timeoutInterval = 10
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.httpBody = try JSONEncoder().encode(body)
@@ -1293,14 +1416,23 @@ func post<Request: Encodable, Response: Decodable>(_ url: URL, body: Request) as
     return try JSONDecoder().decode(Response.self, from: data)
 }
 
-func openLoginPage(base: String, credentialUrl: URL, deviceId: String) async throws {
+func openLoginPage(base: String, credentialUrl: URL, deviceId: String,
+    isCurrent: @escaping @MainActor @Sendable () -> Bool = { true }) async throws {
+    func requireCurrent() async throws {
+        try Task.checkCancellation()
+        guard await isCurrent() else { throw LauncherConnectionError.staleSession }
+    }
+    try await requireCurrent()
     guard let challengeUrl = URL(string: "\(base)/api/one-key/challenge") else { throw LauncherError.message("ONE 服务地址无效") }
     let challenge: ChallengeResponse = try await post(challengeUrl, body: ChallengeRequest(deviceId: deviceId, installationId: installationId()))
+    try await requireCurrent()
     guard let verifyUrl = URL(string: "\(base)/api/one-key/challenge/\(challenge.challengeId)/verify") else { throw LauncherError.message("ONE 验证地址无效") }
     let signature = try signNonce(challenge.nonce, credentialUrl: credentialUrl, deviceId: deviceId)
+    try await requireCurrent()
     let verified: VerifyResponse = try await post(verifyUrl, body: VerifyRequest(signature: signature))
+    try await requireCurrent()
     guard let loginUrl = URL(string: "\(base)/#one-key=\(verified.loginCode)") else { throw LauncherError.message("ONE 登录地址无效") }
-    guard await MainActor.run(body: { NSWorkspace.shared.open(loginUrl) }) else {
+    guard await MainActor.run(body: { !Task.isCancelled && isCurrent() && NSWorkspace.shared.open(loginUrl) }) else {
         throw LauncherError.message("无法打开默认浏览器")
     }
 }
@@ -1314,12 +1446,15 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private var credential: DeviceCredential?
     private var base = ""
     private var socket: URLSessionWebSocketTask?
+    private var liveTransport: LauncherLiveSocket?
     // Lives beyond any one WebSocket connection. Reconnect must never create a
     // second runner and lose ownership of the process already doing the work.
     private var executionRunner: CodexExecutionRunner?
     private var sessionTask: Task<Void, Never>?
     private var removalTask: Task<Void, Never>?
     private var loginTask: Task<Void, Never>?
+    private var loginTaskID: UUID?
+    private var automaticLoginAttempted = false
     private var sessionGeneration = UUID()
     private var stopping = false
     private var handingOff = false
@@ -1331,7 +1466,9 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private let networkMonitor = NWPathMonitor()
     private var receivedInitialPath = false
     private var reopenAcknowledged = false
+    private var reopenRecovering = false
     private var reopenDeviceId: String?
+    private var reopenRequestID: String?
 
     private func reopenNotification(_ deviceId: String) -> Notification.Name {
         let digest = SHA256.hash(data: Data(deviceId.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -1341,28 +1478,44 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func reopenRequested(_ notification: Notification) {
         guard let requestId = notification.object as? String, UUID(uuidString: requestId) != nil else { return }
         guard notification.userInfo?["version"] as? String == launcherVersion else { return }
+        // This means only that the exact lock owner is recovering. It is not
+        // a ready acknowledgement or a substitute for a fresh Key proof.
+        DistributedNotificationCenter.default().postNotificationName(Notification.Name("one.key.reopen.ack.\(requestId)"), object: launcherVersion, userInfo: ["recovering": true, "pid": Int(getpid())], deliverImmediately: true)
         requestLogin()
         // A new double-click must wake the resident that actually owns this
         // Key, not merely create a login URL while that resident is offline.
         if !ready { nextVolumeScan = .distantPast; restartSession() }
         Task { @MainActor in
             // Allow wake/reconnect, but never acknowledge merely being alive.
-            for _ in 0..<30 {
+            let deadline = ProcessInfo.processInfo.systemUptime + 15
+            while ProcessInfo.processInfo.systemUptime <= deadline {
                 if stopping { return }
-                if ready {
-                    DistributedNotificationCenter.default().postNotificationName(Notification.Name("one.key.reopen.ack.\(requestId)"), object: launcherVersion, userInfo: ["ready": true, "pid": Int(getpid())], deliverImmediately: true)
-                    return
+                if ready, let transport = liveTransport, transport.active {
+                    do {
+                        // Reopen needs evidence from a new ping, not a cached
+                        // ready bit from before the network disappeared.
+                        try await transport.ping()
+                        guard ProcessInfo.processInfo.systemUptime <= deadline, isCurrent(transport), transport.fresh else { continue }
+                        DistributedNotificationCenter.default().postNotificationName(Notification.Name("one.key.reopen.ack.\(requestId)"), object: launcherVersion, userInfo: ["ready": true, "pid": Int(getpid())], deliverImmediately: true)
+                        return
+                    } catch {
+                        if liveTransport === transport { nextVolumeScan = .distantPast; restartSession() }
+                    }
                 }
-                try? await Task.sleep(for: .milliseconds(100))
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
             }
         }
     }
 
     @objc private func reopenReply(_ notification: Notification) {
-        guard let deviceId = reopenDeviceId,
+        guard let requestID = reopenRequestID, notification.name == Notification.Name("one.key.reopen.ack.\(requestID)"), let deviceId = reopenDeviceId,
               let support = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false).appendingPathComponent("ONE", isDirectory: true) else { return }
         let digest = SHA256.hash(data: Data(deviceId.utf8)).map { String(format: "%02x", $0) }.joined()
-        reopenAcknowledged = isHealthyResidentReply(version: notification.object as? String, expectedVersion: launcherVersion, ready: notification.userInfo?["ready"] as? Bool == true, pid: (notification.userInfo?["pid"] as? NSNumber)?.int32Value, lockOwners: residentLockOwners(support.appendingPathComponent(residentLockFilename(digest: digest))))
+        let lockOwners = residentLockOwners(support.appendingPathComponent(residentLockFilename(digest: digest)))
+        let validOwner = isHealthyResidentReply(version: notification.object as? String, expectedVersion: launcherVersion, ready: true, pid: (notification.userInfo?["pid"] as? NSNumber)?.int32Value, lockOwners: lockOwners)
+        guard validOwner else { return }
+        if notification.userInfo?["recovering"] as? Bool == true { reopenRecovering = true }
+        if notification.userInfo?["ready"] as? Bool == true { reopenAcknowledged = true }
     }
 
     init(residentMode: Bool, expectedDeviceId: String?, initialCredentialUrl: URL?) {
@@ -1469,6 +1622,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         stopping = true
+        liveTransport?.invalidate()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         DistributedNotificationCenter.default().removeObserver(self)
         networkMonitor.cancel()
@@ -1482,6 +1636,10 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         guard residentMode, !stopping, !handingOff, !runtimeInstallActivity.active else { return }
         let generation = UUID()
         sessionGeneration = generation
+        liveTransport?.invalidate()
+        liveTransport = nil
+        loginTaskID = nil
+        loginTask?.cancel(); loginTask = nil
         socket?.cancel(with: .goingAway, reason: nil)
         removalTask?.cancel()
         sessionTask?.cancel()
@@ -1521,31 +1679,41 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             }
 
             socket = connectedSocket
+            let transport = LauncherLiveSocket(task: connectedSocket, generation: generation)
+            liveTransport = transport
+            defer { transport.invalidate() }
             if executionRunner?.matches(deviceId: foundCredential.deviceId, owner: connection.owner) != true {
                 executionRunner = try CodexExecutionRunner(socket: connectedSocket, deviceId: foundCredential.deviceId, credentialUrl: foundUrl, owner: connection.owner)
             }
             guard let executionRunner else { throw LauncherError.message("本机执行连接尚未就绪") }
-            ready = true
-            // Pre-v2 residents may be offline and polling removable volumes
-            // forever. Only retire the exact same Key after our server proof.
-            let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("ONE", isDirectory: true)
-            let digest = SHA256.hash(data: Data(foundCredential.deviceId.utf8)).map { String(format: "%02x", $0) }.joined()
-            _ = terminateOlderResident(lock: support.appendingPathComponent("presence-\(digest).lock"), support: support, newVersion: launcherVersion) { candidate in
-                (try? loadCredential(candidate, expectedDeviceId: foundCredential.deviceId)) != nil
-            }
-            if let recovery, !recovery.record.requestId.isEmpty {
-                let report = ["type":"runtime_recovery_event", "requestId":recovery.record.requestId, "version":recovery.record.version, "status":recovery.status]
-                try await connectedSocket.send(.string(String(decoding: try JSONSerialization.data(withJSONObject: report), as: UTF8.self)))
-            }
-            removalTask = Task { await monitorRemoval(of: foundUrl) }
-
-            if !openedLogin || loginRequested {
-                loginRequested = false
-                try await openLoginPage(base: foundBase, credentialUrl: foundUrl, deviceId: foundCredential.deviceId)
-                openedLogin = true
-            }
+            ready = false
+            removalTask = Task { await monitorRemoval(of: foundUrl, transport: transport) }
             failures = 0
-            if try await serveProofs(connectedSocket, credentialUrl: foundUrl, deviceId: foundCredential.deviceId, execution: executionRunner) != nil {
+            // The receive callback is installed before login/recovery work can
+            // begin. Slow HTTP login must never delay the signed proof reader.
+            if try await serveProofs(transport, credentialUrl: foundUrl, deviceId: foundCredential.deviceId, execution: executionRunner, onReaderStarted: { [weak self] in
+                Task { @MainActor in
+                    guard let self, self.ownsTransport(transport) else { return }
+                    self.ready = true
+                    self.startLoginIfNeeded(transport)
+                    if let recovery, !recovery.record.requestId.isEmpty {
+                        Task {
+                            guard self.isCurrent(transport) else { return }
+                            let report = ["type":"runtime_recovery_event", "requestId":recovery.record.requestId, "version":recovery.record.version, "status":recovery.status]
+                            if let bytes = try? JSONSerialization.data(withJSONObject: report) {
+                                try? await transport.send(.string(String(decoding: bytes, as: UTF8.self)))
+                            }
+                        }
+                    }
+                    // Compatibility cleanup runs after the reader, and only
+                    // after this socket's authenticated owner was established.
+                    guard self.isCurrent(transport), let support = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("ONE", isDirectory: true) else { return }
+                    let digest = SHA256.hash(data: Data(foundCredential.deviceId.utf8)).map { String(format: "%02x", $0) }.joined()
+                    _ = terminateOlderResident(lock: support.appendingPathComponent("presence-\(digest).lock"), support: support, newVersion: launcherVersion) { candidate in
+                        (try? loadCredential(candidate, expectedDeviceId: foundCredential.deviceId)) != nil
+                    }
+                }
+            }) != nil {
                 handingOff = true
                 // Release the per-Key lock before starting the new portable
                 // app so its updated resident can take over immediately.
@@ -1568,6 +1736,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             // cancelled generation must exit instead of silently killing the
             // only resident connection loop.
             if stopping || generation != sessionGeneration { return }
+            clearTransport(generation: generation)
             socket = nil
             removalTask?.cancel()
             ready = false
@@ -1578,6 +1747,8 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             return
         } catch {
             if stopping || generation != sessionGeneration { return }
+            let closeCode = socket?.closeCode.rawValue ?? 0
+            clearTransport(generation: generation)
             if credentialAccessBlocked {
                 socket?.cancel(with: .goingAway, reason: nil)
                 removalTask?.cancel()
@@ -1588,7 +1759,6 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             failures += 1
-            let closeCode = socket?.closeCode.rawValue ?? 0
             socket?.cancel(with: .goingAway, reason: nil)
             removalTask?.cancel()
             ready = false
@@ -1631,20 +1801,57 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func ownsTransport(_ transport: LauncherLiveSocket) -> Bool {
+        !stopping && !handingOff && liveTransport === transport &&
+            socket === transport.task && sessionGeneration == transport.generation && transport.active
+    }
+
+    private func isCurrent(_ transport: LauncherLiveSocket) -> Bool { ready && ownsTransport(transport) }
+
+    private func clearTransport(generation: UUID) {
+        guard generation == sessionGeneration else { return }
+        liveTransport?.invalidate(); liveTransport = nil
+        loginTaskID = nil; loginTask?.cancel(); loginTask = nil
+        removalTask?.cancel(); removalTask = nil
+        socket?.cancel(with: .goingAway, reason: nil); socket = nil; ready = false
+    }
+
     private func requestLogin() {
         loginRequested = true
-        guard ready, loginTask == nil, let credentialUrl, let credential else { return }
-        loginRequested = false
-        let base = self.base
-        loginTask = Task {
-            do {
-                try await openLoginPage(base: base, credentialUrl: credentialUrl, deviceId: credential.deviceId)
-            } catch is CancellationError {
-                // Normal application termination.
-            } catch {
-                if !stopping { showFailure(error, terminateAfterDismissal: false) }
+        if let transport = liveTransport { startLoginIfNeeded(transport) }
+    }
+
+    private func startLoginIfNeeded(_ transport: LauncherLiveSocket) {
+        guard isCurrent(transport), loginTask == nil, let credentialUrl, let credential,
+              loginRequested || (!openedLogin && !automaticLoginAttempted) else { return }
+        let explicit = loginRequested
+        loginRequested = false; automaticLoginAttempted = true
+        let taskID = UUID(), base = self.base
+        let deadline = ProcessInfo.processInfo.systemUptime + 12
+        loginTaskID = taskID
+        loginTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                // An old HTTP callback cannot clear a newer login task.
+                if self.loginTaskID == taskID { self.loginTask = nil; self.loginTaskID = nil }
             }
-            loginTask = nil
+            do {
+                try await boundedLauncherOperation(timeout: .seconds(12)) { [weak self] in
+                    try await openLoginPage(base: base, credentialUrl: credentialUrl, deviceId: credential.deviceId, isCurrent: { [weak self] in
+                        guard let self else { return false }
+                        return self.loginTaskID == taskID && self.isCurrent(transport) && ProcessInfo.processInfo.systemUptime <= deadline
+                    })
+                }
+                try Task.checkCancellation()
+                guard self.loginTaskID == taskID, self.isCurrent(transport), ProcessInfo.processInfo.systemUptime <= deadline else { return }
+                self.openedLogin = true
+            } catch {
+                guard !Task.isCancelled, self.loginTaskID == taskID, self.isCurrent(transport) else { return }
+                connectionDiagnostic(.loginFailed)
+                // Reconnect does not automatically retry an unsuccessful login
+                // and open many browser tabs. A new double-click may retry.
+                if explicit { self.showFailure(LauncherError.message("登录暂时没有连上。ONE 仍在保持本机连接，可以稍后再双击打开；不用重新安装。"), terminateAfterDismissal: false) }
+            }
         }
     }
 
@@ -1653,17 +1860,24 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
             let requestId = UUID().uuidString
             let reply = Notification.Name("one.key.reopen.ack.\(requestId)")
             reopenAcknowledged = false
+            reopenRecovering = false
             reopenDeviceId = deviceId
+            reopenRequestID = requestId
             DistributedNotificationCenter.default().addObserver(self, selector: #selector(reopenReply(_:)), name: reply, object: nil)
-            defer { DistributedNotificationCenter.default().removeObserver(self, name: reply, object: nil); reopenDeviceId = nil }
+            defer { DistributedNotificationCenter.default().removeObserver(self, name: reply, object: nil); reopenDeviceId = nil; reopenRequestID = nil }
             DistributedNotificationCenter.default().postNotificationName(reopenNotification(deviceId), object: requestId, userInfo: ["version": launcherVersion], deliverImmediately: true)
-            for _ in 0..<35 {
+            for _ in 0..<200 {
                 try await Task.sleep(for: .milliseconds(100))
                 if reopenAcknowledged {
                     stopping = true
                     NSApplication.shared.terminate(nil)
                     return
                 }
+            }
+            if reopenRecovering {
+                // A verified live owner may still own a running child/outbox.
+                // Do not kill it solely because its network is recovering.
+                throw LauncherError.message("ONE 正在恢复这台电脑的连接，已有任务不会重复执行。请保持 Key 插着，稍后再打开一次；不用重新安装。")
             }
             // A newer installed binary can be blocked by an older resident's
             // local lock. Authenticate first: the server rejects equal-version
@@ -1720,11 +1934,12 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.terminate(nil)
     }
 
-    private func monitorRemoval(of credentialUrl: URL) async {
+    private func monitorRemoval(of credentialUrl: URL, transport: LauncherLiveSocket) async {
         while !Task.isCancelled {
             do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+            guard ownsTransport(transport), !Task.isCancelled else { return }
             if !FileManager.default.fileExists(atPath: credentialUrl.path) {
-                socket?.cancel(with: .goingAway, reason: nil)
+                transport.invalidate()
                 if !residentMode {
                     stopping = true
                     NSApplication.shared.terminate(nil)
