@@ -5,6 +5,18 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MessageMarkdown } from "./MessageMarkdown.js";
 const render = (children: string) => renderToStaticMarkup(createElement(MessageMarkdown, { children }));
 
+test("local artifact links show the actual copyable path instead of a broken website route", () => {
+  for (const path of ['/Users/machao/Desktop/test/order.md', '/home/test/order.md', 'file:///Users/test/order.md', 'file:///C:/test/order.md']) {
+    const html = render(`[订单文件](${path})`);
+    assert.doesNotMatch(html, /<a\b/);
+    assert.match(html, /<code class="one-local-artifact-path">/);
+    assert.match(html, /(?:\/Users\/|\/home\/|C:\/)\S*order\.md/);
+  }
+  for (const path of ['/api/attachments/att_test/content', '/?task=cnv_test', 'https://example.com/home/test']) {
+    assert.match(render(`[结果](${path})`), /<a\b/);
+  }
+});
+
 test("public text answers cannot automatically load model-supplied remote images", () => {
   const html = renderToStaticMarkup(createElement(MessageMarkdown, { children: "![tracking](https://example.com/private-query)\n\nAnswer", allowImages: false }));
   assert.doesNotMatch(html, /<img|example.com/);
