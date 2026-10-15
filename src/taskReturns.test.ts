@@ -4,7 +4,12 @@ import {newAutomaticReceiptIds,visibleTransfers,presentationTransfers,transferFe
 import {taskCategory,taskUiOutcome} from './taskAttention';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {TaskTransferRail} from './TaskTransferRail';
+import {TaskTransferRail,dismissibleReceiptIds} from './TaskTransferRail';
+test('closing a task captures all displayed older receipts, not unrelated, active or future results',()=>{
+ const cards:Transfer[]=[{id:'old',taskId:'one',title:'方案',state:'failed'},{id:'last',taskId:'one',title:'方案',state:'cancelled'},{id:'other',taskId:'two',title:'其他',state:'failed'},{id:'running',taskId:'one',title:'方案',state:'running',reportable:false}];
+ const captured=dismissibleReceiptIds(cards,'one');assert.deepEqual(captured,['old','last']);
+ cards.push({id:'future',taskId:'one',title:'方案',state:'returned'});assert.deepEqual(captured,['old','last']);
+});
 test('the sidebar offers a visible dismiss action and read-all disappears after review',()=>{
  const task:Transfer={id:'receipt',taskId:'one',title:'测试方案',state:'failed',read:false};
  const html=renderToStaticMarkup(createElement(TaskTransferRail,{tasks:[task],busy:false,onOpen:()=>{},onDismiss:async()=>{},onReadAll:async()=>{}}));

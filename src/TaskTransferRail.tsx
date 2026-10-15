@@ -6,6 +6,8 @@ import {flyTaskNote,type NoteRect} from './taskTransferMotion';
 
 export type Transfer={id:string;taskId:string;title:string;state:string;reported?:boolean;read?:boolean;reportable?:boolean;outcome?:string;phase?:string;local?:boolean};
 export const transferSettled=(state:string)=>['completed','returned','partial','needs_input','failed','interrupted','cancelled'].includes(state);
+/** Capture only the rendered task's receipts, never a result arriving later. */
+export const dismissibleReceiptIds=(tasks:Transfer[],taskId:string)=>tasks.filter(task=>task.taskId===taskId&&transferSettled(task.state)&&task.reportable!==false).map(task=>task.id);
 /** Pending outcome IDs are for server capture, never an automatic client report trigger. */
 export const newAutomaticReceiptIds=(tasks:Transfer[])=>tasks.filter(t=>transferSettled(t.state)&&!t.reported&&t.reportable!==false).map(t=>t.id);
 export function visibleTransfers(tasks:Transfer[]) {
