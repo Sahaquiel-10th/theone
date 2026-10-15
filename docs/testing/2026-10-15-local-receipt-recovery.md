@@ -274,3 +274,45 @@
 - 签名清单验证 `VERIFIED_VERSION=0.4.19`。包 `/Users/machao/Desktop/theone-output/theone-runtime-0.4.19.tar.gz`，4,782,638 字节，SHA-256 `a3ed841847923b3fa5a6e33774837c327e9ab56e4731a2f81d2d519fe174d833`；只含清单、Mac zip、Windows exe，无私钥或用户数据。
 
 以上制品尚未在服务器更新通道发布、未装到这枚 Key，实际新版正常执行、停止和回执仍待真实 ONE 复测，不以网站部署代替。
+
+## 0.4.19 发布、安装与待完成验收
+
+提交 `aa4b3672ce9cf24ca4a9f9ed4e015761a3ad221a` 已推送，Actions `38687867928` 的应用、Mac、Windows 验证和部署全部成功。云端 Mac job 确认新增 11/13/7 组测试都实际运行；服务器自身回归 757 通过、1 跳过，生产构建通过。只读发布前检查无运行中聊天/模型请求/账单待核对，2 条未开始任务保留。部署于 `05:49:31Z` 成功收尾；重启等待的短暂 connection refused 不是最终失败。
+
+真实 OrcaTerm 上传 0.4.19 包，服务器 hash 与上文完全一致。首次以普通 ubuntu 用户运行验证脚本因发布目录权限无法访问而报 MODULE_NOT_FOUND，未切换更新通道；只读核对确认脚本存在，保留原权限，以原发布所需的 sudo 权限验证成功，没有复制脚本或放宽权限。
+
+随后在原安装脚本运行前硬性校验 current 精确指向 `aa4b3672…`。发布返回 `VERIFIED_VERSION=0.4.19`、上一更新已保留、服务保持运行；重新核对共享签名清单仍为 0.4.19，服务 active、健康 `ok:true`。本次未改模型、价格或用户数据。
+
+真实 ONE 出现 `0.4.18 → 0.4.19` 并点击更新一次。盘上 `/Volumes/ESD-USB/ONE for Mac.app` 版本已为 0.4.19，严格签名验证通过，旧驻留 PID 84747 已退出；精确查询尚无 0.4.19 驻留。准备通过 Finder 打开同一枚 Key 时，原生工具确认 Mac 再次锁屏。已请用户解锁并双击一次，新版运行和真实任务尚未确认；未重新提交原要求，也未把“已安装”写成“已运行”或“已验收”。
+
+## 0.4.19 真实文件创建与停止复测
+
+用户打开后，实际驻留 PID 94406 的可执行文件为 `ONEPresence-0.4.19.app/Contents/MacOS/ONE`，出生时间本地 `13:59:50`，驻留标记正确。真实设置于本地 `14:03:44` 返回授权目录 `/Users/machao/Desktop/test`。未更换目录或扩大授权。
+
+### 新文件创建通过
+
+多次锁屏中先核对指令仍在草稿，最终于 `07:11:33.122Z` 通过真实 ONE 点击本机执行一次。目标 `QA-419-CREATE-20261015.md` 初始不存在；排他创建命令返回 exit 0，正文精确为 `ONE_419_CREATE_OK\n`，18 字节。主代理和独立代理回读的 SHA-256 均为 `bb2c4a0053d39f7f0b05ca3b2194e48400ff11f59ef484a1a31ece2ff02efa5a`，页面也返回相同路径、正文、退出码和摘要。
+
+对应 execution `ext_a06c6ba56b5795aa559b`，attempt `attempt_dc6d25eba732bd85dad3`，第 0 轮；thread `01a13e67-2f0f-7a20-a093-11b67575da69`。服务器于 `07:12:15.840Z` 收到 completed/accepted 回执 `7d7bd382-92b5-48ae-89ed-b426d32a516a`，hash `20e864fc2f9ef81d75ad43fd77f3551f2cfbd5e5a49df251d60f4350c20b8788`。精确本机 journal 七元组匹配、ACK=true、正文已清、文件/父目录权限为 0600/0700。精确本轮执行记录只有一次命令、exit 0 和真实最终回答，没有重跑。
+
+### 停止后的文件安全通过 回执仍待核对
+
+新的 `QA-419-CANCEL-20261015.md` 只做语法检查后才放入 ONE，先输出 marker、等待 90 秒、再排他写入。首次只读观察器等满启动期限，期间未提交任务；一次页面点击被界面变更保护拒绝，随后确认完整指令仍在草稿。最终实际提交为 `07:25:41.413Z`，没有重复受理。
+
+第二个只读观察器于 `07:26:18.873Z` 确认驻留 94406 → Codex 99738 → shell 105 → sleep 106，命令、目标和出生时间均匹配。真实 ONE 于 `07:27:10.764Z` 点停止一次，随后已观察的整棵树退出；至 `07:28:03.844Z`（实际开始后 105 秒）目标始终不存在，驻留身份未变。未用外部终止替代产品停止。两个既有基线文件的大小与 SHA-256 保持不变。
+
+execution `ext_bcb6a539716c221be0d5`，attempt `attempt_042777e0996b4841e7c8`，第 0 轮；thread `01a13e74-2683-7200-9126-1f43c7a4def5`。服务器于 `07:27:11.476Z` 收到 cancelled/supplemental 回执 `6ab5ed5f-1e52-4003-bdbb-7374f467c357`，hash `7f5740466d806566810253de56c5c75cebec7a7cec5e527a5f84304e67c86199`，仍有 `command_unconfirmed`，页面正确保留需核对，未误报完成。精确 journal 七元组和 ACK 一致、0600/0700；未解除本次新保护。
+
+精确本轮记录显示只有一次 exec 和一次等待同一 session `45889` 的 write_stdin；`turn_aborted` 的 interrupted 在 `07:27:11.148Z`，同一命令的 failed/-1 结束事件于 `07:27:11.159Z` 补发，晚 11ms。该核心记录不包含公共 RPC ACK 或双路 EOF，不能单独证明控制器所有条件已齐。源码目前在收到 turn/completed 后拒收同轮所有 item/completed，可能漏掉这种收尾事件；官方 0.160.1 的中断 turn 通知本来就用空 items。下一步修复只在原停止期限内接收同 thread/turn、此前已启动命令的结束证据，仍要求精确 RPC ACK、interrupted 终态与进程/输出屏障，不用 PID 消失或 -1 伪装成功。
+
+## 0.4.20 中断收尾修复与自动验证
+
+按 [OpenAI App Server 文档](https://learn.chatgpt.com/docs/app-server) 的精确 turn 中断与 item 完成契约、固定 `rust-v0.160.1` 官方实现核对：该版本的 interrupted turn 通知使用空 `items` 和 `notLoaded`，不能当成命令结束事件已经齐备。controller 在原始停止期限内只为同 thread/turn、此前已启动、相同 ID/type 的命令接收迟到 item/completed，内部补齐证据但不转发晚进度或回答。共享停止 future 等所有已知命令收齐才允许关闭 stdin；新工具、错轮、畸形、EOF 或超时仍保留保护。
+
+- controller 14 组通过，含 -1/null/130 迟到结束、多命令、精确归属与过期边界；arm64 严格并发编译运行和 x86_64 类型检查通过。主代理独立复跑通过。
+- 原 7 组真实管道夹具保留，新增一组含 6 个变体：空 items 的 interrupted 通知后迟到 11/50ms 的已知命令结束为正例，缺失、串 thread、新编号、过期迟到为反例。正例等待期间 stdin 保持打开，只有真实进程退出、双 EOF 和自有树核对后才可确认取消；反例不因 EOF 自动放行。8 组四轮通过，主代理独立再次通过，证据 `one-appserver-integration-b5641G`。这些是模拟执行器的真实管道测试，不是真实 ONE 验收。
+- 应用源本轮未改；原隔离镜像的类型检查、758 项测试（757 通过、1 跳过）与生产构建通过，日志 `/tmp/one-app-validation-20261015-8CO0nb/`。镜像与当前源码一致性仍在独立核对，发布 CI 将另验当前提交。
+- Mac Universal 完整构建、严格签名与双平台制品签名清单通过，`VERIFIED_VERSION=0.4.20`；Windows 仅同步版本构建，不代表 Windows 新协议或真机通过。
+- 包 `/Users/machao/Desktop/theone-output/theone-runtime-0.4.20.tar.gz`，4,791,831 字节，SHA-256 `6eff9e773121db8e3fbb992e4631fd1f1bcf0735205282c14080bee03cfa091f`。只有清单、Mac zip、Windows exe；打包禁用 Apple 扩展属性，无私钥或用户数据。
+
+此处尚未发布 0.4.20、未替换本机驻留，也未做新版本真实停止验收。0.4.19 的安全等待保持原样，不重跑、不清除历史。

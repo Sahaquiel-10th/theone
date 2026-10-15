@@ -41,6 +41,13 @@ private final class PipeEvidence: @unchecked Sendable {
     }
 }
 
+private final class InterruptFutureEvidence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Bool?
+    func completed(_ result: Bool) { lock.lock(); value = result; lock.unlock() }
+    var result: Bool? { lock.lock(); defer { lock.unlock() }; return value }
+}
+
 private func temporaryEvidenceDirectory() throws -> URL {
     var template = Array((NSTemporaryDirectory() + "one-appserver-integration-XXXXXX").utf8CString)
     let path: String? = template.withUnsafeMutableBufferPointer { buffer in
@@ -197,6 +204,79 @@ private final class ProtocolHarness: @unchecked Sendable {
         h.tree.finish()
     }
 
+    func emptyInterruptedTurnBeforeDelayedKnownCommand() async throws {
+        // Pinned 0.160.1 can publish turn/completed with unloaded empty items
+        // before the already-started command's item/completed notification.
+        // The test-owned gate exposes that boundary deterministically, then
+        // delays the real pipe frame by the observed 11–50 ms ordering gap.
+        for delay in [11, 50] {
+            let h = try harness("empty_late_\(delay)", "empty-late-\(delay)")
+            _ = try await h.controller.start(instruction: "synthetic empty-turn ordering only")
+            let future = InterruptFutureEvidence()
+            let stop = Task {
+                let result = await h.controller.requestInterrupt(timeout: 1)
+                future.completed(result); return result
+            }
+            try require(try await h.controller.waitForTurnEnd(timeout: 1) == .interrupted, "empty interrupted turn absent")
+            let empty = await h.controller.snapshot()
+            try require(empty.interruptAcknowledged && empty.hasUnconfirmedCommands, "fixture did not expose ACK + empty interrupted turn before known terminal")
+            try require(future.result == nil, "interrupt future resolved before delayed known command terminal")
+            try require(!empty.assessment(treeCleanupVerified: true).cancellationConfirmed,
+                "empty unloaded items incorrectly confirmed an unresolved command")
+            try require(!h.evidence.barriers, "empty turn incorrectly established real EOF")
+            writeEvidence(h.directory, "allow-late-terminal", "synthetic gate only\n")
+            try require(await stop.value, "same known command did not settle interrupt within original deadline")
+            let settled = await h.controller.snapshot()
+            try require(!settled.assessment(treeCleanupVerified: false).cancellationConfirmed,
+                "official command terminal alone bypassed process/tree/EOF barriers")
+            try require(!h.evidence.barriers, "stdin/EOF closed before parent verified known terminal")
+            h.writer.close(); try await h.waitBarriers()
+            let cleanup = await h.tree.verifyTrackedExit(timeout: 0.3)
+            let final = await h.controller.snapshot()
+            try require(!readEvidence(h.directory, "fixture.log").contains("EARLY_STDIN_CLOSE"),
+                "stdin closed during ACK + unloaded-turn to delayed-command gap")
+            try require(!cleanup.requiresCheck && final.assessment(treeCleanupVerified: h.evidence.barriers).cancellationConfirmed,
+                "known interrupted command plus exact ACK + tree/dual EOF did not confirm cancelled")
+            try require(final.finalResponse == nil, "empty interruption manufactured an answer")
+            h.save("PASS ACK + interrupted items[]/notLoaded; known failed/-1 command arrives \(delay)ms later; no input close before it; cancellation only after tree + actual dual EOF")
+            h.tree.finish()
+        }
+
+        for variant in ["missing", "foreign", "new-id", "after-deadline"] {
+            let h = try harness("empty_late_\(variant)", "empty-late-\(variant)")
+            _ = try await h.controller.start(instruction: "synthetic protected ordering only")
+            let future = InterruptFutureEvidence()
+            let stop = Task {
+                let result = await h.controller.requestInterrupt(timeout: 0.15)
+                future.completed(result); return result
+            }
+            try require(try await h.controller.waitForTurnEnd(timeout: 1) == .interrupted, "protected empty turn absent")
+            try require(future.result == nil, "negative fixture resolved before candidate was emitted")
+            writeEvidence(h.directory, "allow-late-terminal", "synthetic gate only\n")
+            try require(!(await stop.value), "\(variant) terminal incorrectly settled cancelled")
+            if variant == "after-deadline" {
+                // Keep stdin genuinely open until the too-late frame has been
+                // delivered, rather than killing the fixture before testing it.
+                let deadline = uptime() + 1
+                while !readEvidence(h.directory, "fixture.log").contains("TOO_LATE_KNOWN_TERMINAL_SENT") && uptime() < deadline {
+                    try await Task.sleep(for: .milliseconds(5))
+                }
+                try require(readEvidence(h.directory, "fixture.log").contains("TOO_LATE_KNOWN_TERMINAL_SENT"), "late-after-deadline frame was never actually sent")
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            h.writer.close(); try await h.waitBarriers()
+            let cleanup = await h.tree.verifyTrackedExit(timeout: 0.3)
+            let final = await h.controller.snapshot()
+            let assessment = final.assessment(treeCleanupVerified: !cleanup.requiresCheck && h.evidence.barriers)
+            try require(!assessment.cancellationConfirmed && assessment.requiresCheck,
+                "\(variant) result lost protection after real exit/EOF")
+            try require(final.protocolIssue != nil && !final.interruptCompletedWithinDeadline,
+                "\(variant) result forged a valid bounded interrupt")
+            h.save("PASS unloaded empty interrupted turn + \(variant) command terminal stays protected after process/dual EOF; no replay")
+            h.tree.finish()
+        }
+    }
+
     func earlyStopDoesNotDispatch() async throws {
         let h = try harness("early_stop", "normal")
         _ = await h.controller.requestInterrupt()
@@ -285,6 +365,7 @@ private final class ProtocolHarness: @unchecked Sendable {
     func run() async throws {
         try await normalAnswerAndAllBarriers()
         try await terminalBeforeInterruptACK()
+        try await emptyInterruptedTurnBeforeDelayedKnownCommand()
         try await earlyStopDoesNotDispatch()
         try await partialInstructionWriteIsUnknown()
         try await missingExitNeverCompletes()
@@ -312,18 +393,35 @@ private func fakeProtocol(mode: String, directory: URL) throws {
         }
     }
     func reply(_ id: ProtocolJSON, _ value: ProtocolJSON) throws { try emit(.object(["id": id, "result": value])) }
-    func command(_ status: String, exit: ProtocolJSON = .null) -> ProtocolJSON {
-        .object(["id": .string("fixture_cmd"), "type": .string("commandExecution"), "status": .string(status),
+    func command(_ status: String, exit: ProtocolJSON = .null, id: String = "fixture_cmd") -> ProtocolJSON {
+        .object(["id": .string(id), "type": .string("commandExecution"), "status": .string(status),
             "exitCode": exit, "command": .string("synthetic fixture; not executed"), "aggregatedOutput": .string("fixture output")])
     }
-    func item(_ method: String, _ value: ProtocolJSON) throws {
+    func item(_ method: String, _ value: ProtocolJSON, threadId: String = "fixture_thread") throws {
         try emit(.object(["method": .string(method), "params": .object([
-            "threadId": .string("fixture_thread"), "turnId": .string("fixture_turn"), "item": value])]))
+            "threadId": .string(threadId), "turnId": .string("fixture_turn"), "item": value])]))
     }
-    func terminal(_ status: String, _ items: [ProtocolJSON]) throws {
+    func terminal(_ status: String, _ items: [ProtocolJSON], itemsView: String? = nil) throws {
+        var turn: [String: ProtocolJSON] = ["id": .string("fixture_turn"), "status": .string(status),
+            "items": .array(items), "error": .null]
+        if let itemsView { turn["itemsView"] = .string(itemsView) }
         try emit(.object(["method": .string("turn/completed"), "params": .object([
-            "threadId": .string("fixture_thread"), "turn": .object(["id": .string("fixture_turn"),
-                "status": .string(status), "items": .array(items), "error": .null])])]))
+            "threadId": .string("fixture_thread"), "turn": .object(turn)])]))
+    }
+    func waitWithOpenInput(_ milliseconds: Int, gate: String? = nil) -> Bool {
+        let deadline = uptime() + (gate == nil ? Double(milliseconds) / 1000 : 3)
+        while uptime() < deadline {
+            if let gate, FileManager.default.fileExists(atPath: directory.appendingPathComponent(gate).path) { return true }
+            var descriptor = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN | POLLHUP), revents: 0)
+            if poll(&descriptor, 1, 0) > 0 {
+                var byte: UInt8 = 0
+                if Darwin.read(STDIN_FILENO, &byte, 1) == 0 { note("EARLY_STDIN_CLOSE"); return false }
+                note("UNEXPECTED_INPUT_DURING_LATE_TERMINAL_WAIT"); return false
+            }
+            usleep(1000)
+        }
+        if gate != nil { note("LATE_TERMINAL_GATE_TIMEOUT"); return false }
+        return true
     }
     var holder: Process?
     while let line = readLine() {
@@ -351,13 +449,26 @@ private func fakeProtocol(mode: String, directory: URL) throws {
                 try child.run(); holder = child; note("OWNED_PIPE_HOLDER=\(child.processIdentifier)")
                 usleep(150000) // allow exact ancestry sampling before root exits
             }
-            if mode == "interrupt-order" || mode == "ignore-interrupt" { continue }
+            if mode == "interrupt-order" || mode == "ignore-interrupt" || mode.hasPrefix("empty-late-") { continue }
             let completed = mode == "missing-exit" ? command("failed", exit: .number(-1)) : command("completed", exit: .number(0))
             try item("item/completed", completed)
             let answer: ProtocolJSON = .object(["id": .string("fixture_answer"), "type": .string("agentMessage"), "text": .string("FIXTURE_REAL_ANSWER_🙂")])
             try item("item/completed", answer); try terminal("completed", [completed, answer])
         } else if method == "turn/interrupt" {
             if mode == "ignore-interrupt" { note("IGNORED_INTERRUPT"); continue }
+            if mode.hasPrefix("empty-late-") {
+                try reply(id, .object([:])); note("MATCHED_ACK_SENT")
+                try terminal("interrupted", [], itemsView: "notLoaded"); note("EMPTY_INTERRUPTED_TURN_SENT")
+                guard waitWithOpenInput(0, gate: "allow-late-terminal") else { return }
+                let variant = String(mode.dropFirst("empty-late-".count))
+                if variant == "missing" { note("KNOWN_COMMAND_TERMINAL_INTENTIONALLY_MISSING"); continue }
+                let delay = variant == "after-deadline" ? 250 : Int(variant) ?? 11
+                guard waitWithOpenInput(delay) else { return }
+                let interrupted = command("failed", exit: .number(-1), id: variant == "new-id" ? "unstarted_command" : "fixture_cmd")
+                try item("item/completed", interrupted, threadId: variant == "foreign" ? "foreign_thread" : "fixture_thread")
+                note(variant == "after-deadline" ? "TOO_LATE_KNOWN_TERMINAL_SENT" : "DELAYED_COMMAND_TERMINAL_SENT")
+                continue
+            }
             let interrupted = command("failed", exit: .number(-1))
             try item("item/completed", interrupted)
             let answer: ProtocolJSON = .object(["id": .string("fixture_answer"), "type": .string("agentMessage"), "text": .string("FIXTURE_CANCEL_PARTIAL_RESULT")])
@@ -397,7 +508,7 @@ private func fakeProtocol(mode: String, directory: URL) throws {
         do {
             let value = try IntegrationSuite(); suite = value
             try await value.run(); await value.cleanup()
-            print("CodexAppServerIntegrationTests: 7 real-pipe fixture groups passed; NOT real ONE/Codex acceptance")
+            print("CodexAppServerIntegrationTests: 8 real-pipe fixture groups passed; NOT real ONE/Codex acceptance")
             print("Evidence retained: \(value.root.path)")
         } catch {
             if let suite {

@@ -127,6 +127,11 @@ actor CodexAppServerController {
         let timeout: Task<Void, Never>
         let deadline: TimeInterval
     }
+    private struct InterruptedCommandsWaiter {
+        let continuation: CheckedContinuation<Bool, Never>
+        let timeout: Task<Void, Never>
+        let deadline: TimeInterval
+    }
     private struct Command {
         var started = false
         var ended = false
@@ -159,6 +164,9 @@ actor CodexAppServerController {
     private var cancelRequested = false
     private var interruptACK = false
     private var interruptCompletedWithinDeadline = false
+    private var interruptDeadline: TimeInterval?
+    private var acceptingInterruptedCommandTerminals = false
+    private var interruptedCommandsWaiter: InterruptedCommandsWaiter?
     private var interruptTask: Task<Bool, Never>?
     private var commands: [String: Command] = [:]
     private var itemTypes: [String: String] = [:]
@@ -283,6 +291,7 @@ actor CodexAppServerController {
     // Must be called on actual stdio EOF/closed transport, not merely WS loss.
     func transportClosed() {
         guard !closed else { return }; closed = true
+        finishInterruptedCommandsWaiter(confirmed: false)
         let requests = Array(pending.values); pending = [:]
         requests.forEach { $0.timeout.cancel(); $0.continuation.resume(throwing: CodexAppServerError.transportClosed) }
         if status?.terminal != true {
@@ -322,6 +331,8 @@ actor CodexAppServerController {
     private func performInterrupt(timeout: TimeInterval) async -> Bool {
         guard timeout.isFinite, timeout > 0 else { return false }
         let deadline = now() + timeout
+        interruptDeadline = deadline; acceptingInterruptedCommandTerminals = true
+        defer { acceptingInterruptedCommandTerminals = false }
         while turnId == nil, !closed, now() < deadline {
             try? await Task.sleep(for: .milliseconds(10))
         }
@@ -332,16 +343,42 @@ actor CodexAppServerController {
             let result = try await request("turn/interrupt", params: .object(["threadId": .string(threadId), "turnId": .string(turnId)]), timeout: remaining)
             guard result.object?.isEmpty == true, now() <= deadline else { return false }
             interruptACK = true
-            if status == .interrupted {
-                interruptCompletedWithinDeadline = now() <= deadline
-                return interruptCompletedWithinDeadline
+            if status != .interrupted {
+                let left = deadline - now()
+                guard left > 0, try await waitForTurnEnd(timeout: left) == .interrupted else { return false }
             }
-            let left = deadline - now()
-            guard left > 0 else { return false }
-            let interrupted = try await waitForTurnEnd(timeout: left) == .interrupted
-            interruptCompletedWithinDeadline = interrupted && now() <= deadline
+            // 0.160.1 interrupted notifications intentionally contain no
+            // items. Canonical command item/completed can follow the turn by
+            // a few milliseconds. Keep stdin open until those exact already-
+            // started commands settle, within this SAME original deadline.
+            let settled = await waitForInterruptedCommandTerminals(deadline: deadline)
+            interruptCompletedWithinDeadline = settled && now() <= deadline && protocolIssue == nil && !closed
             return interruptCompletedWithinDeadline
         } catch { return false }
+    }
+
+    private var interruptedCommandsSettled: Bool {
+        pendingOtherTools.isEmpty && commands.values.allSatisfy {
+            $0.started && !$0.malformed && ($0.ended || $0.interruptedCandidate)
+        }
+    }
+    private func waitForInterruptedCommandTerminals(deadline: TimeInterval) async -> Bool {
+        guard !closed, protocolIssue == nil, status == .interrupted, now() <= deadline else { return false }
+        if interruptedCommandsSettled { return true }
+        let remaining = deadline - now()
+        guard remaining > 0 else { return false }
+        return await withCheckedContinuation { continuation in
+            let timer = Task {
+                try? await Task.sleep(for: .seconds(remaining))
+                if !Task.isCancelled { self.finishInterruptedCommandsWaiter(confirmed: false) }
+            }
+            interruptedCommandsWaiter = InterruptedCommandsWaiter(continuation: continuation, timeout: timer, deadline: deadline)
+        }
+    }
+    private func finishInterruptedCommandsWaiter(confirmed: Bool) {
+        guard let waiter = interruptedCommandsWaiter else { return }
+        interruptedCommandsWaiter = nil; waiter.timeout.cancel()
+        waiter.continuation.resume(returning: confirmed && now() <= waiter.deadline && !closed && protocolIssue == nil)
     }
 
     private func ensureMayStart() throws {
@@ -424,6 +461,10 @@ actor CodexAppServerController {
         guard let threadId, let turnId, params["threadId"]?.string == threadId else { return }
         let frameTurn = method == "turn/started" || method == "turn/completed" ? params["turn"]?["id"]?.string : params["turnId"]?.string
         guard frameTurn == turnId else { return }
+        if status == .interrupted {
+            await interruptedCommandTerminal(method: method, params: params)
+            return
+        }
         // Terminal first-wins; stale progress must never replace it.
         guard status == .inProgress, !endingTurn else { return }
         if method == "turn/completed" {
@@ -455,7 +496,24 @@ actor CodexAppServerController {
         }
     }
 
-    private func handleItem(_ item: CodexAppServerJSON, event: String, terminalBackfill: Bool) async {
+    private func interruptedCommandTerminal(method: String, params: CodexAppServerJSON) async {
+        guard cancelRequested, acceptingInterruptedCommandTerminals, protocolIssue == nil,
+              let deadline = interruptDeadline, now() <= deadline, !closed else { return }
+        // No late answer, progress, new command or other tool can alter this
+        // turn. Only terminal evidence for a command observed BEFORE the turn
+        // ended may settle its existing record; the turn itself stays cancelled.
+        guard ["item/started", "item/completed"].contains(method) else { return }
+        guard let item = params["item"], let id = item["id"]?.string,
+              let type = item["type"]?.string else { poison("malformed_late_item"); return }
+        if type == "agentMessage", itemTypes[id] != "commandExecution" { return }
+        guard method == "item/completed", type == "commandExecution", itemTypes[id] == type,
+              commands[id]?.started == true else { poison("uncorrelated_late_command_terminal"); return }
+        await handleItem(item, event: "item.completed", terminalBackfill: false, emitEvent: false)
+        if commands[id]?.malformed == true { poison("malformed_late_command_terminal"); return }
+        if interruptedCommandsSettled { finishInterruptedCommandsWaiter(confirmed: true) }
+    }
+
+    private func handleItem(_ item: CodexAppServerJSON, event: String, terminalBackfill: Bool, emitEvent: Bool = true) async {
         guard let type = item["type"]?.string, let id = item["id"]?.string, Self.validID(id) else { poison("malformed_item"); return }
         let allowed = ["userMessage", "hookPrompt", "agentMessage", "functionCallOutput", "plan", "reasoning", "commandExecution",
             "fileChange", "mcpToolCall", "collabAgentToolCall", "webSearch", "imageView", "enteredReviewMode", "exitedReviewMode", "contextCompaction"]
@@ -504,7 +562,7 @@ actor CodexAppServerController {
         }
         // Backfill only unfinished items. Never replay already completed answers.
         if event == "item.completed" { completedItems.insert(id) }
-        await emit(.object(["type": .string(event), "item": .object(adapted)]))
+        if emitEvent { await emit(.object(["type": .string(event), "item": .object(adapted)])) }
     }
     private static func validID(_ id: String) -> Bool {
         !id.isEmpty && id.utf8.count <= 200 && id.utf8.allSatisfy {
@@ -513,6 +571,7 @@ actor CodexAppServerController {
     }
     private func poison(_ reason: String) {
         if protocolIssue == nil { protocolIssue = reason }
+        finishInterruptedCommandsWaiter(confirmed: false)
         let requests = Array(pending.values); pending = [:]
         let waiters = Array(turnWaiters.values); turnWaiters = [:]
         requests.forEach { $0.timeout.cancel(); $0.continuation.resume(throwing: CodexAppServerError.invalidProtocol) }

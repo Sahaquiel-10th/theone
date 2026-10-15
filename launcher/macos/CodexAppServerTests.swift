@@ -333,6 +333,101 @@ private func missingCommandTerminalFailsNormalCompletion() async throws {
     try check(snapshot.finalResponse == "still waiting" && snapshot.assessment(treeCleanupVerified: true).requiresCheck, "answer plus completed turn cannot hide unconfirmed command")
 }
 
+private func emptyInterrupted(_ actor: CodexAppServerController) async throws {
+    try await notification(actor, "turn/completed", fields: ["turn": .object([
+        "id": .string("turn_1"), "status": .string("interrupted"), "items": .array([]),
+        "itemsView": .string("notLoaded"), "error": .null
+    ])])
+}
+
+private func realShapeDelayedCommandTerminals() async throws {
+    for exit in [JSON.number(-1), .null, .number(130)] {
+        let fixture = Fixture(), actor = try controller(fixture)
+        _ = try await bootstrap(actor, fixture: fixture)
+        try await item(actor, "item/started", command())
+        try await item(actor, "item/started", command()) // repeated progress for one command identity is not another task
+        try await item(actor, "item/started", command("cmd_2"))
+        try await item(actor, "item/completed", .object(["id": .string("before_stop"), "type": .string("agentMessage"), "text": .string("保留已返回的原话")]))
+        let stop = Task { await actor.requestInterrupt(timeout: 0.5) }
+        let sharedStop = Task { await actor.requestInterrupt(timeout: 0.5) }
+        try await reply(actor, fixture.request("turn/interrupt"))
+        try await emptyInterrupted(actor)
+        try await Task.sleep(for: .milliseconds(10))
+        var snapshot = await actor.snapshot()
+        try check(snapshot.interruptAcknowledged && !snapshot.interruptCompletedWithinDeadline,
+            "ACK + empty interrupted must leave shared stop worker waiting")
+        try await item(actor, "item/completed", .object(["id": .string("late_answer"), "type": .string("agentMessage"), "text": .string("不得替换原话")]))
+        try await item(actor, "item/completed", command(status: "failed", exit: exit))
+        snapshot = await actor.snapshot()
+        try check(!snapshot.interruptCompletedWithinDeadline, "one of two tool terminals cannot release shared future")
+        try await item(actor, "item/completed", command("cmd_2", status: "failed", exit: .number(-1)))
+        let first = await stop.value, second = await sharedStop.value
+        try check(first && second, "known delayed command terminals release same stop future")
+        snapshot = await actor.snapshot()
+        try check(snapshot.turnStatus == .interrupted && snapshot.finalResponse == "保留已返回的原话", "late evidence changes neither cancelled turn nor answer")
+        try check(snapshot.assessment(treeCleanupVerified: true).cancellationConfirmed, "pair + exact late terminals + tree confirmation")
+        try check(!snapshot.assessment(treeCleanupVerified: false).cancellationConfirmed, "tree/EOF proof remains independent")
+        let interrupts = await fixture.methodCount("turn/interrupt"), starts = await fixture.methodCount("turn/start")
+        try check(interrupts == 1 && starts == 1,
+            "late reconciliation never dispatches or sends duplicate interrupt")
+        let events = await fixture.allEvents()
+        try check(!events.contains { $0["item"]?["id"]?.string == "late_answer" }, "late answer never emitted")
+        try check(!events.contains { $0["item"]?["type"]?.string == "command_execution" && $0["type"]?.string == "item.completed" },
+            "post-terminal command receipt is internal evidence, not public progress")
+        try await end(actor, status: "completed")
+        try check(await actor.snapshot().turnStatus == .interrupted, "late successful turn cannot overwrite cancelled")
+    }
+}
+
+private func lateCommandEvidenceMustBeExact() async throws {
+    for mode in ["missing", "foreign_thread", "foreign_turn", "new_id", "new_start", "same_id_start", "new_tool", "wrong_type", "boolean_exit", "updated_only", "EOF"] {
+        let fixture = Fixture(), actor = try controller(fixture)
+        _ = try await bootstrap(actor, fixture: fixture)
+        try await item(actor, "item/started", command())
+        let stop = Task { await actor.requestInterrupt(timeout: 0.04) }
+        try await reply(actor, fixture.request("turn/interrupt"))
+        try await emptyInterrupted(actor)
+        switch mode {
+        case "foreign_thread": try await item(actor, "item/completed", command(status: "failed", exit: .number(-1)), thread: "other_thread")
+        case "foreign_turn": try await item(actor, "item/completed", command(status: "failed", exit: .number(-1)), turn: "old_turn")
+        case "new_id": try await item(actor, "item/completed", command("unseen_command", status: "failed", exit: .number(-1)))
+        case "new_start": try await item(actor, "item/started", command("new_command"))
+        case "same_id_start": try await item(actor, "item/started", command())
+        case "new_tool": try await item(actor, "item/completed", .object(["id": .string("file_late"), "type": .string("fileChange"), "status": .string("completed"), "changes": .array([])]))
+        case "wrong_type": try await item(actor, "item/completed", .object(["id": .string("cmd_1"), "type": .string("agentMessage"), "text": .string("not evidence")]))
+        case "boolean_exit": try await item(actor, "item/completed", command(status: "failed", exit: .bool(false)))
+        case "updated_only": try await item(actor, "item/updated", command(status: "failed", exit: .number(-1)))
+        case "EOF": await actor.transportClosed()
+        default: break
+        }
+        try check(!(await stop.value), "invalid late evidence must fail shared stop: \(mode)")
+        var snapshot = await actor.snapshot()
+        try check(snapshot.protocolIssue != nil && snapshot.assessment(treeCleanupVerified: true).requiresCheck,
+            "invalid late evidence retains poisoned hold: \(mode)")
+        try await item(actor, "item/completed", command(status: "failed", exit: .number(-1)))
+        snapshot = await actor.snapshot()
+        try check(!snapshot.interruptCompletedWithinDeadline && snapshot.assessment(treeCleanupVerified: true).requiresCheck,
+            "a later valid terminal cannot revive failed stop: \(mode)")
+    }
+}
+
+private func lateCommandUsesOriginalDeadline() async throws {
+    let fixture = Fixture(), clock = TestClock()
+    let actor = try CodexAppServerController(attemptId: "attempt_late_clock", authorizedCWD: "/tmp/ONE-QA", clientVersion: "test",
+        now: { clock.now() }, sendLine: { try await fixture.send($0) }, onExecEvent: { await fixture.event($0) })
+    _ = try await bootstrap(actor, fixture: fixture)
+    try await item(actor, "item/started", command())
+    let stop = Task { await actor.requestInterrupt(timeout: 0.05) }
+    try await reply(actor, fixture.request("turn/interrupt")); try await emptyInterrupted(actor)
+    clock.advance(1)
+    try await item(actor, "item/completed", command(status: "failed", exit: .number(-1)))
+    try check(!(await stop.value), "late command cannot renew original interrupt deadline")
+    let snapshot = await actor.snapshot()
+    try check(snapshot.interruptibleCommandCount == 0 && !snapshot.interruptCompletedWithinDeadline,
+        "after-deadline command evidence is not adopted even if timer was delayed")
+    try check(snapshot.assessment(treeCleanupVerified: true).requiresCheck, "expired stop retains hold")
+}
+
 @main private struct CodexAppServerTests {
     static func main() async {
         alarm(15)
@@ -348,7 +443,10 @@ private func missingCommandTerminalFailsNormalCompletion() async throws {
             try await monotonicDeadlineAndStuckWriter()
             try await serverRequestsDenied()
             try await missingCommandTerminalFailsNormalCompletion()
-            print("CodexAppServerTests: 11 groups passed (mocked stdio only)")
+            try await realShapeDelayedCommandTerminals()
+            try await lateCommandEvidenceMustBeExact()
+            try await lateCommandUsesOriginalDeadline()
+            print("CodexAppServerTests: 14 groups passed (mocked stdio only)")
         } catch { fputs("CodexAppServerTests failed: \(error)\n", stderr); exit(1) }
     }
 }
