@@ -615,9 +615,101 @@ test('an execution click cannot be acknowledged as dispatched without a real loc
  let runs=0;
  await assert.rejects(()=>f.service.dispatch(a,{...input('operation_false_local','修改网页标题'),localExecution:true},key,undefined,async()=>{runs++;return{id:'never',status:'queued'};}),/本机执行尚未开始/);
  assert.equal(runs,0);
+ assert.equal(f.calls.find(c=>c.modelId==='router')!.requiredTool,'delegate_task','an explicit execution click requires routing, even with no feature, attachment or bound task');
  const db=await f.store.read();
  assert.ok(db.messages.some(m=>m.role==='user'&&m.content==='修改网页标题'));
  assert.ok(!db.messages.some(m=>m.role==='assistant'&&m.content==='已转达并开始执行。'));
+});
+
+test('explicit local execution can ask one controlled clarification without creating or starting any task',async()=>{
+ const f=fixture(),stamp=new Date().toISOString();let runs=0;
+ await f.store.mutate(d=>d.conversations.push(...[
+  {...a,id:'website-ui',title:'官网 UI',modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp},
+  {...a,id:'product-ui',title:'ONE UI',modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp},
+  {...b,id:'foreign-ui',title:'PRIVATE_OTHER_UI',modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp},
+ ]));
+ f.setRoute(messages=>{
+  assert.doesNotMatch(JSON.stringify(messages),/PRIVATE_OTHER_UI/);
+  return messages.at(-1)?.role==='tool'?answer('已经开始修改了。'):{...answer(''),toolCalls:[{id:'clarify-ui',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({clarificationQuestion:'你说的是官网 UI，还是 ONE UI？'})}}]};
+ });
+ const request={...input('operation_local_clarify_01','把那个 UI 标题改一下，开工'),localExecution:true};
+ const reply=await f.service.dispatch(a,request,key,undefined,async()=>{runs++;return{id:'must-not-start',status:'running'};});
+ assert.equal(reply.message.content,'还没开始操作电脑。你说的是官网 UI，还是 ONE UI？');
+ assert.deepEqual(reply.taskIds,[]);assert.equal(reply.taskId,undefined);assert.equal(runs,0);
+ const routing=f.calls.filter(c=>c.modelId==='router');
+ assert.equal(routing[0].requiredTool,'delegate_task');
+ assert.equal(routing.at(-1)!.requiredTool,undefined);assert.deepEqual(routing.at(-1)!.tools,[]);
+ const schema=routing[0].tools.find(t=>t.function.name==='delegate_task')!.function.parameters as {properties:Record<string,unknown>;oneOf:unknown[]};
+ assert.ok(schema.properties.clarificationQuestion);assert.equal(schema.oneOf.length,2);
+ const db=await f.store.read();assert.equal(db.chatOperations!.filter(o=>o.workRun).length,0);assert.equal((db.executionTasks??[]).length,0);
+ assert.equal(db.conversations.filter(c=>!c.coordinatorMain).length,3);
+ assert.equal(db.messages.filter(m=>m.role==='user'&&m.content===request.text).length,1);
+ assert.ok(db.modelUsageRecords.every(row=>row.modelId==='router'),'clarification only uses the coordinator, never a worker');
+ const calls=f.calls.length;await f.service.dispatch(a,request,key,undefined,async()=>{runs++;return{id:'must-not-retry',status:'running'};});await f.service.resume(a,key);
+ assert.equal(f.calls.length,calls);assert.equal(runs,0);
+ await assert.rejects(()=>f.service.dispatch(b,{...request,operationId:'operation_clarify_foreign',boundTaskId:'website-ui'},key,undefined,async()=>{runs++;return{id:'foreign',status:'running'};}),/不存在|未授权/);
+ assert.equal(runs,0);
+});
+
+test('clarification accepts only its own question field and blocks any later delegation in the same request',async()=>{
+ const invalid=fixture();let runs=0;
+ invalid.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('已开始了。'):{...answer(''),toolCalls:[{id:'mixed-clarification',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({clarificationQuestion:'要改哪个？',taskId:null,title:'猜测任务',instruction:'未经确认的目标',executorId:'general'})}}]});
+ await assert.rejects(()=>invalid.service.dispatch(a,{...input('operation_clarify_mixed_01','修改那个文件'),localExecution:true},key,undefined,async()=>{runs++;return{id:'bad',status:'running'};}),/本机执行尚未开始/);
+ assert.equal(runs,0);assert.equal((await invalid.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
+ const guarded=fixture();
+ guarded.setRoute(()=>({...answer(''),toolCalls:[
+  {id:'ask-first',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({clarificationQuestion:'你指的是哪个文件？'})}},
+  {id:'try-after-question',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'不能开始',instruction:'不准猜测',executorId:'general',outputKind:'local_file',featureIds:[],dependsOn:[]}]})}},
+ ]}));
+ const reply=await guarded.service.dispatch(a,{...input('operation_clarify_guard_01','修改那个文件'),localExecution:true},key,undefined,async()=>{runs++;return{id:'bad',status:'running'};});
+ assert.equal(reply.message.content,'还没开始操作电脑。你指的是哪个文件？');assert.equal(runs,0);
+ assert.equal((await guarded.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
+});
+
+test('cancelling an explicit local clarification rejects a late acknowledgement without starting or saving an answer',async()=>{
+ const f=fixture();let release!:(r:ToolChatResult)=>void;let step=0,runs=0;
+ const gate=new Promise<ToolChatResult>(resolve=>{release=resolve;});
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{modelCall:async()=>step++===0?{...answer(''),toolCalls:[{id:'ask-before-cancel',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({clarificationQuestion:'你指的是哪个项目？'})}}]}:gate});
+ const operationId='operation_clarify_cancel_01';
+ const pending=service.dispatch(a,{...input(operationId,'改那个项目，开始'),localExecution:true},key,undefined,async()=>{runs++;return{id:'bad',status:'running'};});
+ const rejected=assert.rejects(pending,/已停止/);
+ await waitFor(async()=>step===2);await assert.rejects(()=>service.cancel(b,operationId,key),/不存在/);await service.cancel(a,operationId,key);
+ release(answer('你指的是哪个项目？'));await rejected;
+ const db=await f.store.read();assert.equal(runs,0);assert.equal((db.executionTasks??[]).length,0);assert.equal(db.chatOperations!.filter(o=>o.workRun).length,0);
+ assert.equal(db.chatOperations!.find(o=>o.operationId===operationId)!.status,'interrupted');assert.equal(db.messages.filter(m=>m.role==='assistant').length,0);
+});
+
+test('explicit local routing forces only an enabled local tool and cannot enable disabled tools',async()=>{
+ const f=fixture();let runs=0;
+ await f.store.mutate(d=>{d.settings.aiTasks!.coordinator!.published!.tools=['execute_local_task'];});
+ f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('本机要求已交出。'):{...answer(''),toolCalls:[{id:'enabled-local-only',type:'function',function:{name:'execute_local_task',arguments:JSON.stringify({taskId:null,title:'独立本机测试',instruction:'只创建测试文件，不覆盖、不联网。',executorId:'general'})}}]});
+ await f.service.dispatch(a,{...input('operation_local_only_tool_01','创建独立测试文件'),localExecution:true},key,undefined,async()=>{runs++;return{id:'enabled-local',status:'queued'};});
+ assert.equal(runs,1);assert.equal(f.calls[0].requiredTool,'execute_local_task');assert.deepEqual(f.calls[0].tools.map(t=>t.function.name),['execute_local_task']);
+ const disabled=fixture();await disabled.store.mutate(d=>{d.settings.aiTasks!.coordinator!.published!.tools=[];});disabled.setRoute(()=>answer('没有可用分派工具。'));
+ await assert.rejects(()=>disabled.service.dispatch(a,{...input('operation_local_no_tool_01','创建独立测试文件'),localExecution:true},key,undefined,async()=>{runs++;return{id:'disabled',status:'queued'};}),/本机执行尚未开始/);
+ assert.equal(runs,1);assert.equal(disabled.calls[0].requiredTool,undefined);assert.deepEqual(disabled.calls[0].tools,[]);
+});
+
+test('a pending local clarification rechecks Key and exact knowledge bindings through its save transaction',async()=>{
+ for(const change of ['revoked','rebound','key','after-read'] as const){
+  const f=fixture(),marker=`CLARIFICATION_REVOKED_CONTENT_${change}`;let release!:(r:ToolChatResult)=>void,step=0,runs=0,keyValid=true;
+  await f.store.mutate(d=>d.knowledgeConnections.push({id:'clarify-source',workspaceId:a.workspaceId,provider:'getnote',status:'connected',clientId:'fixture-account',encryptedApiKey:'fixture-encrypted',createdAt:'now',updatedAt:'now'}));
+  const gate=new Promise<ToolChatResult>(resolve=>{release=resolve;});
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{modelCall:async()=>step++===0?{...answer(''),toolCalls:[{id:'ask-sensitive',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({clarificationQuestion:`${marker}：你指的是哪个项目？`})}}]}:gate});
+  const operationId=`operation_clarify_revoke_${change.replace('-','_')}`;
+  const pending=service.dispatch(a,{...input(operationId,'改那个项目，开工'),sourceIds:['clarify-source'],localExecution:true},async()=>{if(!keyValid)throw new Error('本机授权已失效');},undefined,async()=>{runs++;return{id:'bad',status:'running'};});
+  const rejected=assert.rejects(pending,/知识授权已变化|未完成分派|本机授权/);
+  await waitFor(async()=>step===2);
+  if(change==='key')keyValid=false;
+  else if(change==='after-read'){
+   const read=f.store.read.bind(f.store);let armed=true;
+   f.store.read=async()=>{const snapshot=await read();if(armed){armed=false;await f.store.mutate(d=>{d.knowledgeConnections[0].status='revoked';});}return snapshot;};
+  }else await f.store.mutate(d=>{if(change==='rebound')d.knowledgeConnections[0].clientId='different-fixture-account';else d.knowledgeConnections[0].status='revoked';});
+  release(answer('这句确认可以发出。'));await rejected;
+  const db=await f.store.read();assert.equal(runs,0);assert.equal((db.executionTasks??[]).length,0);assert.equal(db.chatOperations!.filter(o=>o.workRun).length,0);
+  assert.equal(db.chatOperations!.find(o=>o.operationId===operationId)!.status,'failed','failed authorization must not leave a pending operation');
+  assert.equal(db.messages.filter(m=>m.role==='assistant').length,0);assert.doesNotMatch(JSON.stringify([...db.messages,...db.contextTraces]),new RegExp(marker));
+ }
 });
 
 test('explicit answer-only messages cannot delegate even when bound to an existing task', async () => {
@@ -693,6 +785,8 @@ test('local dispatch preserves the handoff, bypasses cloud worker and replay nev
   const run = async (cid: string, mid: string) => { const d=await f.store.read(); assert.equal(d.messages.find(m=>m.id===mid)?.content,'UI 标题改成荷叶饼，开工'); executed.push(cid); return {id:'ext-fixture',status:'queued'}; };
   const request={...input('operation_local_1234','UI 标题改成荷叶饼，开工'),localExecution:true};
   const result = await f.service.dispatch(a,request,key,undefined,run);
+  assert.equal(f.calls.find(c=>c.modelId==='router')!.requiredTool,'delegate_task');
+  assert.equal(f.calls.filter(c=>c.modelId==='router').at(-1)!.requiredTool,undefined,'the acknowledgement must not start a second execution');
   await f.service.resume(a,key);
   assert.equal(f.calls.filter(c=>c.modelId==='worker').length,0);
   assert.equal((await f.service.task(a,result.taskId!)).jobs[0].state,'prepared');

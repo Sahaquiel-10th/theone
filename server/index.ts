@@ -57,6 +57,7 @@ import { installFeishuRoutes } from "./feishuRoutes.js";
 import { connectorRoutes } from "./connectorRoutes.js";
 import { AuthorizationSessionError, AuthorizationSessions } from "./connectors/authorizationSessions.js";
 import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, saveExecutionInput, messagesThrough, publicExecutionTask, taskEvents, executionTrace, executionReceipts, saveExecutionReceipt, executionTerminal, assertLocalExecutionAvailable } from "./executionService.js";
+import { buildDirectExecutionInstruction } from "./directExecutionInstruction.js";
 import { adminUsageSummaries, adminUserUsageDetail } from "./adminUsage.js";
 import { operationsHealth } from "./operationsHealth.js";
 import { batchGift } from "./batchGift.js";
@@ -869,7 +870,8 @@ async function stopLocalPreparation(req:express.Request,operationId:string){
  for(const task of tasks)await connectorService.dispatch({workspaceId:scope.workspaceId,userId:scope.userId,deviceId:req.oneKeyDeviceId,installationId:req.oneKeyInstallationId},task.id,'cancel');
 }
 app.post('/api/executions/preparation/:operationId/cancel',...keyAuth,asyncRoute(async(req,res)=>{await stopLocalPreparation(req,String(req.params.operationId));res.status(202).json({ok:true});}));
-async function startLocalExecution(req: express.Request, res: express.Response, conversationId: string, sourceMessageId: string, operationId?: string) {
+async function startLocalExecution(req: express.Request, res: express.Response, conversationId: string, sourceMessageId: string, operationId?: string,
+  inputPolicy: "compiled" | "direct_input" = "compiled") {
   if (operationId !== undefined && (typeof operationId !== 'string' || !/^[A-Za-z0-9_-]{16,100}$/.test(operationId))) throw new Error("执行编号无效");
   if (!req.oneKeyDeviceId || !oneKeyPresence.isConnected(req.oneKeyDeviceId, req.oneKeyInstallationId)) throw new Error("本机执行未连接，请插入 ONE Key 并双击 ONE 图标");
   const db = await store.read();
@@ -917,10 +919,16 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
   const timestamp = now();
   if (compiled.finishReason === "length" || compiled.finishReason === "filtered") throw new Error("执行指令未完整生成，未发送到本机。请缩小任务范围后再试；本次模型用量已记录。");
   if (!compiled.content.trim()) throw new Error("未生成有效执行指令，未发送到本机；原始要求已保留。");
+  const instruction = inputPolicy === "direct_input" ? buildDirectExecutionInstruction({
+    workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id, sourceMessageId,
+    records: prefix, compiledInstruction: compiled.content,
+    preparedHandoff: prepared && preparedOperation ? { workspaceId: preparedOperation.workspaceId, userId: preparedOperation.userId,
+      conversationId: conversation.id, messageId: prepared.inputMessageId, instruction: prepared.instruction } : undefined
+  }) : compiled.content.trim();
   const useLocalAgent = executionProvider === "local_agent";
   const task: ExecutionTask = {
     id: uid("ext"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id,
-    sourceMessageId, dispatchOperationId: requestOperationId, provider: executionProvider, status: "queued", instruction: compiled.content.trim(), deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId,
+    sourceMessageId, dispatchOperationId: requestOperationId, provider: executionProvider, status: "queued", instruction, deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId,
     createdAt: timestamp, updatedAt: timestamp, batchBudget
   };
   await store.mutate((mutable) => {
@@ -963,7 +971,7 @@ app.post("/api/executions/from-input", ...keyAuth, asyncRoute(async (req, res) =
   const operationId = requiredString(req.body.operationId, "执行编号");
   if (!/^[A-Za-z0-9_-]{16,100}$/.test(operationId)) throw new Error("执行编号无效");
   const sourceMessageId = await store.mutate(d => saveExecutionInput(d, req.workspaceId!, req.user!.id, conversationId, operationId, content, now()));
-  res.status(201).json(await startLocalExecution(req, res, conversationId, sourceMessageId, operationId));
+  res.status(201).json(await startLocalExecution(req, res, conversationId, sourceMessageId, operationId, "direct_input"));
 }));
 
 app.get("/api/me/local-device", ...keyAuth, asyncRoute(async (req, res) => {
