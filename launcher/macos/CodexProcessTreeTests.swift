@@ -12,6 +12,7 @@ private final class FakeTree: CodexProcessTreeBackend, @unchecked Sendable {
     private var addChildOnStop: CodexProcessIdentity?
     private var replaceDuringList: (CodexProcessIdentity,CodexProcessIdentity)?
     private var replaceAfterKill: CodexProcessIdentity?
+    private var departDuringList: (pid_t,CodexProcessIdentity)?
     private(set) var advancedParent = false
 
     init(_ nodes: [CodexProcessIdentity]) { processes = Dictionary(uniqueKeysWithValues: nodes.map { ($0.pid, $0) }) }
@@ -23,6 +24,10 @@ private final class FakeTree: CodexProcessTreeBackend, @unchecked Sendable {
     func children(of pid: pid_t) throws -> [pid_t] {
         lock.lock(); defer { lock.unlock() }
         if failLists.contains(pid) { throw CodexProcessTreeFailure.unavailable }
+        if let (parent,child) = departDuringList, parent == pid {
+            processes.removeValue(forKey:parent); processes[child.pid] = child; departDuringList = nil
+            return [child.pid]
+        }
         if let (parent,child) = replaceDuringList, parent.pid == pid {
             processes[parent.pid] = parent; processes[child.pid] = child; replaceDuringList = nil
         }
@@ -54,6 +59,7 @@ private final class FakeTree: CodexProcessTreeBackend, @unchecked Sendable {
     func denyKill(_ pid: pid_t) { lock.lock(); deniedKills.insert(pid); lock.unlock() }
     func addOnStop(_ node: CodexProcessIdentity) { lock.lock(); addChildOnStop = node; lock.unlock() }
     func replaceOnKill(_ node: CodexProcessIdentity) { lock.lock(); replaceAfterKill = node; lock.unlock() }
+    func reparentDuringChildren(_ parent: pid_t, child: CodexProcessIdentity) { lock.lock(); departDuringList = (parent,child); lock.unlock() }
     func signals() -> [(pid_t, Int32)] { lock.lock(); defer { lock.unlock() }; return sent }
     func contains(_ pid: pid_t) -> Bool { lock.lock(); defer { lock.unlock() }; return processes[pid] != nil }
     private static func stopping(_ n: CodexProcessIdentity, stopped: Bool = true) -> CodexProcessIdentity {
@@ -251,6 +257,44 @@ private final class FakeTree: CodexProcessTreeBackend, @unchecked Sendable {
         precondition(!uncertain.signals().contains { $0.1 == SIGCONT },"failed finish cannot thaw root to hide uncertainty")
     }
 
+    static func testRecordedChildReparentingDoesNotEraseOwnership() async throws {
+        let known = FakeTree([node(28701,getpid()),node(28702,28701,birth:11)])
+        let recorded = try CodexProcessTree.begin(rootPID:28701,attemptId:"attempt-recorded-reparent",backend:known,timing:fast)
+        defer { recorded.finish() }
+        known.reparentDuringChildren(28701,child:node(28702,1,birth:11))
+        recorded.captureNow()
+        let safe = await recorded.requestCancellation()
+        precondition(safe.trackedCount == 2 && safe.trackedProcessesExited && !safe.requiresCheck && safe.reasonCodes.isEmpty)
+        precondition(!known.contains(28702) && known.signals().contains { $0.0 == 28702 && $0.1 == SIGKILL },
+            "the same historically owned kernel identity remains owned after PPID1 reparenting")
+
+        let unknown = FakeTree([node(28801,getpid())])
+        let unproven = try CodexProcessTree.begin(rootPID:28801,attemptId:"attempt-new-reparent",backend:unknown,timing:fast)
+        defer { unproven.finish() }
+        unknown.reparentDuringChildren(28801,child:node(28802,1,birth:11))
+        unproven.captureNow()
+        let held = await unproven.requestCancellation()
+        precondition(held.trackedCount == 1 && held.requiresCheck && held.reasonCodes.contains("ancestry_unconfirmed"))
+        precondition(unknown.contains(28802) && unknown.signals().isEmpty,
+            "a first-seen child whose parent exited is not proven owned")
+
+        for changeUID in [false,true] {
+            let backend = FakeTree([node(28901,getpid()),node(28902,28901,birth:11)])
+            let tree = try CodexProcessTree.begin(rootPID:28901,attemptId:changeUID ? "attempt-uid-reuse" : "attempt-birth-reuse",backend:backend,timing:fast)
+            let old = node(28902,28901,birth:11)
+            let replacement = CodexProcessIdentity(pid:old.pid,parentPID:old.parentPID,
+                uid:changeUID ? old.uid + 1 : old.uid,realUID:changeUID ? old.realUID + 1 : old.realUID,
+                startedSeconds:changeUID ? old.startedSeconds : 999,startedMicroseconds:old.startedMicroseconds,
+                stopped:false,zombie:false)
+            backend.replace(replacement); tree.captureNow()
+            let result = await tree.requestCancellation()
+            precondition(result.requiresCheck && result.reasonCodes.contains("identity_changed"))
+            precondition(backend.contains(28902) && !backend.signals().contains { $0.0 == 28902 },
+                "historical ownership cannot authorize signalling a reused PID/birth/UID")
+            tree.finish()
+        }
+    }
+
     static func childMode() -> Bool {
         let args = CommandLine.arguments
         if args.count > 1 && args[1] == "--native-test-root" {
@@ -379,9 +423,10 @@ private final class FakeTree: CodexProcessTreeBackend, @unchecked Sendable {
         try await testPromptDescendantStopKeepsRootAndIsIdempotent()
         try await testPromptUncertaintyNeverResumesRootOrAdvancesParent()
         try await testPromptFullCancellationAndFinishJoin()
+        try await testRecordedChildReparentingDoesNotEraseOwnership()
         try await testRealNativeInterrupt(); try await testRealDetachedShellCannotWriteAfterStop()
         try await testRealPromptStopPreservesRootWithoutDelayedWrite()
         alarm(0)
-        print("Mac owned process tree tests passed (identity, idempotence, uncertainty, parent-first cleanup, native SIGINT, real detached shell delayed write)")
+        print("Mac owned process tree tests passed (12 groups: exact identity, reparenting, uncertainty, prompt parent-first cleanup, native SIGINT, real delayed write)")
     }
 }

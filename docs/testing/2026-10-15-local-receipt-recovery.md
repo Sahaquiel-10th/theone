@@ -353,3 +353,13 @@ prompt-stop worker 共享且幂等；完整取消与 finish 同锁登记更高�
 提交 `a4e904bc060320401882ea5319e67f50318cab84` 已推送，Actions `38716071945` 的应用检查（758 项、757 通过、1 跳过）和 Windows 检查通过，但 Mac 在旧 `heldStdoutNeedsOwnedTreeCleanup` 管道夹具报 `owned descendant cleanup unconfirmed`，部署跳过。该夹具不调用新增的 prompt-stop hook；具体 reason 尚未被失败断言输出，不能据此放宽停止保护或直接重试掩盖。
 
 包已上传但没有发布。真实服务器仍指向 `6218ec35c9e994c0713c6cdd061ee2a5508ca9b0`，服务 active、健康 `ok:true`；实际驻留仍为 0.4.20，未提交 0.4.21 测试。继续定位检查失败，保留本次失败证据。
+
+### 已知子进程重挂的独立确定性回归
+
+诊断提交 `8b98d62dd240744305914ea988fca05fb4dd6249` 的 Actions `38717476874` 三项验证全部通过；本机严格管道套件连续 9 次通过，未重现首轮失败，不能宣称已经取得那次失败的具体原因。诊断增强保留退出、跟踪数量和完整 reasonCodes，断言不变。
+
+另用不发真实信号的 metadata mock 确定性复现了一处误判：已登记且内核 birth/UID 相同的子进程在父退出时重挂到 PPID1，清理已全部完成，但重新证明历史父子关系时留下 `ancestry_unconfirmed`。首次出现、无法证明父子关系的新进程在同样竞态下拒绝归属是正确行为。
+
+窄修正只把已记录 child 的完整 PID/UID/realUID/birth 判断提前；保留历史 depth，不登记新归属。新发现进程仍需父前后夹读、PPID、出生时间和 UID 全部门禁；信号发送仍再次核对精确身份。正式第 12 组回归覆盖已知重挂、未知新进程拒绝/零信号、birth/UID 复用拒绝/零信号。独立安全复核、12 组严格回归、完整启动器双架构检查通过。最终 helper SHA-256 `7d5a8a54ba2424db229ef896ced96a5a7e9eb5f3363cb86950d5993a588304aa`。
+
+主代理对最终 helper 独立严格编译并运行 9 组真实管道夹具通过，证据 `one-appserver-integration-AbjT0b`。上述是独立修正和自动回归，不证明旧 CI 原因，也不代替真实 ONE 验收。未发布的 0.4.21 将重新生成制品，旧上传包不启用。

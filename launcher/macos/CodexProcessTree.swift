@@ -348,6 +348,14 @@ final class CodexProcessTree: @unchecked Sendable {
                 guard parent.identity.isSameProcess(as: liveParent) else { reasons.insert("identity_changed"); continue }
                 for pid in try backend.children(of: liveParent.pid) {
                     guard let child = try backend.identity(pid), !child.zombie else { continue }
+                    // Ownership of a previously observed exact kernel identity
+                    // survives reparenting when its original parent exits. Do
+                    // not re-prove its now-historical PPID relation; never use
+                    // this exception to attach a new/reused PID or alter depth.
+                    if let previous = nodes[pid] {
+                        if !previous.identity.isSameProcess(as: child) { reasons.insert("identity_changed") }
+                        continue
+                    }
                     // PPID is only a number. The parent may exit and its PID
                     // be reused while enumerating: bracket child observation
                     // with the same kernel parent birth/uid before attaching.
@@ -357,10 +365,6 @@ final class CodexProcessTree: @unchecked Sendable {
                     }
                     guard child.parentPID == liveParent.pid, child.uid == root.uid, child.realUID == root.realUID,
                           child.wasBornAfter(liveParent), pid != getpid() else { reasons.insert("ancestry_unconfirmed"); continue }
-                    if let previous = nodes[pid] {
-                        if !previous.identity.isSameProcess(as: child) { reasons.insert("identity_changed") }
-                        continue
-                    }
                     guard nodes.count < maximumTracked else { reasons.insert("limit_exceeded"); continue }
                     let node = Node(identity: child, depth: parent.depth + 1); nodes[pid] = node; queue.append(node)
                 }
