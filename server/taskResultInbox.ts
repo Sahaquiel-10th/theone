@@ -2,6 +2,7 @@ import type { Attachment, AttachmentSummary, Conversation, Database, ExecutionTa
 import type { ChatOperation } from './chatOperations.js';
 import { createHash } from 'node:crypto';
 import { localExecutionResultId } from './executionService.js';
+import { executionExplicitlyUnfinished } from './executionResultState.js';
 
 export type TaskResultScope = { workspaceId: string; userId: string };
 export type TaskResultOutcome = 'completed' | 'returned' | 'failed' | 'partial' | 'needs_input' | 'cancelled' | 'interrupted';
@@ -21,6 +22,12 @@ export function latestTaskResults(results: TaskResultReceipt[]) {
     if (!previous || result.createdAt >= previous.createdAt) latest.set(result.taskId, result);
   }
   return [...latest.values()];
+}
+/** Only successful, unseen latest outcomes may accompany an unrelated reply.
+ * Failed/uncertain work remains on its note and is available to explicit reads. */
+export function automaticTaskResults(results: TaskResultReceipt[]) {
+  return latestTaskResults(results).filter(result => !result.reported && !result.reviewed
+    && (result.outcome === 'completed' || result.outcome === 'returned'));
 }
 /** Server-internal snapshot, never accepted from a browser. Old local rounds require durable message evidence. */
 export type TaskResultCapture = TaskResultScope & { result: TaskResultReceipt;
@@ -97,7 +104,10 @@ function localResult(db: Database, scope: TaskResultScope, execution: ExecutionT
   const answer = execution.finalResponse?.trim() ?? '', error = execution.lastError?.trim() ?? '';
   const result = answer && error.startsWith(answer) ? error : error && answer.startsWith(error) ? answer : [error, answer].filter(Boolean).join('\n');
   let outcome: TaskResultOutcome = execution.status === 'completed' ? (answer ? 'returned' : 'needs_input')
-    : execution.status === 'failed' && answer ? 'partial' : execution.status as TaskResultOutcome;
+    : execution.status as TaskResultOutcome;
+  // A normal process exit is not proof of goal completion. Preserve the full
+  // receipt, but don't promote an executor's explicit non-completion to success.
+  if (outcome === 'returned' && executionExplicitlyUnfinished(answer)) outcome = 'needs_input';
   const reported = Boolean(marker(db, scope, id) || (execution.reportedToCoordinatorAt
     && (execution.reportedRound === round || execution.reportedRound === undefined && round === 0)));
   const summary = persisted?.content || result || '没有可确认的执行结果，请查看本轮过程。';
@@ -127,6 +137,9 @@ function bounded(results: TaskResultReceipt[], limits: TaskResultLimits) {
 /** Read on the server before a dispatcher call. Returned content is evidence, never instructions or new authority. */
 export function pendingTaskResults(db: Database, scope: TaskResultScope, limits: TaskResultLimits = {}) {
   return bounded(allResults(db, scope, Math.max(100, Math.min(limits.summaryChars ?? 1200, 6000))).filter(r => !r.reported), limits);
+}
+export function pendingConversationTaskResults(db: Database, scope: TaskResultScope, limits: TaskResultLimits = {}) {
+  return bounded(automaticTaskResults(allResults(db, scope, Math.max(100, Math.min(limits.summaryChars ?? 1200, 6000)))), limits);
 }
 /** The review badge persists after a result was reported in the main conversation. */
 export function unreviewedTaskResults(db: Database, scope: TaskResultScope, limits: TaskResultLimits = {}) {

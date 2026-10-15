@@ -37,7 +37,7 @@ import {eyeRoute,isConversationShelfMove,type EyeRoute} from './oneEdgeMotion';
 import {createEyeMotion} from './interruptibleEye';
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
-import { MessageMarkdown } from "./MessageMarkdown";
+import { MessageMarkdown, ImagePreview, hasInlineImage } from "./MessageMarkdown";
 import { PublicSharingPage } from "./PublicSharing";
 import "katex/dist/katex.min.css";
 import {
@@ -536,7 +536,7 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
   const steps = events.filter(event => event.kind !== "user_message");
   const latestStep = friendlyExecutionProgress(steps[steps.length - 1]);
   const api = useContext(PrivateApiContext);
-  const status = preparing ? "preparing" : task?.status || "preparing";
+  const status = preparing ? "preparing" : executionNeedsReview(task) ? "needs_input" : task?.status || "preparing";
   const busy = preparing || isExecutionRunning(task);
   return <section id="one-current-execution" className={`execution-disclosure ${status} ${expanded ? "is-expanded" : ""}`} aria-label="本机执行">
     <div className="execution-disclosure-header">
@@ -766,7 +766,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     ...(coordinator.snapshot?.notices ?? []).map(n => ({id:n.id,taskId:n.taskId,title:n.title||conversations.find(c=>c.id===n.taskId)?.title||'这件事',state:n.state,reported:n.reported,read:n.read,outcome:n.outcome,reportable:true})),
     ...executionTasks.filter(t=>isExecutionRunning(t)).map(t=>({id:t.id,taskId:t.conversationId,title:conversations.find(c=>c.id===t.conversationId)?.title||'本机任务',state:t.status,local:true,reportable:false}))];
   const unviewedResultCount=new Set((coordinator.snapshot?.notices||[]).filter(n=>!n.read).map(n=>n.taskId)).size;
-  const uniqueTransfers = [...new Map(transfers.map(t=>[t.id,t])).values()];
+  const uniqueTransfers = [...new Map(transfers.map(t=>[t.id,t])).values()].map(task=>({...task,updatedAt:
+    coordinator.snapshot?.notices.find(n=>n.id===task.id)?.updatedAt
+    || executionTasks.find(t=>t.id===task.id)?.updatedAt
+    || coordinatorMetas.find(t=>t.id===task.taskId)?.updatedAt}));
+  useEffect(()=>{
+    const input=document.getElementById('one-studio-input');
+    if(input instanceof HTMLTextAreaElement){input.style.height='auto';input.style.height=`${Math.min(180,input.scrollHeight)}px`;}
+  },[content,view]);
   useEffect(() => {
     const previous = motionTasksRef.current; motionTasksRef.current = new Set(executionTasks.map(t=>t.id));
     const eligible=executionTasks.filter(t=>isExecutionRunning(t)&&!stoppedExecutionIdsRef.current.has(t.id)&&!stoppedPreparationIdsRef.current.has(t.dispatchOperationId||'')&&!stoppedPreparationIdsRef.current.has(t.preparationOperationId||''));
@@ -803,7 +810,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const task=coordinator.snapshot?.tasks.find(t=>t.id===id);
     const conversation=coordinator.details[id]?.conversation||conversations.find(c=>c.id===id);
     const local=executionTasks.filter(item=>item.conversationId===id).sort((a,b)=>a.updatedAt.localeCompare(b.updatedAt)).at(-1);
-    const localNeedsAction=local&&['failed','cancelled'].includes(local.status)&&!task?.running&&!task?.queued;
+    const localNeedsAction=local&&(['failed','cancelled'].includes(local.status)||executionNeedsReview(local))&&!task?.running&&!task?.queued;
     if(!coordinator.enabled||!(task?.paused||conversation?.workPaused||localNeedsAction))return null;
     const detail=coordinator.details[id];
     const error=detail?.jobs.filter(job=>job.error).at(-1)?.error;
@@ -820,7 +827,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         if(confirm(`${actionLabel} · ${title}\n本轮范围：${latest.slice(0,480)}\n${recovery.kind==='review_image'?'这会新生成一张图片，可能产生新用量；已有结果和历史都会保留。':'将沿用原附件和功能，可能产生新用量；不会重复执行较早待办。'}`))void coordinator.retryTask(id).then(()=>refresh()).catch(e=>setError(e.message));
       }}>{retrying?'正在恢复…':actionLabel}</button>:null}
       {recovery?.kind==='review_notion'?<NotionReceiptNotice api={api} taskId={id} receipt={detail?.jobs.filter(j=>j.notionReceipt).at(-1)?.notionReceipt} onRefresh={()=>coordinator.load(id)} />:null}
-{localNeedsAction?<><p>{local.status==='cancelled'?'这轮已经停下，不会自己再启动。':'这轮本机操作还没完成。'}先看看操作记录；想接着做，可以回到这件事补一句要求，ONE 会先核对已有结果。</p><button type="button" onClick={()=>{setSelectedExecutionId(local.id);setExpandedExecutionId(local.id);setRevealExecutionId(local.id);void loadLatestExecution(id,local.id);}}>查看本轮操作</button><button type="button" onClick={()=>{if(currentDraftRef.current.content.trim()){setError('输入框里还有一段没发出的内容，先保留或发完它，再继续这件事。');return;}coordinator.dispatch({type:'bind',taskId:id});openSurface('chat');setContent('请先核对上一轮实际结果，只继续未完成的部分，不要重复已有修改。');}}>核对后继续这件事</button></>:null}
+{localNeedsAction?<><p>{local.status==='cancelled'?'这轮已经停下，不会自己再启动。':'这轮本机操作还没完成。'}先看看操作记录；想接着做，可以回到这件事补一句要求，ONE 会先核对已有结果。</p><button type="button" onClick={()=>{setSelectedExecutionId(local.id);setExpandedExecutionId(local.id);setRevealExecutionId(local.id);void loadLatestExecution(id,local.id);}}>查看本轮操作</button><button type="button" onClick={()=>{if(currentDraftRef.current.content.trim()){setError('输入框里还有一段没发出的内容，先保留或发完它，再继续这件事。');return;}coordinator.dispatch({type:'bind',taskId:id});openSurface('chat');setContent('请先核对上一轮实际结果，只继续未完成的部分，不要重复已有修改。补充本轮要求：若本任务是新建文档，同名文件（即使为空）请保留，另存为原名-2、-3等编号版本；允许回读本轮目标文件验证，不读取无关文件。若原任务是修改已有文件，则先核对原目标，不擅自另存或扩大授权。');}}>核对后继续这件事</button></>:null}
       {!detail?<button type="button" onClick={()=>void coordinator.load(id).catch(e=>setError(e.message))}>查看恢复方式</button>:null}
     </section>;
   }
@@ -1782,7 +1789,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const settledOthers = otherRows.filter(item => item.status !== "running" && item.status !== "thinking");
   const latestTurnStart = Math.max(0, (active?.messages || []).map(message => message.role).lastIndexOf("user"));
   const replyPending=waitingForCurrentReply(activeLoading,active?.messages??[]);
-  const currentStatus = activePreparing ? "正在连接" : currentRunningExecution ? "本机执行中" : activeLoading ? replyPending?'准备回复中':'正在回复' : failedTaskIds.has(activeId) ? "待重试" : executionTask?.status === "completed" ? "本机已完成" : executionTask?.status === "cancelled" ? "本机已停止" : executionTask?.status === "failed" ? "本轮未完成 · 查看原因" : "当前任务";
+  const currentStatus = activePreparing ? "正在连接" : currentRunningExecution ? "本机执行中" : activeLoading ? replyPending?'准备回复中':'正在回复' : failedTaskIds.has(activeId) ? "待重试" : executionNeedsReview(executionTask) ? "本轮未完成 · 查看下一步" : executionTask?.status === "completed" ? "本机已完成" : executionTask?.status === "cancelled" ? "本机已停止" : executionTask?.status === "failed" ? "本轮未完成 · 查看原因" : "当前任务";
   const currentBusy = activePreparing || Boolean(currentRunningExecution) || activeLoading;
 
   function activityLabel(row: TaskActivityRow) {
@@ -1986,7 +1993,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                         ) : null}
                       </>
                     )}
-                    {message.imageUrl ? <img className="generated-image" src={message.imageUrl} alt={message.content} /> : null}
+                    {message.imageUrl && !hasInlineImage(message.content,message.imageUrl) ? <ImagePreview src={message.imageUrl} alt="ONE 生成的图片"/> : null}
                     <small className="message-time">{dateTime(message.createdAt)}</small>
                   </div>
                 </article>
@@ -2019,7 +2026,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           }
         }} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)}/>:null}
         {coordinator.removedTask?<p role="status">任务已删除，历史保留。<button type="button" onClick={()=>void coordinator.restoreTask().then(()=>refresh()).catch(e=>setError(e.message))}>恢复任务（不会自动重跑）</button></p>:null}
-{coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} departureAnchor={()=>document.querySelector<HTMLElement>('[data-task-dispatch-anchor]') || document.querySelector<HTMLElement>('.studio-presence')} returnAnchor={()=>document.querySelector<HTMLElement>('[data-task-return-anchor]') || document.querySelector<HTMLElement>('.coordinator-message.assistant:last-of-type')} recentReportedReceiptIds={coordinator.snapshot?.recentReportedReceiptIds} onReadAll={readAllTaskMessages} onDismiss={task=>coordinator.acknowledge(task.taskId,dismissibleReceiptIds(uniqueTransfers,task.taskId))} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null}
+{coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} departureAnchor={()=>document.querySelector<HTMLElement>('[data-task-dispatch-anchor]') || document.querySelector<HTMLElement>('.studio-presence')} returnAnchor={()=>document.querySelector<HTMLElement>('[data-task-return-anchor]') || document.querySelector<HTMLElement>('.coordinator-message.assistant:last-of-type')} recentReportedReceiptIds={coordinator.snapshot?.recentReportedReceiptIds} onReadAll={readAllTaskMessages} onOpenAll={()=>openSurface('things')} onDismiss={task=>coordinator.acknowledge(task.taskId,dismissibleReceiptIds(uniqueTransfers,task.taskId))} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null}
 
         {!preview.enabled && (otherRows.length > 0 || unreadNotices.length > 0 || taskStatusUnavailable) ? <section className="studio-activity attention-activity" aria-label="任务动态">
           {otherRows.length > 0 || unreadNotices.length > 0 ? <button className="attention-activity-toggle" type="button" aria-expanded={activityExpanded} aria-controls="attention-task-list" onClick={() => setActivityExpanded(value => !value)}>
@@ -2085,7 +2092,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               onKeyDown={handleComposerKeyDown}
               onPaste={handleComposerPaste}
               placeholder={composeMode === "execution" ? "补充要求" : currentModel?.kind === "image" ? "描述你想怎么改" : "告诉我，你想做什么"}
-              rows={3}
+              rows={1}
             />
             <button id="one-studio-send" className="primary send" type="submit" aria-label={composeMode === "execution" ? "发送并继续执行" : "发送消息"} title={targetLoading ? (preview.enabled ? "ONE 正在承接这句话，可以先编辑下一条" : "这件事正在回复，可以新开一件事") : "发送消息"} disabled={uploadingAttachments || pendingAttachments.some(a => a.status && a.status !== "ready") || (composeMode === "execution" ? taskStatusUnavailable || preparingExecution || executionBusy || !content.trim() || pendingAttachments.length > 0 : !activeModelId || targetLoading || (!content.trim() && !pendingAttachments.length))}>
               {composeMode === "execution" ? <Zap size={18} /> : <ArrowUp size={19} />}

@@ -5,6 +5,13 @@ import rehypeKatex from "rehype-katex";
 import { internalTaskId } from './taskLink';
 import { executionReceiptPresentation } from './executionReceiptPresentation';
 
+export function ImagePreview({src,alt='图片'}:{src:string;alt?:string}) {
+  return <button type="button" className="one-image-preview" aria-label={`查看大图：${alt}`} onClick={()=>window.open(src,'_blank','noopener,noreferrer')}>
+    <img src={src} alt={alt} loading="lazy"/><span>查看大图 ↗</span>
+  </button>;
+}
+export const hasInlineImage=(markdown:string,url:string)=>[...markdown.matchAll(/!\[[^\]]*\]\(\s*<?([^\s)>]+)>?/g)].some(match=>match[1]===url);
+
 /** Local artifacts are not website routes and cannot be opened by an ordinary web link. */
 function localArtifactPath(href: string | undefined): string | undefined {
   if (!href) return;
@@ -22,7 +29,7 @@ export function MessageMarkdown({ children, allowImages = true }: { children: st
   const receipt = executionReceiptPresentation(children);
   if (receipt) return <div className="one-local-feedback"><small>{receipt.headline}</small><MessageMarkdown allowImages={allowImages}>{receipt.body}</MessageMarkdown><details className="one-result-evidence"><summary>查看操作记录</summary><small>{receipt.provenance}</small>{receipt.tools ? <pre>{receipt.tools}</pre> : null}</details></div>;
   return <ReactMarkdown urlTransform={(url, _key, node) => node.tagName === 'a' && localArtifactPath(url) ? url : defaultUrlTransform(url)} components={{
-    ...(!allowImages ? { img: () => null } : {}),
+    img: ({src,alt}) => allowImages && typeof src==='string' && src ? <ImagePreview src={src} alt={alt}/> : null,
     a: ({node: _node, href, children: label, ...props}) => {
       const local = localArtifactPath(href || String(_node?.properties?.href || ''));
       if (local) return <code className="one-local-artifact-path">{local}</code>;

@@ -2,8 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MessageMarkdown } from "./MessageMarkdown.js";
+import { MessageMarkdown, hasInlineImage } from "./MessageMarkdown.js";
 const render = (children: string) => renderToStaticMarkup(createElement(MessageMarkdown, { children }));
+test("inline images use a compact accessible preview and repeated attachment images can be omitted",()=>{
+ const url='/api/attachments/att_test/content',text=`![结果](${url})`;
+ assert.match(render(text),/class="one-image-preview"/);
+ assert.match(render(text),/查看大图/);
+ assert.equal(hasInlineImage(text,url),true);
+ assert.equal(hasInlineImage('[下载]('+url+')',url),false);
+ assert.equal(hasInlineImage(text,url+'2'),false);
+});
 
 test("local artifact links show the actual copyable path instead of a broken website route", () => {
   for (const path of ['/Users/machao/Desktop/test/order.md', '/home/test/order.md', 'file:///Users/test/order.md', 'file:///C:/test/order.md']) {

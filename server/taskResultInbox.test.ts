@@ -6,7 +6,19 @@ import type { WorkRun } from './coordinatorTypes.js';
 import { CoordinatorService } from './coordinatorService.js';
 import { acknowledgeTaskResults, acknowledgeAllTaskResults, appendTaskResultReport, markTaskResultsReported, pendingTaskResults, unreviewedTaskResults, taskResultIdsReportedInMessage, taskResultConversationContext, captureTaskResults, capturedTaskResultsForReport } from './taskResultInbox.js';
 import { saveExecutionReceipt } from './executionService.js';
-import {latestTaskResults} from './taskResultInbox.js';
+import {latestTaskResults,pendingConversationTaskResults} from './taskResultInbox.js';
+
+test('unrelated conversation reports only unseen successful latest work, never stale successes behind a failure',()=>{
+ const db=fixture(),good=local(db,'good'),old=local(db,'old'),bad=local(db,'bad');
+ bad.conversationId=old.conversationId;bad.updatedAt='2026-10-16T12:00:00Z';bad.status='failed';bad.finalResponse='尚未创建文件';
+ const read=local(db,'read');read.noticeReadRound=0;
+ const stopped=local(db,'stop');stopped.status='cancelled';
+ const uncertain=local(db,'uncertain');uncertain.finalResponse='停止操作。无法确认内容，未完成回读';
+ local(db,'other-owner',b);
+ assert.deepEqual(pendingConversationTaskResults(db,a).map(r=>r.sourceId),[good.id]);
+ assert.equal(unreviewedTaskResults(db,a,{count:50}).some(r=>r.sourceId===bad.id),true);
+ assert.equal(pendingConversationTaskResults(db,b).length,1);
+});
 
 test('one task briefing keeps only its newest result, without erasing history or other owners',()=>{
   const db=fixture();const first=local(db,'first'),last=local(db,'last');last.conversationId=first.conversationId;
@@ -184,7 +196,7 @@ test('failed partial, no-result and needs-input receipts remain truthful and bou
   const localFailed = local(db, 'local-partial'); localFailed.status = 'failed'; localFailed.lastError = '写入第二个文件失败';
   const outcomes = new Map(pendingTaskResults(db, a).map(r => [r.id, r.outcome]));
   assert.equal(outcomes.get('failed'), 'partial'); assert.equal(outcomes.get('empty'), 'needs_input');
-  assert.equal(outcomes.get('needs-input'), 'needs_input'); assert.equal(outcomes.get('local-partial'), 'partial');
+  assert.equal(outcomes.get('needs-input'), 'needs_input'); assert.equal(outcomes.get('local-partial'), 'failed');
   assert.equal(outcomes.get('long'), 'completed');
   const bounded = pendingTaskResults(db, a, { count: 2, summaryChars: 100, totalChars: 150 });
   assert.equal(bounded.length, 2); assert.ok(bounded.reduce((n, r) => n + r.summary.length, 0) <= 150);

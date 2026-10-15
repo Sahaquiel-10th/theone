@@ -1,4 +1,16 @@
-.task-transfer-rail{position:fixed;right:24px;top:160px;width:clamp(155px,16vw,235px);max-height:calc(100dvh - 240px);overflow:visible;display:flex;flex-direction:column;gap:10px;z-index:12;scrollbar-width:thin}
+.task-transfer-rail{position:fixed;right:24px;top:120px;width:clamp(155px,16vw,235px);max-height:calc(100dvh - 170px);overflow:auto;display:flex;flex-direction:column;gap:10px;z-index:12;scrollbar-width:thin}
+.one-studio .one-image-preview{display:inline-flex;flex-direction:column;align-items:flex-start;gap:4px;max-width:100%;margin:8px 0;padding:0;border:0;background:transparent;color:var(--studio-muted);cursor:zoom-in;vertical-align:top}
+.one-studio .one-image-preview img{display:block;width:auto;max-width:100%;height:auto;max-height:min(240px,32dvh);object-fit:contain;border:1px solid var(--studio-line);border-radius:10px}
+.one-image-preview span{font-size:11px;line-height:1.5}
+.one-studio.studio-open .composer-row{min-height:64px;padding:12px}
+.one-studio.studio-open .composer-row textarea{min-height:32px;max-height:180px;overflow-y:auto;line-height:1.65}
+.one-studio.coordinator-preview.studio-open .studio-presence .one-presence{width:36px;height:36px;flex-basis:36px}
+.one-studio.coordinator-preview.studio-open .studio-presence-copy h2{font-size:15px;margin:0}
+.one-studio.coordinator-preview.studio-open .studio-presence{gap:10px}
+.one-studio.coordinator-preview.studio-open .studio-assistant{gap:10px;padding-top:14px}
+.one-studio .coordinator-messages{gap:10px;padding-bottom:12px}
+.one-studio .coordinator-message{padding:10px 14px}
+.one-studio .coordinator-message.user{padding:10px 14px}
 .one-studio button.task-transfer-bubble{display:flex;align-items:center;gap:9px;padding:12px 14px;border:1px solid var(--studio-line);border-radius:18px 18px 5px 18px;background:var(--studio-paper);color:var(--studio-ink);font:inherit;text-align:left;cursor:pointer}
 .task-transfer-bubble>span{flex:1;min-width:0}.task-transfer-bubble strong{display:block;font-size:12px;font-weight:500;overflow-wrap:anywhere}.task-transfer-bubble small{display:block;font-size:10px;color:var(--studio-muted);margin-top:5px}
 .task-transfer-row{display:flex;align-items:center;gap:3px;flex-wrap:wrap}.task-transfer-row>.task-transfer-bubble{flex:1 1 100%;min-width:0;border-radius:5px 18px 18px 18px}.task-transfer-row>.task-transfer-more{margin-left:auto}.task-transfer-heading{animation:none!important}.task-feedback-light{color:#928138;filter:drop-shadow(0 0 5px #c8bb6e66)}

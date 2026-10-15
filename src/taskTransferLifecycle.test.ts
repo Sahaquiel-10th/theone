@@ -3,7 +3,15 @@ import assert from 'node:assert/strict';
 import {reportedCardTransitions,departingCardTransitions,applyReviewedReceipts} from './taskTransferLifecycle';
 import {noteFlightFrames} from './taskTransferMotion';
 import type {Transfer} from './TaskTransferRail';
+import {latestTransferNotes,transferNeedsRecovery} from './TaskTransferRail';
 const card:Transfer={id:'round-1',taskId:'ui',title:'界面',state:'returned',read:false,reported:false};
+test('only the five latest notes are visible; older and active work is retained',()=>{
+ const tasks=Array.from({length:8},(_,i)=>({...card,id:String(i),taskId:String(i),updatedAt:`2026-10-16T00:00:0${i}Z`}));
+ assert.deepEqual(latestTransferNotes(tasks).map(t=>t.id),['7','6','5','4','3']);
+ assert.equal(tasks.length,8);
+ assert.equal(transferNeedsRecovery({...card,state:'failed',outcome:'failed'}),true);
+ assert.equal(transferNeedsRecovery(card),false);
+});
 
 test('finished notes wait through idle updates; only a dispatcher receipt sends them back',()=>{
  const previous=new Map([[card.id,card]]);

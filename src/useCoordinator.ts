@@ -27,6 +27,7 @@ type Meta = {
 };
 type Notice = {
   id: string;
+  updatedAt?: string;
   taskId: string;
   title?: string;
   state: string;

@@ -142,6 +142,7 @@ actor CodexAppServerController {
 
     let attemptId: String
     private let cwd: String
+    private let scratchDirectory: String?
     private let model: String
     private let resumeThreadId: String?
     private let clientVersion: String
@@ -180,7 +181,7 @@ actor CodexAppServerController {
     private var flushingEarlyFrames = false
     private var endingTurn = false
 
-    init(attemptId: String, authorizedCWD: String, model: String = "one-executor", resumeThreadId: String? = nil,
+    init(attemptId: String, authorizedCWD: String, scratchDirectory: String? = nil, model: String = "one-executor", resumeThreadId: String? = nil,
          clientVersion: String, requestTimeout: TimeInterval = 10,
          now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          onInterruptAccepted: @escaping InterruptAccepted = { true },
@@ -188,8 +189,10 @@ actor CodexAppServerController {
         guard Self.validID(attemptId), authorizedCWD.hasPrefix("/"), !authorizedCWD.contains("\0"),
               URL(fileURLWithPath: authorizedCWD).standardizedFileURL.path == authorizedCWD,
               model == "one-executor", requestTimeout.isFinite, requestTimeout > 0,
-              resumeThreadId.map(Self.validID) ?? true else { throw CodexAppServerError.invalidConfiguration }
+              resumeThreadId.map(Self.validID) ?? true,
+              scratchDirectory.map({ $0.hasPrefix("/") && !$0.contains("\0") && URL(fileURLWithPath: $0).standardizedFileURL.path == $0 && URL(fileURLWithPath: $0).lastPathComponent.hasPrefix("scratch-") }) ?? true else { throw CodexAppServerError.invalidConfiguration }
         self.attemptId = attemptId; cwd = authorizedCWD; self.model = model
+        self.scratchDirectory = scratchDirectory
         self.resumeThreadId = resumeThreadId; self.clientVersion = clientVersion
         self.requestTimeout = requestTimeout; self.sendLine = sendLine; self.onExecEvent = onExecEvent
         self.now = now; self.onInterruptAccepted = onInterruptAccepted
@@ -224,7 +227,7 @@ actor CodexAppServerController {
         let turn = try await request("turn/start", params: .object([
             "threadId": .string(id), "input": .array([.object(["type": .string("text"), "text": .string(instruction), "text_elements": .array([])])]),
             "model": .string(model), "cwd": .string(cwd), "approvalPolicy": .string("never"),
-            "sandboxPolicy": .object(["type": .string("workspaceWrite"), "writableRoots": .array([.string(cwd)]),
+            "sandboxPolicy": .object(["type": .string("workspaceWrite"), "writableRoots": .array(([cwd] + (scratchDirectory.map { [$0] } ?? [])).map { .string($0) }),
                 "networkAccess": .bool(false), "excludeTmpdirEnvVar": .bool(true), "excludeSlashTmp": .bool(true)])
         ]))
         guard let newTurn = turn["turn"], let newID = newTurn["id"]?.string, Self.validID(newID),

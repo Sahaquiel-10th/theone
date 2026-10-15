@@ -5,6 +5,24 @@ import CFNetwork
 import Network
 import Darwin
 
+// Sandboxed document helper: no Key discovery, resident startup, networking or
+// user-default mutation. The parent provides only this round's authorized root.
+func runDocumentCommand() {
+    do {
+        guard let root = ProcessInfo.processInfo.environment["ONE_DOCUMENT_ROOT"] else { throw LocalFileFailure.message("未提供工作文件夹") }
+        var data = Data()
+        while data.count <= 2_000_000 {
+            let chunk = FileHandle.standardInput.readData(ofLength: min(8192, 2_000_001 - data.count))
+            if chunk.isEmpty { break }; data.append(chunk)
+        }
+        guard data.count <= 2_000_000, let content = String(data: data, encoding: .utf8) else { throw LocalFileFailure.message("文档过大或不是 UTF-8") }
+        let result = try MacLocalFiles(root: root).createDocument(CommandLine.arguments[2], content: content, renameOnConflict: CommandLine.arguments[1] != "--one-create-document-exact")
+        print(result); exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8)); exit(1)
+    }
+}
+
 let launcherVersion = "__ONE_RUNTIME_VERSION__"
 let updatePublicKeyRaw = "__ONE_UPDATE_PUBLIC_KEY__"
 let executorPublicKeyRaw = "__ONE_EXECUTOR_PUBLIC_KEY__"
@@ -1094,7 +1112,14 @@ final class CodexExecutionRunner: @unchecked Sendable {
             let digest = SHA256.hash(data: Data("\(deviceId):\(taskId)".utf8)).map { String(format: "%02x", $0) }.joined()
             let home = support.appendingPathComponent("ONE/codex/\(digest)")
             try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            let overrides = try gateway.launchOverrides(home: home, environment: executionEnvironment())
+            let scratch = try createCodexScratch(home: home)
+            var environment = executionEnvironment()
+            environment["TMPDIR"] = scratch.path
+            // zsh uses TMPPREFIX for long here-documents, not just TMPDIR.
+            environment["TMPPREFIX"] = scratch.appendingPathComponent("zsh").path
+            environment["ONE_DOCUMENT_TOOL"] = Bundle.main.executableURL?.path
+            environment["ONE_DOCUMENT_ROOT"] = projectPath
+            let overrides = try gateway.launchOverrides(home: home, environment: environment)
             process.executableURL = URL(fileURLWithPath: executable)
             process.environment = overrides.environment
             process.arguments = overrides.arguments + CodexAppServerController.launchArguments
@@ -1102,7 +1127,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
             let writer = try CodexAppServerInput(fileHandle: stdin.fileHandleForWriting)
             input = writer
             let controller = try CodexAppServerController(attemptId: identity.attemptId,
-                authorizedCWD: projectPath, resumeThreadId: resumeThreadId, clientVersion: launcherVersion,
+                authorizedCWD: projectPath, scratchDirectory: scratch.path, resumeThreadId: resumeThreadId, clientVersion: launcherVersion,
                 onInterruptAccepted: { [self] in
                     guard let tree = synchronized({ identities[taskId] == identity ? processTrees[identity.attemptId] : nil }),
                           tree.attemptId == identity.attemptId else { return false }
@@ -1195,6 +1220,9 @@ final class CodexExecutionRunner: @unchecked Sendable {
             let errorEOF: Bool? = try? await boundedRuntimeOperation(timeout: .seconds(3)) { await errorReader.value; return true }
             let snapshot = await controller.snapshot()
             let barriersPassed = !cleanup.requiresCheck && exitCode != nil && readClean == true && errorEOF == true
+            // Never remove temporary input while an owned descendant may still
+            // be using it. Uncertain attempts retain their private scratch.
+            if barriersPassed { try? FileManager.default.removeItem(at: scratch) }
             let assessment = snapshot.assessment(treeCleanupVerified: barriersPassed)
             let response = snapshot.finalResponse ?? synchronized { lastResponses[taskId] }
             if !snapshot.turnStartSent && barriersPassed {
@@ -2169,6 +2197,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
 struct ONEKeyLauncher {
     @MainActor
     static func main() {
+        if CommandLine.arguments.count == 3 && ["--one-create-document", "--one-create-document-exact"].contains(CommandLine.arguments[1]) { runDocumentCommand(); return }
         let residentMode = CommandLine.arguments.contains(residentArgument)
         let application = NSApplication.shared
         let credentialPath = commandLineValue(credentialArgument).map { URL(fileURLWithPath: $0) }

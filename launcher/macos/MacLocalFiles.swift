@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import CryptoKit
 
 struct LocalFileArguments: Decodable {
     var path: String?
@@ -42,6 +43,40 @@ final class MacLocalFiles {
         if rootFD < 0 { throw LocalFileFailure.message("工作目录无法打开，请重新选择") }
     }
     deinit { close(rootFD) }
+    /// Stage a complete UTF-8 document before publishing it with linkat's
+    /// exclusive-create semantics. A failure never leaves an empty final name.
+    func createDocument(_ path: String, content: String, renameOnConflict: Bool = true) throws -> String {
+        guard !Set(["doc", "docx", "xls", "xlsx", "pdf", "ppt", "pptx", "png", "jpg", "zip", "app", "exe"]).contains(URL(fileURLWithPath: path).pathExtension.lowercased()) else {
+            throw LocalFileFailure.message("此助手只创建 UTF-8 文本文档，不伪装二进制格式")
+        }
+        let data = Data(content.utf8)
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, data.count <= 2_000_000 else {
+            throw LocalFileFailure.message("文档内容为空或超过 2 MB，未创建")
+        }
+        let (dir, name) = try parent(path); defer { close(dir) }
+        let stage = ".one-stage-\(UUID().uuidString)"
+        let fd = openat(dir, stage, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw LocalFileFailure.message("无法准备文档，未创建成品") }
+        defer { close(fd); unlinkat(dir, stage, 0) }
+        try writeAll(fd, data)
+        guard fsync(fd) == 0, lseek(fd, 0, SEEK_SET) == 0 else { throw LocalFileFailure.message("文档暂存失败，未发布成品") }
+        let bytes = try FileHandle(fileDescriptor: fd, closeOnDealloc: false).readToEnd() ?? Data()
+        guard bytes == data else { throw LocalFileFailure.message("文档回读不一致，未发布成品") }
+        let url = URL(fileURLWithPath: name), ext = url.pathExtension
+        let stem = ext.isEmpty ? name : String(name.dropLast(ext.count + 1))
+        for index in 1...1000 {
+            let candidate = index == 1 ? name : "\(stem)-\(index)\(ext.isEmpty ? "" : "." + ext)"
+            if linkat(dir, stage, dir, candidate, 0) == 0 {
+                let parentPath = (path as NSString).deletingLastPathComponent
+                let relative = parentPath.isEmpty ? candidate : "\(parentPath)/\(candidate)"
+                let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+                let receipt: [String: Any] = ["verified": true, "path": "\(root)/\(relative)", "bytes": bytes.count, "sha256": hash, "renamed": index != 1, "content": content]
+                return String(decoding: try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]), as: UTF8.self)
+            }
+            guard errno == EEXIST, renameOnConflict else { throw LocalFileFailure.message("文档未提交；已有文件或链接保持不变") }
+        }
+        throw LocalFileFailure.message("同名文档过多，请选择另一个名字；已有文件未修改")
+    }
     private func components(_ path: String) throws -> [String] {
         if path.hasPrefix("/") || path.contains("\0") || path.contains("\\") { throw LocalFileFailure.message("只能使用授权目录内的相对路径") }
         let parts = path.split(separator: "/").map(String.init)

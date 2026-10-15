@@ -117,6 +117,18 @@ private func normalAndPolicy() async throws {
     try check(await fixture.methodCount("turn/start") == 1, "one turn/start only")
 }
 
+private func privateScratchPolicy() async throws {
+    let fixture = Fixture()
+    let actor = try CodexAppServerController(attemptId: "scratch_attempt", authorizedCWD: "/tmp/ONE-QA", scratchDirectory: "/private/one/scratch-round",
+        clientVersion: "test", sendLine: { try await fixture.send($0) }, onExecEvent: { await fixture.event($0) })
+    let request = try await bootstrap(actor, fixture: fixture)
+    let policy = request["params"]?["sandboxPolicy"]
+    try check(policy?["writableRoots"] == .array([.string("/tmp/ONE-QA"),.string("/private/one/scratch-round")]), "only business root and exact scratch")
+    try check(policy?["excludeTmpdirEnvVar"] == .bool(true) && policy?["excludeSlashTmp"] == .bool(true), "system temp remains blocked")
+    try check(policy?["networkAccess"] == .bool(false), "scratch never enables network")
+    await actor.transportClosed()
+}
+
 private func exactCancellation() async throws {
     let fixture = Fixture(), actor = try controller(fixture)
     _ = try await bootstrap(actor, fixture: fixture)
@@ -489,6 +501,7 @@ private func ownedStopFailureOrTimeoutCannotTurnGreen() async throws {
         alarm(15)
         do {
             try await normalAndPolicy()
+            try await privateScratchPolicy()
             try await exactCancellation()
             try await unknownCommandsStayUnknown()
             try await earlyAndForeignEvents()
@@ -504,7 +517,7 @@ private func ownedStopFailureOrTimeoutCannotTurnGreen() async throws {
             try await lateCommandUsesOriginalDeadline()
             try await acceptedInterruptStopsOwnedCommandsBeforeWaitingForTerminal()
             try await ownedStopFailureOrTimeoutCannotTurnGreen()
-            print("CodexAppServerTests: 16 groups passed (mocked stdio only)")
+            print("CodexAppServerTests: 17 groups passed (mocked stdio only)")
         } catch { fputs("CodexAppServerTests failed: \(error)\n", stderr); exit(1) }
     }
 }

@@ -2,7 +2,7 @@ import {useFollowLatest} from '../useFollowLatest';
 import type {Message,Task} from './dispatchPreviewState';
 import {OneWaitingCopy} from '../OnePersonality';
 import {Lightbulb} from 'lucide-react';
-import {MessageMarkdown} from '../MessageMarkdown';
+import {MessageMarkdown, ImagePreview, hasInlineImage} from '../MessageMarkdown';
 import {ResponseProgress} from '../ResponseProgress';
 import {privateImageUrl} from '../coordinatorMessage';
 import {useEffect,useRef,useState} from 'react';
@@ -18,7 +18,7 @@ export function CoordinatorConversation({messages,tasks,pending,onOpen,visible=t
   <div ref={scroll} className="coordinator-messages" aria-label="与 ONE 的持续对话" role="log" aria-live="polite" onScroll={onScroll}>
    {messages.map(message=><article key={message.id} className={`coordinator-message ${message.role}`} data-message-kind={message.kind||'conversation'} data-task-return-anchor={message.role==='assistant'&&message.id===latestAssistantId?'':undefined}>
     {message.featureName?<span className="coordinator-feature-label">{message.featureName}</span>:null}{message.role==='assistant'?<MessageMarkdown>{message.text}</MessageMarkdown>:<p>{message.text}</p>}
-    {privateImageUrl(message.imageUrl)?<><img className="generated-image" src={message.imageUrl} alt="ONE 生成的图片" loading="lazy"/><a className="coordinator-task-link" href={message.imageUrl} download>下载图片</a></>:null}
+    {privateImageUrl(message.imageUrl)&&!hasInlineImage(message.text,message.imageUrl!)?<><ImagePreview src={message.imageUrl!} alt="ONE 生成的图片"/><a className="coordinator-task-link" href={message.imageUrl} download>下载图片</a></>:null}
     {message.files?.map(file=><small key={file.id}>📎 {file.originalName}</small>)}
     {message.status==='failed'&&onRestore?<button type="button" className="coordinator-task-link" disabled={pending} onClick={()=>onRestore(message.text)}>放回输入框</button>:null}
     {(message.taskIds?.length ? message.taskIds : message.taskId ? [message.taskId] : []).map(id=><button key={id} type="button" className="coordinator-task-link" aria-label={`打开任务：${tasks.find(task=>task.id===id)?.title || '查看事情'}`} onClick={()=>onOpen(id)}><Lightbulb size={13}/>{tasks.find(task=>task.id===id)?.title || '查看事情'} <span aria-hidden="true">↗</span></button>)}

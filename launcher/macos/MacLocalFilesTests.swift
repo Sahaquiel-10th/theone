@@ -7,6 +7,26 @@ import Foundation
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         try "OUTSIDE_UNCHANGED".write(to: outside, atomically: true, encoding: .utf8)
         let files = try MacLocalFiles(root: root.path)
+        let document = try files.createDocument("成品.md", content: String(repeating: "完整文档🙂\n", count: 10000))
+        let receipt = try JSONSerialization.jsonObject(with: Data(document.utf8)) as! [String: Any]
+        precondition(receipt["verified"] as? Bool == true && (receipt["bytes"] as? Int ?? 0) > 100000)
+        _ = try files.createDocument("成品.md", content: "第二版")
+        do { _ = try files.createDocument("成品.md", content: "不可覆盖", renameOnConflict: false); preconditionFailure("exact conflict accepted") } catch {}
+        let secondDocument = try files.read("成品-2.md"); precondition(secondDocument == "第二版")
+        try Data().write(to: root.appendingPathComponent("空壳.md"))
+        _ = try files.createDocument("空壳.md", content: "不覆盖空壳")
+        let emptyOriginal = try Data(contentsOf: root.appendingPathComponent("空壳.md")); precondition(emptyOriginal.isEmpty)
+        let besideEmpty = try files.read("空壳-2.md"); precondition(besideEmpty == "不覆盖空壳")
+        do { _ = try files.createDocument("不得创建.md", content: "  "); preconditionFailure("empty accepted") } catch {}
+        precondition(!FileManager.default.fileExists(atPath: root.appendingPathComponent("不得创建.md").path))
+        try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("同名链接.md").path, withDestinationPath: outside.path)
+        _ = try files.createDocument("同名链接.md", content: "另存")
+        let besideLink = try files.read("同名链接-2.md"); precondition(besideLink == "另存")
+        do { _ = try files.createDocument("../escape.md", content: "escape"); preconditionFailure("escape accepted") } catch {}
+        do { _ = try files.createDocument("fake.xlsx", content: "fake"); preconditionFailure("binary fake accepted") } catch {}
+        precondition(!FileManager.default.fileExists(atPath: root.appendingPathComponent("fake.xlsx").path))
+        let publishedFiles = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        precondition(publishedFiles.allSatisfy { !$0.hasPrefix(".one-stage-") })
         let result = try files.create("测试 说明.md", content: "荷叶饼好吃，一个 5 块钱")
         precondition(result.contains("回读验证"))
         let initial = try files.read("测试 说明.md"); precondition(initial == "荷叶饼好吃，一个 5 块钱")
