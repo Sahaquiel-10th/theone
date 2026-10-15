@@ -433,7 +433,10 @@ private final class ProtocolHarness: @unchecked Sendable {
         try require(before.requiresCheck && before.trackedCount >= 2, "live owned child incorrectly clean")
         let cleanup = await h.tree.requestCancellation()
         try await h.waitBarriers()
-        try require(cleanup.trackedProcessesExited && !cleanup.requiresCheck, "owned descendant cleanup unconfirmed")
+        try require(cleanup.trackedProcessesExited && !cleanup.requiresCheck,
+            "owned descendant cleanup unconfirmed: exited=\(cleanup.trackedProcessesExited) requiresCheck=\(cleanup.requiresCheck) " +
+            "tracked=\(cleanup.trackedCount) escalated=\(cleanup.usedEscalation) reasons=\(cleanup.reasonCodes) " +
+            "beforeReasons=\(before.reasonCodes)")
         h.save("PASS real child held stdout past root exit; actual EOF arrived only after exact owned-tree cleanup")
         h.tree.finish()
     }

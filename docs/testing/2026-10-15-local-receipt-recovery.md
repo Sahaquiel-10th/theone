@@ -347,3 +347,9 @@ prompt-stop worker 共享且幂等；完整取消与 finish 同锁登记更高�
 - 包 `/Users/machao/Desktop/theone-output/theone-runtime-0.4.21.tar.gz`，4,824,292 字节，SHA-256 `381c2f574f10019073eaabc1595e5966e83f8128ae2eeb4fc29cd87db1f43fe3`，仍只含清单和双平台更新，不含私钥或用户资料。
 
 此处 0.4.21 尚未发布/安装/真机验收。下一轮采用全新文件和 180 秒延迟，保留 0.4.20 的失败文件（33 字节，SHA-256 `dd8d211f1b9651d48521442350008b286c31c59a59d22962b1ae787015740b2c`）与所有历史，不覆盖失败记录。
+
+### 首次发布检查被拦截
+
+提交 `a4e904bc060320401882ea5319e67f50318cab84` 已推送，Actions `38716071945` 的应用检查（758 项、757 通过、1 跳过）和 Windows 检查通过，但 Mac 在旧 `heldStdoutNeedsOwnedTreeCleanup` 管道夹具报 `owned descendant cleanup unconfirmed`，部署跳过。该夹具不调用新增的 prompt-stop hook；具体 reason 尚未被失败断言输出，不能据此放宽停止保护或直接重试掩盖。
+
+包已上传但没有发布。真实服务器仍指向 `6218ec35c9e994c0713c6cdd061ee2a5508ca9b0`，服务 active、健康 `ok:true`；实际驻留仍为 0.4.20，未提交 0.4.21 测试。继续定位检查失败，保留本次失败证据。
