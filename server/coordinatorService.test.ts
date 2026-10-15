@@ -634,7 +634,7 @@ test('an execution click cannot be acknowledged as dispatched without a real loc
  let runs=0;
  await assert.rejects(()=>f.service.dispatch(a,{...input('operation_false_local','修改网页标题'),localExecution:true},key,undefined,async()=>{runs++;return{id:'never',status:'queued'};}),/本机执行尚未开始/);
  assert.equal(runs,0);
- assert.equal(f.calls.find(c=>c.modelId==='router')!.requiredTool,'delegate_task','an explicit execution click requires routing, even with no feature, attachment or bound task');
+ assert.equal(f.calls.find(c=>c.modelId==='router')!.requiredTool,'execute_local_task','an explicit execution click requires local routing, even with no feature, attachment or bound task');
  const db=await f.store.read();
  assert.ok(db.messages.some(m=>m.role==='user'&&m.content==='修改网页标题'));
  assert.ok(!db.messages.some(m=>m.role==='assistant'&&m.content==='已转达并开始执行。'));
@@ -656,7 +656,7 @@ test('explicit local execution can ask one controlled clarification without crea
  assert.equal(reply.message.content,'还没开始操作电脑。你说的是官网 UI，还是 ONE UI？');
  assert.deepEqual(reply.taskIds,[]);assert.equal(reply.taskId,undefined);assert.equal(runs,0);
  const routing=f.calls.filter(c=>c.modelId==='router');
- assert.equal(routing[0].requiredTool,'delegate_task');
+ assert.equal(routing[0].requiredTool,'execute_local_task');
  assert.equal(routing.at(-1)!.requiredTool,undefined);assert.deepEqual(routing.at(-1)!.tools,[]);
  const schema=routing[0].tools.find(t=>t.function.name==='delegate_task')!.function.parameters as {properties:Record<string,unknown>;oneOf:unknown[]};
  assert.ok(schema.properties.clarificationQuestion);assert.equal(schema.oneOf.length,2);
@@ -804,7 +804,7 @@ test('local dispatch preserves the handoff, bypasses cloud worker and replay nev
   const run = async (cid: string, mid: string) => { const d=await f.store.read(); assert.equal(d.messages.find(m=>m.id===mid)?.content,'UI 标题改成荷叶饼，开工'); executed.push(cid); return {id:'ext-fixture',status:'queued'}; };
   const request={...input('operation_local_1234','UI 标题改成荷叶饼，开工'),localExecution:true};
   const result = await f.service.dispatch(a,request,key,undefined,run);
-  assert.equal(f.calls.find(c=>c.modelId==='router')!.requiredTool,'delegate_task');
+  assert.equal(f.calls.find(c=>c.modelId==='router')!.requiredTool,'execute_local_task');
   assert.equal(f.calls.filter(c=>c.modelId==='router').at(-1)!.requiredTool,undefined,'the acknowledgement must not start a second execution');
   await f.service.resume(a,key);
   assert.equal(f.calls.filter(c=>c.modelId==='worker').length,0);
@@ -1733,6 +1733,24 @@ test('single local_special routes only through its configured logic handoff and 
   f.setRoute(()=>localCall());
   await assert.rejects(()=>f.service.dispatch(a,input('operation_local_disabled_01','逻辑能力停用后不可静默降级'),key,undefined,executeLocal),/未完成分派|工具未授权|参数无效/);
   assert.equal(localCalls,1);
+});
+
+test('explicit local button accepts local_special through both routing tools without relaxing task ownership',async()=>{
+  for(const name of ['delegate_task','execute_local_task']){
+    const f=fixture();
+    const profile=await f.store.mutate(d=>updateExecutor(d,'a',undefined,{revision:0,action:'draft',values:{...executorDefaults(),name:'本机交接',modelId:'worker',routingRole:'logic'}}));
+    await f.store.mutate(d=>updateExecutor(d,'a',profile.id,{revision:1,action:'publish'}));
+    let calls=0;
+    const localCall=(taskId:string|null)=>({...answer(''),toolCalls:[{id:'explicit-local-alias',type:'function' as const,function:{name,arguments:JSON.stringify({taskId,title:'独立文档',instruction:'在授权目录内新建并核验文档',executorId:'local_special'})}}]});
+    f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('已经交给本机'):localCall(null));
+    const run=async()=>{calls++;return{id:'local-real',status:'queued'};};
+    const accepted=await f.service.dispatch(a,{...input(`operation_explicit_alias_${name}`,'新建本地文档'),localExecution:true},key,undefined,run);
+    assert.ok(accepted.taskId);assert.equal(calls,1);
+    assert.equal(f.calls[0].requiredTool,'execute_local_task');
+    f.setRoute(()=>localCall('foreign-task'));
+    await assert.rejects(()=>f.service.dispatch(a,{...input(`operation_explicit_foreign_${name}`,'写入文件'),localExecution:true},key,undefined,run),/未开始|尚未开始|未完成分派|参数无效/);
+    assert.equal(calls,1);
+  }
 });
 
 test('read-all HTTP endpoint requires a live Key and only acknowledges the authenticated owner current results',async t=>{

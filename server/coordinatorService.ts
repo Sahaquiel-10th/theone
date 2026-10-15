@@ -682,7 +682,7 @@ export class CoordinatorService {
               taskId: { type: ["string", "null"] },
               title: { type: "string", maxLength: 80 },
               instruction: { type: "string", maxLength: 4000 },
-              executorId: { type: "string" },
+              executorId: input.localExecution ? { type: "string", enum: ['local_special', ...profiles.map(p=>p.id)] } : { type: "string" },
               ...(input.localExecution ? { clarificationQuestion: { type: 'string', minLength: 1, maxLength: 280 } } : {}),
             },
             ...(input.localExecution ? {
@@ -712,6 +712,11 @@ export class CoordinatorService {
               throw new Error("参数无效");
             text(v.title, 80, "标题");
             text(v.instruction, 4000, "交接");
+            // The explicit local button makes delegate_task a local handoff too.
+            // Normalize the public capability alias before the same owner and
+            // bound-task checks; ordinary cloud delegation must still reject it.
+            if (input.localExecution && v.executorId === 'local_special')
+              v.executorId = resolveRoutingExecutorId(current, 'logic');
             if (!profiles.some((p) => p.id === v.executorId))
               throw new Error("执行器未授权");
             if (v.taskId && !candidates.some((c) => c.id === v.taskId))
@@ -856,7 +861,7 @@ export class CoordinatorService {
         call: (messages, offeredTools) => {
           const tools = localClarification ? [] : offeredTools.filter(t=>!(dispatchedTasks.length>=4&&['delegate_task','delegate_tasks','execute_local_task','generate_image'].includes(t.function.name)));
           const requiredLocalTool = input.localExecution && !dispatchedTasks.length
-            ? ['delegate_task', 'execute_local_task'].find(name=>tools.some(t=>t.function.name===name)) : undefined;
+            ? ['execute_local_task', 'delegate_task'].find(name=>tools.some(t=>t.function.name===name)) : undefined;
           return runBilledModel(
             this.store,
             {
