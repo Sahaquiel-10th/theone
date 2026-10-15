@@ -14,6 +14,11 @@ private actor WriterGate {
     func wait() async { await withCheckedContinuation { continuation = $0 } }
     func release() { continuation?.resume(); continuation = nil }
 }
+private actor InterruptHookProbe {
+    private var calls = 0
+    func called() { calls += 1 }
+    func count() -> Int { calls }
+}
 private func check(_ value: Bool, _ message: String) throws {
     if !value { throw TestFailure(message: message) }
 }
@@ -428,6 +433,57 @@ private func lateCommandUsesOriginalDeadline() async throws {
     try check(snapshot.assessment(treeCleanupVerified: true).requiresCheck, "expired stop retains hold")
 }
 
+private func acceptedInterruptStopsOwnedCommandsBeforeWaitingForTerminal() async throws {
+    let fixture = Fixture(), gate = WriterGate(), probe = InterruptHookProbe()
+    let actor = try CodexAppServerController(attemptId:"attempt_hook_order", authorizedCWD:"/tmp/ONE-QA",clientVersion:"test",
+        onInterruptAccepted:{ await probe.called(); await gate.wait(); return true },
+        sendLine:{ try await fixture.send($0) },onExecEvent:{ await fixture.event($0) })
+    _ = try await bootstrap(actor,fixture:fixture)
+    try await item(actor,"item/started",command())
+    let first = Task { await actor.requestInterrupt(timeout:0.5) }
+    let second = Task { await actor.requestInterrupt(timeout:0.5) }
+    let stop = try await fixture.request("turn/interrupt")
+    try await emptyInterrupted(actor)
+    try check(await probe.count() == 0,"owned cleanup must not freeze the root before exact interrupt ACK")
+    try await reply(actor,stop)
+    while await probe.count() == 0 { await Task.yield() }
+    try check(await probe.count() == 1,"one shared cleanup worker per exact interrupted turn")
+    // A command event can arrive while the hook is in flight, but neither it
+    // nor the hook independently certifies cancellation.
+    try await item(actor,"item/completed",command(status:"failed",exit:.number(-1)))
+    try check(!(await actor.snapshot()).assessment(treeCleanupVerified:true).cancellationConfirmed,
+        "known terminal cannot bypass an unfinished owned cleanup")
+    await gate.release()
+    let firstResult = await first.value, secondResult = await second.value
+    try check(firstResult && secondResult,"hook plus known command terminal finishes shared interrupt")
+    let snapshot = await actor.snapshot()
+    let calls = await probe.count()
+    try check(snapshot.assessment(treeCleanupVerified:true).cancellationConfirmed && calls == 1,
+        "protocol still needs independent final tree/EOF evidence")
+}
+
+private func ownedStopFailureOrTimeoutCannotTurnGreen() async throws {
+    for mode in ["false","hung"] {
+        let fixture = Fixture(), gate = WriterGate(), probe = InterruptHookProbe()
+        let actor = try CodexAppServerController(attemptId:"attempt_hook_\(mode)",authorizedCWD:"/tmp/ONE-QA",clientVersion:"test",
+            onInterruptAccepted:{ await probe.called(); if mode == "hung" { await gate.wait() }; return false },
+            sendLine:{ try await fixture.send($0) },onExecEvent:{ await fixture.event($0) })
+        _ = try await bootstrap(actor,fixture:fixture)
+        try await item(actor,"item/started",command())
+        let start = ProcessInfo.processInfo.systemUptime
+        let stop = Task { await actor.requestInterrupt(timeout:0.05) }
+        try await reply(actor,fixture.request("turn/interrupt")); try await emptyInterrupted(actor)
+        while await probe.count() == 0 { await Task.yield() }
+        try check(!(await stop.value),"failed or uncooperative cleanup cannot confirm cancellation")
+        try check(ProcessInfo.processInfo.systemUptime - start < 0.5,"hook cannot extend original cancellation timeout")
+        await gate.release()
+        try await item(actor,"item/completed",command(status:"completed",exit:.number(0)))
+        let snapshot = await actor.snapshot()
+        try check(snapshot.protocolIssue != nil && snapshot.assessment(treeCleanupVerified:true).requiresCheck,
+            "late tool completion and eventual tree exit must not erase hook failure")
+    }
+}
+
 @main private struct CodexAppServerTests {
     static func main() async {
         alarm(15)
@@ -446,7 +502,9 @@ private func lateCommandUsesOriginalDeadline() async throws {
             try await realShapeDelayedCommandTerminals()
             try await lateCommandEvidenceMustBeExact()
             try await lateCommandUsesOriginalDeadline()
-            print("CodexAppServerTests: 14 groups passed (mocked stdio only)")
+            try await acceptedInterruptStopsOwnedCommandsBeforeWaitingForTerminal()
+            try await ownedStopFailureOrTimeoutCannotTurnGreen()
+            print("CodexAppServerTests: 16 groups passed (mocked stdio only)")
         } catch { fputs("CodexAppServerTests failed: \(error)\n", stderr); exit(1) }
     }
 }

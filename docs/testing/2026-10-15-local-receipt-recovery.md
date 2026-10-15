@@ -301,7 +301,7 @@
 
 第二个只读观察器于 `07:26:18.873Z` 确认驻留 94406 → Codex 99738 → shell 105 → sleep 106，命令、目标和出生时间均匹配。真实 ONE 于 `07:27:10.764Z` 点停止一次，随后已观察的整棵树退出；至 `07:28:03.844Z`（实际开始后 105 秒）目标始终不存在，驻留身份未变。未用外部终止替代产品停止。两个既有基线文件的大小与 SHA-256 保持不变。
 
-execution `ext_bcb6a539716c221be0d5`，attempt `attempt_042777e0996b4841e7c8`，第 0 轮；thread `01a13e74-2683-7200-9126-1f43c7a4def5`。服务器于 `07:27:11.476Z` 收到 cancelled/supplemental 回执 `6ab5ed5f-1e52-4003-bdbb-7374f467c357`，hash `7f5740466d806566810253de56c5c75cebec7a7cec5e527a5f84304e67c86199`，仍有 `command_unconfirmed`，页面正确保留需核对，未误报完成。精确 journal 七元组和 ACK 一致、0600/0700；未解除本次新保护。
+execution `ext_bcb6a539716c221be0d5`，attempt `attempt_042777e0996b4841e7c8`，第 0 轮；thread `01a13e74-2683-7200-9126-1f43c7a4def5`。服务器于 `07:27:11.476Z` 收到 cancelled/supplemental 回执 `6babe5df-1e52-4003-bdbb-7374f467c357`，hash `7f5740466d806566810253de56c5c75cebec7a7cec5e527a5f84304e67c86199`，仍有 `command_unconfirmed`，页面正确保留需核对，未误报完成。精确 journal 七元组和 ACK 一致、0600/0700；此时尚未解除本次新保护。
 
 精确本轮记录显示只有一次 exec 和一次等待同一 session `45889` 的 write_stdin；`turn_aborted` 的 interrupted 在 `07:27:11.148Z`，同一命令的 failed/-1 结束事件于 `07:27:11.159Z` 补发，晚 11ms。该核心记录不包含公共 RPC ACK 或双路 EOF，不能单独证明控制器所有条件已齐。源码目前在收到 turn/completed 后拒收同轮所有 item/completed，可能漏掉这种收尾事件；官方 0.160.1 的中断 turn 通知本来就用空 items。下一步修复只在原停止期限内接收同 thread/turn、此前已启动命令的结束证据，仍要求精确 RPC ACK、interrupted 终态与进程/输出屏障，不用 PID 消失或 -1 伪装成功。
 
@@ -316,3 +316,34 @@ execution `ext_bcb6a539716c221be0d5`，attempt `attempt_042777e0996b4841e7c8`，
 - 包 `/Users/machao/Desktop/theone-output/theone-runtime-0.4.20.tar.gz`，4,791,831 字节，SHA-256 `6eff9e773121db8e3fbb992e4631fd1f1bcf0735205282c14080bee03cfa091f`。只有清单、Mac zip、Windows exe；打包禁用 Apple 扩展属性，无私钥或用户数据。
 
 此处尚未发布 0.4.20、未替换本机驻留，也未做新版本真实停止验收。0.4.19 的安全等待保持原样，不重跑、不清除历史。
+
+## 0.4.20 发布与单次测试保护处理
+
+提交 `6218ec35c9e994c0713c6cdd061ee2a5508ca9b0` 已推送，Actions `38704980546` 的应用、Mac、Windows 和部署全部成功，部署 `08:29:55Z` 完成。独立逐文件核对当前与验证镜像 354 个代码、测试和构建配置文件 SHA-256 一致，0 差异、0 读取错误，证据 `/tmp/one-app-validation-20261015-8CO0nb/source-hash-comparison.json`。
+
+真实 OrcaTerm 上传的包 hash 与制品一致，current 精确为上述提交；原更新脚本发布及共享清单复验均为 `VERIFIED_VERSION=0.4.20`，服务保持运行、健康正常。真实 ONE 点击更新后盘上版本 0.4.20、严格签名通过；实际驻留 PID 10184，出生本地 `17:01:28`，可执行文件属于 `ONEPresence-0.4.20.app`。
+
+用户另外明确批准只解除上述 0.4.19 测试保护。最初两次事务因截图中回执首段抄录不符严格失败并回滚，未放宽校验；逐字符只读核对首段为 `6babe5df` 后，全部 exact guards 独立校验通过，再处理该条。维护前后预检无运行中聊天/模型请求，2 个未开始任务保留；事务内身份、attempt、round、终态、hash、更新时间均匹配，只移除本条 hold，深对比其他字段完全不变。审计 `aud_qa_reconcile_fe592513bf1a48a8a6001d8f4c498450`，`onlyHoldChanged:true`，重启后健康正常。历史、旧文件和 cancelled 状态保留，未重跑。
+
+## 0.4.20 真实停止回执通过但副作用停止失败
+
+新目标 `QA-420-CANCEL-20261015.md` 先确认不存在，并对新排他写入命令做只读语法检查。通过真实任务内本机执行于 `09:17:51.868Z` 提交一次；execution `ext_a3583db5a6a8596c5376`，attempt `attempt_2009ea954eeefdd9931f`，第 0 轮，thread `01a13eda-b763-78e0-a9c4-7991a20c506c`。
+
+只读观察于 `09:18:15.328Z` 捕获驻留 10184 → Codex 12419 → shell 12665 → sleep 12666。真实页面于 `09:19:40.973Z` 点停止；服务器于 `09:19:41.215Z` 取消，原生 interrupted 于 `09:19:41.296Z`，传递约 0.3 秒。但原命令仍运行，到 `09:19:45.031Z` 目标文件写出、`09:19:45.032Z` 自然 exit 0，约为 sleep 的原始 90 秒终点。观察到整树于 `09:19:45.49Z` 退出；到开始后 105 秒仍有这个 33 字节文件。文件和历史保留，未删除或覆盖。一次 exec、三次同 session `3446` 等待，没有重跑。
+
+回执 `3c39048b-fa9e-431a-ac53-242fde99083e`、hash `08bab28375a66dd28fa9f6443fb28d5a88ee0255d79e3ad4a6920ddb83d11668` 于 `09:19:45.306Z` 收到，cancelled/supplemental、无 hold，精确本机 journal 已 ACK、正文清除、权限正确。页面显示已停止、不误报完成，说明迟到工具收尾修复已生效；**不能因此判停止验收通过**，中断到命令真正退出之间仍发生了写入。
+
+源码定位：managed cancel 先等 requestInterrupt 最长 5 秒收齐命令终态，只在 false 才请求树清理。本例子命令在原生中断后继续 3.736 秒、自然结束，future 变 true，于是跳过主动停止子命令。下一修复必须在精确 ACK 与 interrupted 成对后立即收束本轮自有后代，保留 app-server 接收工具终态的能力；不能先耗掉整段协议等待，也不能用杀 CLI 留下 shell 的旧方式。
+
+## 0.4.21 及时停止子命令的修复与制品
+
+在精确 RPC ACK 与同轮 interrupted 成对后，先停止本轮自有后代，再等待命令结束证据。为避免只停 sleep 让 shell 进入下一句，先核对并冻结自有 root，再按内核父子关系冻结与复扫自有后代；父先子后清理，确认全部已知后代退出后，仅恢复本次亲自冻结、身份未变的 app-server root 接收命令回执。不会恢复子命令或外部已暂停的进程；不依赖名字、session 号或目录猜 PID。
+
+prompt-stop worker 共享且幂等；完整取消与 finish 同锁登记更高优先级，等待在途冻结流程后清理，不能交错复活 root 或遗留暂停进程。hook 仍在原 5 秒协议时限内，失败、迟到、EOF 或身份不确定保持需核对。终态仍要求精确 ACK、interrupted、已知命令收尾、CLI 实际退出、双 EOF 和自有树清理，不把自然结束说成成功执行，不以进程消失清保护。
+
+- 11 组进程树测试、16 组 controller 测试通过，含真实 shell/sleep 延迟写入、保持 root 收回执、重复停止、原已暂停 root、父级冻结失败、PID/birth 变化、外部 PID 不受影响、完整取消/finish 并发和 hook 原始时限。完整启动器 arm64/x86_64 检查通过，严格并发/warnings-as-errors 通过，主代理独立复跑通过。
+- 管道集成原 8 组保留，新增第 9 组含正反两例。模拟协议先确认中断、实际子进程仍在 sleep 的情况下，hook 及时清理子树，root 保留到真实子进程退出、相关终态和双 EOF，超过原写入期限后仍无文件；hook 失败即使已全树清理仍保留保护。最终源码重拷后 9 组通过；主代理独立复跑证据 `one-appserver-integration-6SgzMy`。这些不代替真实 Codex/ONE 验收。
+- Mac Universal 完整构建及严格签名通过；Windows 仅同步版本构建。签名制品验证 `VERIFIED_VERSION=0.4.21`。
+- 包 `/Users/machao/Desktop/theone-output/theone-runtime-0.4.21.tar.gz`，4,824,292 字节，SHA-256 `381c2f574f10019073eaabc1595e5966e83f8128ae2eeb4fc29cd87db1f43fe3`，仍只含清单和双平台更新，不含私钥或用户资料。
+
+此处 0.4.21 尚未发布/安装/真机验收。下一轮采用全新文件和 180 秒延迟，保留 0.4.20 的失败文件（33 字节，SHA-256 `dd8d211f1b9651d48521442350008b286c31c59a59d22962b1ae787015740b2c`）与所有历史，不覆盖失败记录。

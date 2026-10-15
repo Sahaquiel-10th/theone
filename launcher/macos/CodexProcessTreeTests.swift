@@ -11,6 +11,7 @@ private final class FakeTree: CodexProcessTreeBackend, @unchecked Sendable {
     private var deniedKills = Set<pid_t>()
     private var addChildOnStop: CodexProcessIdentity?
     private var replaceDuringList: (CodexProcessIdentity,CodexProcessIdentity)?
+    private var replaceAfterKill: CodexProcessIdentity?
     private(set) var advancedParent = false
 
     init(_ nodes: [CodexProcessIdentity]) { processes = Dictionary(uniqueKeysWithValues: nodes.map { ($0.pid, $0) }) }
@@ -35,10 +36,12 @@ private final class FakeTree: CodexProcessTreeBackend, @unchecked Sendable {
             if let child = addChildOnStop { processes[child.pid] = child; addChildOnStop = nil }
             if !ignoredStops.contains(pid) { processes[pid] = Self.stopping(node) }
         }
+        if signal == SIGCONT { processes[pid] = Self.stopping(node, stopped:false) }
         if signal == SIGKILL {
             if deniedKills.contains(pid) { throw CodexProcessTreeFailure.unavailable }
             if let parent = processes[node.parentPID], !parent.stopped { advancedParent = true }
             processes.removeValue(forKey: pid)
+            if let replacement = replaceAfterKill { processes[replacement.pid] = replacement; replaceAfterKill = nil }
         }
         return true
     }
@@ -50,18 +53,19 @@ private final class FakeTree: CodexProcessTreeBackend, @unchecked Sendable {
     func ignoreStop(_ pid: pid_t) { lock.lock(); ignoredStops.insert(pid); lock.unlock() }
     func denyKill(_ pid: pid_t) { lock.lock(); deniedKills.insert(pid); lock.unlock() }
     func addOnStop(_ node: CodexProcessIdentity) { lock.lock(); addChildOnStop = node; lock.unlock() }
+    func replaceOnKill(_ node: CodexProcessIdentity) { lock.lock(); replaceAfterKill = node; lock.unlock() }
     func signals() -> [(pid_t, Int32)] { lock.lock(); defer { lock.unlock() }; return sent }
     func contains(_ pid: pid_t) -> Bool { lock.lock(); defer { lock.unlock() }; return processes[pid] != nil }
-    private static func stopping(_ n: CodexProcessIdentity) -> CodexProcessIdentity {
+    private static func stopping(_ n: CodexProcessIdentity, stopped: Bool = true) -> CodexProcessIdentity {
         CodexProcessIdentity(pid:n.pid,parentPID:n.parentPID,uid:n.uid,realUID:n.realUID,
-            startedSeconds:n.startedSeconds,startedMicroseconds:n.startedMicroseconds,stopped:true,zombie:n.zombie)
+            startedSeconds:n.startedSeconds,startedMicroseconds:n.startedMicroseconds,stopped:stopped,zombie:n.zombie)
     }
 }
 
 @main struct CodexProcessTreeTests {
-    static func node(_ pid: pid_t, _ parent: pid_t, birth: UInt64 = 10) -> CodexProcessIdentity {
+    static func node(_ pid: pid_t, _ parent: pid_t, birth: UInt64 = 10, stopped: Bool = false) -> CodexProcessIdentity {
         CodexProcessIdentity(pid:pid,parentPID:parent,uid:getuid(),realUID:getuid(),startedSeconds:birth,
-            startedMicroseconds:UInt64(pid),stopped:false,zombie:false)
+            startedMicroseconds:UInt64(pid),stopped:stopped,zombie:false)
     }
     static var fast: CodexProcessTreeTiming {
         var value = CodexProcessTreeTiming(); value.interruptGrace = 0; value.killConfirmation = 0.02; value.observationInterval = 60; return value
@@ -160,6 +164,93 @@ private final class FakeTree: CodexProcessTreeBackend, @unchecked Sendable {
         precondition(normal.signals().isEmpty)
     }
 
+    static func testPromptDescendantStopKeepsRootAndIsIdempotent() async throws {
+        let backend = FakeTree([node(28001,getpid()),node(28002,28001,birth:11),node(28003,28002,birth:12),node(28004,99999,birth:13)])
+        let tree = try CodexProcessTree.begin(rootPID:28001,attemptId:"attempt-prompt",backend:backend,timing:fast)
+        defer { tree.finish() }
+        backend.addOnStop(node(28005,28002,birth:14))
+        async let first = tree.requestOwnedDescendantStop()
+        async let second = tree.requestOwnedDescendantStop()
+        let (a,b) = await (first,second)
+        precondition(a.descendantsExited && a.rootAvailable && !a.requiresCheck && a.trackedCount == 4)
+        precondition(b.descendantsExited && b.rootAvailable && !b.requiresCheck)
+        let sent = backend.signals()
+        precondition(sent.filter { $0.0 == 28001 && $0.1 == SIGSTOP }.count == 1)
+        precondition(sent.filter { $0.1 == SIGCONT }.map(\.0) == [28001])
+        precondition(sent.filter { $0.1 == SIGKILL }.map(\.0).first == 28002)
+        precondition(!sent.contains { $0.1 == SIGINT || $0.0 == 28004 || ($0.0 == 28001 && $0.1 == SIGKILL) })
+        precondition(backend.contains(28001) && backend.contains(28004) && !backend.advancedParent)
+        _ = await tree.requestCancellation()
+    }
+
+    static func testPromptUncertaintyNeverResumesRootOrAdvancesParent() async throws {
+        let stopped = FakeTree([node(28101,getpid(),stopped:true),node(28102,28101,birth:11)])
+        let already = try CodexProcessTree.begin(rootPID:28101,attemptId:"attempt-stopped",backend:stopped,timing:fast)
+        let prior = await already.requestOwnedDescendantStop()
+        precondition(prior.requiresCheck && prior.reasonCodes.contains("root_already_stopped") && stopped.signals().isEmpty)
+        _ = await already.requestCancellation(); already.finish()
+
+        let ignored = FakeTree([node(28201,getpid()),node(28202,28201,birth:11),node(28203,28202,birth:12)])
+        let failed = try CodexProcessTree.begin(rootPID:28201,attemptId:"attempt-parent-unfrozen",backend:ignored,timing:fast)
+        ignored.ignoreStop(28202)
+        let unsafe = await failed.requestOwnedDescendantStop()
+        precondition(unsafe.requiresCheck && !unsafe.rootAvailable)
+        precondition(!ignored.signals().contains { $0.1 == SIGCONT || $0.1 == SIGKILL })
+        precondition(!ignored.advancedParent)
+        _ = await failed.requestCancellation(); failed.finish()
+
+        let switched = FakeTree([node(28301,getpid()),node(28302,28301,birth:11)])
+        let reused = try CodexProcessTree.begin(rootPID:28301,attemptId:"attempt-prompt-reuse",backend:switched,timing:fast)
+        switched.replaceOnKill(node(28301,99999,birth:999))
+        let mismatch = await reused.requestOwnedDescendantStop()
+        precondition(mismatch.requiresCheck && !mismatch.rootAvailable && mismatch.reasonCodes.contains("identity_changed"))
+        precondition(!switched.signals().contains { $0.1 == SIGCONT })
+        let cleanup = await reused.requestCancellation()
+        precondition(cleanup.requiresCheck && switched.contains(28301),"new root identity is not owned and must never be signalled")
+        reused.finish()
+    }
+
+    static func testPromptFullCancellationAndFinishJoin() async throws {
+        let backend = FakeTree([node(28401,getpid()),node(28402,28401,birth:11)])
+        let tree = try CodexProcessTree.begin(rootPID:28401,attemptId:"attempt-priority",backend:backend,timing:fast)
+        let prompt = Task { await tree.requestOwnedDescendantStop() }
+        while !backend.signals().contains(where:{ $0.0 == 28401 && $0.1 == SIGSTOP }) { await Task.yield() }
+        let full = Task { await tree.requestCancellation() }
+        let result = await full.value
+        let partial = await prompt.value
+        precondition(!partial.rootAvailable && partial.requiresCheck)
+        precondition(result.trackedProcessesExited && !backend.signals().contains { $0.1 == SIGCONT })
+        tree.finish()
+
+        let ending = FakeTree([node(28501,getpid()),node(28502,28501,birth:11)])
+        let finish = try CodexProcessTree.begin(rootPID:28501,attemptId:"attempt-finish-join",backend:ending,timing:fast)
+        let inFlight = Task { await finish.requestOwnedDescendantStop() }
+        while !ending.signals().contains(where:{ $0.1 == SIGSTOP }) { await Task.yield() }
+        finish.finish()
+        let joined = await inFlight.value
+        precondition(!joined.rootAvailable && joined.requiresCheck,"finish reserves full cleanup rather than abandoning its frozen root")
+        let finishDeadline = ProcessInfo.processInfo.systemUptime + 1
+        while ending.contains(28501), ProcessInfo.processInfo.systemUptime < finishDeadline {
+            try await Task.sleep(for:.milliseconds(10))
+        }
+        precondition(!ending.contains(28501) && !ending.signals().contains { $0.1 == SIGCONT })
+
+        let uncertain = FakeTree([node(28601,getpid()),node(28602,28601,birth:11)])
+        let failedFinish = try CodexProcessTree.begin(rootPID:28601,attemptId:"attempt-finish-failed",backend:uncertain,timing:fast)
+        uncertain.ignoreStop(28602)
+        let failedPrompt = Task { await failedFinish.requestOwnedDescendantStop() }
+        while !uncertain.signals().contains(where:{ $0.1 == SIGSTOP }) { await Task.yield() }
+        failedFinish.finish()
+        let failedResult = await failedPrompt.value
+        precondition(failedResult.requiresCheck)
+        let deadline = ProcessInfo.processInfo.systemUptime + 1
+        while uncertain.contains(28601), ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for:.milliseconds(10))
+        }
+        precondition(!uncertain.contains(28601) && !uncertain.contains(28602),"finish must join failed prompt's full owned cleanup")
+        precondition(!uncertain.signals().contains { $0.1 == SIGCONT },"failed finish cannot thaw root to hide uncertainty")
+    }
+
     static func childMode() -> Bool {
         let args = CommandLine.arguments
         if args.count > 1 && args[1] == "--native-test-root" {
@@ -201,6 +292,14 @@ private final class FakeTree: CodexProcessTreeBackend, @unchecked Sendable {
             do { try child.run() } catch { _exit(126) }
             print("CHILD \(child.processIdentifier)"); fflush(stdout)
             child.waitUntilExit(); _exit(0)
+        }
+        if args.count > 2 && args[1] == "--preserved-test-root" {
+            signal(SIGINT,SIG_IGN)
+            let child = Process(); child.executableURL = URL(fileURLWithPath:args[0]); child.arguments = ["--detached-test-shell",args[2]]
+            do { try child.run() } catch { _exit(126) }
+            print("CHILD \(child.processIdentifier)"); fflush(stdout)
+            child.waitUntilExit()
+            while true { pause() }
         }
         return false
     }
@@ -248,13 +347,40 @@ private final class FakeTree: CodexProcessTreeBackend, @unchecked Sendable {
         try await Task.sleep(for:.milliseconds(2200))
         precondition(!FileManager.default.fileExists(atPath:marker.path),"cancelled shell advanced to its delayed write")
     }
+    static func testRealPromptStopPreservesRootWithoutDelayedWrite() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("one-owned-prompt-test-\(UUID().uuidString)",isDirectory:true)
+        try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+        let marker = directory.appendingPathComponent("must-not-write.txt")
+        let (process,ready) = try launch(["--preserved-test-root",marker.path])
+        let wrapperPID = pid_t(ready.split(separator:" ").last ?? "")!
+        let tree = try CodexProcessTree.begin(rootPID:process.processIdentifier,attemptId:"attempt-prompt-real",timing:fast)
+        defer { tree.finish(); if process.isRunning { process.terminate() } }
+        let backend = DarwinCodexProcessTreeBackend()
+        for _ in 0..<50 {
+            if let child = (try backend.children(of:wrapperPID)).first, getsid(child) == child { break }
+            try await Task.sleep(for:.milliseconds(10))
+        }
+        tree.captureNow()
+        let stopped = await tree.requestOwnedDescendantStop()
+        precondition(stopped.descendantsExited && stopped.rootAvailable && !stopped.requiresCheck)
+        precondition(process.isRunning,"app-server stand-in must stay alive for protocol ACK and command terminal")
+        try await Task.sleep(for:.milliseconds(2200))
+        precondition(!FileManager.default.fileExists(atPath:marker.path),"prompt stop allowed the shell's delayed write")
+        let cleanup = await tree.requestCancellation(); process.waitUntilExit()
+        precondition(cleanup.trackedProcessesExited && !cleanup.requiresCheck)
+        try FileManager.default.removeItem(at:directory)
+    }
     static func main() async throws {
         if childMode() { return }
         alarm(20)
         try await testExactTreeAndIdempotence(); try await testReuseAndUncertainty()
         try await testExitVerificationDoesNotSignal()
         try await testFreezeFailureCannotAdvanceParent(); try await testLateChildLimitsAndFinish()
+        try await testPromptDescendantStopKeepsRootAndIsIdempotent()
+        try await testPromptUncertaintyNeverResumesRootOrAdvancesParent()
+        try await testPromptFullCancellationAndFinishJoin()
         try await testRealNativeInterrupt(); try await testRealDetachedShellCannotWriteAfterStop()
+        try await testRealPromptStopPreservesRootWithoutDelayedWrite()
         alarm(0)
         print("Mac owned process tree tests passed (identity, idempotence, uncertainty, parent-first cleanup, native SIGINT, real detached shell delayed write)")
     }

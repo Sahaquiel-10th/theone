@@ -48,6 +48,37 @@ private final class InterruptFutureEvidence: @unchecked Sendable {
     var result: Bool? { lock.lock(); defer { lock.unlock() }; return value }
 }
 
+private enum DescendantStopMode: Sendable { case disabled, stop, fail }
+private final class DescendantStopEvidence: @unchecked Sendable {
+    private let lock = NSLock()
+    private let mode: DescendantStopMode
+    private var tree: CodexProcessTree?
+    private var invocations = 0
+    private var result: (descendantsExited: Bool, rootAvailable: Bool, requiresCheck: Bool)?
+    init(_ mode: DescendantStopMode) { self.mode = mode }
+    func bind(_ value: CodexProcessTree) { lock.lock(); tree = value; lock.unlock() }
+    private func begin() -> CodexProcessTree? {
+        lock.lock(); defer { lock.unlock() }; invocations += 1; return tree
+    }
+    private func record(_ value: CodexProcessTreeDescendantStop) {
+        lock.lock(); defer { lock.unlock() }
+        result = (value.descendantsExited, value.rootAvailable, value.requiresCheck)
+    }
+    func invoke() async -> Bool {
+        if mode == .disabled { return true }
+        let captured = begin()
+        guard mode == .stop, let captured else { return false }
+        let value = await captured.requestOwnedDescendantStop()
+        record(value)
+        return value.descendantsExited && value.rootAvailable && !value.requiresCheck
+    }
+    var calls: Int { lock.lock(); defer { lock.unlock() }; return invocations }
+    var stoppedDescendantsAndKeptRoot: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return result?.descendantsExited == true && result?.rootAvailable == true && result?.requiresCheck == false
+    }
+}
+
 private func temporaryEvidenceDirectory() throws -> URL {
     var template = Array((NSTemporaryDirectory() + "one-appserver-integration-XXXXXX").utf8CString)
     let path: String? = template.withUnsafeMutableBufferPointer { buffer in
@@ -71,18 +102,22 @@ private final class ProtocolHarness: @unchecked Sendable {
     let writer: CodexAppServerInput
     let controller: CodexAppServerController
     let tree: CodexProcessTree
+    let descendantStop: DescendantStopEvidence
     let evidence: PipeEvidence
     let exit: Task<Int32, Never>
     let output: Task<Void, Never>
     let errors: Task<Void, Never>
 
-    init(root: URL, name: String, mode: String, writeTimeout: Duration = .seconds(1)) throws {
+    init(root: URL, name: String, mode: String, writeTimeout: Duration = .seconds(1),
+        descendantStopMode: DescendantStopMode = .disabled) throws {
         let directory = root.appendingPathComponent(name, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         let process = Process(), stdin = Pipe(), stdout = Pipe(), stderr = Pipe(), state = PipeEvidence()
         let writer = try CodexAppServerInput(fileHandle: stdin.fileHandleForWriting, timeout: writeTimeout)
+        let descendantStop = DescendantStopEvidence(descendantStopMode)
         let controller = try CodexAppServerController(attemptId: "attempt_\(name)", authorizedCWD: directory.path,
             clientVersion: "fixture-test", requestTimeout: 3,
+            onInterruptAccepted: { await descendantStop.invoke() },
             sendLine: { line in
                 do { try await writer.sendLine(line) }
                 catch { state.inputFailed(error); throw error }
@@ -101,6 +136,7 @@ private final class ProtocolHarness: @unchecked Sendable {
         } catch {
             writer.close(); if process.isRunning { process.terminate() }; throw error
         }
+        descendantStop.bind(tree)
         // The parent must not keep duplicate child-side pipe ends open, or an
         // actual child EOF/EPIPE cannot be observed correctly.
         try? stdin.fileHandleForReading.close()
@@ -134,6 +170,7 @@ private final class ProtocolHarness: @unchecked Sendable {
         }
         self.directory = directory; self.process = process; self.writer = writer; self.controller = controller
         self.tree = tree; evidence = state; self.exit = exit; self.output = output; self.errors = errors
+        self.descendantStop = descendantStop
     }
 
     func waitBarriers(timeout: TimeInterval = 2) async throws {
@@ -159,8 +196,8 @@ private final class ProtocolHarness: @unchecked Sendable {
     let root: URL
     private var children: [ProtocolHarness] = []
     init() throws { root = try temporaryEvidenceDirectory() }
-    private func harness(_ name: String, _ mode: String) throws -> ProtocolHarness {
-        let value = try ProtocolHarness(root: root, name: name, mode: mode)
+    private func harness(_ name: String, _ mode: String, descendantStopMode: DescendantStopMode = .disabled) throws -> ProtocolHarness {
+        let value = try ProtocolHarness(root: root, name: name, mode: mode, descendantStopMode: descendantStopMode)
         children.append(value); return value
     }
     func cleanup() async { for child in children { await child.cleanup() } }
@@ -289,6 +326,69 @@ private final class ProtocolHarness: @unchecked Sendable {
         h.tree.finish()
     }
 
+    func promptDescendantStopPreventsLateWrite() async throws {
+        for (name, hookMode) in [("prompt_descendants", DescendantStopMode.stop), ("failed_descendant_hook", .fail)] {
+            let h = try harness(name, "prompt-descendants", descendantStopMode: hookMode)
+            let marker = h.directory.appendingPathComponent("owned-shell-started")
+            let lateWrite = h.directory.appendingPathComponent("late-write-must-not-exist.txt")
+            _ = try await h.controller.start(instruction: "fixture-only owned shell/sleep cancellation")
+            let startDeadline = uptime() + 1
+            while !FileManager.default.fileExists(atPath: marker.path) && uptime() < startDeadline {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            try require(FileManager.default.fileExists(atPath: marker.path), "actual owned shell/sleep never began")
+            let observedStart = uptime()
+            try require(!FileManager.default.fileExists(atPath: lateWrite.path), "fixture target existed before Stop")
+            h.tree.captureNow()
+            // Leave a real 0.5–1s write deadline outstanding when the official
+            // protocol ACK/turn terminal arrives, rather than testing a child
+            // that had already naturally finished before Stop.
+            try await Task.sleep(for: .milliseconds(100))
+            let accepted = await h.controller.requestInterrupt(timeout: 1.5)
+            try require(h.descendantStop.calls == 1, "prompt descendant hook was not invoked exactly once")
+            let snapshot = await h.controller.snapshot()
+            if hookMode == .stop {
+                try require(accepted, "prompt descendant stop failed to obtain the same known command terminal")
+                try require(h.descendantStop.stoppedDescendantsAndKeptRoot, "descendant stop did not preserve the exact protocol root")
+                try require(h.process.isRunning && !h.evidence.barriers, "protocol root was killed before correlated command terminal and stdin EOF")
+                try require(!snapshot.assessment(treeCleanupVerified: false).cancellationConfirmed,
+                    "descendant stop bypassed required root/dual EOF barriers")
+                let log = readEvidence(h.directory, "fixture.log")
+                try require(log.contains("INTERRUPT_ACCEPTED_WITH_LIVE_TOOL=true") && log.contains("CHILD_EXITED_WITH_PROTOCOL_ROOT_ALIVE")
+                    && log.contains("CHILD_EXIT_INTERRUPTED=true"),
+                    "fixture did not keep a live late-write child after early ACK/interrupted")
+                h.writer.close(); try await h.waitBarriers()
+                let cleanup = await h.tree.verifyTrackedExit(timeout: 0.3)
+                let settled = await h.controller.snapshot()
+                try require(!cleanup.requiresCheck && settled.assessment(treeCleanupVerified: h.evidence.barriers).cancellationConfirmed,
+                    "known command terminal + prompt child stop + real EOF did not settle cancellation")
+                try require(settled.attemptId == "attempt_\(name)" && settled.threadId == "fixture_thread" && settled.turnId == "fixture_turn",
+                    "prompt stop lost exact attempt/thread/turn correlation")
+                try require(await h.exit.value == 0, "protocol root did not exit naturally after stdin EOF")
+            } else {
+                try require(!accepted && snapshot.protocolIssue != nil, "failed descendant hook was accepted as cancellation")
+                h.writer.close()
+                let cleanup = await h.tree.requestCancellation()
+                try await h.waitBarriers()
+                let settled = await h.controller.snapshot()
+                let assessment = settled.assessment(treeCleanupVerified: !cleanup.requiresCheck && h.evidence.barriers)
+                try require(!assessment.cancellationConfirmed && assessment.requiresCheck,
+                    "whole-tree fallback erased the failed descendant-hook protection")
+            }
+            // Independently wait beyond the shell's original 0.8s deadline.
+            // No old fixture evidence or application/user files are removed.
+            while uptime() - observedStart < 1.05 { try await Task.sleep(for: .milliseconds(10)) }
+            try require(!FileManager.default.fileExists(atPath: lateWrite.path), "owned shell performed the delayed write after Stop")
+            let requests = readEvidence(h.directory, "requests.log").split(separator: "\n")
+            try require(requests.filter { $0 == "turn/start" }.count == 1 && requests.filter { $0 == "turn/interrupt" }.count == 1,
+                "fixture task or interrupt was automatically rerun")
+            h.save(hookMode == .stop
+                ? "PASS early official interrupted ACK while real owned shell/sleep remained alive; stop descendants, retain protocol root until known command terminal + EOF; no file past original deadline"
+                : "PASS failed prompt-descendant hook requires whole-tree fallback and remains protected; no late file, no replay")
+            h.tree.finish()
+        }
+    }
+
     func partialInstructionWriteIsUnknown() async throws {
         let h = try harness("partial_write", "close-mid-turn")
         do {
@@ -367,6 +467,7 @@ private final class ProtocolHarness: @unchecked Sendable {
         try await terminalBeforeInterruptACK()
         try await emptyInterruptedTurnBeforeDelayedKnownCommand()
         try await earlyStopDoesNotDispatch()
+        try await promptDescendantStopPreventsLateWrite()
         try await partialInstructionWriteIsUnknown()
         try await missingExitNeverCompletes()
         try await heldStdoutNeedsOwnedTreeCleanup()
@@ -441,6 +542,18 @@ private func fakeProtocol(mode: String, directory: URL) throws {
         } else if method == "turn/start" {
             try reply(id, .object(["turn": .object(["id": .string("fixture_turn"), "status": .string("inProgress"), "items": .array([])])]))
             try item("item/started", command("inProgress"))
+            if mode == "prompt-descendants" {
+                let child = Process()
+                child.executableURL = URL(fileURLWithPath: "/bin/sh")
+                child.arguments = ["-c", "umask 077; set -euC; printf 'FIXTURE_CHILD_STARTED\\n' > \"$1/owned-shell-started\"; /bin/sleep 0.8; printf 'LATE_WRITE_AFTER_STOP\\n' > \"$1/late-write-must-not-exist.txt\"", "one-fixture", directory.path]
+                child.environment = ["PATH": "/usr/bin:/bin"]
+                child.currentDirectoryURL = directory
+                child.standardInput = FileHandle.nullDevice
+                child.standardOutput = FileHandle.standardOutput; child.standardError = FileHandle.standardError
+                try child.run(); holder = child
+                note("OWNED_LATE_WRITE_SHELL=\(child.processIdentifier)")
+                continue
+            }
             if ["held-stdout", "ignore-interrupt"].contains(mode) {
                 let child = Process()
                 child.executableURL = URL(fileURLWithPath: "/bin/sleep"); child.arguments = ["10"]
@@ -456,6 +569,21 @@ private func fakeProtocol(mode: String, directory: URL) throws {
             try item("item/completed", answer); try terminal("completed", [completed, answer])
         } else if method == "turn/interrupt" {
             if mode == "ignore-interrupt" { note("IGNORED_INTERRUPT"); continue }
+            if mode == "prompt-descendants" {
+                try reply(id, .object([:])); try terminal("interrupted", [], itemsView: "notLoaded")
+                note("INTERRUPT_ACCEPTED_WITH_LIVE_TOOL=\(holder?.isRunning == true)")
+                let deadline = uptime() + 2
+                while holder?.isRunning == true && uptime() < deadline { usleep(1000) }
+                guard let holder, !holder.isRunning else { note("LATE_WRITE_CHILD_DID_NOT_EXIT"); return }
+                note("CHILD_EXITED_WITH_PROTOCOL_ROOT_ALIVE")
+                note("CHILD_EXIT_INTERRUPTED=\(holder.terminationReason == .uncaughtSignal || holder.terminationStatus != 0)")
+                let interrupted = holder.terminationReason == .uncaughtSignal
+                    ? command("failed", exit: .number(-1))
+                    : command(holder.terminationStatus == 0 ? "completed" : "failed", exit: .number(Double(holder.terminationStatus)))
+                try item("item/completed", interrupted)
+                note("KNOWN_COMMAND_TERMINAL_SENT_AFTER_ACTUAL_CHILD_EXIT")
+                continue
+            }
             if mode.hasPrefix("empty-late-") {
                 try reply(id, .object([:])); note("MATCHED_ACK_SENT")
                 try terminal("interrupted", [], itemsView: "notLoaded"); note("EMPTY_INTERRUPTED_TURN_SENT")
@@ -508,7 +636,7 @@ private func fakeProtocol(mode: String, directory: URL) throws {
         do {
             let value = try IntegrationSuite(); suite = value
             try await value.run(); await value.cleanup()
-            print("CodexAppServerIntegrationTests: 8 real-pipe fixture groups passed; NOT real ONE/Codex acceptance")
+            print("CodexAppServerIntegrationTests: 9 real-pipe fixture groups passed; NOT real ONE/Codex acceptance")
             print("Evidence retained: \(value.root.path)")
         } catch {
             if let suite {

@@ -115,6 +115,7 @@ struct CodexAppServerSnapshot: Sendable {
 actor CodexAppServerController {
     typealias SendLine = @Sendable (String) async throws -> Void
     typealias ExecEvent = @Sendable (String) async -> Void
+    typealias InterruptAccepted = @Sendable () async -> Bool
     static let launchArguments = ["app-server", "--listen", "stdio://"]
     private struct Pending {
         let method: String
@@ -148,6 +149,7 @@ actor CodexAppServerController {
     private let now: @Sendable () -> TimeInterval
     private let sendLine: SendLine
     private let onExecEvent: ExecEvent
+    private let onInterruptAccepted: InterruptAccepted
     private var sequence = 0
     private var pending: [String: Pending] = [:]
     private var turnWaiters: [UUID: TurnWaiter] = [:]
@@ -181,6 +183,7 @@ actor CodexAppServerController {
     init(attemptId: String, authorizedCWD: String, model: String = "one-executor", resumeThreadId: String? = nil,
          clientVersion: String, requestTimeout: TimeInterval = 10,
          now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         onInterruptAccepted: @escaping InterruptAccepted = { true },
          sendLine: @escaping SendLine, onExecEvent: @escaping ExecEvent) throws {
         guard Self.validID(attemptId), authorizedCWD.hasPrefix("/"), !authorizedCWD.contains("\0"),
               URL(fileURLWithPath: authorizedCWD).standardizedFileURL.path == authorizedCWD,
@@ -189,7 +192,7 @@ actor CodexAppServerController {
         self.attemptId = attemptId; cwd = authorizedCWD; self.model = model
         self.resumeThreadId = resumeThreadId; self.clientVersion = clientVersion
         self.requestTimeout = requestTimeout; self.sendLine = sendLine; self.onExecEvent = onExecEvent
-        self.now = now
+        self.now = now; self.onInterruptAccepted = onInterruptAccepted
     }
 
     func start(instruction: String) async throws -> CodexAppServerTurnIdentity {
@@ -347,6 +350,16 @@ actor CodexAppServerController {
                 let left = deadline - now()
                 guard left > 0, try await waitForTurnEnd(timeout: left) == .interrupted else { return false }
             }
+            // An interrupted turn can leave a unified-exec shell running.
+            // Stop only this attempt's owned descendants while keeping the
+            // app-server alive for its command terminals. Never spend a new
+            // timeout budget or accept the hook alone as cancellation proof.
+            let hookTime = deadline - now(), hook = onInterruptAccepted
+            guard hookTime > 0, protocolIssue == nil, !closed else { return false }
+            try await codexAppServerBoundedSend(timeout: hookTime) {
+                guard await hook() else { throw CodexAppServerError.invalidProtocol }
+            }
+            guard now() <= deadline, protocolIssue == nil, !closed else { return false }
             // 0.160.1 interrupted notifications intentionally contain no
             // items. Canonical command item/completed can follow the turn by
             // a few milliseconds. Keep stdin open until those exact already-

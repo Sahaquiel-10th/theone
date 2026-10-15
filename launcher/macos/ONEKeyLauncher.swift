@@ -1103,6 +1103,12 @@ final class CodexExecutionRunner: @unchecked Sendable {
             input = writer
             let controller = try CodexAppServerController(attemptId: identity.attemptId,
                 authorizedCWD: projectPath, resumeThreadId: resumeThreadId, clientVersion: launcherVersion,
+                onInterruptAccepted: { [self] in
+                    guard let tree = synchronized({ identities[taskId] == identity ? processTrees[identity.attemptId] : nil }),
+                          tree.attemptId == identity.attemptId else { return false }
+                    let stopped = await tree.requestOwnedDescendantStop()
+                    return stopped.descendantsExited && stopped.rootAvailable && !stopped.requiresCheck
+                },
                 sendLine: { line in try await writer.sendLine(line) },
                 onExecEvent: { [self] line in
                     guard synchronized({ appServers[identity.attemptId] != nil && !finishing.contains(identity.attemptId) }) else { return }
