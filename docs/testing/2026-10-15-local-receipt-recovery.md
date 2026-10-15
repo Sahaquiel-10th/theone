@@ -363,3 +363,35 @@ prompt-stop worker 共享且幂等；完整取消与 finish 同锁登记更高�
 窄修正只把已记录 child 的完整 PID/UID/realUID/birth 判断提前；保留历史 depth，不登记新归属。新发现进程仍需父前后夹读、PPID、出生时间和 UID 全部门禁；信号发送仍再次核对精确身份。正式第 12 组回归覆盖已知重挂、未知新进程拒绝/零信号、birth/UID 复用拒绝/零信号。独立安全复核、12 组严格回归、完整启动器双架构检查通过。最终 helper SHA-256 `7d5a8a54ba2424db229ef896ced96a5a7e9eb5f3363cb86950d5993a588304aa`。
 
 主代理对最终 helper 独立严格编译并运行 9 组真实管道夹具通过，证据 `one-appserver-integration-AbjT0b`。上述是独立修正和自动回归，不证明旧 CI 原因，也不代替真实 ONE 验收。未发布的 0.4.21 将重新生成制品，旧上传包不启用。
+
+### 最终 0.4.21 制品及真实验收暂停点
+
+最终提交 `84b10c6bd3cf673384158776fad903f34435627a`，Actions `38718247445` 的应用、Mac、Windows 验证全部通过；Mac 明确运行 12 组进程树、16 组 controller、13 组 input 和 9 组管道集成。自动部署已开始，完成与服务器 current 尚待核对。
+
+最终 Mac Universal 重构建、严格签名、双平台制品与发布公钥匹配验证通过，仍为 `VERIFIED_VERSION=0.4.21`。包在同一路径 `/Users/machao/Desktop/theone-output/theone-runtime-0.4.21.tar.gz`，**4,824,334 字节**，最终 SHA-256 **`0b72751f046aa81999c25196712b04ee521e97064f734b735aecd85680be950a`**。最初未发布包另保留在 `/tmp/one-runtime-0.4.21-q0GAsH/initial-unpublished-package.tar.gz`，不作为本次发布制品。
+
+真实 OrcaTerm 再选最终制品，点击文件选择器“打开”后 Mac 自动锁屏；当前不能确认上传/同名替换是否完成，不盲点或重复传送。已请用户解锁。签名更新通道仍未发布 0.4.21，盘上和实际驻留仍只确认到 0.4.20，没有提交新测试。新建目标 `QA-421-CREATE-20261015.md` 初始不存在，预期正文 `ONE_421_CREATE_OK\n`、SHA-256 `d2accbbac66e3261ffabb24f5c06b476d4bb6b11bf2d8f77b0f6bf0da85eb86a`；解锁后须重新核对目标、当前版本、授权目录和受理状态，再单次执行。
+
+## 0.4.21 最终发布及真实创建验收
+
+用户再次解锁后，先只读核对服务器：current 精确为 `84b10c6bd3cf673384158776fad903f34435627a`，active、健康 `ok:true`；服务器上传文件仍为旧未发布包的 hash，未跳过校验。重新选最终包，在明确 `/home/ubuntu/theone-runtime-0.4.21.tar.gz` 的同名提示中替换；传输成功后，完整 current/hash 硬校验通过，临时清单、原安装脚本和共享清单复验均为 `VERIFIED_VERSION=0.4.21`。服务保持运行、健康正常，没有调整模型、价格或用户数据。
+
+真实 ONE 提示 `0.4.20 → 0.4.21`，点更新一次。USB app 版本 0.4.21、严格签名通过，其可执行文件与最终构建逐字 hash 相同：`ee937124b19ffe40f882c97a5b6ea0c4dac8d1377c79ade65cde6fb21d793089`。旧驻留退出后通过同枚 Key 打开，新实际驻留 PID 21857，出生本地 `20:32:51`，`ONEPresence-0.4.21.app/Contents/MacOS/ONE`，resident 标志正确。页面明确新版已启动并连接；设置仍为 `/Users/machao/Desktop/test`，未更换目录/扩大授权。
+
+通过隔离任务的直接输入区于 `12:36:43.454Z` 只点击一次本机执行。新目标初始不存在，实际创建 `QA-421-CREATE-20261015.md`，18 字节，正文逐字 `ONE_421_CREATE_OK\n`，SHA-256 与上文预期一致。主代理与独立代理 O_NOFOLLOW 回读一致；真实页面返回 exit 0、实际路径、正文和同一 hash。
+
+execution `ext_7b46559734eeb93a08d8`，attempt `attempt_4009456a55a4f7f48dc6`，第 0 轮，thread `01a13f90-e4e8-7de2-b735-e4b688f6d4a2`。服务器于 `12:37:20.963Z` 收到 completed/accepted 回执 `22f1795f-689e-422b-9905-54a8cfa26834`，hash `4d0ceb30c2902ef545beb367799a11881848d871398f2a48f164fb6516bed2a1`。精确 journal 七元组匹配、ACK=true、正文清除、0600/0700。精确本轮仅一次 exec（`12:37:11.492Z`），exit 0（`11.778Z`）、真实 final（`17.861Z`），没有 write_stdin 或重跑。
+
+## 0.4.21 真实停止验收通过
+
+新目标 `QA-421-CANCEL-20261015.md` 起初不存在，完整单次命令经过只读语法检查；仅输出 marker、sleep 180，再排他写入，不重跑旧要求。于 `12:40:08.716Z` 在真实 ONE 点击本机执行一次，只读观察器于 `12:40:31.625Z` 捕获精确驻留 21857 → CLI 22874 → shell 23103 → sleep 23104。
+
+真实 ONE 于 `12:41:07.828Z` 点击停止。执行器 `12:41:08.483Z` interrupted，已启动的同一命令于 `12:41:08.545Z` 返回 failed/exit137，晚 62ms；服务器于 `12:41:08.890Z` 收到 cancelled/supplemental 回执，没有 hold。只读观察器于 `12:41:09.024–09.033Z` 确认 CLI、shell、sleep 均退出；不是外部终止脚本替代产品停止。
+
+观察至 `12:43:46.585Z`，距实际启动 195 秒，已超过原定 180 秒写入期限，目标始终不存在，驻留身份未变，本轮全部已观察后代均退出。模型仅一次 exec，没有额外模型工具调用、write_stdin、task_complete 或重跑；中途首次 yield 返回 running 的 session 为 39528，最终 CommandExecution 的 process_id 同为 39528。观察器另看到 CLI 背景 git/ssh 子进程；精确 rollout 并无模型发起 git/ssh 命令，不能把它混称为用户指令执行；本次未泛查其内容或个人凭据，也不据此作“完全没有后台网络活动”的承诺。
+
+execution `ext_ab56c194dee4c405a9b1`，attempt `attempt_3e89eaa035ebb1b0f960`，第 0 轮，thread `01a13f93-f4f5-7210-89a4-4555f32314a7`；回执 `6a432478-e305-4cc4-940d-613de3e5331f`，hash `18a4a3326a521d7b1732339986da26fdb2e939746d00eb17b299ab292addd856`。精确本机 journal 七元组匹配、ACK=true、正文清除，0600/0700。页面保持“任务已停止”，迟到工具回执仅补充停止信息，没有变成已完成，也没有新的需核对保护；本次未解除任何新保护。
+
+主代理收尾以精确路径 O_NOFOLLOW 再读四个旧基线和 421 新创建文件，大小、完整 SHA-256 均与记录一致；`12:46:39.653Z` 再次 lstat 确认 421 取消目标不存在。0.4.20 的失败文件与全部历史保留，无删除、覆盖或自动重跑。
+
+本轮验收范围为 0.4.21 真机正常创建、真实结果回传及运行中停止/无延迟写入，不代表本日重新验收了全部连接器、图片、计费、Windows 真机或所有 UX。页面停止主状态正确，但副标题仍残留“我在连接这台电脑…”；这是另记的文案一致性问题，不把它当成仍在执行，也不据此扩大本轮修改。
