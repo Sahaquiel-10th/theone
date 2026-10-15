@@ -168,7 +168,8 @@ private final class FakeTree: CodexProcessTreeBackend, @unchecked Sendable {
             guard posix_spawnattr_init(&attributes) == 0 else { _exit(124) }
             guard posix_spawnattr_setpgroup(&attributes,getpgrp()) == 0,
                   posix_spawnattr_setflags(&attributes,Int16(POSIX_SPAWN_SETPGROUP)) == 0 else { _exit(124) }
-            let cargs = [args[0],"--new-session-shell",args[2]].map { strdup($0) } + [nil]
+            let childArguments: [String] = [args[0],"--new-session-shell",args[2]]
+            let cargs: [UnsafeMutablePointer<CChar>?] = childArguments.map { value in value.withCString { strdup($0) } } + [nil]
             let environment = ProcessInfo.processInfo.environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
             var child: pid_t = 0
             let spawned = cargs.withUnsafeBufferPointer { argv in
