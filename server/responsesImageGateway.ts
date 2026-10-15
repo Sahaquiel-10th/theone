@@ -1,5 +1,6 @@
 import type { Message, ModelConfig } from './types.js';
 import { parseProviderUsage } from './modelGateway.js';
+import {fetchWithSafeRetries,type ProviderRetryOptions} from './providerRetry.js';
 
 type ImageOutput = { type?: string; status?: string; result?: string; output_format?: string; content?: { type?: string; text?: string }[] };
 type ResponsePayload = { status?: string; output?: ImageOutput[]; usage?: unknown };
@@ -63,7 +64,7 @@ export function parseChatImageSse(body: string) {
  * AND chat cost, and persist the image privately before exposing it to a client.
  * Never automatically retry an uncertain paid call. Not enabled by model name.
  */
-export async function callChatImage(model: ModelConfig, messages: Message[], options: { imageModel?: string; timeoutMs?: number } = {}) {
+export async function callChatImage(model: ModelConfig, messages: Message[], options: { imageModel?: string; timeoutMs?: number; retry?: ProviderRetryOptions } = {}) {
   if (!model.enabled || model.kind !== 'chat' || model.protocol !== 'openai' || !model.apiKey) throw new ChatImageGatewayError('configuration');
   const inputImages = messages.flatMap(m => m.inputImageDataUrls || []);
   if (inputImages.length > 5 || inputImages.some(url => !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(url) || url.length > 36 * 1024 * 1024)) throw new ChatImageGatewayError('invalid_input_image');
@@ -72,14 +73,14 @@ export async function callChatImage(model: ModelConfig, messages: Message[], opt
   const controller = new AbortController();
   const deadline = setTimeout(() => controller.abort(), options.timeoutMs || 180_000);
   try {
-    const response = await fetch(endpoint, { method: 'POST', redirect: 'error', signal: controller.signal,
+    const response = await fetchWithSafeRetries(endpoint, { method: 'POST', redirect: 'error', signal: controller.signal,
       headers: { 'content-type': 'application/json', authorization: `Bearer ${model.apiKey}` },
       body: JSON.stringify({ model: model.model, store: false, stream: true, parallel_tool_calls: false, max_output_tokens: 3000,
         input: [...(model.systemPrompt ? [{ role: 'system', content: model.systemPrompt }] : []), ...messages.map(m => ({ role: m.role,
           content: [{ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: m.content },
             ...(m.role === 'user' ? (m.inputImageDataUrls || []).map(image_url => ({ type: 'input_image', image_url })) : [])] }))],
         tools: [{ type: 'image_generation', ...(options.imageModel ? { model: options.imageModel } : {}), size: '1024x1024', output_format: 'png' }],
-        tool_choice: { type: 'image_generation' } }) });
+        tool_choice: { type: 'image_generation' } }) }, options.retry);
     const reader = response.body?.getReader();
     if (!reader) throw new ChatImageGatewayError('invalid_response',response.status);
     const chunks: Uint8Array[] = []; let count = 0;

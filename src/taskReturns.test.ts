@@ -2,6 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {newAutomaticReceiptIds,visibleTransfers,presentationTransfers,transferFeedbackLabel,type Transfer} from './TaskTransferRail';
 import {taskCategory,taskUiOutcome} from './taskAttention';
+import {createElement} from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {TaskTransferRail} from './TaskTransferRail';
+test('the sidebar offers a visible dismiss action and read-all disappears after review',()=>{
+ const task:Transfer={id:'receipt',taskId:'one',title:'测试方案',state:'failed',read:false};
+ const html=renderToStaticMarkup(createElement(TaskTransferRail,{tasks:[task],busy:false,onOpen:()=>{},onDismiss:async()=>{},onReadAll:async()=>{}}));
+ assert.match(html,/收起测试方案的提醒/);assert.match(html,/全部标为已读/);
+ assert.equal(renderToStaticMarkup(createElement(TaskTransferRail,{tasks:[{...task,read:true}],busy:false,onOpen:()=>{}})),'');
+});
+test('read or dismissed results leave the rail, without consuming a future round or active work',()=>{
+ const task:Transfer={id:'old',taskId:'one',title:'方案',state:'failed',read:true,reported:false};
+ assert.deepEqual(visibleTransfers([task]),[]);
+ const next={...task,id:'new',read:false};assert.deepEqual(visibleTransfers([task,next]),[next]);
+ const running={...task,id:'running',state:'running'};assert.deepEqual(visibleTransfers([task,running]),[running]);
+ assert.deepEqual(newAutomaticReceiptIds([task]),['old'],'dismissal does not invent a coordinator report');
+});
 test('unreported receipts survive refresh even without having observed the task running',()=>{
  const tasks:Transfer[]=[{id:'old',taskId:'ui',title:'UI',state:'completed',reported:true},{id:'new',taskId:'ui',title:'UI',state:'completed',reported:false},{id:'failed',taskId:'other',title:'Other',state:'failed',reported:false},{id:'running',taskId:'ui',title:'UI',state:'running',reportable:false}];
  assert.deepEqual(newAutomaticReceiptIds(tasks),['new','failed']);

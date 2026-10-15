@@ -6,6 +6,7 @@ import { appendExecutionEvent, executionTerminal } from "./executionService.js";
 import { resolveAiTask } from "./aiTaskConfig.js";
 import { runBilledModel } from "./modelBilling.js";
 import { MODEL_MAX_OUTPUT_TOKENS, parseProviderUsage } from "./modelGateway.js";
+import { fetchWithSafeRetries } from './providerRetry.js';
 
 export type CodexGatewayConfiguration = { baseUrl: string; token: string; model: "one-executor" };
 type Grant = Pick<ExecutionTask, "id" | "workspaceId" | "userId" | "deviceId" | "installationId" | "conversationId" | "batchBudget"> & {
@@ -154,10 +155,11 @@ export class CodexGateway {
           if (signal.aborted || calls.some(row => row.requestId === requestId || row.status === "pending") || calls.length >= 64) throw unavailable();
         }
       }, async model => {
-        const response = await (this.options.fetch ?? fetch)(`${model.baseUrl.replace(/\/$/, "")}/responses`, {
+        const response = await fetchWithSafeRetries(`${model.baseUrl.replace(/\/$/, "")}/responses`, {
           method: "POST", redirect: "error", headers: { "Content-Type": "application/json", Authorization: `Bearer ${model.apiKey}` },
           body: JSON.stringify(body), signal: controller.signal
-        });
+        }, { fetch: this.options.fetch, beforeRetry: async () => { this.active(await this.store.read(), grant); await this.proof({ ...grant, method: 'POST', path: '/api/executor-gateway/v1/responses' }); },
+          onRetry: async notice => { await this.store.mutate(db => { this.active(db, grant); appendExecutionEvent(db, {id:`exe_${crypto.randomBytes(12).toString('hex')}`,workspaceId:grant.workspaceId,userId:grant.userId,taskId:grant.id,round:grant.round,kind:'status',text:`模型服务有点忙，${Math.ceil(notice.delayMs/1000)} 秒后再试（${notice.attempt}/${notice.maxRetries}）。不用重新发送，随时可以停止。`,createdAt:new Date(this.now()).toISOString()}); }); } });
         if (!response.ok || !response.body || !response.headers.get("content-type")?.includes("text/event-stream")) throw unavailable();
         const reader = response.body.getReader(), decoder = new TextDecoder();
         let pending = "", total = 0;

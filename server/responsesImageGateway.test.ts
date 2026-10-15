@@ -48,3 +48,10 @@ test('reference images cannot introduce external URLs before authentication is s
   try { await assert.rejects(()=>callChatImage(model,[{role:'user',content:'edit',createdAt:'',inputImageDataUrls:['https://example.invalid/private']}]),e=>e instanceof ChatImageGatewayError && e.code==='invalid_input_image'); assert.equal(calls,0); }
   finally { globalThis.fetch=previous; }
 });
+
+test('an explicit image rate limit retries before acceptance but cancellation prevents the next call',async()=>{
+ let calls=0,checked=0;const notices:number[]=[];
+ const response=await callChatImage(model,[],{retry:{fetch:async()=>++calls===1?new Response('',{status:429}):Response.json(payload),wait:async()=>{},beforeRetry:async()=>{checked++;},onRetry:async n=>{notices.push(n.attempt);}}});
+ assert.equal(response.imageCount,1);assert.equal(calls,2);assert.equal(checked,1);assert.deepEqual(notices,[1]);
+ calls=0;await assert.rejects(callChatImage(model,[],{retry:{fetch:async()=>{calls++;return new Response('',{status:429});},wait:async()=>{},beforeRetry:async()=>{throw new Error('stopped');}}}),ChatImageGatewayError);assert.equal(calls,1);
+});

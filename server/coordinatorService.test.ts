@@ -10,6 +10,7 @@ import {createHash} from 'node:crypto';
 import type { Store } from "./db.js";
 import type { Database, ModelConfig } from "./types.js";
 import { CoordinatorService } from "./coordinatorService.js";
+import {ChatImageGatewayError} from './responsesImageGateway.js';
 import { NotionDocuments } from './notionDocuments.js';
 import type { NotionMcpService } from './knowledge/notionMcpService.js';
 import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
@@ -517,6 +518,24 @@ async function imageFixture(imageCall:NonNullable<import('./featureRuns.js').Fea
   const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{artifactDirectory:directory,imageCall,modelCall:async(_model,messages)=>messages.at(-1)?.role==='tool'?answer('活动文案先给你；图片正在制作。'):{...answer(''),toolCalls:[{id:'draw',type:'function',function:{name:'generate_image',arguments:JSON.stringify({query:'蓝色圆圈，没有文字'})}}]}});
   return {...f,service,directory};
 }
+test('failed image shows a safe reason and explicit retry reuses its task with one new billed attempt',async()=>{
+  let calls=0,fail=true;const f=await imageFixture(async()=>{calls++;if(fail)throw new ChatImageGatewayError('authorization',403);return {content:'图片好了',imageUrl:imageFixturePng};});
+  try{
+    const reply=await f.service.dispatch(a,input('operation_image_recover_01','画图'),key);await f.service.resume(a,key);
+    await waitFor(async()=>(await f.service.task(a,reply.taskIds[0])).jobs.at(-1)?.state==='failed');
+    const detail=await f.service.task(a,reply.taskIds[0]),source=detail.jobs.at(-1)!;
+    assert.equal(source.failureCode,'image_authorization_403');assert.match(source.error!,/不用重新授权电脑/);assert.equal(calls,1);
+    await assert.rejects(()=>f.service.retryLatest(b,reply.taskIds[0],source.id,undefined,key));assert.equal(calls,1);
+    fail=false;
+    await Promise.allSettled([f.service.retryLatest(a,reply.taskIds[0],source.id,undefined,key),f.service.retryLatest(a,reply.taskIds[0],source.id,undefined,key)]);
+    await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,reply.taskIds[0])).jobs.at(-1)?.state==='completed');
+    const done=await f.store.read();assert.equal(calls,2);assert.equal(done.chatOperations!.filter(o=>o.conversationId===reply.taskIds[0]&&o.workRun).length,2);
+    assert.equal(done.attachments.length,1);assert.equal(done.modelUsageRecords.filter(r=>r.activity==='image_generation'&&r.status==='success').length,1);
+    assert.equal(done.modelUsageRecords.filter(r=>r.activity==='image_generation'&&r.status==='failed').length,1);
+    assert.equal(done.powerAccounts[1].balanceMicros,100e6);
+  }finally{rmSync(f.directory,{recursive:true,force:true});}
+});
+
 test('chat image task is independent, private, billed once and returns to the same chat exactly once',async()=>{
   let release!:()=>void,calls=0;
   const gate=new Promise<void>(r=>release=r);
@@ -1859,7 +1878,7 @@ test('next answer reports the captured old local round after the same execution 
   await ready;
   await f.store.mutate(d=>{const task=d.executionTasks[0];task.reportRound=1;task.status='running';task.finalResponse=undefined;task.completedAt=undefined;task.updatedAt=new Date().toISOString();});
   release(answer('上一轮已经返回了文件内容和回读结果。'));
-  const reply=await response;assert.match(reply.message.content,/连续本机文档.*有新结果/);assert.match(reply.message.content,/task=same-local-conversation/);
+  const reply=await response;assert.match(reply.message.content,/连续本机文档.*有新反馈/);assert.match(reply.message.content,/task=same-local-conversation/);
   let db=await f.store.read();assert.equal(db.chatOperations!.filter(o=>o.id==='notice_same-local-execution'&&o.assistantMessageId===reply.message.id).length,1);
   assert.equal(db.executionTasks[0].status,'running');assert.equal(db.executionTasks[0].reportedRound,undefined);assert.equal(db.executionTasks[0].reportedToCoordinatorAt,undefined);
   const state=await service.state(a);assert.deepEqual(state.recentReportedReceiptIds,['same-local-execution']);assert.ok(state.transfers.some(t=>t.id==='same-local-conversation'&&t.running));

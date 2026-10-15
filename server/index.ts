@@ -419,7 +419,6 @@ app.post("/api/chat", ...keyAuth, asyncRoute(async (req, res) => {
   const db = await store.read(); const existing = conversationId ? db.conversations.find((item) => item.id === conversationId && item.workspaceId === req.workspaceId && item.userId === req.user!.id) : undefined;
   if (conversationId && !existing) throw new BetaInputError("对话不存在", 404, "NOT_FOUND");
   const model = db.models.find((item) => item.id === (existing?.modelId || modelId) && item.enabled && item.apiKey); if (!model) throw new BetaInputError("模型暂不可用，请在设置中更换或联系管理员", 404, "MODEL_NOT_FOUND");
-  if (db.modelUsageRecords.some((item) => item.workspaceId === req.workspaceId && item.userId === req.user!.id && item.status === "needs_review")) throw new BetaInputError("有一笔模型用量待管理员核对，请联系管理员后继续", 409, "BILLING_REVIEW_REQUIRED");
   if (availablePowerMicros(db, req.workspaceId!, req.user!.id) <= 0) throw new BetaInputError("电力不足，请联系管理员补充内测电力", 402, "POWER_REQUIRED");
   const attachmentSelection = selectConversationAttachments(db, { ...scope, conversationId: existing?.id }, attachmentIds, { maxFiles: 10, maxImages: 5 });
   const selectedAttachments = attachmentSelection.current; const contextAttachments = attachmentSelection.context;

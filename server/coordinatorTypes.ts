@@ -40,5 +40,7 @@ export type WorkRun = {
   credentials: CredentialBinding[];
   unread?: boolean;
   error?: string;
+  retryProgress?: { attempt: number; maxRetries: number; nextRetryAt: string };
+  failureCode?: string;
   resultMessageId?: string;
 };

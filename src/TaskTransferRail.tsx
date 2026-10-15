@@ -1,5 +1,5 @@
 import {useEffect,useLayoutEffect,useRef,useState} from 'react';
-import {ArrowUpRight,Check,Loader2,AlertCircle,ChevronDown,Lightbulb} from 'lucide-react';
+import {ArrowUpRight,Check,Loader2,AlertCircle,ChevronDown,Lightbulb,X} from 'lucide-react';
 import {transferStateLabel} from './noviceUx';
 import {reportedCardTransitions,departingCardTransitions} from './taskTransferLifecycle';
 import {flyTaskNote,type NoteRect} from './taskTransferMotion';
@@ -11,7 +11,7 @@ export const newAutomaticReceiptIds=(tasks:Transfer[])=>tasks.filter(t=>transfer
 export function visibleTransfers(tasks:Transfer[]) {
   const grouped=new Map<string,Transfer>();
   for(const task of tasks){
-    if(transferSettled(task.state)&&task.reported)continue;
+    if(transferSettled(task.state)&&(task.reported||task.read))continue;
     const previous=grouped.get(task.taskId);
     if(!previous||transferSettled(previous.state)||!transferSettled(task.state))grouped.set(task.taskId,task);
   }
@@ -32,11 +32,11 @@ export function transferFeedbackLabel(task:Transfer) {
   if(task.state==='returned')return '结果已返回，查看内容';
   return transferStateLabel(task.state);
 }
-type RailProps={tasks:Transfer[];busy:boolean;onOpen:(id:string)=>void;onStop?:(task:Transfer,source:HTMLElement)=>Promise<void>;onReport?:(ids:string[])=>Promise<boolean|void>;onReadAll?:()=>Promise<void>;recentReportedReceiptIds?:string[];departureAnchor?:()=>HTMLElement|null;returnAnchor?:()=>HTMLElement|null};
+type RailProps={tasks:Transfer[];busy:boolean;onOpen:(id:string)=>void;onStop?:(task:Transfer,source:HTMLElement)=>Promise<void>;onReport?:(ids:string[])=>Promise<boolean|void>;onReadAll?:()=>Promise<void>;onDismiss?:(task:Transfer)=>Promise<void>;recentReportedReceiptIds?:string[];departureAnchor?:()=>HTMLElement|null;returnAnchor?:()=>HTMLElement|null};
 type CardGeometry={node:HTMLElement;rect:NoteRect};
 
 /** Completed notes wait for the next dispatcher answer. Motion never sends a chat or marks work read. */
-export function TaskTransferRail({tasks,busy,onOpen,onStop,onReadAll,recentReportedReceiptIds=[],departureAnchor,returnAnchor}:RailProps) {
+export function TaskTransferRail({tasks,busy,onOpen,onStop,onReadAll,onDismiss,recentReportedReceiptIds=[],departureAnchor,returnAnchor}:RailProps) {
   const [returning,setReturning]=useState<Transfer[]>([]),[departing,setDeparting]=useState<string[]>([]),[page,setPage]=useState(0),[expanded,setExpanded]=useState(true);
   const [stopping,setStopping]=useState<string[]>([]),[stopError,setStopError]=useState(''),[reading,setReading]=useState(false),[readError,setReadError]=useState('');
   const previous=useRef<Map<string,Transfer>|null>(null),returned=useRef(new Set<string>()),rail=useRef<HTMLElement>(null);
@@ -89,6 +89,7 @@ export function TaskTransferRail({tasks,busy,onOpen,onStop,onReadAll,recentRepor
         {['completed','returned'].includes(task.state)&&!['needs_input','partial','failed'].includes(task.outcome||'')?<Check size={14}/>:transferSettled(task.state)||task.state==='paused'||task.state==='prepared_local'?<AlertCircle size={14}/>:<Loader2 size={14} className={task.state==='waiting'?'':'task-transfer-spinner'}/>}
         <span><strong>{task.title}</strong><small>{transferFeedbackLabel(task)}</small></span><ArrowUpRight size={12}/>
       </button>
+      {transferSettled(task.state)&&onDismiss?<button type="button" className="task-transfer-more" aria-label={`收起${task.title}的提醒`} title="收起提醒，任务和结果仍在任务列表里" onClick={()=>{void onDismiss(task).catch(error=>setReadError(error instanceof Error?error.message:'暂时没能收起，请再试一次'));}}><X size={12}/></button>:null}
       {task.state==='paused'||task.state==='prepared_local'?<button type="button" className="task-transfer-more" onClick={()=>onOpen(task.taskId)}>{task.state==='prepared_local'?'打开任务':'查看恢复方式'}</button>:null}
       {!transferSettled(task.state)&&onStop?<button type="button" className="task-transfer-more" disabled={stopping.includes(task.id)} onClick={event=>{const source=event.currentTarget;setStopping(old=>[...old,task.id]);void onStop(task,source).catch(error=>setStopError(error instanceof Error?error.message:'停止未确认')).finally(()=>setStopping(old=>old.filter(id=>id!==task.id)));}}>{stopping.includes(task.id)?'停止中':'停止'}</button>:null}
     </div>):null}

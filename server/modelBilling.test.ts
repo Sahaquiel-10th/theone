@@ -131,12 +131,22 @@ test("unknown usage retains a review hold; another tenant and duplicate resoluti
   const row = f.db().modelUsageRecords[0]; const held = row.reservedMicros!;
   assert.equal(row.status, "needs_review"); assert.ok(held > 0);
   assert.equal(f.db().powerLedger.length, 0);
-  await assert.rejects(runBilledModel(f.store, f.params, async () => ({ usage })), /核对/);
+  await runBilledModel(f.store, {...f.params,requestId:'next-step'}, async () => ({ usage }));
+  assert.equal(row.status,'needs_review');assert.equal(row.reservedMicros,held);
+  assert.equal(f.db().powerAccounts[0].reservedMicros,held);
   assert.throws(() => resolveBillingReview(f.db(), { ...scope(row.id), workspaceId: "wb", userId: "b", action: "waive" }), /不属于/);
   resolveBillingReview(f.db(), { ...scope(row.id), action: "provider_usage", inputTokens: 10, outputTokens: 5 });
   resolveBillingReview(f.db(), { ...scope(row.id), action: "provider_usage", inputTokens: 10, outputTokens: 5 });
-  assert.equal(f.db().powerLedger.length, 1);
+  assert.equal(f.db().powerLedger.length, 2);
   assert.equal(f.db().powerAccounts[1].balanceMicros, 1_000_000);
+});
+
+test('an uncertain bill cannot spend reserved funds, but another workspace remains usable',async()=>{
+  const f=fixture(),held=modelReservationMicros(f.model,f.params.input);f.db().powerAccounts[0].balanceMicros=held;
+  await runBilledModel(f.store,f.params,async()=>({usage:undefined}));let called=false;
+  await assert.rejects(runBilledModel(f.store,{...f.params,requestId:'next'},async()=>{called=true;return {usage};}),/电力不足/);assert.equal(called,false);
+  await runBilledModel(f.store,{...f.params,workspaceId:'wb',userId:'b',requestId:'other'},async()=>({usage}));
+  assert.equal(f.db().modelUsageRecords[0].reservedMicros,held);assert.equal(f.db().modelUsageRecords[0].chargedMicros,0);
 });
 
 test("provider failure records duration and releases its own reservation without charging", async () => {

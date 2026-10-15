@@ -38,7 +38,7 @@ function fixture() {
       if (mode === "error") return new Response("upstream-secret", { status: 403 });
       const events = [{ type: "response.created", response: { id: "resp_1", model: "coding-model" } },
         { type: "response.output_text.delta", item_id: "item_1", delta: "done" },
-        ...(mode === "truncated" ? [] : [{ type: "response.completed", response: { id: "resp_1", status: "completed", model: "coding-model", usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } }])];
+        ...(mode === "truncated" ? [] : [{ type: "response.completed", response: { id: "resp_1", status: "completed", model: "coding-model", usage: mode==='missing_usage'?undefined:{ input_tokens: 10, output_tokens: 5, total_tokens: 15 } } }])];
       const bytes = new TextEncoder().encode(events.map(event => `event: ${event.type}\r\ndata: ${JSON.stringify(event)}\r\n\r\n`).join(""));
       // Bytewise frames exercise boundaries, CRLF splitting and incremental decode.
       return new Response(new ReadableStream({ start(controller) { for (const byte of bytes) controller.enqueue(Uint8Array.of(byte)); controller.close(); } }), { headers: { "content-type": "text/event-stream" } });
@@ -49,6 +49,16 @@ function fixture() {
     failPersistence: () => { persistenceFailure = true; }, advance: () => { clock += 61 * 60_000; } };
 }
 const signal = () => new AbortController().signal;
+test('missing supplier usage keeps its hold without stopping the next local tool decision',async()=>{
+  const f=fixture(),config=await f.gateway.prepare(f.task);f.setMode('missing_usage');
+  const events:string[]=[];await f.gateway.responses(config.token,request,signal(),e=>events.push(String(e.type)));
+  const pending=f.db.modelUsageRecords[0],held=pending.reservedMicros;
+  assert.equal(pending.status,'needs_review');assert.ok(held!>0);assert.ok(events.includes('response.completed'));
+  f.setMode('success');await f.gateway.responses(config.token,{...request,input:'Next distinct step after checking the local directory'},signal(),()=>{});
+  assert.equal(f.calls(),2);assert.equal(pending.status,'needs_review');assert.equal(pending.reservedMicros,held);
+  assert.equal(f.db.modelUsageRecords[1].status,'success');assert.equal(f.db.powerAccounts[1].balanceMicros,10000000);
+  assert.equal(f.db.powerLedger.length,1);
+});
 const followup = { ...request, input: [{ role: "user", content: "Continue after the existing local command returned" }] };
 function disconnect(f: ReturnType<typeof fixture>, reason: NonNullable<ExecutionTask["transportInterruption"]>["reason"] = "proof_timeout") {
   f.task.status = "failed"; f.task.lastError = "本机连接中断，结果待确认"; f.task.completedAt = "2026-10-15T00:00:10Z";

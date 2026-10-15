@@ -13,6 +13,15 @@ export type TaskResultReceipt = {
   location?: string; notionUrl?: string; round?: number; reported: boolean; reviewed: boolean;
 };
 export type TaskResultLimits = { count?: number; summaryChars?: number; totalChars?: number };
+/** One user-facing update per task; attempt/round history remains in storage. */
+export function latestTaskResults(results: TaskResultReceipt[]) {
+  const latest = new Map<string, TaskResultReceipt>();
+  for (const result of results) {
+    const previous = latest.get(result.taskId);
+    if (!previous || result.createdAt >= previous.createdAt) latest.set(result.taskId, result);
+  }
+  return [...latest.values()];
+}
 /** Server-internal snapshot, never accepted from a browser. Old local rounds require durable message evidence. */
 export type TaskResultCapture = TaskResultScope & { result: TaskResultReceipt;
   localEvidence?: { messageId: string; createdAt: string; contentHash: string } };

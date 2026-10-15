@@ -6,6 +6,15 @@ import type { WorkRun } from './coordinatorTypes.js';
 import { CoordinatorService } from './coordinatorService.js';
 import { acknowledgeTaskResults, acknowledgeAllTaskResults, appendTaskResultReport, markTaskResultsReported, pendingTaskResults, unreviewedTaskResults, taskResultIdsReportedInMessage, taskResultConversationContext, captureTaskResults, capturedTaskResultsForReport } from './taskResultInbox.js';
 import { saveExecutionReceipt } from './executionService.js';
+import {latestTaskResults} from './taskResultInbox.js';
+
+test('one task briefing keeps only its newest result, without erasing history or other owners',()=>{
+  const db=fixture();const first=local(db,'first'),last=local(db,'last');last.conversationId=first.conversationId;
+  first.updatedAt='2026-10-14T01:00:00Z';last.updatedAt='2026-10-14T02:00:00Z';last.status='cancelled';
+  local(db,'foreign',b);const pending=pendingTaskResults(db,a);
+  const brief=latestTaskResults(pending);assert.equal(brief.length,1);assert.equal(brief[0].sourceId,'last');assert.equal(brief[0].outcome,'cancelled');
+  assert.equal(pending.length,2);assert.equal(pendingTaskResults(db,b).length,1);
+});
 
 function recoverReceipt(db: Database, task: ExecutionTask) {
   const id=`execution_receipt_${task.id}_0_recovery_${'a'.repeat(24)}`;

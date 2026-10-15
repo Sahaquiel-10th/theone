@@ -23,6 +23,7 @@ type Meta = {
   paused?: boolean;
   state?: string;
   localPrepared?: boolean;
+  phase?: string;
 };
 type Notice = {
   id: string;
@@ -306,9 +307,9 @@ export function useCoordinator(
     directReceipts.current.delete(receiptKey);
     try { localStorage.removeItem(storageKey); } catch {}
   }
-  async function acknowledge(taskId?: string) {
+  async function acknowledge(taskId?: string, receiptIds?: string[]) {
     const ids = (snapshotRef.current?.notices ?? [])
-      .filter((n) => !n.read && (!taskId || n.taskId === taskId))
+      .filter((n) => !n.read && (!taskId || n.taskId === taskId) && (!receiptIds || receiptIds.includes(n.id)))
       .map((n) => n.id);
     if (!ids.length) return;
     await api("/api/coordinator/notices/read", {
@@ -341,7 +342,7 @@ export function useCoordinator(
     try{
     const detail=await load(id),job=detail.jobs.at(-1);
     if(!job)throw new Error('此任务没有可重新处理的要求');
-    if(!detail.recovery||!['retry','resume'].includes(detail.recovery.kind))throw new Error(detail.recovery?.message||'请刷新后查看任务恢复方式');
+    if(!detail.recovery||!['retry','resume','review_image'].includes(detail.recovery.kind))throw new Error(detail.recovery?.message||'请刷新后查看任务恢复方式');
     const featureApprovals=await approveFeaturePrices(api,[],id);
     await api(`/api/coordinator/tasks/${encodeURIComponent(id)}/retry`,{method:'POST',body:JSON.stringify({sourceJobId:job.id,confirmed:true,featureApprovals})});
     await load(id);await refresh();

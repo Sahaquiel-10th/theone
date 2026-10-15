@@ -2,6 +2,7 @@ import type { AiTaskValues } from "./aiTaskConfig.js";
 import type { Database, Message, ModelConfig } from "./types.js";
 import { callModel } from "./modelGateway.js";
 import { callChatImage } from "./responsesImageGateway.js";
+import type {ProviderRetryOptions} from './providerRetry.js';
 
 export type ImageTaskRoute = "images" | "responses";
 export type ImageTaskFields = {
@@ -85,10 +86,11 @@ export async function callImageTask(
   safetyRules = "",
   requestId = "unknown",
   imageCall?: typeof callModel,
+  retry?: ProviderRetryOptions,
 ): Promise<Awaited<ReturnType<typeof callModel>>> {
   if (selectedBillingModel.id !== config.credentialModel.id || selectedBillingModel.kind !== "image")
     throw new ImageTaskConfigurationError("图片执行与计费配置不一致");
   if (imageCall) return imageCall(selectedBillingModel, messages, safetyRules, requestId);
   if (config.route === "images") return callModel({ ...selectedBillingModel, model: config.serviceModel }, messages, safetyRules, requestId);
-  return callChatImage({ ...structuredClone(config.credentialModel), systemPrompt: [safetyRules, selectedBillingModel.systemPrompt].filter(Boolean).join("\n\n") }, messages, { imageModel: config.serviceModel });
+  return callChatImage({ ...structuredClone(config.credentialModel), systemPrompt: [safetyRules, selectedBillingModel.systemPrompt].filter(Boolean).join("\n\n") }, messages, { imageModel: config.serviceModel, retry });
 }

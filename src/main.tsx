@@ -762,7 +762,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const lampTasks = preview.enabled ? preview.state.tasks.filter(task=>task.unread && !dismissedResults.includes(`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`)) : [];
   const lampKey=lampTasks.map(task=>`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`).join('|');
   const coordinatorMetas = coordinator.snapshot?.transfers || coordinator.snapshot?.tasks || [];
-  const transfers: Transfer[] = [...coordinatorMetas.filter(t => t.running || t.queued || t.localPrepared || t.state==='prepared_local').map(t => ({id:`work:${t.id}`,taskId:t.id,title:t.title,state:t.state||(t.running?'running':t.paused?'paused':t.localPrepared?'prepared_local':'queued'),reportable:false})),
+  const transfers: Transfer[] = [...coordinatorMetas.filter(t => t.running || t.queued || t.localPrepared || t.state==='prepared_local').map(t => ({id:`work:${t.id}`,taskId:t.id,title:t.title,phase:t.phase,state:t.state||(t.running?'running':t.paused?'paused':t.localPrepared?'prepared_local':'queued'),reportable:false})),
     ...(coordinator.snapshot?.notices ?? []).map(n => ({id:n.id,taskId:n.taskId,title:n.title||conversations.find(c=>c.id===n.taskId)?.title||'这件事',state:n.state,reported:n.reported,read:n.read,outcome:n.outcome,reportable:true})),
     ...executionTasks.filter(t=>isExecutionRunning(t)).map(t=>({id:t.id,taskId:t.conversationId,title:conversations.find(c=>c.id===t.conversationId)?.title||'本机任务',state:t.status,local:true,reportable:false}))];
   const unviewedResultCount=new Set((coordinator.snapshot?.notices||[]).filter(n=>!n.read).map(n=>n.taskId)).size;
@@ -802,22 +802,25 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   function taskPauseNotice(id:string) {
     const task=coordinator.snapshot?.tasks.find(t=>t.id===id);
     const conversation=coordinator.details[id]?.conversation||conversations.find(c=>c.id===id);
-    if(!coordinator.enabled||!(task?.paused||conversation?.workPaused))return null;
+    const local=executionTasks.filter(item=>item.conversationId===id).sort((a,b)=>a.updatedAt.localeCompare(b.updatedAt)).at(-1);
+    const localNeedsAction=local&&['failed','cancelled'].includes(local.status)&&!task?.running&&!task?.queued;
+    if(!coordinator.enabled||!(task?.paused||conversation?.workPaused||localNeedsAction))return null;
     const detail=coordinator.details[id];
     const error=detail?.jobs.filter(job=>job.error).at(-1)?.error;
     const recovery=detail?.recovery;
     const latest=taskRetryScope(detail?.jobs||[],conversation?.messages.filter(m=>m.role==='user').at(-1)?.content);
     const title=conversation?.title||task?.title||'当前任务';
     const retrying=coordinator.retryingTasks.includes(id);
-    const actionLabel=recovery?.kind==='resume'?'开始处理最新要求':'重新处理最新要求';
+    const actionLabel=recovery?.kind==='review_image'?'重新生成图片':recovery?.kind==='resume'?'开始处理最新要求':'重新处理最新要求';
     return <section className="task-recovery" role="status">
-      <strong>任务已暂停</strong><p>{error||'新补充已保存，尚未开始处理。'}</p>
+      <strong>这轮还没做完</strong><p>{error||'原要求还在，下面可以查看下一步。'}</p>
       <p>{recovery?.message||'正在读取恢复方式…'}</p>
       {recovery&&['retry','resume'].includes(recovery.kind)?<p>本轮范围：{latest}</p>:null}
-      {recovery&&['retry','resume'].includes(recovery.kind)?<button type="button" disabled={retrying} onClick={()=>{
-        if(confirm(`${actionLabel} · ${title}\n本轮范围：${latest.slice(0,480)}\n将沿用原附件和功能，可能产生新用量；不会重复执行较早待办。`))void coordinator.retryTask(id).then(()=>refresh()).catch(e=>setError(e.message));
+      {recovery&&['retry','resume','review_image'].includes(recovery.kind)?<button type="button" disabled={retrying} onClick={()=>{
+        if(confirm(`${actionLabel} · ${title}\n本轮范围：${latest.slice(0,480)}\n${recovery.kind==='review_image'?'这会新生成一张图片，可能产生新用量；已有结果和历史都会保留。':'将沿用原附件和功能，可能产生新用量；不会重复执行较早待办。'}`))void coordinator.retryTask(id).then(()=>refresh()).catch(e=>setError(e.message));
       }}>{retrying?'正在恢复…':actionLabel}</button>:null}
       {recovery?.kind==='review_notion'?<NotionReceiptNotice api={api} taskId={id} receipt={detail?.jobs.filter(j=>j.notionReceipt).at(-1)?.notionReceipt} onRefresh={()=>coordinator.load(id)} />:null}
+      {localNeedsAction?<><p>{local.status==='cancelled'?'这轮已经停下，不会自己再启动。':'这轮本机操作还没完成。'}先看看操作记录；想接着做，可以回到这件事补一句要求，ONE 会先核对已有结果。</p><button type="button" onClick={()=>{setSelectedExecutionId(local.id);setExpandedExecutionId(local.id);setRevealExecutionId(local.id);void loadLatestExecution(id,local.id);}}>查看本轮操作</button><button type="button" onClick={()=>{coordinator.dispatch({type:'bind',taskId:id});openSurface('chat');if(!currentDraftRef.current.content.trim())setContent('请先核对上一轮实际结果，只继续未完成的部分，不要重复已有修改。');}}>核对后继续这件事</button></>:null}
       {!detail?<button type="button" onClick={()=>void coordinator.load(id).catch(e=>setError(e.message))}>查看恢复方式</button>:null}
     </section>;
   }
@@ -2016,7 +2019,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           }
         }} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)}/>:null}
         {coordinator.removedTask?<p role="status">任务已删除，历史保留。<button type="button" onClick={()=>void coordinator.restoreTask().then(()=>refresh()).catch(e=>setError(e.message))}>恢复任务（不会自动重跑）</button></p>:null}
-        {coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} departureAnchor={()=>document.querySelector<HTMLElement>('[data-task-dispatch-anchor]') || document.querySelector<HTMLElement>('.studio-presence')} returnAnchor={()=>document.querySelector<HTMLElement>('[data-task-return-anchor]') || document.querySelector<HTMLElement>('.coordinator-message.assistant:last-of-type')} recentReportedReceiptIds={coordinator.snapshot?.recentReportedReceiptIds} onReadAll={readAllTaskMessages} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null}
+{coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} departureAnchor={()=>document.querySelector<HTMLElement>('[data-task-dispatch-anchor]') || document.querySelector<HTMLElement>('.studio-presence')} returnAnchor={()=>document.querySelector<HTMLElement>('[data-task-return-anchor]') || document.querySelector<HTMLElement>('.coordinator-message.assistant:last-of-type')} recentReportedReceiptIds={coordinator.snapshot?.recentReportedReceiptIds} onReadAll={readAllTaskMessages} onDismiss={task=>coordinator.acknowledge(task.taskId)} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null}
 
         {!preview.enabled && (otherRows.length > 0 || unreadNotices.length > 0 || taskStatusUnavailable) ? <section className="studio-activity attention-activity" aria-label="任务动态">
           {otherRows.length > 0 || unreadNotices.length > 0 ? <button className="attention-activity-toggle" type="button" aria-expanded={activityExpanded} aria-controls="attention-task-list" onClick={() => setActivityExpanded(value => !value)}>
