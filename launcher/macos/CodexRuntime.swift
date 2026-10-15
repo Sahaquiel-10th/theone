@@ -108,7 +108,9 @@ func discoverCompatibleCodex(_ candidates: [String], probe: (String, [String]) -
               let help = probe(path, ["exec", "--help"]), help.status == 0,
               ["--json", "--sandbox", "--skip-git-repo-check", "--cd", "--config"].allSatisfy({ help.output.contains($0) }),
               let resume = probe(path, ["exec", "resume", "--help"]), resume.status == 0,
-              resume.output.contains("SESSION_ID") else { continue }
+              resume.output.contains("SESSION_ID"),
+              let server = probe(path, ["app-server", "--help"]), server.status == 0,
+              server.output.contains("--listen"), server.output.contains("stdio://") else { continue }
         return CompatibleCodex(path: path, version: version)
     }
     return nil

@@ -136,6 +136,18 @@ final class CodexProcessTree: @unchecked Sendable {
     // finish() does not terminate a process or erase cancellation evidence.
     func finish() { synchronized { monitoring = false; observer?.cancel(); observer = nil } }
 
+    // The app-server protocol can acknowledge an exact interrupted turn before
+    // its stdio process finishes shutting down. Wait for the already-owned tree
+    // without sending another interrupt. This alone never proves a tool ended.
+    func verifyTrackedExit(timeout: TimeInterval = 3.5) async -> CodexProcessTreeCancellation {
+        guard synchronized({ monitoring }) else {
+            return CodexProcessTreeCancellation(trackedProcessesExited: false, requiresCheck: true,
+                usedEscalation: false, trackedCount: synchronized { nodes.count }, reasonCodes: ["monitoring_finished"])
+        }
+        _ = await waitForTrackedExit(timeout.isFinite ? timeout : 0)
+        return result(escalated: false)
+    }
+
     func requestCancellation() async -> CodexProcessTreeCancellation {
         let work = synchronized { () -> Task<CodexProcessTreeCancellation, Never> in
             if let cancellation { return cancellation }

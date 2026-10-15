@@ -43,6 +43,7 @@ private final class FakeTree: CodexProcessTreeBackend, @unchecked Sendable {
         return true
     }
     func replace(_ node: CodexProcessIdentity) { lock.lock(); processes[node.pid] = node; lock.unlock() }
+    func remove(_ pid: pid_t) { lock.lock(); processes.removeValue(forKey: pid); lock.unlock() }
     func failRead(_ pid: pid_t) { lock.lock(); failReads.insert(pid); lock.unlock() }
     func failList(_ pid: pid_t) { lock.lock(); failLists.insert(pid); lock.unlock() }
     func replaceDuringChildren(_ parent: CodexProcessIdentity, child: CodexProcessIdentity) { lock.lock(); replaceDuringList = (parent,child); lock.unlock() }
@@ -79,6 +80,19 @@ private final class FakeTree: CodexProcessTreeBackend, @unchecked Sendable {
         precondition(signals.filter { $0.1 == SIGKILL }.map(\.0) == [20001,20002,20003], "parents die before their leaves")
         precondition(!signals.contains { $0.0 == 20004 || $0.1 == SIGCONT || $0.1 == SIGTERM })
         precondition(backend.contains(20004) && !backend.advancedParent)
+    }
+    static func testExitVerificationDoesNotSignal() async throws {
+        let backend = FakeTree([node(20101,getpid()),node(20102,20101,birth:11)])
+        let tree = try CodexProcessTree.begin(rootPID:20101,attemptId:"attempt-verify",backend:backend,timing:fast)
+        let live = await tree.verifyTrackedExit(timeout:0)
+        precondition(!live.trackedProcessesExited && live.requiresCheck && backend.signals().isEmpty)
+        backend.remove(20101); backend.remove(20102)
+        let gone = await tree.verifyTrackedExit(timeout:0)
+        precondition(gone.trackedProcessesExited && !gone.requiresCheck && !gone.usedEscalation)
+        precondition(backend.signals().isEmpty,"protocol-confirmed shutdown must not receive another signal")
+        tree.finish()
+        let closed = await tree.verifyTrackedExit(timeout:0)
+        precondition(closed.requiresCheck && !closed.trackedProcessesExited)
     }
     static func testReuseAndUncertainty() async throws {
         let backend = FakeTree([node(21001,getpid()),node(21002,21001,birth:11)])
@@ -238,6 +252,7 @@ private final class FakeTree: CodexProcessTreeBackend, @unchecked Sendable {
         if childMode() { return }
         alarm(20)
         try await testExactTreeAndIdempotence(); try await testReuseAndUncertainty()
+        try await testExitVerificationDoesNotSignal()
         try await testFreezeFailureCannotAdvanceParent(); try await testLateChildLimitsAndFinish()
         try await testRealNativeInterrupt(); try await testRealDetachedShellCannotWriteAfterStop()
         alarm(0)

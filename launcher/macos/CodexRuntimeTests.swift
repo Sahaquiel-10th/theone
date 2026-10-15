@@ -40,10 +40,11 @@ import Foundation
             precondition(compatibleCodexVersion(output) == nil)
         }
         let surface = "--json --sandbox --skip-git-repo-check --cd --config"
-        let selected = discoverCompatibleCodex(["old", "partial", "good", "never"]) { path, args in
+        let selected = discoverCompatibleCodex(["old", "partial", "no-app-server", "good", "never"]) { path, args in
             precondition(path != "never")
             if args == ["--version"] { return CodexProbeResult(status: 0, output: "codex-cli \(path == "old" ? "0.100.0" : "0.160.2")") }
             if args == ["exec", "--help"] { return CodexProbeResult(status: 0, output: path == "partial" ? "--json" : surface) }
+            if args == ["app-server", "--help"] { return CodexProbeResult(status: path == "no-app-server" ? 1 : 0, output: "--listen stdio://") }
             return CodexProbeResult(status: 0, output: "SESSION_ID")
         }
         precondition(selected?.path == "good" && selected?.version == "0.160.2")

@@ -772,6 +772,8 @@ final class CodexExecutionRunner: @unchecked Sendable {
     private let lock = NSLock()
     private var processes: [String: Process] = [:]
     private var processTrees: [String: CodexProcessTree] = [:]
+    private var appServers: [String: CodexAppServerController] = [:]
+    private var appServerInputs: [String: CodexAppServerInput] = [:]
     private var threadIds: [String: String] = [:]
     private var projectPaths: [String: String] = [:]
     private var lastResponses: [String: String] = [:]
@@ -870,6 +872,18 @@ final class CodexExecutionRunner: @unchecked Sendable {
         }
         guard let (process, processTree, identity, commandUnconfirmed, finalResponse) = value else { return }
         if process != nil {
+            let managed = synchronized { (appServers[identity.attemptId], appServerInputs[identity.attemptId]) }
+            if let controller = managed.0 {
+                Task {
+                    // Join the one exact turn/interrupt worker, not a process
+                    // signal. Keep stdin open until both RPC ACK and terminal
+                    // have arrived (or the bounded confirmation has failed).
+                    let confirmed = await controller.requestInterrupt()
+                    managed.1?.close()
+                    if !confirmed, let processTree { _ = await processTree.requestCancellation() }
+                }
+                return
+            }
             // Native SIGINT lets Codex interrupt its turn and clean up tools;
             // bounded fallback is restricted to this attempt's owned tree.
             if let processTree { Task { _ = await processTree.requestCancellation() } }
@@ -921,6 +935,13 @@ final class CodexExecutionRunner: @unchecked Sendable {
         if synchronized({ cancelled.contains(identity.attemptId) }) { return }
         let threadId = synchronized { projectPaths[taskId] = projectPath; return threadIds[taskId] }
 
+        if let gateway {
+            await runManagedAppServer(taskId: taskId, instruction: instruction,
+                executable: executable, projectPath: projectPath,
+                resumeThreadId: resume ? threadId : nil, gateway: gateway, identity: identity)
+            return
+        }
+
         let process = Process()
         var processTree: CodexProcessTree?
         defer { processTree?.finish() }
@@ -928,20 +949,6 @@ final class CodexExecutionRunner: @unchecked Sendable {
         process.executableURL = URL(fileURLWithPath: executable)
         process.environment = executionEnvironment()
         var arguments = ["exec", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check", "-C", projectPath]
-        if let gateway {
-            do {
-                let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                let identity = SHA256.hash(data: Data("\(deviceId):\(taskId)".utf8)).map { String(format: "%02x", $0) }.joined()
-                let home = support.appendingPathComponent("ONE/codex/\(identity)")
-                try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-                let overrides = try gateway.launchOverrides(home: home, environment: executionEnvironment())
-                process.environment = overrides.environment
-                arguments = overrides.arguments + arguments
-            } catch {
-                await report(taskId: taskId, kind: "error", text: "无法准备 ONE 执行环境；本机尚未开始操作，不会使用个人 Codex 账号", status: "failed")
-                return
-            }
-        }
         if resume, let threadId { arguments += ["resume", threadId, "-"] } else { arguments.append("-") }
         process.arguments = arguments
         process.standardOutput = stdout
@@ -1058,6 +1065,156 @@ final class CodexExecutionRunner: @unchecked Sendable {
             stdout.fileHandleForReading.readabilityHandler = nil
             stderr.fileHandleForReading.readabilityHandler = nil
             synchronized { processes.removeValue(forKey: taskId); processTrees.removeValue(forKey: identity.attemptId); outputBuffers.removeValue(forKey: taskId); errorBuffers.removeValue(forKey: taskId) }
+        }
+    }
+
+    // ONE-managed gateway only. Personal Codex login remains on the legacy
+    // path; a failed managed attempt is never replayed through another path.
+    private func runManagedAppServer(taskId: String, instruction: String, executable: String,
+                                     projectPath: String, resumeThreadId: String?,
+                                     gateway: CodexGatewayConfiguration, identity: ExecutionReceiptIdentity) async {
+        let process = Process(), stdout = Pipe(), stderr = Pipe(), stdin = Pipe()
+        var ownedTree: CodexProcessTree?
+        var input: CodexAppServerInput?
+        defer {
+            input?.close(); ownedTree?.finish()
+            try? stdout.fileHandleForWriting.close(); try? stderr.fileHandleForWriting.close()
+            synchronized {
+                processes.removeValue(forKey: taskId); processTrees.removeValue(forKey: identity.attemptId)
+                appServers.removeValue(forKey: identity.attemptId); appServerInputs.removeValue(forKey: identity.attemptId)
+                errorBuffers.removeValue(forKey: taskId); outputBuffers.removeValue(forKey: taskId)
+            }
+        }
+        func report(_ kind: String, _ text: String, status: String? = nil, error: String? = nil) async {
+            await send(taskId: taskId, kind: kind, text: text, targetName: projectPath,
+                       status: status, identity: identity, error: error)
+        }
+        do {
+            let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            let digest = SHA256.hash(data: Data("\(deviceId):\(taskId)".utf8)).map { String(format: "%02x", $0) }.joined()
+            let home = support.appendingPathComponent("ONE/codex/\(digest)")
+            try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let overrides = try gateway.launchOverrides(home: home, environment: executionEnvironment())
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.environment = overrides.environment
+            process.arguments = overrides.arguments + CodexAppServerController.launchArguments
+            process.standardOutput = stdout; process.standardError = stderr; process.standardInput = stdin
+            let writer = try CodexAppServerInput(fileHandle: stdin.fileHandleForWriting)
+            input = writer
+            let controller = try CodexAppServerController(attemptId: identity.attemptId,
+                authorizedCWD: projectPath, resumeThreadId: resumeThreadId, clientVersion: launcherVersion,
+                sendLine: { line in try await writer.sendLine(line) },
+                onExecEvent: { [self] line in
+                    guard synchronized({ appServers[identity.attemptId] != nil && !finishing.contains(identity.attemptId) }) else { return }
+                    await consume(taskId: taskId, line: line, targetName: projectPath, identity: identity)
+                })
+            let processExit = CodexProcessExit(process: process)
+            let launched = try synchronized { () throws -> Bool in
+                guard !cancelled.contains(identity.attemptId) else { return false }
+                lastResponses.removeValue(forKey: taskId); toolFailures.remove(taskId)
+                try process.run()
+                // Register root, immutable pipes and controller together before
+                // a task may be sent, so Stop cannot race through a fallback.
+                let tree = try CodexProcessTree.begin(rootPID: process.processIdentifier, attemptId: identity.attemptId)
+                ownedTree = tree; processTrees[identity.attemptId] = tree
+                processes[taskId] = process; appServers[identity.attemptId] = controller
+                appServerInputs[identity.attemptId] = writer
+                return true
+            }
+            guard launched, let tree = ownedTree else { return }
+            // One exit waiter is shared through a Task; CodexProcessExit itself
+            // intentionally has only one continuation.
+            let exitTask = Task { await processExit.value() }
+            try? stdout.fileHandleForWriting.close(); try? stderr.fileHandleForWriting.close()
+            let outputReader = Task.detached {
+                defer { try? stdout.fileHandleForReading.close() }
+                var pending = Data(), discarding = false, clean = true
+                let limit = 2 * 1024 * 1024
+                while true {
+                    let chunk = stdout.fileHandleForReading.availableData
+                    if chunk.isEmpty { break }
+                    // Bound the unfinished frame before decoding, not after a
+                    // malicious/no-newline stream has filled memory.
+                    for byte in chunk {
+                        if byte == 10 {
+                            if !discarding { await controller.receive(line: String(decoding: pending, as: UTF8.self)) }
+                            pending.removeAll(keepingCapacity: true); discarding = false
+                        } else if !discarding {
+                            if pending.count >= limit {
+                                clean = false; discarding = true; pending.removeAll(keepingCapacity: true)
+                                await controller.receive(line: "") // poison, no raw output logged
+                            } else { pending.append(byte) }
+                        }
+                    }
+                }
+                if !pending.isEmpty && !discarding { await controller.receive(line: String(decoding: pending, as: UTF8.self)) }
+                await controller.transportClosed()
+                return clean
+            }
+            let errorReader = Task.detached { [self] in
+                defer { try? stderr.fileHandleForReading.close() }
+                while true {
+                    let bytes = stderr.fileHandleForReading.availableData
+                    if bytes.isEmpty { break }
+                    synchronized {
+                        guard identities[taskId] == identity else { return }
+                        errorBuffers[taskId] = String(((errorBuffers[taskId] ?? "") + String(decoding: bytes, as: UTF8.self)).suffix(4000))
+                    }
+                }
+            }
+            await report("status", "\(resumeThreadId == nil ? "开始执行" : "继续执行") · 工作位置：\(projectPath)", status: "running")
+            var runFailure: Error?
+            do {
+                // Recheck after registration: pre-bootstrap Stop never sends
+                // the user's instruction, even if the process has just begun.
+                if synchronized({ cancelled.contains(identity.attemptId) }) { _ = await controller.requestInterrupt() }
+                _ = try await controller.start(instruction: instruction)
+                _ = try await controller.waitForTurnEnd()
+            } catch { runFailure = error }
+            let wasCancelled = synchronized { () -> Bool in
+                finishing.insert(identity.attemptId)
+                return cancelled.contains(identity.attemptId)
+            }
+            let beforeClose = await controller.snapshot()
+            if wasCancelled || runFailure != nil || beforeClose.interruptRequested {
+                // turn/completed can precede its RPC response. Do not close
+                // stdin based on the notification alone: join the same worker.
+                _ = await controller.requestInterrupt()
+            }
+            writer.close()
+            var cleanup = await tree.verifyTrackedExit(timeout: 3.5)
+            if cleanup.requiresCheck { cleanup = await tree.requestCancellation() }
+            let exitCode: Int32? = try? await boundedRuntimeOperation(timeout: .seconds(3)) { await exitTask.value }
+            let readClean: Bool? = try? await boundedRuntimeOperation(timeout: .seconds(3)) { await outputReader.value }
+            let errorEOF: Bool? = try? await boundedRuntimeOperation(timeout: .seconds(3)) { await errorReader.value; return true }
+            let snapshot = await controller.snapshot()
+            let barriersPassed = !cleanup.requiresCheck && exitCode != nil && readClean == true && errorEOF == true
+            let assessment = snapshot.assessment(treeCleanupVerified: barriersPassed)
+            let response = snapshot.finalResponse ?? synchronized { lastResponses[taskId] }
+            if !snapshot.turnStartSent && barriersPassed {
+                await report(wasCancelled ? "status" : "error",
+                    wasCancelled ? "已停止，本机任务尚未开始。" : "执行器没有接受本轮任务；尚未操作文件，原话保留，不会自动重跑。",
+                    status: wasCancelled ? "cancelled" : "failed")
+            } else if assessment.requiresCheck || !barriersPassed {
+                let terminal = CodexCommandLifecycle.unconfirmedTerminal(finalResponse: response, cancelled: wasCancelled)
+                await report("error", terminal.response, status: terminal.outcome, error: terminal.error)
+            } else if wasCancelled {
+                await report("status", "已停止；已产生的修改不会自动撤销。", status: "cancelled")
+            } else if runFailure == nil, snapshot.turnStatus == .completed, exitCode == 0,
+                      !snapshot.hasFailedTools, let response, !response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                await report("status", response, status: "completed")
+            } else {
+                let explanation = snapshot.hasFailedTools ? "本轮有工具未能完成，请查看工具反馈；不会自动重跑。"
+                    : (snapshot.turnStartSent ? "本轮没有确认完成，请检查已有文件和工具反馈；不会自动重跑。" : "执行器尚未开始本机任务；原话已保留，不会自动重跑。")
+                await report("error", response.map { "\($0)\n\n\(explanation)" } ?? explanation, status: "failed")
+            }
+        } catch {
+            input?.close()
+            // No task has been written when registration/bootstrap setup fails.
+            // If a root was spawned, stop only that just-created input-less root.
+            if let tree = ownedTree { _ = await tree.requestCancellation() }
+            else if process.isRunning { process.terminate() }
+            await report("error", "无法准备本机执行连接；本轮尚未发送任务，原话保留，不会自动重跑。", status: "failed")
         }
     }
 

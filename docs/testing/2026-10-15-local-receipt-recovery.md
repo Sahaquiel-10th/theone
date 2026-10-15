@@ -239,3 +239,38 @@
 新目标 `QA-418-CANCEL-20261015.md` 初始不存在，包括符号链接检查。新命令先做只读语法检查，再输出 `QA_418_CANCEL_STARTED`、等待 90 秒、排他写文件；不触碰旧文件，不联网，不扩大授权。只读观察器绑定上述 0.4.18 驻留和进程出生时间，计划记录实际 Codex、shell、sleep，真实页面手动停止后继续观察 105 秒。
 
 指令已填入原隔离任务的空白输入框；准备点击本机执行时 Mac 自动锁屏，未确认提交，观察器也尚未发现对应命令开始。必须解锁后先检查是否已受理，不能盲目重发。此处仍不计新版停止通过。
+
+## 0.4.18 真实停止结果与精确保护核对
+
+解锁后先确认原指令仍是草稿，再于 `2026-10-15T04:56:10.279Z` 通过真实 ONE 提交一次。execution `ext_76cf2e9157a03fe1bf77`、attempt `attempt_f90f4717d30e253ffd9b`、第 0 轮，thread `01a13deb-2b38-7931-b6e9-5b4402362834`。实际唯一 `exec_command` 于 `04:56:31.155Z` 发出，完整保留 marker、`sleep 90` 和排他写入路径；未重跑。
+
+只读观察于 `04:56:31.792Z` 确认 ONE 84747 → 自有 Codex 87242 → shell 87469 → sleep 87470。实际页面于 `04:57:01.160Z` 点停止一次；Codex、shell、sleep 分别在 `04:57:01.707Z`、`01.720Z`、`01.725Z` 被观察为已不存在。至 `04:58:16.744Z`（开始观察后 105 秒）全部仍不存在，目标 `QA-418-CANCEL-20261015.md` 始终不存在，驻留身份未变。没有用外部 kill 代替 ONE 停止。
+
+**实际进程停止与无延迟写入通过，端到端停止回执尚未通过。** 页面保持 cancelled，但因 `exec --json` 没有可信命令结束记录，仍诚实显示 `command_unconfirmed`。私有精确 QA rollout 的 `turn_aborted` 为 `04:57:01.451Z`，最后的工具状态仍是 running，没有真实退出码；不能用进程消失伪造该码或清锁，也不能单凭 rollout 证明双路 EOF。
+
+服务器终态 `4f368001-e5f8-4dee-ae51-e76c4ae32d58`，hash `8bc9c3d70915daef35d1cc22572fc9bc93991530cc5c4df6f4e483adad78c907`，于 `04:57:01.752Z` 接收，cancelled、supplemental。精确 journal 七项身份一致，ACK 已收到、receipt 正文已清，权限仍为 0600/0700。截图 `output/playwright/qa-418-stop-unconfirmed-20261015.png`。
+
+用户随后明确允许只解除本次 0.4.18 隔离测试保护。停服务前后只读检查均无运行中聊天/模型请求；2 条尚未开始的持久任务保留。事务内逐项校验本次 owner、设备、安装编号、对话、attempt、round、终态和更新时间，移除且仅移除本条保护，完整对比其他 JSON 字段未变。审计 `aud_qa_reconcile_7b1b4f3346f545ec92e5cd30257ebfdc`，`onlyHoldChanged:true`；重启服务刷新缓存后健康 `ok:true`。没有重跑或删除任何测试历史，其他保护不动。
+
+## 工作台显式本机执行入口：调度前失败
+
+独立新要求 `QA418入口20261015` 于 `05:06:55.142Z` 在真实工作台点“发送并执行本机任务”一次。输入框清空且立即提供停止；请求 `coord_8529958abf3704dc152b` 在调度模型调用阶段失败，日志为 gpt-6.1-sol、13 条输入、7 项工具、请求内耗时 236ms、HTTP 500 的已脱敏通用错误，不是等待满 150 秒后的超时。页面保留原话和失败提示，未自动重跑。
+
+只查询本次归属的元数据：模型用量 `use_9890942f064d847d6027` 为 failed，账本耗时 2489ms，`chargedMicros:0`、`reservedMicros:0`，`reviewReason:upstream_failed_cost_unknown`。该窄时间窗内同一用户/空间新增 execution 数量为 0。目标 `QA-418-MAIN-20261015.md` 未出现。本次没有进入 Codex，因此既不能算本机入口通过，也不能以这个 500 推断启动器本机文件执行失败。未读取供应商原始错误体或其他用户内容，未再次提交该请求。
+
+## 明确停止回执修复：开发与验证边界
+
+决定沿用 ONE 当前任务、授权目录、供应商网关、隔离 Codex home、进程树与持久回执，仅将 Mac 的 ONE 托管执行通道改为固定 stdio app-server 协议。`turn/interrupt` 必须匹配请求编号和同一 thread/turn，取得 ACK、interrupted 终态及自有树清理证据，才能记为明确停止；不能用晚到确认、updated、进程消失或通用退出文字替代。
+
+未知/异常工具、部分指令写入、丢失结束确认仍保持待核对，不自动换到 `exec` 或个人账号重跑。固定 stdin 写端有界串行、非阻塞和单 fd SIGPIPE 保护；取消超时立即唤醒主等待并清理精确自有树，不等正常任务的 900 秒超时。正常完成仍等待真实回答、退出、stdout/stderr EOF；未知管道不伪装为 EOF。后续还需完整构建、真实管道回归、新启动器发布及真实 ONE 验收，此处不计修复已上线或已验收。
+
+## 0.4.19 自动验证与制品
+
+- 应用类型检查、758 项全量测试（757 通过、1 既有跳过、0 失败）及生产构建通过；现有跨空间、用户、设备、安装、attempt、round 隔离回归通过。本轮未新增服务器数据路径。日志 `/tmp/one-app-validation-20261015-EvxRrQ/`。
+- controller 的 11 组 mock stdio 测试通过；固定写端的 13 组真实 pipe/可控 syscall 测试通过，含 8 并发完整行、半包/EAGAIN、超时、取消、关闭、EPIPE 不触发全局 SIGPIPE、迟到 syscall 不算及时成功。输入组件独立严格并发编译和 5 轮复跑通过。
+- 7 组真实进程/管道夹具两轮通过，主代理独立再跑通过（证据 `one-appserver-integration-G3F9d0`）。覆盖终态先于 ACK（放行 gate 后才确认）、早停未发 turn/start、partial turn/start 实际 EPIPE、命令缺失退出码保持未知、子进程持 stdout、忽略中断和 stdin EOF 后的精确自有树兜底。夹具使用自有测试二进制，不是真实 Codex 或 ONE 验收。
+- 无任务的实际 managed Codex **0.160.1** 协议探测通过：全新临时 home/cwd、dummy 本机 provider、无凭证，仅 initialize → initialized → ephemeral thread/start，没有 turn/start、thread/resume/read。该版本自身 schema 确认 thread/start 的 `workspace-write` 与回包 `workspaceWrite` 相容；线程 turns 为空，networkAccess=false，目录仍空。关闭 stdin 后退出 0、双 EOF，无强制终止。证据 `/tmp/one-appserver-no-task-uv5jp6/summary.json`。这只证明初始化兼容，不代替模型执行或停止验收。误先定位到的 alpha CLI 仅读 version/help，未启动 app-server。
+- Mac Universal 完整构建及严格签名通过；Windows x64 仅同步版本构建，不声称已实现或真机验证新 Mac 协议。CI 增加独立 controller/input 和组合管道测试。
+- 签名清单验证 `VERIFIED_VERSION=0.4.19`。包 `/Users/machao/Desktop/theone-output/theone-runtime-0.4.19.tar.gz`，4,782,638 字节，SHA-256 `a3ed841847923b3fa5a6e33774837c327e9ab56e4731a2f81d2d519fe174d833`；只含清单、Mac zip、Windows exe，无私钥或用户数据。
+
+以上制品尚未在服务器更新通道发布、未装到这枚 Key，实际新版正常执行、停止和回执仍待真实 ONE 复测，不以网站部署代替。
