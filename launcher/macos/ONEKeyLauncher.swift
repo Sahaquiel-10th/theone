@@ -771,12 +771,14 @@ final class CodexExecutionRunner: @unchecked Sendable {
     private let outbox: TerminalReceiptOutbox
     private let lock = NSLock()
     private var processes: [String: Process] = [:]
+    private var processTrees: [String: CodexProcessTree] = [:]
     private var threadIds: [String: String] = [:]
     private var projectPaths: [String: String] = [:]
     private var lastResponses: [String: String] = [:]
     private var toolFailures = Set<String>()
     private var commandLifecycles: [String: CodexCommandLifecycle] = [:]
     private var cancelled = Set<String>()
+    private var finishing = Set<String>()
     private var preparing = Set<String>()
     private var rounds: [String: Int] = [:]
     private var outputBuffers: [String: String] = [:]
@@ -861,14 +863,16 @@ final class CodexExecutionRunner: @unchecked Sendable {
     }
 
     func cancel(taskId: String, attemptId: String, round: Int) {
-        let value = synchronized { () -> (Process?, ExecutionReceiptIdentity, Bool, String?)? in
-            guard let identity = identities[taskId], identity.attemptId == attemptId, identity.round == round, processes[taskId] != nil || preparing.contains(taskId), (try? outbox.hasTerminal(identity)) != true, unsavedTerminals[attemptId] == nil else { return nil }
+        let value = synchronized { () -> (Process?, CodexProcessTree?, ExecutionReceiptIdentity, Bool, String?)? in
+            guard let identity = identities[taskId], identity.attemptId == attemptId, identity.round == round, !finishing.contains(attemptId), processes[taskId] != nil || preparing.contains(taskId), (try? outbox.hasTerminal(identity)) != true, unsavedTerminals[attemptId] == nil else { return nil }
             cancelled.insert(identity.attemptId)
-            return (processes[taskId], identity, commandLifecycles[identity.attemptId]?.hasUnconfirmedCommands == true, lastResponses[taskId])
+            return (processes[taskId], processTrees[identity.attemptId], identity, commandLifecycles[identity.attemptId]?.hasUnconfirmedCommands == true, lastResponses[taskId])
         }
-        guard let (process, identity, commandUnconfirmed, finalResponse) = value else { return }
-        if let process {
-            process.terminate()
+        guard let (process, processTree, identity, commandUnconfirmed, finalResponse) = value else { return }
+        if process != nil {
+            // Native SIGINT lets Codex interrupt its turn and clean up tools;
+            // bounded fallback is restricted to this attempt's owned tree.
+            if let processTree { Task { _ = await processTree.requestCancellation() } }
             // The server makes the stop button effective immediately, but a
             // terminal receipt is proof of process/pipe completion, not merely
             // a signal sent. run() publishes it after the EOF barrier below.
@@ -886,7 +890,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
         func report(taskId: String, kind: String, text: String? = nil, providerThreadId: String? = nil, targetName: String? = nil, status: String? = nil, error: String? = nil) async {
             await send(taskId: taskId, kind: kind, text: text, providerThreadId: providerThreadId, targetName: targetName, status: status, identity: identity, error: error)
         }
-        defer { synchronized { preparing.remove(taskId); commandLifecycles.removeValue(forKey: identity.attemptId) } }
+        defer { synchronized { preparing.remove(taskId); commandLifecycles.removeValue(forKey: identity.attemptId); finishing.remove(identity.attemptId) } }
         let alreadyRunning = synchronized { processes[taskId] != nil }
         if managedCodexActivity.isActive() { await report(taskId: taskId, kind: "error", text: "正在准备本机执行工具，本轮尚未操作文件，请准备完成后再执行", status: "failed"); return }
         if alreadyRunning { await report(taskId: taskId, kind: "error", text: "Codex 正在执行当前任务", status: "failed"); return }
@@ -918,6 +922,8 @@ final class CodexExecutionRunner: @unchecked Sendable {
         let threadId = synchronized { projectPaths[taskId] = projectPath; return threadIds[taskId] }
 
         let process = Process()
+        var processTree: CodexProcessTree?
+        defer { processTree?.finish() }
         let stdout = Pipe(), stderr = Pipe(), stdin = Pipe()
         process.executableURL = URL(fileURLWithPath: executable)
         process.environment = executionEnvironment()
@@ -947,7 +953,11 @@ final class CodexExecutionRunner: @unchecked Sendable {
             synchronized { lastResponses.removeValue(forKey: taskId); toolFailures.remove(taskId) }
             let launched = try synchronized { () throws -> Bool in
                 guard !cancelled.contains(identity.attemptId) else { return false }
-                try process.run(); processes[taskId] = process
+                try process.run()
+                // Capture the real root before sending any task on stdin.
+                // A session number in tool output is never an OS process ID.
+                let tree = try CodexProcessTree.begin(rootPID: process.processIdentifier, attemptId: identity.attemptId)
+                processTree = tree; processTrees[identity.attemptId] = tree; processes[taskId] = process
                 return true
             }
             guard launched else { return }
@@ -980,12 +990,21 @@ final class CodexExecutionRunner: @unchecked Sendable {
                 }
             }
             await report(taskId: taskId, kind: "status", text: "\(resume ? "继续执行" : "开始执行") · 工作位置：\(projectPath)", targetName: projectPath, status: "running")
-            stdin.fileHandleForWriting.write(Data(instruction.utf8)); try? stdin.fileHandleForWriting.close()
+            try synchronized {
+                if !cancelled.contains(identity.attemptId) {
+                    try stdin.fileHandleForWriting.write(contentsOf: Data(instruction.utf8))
+                }
+                try? stdin.fileHandleForWriting.close()
+            }
             let exitCode = await processExit.value()
             await outputReader.value
             await errorReader.value
             let result = synchronized { () -> (Bool, String?, String, Bool, Bool) in
+                // Close registration and capture cancellation in one lock, so
+                // a stop cannot sneak between the snapshot and terminal join.
+                finishing.insert(identity.attemptId)
                 processes.removeValue(forKey: taskId)
+                processTrees.removeValue(forKey: identity.attemptId)
                 let wasCancelled = cancelled.contains(identity.attemptId)
                 let finalResponse = lastResponses[taskId]
                 let errorText = errorBuffers.removeValue(forKey: taskId) ?? ""
@@ -995,7 +1014,10 @@ final class CodexExecutionRunner: @unchecked Sendable {
                         lifecycle?.hasUnconfirmedCommands == true, lifecycle?.hasFailedCommands == true)
             }
             let (wasCancelled, finalResponse, errorText, commandUnconfirmed, confirmedCommandFailure) = result
-            if commandUnconfirmed {
+            // A fast CLI exit must not publish "stopped" while cancellation's
+            // owned-child checks are pending. Repeated joins share one worker.
+            let stopResult = wasCancelled ? await processTree?.requestCancellation() : nil
+            if commandUnconfirmed || stopResult?.requiresCheck == true {
                 let terminal = CodexCommandLifecycle.unconfirmedTerminal(finalResponse: finalResponse, cancelled: wasCancelled)
                 await report(taskId: taskId, kind: "error", text: terminal.response, status: terminal.outcome, error: terminal.error)
                 return
@@ -1016,10 +1038,26 @@ final class CodexExecutionRunner: @unchecked Sendable {
                 await report(taskId: taskId, kind: "error", text: finalResponse.map { "\($0)\n\n本轮执行未正常完成：\(failure)" } ?? failure, status: "failed")
             }
         } catch {
+            try? stdin.fileHandleForWriting.close()
+            if let processTree {
+                // A write may have sent part of the prompt before failing.
+                // Do not call that a clean failure to launch or permit retry.
+                _ = await processTree.requestCancellation()
+                let snapshot = synchronized { () -> (Bool, String?) in
+                    finishing.insert(identity.attemptId)
+                    return (cancelled.contains(identity.attemptId), lastResponses[taskId])
+                }
+                let terminal = CodexCommandLifecycle.unconfirmedTerminal(finalResponse: snapshot.1, cancelled: snapshot.0)
+                await report(taskId: taskId, kind: "error", text: "发送本机要求时发生中断，执行情况需要核对；不会自动重跑。\n\(terminal.response)", status: terminal.outcome, error: terminal.error)
+            } else {
+                // Registration failed before any prompt was written. Only the
+                // just-spawned, input-less root can be terminated here.
+                if process.isRunning { process.terminate() }
+                await report(taskId: taskId, kind: "error", text: "无法启动 Codex：\(error.localizedDescription)", status: "failed")
+            }
             stdout.fileHandleForReading.readabilityHandler = nil
             stderr.fileHandleForReading.readabilityHandler = nil
-            synchronized { processes.removeValue(forKey: taskId); outputBuffers.removeValue(forKey: taskId); errorBuffers.removeValue(forKey: taskId) }
-            await report(taskId: taskId, kind: "error", text: "无法启动 Codex：\(error.localizedDescription)", status: "failed")
+            synchronized { processes.removeValue(forKey: taskId); processTrees.removeValue(forKey: identity.attemptId); outputBuffers.removeValue(forKey: taskId); errorBuffers.removeValue(forKey: taskId) }
         }
     }
 
