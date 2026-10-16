@@ -30,6 +30,8 @@ export function isOnboardingImageOperation(db:Database,scope:AccountScope,operat
 export function welcomeDelivery(db:Database,scope:AccountScope):WelcomeDelivery|undefined {
   const p=resolvedOnboardingHandbookProfile(db,scope).profile,h=p.onboarding.handbook;
   if(!h)return;
+  // Deliberately finishing without another picture is not a failed task.
+  if(h.status==='skipped'&&h.maxPower===0)return;
   let op=db.chatOperations?.find(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.operationId===`${h.operationId}_image`&&o.workRun?.kind==='image');
   if(op?.conversationId)op=db.chatOperations?.filter(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.conversationId===op!.conversationId&&o.workRun?.kind==='image').at(-1)??op;
   const taskId=ownsTask(db,scope,op?.conversationId)?op!.conversationId:ownsTask(db,scope,h.taskId)?h.taskId:undefined;

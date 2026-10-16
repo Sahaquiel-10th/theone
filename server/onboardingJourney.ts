@@ -60,7 +60,7 @@ export function updateJourney(db:Database,scope:AccountScope,input:JourneyInput,
       const allowed=new Set(welcomeContext(db,scope).features.map(f=>f.id));j.featureIds=j.featureIds.filter(id=>allowed.has(id));
       j.stage='complete';j.completedAt=time;j.events.push({step:'complete',choice:withoutImage?'finished_without_image':'create_comic',at:time});
       profile.onboarding.completedAt ||= time;
-      profile.onboarding.handbook={operationId:uid('welcome'),funding:!withoutImage&&firstGift?'one':'customer',status:withoutImage?'skipped':'pending',reason:withoutImage?'not_configured':undefined,maxPower:withoutImage?0:firstGift ? .5 : input.budgetPower as number,requestedAt:time,updatedAt:time};
+      profile.onboarding.handbook={operationId:uid('welcome'),funding:!withoutImage&&firstGift?'one':'customer',status:withoutImage?'skipped':'pending',maxPower:withoutImage?0:firstGift ? .5 : input.budgetPower as number,requestedAt:time,updatedAt:time};
       if(!withoutImage&&firstGift)profile.onboarding.welcomeGiftOperationId=profile.onboarding.handbook.operationId;
     } else if(input.action==='step') {
       if(input.step!==j.stage) {

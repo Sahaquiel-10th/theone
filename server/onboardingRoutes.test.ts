@@ -78,7 +78,7 @@ test('unavailable image setup can complete without any undisclosed paid budget',
  const b=await(await post({action:'begin',launchId:'launch_noimage_0123456789'})).json(),id=b.profile.onboarding.journey.id;
  for(const step of ['name','knowledge','device','features'])await post({action:'step',journeyId:id,step,choice:'skipped'});
  const done=await(await post({action:'finish',journeyId:id,choice:'without_image'})).json();
- assert.equal(done.profile.onboarding.journey.stage,'complete');assert.equal(done.profile.onboarding.handbook.maxPower,0);assert.equal(done.welcomeDelivery.canRetry,false);assert.equal(f.stats().queued,0);
+ assert.equal(done.profile.onboarding.journey.stage,'complete');assert.equal(done.profile.onboarding.handbook.maxPower,0);assert.equal(done.welcomeDelivery,undefined);assert.equal(done.handbookNotice,undefined);assert.equal(f.stats().queued,0);
 });
 
 test('comic journey HTTP accepts all skipped steps, queues once, ignores forged device capabilities and can explicitly reopen',async t=>{
