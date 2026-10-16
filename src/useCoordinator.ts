@@ -48,6 +48,7 @@ type Snapshot = {
   recentReportedReceiptIds?: string[];
 };
 type Job = {
+  retryPower?:number;
   notionReceipt?: { state: 'pending' | 'verified' | 'uncertain'; url?: string; error?: string };
   id: string;
   operationId: string;

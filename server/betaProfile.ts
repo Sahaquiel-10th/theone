@@ -2,11 +2,12 @@ import type { Database, User } from "./types.js";
 import { uid } from "./security.js";
 
 export type OnboardingHandbook = {
+  funding?: 'one' | 'customer';
   operationId: string;
   status: "pending" | "preparing" | "queued" | "skipped" | "failed";
   requestedAt: string;
   updatedAt: string;
-  /** The price ceiling explicitly shown when the user starts the welcome task. */
+  /** Customer-disclosed ceiling, or ONE's server-side ceiling for its first gift. */
   maxPower: number;
   taskId?: string;
   pricePower?: number;
@@ -21,6 +22,8 @@ export type AccountProfile = {
     knowledgeChoice: "pending" | "connected" | "skipped";
     knowledgeStepAt?: string;
     completedAt?: string;
+    /** One server-allocated welcome gift, retained across setup restarts. */
+    welcomeGiftOperationId?: string;
     /** A new explicit welcome-flow choice, never inferred for existing accounts. */
     handbook?: OnboardingHandbook;
     journey?: import('./onboardingJourney.js').OnboardingJourney;

@@ -14,6 +14,7 @@ export type WorkRun = {
   kind?: "image";
   /** Server-created welcome handoff. Retained on explicit retries; never client input. */
   welcomeOperationId?: string;
+  welcomeSponsored?: boolean;
   imagePrice?: number;
   imageCost?: number;
   state:

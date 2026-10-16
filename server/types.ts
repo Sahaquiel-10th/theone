@@ -86,6 +86,7 @@ export type ExecutionTraceStep = {
 };
 
 export type ModelUsageRecord = {
+  sponsorship?: { kind:'welcome_gift'; operationId:string };
   batchBudget?: import('./executionBatchBudget.js').ExecutionBatchBudget;
   featurePriceSnapshot?: import('./featurePricing.js').FeaturePrice;
   /** Company payer snapshot; userId remains the employee who performed the work. */

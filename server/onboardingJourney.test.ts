@@ -16,6 +16,27 @@ test('all skipped, anonymous and sparse profiles still claim a real comic withou
  const prompt=onboardingComicInstruction(db,scope);assert.match(prompt,/四格定制漫画/);assert.match(prompt,/使用场景示意/);assert.match(prompt,/"localReady":false/);assert.match(prompt,/"nickname":"你"/);
  assert.equal(accountProfile(db,{workspaceId:'b',userId:'v'}).onboarding.journey,undefined);
 });
+test('only the first completed comic is sponsored; restarts keep the allocation and require paid consent',()=>{
+ const db=fixture(),j=begin(db);skipAll(db,j.id);
+ const first=updateJourney(db,scope,{action:'finish',journeyId:j.id});
+ const gift=first.onboarding.handbook!;
+ assert.equal(gift.funding,'one');assert.equal(gift.maxPower,.5);assert.equal(first.onboarding.welcomeGiftOperationId,gift.operationId);
+ updateJourney(db,scope,{action:'finish',journeyId:j.id});assert.equal(accountProfile(db,scope).onboarding.handbook!.operationId,gift.operationId);
+ db.users[0].profile!.onboarding.handbook!.status='queued';
+ const second=begin(db,'second_0123456789abcdef');skipAll(db,second.id);
+ assert.throws(()=>updateJourney(db,scope,{action:'finish',journeyId:second.id}),/再次生成/);
+ const paid=updateJourney(db,scope,{action:'finish',journeyId:second.id,budgetPower:.012});
+ assert.equal(paid.onboarding.handbook!.funding,'customer');assert.equal(paid.onboarding.handbook!.maxPower,.012);assert.equal(paid.onboarding.welcomeGiftOperationId,gift.operationId);
+ assert.notEqual(paid.onboarding.handbook!.operationId,gift.operationId);
+ assert.equal(accountProfile(db,{workspaceId:'b',userId:'v'}).onboarding.welcomeGiftOperationId,undefined);
+});
+test('finishing without an image never consumes the first gift',()=>{
+ const db=fixture(),j=begin(db);skipAll(db,j.id);
+ const skipped=updateJourney(db,scope,{action:'finish',journeyId:j.id,choice:'without_image'});
+ assert.equal(skipped.onboarding.welcomeGiftOperationId,undefined);
+ const next=begin(db,'retry_later_0123456789');skipAll(db,next.id);
+ assert.equal(updateJourney(db,scope,{action:'finish',journeyId:next.id}).onboarding.handbook!.funding,'one');
+});
 test('steps resume without replaying, explicit restart preserves old guide and rejects stale finishes',()=>{
  const db=fixture(),j=begin(db);step(db,j.id,'name','provided',{displayName:'小张'});
  assert.equal(begin(db,'new_begin_0123456789').id,j.id);step(db,j.id,'name','provided',{displayName:'小张'});

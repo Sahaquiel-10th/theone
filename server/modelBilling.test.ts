@@ -43,6 +43,30 @@ function fixture() {
 }
 const usage = { inputTokens: 10, outputTokens: 5, totalTokens: 15, source: "provider" };
 const scope = (id: string) => ({ usageId: id, workspaceId: "wa", userId: "a" });
+test('welcome sponsorship is scoped, once-only and keeps procurement cost without a user hold or debit',async()=>{
+ const f=fixture(),gift='welcome_gift_0123456789';
+ f.model.kind='image';f.model.imagePowerPerCall=.012;f.model.costImagePowerPerCall=.02;
+ f.db().users[0].defaultWorkspaceId='wa';f.db().users[0].profile={workspaceId:'wa',displayName:'',onboarding:{knowledgeChoice:'skipped',welcomeGiftOperationId:gift},updatedAt:'now'};
+ f.db().chatOperations=[{...f.params,id:'job',operationId:gift+'_image',workRun:{kind:'image',state:'running',welcomeSponsored:true,welcomeOperationId:gift}}] as never;
+ f.db().powerAccounts[0].balanceMicros=0;
+ const params={...f.params,sponsorship:{kind:'welcome_gift' as const,operationId:gift}};
+ let calls=0;
+ await assert.rejects(()=>runBilledModel(f.store,{...params,userId:'b',workspaceId:'wb'},async()=>{calls++;return {};}),/资格/);
+ await assert.rejects(()=>runBilledModel(f.store,{...params,sponsorship:{kind:'welcome_gift',operationId:'foreign'}},async()=>{calls++;return {};}),/资格/);
+ f.model.costImagePowerPerCall=.51;
+ await assert.rejects(()=>runBilledModel(f.store,params,async()=>{calls++;return {};}),/资格/);
+ f.model.costImagePowerPerCall=.02;
+ await runBilledModel(f.store,params,async()=>{calls++;assert.equal(f.db().modelUsageRecords[0].reservedMicros,0);return {};});
+ assert.equal(calls,1);const row=f.db().modelUsageRecords[0];assert.equal(row.chargedMicros,0);assert.equal(row.costMicros,20000);assert.equal(row.status,'success');assert.equal(row.billingCapped,false);
+ assert.equal(f.db().powerAccounts[0].balanceMicros,0);assert.equal(f.db().powerLedger.length,0);
+ const restored=JSON.parse(JSON.stringify(f.db()));restored.modelUsageRecords[0].status='pending';
+ reconcileInterruptedBilling(restored);assert.equal(restored.modelUsageRecords[0].status,'needs_review');assert.equal(restored.powerAccounts[0].reservedMicros,0);
+ resolveBillingReview(restored,{...scope(row.id),action:'waive'});assert.equal(restored.powerLedger.length,0);
+ await assert.rejects(()=>runBilledModel(f.store,params,async()=>{calls++;return {};}),/资格/);assert.equal(calls,1);
+ f.db().powerAccounts[0].balanceMicros=1000000;
+ await runBilledModel(f.store,f.params,async()=>({}));
+ assert.equal(f.db().modelUsageRecords[1].chargedMicros,12000);assert.equal(f.db().powerAccounts[0].balanceMicros,988000);
+});
 test("tier snapshot survives price changes, manual review, owner isolation and duplicate settlement", async () => {
   const f = fixture();
   f.model.pricing = { version: 2, label: "test", publishedAt: new Date().toISOString(), multiplier: 1, referenceInput: 2, referenceOutput: 10, referenceCache: { read: .1, write: 2.5, write1h: 2.5 }, longContext: { thresholdInputTokens: 272000, referenceInput: 4, referenceOutput: 15, referenceCache: { read: .2, write: 5, write1h: 5 } } };

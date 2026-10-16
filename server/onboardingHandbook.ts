@@ -18,7 +18,7 @@ const noticeText: Record<NonNullable<OnboardingHandbook["reason"]>, string> = {
 };
 const ownsTask = (db: Database, scope: AccountScope, taskId: string | undefined) => !!taskId && db.conversations.some(c => c.id === taskId && c.workspaceId === scope.workspaceId && c.userId === scope.userId);
 
-export type OnboardingHandbookOffer = { available: boolean; pricePower?: number };
+export type OnboardingHandbookOffer = { available: boolean; pricePower?: number; firstGift?: boolean };
 export type WelcomeDelivery = { operationId:string; state:'preparing'|'queued'|'running'|'completed'|'failed'|'cancelled'; taskId?:string; message:string; canRetry:boolean };
 export function isOnboardingImageOperation(db:Database,scope:AccountScope,operationId:string) {
   if(!db.users.some(u=>u.id===scope.userId&&u.defaultWorkspaceId===scope.workspaceId&&u.profile?.workspaceId===scope.workspaceId))return false;
@@ -44,14 +44,15 @@ export function welcomeDelivery(db:Database,scope:AccountScope):WelcomeDelivery|
 }
 export function handbookTitle(profile:ReturnType<typeof accountProfile>) { return profile.onboarding.journey?.version===2?'给你的欢迎礼物':`${profile.displayName}的 ONE 小指南`; }
 /** Only a public price leaves this resolver; credentials/model prompts do not. */
-export function onboardingHandbookOffer(db: Database, storageAvailable: boolean): OnboardingHandbookOffer {
+export function onboardingHandbookOffer(db: Database, storageAvailable: boolean, scope?:AccountScope): OnboardingHandbookOffer {
   try {
     const config = resolveImageTask(db, storageAvailable);
     // Image publication has no separate enable switch; unlike the coordinator,
     // a valid published configuration is available without `enabled: true`.
     if (config.values.enabled === false) return { available: false };
     const pricePower = config.billingModel.imagePowerPerCall!;
-    return { available: pricePower <= .5, pricePower };
+    const firstGift=scope?!accountProfile(db,scope).onboarding.welcomeGiftOperationId:undefined;
+    return { available: pricePower <= .5&&(!firstGift||config.billingModel.costImagePowerPerCall!<=.5), pricePower, ...(scope?{firstGift}:{}) };
   } catch { return { available: false }; }
 }
 
@@ -76,7 +77,7 @@ export function handbookInstruction(db: Database, scope: AccountScope): string {
   ].join("\n");
 }
 
-export type OnboardingImageInput = { operationId: string; title: string; instruction: string; budget: number; imageVersion: number };
+export type OnboardingImageInput = { operationId: string; title: string; instruction: string; budget: number; imageVersion: number; sponsored?:boolean };
 export type OnboardingHandbookDependencies = {
   storageAvailable: boolean;
   verifyKey: () => Promise<void>;
@@ -115,12 +116,14 @@ export async function startOnboardingHandbook(store: Store, scope: AccountScope,
     try {
       const config = resolveImageTask(db, deps.storageAvailable);
       const price = config.billingModel.imagePowerPerCall!;
+      const sponsored=handbook.funding==='one'&&profile.onboarding.welcomeGiftOperationId===handbook.operationId;
       if (config.values.enabled === false) reason = "not_configured";
+      else if(handbook.funding==='one'&&(!sponsored||config.billingModel.costImagePowerPerCall!>.5))reason='not_configured';
       else if (!Number.isFinite(handbook.maxPower) || handbook.maxPower <= 0 || handbook.maxPower > .5 || price > handbook.maxPower) reason = "budget_required";
       // An older uncertain call retains its own hold. Like ordinary model
       // calls, a welcome image may spend only the remaining available balance.
-      else if (availablePowerMicros(db, scope.workspaceId, scope.userId) < Math.ceil(price * 1e6 - 1e-7)) reason = "insufficient_power";
-      else input = { operationId: handbook.operationId, title: handbookTitle(profile), instruction: handbookInstruction(db, scope), budget: price, imageVersion: config.version };
+      else if (!sponsored&&availablePowerMicros(db, scope.workspaceId, scope.userId) < Math.ceil(price * 1e6 - 1e-7)) reason = "insufficient_power";
+      else input = { operationId: handbook.operationId, title: handbookTitle(profile), instruction: handbookInstruction(db, scope), budget: price, imageVersion: config.version, sponsored };
       handbook.pricePower = price;
     } catch { reason = "not_configured"; }
     handbook.status = input ? "preparing" : "skipped";

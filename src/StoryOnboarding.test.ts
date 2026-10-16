@@ -14,7 +14,9 @@ test('welcome is skippable, includes outcomes rather than jargon, and rendering 
 test('completion is short, hides the storyboard and keeps paid use explicit without another consent screen',()=>{
  const p={...profile,onboarding:{...profile.onboarding,journey:{...profile.onboarding.journey!,stage:'ready' as const,nameChoice:'skipped' as const}}};
  const html=renderToStaticMarkup(createElement(StoryOnboarding,{...props,profile:p,offer:{available:true,pricePower:.012}}));
- assert.match(html,/开始使用 ONE/);assert.match(html,/0.012.*电力/);assert.doesNotMatch(html,/四格|没睡醒|主角|交付位置|故事|PPT|漫画/);
+ assert.match(html,/确认电力，再画一张/);assert.match(html,/0.012.*电力/);assert.match(html,/不画了，直接开始/);assert.doesNotMatch(html,/四格|没睡醒|主角|交付位置|故事|PPT/);
+ const gift=renderToStaticMarkup(createElement(StoryOnboarding,{...props,profile:p,offer:{available:true,pricePower:.012,firstGift:true}}));
+ assert.match(gift,/开始使用 ONE/);assert.doesNotMatch(gift,/电力|漫画|图|故事|赠送/);
  const unavailable=renderToStaticMarkup(createElement(StoryOnboarding,{...props,profile:p,offer:{available:false}}));assert.match(unavailable,/开始使用 ONE/);assert.doesNotMatch(unavailable,/disabled|图片通道|电力/);
 });
 test('features are selected for storytelling without granting purchase or execution',()=>{

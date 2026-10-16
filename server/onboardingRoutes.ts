@@ -22,7 +22,7 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
   const scope = (req: express.Request): AccountScope => ({ userId: req.user!.id, workspaceId: req.workspaceId! });
   router.get("/", asyncRoute(async (req, res) => {
     const db = await store.read(), current = resolvedOnboardingHandbookProfile(db, scope(req));
-    res.json({ profile: current.profile, welcomeContext: welcomeContext(db,scope(req)), welcomeDelivery:welcomeDelivery(db,scope(req)), handbookNotice: current.notice, handbookOffer: onboardingHandbookOffer(db, deps.storageAvailable) });
+    res.json({ profile: current.profile, welcomeContext: welcomeContext(db,scope(req)), welcomeDelivery:welcomeDelivery(db,scope(req)), handbookNotice: current.notice, handbookOffer: onboardingHandbookOffer(db, deps.storageAvailable,scope(req)) });
   }));
   router.post('/onboarding',asyncRoute(async(req,res)=>{
     const s=scope(req),input=req.body??{};
@@ -31,6 +31,7 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
       await store.mutate(db=>{
         const delivery=welcomeDelivery(db,s),user=accountInScope(db,s),p=accountProfile(db,s),h=p.onboarding.handbook;
         if(!h||input.operationId!==h.operationId||!delivery?.canRetry)throw new BetaInputError('先查看已有任务，不能重复安排。',409);
+        if(!p.onboarding.welcomeGiftOperationId){p.onboarding.welcomeGiftOperationId=h.operationId;h.funding='one';h.maxPower=.5;}
         h.status='pending';h.reason=undefined;h.updatedAt=new Date().toISOString();user.profile=p;
       });
     }
@@ -58,7 +59,7 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
       }
     }
     const db=await store.read(),current=resolvedOnboardingHandbookProfile(db,s);
-    res.json({profile:current.profile,welcomeContext:welcomeContext(db,s),welcomeDelivery:welcomeDelivery(db,s),handbookOffer:onboardingHandbookOffer(db,deps.storageAvailable),handbookNotice:notice||current.notice});
+    res.json({profile:current.profile,welcomeContext:welcomeContext(db,s),welcomeDelivery:welcomeDelivery(db,s),handbookOffer:onboardingHandbookOffer(db,deps.storageAvailable,s),handbookNotice:notice||current.notice});
   }));
   router.patch("/", asyncRoute(async (req, res) => {
     const s = scope(req), body = req.body ?? {};
@@ -91,7 +92,7 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
       }
     }
     const db = await store.read(), current = resolvedOnboardingHandbookProfile(db, s);
-    res.json({ profile: current.profile, handbookNotice: handbookNotice || current.notice, handbookOffer: onboardingHandbookOffer(db, deps.storageAvailable) });
+    res.json({ profile: current.profile, handbookNotice: handbookNotice || current.notice, handbookOffer: onboardingHandbookOffer(db, deps.storageAvailable,s) });
   }));
   app.use("/api/me/profile", router);
 }

@@ -1780,31 +1780,34 @@ test('read-all HTTP endpoint requires a live Key and only acknowledges the authe
   assert.ok(db.executionTasks.every(task=>!task.reportedToCoordinatorAt));assert.equal(db.messages.length,0);
 });
 
-for(const comic of [false,true])test(`server-only onboarding ${comic?'comic':'guide'} requires the claimed profile marker and uses a private normal image job once`,async()=>{
+for(const variant of ['guide','comic','gift'])test(`server-only onboarding ${variant} requires the claimed profile marker and uses a private normal image job once`,async()=>{
+  const comic=variant!=='guide',sponsored=variant==='gift';
   let calls=0;const f=await imageFixture(async()=>{calls++;return {content:'真实欢迎图片',imageUrl:imageFixturePng};});
   const operationId='welcome_0123456789abcdef';
   await f.store.mutate(d=>{
     const user=d.users.find(u=>u.id==='a')!;user.defaultWorkspaceId='wa';
     user.profile={workspaceId:'wa',displayName:'小明',onboarding:{nameSetAt:'now',knowledgeChoice:'skipped',completedAt:'now',handbook:{operationId,status:'preparing',requestedAt:'now',updatedAt:'now',pricePower:.012,maxPower:.012}},updatedAt:'now'};
     if(comic)user.profile.onboarding.journey={id:'journey_0123456789',launchId:'launch_0123456789',version:2,stage:'complete',startedAt:'now',completedAt:'now',nameChoice:'provided',knowledgeChoice:'skipped',localChoice:'skipped',featureIds:[],events:[]};
+    if(sponsored){user.profile.onboarding.welcomeGiftOperationId=operationId;user.profile.onboarding.handbook!.funding='one';d.powerAccounts.find(p=>p.userId==='a')!.balanceMicros=0;}
     d.settings.aiTasks!.image_generation!.published!.imagePowerPerCall=.012;
     d.settings.aiTasks!.image_generation!.published!.costImagePowerPerCall=.02;
     delete d.settings.aiTasks!.image_generation!.published!.enabled;
   });
   const {handbookInstruction,handbookTitle,startOnboardingHandbook}=await import('./onboardingHandbook.js');
   const db=await f.store.read(),configuration=db.settings.aiTasks!.image_generation!.published!;
-  const welcome={operationId,title:handbookTitle(db.users.find(u=>u.id==='a')!.profile!),instruction:handbookInstruction(db,a),budget:.012,imageVersion:configuration.version};
+  const welcome={operationId,title:handbookTitle(db.users.find(u=>u.id==='a')!.profile!),instruction:handbookInstruction(db,a),budget:.012,imageVersion:configuration.version,sponsored};
   const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw new Error('欢迎图片不得读取知识库');}},
     {artifactDirectory:f.directory,imageCall:async()=>{calls++;return {content:'真实欢迎图片',imageUrl:imageFixturePng};},modelCall:async()=>{throw new Error('欢迎图片不得调用文字模型');}});
   await f.store.mutate(d=>{d.conversations.push({...a,id:'busy-main',coordinatorMain:true,title:'与 ONE 对话',modelId:d.models[0].id,archived:false,messages:[],createdAt:'now',updatedAt:'now'});});
   await beginChatOperation(f.store,{...a,operationId:'ordinary_chat_busy_012345',conversationId:'busy-main',requestId:'ordinary-chat',payload:{text:'另一条正在回答的问题'}});
   try{
     await assert.rejects(()=>service.enqueueOnboardingImage(b,welcome,key));
+    await assert.rejects(()=>service.enqueueOnboardingImage(a,{...welcome,sponsored:!sponsored},key),/资格/);
     await assert.rejects(()=>service.enqueueOnboardingImage(a,{...welcome,instruction:'浏览器任意写入任务'},key),/内容已变化/);
     await assert.rejects(()=>service.enqueueOnboardingImage(a,{...welcome,imageVersion:configuration.version+1},key),/配置或额度已变化/);
     await assert.rejects(()=>service.enqueueOnboardingImage(a,welcome,async()=>{throw new Error('Key已断开');}),/Key已断开/);
     await f.store.mutate(d=>{d.users[0].profile!.onboarding.handbook!.status='pending';});
-    const deps={verifyKey:key,storageAvailable:true,enqueueImage:(scope:typeof a,request:typeof welcome,verify:()=>Promise<void>)=>service.enqueueOnboardingImage(scope,request,verify)};
+    const deps={verifyKey:key,storageAvailable:true,enqueueImage:(scope:typeof a,request:import('./onboardingHandbook.js').OnboardingImageInput,verify:()=>Promise<void>)=>service.enqueueOnboardingImage(scope,request,verify)};
     const accepted=await startOnboardingHandbook(f.store,a,deps),taskId=accepted.handbook!.taskId!;
     assert.equal(accepted.handbook!.status,'queued');assert.ok(taskId);
     let saved=await f.store.read();const child=saved.chatOperations!.find(o=>o.operationId===`${operationId}_image`)!;
@@ -1815,9 +1818,9 @@ for(const comic of [false,true])test(`server-only onboarding ${comic?'comic':'gu
     assert.equal(saved.chatOperations!.find(o=>o.conversationId===taskId&&o.workRun)!.workRun!.instruction,welcome.instruction,'only server execution retains the real prompt');
     assert.doesNotMatch(JSON.stringify(await service.task(a,taskId)),/生成并交付一张|固定故事|JSON 仅为|米白背景/);
     await service.resume(a,key);await waitFor(async()=>(await service.task(a,taskId)).jobs[0].state==='completed');
-    saved=await f.store.read();assert.equal(calls,1);assert.equal(saved.modelUsageRecords.filter(r=>r.activity==='image_generation').length,1);
-    assert.equal(saved.modelUsageRecords.find(r=>r.activity==='image_generation')!.chargedMicros,12000);
-    assert.equal(saved.modelUsageRecords.find(r=>r.activity==='image_generation')!.costMicros,20000);
+    saved=await f.store.read();assert.equal(calls,1);const usage=saved.modelUsageRecords.filter(r=>r.imagePowerPerCallSnapshot!==undefined);assert.equal(usage.length,1);
+    assert.equal(usage[0].chargedMicros,sponsored?0:12000);assert.equal(usage[0].costMicros,20000);
+    if(sponsored){assert.equal(usage[0].sponsorship!.operationId,operationId);assert.equal(saved.powerAccounts.find(p=>p.userId==='a')!.balanceMicros,0);assert.equal(saved.powerLedger.length,0);}
     assert.equal(saved.attachments[0].workspaceId,'wa');assert.match((await service.task(a,taskId)).conversation.messages.at(-1)!.imageUrl!,/^\/api\/attachments\//);
     assert.ok((await service.state(a)).notices.some(n=>n.taskId===taskId&&!n.read&&!n.reported));
     assert.equal(saved.conversations.find(c=>c.coordinatorMain)!.messages.length,1,'completion stays in the sidebar');

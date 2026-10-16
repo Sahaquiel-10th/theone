@@ -54,12 +54,14 @@ export function updateJourney(db:Database,scope:AccountScope,input:JourneyInput,
       if(j.stage==='complete')return profile;
       if(j.stage!=='ready')throw new BetaInputError('先完成或跳过前面的步骤。',409);
       const withoutImage=input.choice==='without_image';
-      if(!withoutImage&&(typeof input.budgetPower!=='number'||!Number.isFinite(input.budgetPower)||input.budgetPower<=0||input.budgetPower>.5))throw new BetaInputError('请先确认这张漫画的电力上限。');
+      const firstGift=!profile.onboarding.welcomeGiftOperationId;
+      if(!withoutImage&&!firstGift&&(typeof input.budgetPower!=='number'||!Number.isFinite(input.budgetPower)||input.budgetPower<=0||input.budgetPower>.5))throw new BetaInputError('再次生成需要先确认这张漫画的电力。');
       if(j.localChoice==='checked')j.local=local??{connected:false,folderSelected:false,executorReady:false,checkedAt:time};
       const allowed=new Set(welcomeContext(db,scope).features.map(f=>f.id));j.featureIds=j.featureIds.filter(id=>allowed.has(id));
       j.stage='complete';j.completedAt=time;j.events.push({step:'complete',choice:withoutImage?'finished_without_image':'create_comic',at:time});
       profile.onboarding.completedAt ||= time;
-      profile.onboarding.handbook={operationId:uid('welcome'),status:withoutImage?'skipped':'pending',reason:withoutImage?'not_configured':undefined,maxPower:withoutImage?0:input.budgetPower as number,requestedAt:time,updatedAt:time};
+      profile.onboarding.handbook={operationId:uid('welcome'),funding:!withoutImage&&firstGift?'one':'customer',status:withoutImage?'skipped':'pending',reason:withoutImage?'not_configured':undefined,maxPower:withoutImage?0:firstGift ? .5 : input.budgetPower as number,requestedAt:time,updatedAt:time};
+      if(!withoutImage&&firstGift)profile.onboarding.welcomeGiftOperationId=profile.onboarding.handbook.operationId;
     } else if(input.action==='step') {
       if(input.step!==j.stage) {
         // A lost response may repeat the last exact step, never advance another one.

@@ -47,8 +47,8 @@ export function StoryOnboarding({profile,context,offer,onBegin,onAction,onKnowle
       <div className="one-onboarding-actions"><button type="button" disabled={busy||!j} onClick={()=>void act({action:'step',step:'features',choice:chosen.length?'selected':'skipped',featureIds:chosen})}>{chosen.length?'就用这些':'先用基础能力'}<ArrowUpRight size={16}/></button>{chosen.length?<button type="button" className="one-onboarding-quiet" disabled={busy} onClick={()=>void act({action:'step',step:'features',choice:'skipped'})}>不选了，继续</button>:null}</div>
     </>:<>
       <Check size={25}/><h2 id="one-story-title">都记下了，开聊吧。</h2><p>想做什么，直接告诉我。设置以后随时能改，不用一次弄齐。</p>
-      {canDraw?<small>完成后会安排一张专属欢迎图，使用 {price.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力。</small>:null}
-      <div className="one-onboarding-actions"><button type="button" disabled={busy||!j} onClick={()=>void act({action:'finish',...(canDraw?{budgetPower:price}:{choice:'without_image'})})}>{busy?'正在保存设置…':'开始使用 ONE'}<ArrowUpRight size={16}/></button></div>
+      {canDraw&&!offer?.firstGift?<small>第一张是 ONE 送你的。再画一张专属漫画，这次使用 {price.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力。</small>:null}
+      <div className="one-onboarding-actions"><button type="button" disabled={busy||!j} onClick={()=>void act({action:'finish',...(canDraw?offer?.firstGift?{}:{budgetPower:price}:{choice:'without_image'})})}>{busy?'正在保存设置…':canDraw&&!offer?.firstGift?'确认电力，再画一张':'开始使用 ONE'}<ArrowUpRight size={16}/></button>{canDraw&&!offer?.firstGift?<button type="button" className="one-onboarding-quiet" disabled={busy||!j} onClick={()=>void act({action:'finish',choice:'without_image'})}>不画了，直接开始</button>:null}</div>
     </>}
     {busy?<p className="story-saving" role="status">{stage==='device'?'正在核对本机状态，不会操作文件。':'在保存这一步，稍等一下。'}</p>:null}
     {error?<div className="one-onboarding-error" role="alert"><p>{error}</p>{!j?<button type="button" onClick={()=>{setBusy(true);setError('');void onBegin().catch(e=>setError(e.message)).finally(()=>setBusy(false));}}>重新打开</button>:null}</div>:null}
