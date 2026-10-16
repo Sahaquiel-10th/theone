@@ -47,6 +47,7 @@ export type Agent = {
 
 export type AttachmentKind = "image" | "document" | "spreadsheet" | "presentation" | "text";
 export type Attachment = {
+  visualDocument?:import('./visualDocument.js').VisualDocument;
   /** Server-generated personal explanation; never accepted from uploads. */
   welcomeGuide?:import('./welcomeGuide.js').WelcomeGuideFacts;
   welcomeShare?:{hash:string;expiresAt:string};
@@ -56,7 +57,7 @@ export type Attachment = {
   status?: "uploading" | "queued" | "parsing" | "ready" | "failed";
   uploadedBytes?: number; parseError?: string; textChars?: number; segmentCount?: number;
 };
-export type AttachmentSummary = Pick<Attachment, "id" | "originalName" | "mimeType" | "kind" | "size" | "status" | "uploadedBytes" | "parseError" | "textChars" | "segmentCount"> & {welcomeGuide?:boolean};
+export type AttachmentSummary = Pick<Attachment, "id" | "originalName" | "mimeType" | "kind" | "size" | "status" | "uploadedBytes" | "parseError" | "textChars" | "segmentCount"> & {welcomeGuide?:boolean;visualDocument?:boolean};
 export type SearchSource = { title: string; url: string; snippet: string };
 export type SystemSettings = { membershipOnlyRollout?: { id: string; activatedAt: string; giftedUsers: number }; membershipTrialRollout?: string; membershipBilling?: import("./memberships.js").MembershipCatalog; executorProfiles?: import('./executorProfiles.js').ExecutorProfile[]; safetyRules: string; rechargeCnyPerPower: number; aiTasks?: import("./aiTaskConfig.js").AiTaskConfigs; officialFeatures?: import("./officialFeatures.js").OfficialFeatureRecord[];publicCommercePolicy?:import('./publicSharingTypes.js').PublicCommercePolicy };
 
@@ -89,7 +90,7 @@ export type ExecutionTraceStep = {
 };
 
 export type ModelUsageRecord = {
-  sponsorship?: { kind:'welcome_gift'; operationId:string };
+  sponsorship?: { kind:'welcome_gift'; operationId:string;stage?:'manual'|'image' };
   batchBudget?: import('./executionBatchBudget.js').ExecutionBatchBudget;
   featurePriceSnapshot?: import('./featurePricing.js').FeaturePrice;
   /** Company payer snapshot; userId remains the employee who performed the work. */

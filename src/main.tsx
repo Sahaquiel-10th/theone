@@ -189,7 +189,7 @@ type Message = {
 };
 
 type AttachmentSummary = {
-  welcomeGuide?:boolean;
+  welcomeGuide?:boolean;visualDocument?:boolean;
   id: string;
   originalName: string;
   mimeType: string;
@@ -447,7 +447,7 @@ function AttachmentList({ attachments, removable, onRemove, onRetry }: {
   return (
     <div className={`attachment-list ${removable ? "pending" : ""}`}>
       {attachments.map((attachment) => (
-        attachment.welcomeGuide?<WelcomeGuideCard key={attachment.id} id={attachment.id} title={attachment.originalName}/>:
+        attachment.welcomeGuide||attachment.visualDocument?<WelcomeGuideCard key={attachment.id} id={attachment.id} title={attachment.originalName}/>:
         <div className="attachment-chip" key={attachment.id}>
           {attachment.kind === "image" && (!attachment.status || attachment.status === "ready") ? (
             <img src={`/api/attachments/${encodeURIComponent(attachment.id)}/content`} alt="" />
@@ -631,7 +631,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     return result.profile;
   }
   async function startStory() {
-    await saveStory({action:'begin',launchId:crypto.randomUUID(),experience:3});setStoryOpen(true);setStoryHidden(false);setComposeNew(true);openSurface('chat');
+    await saveStory({action:'begin',launchId:crypto.randomUUID(),experience:4});setStoryOpen(true);setStoryHidden(false);setComposeNew(true);openSurface('chat');
   }
   async function recoverAnswer(operationId: string) {
     try {

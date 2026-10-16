@@ -6,6 +6,7 @@ import { resolveImageTask } from "./imageTaskConfiguration.js";
 import { availablePowerMicros } from "./powerBilling.js";
 import { onboardingComicInstruction } from './onboardingComic.js';
 import {welcomeGuideFacts,type WelcomeGuideFacts} from './welcomeGuide.js';
+import {welcomeManualConfig} from './welcomeManual.js';
 
 const platformNames: Record<KnowledgeProviderId, string> = {
   getnote: "得到大脑", notion: "Notion", yinxiang: "印象笔记", flowus: "FlowUs", feishu: "飞书", flomo: "flomo",
@@ -51,6 +52,10 @@ export function handbookGuide(db:Database,scope:AccountScope){
   const previous=p.onboarding.journeyHistory?.find(j=>j.stage==='complete'&&j.handbook?.operationId===p.onboarding.handbook?.operationId);
   return welcomeGuideFacts(db,scope,previous??p.onboarding.journey);
 }
+export function usesWelcomeManual(db:Database,scope:AccountScope){
+  const p=accountProfile(db,scope),j=p.onboarding.journeyHistory?.find(j=>j.handbook?.operationId===p.onboarding.handbook?.operationId)??p.onboarding.journey;
+  return j?.experience===4;
+}
 /** Only a public price leaves this resolver; credentials/model prompts do not. */
 export function onboardingHandbookOffer(db: Database, storageAvailable: boolean, scope?:AccountScope): OnboardingHandbookOffer {
   try {
@@ -58,7 +63,7 @@ export function onboardingHandbookOffer(db: Database, storageAvailable: boolean,
     // Image publication has no separate enable switch; unlike the coordinator,
     // a valid published configuration is available without `enabled: true`.
     if (config.values.enabled === false) return { available: false };
-    const pricePower = config.billingModel.imagePowerPerCall!;
+    const pricePower = config.billingModel.imagePowerPerCall!+(scope&&accountProfile(db,scope).onboarding.journey?.experience===4?welcomeManualConfig(db,handbookGuide(db,scope)).reservation/1e6:0);
     const firstGift=scope?!accountProfile(db,scope).onboarding.welcomeGiftOperationId:undefined;
     return { available: pricePower <= .5&&(!firstGift||config.billingModel.costImagePowerPerCall!<=.5), pricePower, ...(scope?{firstGift}:{}) };
   } catch { return { available: false }; }
@@ -123,7 +128,7 @@ export async function startOnboardingHandbook(store: Store, scope: AccountScope,
     let input: OnboardingImageInput | undefined;
     try {
       const config = resolveImageTask(db, deps.storageAvailable);
-      const price = config.billingModel.imagePowerPerCall!;
+      const price = config.billingModel.imagePowerPerCall!+(usesWelcomeManual(db,scope)?welcomeManualConfig(db,handbookGuide(db,scope)).reservation/1e6:0);
       const sponsored=handbook.funding==='one'&&profile.onboarding.welcomeGiftOperationId===handbook.operationId;
       if (config.values.enabled === false) reason = "not_configured";
       else if(handbook.funding==='one'&&(!sponsored||config.billingModel.costImagePowerPerCall!>.5))reason='not_configured';

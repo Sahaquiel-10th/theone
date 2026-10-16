@@ -15,7 +15,7 @@ type Thing = {
   title: string;
   updatedAt: string;
   archived?: boolean;
-  messages: { id?: string; role: string; content: string; originalContent?: string; imageUrl?: string; attachments?: {id:string; originalName:string;welcomeGuide?:boolean}[] }[];
+  messages: { id?: string; role: string; content: string; originalContent?: string; imageUrl?: string; attachments?: {id:string; originalName:string;welcomeGuide?:boolean;visualDocument?:boolean}[] }[];
   messagesLoaded?: boolean;
   taskState?: 'active' | 'review' | 'ended' | 'history';
   outcome?: string;
@@ -171,7 +171,7 @@ export function ThingsPanel({
                     )}
                     {message.originalContent ? <details className="task-original-message"><summary>看看我当时的原话</summary><p>{message.originalContent}</p></details> : null}
                     {privateImageUrl(message.imageUrl) ? <>{!hasInlineImage(message.content,message.imageUrl!) ? <ImagePreview src={message.imageUrl!} alt="这件任务生成的图片"/> : null}<a className="one-task-result-link" href={message.imageUrl} download>保存图片 ↗</a></> : null}
-                    {remainingResultAttachments(message.attachments,privateImageUrl(message.imageUrl) || undefined).map(file=>file.welcomeGuide?<WelcomeGuideCard key={file.id} id={file.id} title={file.originalName}/>:<a className="one-task-result-link" key={file.id} href={`/api/attachments/${encodeURIComponent(file.id)}/content`} download>{file.originalName} ↗</a>)}
+                    {remainingResultAttachments(message.attachments,privateImageUrl(message.imageUrl) || undefined).map(file=>file.welcomeGuide||file.visualDocument?<WelcomeGuideCard key={file.id} id={file.id} title={file.originalName}/>:<a className="one-task-result-link" key={file.id} href={`/api/attachments/${encodeURIComponent(file.id)}/content`} download>{file.originalName} ↗</a>)}
                   </article>
                 ))
               ) : (

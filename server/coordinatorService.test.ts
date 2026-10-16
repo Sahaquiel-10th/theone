@@ -18,6 +18,40 @@ import { executorDefaults, updateExecutor } from "./executorProfiles.js";
 import { beginChatOperation,reconcileInterruptedChatOperations } from "./chatOperations.js";
 import { MODEL_MAX_OUTPUT_TOKENS, type ModelToolMessage, type ModelToolDefinition, type ToolChatResult } from "./modelGateway.js";
 
+for(const sponsored of [true,false])test(`welcome manual → image → shared visual functions is durable, scoped and billed by stage (gift=${sponsored})`,async()=>{
+  const f=await imageFixture(async()=>({content:'',imageUrl:imageFixturePng})),operationId='welcome_manual_0123456789';let texts=0,images=0;
+  const scene={id:'idea',title:'整理想法',situation:'开会前有一堆想法。',feature:'把想法整理成提纲。',advantage:'不用自己反复排版。',benefit:'拿到可讨论的提纲。',evidence:'查看实际提纲，核对缺口。',steps:['说出目标。','核对提纲。'],prompt:'帮我整理开会提纲。',capabilityIds:['chat']};
+  const doc={version:1,title:'小明的 ONE 使用说明',intro:'先从今天要开的会开始。',scenes:[scene,{...scene,id:'result',title:'把成果拿来用',capabilityIds:['visual']}]};
+  await f.store.mutate(d=>{
+    const u=d.users.find(u=>u.id==='a')!;u.defaultWorkspaceId='wa';
+    u.profile={workspaceId:'wa',displayName:'小明',onboarding:{knowledgeChoice:'skipped',completedAt:'now',journey:{id:'journey_manual_test',launchId:'manual_launch_012345',version:2,experience:4,stage:'complete',startedAt:'now',featureIds:[],events:[]},handbook:{operationId,funding:sponsored?'one':'customer',status:'pending',requestedAt:'now',updatedAt:'now',maxPower:.5},...(sponsored?{welcomeGiftOperationId:operationId}:{})},updatedAt:'now'};
+    const v=d.settings.aiTasks!.image_generation!.published!;v.imagePowerPerCall=.012;v.costImagePowerPerCall=.02;delete v.enabled;
+    if(sponsored)d.powerAccounts.find(p=>p.userId==='a')!.balanceMicros=0;
+  });
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('must not read knowledge');}},{artifactDirectory:f.directory,modelCall:async(_m,messages,tools)=>{texts++;assert.equal(tools[0].function.name,'oneManual');assert.doesNotMatch(JSON.stringify(messages),/apiKey|storagePath/);return {...answer(''),toolCalls:[{id:'manual',type:'function',function:{name:'oneManual',arguments:JSON.stringify(doc)}}]};},imageCall:async(_m,messages)=>{images++;assert.match(JSON.stringify(messages),/开会前有一堆想法/);assert.match(JSON.stringify(messages),/小明的 ONE 使用说明/);return {content:'',imageUrl:imageFixturePng};}});
+  const {startOnboardingHandbook,onboardingHandbookOffer}=await import('./onboardingHandbook.js');
+  const deps={verifyKey:key,storageAvailable:true,enqueueImage:(scope:typeof a,request:import('./onboardingHandbook.js').OnboardingImageInput,verify:()=>Promise<void>)=>service.enqueueOnboardingImage(scope,request,verify)};
+  try{
+    const offer=onboardingHandbookOffer(await f.store.read(),true,a);assert.ok(offer.available&&offer.pricePower!>.012);
+    const accepted=await startOnboardingHandbook(f.store,a,deps);assert.equal(accepted.handbook!.status,'queued');const taskId=accepted.handbook!.taskId!;
+    await service.resume(a,key);await waitFor(async()=>(await service.task(a,taskId)).jobs[0].state==='completed');
+    const d=await f.store.read(),run=d.chatOperations!.find(o=>o.conversationId===taskId&&o.workRun)!.workRun!;
+    assert.equal(texts,1);assert.equal(images,1);assert.deepEqual(run.welcomeManual!.document,doc);assert.equal(run.welcomeManual!.model.apiKey,'');assert.ok(run.welcomeArtifacts?.flowId&&run.welcomeArtifacts.pageId);
+    assert.equal(d.attachments.filter(f=>f.conversationId===taskId).length,3);assert.equal(d.modelUsageRecords.length,2);
+    assert.ok(d.modelUsageRecords.every(r=>sponsored?r.chargedMicros===0:r.chargedMicros!>0));assert.ok(d.attachments.find(f=>f.id===run.welcomeImageAttachmentId)!.welcomeGuide!.manual);
+    const returned=await service.task(a,taskId);assert.doesNotMatch(JSON.stringify(returned),/welcomeManual|contentBudget|safetyRules|apiKey/);
+    await startOnboardingHandbook(f.store,a,deps);await service.resume(a,key);assert.equal(texts,1);assert.equal(images,1);
+    await assert.rejects(()=>service.task(b,taskId));
+    // Simulate a lost final receipt after artifacts were saved. Explicit retry
+    // must recover the same image/manual rather than buying them again.
+    const source=d.chatOperations!.find(o=>o.conversationId===taskId&&o.workRun)!;
+    await f.store.mutate(db=>{const op=db.chatOperations!.find(o=>o.id===source.id)!;op.status='failed';op.workRun!.state='failed';op.workRun!.resultOutcome='failed';op.workRun!.resultMessageId=undefined;op.workRun!.error='收尾回执中断';});
+    await service.retryLatest(a,taskId,source.id,undefined,key);await service.resume(a,key);
+    await waitFor(async()=>(await service.task(a,taskId)).jobs.at(-1)!.state==='completed');
+    assert.equal(texts,1);assert.equal(images,1);assert.equal((await f.store.read()).modelUsageRecords.length,2);
+  }finally{rmSync(f.directory,{recursive:true,force:true});}
+});
+
 test('one request runs two tasks concurrently and feeds their durable results into the next answer once',async()=>{
  const f=fixture();
  f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('两项已安排'):{...answer(''),toolCalls:[{id:'batch',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:['逻辑分析','写作草稿'].map(title=>({taskId:null,title,instruction:`只做${title}`,executorId:'general',outputKind:'text',featureIds:[],dependsOn:[]}))})}}]});

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import {composeFeatureTask} from './featureExperience.js';
-import {selectedFeatureFiles,selectedTableCsv,saveFeatureArtifact} from './featureArtifacts.js';
+import {selectedFeatureFiles,selectedTableCsv,saveFeatureArtifact,visualArtifactSaver} from './featureArtifacts.js';
 import {prepareAttachmentContext} from './attachmentRetrieval.js';
 import {tableWorkbook} from './skillTables.js';
 import {featureImageBytes} from './featureImage.js';
@@ -91,7 +91,7 @@ export function featureRunResult(db: Database, scope: FeatureScope, operationId:
     ...(detail ? { prompt, content: conv?.messages.find(m => m.id === op.assistantMessageId)?.content ?? "", error: op.status === "failed" || op.status === "interrupted" ? trace?.responsePreview ?? "任务中断，可能已有用量；不会自动重跑。" : undefined,
       recovery: featureRunRecovery(db, scope, op),
       finishReason: conv?.messages.find(m => m.id === op.assistantMessageId)?.finishReason,
-      imageUrl: conv?.messages.find(m=>m.id===op.assistantMessageId)?.imageUrl, files: (db.attachments??[]).filter(a=>!!conv&&a.workspaceId===scope.workspaceId&&a.userId===scope.userId&&a.conversationId===conv.id).map(a=>({id:a.id,name:a.originalName,mimeType:a.mimeType})),
+      imageUrl: conv?.messages.find(m=>m.id===op.assistantMessageId)?.imageUrl, files: (db.attachments??[]).filter(a=>!!conv&&a.workspaceId===scope.workspaceId&&a.userId===scope.userId&&a.conversationId===conv.id).map(a=>({id:a.id,name:a.originalName,mimeType:a.mimeType,...(a.visualDocument?{visualDocument:true}:{})})),
       trace: trace?.executionSteps ?? [], charges: usage.map(u => ({ feature: u.featurePriceSnapshot, model: u.modelNameSnapshot, power: (u.chargedMicros ?? 0) / 1e6, status: u.status })) } : {}) };
 }
 function featureRetryId(op: ChatOperation) {
@@ -225,7 +225,7 @@ export async function executeFeatureRun(store: Store, scope: FeatureScope, opera
     const inputFiles=await selectedFeatureFiles(store,scope,attachmentIds);
     const verifyOutput=(d:Database)=>{availableFeature(d,scope,meta.featureId,meta.releaseId);verifySources(d,scope,meta.sources);verifyCredentialBindings(d,scope,meta.credentials??[]);if(ownRun(d,scope,operationId).status!=='pending')throw new FeatureConfigError('任务已停止');};
     const saveTable=deps.artifactDirectory?async(rows:(string|number|boolean|null)[][],name:string)=>{await verify();return saveFeatureArtifact(store,{...scope,conversationId},deps.artifactDirectory!,name,tableWorkbook(rows),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','spreadsheet',verifyOutput);}:undefined;
-    const tools: OrchestrationTool[] = executableFeatureTools(store,scope,values.tools??[],verify,{...deps,localContext:{quoteCurrency:typeof meta.options?.currency==='string'?meta.options.currency:values.experience?.inputs.find(f=>f.id==='currency')?.default as string|undefined,readTable:async id=>{await verify();return selectedTableCsv(store,scope,attachmentIds,id);},saveTable}});
+    const tools: OrchestrationTool[] = executableFeatureTools(store,scope,values.tools??[],verify,{...deps,localContext:{saveVisual:visualArtifactSaver(store,{...scope,conversationId},deps.artifactDirectory,verifyOutput),quoteCurrency:typeof meta.options?.currency==='string'?meta.options.currency:values.experience?.inputs.find(f=>f.id==='currency')?.default as string|undefined,readTable:async id=>{await verify();return selectedTableCsv(store,scope,attachmentIds,id);},saveTable}});
     if (meta.sources.length) tools.push({ name: "knowledge_search", description: "当任务需要用户自己的资料时，检索本次用户明确选择的知识来源。query 填具体问题。没有结果不能声称资料中存在答案。", run: async query => {
       await verify(); const found = await knowledge.recallWithDiagnostics(scope.workspaceId, query, 5, meta.sources.map(s => s.id), scope.userId); await verify(); return found;
     } });

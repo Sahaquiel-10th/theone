@@ -11,7 +11,7 @@ import { featurePricedModel, type FeaturePrice } from './featurePricing.js';
 import { reserveExecutionBatchBudget, type ExecutionBatchBudget } from './executionBatchBudget.js';
 
 export type ModelUsage = { inputTokens: number; outputTokens: number; totalTokens: number; cacheUsage?: CacheUsage; source: string };
-type BillingParams = { sponsorship?:{kind:'welcome_gift';operationId:string}; batchBudget?: ExecutionBatchBudget; featurePrice?: FeaturePrice; workspaceId: string; userId: string; conversationId?: string; model: ModelConfig; input: unknown; activity: string; requestId: string; beforeReserve?: (db: Database, amountMicros: number) => void;commerce?:PublicCommerceSnapshot };
+type BillingParams = { sponsorship?:{kind:'welcome_gift';operationId:string;stage?:'manual'|'image'}; batchBudget?: ExecutionBatchBudget; featurePrice?: FeaturePrice; workspaceId: string; userId: string; conversationId?: string; model: ModelConfig; input: unknown; activity: string; requestId: string; beforeReserve?: (db: Database, amountMicros: number) => void;commerce?:PublicCommerceSnapshot };
 type BillingScope = { usageId: string; workspaceId: string; userId: string };
 
 export class BillingReviewRequiredError extends Error {
@@ -138,7 +138,9 @@ export async function runBilledModel<T extends { usage?: ModelUsage; finishReaso
       const gift=params.sponsorship.operationId;
       const profile=db.users.find(u=>u.id===params.userId&&u.defaultWorkspaceId===params.workspaceId)?.profile;
       const job=db.chatOperations?.find(o=>o.workspaceId===params.workspaceId&&o.userId===params.userId&&o.requestId===params.requestId&&o.conversationId===params.conversationId)?.workRun;
-      if(model.kind!=='image'||params.featurePrice||params.commerce||params.batchBudget||profile?.workspaceId!==params.workspaceId||profile.onboarding.welcomeGiftOperationId!==gift||job?.kind!=='image'||!job.welcomeSponsored||job.welcomeOperationId!==gift||job.state!=='running'||(model.costImagePowerPerCall??Infinity)>.5||db.modelUsageRecords.some(r=>r.workspaceId===params.workspaceId&&r.userId===params.userId&&r.sponsorship?.operationId===gift))throw new Error('欢迎礼物赠送资格无效或已使用');
+      const stage=params.sponsorship.stage??'image';
+      const validStage=stage==='image'?model.kind==='image'&&(model.costImagePowerPerCall??Infinity)<=.5:model.kind==='chat'&&job?.welcomeManual?.model.id===model.id&&job.welcomeManual.reservation>=amountMicros&&amountMicros<=500000&&params.activity==='welcome_manual'&&!job.welcomeManual.document;
+      if(!validStage||params.featurePrice||params.commerce||params.batchBudget||profile?.workspaceId!==params.workspaceId||profile.onboarding.welcomeGiftOperationId!==gift||job?.kind!=='image'||!job.welcomeSponsored||job.welcomeOperationId!==gift||job.state!=='running'||db.modelUsageRecords.some(r=>r.workspaceId===params.workspaceId&&r.userId===params.userId&&r.sponsorship?.operationId===gift&&(r.sponsorship?.stage??'image')===stage))throw new Error('欢迎礼物赠送资格无效或已使用');
       row.reservedMicros=0;row.activity='首次使用说明（ONE承担）';
     }
     // An uncertain bill keeps its own reservation. It must not lock unrelated

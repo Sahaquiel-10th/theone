@@ -25,7 +25,7 @@ export function StoryOnboarding({profile,context,offer,onBegin,onAction,onKnowle
   useEffect(()=>{card.current?.scrollIntoView({block:'start',behavior:'auto'});},[stage,j?.id]);
   function generationChoice(){
     if(!canDraw)return {createGuide:false,choice:'without_image'};
-    if(!offer?.firstGift&&!window.confirm(`重新制作你的 ONE 使用说明，将生成一张新图片，使用 ${price} 电力。继续吗？取消也能保存设置，不重新生成。`))return {createGuide:false,choice:'without_image'};
+    if(!offer?.firstGift&&!window.confirm(`重新制作你的 ONE 使用说明，将整理说明并配一张图，最多使用 ${price} 电力，按实际用量结算。继续吗？取消也能保存设置，不重新生成。`))return {createGuide:false,choice:'without_image'};
     return {createGuide:true,budgetPower:offer?.firstGift?undefined:price};
   }
   async function act(input:JourneyInput){if(busy)return;setBusy(true);setError('');try{await onAction({...input,journeyId:j?.id});}catch(e){setError(e instanceof Error?e.message:'这一步没保存好，再试一次？');}finally{setBusy(false);}}
@@ -50,7 +50,7 @@ export function StoryOnboarding({profile,context,offer,onBegin,onAction,onKnowle
     </>:<>
       <Sparkles size={25}/><h2 id="one-story-title">你主要想用 ONE 做什么？</h2><p>选一两个就好，之后随时能改。</p>
       <div className="story-feature-list story-purpose-list">{onboardingPurposes.map(p=><button type="button" key={p.id} disabled={busy||!chosen.includes(p.id)&&chosen.length>=2} aria-pressed={chosen.includes(p.id)} onClick={()=>setChosen(old=>old.includes(p.id)?old.filter(id=>id!==p.id):[...old,p.id])}><span><strong>{p.title}</strong><small>{p.description}</small></span>{chosen.includes(p.id)?<Check size={17}/>:null}</button>)}</div>
-      <div className="one-onboarding-actions"><button type="button" disabled={busy||!j} onClick={()=>{const generation=generationChoice();void act({action:'step',step:'features',...generation,choice:'purposes',purposeIds:chosen,experience:3});}}>{busy?'正在保存设置…':'开始使用 ONE'}<ArrowUpRight size={16}/></button></div>
+      <div className="one-onboarding-actions"><button type="button" disabled={busy||!j} onClick={()=>{const generation=generationChoice();void act({action:'step',step:'features',...generation,choice:'purposes',purposeIds:chosen,experience:4});}}>{busy?'正在保存设置…':'开始使用 ONE'}<ArrowUpRight size={16}/></button></div>
     </>}
     {busy?<p className="story-saving" role="status">{stage==='device'?'正在核对本机状态。':'在保存这一步，稍等一下。'}</p>:null}
     {error?<div className="one-onboarding-error" role="alert"><p>{error}</p></div>:null}

@@ -54,7 +54,7 @@ function marker(db: Database, scope: TaskResultScope, id: string) {
 }
 function publicFile(file: Attachment): AttachmentSummary {
   const { id, originalName, mimeType, kind, size, status } = file;
-  return { id, originalName, mimeType, kind, size, status, ...(file.welcomeGuide ? { welcomeGuide: true } : {}) };
+  return { id, originalName, mimeType, kind, size, status, ...(file.welcomeGuide ? { welcomeGuide: true } : {}),...(file.visualDocument?{visualDocument:true}:{}) };
 }
 function ownedFiles(db: Database, scope: TaskResultScope, task: Conversation, message: Message | undefined) {
   return (message?.attachments ?? []).flatMap(summary => {
@@ -266,7 +266,7 @@ export function appendTaskResultReport(db: Database, scope: TaskResultScope, inp
         return `${r.title}：${labels[r.outcome]}。${preview ? ` ${preview.slice(0, 140)}${preview.length > 140 ? '…' : ''}` : ''}\n[查看结果](#task:${encodeURIComponent(r.taskId)})${r.imageUrl && !singleImage ? `\n![生成的图片](${r.imageUrl})` : ''}`;
       }).join('\n\n'),
       ...(singleImage ? { imageUrl: results[0].imageUrl, attachments: results[0].attachments }
-        : { attachments: results.flatMap(result => result.attachments.filter(file => file.welcomeGuide)) }) };
+        : { attachments: results.flatMap(result => result.attachments.filter(file => file.welcomeGuide||file.visualDocument)) }) };
     main.messages.push(message); main.updatedAt = timestamp;
     db.messages.push({ ...message, id: messageId, ...scope, conversationId: main.id, attachmentIds: message.attachments?.map(a => a.id) });
   }

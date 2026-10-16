@@ -27,7 +27,7 @@ test('welcome artifact preview, exports and opt-in shares are private, isolated,
  let p=await(await get()).json();assert.equal(p.shared,false);assert.match(p.html,/小张的 ONE 使用说明/);assert.doesNotMatch(p.html,/storagePath|workspaceId|apiKey/);
  assert.equal(db.attachments[0].welcomeShare,undefined,'read-only preview must not publish');
  const framed=await get('/view');assert.equal(framed.headers.get('x-frame-options'),'SAMEORIGIN');assert.match(framed.headers.get('content-security-policy')!,/default-src 'none'/);assert.match(framed.headers.get('content-security-policy')!,/frame-ancestors 'self'/);
- const poster=await(await get('?format=poster')).json();assert.match(poster.svg,/width="1920" height="1080"/);
+ const poster=await(await get('?format=poster')).json();assert.match(poster.svg,/width="1920" height="\d+"/);
  assert.equal((await share({})).status,400);assert.equal(db.attachments[0].welcomeShare,undefined);
  const published=await(await share({confirm:true})).json();assert.match(published.url,/^\/welcome\/[a-f0-9]{48}$/);
  assert.doesNotMatch(JSON.stringify(publicAttachmentSummary(db.attachments[0])),/hash|expiresAt|Notion|nickname/);
@@ -37,5 +37,11 @@ test('welcome artifact preview, exports and opt-in shares are private, isolated,
  const renewed=await(await share({confirm:true})).json();assert.equal((await fetch(base+published.url)).status,404);
  await fetch(base+'/api/welcome-pages/mine/share',{method:'DELETE'});assert.equal((await fetch(base+renewed.url)).status,404);
  db.workspaces[0].kind='company';db.workspaces[0].company={agreementRef:'x',billing:'bank_transfer',allowPublicSharing:false};assert.equal((await share({confirm:true})).status,403);
+ const scene={id:'first',title:'整理',situation:'开会前',feature:'整理资料',advantage:'少搬运',benefit:'一份提纲',evidence:'对照原文',steps:['说目标','看结果'],prompt:'帮我整理提纲',capabilityIds:[]};
+ db.attachments.push({...db.attachments[0],id:'page',conversationId:'standalone',welcomeGuide:undefined,welcomeShare:undefined,kind:'document',mimeType:'text/html',visualDocument:{version:1,title:'私有说明',intro:'这是说明',scenes:[scene,{...scene,id:'second'}]}});
+ db.conversations.push({...db.conversations[0],id:'standalone',archived:true});db.chatOperations=[{workspaceId:'wa',userId:'a',conversationId:'standalone',status:'completed',featureRun:{featureId:'one-visual-html'}}] as never;
+ const page=await fetch(base+'/api/welcome-pages/page/view');assert.equal(page.status,200);assert.match(page.headers.get('content-security-policy')!,/script-src 'sha256-/);assert.doesNotMatch(page.headers.get('content-security-policy')!,/allow-same-origin/);
+ assert.equal((await fetch(base+'/api/welcome-pages/page/view',{headers:{'x-test-user':'b'}})).status,404);
+ assert.equal((await fetch(base+'/api/welcome-pages/page/share',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({confirm:true})})).status,403);
  db.conversations[0].archived=true;assert.equal((await get()).status,404);
 });

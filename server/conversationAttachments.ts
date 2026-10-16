@@ -4,7 +4,7 @@ type AttachmentScope = { workspaceId: string; userId: string; conversationId?: s
 
 export function publicAttachmentSummary(attachment: Attachment): AttachmentSummary {
   const { id, originalName, mimeType, kind, size, status, uploadedBytes, parseError, textChars, segmentCount } = attachment;
-  return { id, originalName, mimeType, kind, size, status, uploadedBytes, parseError, textChars, segmentCount,...(attachment.welcomeGuide?{welcomeGuide:true}:{}) };
+  return { id, originalName, mimeType, kind, size, status, uploadedBytes, parseError, textChars, segmentCount,...(attachment.welcomeGuide?{welcomeGuide:true}:{}),...(attachment.visualDocument?{visualDocument:true}:{}) };
 }
 
 /** Remove files only after their last server-authorized conversation reference. */

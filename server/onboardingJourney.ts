@@ -14,7 +14,7 @@ export type OnboardingJourney = {
   localChoice?: 'checked' | 'skipped'; local?: LocalWelcomeState;
   featureIds: string[]; events: { step: JourneyStage; choice: string; at: string }[];
   purposeIds?:OnboardingPurpose[];
-  experience?:3;
+  experience?:3|4;
   handbook?: import('./betaProfile.js').OnboardingHandbook;
 };
 export type WelcomeContext = { platforms: string[]; features: { id: string; name: string; description: string }[] };
@@ -53,7 +53,7 @@ export function updateJourney(db:Database,scope:AccountScope,input:JourneyInput,
       else throw new BetaInputError('上一份使用说明还在交接，稍后再开始引导。',409);
     }
     if(current)profile.onboarding.journeyHistory=[...(profile.onboarding.journeyHistory??[]),{...current,handbook:profile.onboarding.handbook}];
-    profile.onboarding.journey={id:uid('journey'),launchId:input.launchId as string,version:2,experience:input.experience===3?3:undefined,stage:'name',startedAt:time,featureIds:[],events:[]};
+    profile.onboarding.journey={id:uid('journey'),launchId:input.launchId as string,version:2,experience:input.experience===4?4:input.experience===3?3:undefined,stage:'name',startedAt:time,featureIds:[],events:[]};
   } else {
     const j=profile.onboarding.journey;
     if(!j||input.journeyId!==j.id)throw new BetaInputError('这次引导已经变化，请重新打开。',409);
@@ -93,7 +93,7 @@ export function updateJourney(db:Database,scope:AccountScope,input:JourneyInput,
         if(input.choice==='purposes'){
           if(!Array.isArray(input.purposeIds)||input.purposeIds.length>2||input.purposeIds.some(id=>!onboardingPurposes.some(p=>p.id===id)))throw new BetaInputError('选一两个用途就好，也可以先跳过。');
           j.purposeIds=[...new Set(input.purposeIds)] as OnboardingPurpose[];
-          j.featureIds=matchWelcomeFeatures(db,scope,j.purposeIds);j.experience=3;j.stage='ready';
+          j.featureIds=matchWelcomeFeatures(db,scope,j.purposeIds);j.experience=j.experience===4?4:3;j.stage='ready';
           j.events.push({step:'features',choice:'purposes',at:time});profile.updatedAt=time;user.profile=profile;return structuredClone(profile);
         }
         if(!['selected','skipped'].includes(String(input.choice)))throw new BetaInputError('请选择感兴趣的功能或跳过。');

@@ -5,6 +5,16 @@ import type { Store } from './db.js';
 import type { Attachment, Database } from './types.js';
 import { ownedAttachment } from './attachmentService.js';
 import { tableFileToCsv } from './skillTables.js';
+import {createVisualArtifact,type SaveVisual} from './visualTools.js';
+
+export function visualArtifactSaver(store:Store,scope:{workspaceId:string;userId:string;conversationId:string},directory:string|undefined,verify:(db:Database)=>void,onSaved?:(id:string)=>void):SaveVisual|undefined {
+  if(!directory)return;
+  return (doc,format)=>createVisualArtifact(doc,format,async(name,bytes,mime,content)=>{
+    const file=await saveFeatureArtifact(store,scope,directory,name,bytes,mime,'document',verify);
+    await store.mutate(db=>{verify(db);const f=ownedAttachment(db.attachments,scope,file.id);if(format==='html')f.visualDocument=content;});
+    onSaved?.(file.id);return file;
+  });
+}
 
 export async function selectedFeatureFiles(store:Store,scope:{workspaceId:string;userId:string},ids:unknown):Promise<Attachment[]> {
   if(ids===undefined)return [];
@@ -20,7 +30,9 @@ export async function selectedTableCsv(store:Store,scope:{workspaceId:string;use
 }
 export async function saveFeatureArtifact(store:Store,scope:{workspaceId:string;userId:string;conversationId:string},directory:string,name:string,bytes:Buffer,mimeType:string,kind:Attachment['kind'],verify:(db:Database)=>void){
   if(!directory||!bytes.length||bytes.length>25*1024*1024)throw new Error('成果文件存储不可用或过大');
-  const id=uid('att'),extension=kind==='image'?mimeType==='image/jpeg'?'.jpg':mimeType==='image/webp'?'.webp':'.png':'.xlsx';
+  const formats:Record<string,string>={'image/jpeg':'.jpg','image/webp':'.webp','image/png':'.png','image/svg+xml':'.svg','text/html':'.html','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'.xlsx'};
+  const extension=formats[mimeType];if(!extension)throw new Error('成果格式不支持');
+  const id=uid('att');
   const storagePath=path.join(directory,id+extension);
   await fs.writeFile(storagePath,bytes,{flag:'wx',mode:0o600});
   const file:Attachment={...scope,id,originalName:name.slice(0,160),size:bytes.length,mimeType,kind,storagePath,extractedText:'',status:'ready',createdAt:new Date().toISOString()};

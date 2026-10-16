@@ -16,6 +16,9 @@ export type WorkRun = {
   welcomeOperationId?: string;
   welcomeSponsored?: boolean;
   welcomeGuide?:import('./welcomeGuide.js').WelcomeGuideFacts;
+  welcomeManual?:import('./welcomeManual.js').WelcomeManualSnapshot;
+  welcomeImageAttachmentId?:string;
+  welcomeArtifacts?:{flowId?:string;pageId?:string};
   imagePrice?: number;
   imageCost?: number;
   state:

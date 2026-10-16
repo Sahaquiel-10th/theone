@@ -1,7 +1,8 @@
 import manifest from '../skills-library/one/manifest.json' with {type:'json'};
 import type { Database } from './types.js';
 import { featureValues, updateOfficialFeature, FeatureConfigError } from './officialFeatures.js';
-export const oneSkillLibrary = manifest.map(item=>({...item,values:featureValues(item.values)}));
+import {visualFeatureLibrary} from './visualFeatureLibrary.js';
+export const oneSkillLibrary = [...manifest,...visualFeatureLibrary].map(item=>({...item,values:featureValues(item.values)}));
 /** Add missing first-party drafts only. Existing user edits and approved versions are preserved. */
 export function installOneSkillLibrary(db:Database,actor:string,selection:string[]=oneSkillLibrary.map(s=>s.id),modelIds:{text?:string;image?:string}={}){
   if(!db.users.some(u=>u.id===actor&&u.enabled&&u.role==='admin'))throw new FeatureConfigError('无权安装功能',403);

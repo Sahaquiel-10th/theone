@@ -1,17 +1,22 @@
 import { calculateFinance } from '../skills-library/one/shared/scripts/finance.mjs';
 import { stringifyTableCsv, csvParse } from './skillTables.js';
 import type { OrchestrationTool } from './taskOrchestrator.js';
+import {visualToolPresets,visualTool,type SaveVisual} from './visualTools.js';
 
 export const localSkillPresets = [
+  ...visualToolPresets,
   {id:'oneFinance',name:'金额与收益测算',description:'依据用户确认的数据计算收益或报价。operation=profit、promotion、quote；dataJson 是 JSON 对象。金额字段为元，税率／渠道费率为 0–1 小数。不猜测缺失价格与成本。'},
   {id:'oneTable',name:'表格整理与导出',description:'清洗用户的 CSV 或本次选中的表格附件。operation=clean、customers 或 merge；merge 使用 attachmentIds 数组且表头一致，其他操作使用 attachmentId 或 csv；dataJson 可包含 keyColumns、trim、deduplicate，customers 另含 referenceDate、inactiveDays。attachmentId 仅限本次选中附件；未授权时不能读取。'}
 ];
 export type SkillLocalContext = {
+  saveVisual?:SaveVisual;
   quoteCurrency?:string;
   readTable?: (id:string)=>Promise<string>;
   saveTable?: (rows:(string|number|boolean|null)[][],name:string)=>Promise<{id:string;name:string}>;
 };
 export function localSkillTool(id:string, description:string, verify:()=>Promise<void>, context:SkillLocalContext={}):OrchestrationTool {
+  if(visualToolPresets.some(x=>x.id===id))return visualTool(id,description,verify,context.saveVisual);
+  if(!['oneFinance','oneTable'].includes(id))throw new Error('未知的内置工具');
   return {name:id,description,run:async()=>{throw new Error('需要结构化参数');},structured:{
     schema:{type:'object',additionalProperties:false,properties:{operation:{type:'string',enum:id==='oneFinance'?['profit','promotion','quote']:['clean','customers','merge']},dataJson:{type:'string',maxLength:120000}},required:['operation','dataJson']},
     validate:raw=>{
