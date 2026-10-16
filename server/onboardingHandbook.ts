@@ -24,7 +24,9 @@ export function handbookTitle(profile:ReturnType<typeof accountProfile>) { retur
 export function onboardingHandbookOffer(db: Database, storageAvailable: boolean): OnboardingHandbookOffer {
   try {
     const config = resolveImageTask(db, storageAvailable);
-    if (config.values.enabled !== true) return { available: false };
+    // Image publication has no separate enable switch; unlike the coordinator,
+    // a valid published configuration is available without `enabled: true`.
+    if (config.values.enabled === false) return { available: false };
     const pricePower = config.billingModel.imagePowerPerCall!;
     return { available: pricePower <= .5, pricePower };
   } catch { return { available: false }; }
@@ -85,7 +87,7 @@ export async function startOnboardingHandbook(store: Store, scope: AccountScope,
     try {
       const config = resolveImageTask(db, deps.storageAvailable);
       const price = config.billingModel.imagePowerPerCall!;
-      if (config.values.enabled !== true) reason = "not_configured";
+      if (config.values.enabled === false) reason = "not_configured";
       else if (!Number.isFinite(handbook.maxPower) || handbook.maxPower <= 0 || handbook.maxPower > .5 || price > handbook.maxPower) reason = "budget_required";
       else if (db.modelUsageRecords.some(row => row.workspaceId === scope.workspaceId && row.userId === scope.userId && row.status === "needs_review")) reason = "billing_review";
       else if (availablePowerMicros(db, scope.workspaceId, scope.userId) < Math.ceil(price * 1e6 - 1e-7)) reason = "insufficient_power";

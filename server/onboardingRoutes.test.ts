@@ -16,7 +16,7 @@ function fixture() {
     users: [{ id: "a", username: "a", enabled: true, defaultWorkspaceId: "wa", role: "user", createdAt: "today" }, { id: "b", username: "b", enabled: true, defaultWorkspaceId: "wb", role: "user", createdAt: "today" }],
     workspaces: [{ id: "wa", status: "active" }, { id: "wb", status: "active" }], workspaceMembers: [{ workspaceId: "wa", userId: "a", role: "owner" }, { workspaceId: "wb", userId: "b", role: "owner" }],
     knowledgeConnections: [], conversations: [], messages: [], models: [model], chatOperations: [], modelUsageRecords: [], powerAccounts: [{ ...scope, id: "power", balanceMicros: 1_000_000 }],
-    settings: { aiTasks: { image_generation: { published: { ...defaultTaskValues("image_generation"), enabled: true, modelId: model.id, imagePowerPerCall: .012, costImagePowerPerCall: .02, version: 1 } } } },
+    settings: { aiTasks: { image_generation: { published: { ...defaultTaskValues("image_generation"), modelId: model.id, imagePowerPerCall: .012, costImagePowerPerCall: .02, version: 1 } } } },
   } as unknown as Database;
   const store: Store = { read: async () => db, mutate: async fn => fn(db) };
   let queued = 0, resumed = 0, verified = 0, keyLost = false;

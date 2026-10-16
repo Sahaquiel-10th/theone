@@ -1789,7 +1789,7 @@ for(const comic of [false,true])test(`server-only onboarding ${comic?'comic':'gu
     if(comic)user.profile.onboarding.journey={id:'journey_0123456789',launchId:'launch_0123456789',version:2,stage:'complete',startedAt:'now',completedAt:'now',nameChoice:'provided',knowledgeChoice:'skipped',localChoice:'skipped',featureIds:[],events:[]};
     d.settings.aiTasks!.image_generation!.published!.imagePowerPerCall=.012;
     d.settings.aiTasks!.image_generation!.published!.costImagePowerPerCall=.02;
-    d.settings.aiTasks!.image_generation!.published!.enabled=true;
+    delete d.settings.aiTasks!.image_generation!.published!.enabled;
   });
   const {handbookInstruction,handbookTitle,startOnboardingHandbook}=await import('./onboardingHandbook.js');
   const db=await f.store.read(),configuration=db.settings.aiTasks!.image_generation!.published!;

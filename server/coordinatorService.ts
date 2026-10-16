@@ -1163,7 +1163,7 @@ export class CoordinatorService {
         throw new CoordinatorError('图片指南内容已变化，请先开始聊天', 409);
       const config = resolveImageTask(db, Boolean(this.deps.artifactDirectory));
       if (!Number.isFinite(input.budget) || input.budget <= 0 || input.budget > .5
-        || config.values.enabled !== true || config.version !== input.imageVersion
+        || config.values.enabled === false || config.version !== input.imageVersion
         || config.billingModel.imagePowerPerCall! > input.budget)
         throw new CoordinatorError('图片指南配置或额度已变化，请先开始聊天', 409);
     };

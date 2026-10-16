@@ -4,7 +4,7 @@ import type { Store } from "./db.js";
 import type { Database, ModelConfig } from "./types.js";
 import { accountProfile, completeOnboardingOnChat, updateAccountProfile } from "./betaProfile.js";
 import { handbookInstruction, onboardingHandbookOffer, resolvedOnboardingHandbookProfile, startOnboardingHandbook, type OnboardingImageInput } from "./onboardingHandbook.js";
-import { defaultTaskValues } from "./aiTaskConfig.js";
+import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
 
 const scope = { workspaceId: "wa", userId: "a" };
 const key = async () => {};
@@ -14,7 +14,7 @@ function fixture() {
     users: [{ id: "a", username: "PRIVATE_LOGIN_A", enabled: true, defaultWorkspaceId: "wa", role: "user", createdAt: "today" }, { id: "b", username: "PRIVATE_LOGIN_B", enabled: true, defaultWorkspaceId: "wb", role: "user", createdAt: "today" }],
     workspaces: [{ id: "wa", status: "active" }, { id: "wb", status: "active" }], workspaceMembers: [{ workspaceId: "wa", userId: "a", role: "owner" }, { workspaceId: "wb", userId: "b", role: "owner" }],
     knowledgeConnections: [], conversations: [], messages: [], models: [model], chatOperations: [], modelUsageRecords: [], powerAccounts: [{ ...scope, id: "power", balanceMicros: 1_000_000 }],
-    settings: { aiTasks: { image_generation: { published: { ...defaultTaskValues("image_generation"), enabled: true, modelId: model.id, imagePowerPerCall: .012, costImagePowerPerCall: .02, version: 1 } } } },
+    settings: { aiTasks: { image_generation: { published: { ...defaultTaskValues("image_generation"), modelId: model.id, imagePowerPerCall: .012, costImagePowerPerCall: .02, version: 1 } } } },
   } as unknown as Database;
   const store: Store = { read: async () => db, mutate: async fn => fn(db) };
   const welcome = () => { updateAccountProfile(db, scope, { displayName: "小马" }); updateAccountProfile(db, scope, { onboardingAction: "knowledge_skipped" }); updateAccountProfile(db, scope, { onboardingAction: "complete", handbookChoice: "create", handbookBudgetPower: .012 }); };
@@ -25,6 +25,23 @@ function fixture() {
   }
   return { db, store, welcome, accepted };
 }
+
+test("an image published through the admin path is offered and queued without a coordinator enable flag", async () => {
+  const f = fixture(); f.welcome();
+  f.db.settings.aiTasks = {};
+  updateTaskConfig(f.db.settings, f.db.models, "image_generation", { revision: 0, action: "draft", values: {
+    ...defaultTaskValues("image_generation"), modelId: "image-key", imagePowerPerCall: .012, costImagePowerPerCall: .02,
+  } }, "admin", "now");
+  const config = updateTaskConfig(f.db.settings, f.db.models, "image_generation", { revision: 1, action: "publish" }, "admin", "now");
+  assert.equal(config.published!.enabled, undefined);
+  assert.deepEqual(onboardingHandbookOffer(f.db, true), { available: true, pricePower: .012 });
+  assert.deepEqual(onboardingHandbookOffer(f.db, false), { available: false });
+  let calls = 0;
+  const result = await startOnboardingHandbook(f.store, scope, { storageAvailable: true, verifyKey: key,
+    enqueueImage: async (_scope, input) => { calls++; return f.accepted(input); } });
+  assert.equal(result.handbook?.status, "queued");
+  assert.equal(calls, 1);
+});
 
 test("first explicit welcome choice creates one claim; existing, chat-skipped and opted-out accounts do not", () => {
   const f = fixture(); f.welcome();
