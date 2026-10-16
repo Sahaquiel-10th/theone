@@ -56,7 +56,7 @@ import {
 } from "./conversationAttachments.js";
 import { prepareAttachmentContext } from "./attachmentRetrieval.js";
 import { accountInScope } from './betaProfile.js';
-import { handbookInstruction, handbookTitle, isOnboardingImageOperation, type OnboardingImageInput } from './onboardingHandbook.js';
+import { handbookGuide,handbookInstruction, handbookTitle, isOnboardingImageOperation, type OnboardingImageInput } from './onboardingHandbook.js';
 import { friendlyConversationGuidance } from './conversationTone.js';
 
 export type WorkScope = { workspaceId: string; userId: string };
@@ -368,7 +368,7 @@ export class CoordinatorService {
           instruction: (() => {
             // A retry preview must not expose generated source context after
             // its knowledge or external-tool authorization has been revoked.
-            try { assertSources(db, s, o.workRun!.sources); verifyCredentialBindings(db, s, o.workRun!.credentials); return isOnboardingImageOperation(db,s,o.operationId)?'根据你刚才的设置，准备一份专属欢迎礼物。':o.workRun!.instruction; }
+            try { assertSources(db, s, o.workRun!.sources); verifyCredentialBindings(db, s, o.workRun!.credentials); return isOnboardingImageOperation(db,s,o.operationId)?'根据你刚才的设置，整理你的 ONE 使用说明。':o.workRun!.instruction; }
             catch { return undefined; }
           })(),
           features:o.workRun!.skills.map(f=>({id:f.id,name:f.values.name,multiplier:featureMultiplier(f.values)})),
@@ -1020,6 +1020,7 @@ export class CoordinatorService {
         id: mid,
         role: "assistant",
         content:content+(resultLinks?`\n\n${resultLinks}`:''),
+        attachments: returned.flatMap(result => result.attachments.filter(file => file.welcomeGuide)),
         modelId,
         requestId,
         createdAt: at(),
@@ -1189,14 +1190,14 @@ export class CoordinatorService {
       await this.store.mutate(db => {
         check(db);
         const main = db.conversations.find(c => own(c, s) && c.id === cid && c.coordinatorMain)!;
-        saveMessage(db, s, main, { id: sourceId, role: 'assistant', content: current.users.find(u=>u.id===s.userId)?.profile?.onboarding.journey?.version===2?'设置记好了。在给你准备一份小礼物，先聊着。':'我会给你准备一张 ONE 小指南，做好后放在右边的任务里。', createdAt: at() });
+        saveMessage(db, s, main, { id: sourceId, role: 'assistant', content:'设置记好了。在整理你的 ONE 使用说明，先聊着。', createdAt: at() });
       });
       const taskId = await this.enqueueImage(s, { operationId: `${input.operationId}_image`, parentOperationId: input.operationId,
-        text: '根据你刚才的设置，准备一份专属欢迎礼物。', prompt: input.instruction, title: input.title, originConversationId: cid, originMessageId: sourceId, budget: input.budget, welcomeOperationId:input.operationId, welcomeSponsored:input.sponsored }, verifyKey, check);
+        text: '根据你刚才的设置，整理你的 ONE 使用说明。', prompt: input.instruction, title: input.title, originConversationId: cid, originMessageId: sourceId, budget: input.budget, welcomeOperationId:input.operationId, welcomeSponsored:input.sponsored,welcomeGuide:current.users.find(u=>u.id===s.userId)?.profile?.onboarding.journey?.version===2?handbookGuide(current,s):undefined }, verifyKey, check);
       await this.store.mutate(db => {
         const main = db.conversations.find(c => own(c, s) && c.id === cid && c.coordinatorMain)!;
         const comic=db.users.find(u=>u.id===s.userId)?.profile?.onboarding.journey?.version===2;
-        const content = comic?`设置记好了。给你准备的小礼物已放进任务区，先聊着。\n\n[查看任务](/?task=${encodeURIComponent(taskId)})`:`你的 ONE 小指南已经安排了，做好后放在右边。我们可以先继续聊。\n\n[查看小指南](/?task=${encodeURIComponent(taskId)})`;
+        const content = comic?`设置记好了。使用说明已放进任务区，先聊着。\n\n[查看任务](/?task=${encodeURIComponent(taskId)})`:`你的 ONE 小指南已经安排了，做好后放在右边。我们可以先继续聊。\n\n[查看小指南](/?task=${encodeURIComponent(taskId)})`;
         const message = main.messages.find(m => m.id === sourceId)!; message.content = content;
         const record = db.messages.find(m => own(m, s) && m.conversationId === cid && m.id === sourceId); if (record) record.content = content;
         const operation = db.chatOperations!.find(o => own(o, s) && o.operationId === input.operationId)!;
@@ -1212,7 +1213,7 @@ export class CoordinatorService {
       throw error;
     }
   }
-  private async enqueueImage(s:WorkScope,input:{operationId:string;parentOperationId:string;text:string;prompt:string;originConversationId:string;originMessageId:string;budget:number;title?:string;dependsOnOperationIds?:string[];welcomeOperationId?:string;welcomeSponsored?:boolean},verifyKey:()=>Promise<void>, authorizeInput?: (db: Database) => void) {
+  private async enqueueImage(s:WorkScope,input:{operationId:string;parentOperationId:string;text:string;prompt:string;originConversationId:string;originMessageId:string;budget:number;title?:string;dependsOnOperationIds?:string[];welcomeOperationId?:string;welcomeSponsored?:boolean;welcomeGuide?:import('./welcomeGuide.js').WelcomeGuideFacts},verifyKey:()=>Promise<void>, authorizeInput?: (db: Database) => void) {
     await verifyKey();
     const db=await this.store.read();
     featureMember(db,s);
@@ -1239,6 +1240,7 @@ export class CoordinatorService {
       const op=d.chatOperations!.find(o=>o.id===claim.operation.id)!;
       op.conversationId=cid;
       op.workRun={kind:'image',welcomeOperationId:input.welcomeOperationId,welcomeSponsored:input.welcomeSponsored,state:'queued',executorId:'image_generation',executorVersion:config.version,values:{...config.values,name:'图片生成',description:'独立生成一张图片',featureIds:[]},modelId:model.id,modelPrompt:model.systemPrompt,instruction:input.prompt,inputMessageId:mid,originConversationId:input.originConversationId,originMessageId:input.originMessageId,parentOperationId:input.parentOperationId,dependsOnOperationIds:input.dependsOnOperationIds,budget:input.budget,webSearch:false,sources:[],skills:[],credentials:[],imagePrice:price,imageCost:cost};
+      op.workRun.welcomeGuide=input.welcomeGuide?structuredClone(input.welcomeGuide):undefined;
       return cid;
     });}catch(error){await failChatOperation(this.store,{...s,operationId:input.operationId});throw error;}
   }
@@ -1624,6 +1626,7 @@ export class CoordinatorService {
           const bytes=await featureImageBytes(result.imageUrl||'');
           await verify();
           const file=await saveFeatureArtifact(this.store,{...s,conversationId:cid},this.deps.artifactDirectory!,'ONE生成图片'+bytes.extension,bytes.data,bytes.mimeType,'image',db=>assertWork(db,s,id,job,cid));
+          if(job.welcomeGuide)await this.store.mutate(db=>{assertWork(db,s,id,job,cid);const saved=db.attachments.find(a=>own(a,s)&&a.id===file.id)!;saved.welcomeGuide=structuredClone(job.welcomeGuide!);saved.originalName=`${job.welcomeGuide!.nickname}的 ONE 使用说明${bytes.extension}`;});
           return {...result,imageUrl:`/api/attachments/${file.id}/content`,raw:undefined};
         });
         await verify();
@@ -1634,7 +1637,7 @@ export class CoordinatorService {
           const file=db.attachments.find(a=>own(a,s)&&a.conversationId===cid&&result.imageUrl===`/api/attachments/${a.id}/content`);
           if(!file)throw new CoordinatorError('图片成果尚未保存');
           file.messageId=mid;
-          saveMessage(db,s,target,{id:mid,role:'assistant',content:'图片好了。',imageUrl:result.imageUrl,attachments:[publicAttachmentSummary(file)],modelId:model.id,requestId:o.requestId,createdAt:at()});
+          saveMessage(db,s,target,{id:mid,role:'assistant',content:file.welcomeGuide?`${file.welcomeGuide.nickname}，你的 ONE 使用说明做好了。打开看看，可以保存网页和大图。`:'图片好了。',imageUrl:file.welcomeGuide?undefined:result.imageUrl,attachments:[publicAttachmentSummary(file)],modelId:model.id,requestId:o.requestId,createdAt:at()});
           completeChatOperation(db,{...s,operationId:o.operationId},{conversationId:cid,assistantMessageId:mid});
           o.workRun!.state='completed';o.workRun!.resultOutcome='completed';o.workRun!.unread=true;o.workRun!.resultMessageId=mid;
         });

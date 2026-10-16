@@ -1814,14 +1814,16 @@ for(const variant of ['guide','comic','gift'])test(`server-only onboarding ${var
     assert.equal(child.conversationId,taskId);assert.equal(child.workRun!.state,'queued');assert.equal(calls,0);
     assert.equal(saved.conversations.find(c=>c.coordinatorMain)!.messages.length,1);assert.equal(saved.conversations.find(c=>c.coordinatorMain)!.messages[0].role,'assistant');
     assert.match(saved.conversations.find(c=>c.coordinatorMain)!.messages[0].content,comic?/查看任务/:/查看小指南/);
-    assert.equal(saved.conversations.find(c=>c.id===taskId)!.messages[0].content,'根据你刚才的设置，准备一份专属欢迎礼物。');
+    assert.equal(saved.conversations.find(c=>c.id===taskId)!.messages[0].content,'根据你刚才的设置，整理你的 ONE 使用说明。');
     assert.equal(saved.chatOperations!.find(o=>o.conversationId===taskId&&o.workRun)!.workRun!.instruction,welcome.instruction,'only server execution retains the real prompt');
     assert.doesNotMatch(JSON.stringify(await service.task(a,taskId)),/生成并交付一张|固定故事|JSON 仅为|米白背景/);
     await service.resume(a,key);await waitFor(async()=>(await service.task(a,taskId)).jobs[0].state==='completed');
     saved=await f.store.read();assert.equal(calls,1);const usage=saved.modelUsageRecords.filter(r=>r.imagePowerPerCallSnapshot!==undefined);assert.equal(usage.length,1);
     assert.equal(usage[0].chargedMicros,sponsored?0:12000);assert.equal(usage[0].costMicros,20000);
     if(sponsored){assert.equal(usage[0].sponsorship!.operationId,operationId);assert.equal(saved.powerAccounts.find(p=>p.userId==='a')!.balanceMicros,0);assert.equal(saved.powerLedger.length,0);}
-    assert.equal(saved.attachments[0].workspaceId,'wa');assert.match((await service.task(a,taskId)).conversation.messages.at(-1)!.imageUrl!,/^\/api\/attachments\//);
+    assert.equal(saved.attachments[0].workspaceId,'wa');
+    const delivered=(await service.task(a,taskId)).conversation.messages.at(-1)!;
+    if(comic){assert.equal(delivered.imageUrl,undefined);assert.equal(delivered.attachments![0].welcomeGuide,true);assert.equal(saved.attachments[0].welcomeGuide!.nickname,'小明');assert.match(delivered.content,/使用说明/);}else assert.match(delivered.imageUrl!,/^\/api\/attachments\//);
     assert.ok((await service.state(a)).notices.some(n=>n.taskId===taskId&&!n.read&&!n.reported));
     assert.equal(saved.conversations.find(c=>c.coordinatorMain)!.messages.length,1,'completion stays in the sidebar');
     assert.equal((await startOnboardingHandbook(f.store,a,deps)).handbook!.taskId,taskId);assert.equal(calls,1,'a welcome-flow replay cannot create another image');

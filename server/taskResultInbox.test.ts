@@ -73,6 +73,20 @@ test('cancellation remains explicit even when an earlier disconnect receipt exis
 
 const a = { workspaceId: 'wa', userId: 'a' }, b = { workspaceId: 'wb', userId: 'b' };
 const timestamp = '2026-10-14T01:00:00.000Z';
+test('welcome guide is successful only with an owned ready image and its server snapshot; reports carry the private card',()=>{
+  const db=fixture(),{task,operation}=cloud(db,'guide',a,{kind:'image',text:'使用说明做好了'});
+  const facts={version:1 as const,nickname:'小张',purposes:[],platforms:[],features:[],localReady:false};
+  operation.workRun!.welcomeGuide=facts;
+  const file={...a,id:'guide-image',conversationId:task.id,originalName:'小张的 ONE 使用说明.png',kind:'image',mimeType:'image/png',size:42,status:'ready',welcomeGuide:facts,storagePath:'/private/test.png',extractedText:'',createdAt:timestamp} as Attachment;
+  db.attachments.push(file);task.messages[0].attachments=[{id:file.id,originalName:file.originalName,kind:'image',mimeType:'image/png',size:42,status:'ready',welcomeGuide:true}];
+  assert.equal(pendingTaskResults(db,a)[0].outcome,'completed');assert.equal(pendingTaskResults(db,a)[0].imageUrl,undefined);
+  assert.equal(pendingTaskResults(db,b).length,0);
+  file.status='failed';assert.equal(pendingTaskResults(db,a)[0].outcome,'failed');file.status='ready';
+  appendTaskResultReport(db,a);
+  const reply=db.conversations.find(c=>c.id==='main-a')!.messages.at(-1)!;
+  assert.equal(reply.attachments?.[0].welcomeGuide,true);assert.equal(reply.imageUrl,undefined);
+  assert.equal('nickname' in reply.attachments![0],false);
+});
 function conversation(id: string, scope = a, main = false): Conversation {
   return { ...scope, id, modelId: 'worker', title: id, coordinatorMain: main, archived: false, messages: [], createdAt: timestamp, updatedAt: timestamp };
 }

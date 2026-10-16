@@ -26,6 +26,7 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
   }));
   router.post('/onboarding',asyncRoute(async(req,res)=>{
     const s=scope(req),input=req.body??{};
+    const finishing=input.action==='finish'||input.action==='step'&&input.step==='features'&&input.choice==='purposes';
     if(input.action==='retry_delivery') {
       await deps.verifyKey(req);
       await store.mutate(db=>{
@@ -38,16 +39,20 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
     // The server inspects only the authenticated Key's current installation.
     // A browser cannot claim that a folder or executor has been authorized.
     let local:LocalWelcomeState|undefined;
-    if((input.action==='step'&&input.step==='device'&&input.choice==='checked')||input.action==='finish') {
+    if((input.action==='step'&&input.step==='device'&&input.choice==='checked')||finishing) {
       const p=accountProfile(await store.read(),s),j=p.onboarding.journey;
-      if(j&&j.id===input.journeyId&&j.stage!=='complete'&&(j.stage==='device'||input.action==='finish'&&j.localChoice==='checked')) {
+      if(j&&j.id===input.journeyId&&j.stage!=='complete'&&(j.stage==='device'||finishing&&j.localChoice==='checked')) {
         try { local=await deps.inspectLocal?.(req); } catch { /* No raw device/provider errors are exposed. */ }
         local??={connected:false,folderSelected:false,executorReady:false,checkedAt:new Date().toISOString()};
       }
     }
-    if(input.action!=='retry_delivery')await store.mutate(db=>updateJourney(db,s,input,local));
+    if(input.action!=='retry_delivery')await store.mutate(db=>{
+      const profile=updateJourney(db,s,input,local);
+      if(finishing&&input.action!=='finish'&&profile.onboarding.journey?.stage==='ready')return updateJourney(db,s,{action:'finish',journeyId:input.journeyId,budgetPower:input.budgetPower,choice:input.createGuide===false?'without_image':undefined},local);
+      return profile;
+    });
     let notice:string|undefined;
-    if(input.action==='finish'||input.action==='retry_delivery') {
+    if(finishing||input.action==='retry_delivery') {
       try {
         const result=await startOnboardingHandbook(store,s,{storageAvailable:deps.storageAvailable,verifyKey:()=>deps.verifyKey(req),enqueueImage:deps.enqueueImage});
         notice=result.notice;
@@ -55,7 +60,7 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
       } catch {
         // A pre-queue Key loss is a known failed handoff, never an endless pending state.
         await store.mutate(db=>{const u=accountInScope(db,s),p=accountProfile(db,s);if((input.action==='retry_delivery'?p.onboarding.handbook?.operationId!==input.operationId:p.onboarding.journey?.id!==input.journeyId)||p.onboarding.handbook?.status!=='pending')return;p.onboarding.handbook.status='failed';p.onboarding.handbook.reason='unavailable';u.profile=p;});
-        notice='漫画这次没交接好。可以先聊天，稍后到任务里查看；不会自动重复生成。';
+        notice='使用说明这次没交接好。可以先聊天，稍后到任务里查看；不会自动重复生成。';
       }
     }
     const db=await store.read(),current=resolvedOnboardingHandbookProfile(db,s);

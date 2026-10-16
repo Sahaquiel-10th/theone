@@ -15,6 +15,7 @@ export type WorkRun = {
   /** Server-created welcome handoff. Retained on explicit retries; never client input. */
   welcomeOperationId?: string;
   welcomeSponsored?: boolean;
+  welcomeGuide?:import('./welcomeGuide.js').WelcomeGuideFacts;
   imagePrice?: number;
   imageCost?: number;
   state:

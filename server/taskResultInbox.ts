@@ -54,7 +54,7 @@ function marker(db: Database, scope: TaskResultScope, id: string) {
 }
 function publicFile(file: Attachment): AttachmentSummary {
   const { id, originalName, mimeType, kind, size, status } = file;
-  return { id, originalName, mimeType, kind, size, status };
+  return { id, originalName, mimeType, kind, size, status, ...(file.welcomeGuide ? { welcomeGuide: true } : {}) };
 }
 function ownedFiles(db: Database, scope: TaskResultScope, task: Conversation, message: Message | undefined) {
   return (message?.attachments ?? []).flatMap(summary => {
@@ -72,14 +72,16 @@ function cloudResult(db: Database, scope: TaskResultScope, operation: ChatOperat
     && result?.imageUrl === `/api/attachments/${file.id}/content`
     && (file.conversationId === task.id || file.sharedConversationIds?.includes(task.id)));
   const imageUrl = imageFile ? `/api/attachments/${imageFile.id}/content` : undefined;
+  const guideFile = run.welcomeGuide && attachments.find(summary => db.attachments.some(file => own(file, scope)
+    && file.id === summary.id && file.kind === 'image' && file.status === 'ready' && file.welcomeGuide));
   if (imageFile && !attachments.some(a => a.id === imageFile.id)) attachments.push(publicFile(imageFile));
   let outcome: TaskResultOutcome = run.state === 'completed' ? (run.resultOutcome ?? 'returned')
     : run.state === 'failed' && (run.resultOutcome === 'partial' || run.resultOutcome === 'needs_input') ? run.resultOutcome
     : run.state as TaskResultOutcome;
   let summary = clip([run.error, result?.content].filter(Boolean).join('\n'), max);
   if (run.kind === 'image' && run.state === 'completed') {
-    outcome = imageUrl ? 'completed' : 'failed';
-    if (!imageUrl) summary = '绘图任务没有返回可确认的图片，尚未完成。请查看本轮反馈，不会自动重做。';
+    outcome = imageUrl || guideFile ? 'completed' : 'failed';
+    if (!imageUrl && !guideFile) summary = '绘图任务没有返回可确认的图片，尚未完成。请查看本轮反馈，不会自动重做。';
   } else if (run.state === 'completed' && run.notionReceipt?.state === 'verified') {
     outcome = 'completed';
   } else if (run.state === 'completed' && !result?.content.trim() && !attachments.length) {
@@ -263,7 +265,8 @@ export function appendTaskResultReport(db: Database, scope: TaskResultScope, inp
           .map(line => line.replace(/^\s*[#>*-]+\s*/, '').trim()).find(Boolean) ?? '';
         return `${r.title}：${labels[r.outcome]}。${preview ? ` ${preview.slice(0, 140)}${preview.length > 140 ? '…' : ''}` : ''}\n[查看结果](#task:${encodeURIComponent(r.taskId)})${r.imageUrl && !singleImage ? `\n![生成的图片](${r.imageUrl})` : ''}`;
       }).join('\n\n'),
-      ...(singleImage ? { imageUrl: results[0].imageUrl, attachments: results[0].attachments } : {}) };
+      ...(singleImage ? { imageUrl: results[0].imageUrl, attachments: results[0].attachments }
+        : { attachments: results.flatMap(result => result.attachments.filter(file => file.welcomeGuide)) }) };
     main.messages.push(message); main.updatedAt = timestamp;
     db.messages.push({ ...message, id: messageId, ...scope, conversationId: main.id, attachmentIds: message.attachments?.map(a => a.id) });
   }

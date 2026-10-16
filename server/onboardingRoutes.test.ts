@@ -52,6 +52,19 @@ async function server(t: TestContext, f: ReturnType<typeof fixture>) {
   return { url, patch };
 }
 const completion = { onboardingAction: "complete", handbookChoice: "create", handbookBudgetPower: .012 };
+test('four-step purpose setup finishes and queues once without a reveal page; repeat generation requires a paid choice',async t=>{
+ const f=fixture(),http=await server(t,f),post=(body:object)=>fetch(http.url+'/onboarding',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+ const begin=await(await post({action:'begin',launchId:'purpose_0123456789abcdef',experience:3})).json(),id=begin.profile.onboarding.journey.id;
+ for(const step of ['name','knowledge','device'])await post({action:'step',journeyId:id,step,choice:'skipped'});
+ const input={action:'step',journeyId:id,step:'features',choice:'purposes',purposeIds:['work','writing'],createGuide:true};
+ const result=await(await post(input)).json();assert.equal(result.profile.onboarding.journey.stage,'complete');assert.equal(result.welcomeDelivery.taskId,'guide-task');assert.equal(f.stats().queued,1);
+ assert.deepEqual(result.profile.onboarding.journey.purposeIds,['work','writing']);assert.equal(result.profile.onboarding.handbook.funding,'one');
+ assert.equal((await post(input)).status,200);assert.equal(f.stats().queued,1,'lost final response cannot duplicate a generation');
+ const second=await(await post({action:'begin',launchId:'purpose_again_0123456789'})).json(),other=second.profile.onboarding.journey.id;
+ for(const step of ['name','knowledge','device'])await post({action:'step',journeyId:other,step,choice:'skipped'});
+ assert.equal((await post({...input,journeyId:other})).status,400);
+ const decline=await(await post({...input,journeyId:other,createGuide:false})).json();assert.equal(decline.profile.onboarding.journey.stage,'complete');assert.equal(decline.welcomeDelivery,undefined);assert.equal(f.stats().queued,1);
+});
 
 test('welcome handoff retry accepts only a known unstarted attempt; refresh never queues it and cross-owner IDs cannot retry',async t=>{
  const f=fixture(),http=await server(t,f),url=http.url+'/onboarding';

@@ -19,6 +19,7 @@ import { friendlyConversationGuidance } from './conversationTone.js';
 import { installAiTaskRoutes } from "./aiTaskRoutes.js";
 import { installCoordinatorRoutes } from './coordinatorRoutes.js';
 import { installOnboardingProfileRoutes } from './onboardingRoutes.js';
+import {installWelcomeGuideRoutes} from './welcomeGuideRoutes.js';
 import {installCapabilityRoutes} from './capabilityRoutes.js';
 import { NotionDocuments } from './notionDocuments.js';
 import { CoordinatorError } from './executorProfiles.js';
@@ -217,6 +218,7 @@ async function persistGeneratedImage(params: { imageUrl?: string; workspaceId: s
 const keyAuth = [auth(jwtSecret), requireOneKeySession] as const;
 installVisitorRoutes(app,store,jwtSecret);
 installPublicSharingRoutes(app, keyAuth, store, knowledgeService, attachmentService,jwtSecret);
+installWelcomeGuideRoutes(app,keyAuth,store);
 installPublicApiRoutes(app, keyAuth, store, knowledgeService);
 installPaymentRoutes(app, keyAuth, store);
 installFeishuRoutes(app, keyAuth, store, feishuService, () => connectorRegistry.enabled("feishu"));

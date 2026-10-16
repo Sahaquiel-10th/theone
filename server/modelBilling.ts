@@ -139,7 +139,7 @@ export async function runBilledModel<T extends { usage?: ModelUsage; finishReaso
       const profile=db.users.find(u=>u.id===params.userId&&u.defaultWorkspaceId===params.workspaceId)?.profile;
       const job=db.chatOperations?.find(o=>o.workspaceId===params.workspaceId&&o.userId===params.userId&&o.requestId===params.requestId&&o.conversationId===params.conversationId)?.workRun;
       if(model.kind!=='image'||params.featurePrice||params.commerce||params.batchBudget||profile?.workspaceId!==params.workspaceId||profile.onboarding.welcomeGiftOperationId!==gift||job?.kind!=='image'||!job.welcomeSponsored||job.welcomeOperationId!==gift||job.state!=='running'||(model.costImagePowerPerCall??Infinity)>.5||db.modelUsageRecords.some(r=>r.workspaceId===params.workspaceId&&r.userId===params.userId&&r.sponsorship?.operationId===gift))throw new Error('欢迎礼物赠送资格无效或已使用');
-      row.reservedMicros=0;row.activity='首次欢迎漫画（ONE赠送）';
+      row.reservedMicros=0;row.activity='首次使用说明（ONE承担）';
     }
     // An uncertain bill keeps its own reservation. It must not lock unrelated
     // calls or the next step of an otherwise healthy local execution. The

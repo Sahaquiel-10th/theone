@@ -12,6 +12,8 @@ import {FeatureNav} from './FeatureNav';
 import {ThingsPanel} from './ThingsPanel';
 import {TaskReadAllButton} from './TaskReadAllButton';
 import {StoryOnboarding} from './StoryOnboarding';
+import {WelcomeGuideCard} from './WelcomeGuideCard';
+import './welcome-guide.css';
 import type {JourneyInput,WelcomeContext} from '../server/onboardingJourney';
 import {ActionMenu} from './ActionMenu';
 import {remainingResultAttachments} from './taskMessagePresentation';
@@ -187,6 +189,7 @@ type Message = {
 };
 
 type AttachmentSummary = {
+  welcomeGuide?:boolean;
   id: string;
   originalName: string;
   mimeType: string;
@@ -444,6 +447,7 @@ function AttachmentList({ attachments, removable, onRemove, onRetry }: {
   return (
     <div className={`attachment-list ${removable ? "pending" : ""}`}>
       {attachments.map((attachment) => (
+        attachment.welcomeGuide?<WelcomeGuideCard key={attachment.id} id={attachment.id} title={attachment.originalName}/>:
         <div className="attachment-chip" key={attachment.id}>
           {attachment.kind === "image" && (!attachment.status || attachment.status === "ready") ? (
             <img src={`/api/attachments/${encodeURIComponent(attachment.id)}/content`} alt="" />
@@ -617,17 +621,17 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   async function saveStory(input:JourneyInput) {
     const result=await api<WelcomeResponse>('/api/me/profile/onboarding',{method:'POST',body:JSON.stringify(input)});
     acceptWelcome(result);
-    if(input.action==='finish') {
+    if(result.profile.onboarding.journey?.stage==='complete'&&(input.action==='finish'||input.step==='features')) {
       setStoryOpen(false);setStoryHidden(true);setComposeNew(true);openSurface('chat');
       const guide=result.profile.onboarding.handbook;
       setHandbookNotice(result.welcomeDelivery?'':result.handbookNotice||'');setDismissedDelivery('');
       setStoryTaskId(guide?.status==='queued'?guide.taskId||'':'');
-      void coordinator.refresh().catch(()=>{if(guide?.status==='queued')setHandbookNotice('漫画已经安排好了，进度暂时没刷新出来。可以先聊，或打开任务看看。');});
+      void coordinator.refresh().catch(()=>{if(guide?.status==='queued')setHandbookNotice('使用说明已经安排好了，进度暂时没刷新出来。可以先聊，或打开任务看看。');});
     }
     return result.profile;
   }
   async function startStory() {
-    await saveStory({action:'begin',launchId:crypto.randomUUID()});setStoryOpen(true);setStoryHidden(false);setComposeNew(true);openSurface('chat');
+    await saveStory({action:'begin',launchId:crypto.randomUUID(),experience:3});setStoryOpen(true);setStoryHidden(false);setComposeNew(true);openSurface('chat');
   }
   async function recoverAnswer(operationId: string) {
     try {

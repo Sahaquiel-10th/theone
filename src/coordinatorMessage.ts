@@ -10,6 +10,6 @@ export function coordinatorMessage(message: StoredMessage): Message {
  return {
   id: message.id!, role: message.role === 'user' ? 'user' : 'assistant', text: message.content,
   imageUrl: privateImageUrl(message.imageUrl),
-  files: message.attachments?.map(file => ({id:file.id,originalName:file.originalName})),
+  files: message.attachments?.map(file => ({id:file.id,originalName:file.originalName,...(file.welcomeGuide?{welcomeGuide:true}:{})})),
  };
 }

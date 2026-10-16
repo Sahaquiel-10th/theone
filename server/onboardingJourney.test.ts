@@ -2,18 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type {Database} from './types.js';
 import {accountProfile} from './betaProfile.js';
-import {updateJourney,welcomeContext,type LocalWelcomeState} from './onboardingJourney.js';
+import {updateJourney,welcomeContext,matchWelcomeFeatures,type LocalWelcomeState} from './onboardingJourney.js';
 import {onboardingComicInstruction} from './onboardingComic.js';
 const scope={workspaceId:'a',userId:'u'};
 function fixture(){return {users:[{id:'u',enabled:true,defaultWorkspaceId:'a',createdAt:'now'},{id:'v',enabled:true,defaultWorkspaceId:'b',createdAt:'now'}],workspaces:[{id:'a',status:'active'},{id:'b',status:'active'}],workspaceMembers:[{workspaceId:'a',userId:'u',role:'owner'},{workspaceId:'b',userId:'v',role:'owner'}],settings:{officialFeatures:[]},models:[],knowledgeConnections:[],conversations:[]} as unknown as Database;}
 function begin(db:Database,launchId='begin_0123456789abcdef'){return updateJourney(db,scope,{action:'begin',launchId}).onboarding.journey!;}
 function step(db:Database,id:string,stage:string,choice:string,extra={}){return updateJourney(db,scope,{action:'step',journeyId:id,step:stage,choice,...extra});}
 function skipAll(db:Database,id:string){for(const s of ['name','knowledge','device','features'])step(db,id,s,'skipped');}
+test('purpose matching never invents or enables an unavailable feature',()=>{
+ const db=fixture();assert.deepEqual(matchWelcomeFeatures(db,scope,['writing','work']),[]);
+ assert.throws(()=>matchWelcomeFeatures(db,{workspaceId:'b',userId:'u'},['work']),/无权/);
+});
 test('all skipped, anonymous and sparse profiles still claim a real comic without inventing personal data',()=>{
  const db=fixture(),j=begin(db);skipAll(db,j.id);
  const p=updateJourney(db,scope,{action:'finish',journeyId:j.id,budgetPower:.012});
  assert.equal(p.displayName,'');assert.equal(p.onboarding.journey?.events.length,5);assert.equal(p.onboarding.handbook?.status,'pending');
- const prompt=onboardingComicInstruction(db,scope);assert.match(prompt,/四格定制漫画/);assert.match(prompt,/使用场景示意/);assert.match(prompt,/"localReady":false/);assert.match(prompt,/"nickname":"你"/);
+ const prompt=onboardingComicInstruction(db,scope);assert.match(prompt,/个人 AI 使用方式说明插画/);assert.match(prompt,/不是四格漫画/);assert.match(prompt,/使用示意/);assert.match(prompt,/"localReady":false/);assert.match(prompt,/"nickname":"你"/);
  assert.equal(accountProfile(db,{workspaceId:'b',userId:'v'}).onboarding.journey,undefined);
 });
 test('only the first completed comic is sponsored; restarts keep the allocation and require paid consent',()=>{

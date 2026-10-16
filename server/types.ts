@@ -47,13 +47,16 @@ export type Agent = {
 
 export type AttachmentKind = "image" | "document" | "spreadsheet" | "presentation" | "text";
 export type Attachment = {
+  /** Server-generated personal explanation; never accepted from uploads. */
+  welcomeGuide?:import('./welcomeGuide.js').WelcomeGuideFacts;
+  welcomeShare?:{hash:string;expiresAt:string};
   sharedConversationIds?:string[];
   id: string; workspaceId: string; userId: string; originalName: string; mimeType: string; kind: AttachmentKind;
   size: number; storagePath: string; extractedText: string; conversationId?: string; messageId?: string; createdAt: string;
   status?: "uploading" | "queued" | "parsing" | "ready" | "failed";
   uploadedBytes?: number; parseError?: string; textChars?: number; segmentCount?: number;
 };
-export type AttachmentSummary = Pick<Attachment, "id" | "originalName" | "mimeType" | "kind" | "size" | "status" | "uploadedBytes" | "parseError" | "textChars" | "segmentCount">;
+export type AttachmentSummary = Pick<Attachment, "id" | "originalName" | "mimeType" | "kind" | "size" | "status" | "uploadedBytes" | "parseError" | "textChars" | "segmentCount"> & {welcomeGuide?:boolean};
 export type SearchSource = { title: string; url: string; snippet: string };
 export type SystemSettings = { membershipOnlyRollout?: { id: string; activatedAt: string; giftedUsers: number }; membershipTrialRollout?: string; membershipBilling?: import("./memberships.js").MembershipCatalog; executorProfiles?: import('./executorProfiles.js').ExecutorProfile[]; safetyRules: string; rechargeCnyPerPower: number; aiTasks?: import("./aiTaskConfig.js").AiTaskConfigs; officialFeatures?: import("./officialFeatures.js").OfficialFeatureRecord[];publicCommercePolicy?:import('./publicSharingTypes.js').PublicCommercePolicy };
 
