@@ -22,5 +22,5 @@ export function guideExamples(f:WelcomeGuideFacts){return [
 export function guideDocument(f:WelcomeGuideFacts):VisualDocument {
   return f.manual??{version:1,title:`${f.nickname==='你'?'你':f.nickname}的 ONE 使用说明`,intro:f.purposes.length?`把${f.purposes.join('、')}里那些费劲的小事，交给 ONE 帮忙。`:'从理清想法到拿到成果，选一件你今天正好需要的小事。',scenes:guideExamples(f).map((c,i)=>({id:`scene${i}`,title:c.title,situation:c.title,feature:c.text.slice(0,159),advantage:i===1?'不用在资料和聊天窗口之间来回找。':i===2?'各做各的，不用守着一个任务等。':i===3?'成果留在方便你继续使用的地方。':'不必先挑模型或学会一串操作。',benefit:i===0?'把模糊想法变成清楚的下一步。':i===1?'回答有依据，回头找得到。':i===2?'几件事分开做，结果不混在一起。':'做完的东西，能接着用。',evidence:i===1&&f.platforms.length?'打开回答里的来源，核对是不是你要的内容。':i===3&&f.localReady?'检查文件位置和内容后，再交付给别人。':'打开任务里的实际结果，看看是否符合要求。',steps:[c.example,'查看实际结果；需要调整就接着补一句。'],prompt:c.example,capabilityIds:[]}))};
 }
-export function renderWelcomeGuide(f:WelcomeGuideFacts,image:string,_posterUrl?:string){return renderVisualPage(guideDocument(f),image);}
+export function renderWelcomeGuide(f:WelcomeGuideFacts,image:string,posterUrl?:string){return renderVisualPage(guideDocument(f),image,posterUrl);}
 export function renderWelcomePoster(f:WelcomeGuideFacts,_image:string){return renderVisualDiagram(guideDocument(f));}
