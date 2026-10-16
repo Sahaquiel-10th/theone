@@ -117,7 +117,8 @@ import { OneCompanionEye as OneHeroEye } from "./OneCompanionEye";
 import { api, apiForUser, ApiError, expectUser, announceSessionChange, SESSION_EVENT, SESSION_STORAGE_KEY } from "./oneApi";
 import { chatSubmission, forgetChatSubmission, pendingChatSubmissions } from "./chatSubmission";
 import { ProfileNameEditor, BetaFeedbackControls, type AccountProfile, type ProfilePatch } from "./Onboarding";
-import type { OnboardingHandbookOffer } from '../server/onboardingHandbook';
+import type { OnboardingHandbookOffer,WelcomeDelivery as Delivery } from '../server/onboardingHandbook';
+import {WelcomeDelivery} from './WelcomeDelivery';
 import { getNotePollFailureAction, prepareGetNoteAuthorizationWindow } from "./getNoteAuthorization";
 import { PaymentPanel } from "./PaymentPanel";
 import { EnterpriseKnowledgeCard, FlomoConnectionNotice } from "./EnterpriseConnectionNotice";
@@ -584,12 +585,23 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [profile, setProfile] = useState<AccountProfile>(user.profile || { workspaceId: user.defaultWorkspaceId, displayName: "", onboarding: { knowledgeChoice: "pending" }, updatedAt: user.createdAt });
   const [handbookOffer,setHandbookOffer]=useState<OnboardingHandbookOffer>(),[handbookNotice,setHandbookNotice]=useState('');
   const [welcomeContext,setWelcomeContext]=useState<WelcomeContext>(),[profileLoaded,setProfileLoaded]=useState(false),[storyOpen,setStoryOpen]=useState(false),[storyHidden,setStoryHidden]=useState(false),[storyTaskId,setStoryTaskId]=useState('');
+  const [delivery,setDelivery]=useState<Delivery>(),[deliveryBusy,setDeliveryBusy]=useState(false),[deliveryError,setDeliveryError]=useState(''),[dismissedDelivery,setDismissedDelivery]=useState('');
+  type WelcomeResponse={profile:AccountProfile;handbookOffer?:OnboardingHandbookOffer;welcomeContext?:WelcomeContext;welcomeDelivery?:Delivery;handbookNotice?:string};
+  function acceptWelcome(result:WelcomeResponse){setProfile(result.profile);setHandbookOffer(result.handbookOffer);setWelcomeContext(result.welcomeContext);setDelivery(result.welcomeDelivery);}
+  async function checkWelcome(){setDeliveryBusy(true);setDeliveryError('');try{acceptWelcome(await api<WelcomeResponse>('/api/me/profile'));}catch{setDeliveryError('状态还没连上，设置和已有任务都保留着。');}finally{setDeliveryBusy(false);}}
+  async function retryWelcome(){if(!delivery?.canRetry||deliveryBusy)return;setDeliveryBusy(true);setDeliveryError('');try{acceptWelcome(await api<WelcomeResponse>('/api/me/profile/onboarding',{method:'POST',body:JSON.stringify({action:'retry_delivery',operationId:delivery.operationId})}));void coordinator.refresh();}catch(e){setDeliveryError(e instanceof Error?e.message:'这次没安排好，先检查状态。');}finally{setDeliveryBusy(false);}}
   useEffect(()=>{
     if(demo.enabled)return;
     let live=true;
-    void api<{profile:AccountProfile;handbookOffer?:OnboardingHandbookOffer;welcomeContext?:WelcomeContext}>('/api/me/profile').then(result=>{if(live){setProfile(result.profile);setHandbookOffer(result.handbookOffer);setWelcomeContext(result.welcomeContext);}}).catch(()=>{}).finally(()=>{if(live)setProfileLoaded(true);});
+    void api<WelcomeResponse>('/api/me/profile').then(result=>{if(live)acceptWelcome(result);}).catch(()=>{}).finally(()=>{if(live)setProfileLoaded(true);});
     return()=>{live=false;};
   },[user.id,profile.workspaceId]);
+  useEffect(()=>{
+    if(demo.enabled||!delivery||!['preparing','queued','running'].includes(delivery.state))return;
+    let live=true,busy=false;
+    const timer=setInterval(()=>{if(busy)return;busy=true;void api<WelcomeResponse>('/api/me/profile').then(result=>{if(live){setDelivery(old=>old?.operationId===result.welcomeDelivery?.operationId?result.welcomeDelivery:old);setDeliveryError('');}}).catch(()=>{if(live)setDeliveryError('状态暂时没连上，任务不会重复安排。');}).finally(()=>{busy=false;});},5000);
+    return()=>{live=false;clearInterval(timer);};
+  },[user.id,profile.workspaceId,delivery?.operationId,delivery?.state]);
   const [pendingRequests, setPendingRequests] = useState(() => pendingChatSubmissions(user.id));
   const [hasSubmittedChat, setHasSubmittedChat] = useState(false);
   const failedSubmissions = useRef(new Map<string, { content: string; attachmentIds: string[]; draftKey: string }>());
@@ -600,12 +612,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     return result.profile;
   }
   async function saveStory(input:JourneyInput) {
-    const result=await api<{profile:AccountProfile;welcomeContext:WelcomeContext;handbookOffer:OnboardingHandbookOffer;handbookNotice?:string}>('/api/me/profile/onboarding',{method:'POST',body:JSON.stringify(input)});
-    setProfile(result.profile);setWelcomeContext(result.welcomeContext);setHandbookOffer(result.handbookOffer);
+    const result=await api<WelcomeResponse>('/api/me/profile/onboarding',{method:'POST',body:JSON.stringify(input)});
+    acceptWelcome(result);
     if(input.action==='finish') {
       setStoryOpen(false);setStoryHidden(true);setComposeNew(true);openSurface('chat');
       const guide=result.profile.onboarding.handbook;
-      setHandbookNotice(result.handbookNotice||'');
+      setHandbookNotice(result.welcomeDelivery?'':result.handbookNotice||'');setDismissedDelivery('');
       setStoryTaskId(guide?.status==='queued'?guide.taskId||'':'');
       void coordinator.refresh().catch(()=>{if(guide?.status==='queued')setHandbookNotice('漫画已经安排好了，进度暂时没刷新出来。可以先聊，或打开任务看看。');});
     }
@@ -2020,7 +2032,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
       <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 指挥台">
         {view==='chat'&&profileLoaded&&!storyHidden&&(storyOpen||profile.onboarding.journey?.stage&&profile.onboarding.journey.stage!=='complete'||!hasSubmittedChat&&!conversations.length&&!profile.onboarding.completedAt&&user.access?.kind!=='company')?<StoryOnboarding profile={profile} context={welcomeContext} offer={handbookOffer} onBegin={startStory} onAction={saveStory} onKnowledge={()=>openSurface('knowledge')} onDevice={()=>{setAccountSection('device');openSurface('account');}} onDismiss={()=>{setStoryHidden(true);setStoryOpen(false);}}/>:null}
-        {handbookNotice && view==='chat' ? <p className="one-onboarding-handbook-notice" role="status">{handbookNotice}{storyTaskId?<button type="button" onClick={()=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(storyTaskId)}`).then(result=>openConversation(result.conversation)).catch(e=>setError(e.message))}>查看漫画任务 ↗</button>:null}<button type="button" onClick={()=>setHandbookNotice('')} aria-label="收起说明">知道了</button></p> : null}
+        {delivery&&delivery.operationId!==dismissedDelivery&&view==='chat'&&(storyHidden||profile.onboarding.journey?.stage==='complete')?<WelcomeDelivery delivery={delivery} busy={deliveryBusy} error={deliveryError} onOpen={id=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(id)}`).then(result=>openConversation(result.conversation)).catch(e=>setDeliveryError(e.message))} onCheck={()=>void checkWelcome()} onRetry={()=>void retryWelcome()} onDismiss={()=>setDismissedDelivery(delivery.operationId)}/>:null}
+        {!delivery&&handbookNotice && view==='chat' ? <p className="one-onboarding-handbook-notice" role="status">{handbookNotice}{storyTaskId?<button type="button" onClick={()=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(storyTaskId)}`).then(result=>openConversation(result.conversation)).catch(e=>setError(e.message))}>查看任务 ↗</button>:null}<button type="button" onClick={()=>setHandbookNotice('')} aria-label="收起说明">知道了</button></p> : null}
         <div className="studio-presence">
           <OneHeroEye mood={heroMood} label={view==='features'?'收起功能，回到 ONE':'打开功能'} onActivate={()=>openSurface(view==='features'?'chat':'features')}/>
           <div className="studio-presence-copy"><span className="studio-eyebrow">ONE IS WITH YOU</span>
@@ -2493,7 +2506,7 @@ function AccountPage({ user, profile, onSaveProfile, onOpenGuide, models, defaul
         {guidePending&&section!=='profile'?<div className="story-settings-return"><span>新手引导还在，接好后回来继续。</span>{guideButton}</div>:null}
         {section === "device" ? <LocalDeviceSettings key={user.id} api={api}/> : section === "knowledge" ? knowledge : section === "power" ? user.access?.kind === "company" ? <div className="settings-empty"><p>费用由公司按协议对公打款承担，无需个人充值。</p><p>公司可用电力：{((billing?.availableMicros??0)/1e6).toFixed(3)}；个人额度由公司管理员配置。</p></div> : billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载会员与额度…</p> : <>
         <section className="account-panel"><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
-        <section className="account-panel story-settings-entry"><div><h3>新手引导</h3><p>看看 ONE 能帮什么忙，再画一张属于你的故事漫画。已有连接、文件和任务不会重置；生成前会显示图片电力。</p></div>{guideButton}</section>
+        <section className="account-panel story-settings-entry"><div><h3>新手引导</h3><p>重新认识一下 ONE，按自己的节奏设置。已有连接、文件和任务都保留。</p></div>{guideButton}</section>
         <FeatureBudgetSettings key={user.id} api={api}/>
         <section className="account-panel">
           <div className="account-panel-title"><Bot size={18} /><h3>默认模型</h3></div>

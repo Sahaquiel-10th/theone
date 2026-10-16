@@ -56,7 +56,7 @@ import {
 } from "./conversationAttachments.js";
 import { prepareAttachmentContext } from "./attachmentRetrieval.js";
 import { accountInScope } from './betaProfile.js';
-import { handbookInstruction, handbookTitle, type OnboardingImageInput } from './onboardingHandbook.js';
+import { handbookInstruction, handbookTitle, isOnboardingImageOperation, type OnboardingImageInput } from './onboardingHandbook.js';
 import { friendlyConversationGuidance } from './conversationTone.js';
 
 export type WorkScope = { workspaceId: string; userId: string };
@@ -367,7 +367,7 @@ export class CoordinatorService {
           instruction: (() => {
             // A retry preview must not expose generated source context after
             // its knowledge or external-tool authorization has been revoked.
-            try { assertSources(db, s, o.workRun!.sources); verifyCredentialBindings(db, s, o.workRun!.credentials); return o.workRun!.instruction; }
+            try { assertSources(db, s, o.workRun!.sources); verifyCredentialBindings(db, s, o.workRun!.credentials); return isOnboardingImageOperation(db,s,o.operationId)?'根据你刚才的设置，准备一份专属欢迎礼物。':o.workRun!.instruction; }
             catch { return undefined; }
           })(),
           features:o.workRun!.skills.map(f=>({id:f.id,name:f.values.name,multiplier:featureMultiplier(f.values)})),
@@ -758,7 +758,7 @@ export class CoordinatorService {
         const matches=exact?[exact]:available.filter(c=>c.title===id.trim());
         if(matches.length!==1)return {status:matches.length?'ambiguous':'not_found',message:'未定位到唯一可用任务。请用 search_tasks 返回的真实编号定位；不要猜测编号，也不要宣称已开始。',candidates:matches.map(c=>({id:c.id,title:c.title}))};
         const c=matches[0];
-        return { id: c.id, title: c.title, messages: c.messages.slice(-20).map(m => ({ role: m.role, content: m.content.slice(-4000) })), executionReceipts: executionReceipts(d, s.workspaceId, s.userId, c.id), handoffs: (d.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === c.id && o.workRun).slice(-5).map(o => o.workRun!.instruction) };
+        return { id: c.id, title: c.title, messages: c.messages.slice(-20).map(m => ({ role: m.role, content: m.content.slice(-4000) })), executionReceipts: executionReceipts(d, s.workspaceId, s.userId, c.id), handoffs: (d.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === c.id && o.workRun).slice(-5).map(o => isOnboardingImageOperation(d,s,o.operationId)?'根据用户设置准备专属欢迎礼物；内部作图要求不向用户复述。':o.workRun!.instruction) };
       }};
       const queueImage=async(prompt:string,title?:string,dependsOnOperationIds:string[]=[])=>{
         await verify();
@@ -1170,8 +1170,10 @@ export class CoordinatorService {
     await verifyKey();
     const current = await this.store.read(); check(current);
     const cid = await this.main(s, modelOf(current).id), sourceId = uid('msg');
+    // This is an independent setup job, not another user chat turn. Do not
+    // acquire the main dialogue's serialization lock while a reply is running.
     const claim = await beginChatOperation(this.store, { ...s, operationId: input.operationId,
-      requestId: uid('welcome'), conversationId: cid, payload: { kind: 'onboarding_image', ...input }, beforeClaim: check });
+      requestId: uid('welcome'), payload: { kind: 'onboarding_image', ...input }, beforeClaim: check });
     if (claim.kind === 'completed') {
       const saved = await this.store.read(), job = saved.chatOperations?.find(o => own(o, s) && o.operationId === `${input.operationId}_image` && o.workRun?.kind === 'image');
       if (!job?.conversationId) throw new CoordinatorError('图片指南接收情况还需确认，不会重复生成', 409);
@@ -1182,18 +1184,21 @@ export class CoordinatorService {
       await this.store.mutate(db => {
         check(db);
         const main = db.conversations.find(c => own(c, s) && c.id === cid && c.coordinatorMain)!;
-        saveMessage(db, s, main, { id: sourceId, role: 'assistant', content: current.users.find(u=>u.id===s.userId)?.profile?.onboarding.journey?.version===2?'嗯，给你画一张和 ONE 一起做事的漫画。安排好就放进任务区。':'我会给你准备一张 ONE 小指南，做好后放在右边的任务里。', createdAt: at() });
+        saveMessage(db, s, main, { id: sourceId, role: 'assistant', content: current.users.find(u=>u.id===s.userId)?.profile?.onboarding.journey?.version===2?'设置记好了。在给你准备一份小礼物，先聊着。':'我会给你准备一张 ONE 小指南，做好后放在右边的任务里。', createdAt: at() });
       });
       const taskId = await this.enqueueImage(s, { operationId: `${input.operationId}_image`, parentOperationId: input.operationId,
-        text: input.instruction, prompt: input.instruction, title: input.title, originConversationId: cid, originMessageId: sourceId, budget: input.budget }, verifyKey, check);
+        text: '根据你刚才的设置，准备一份专属欢迎礼物。', prompt: input.instruction, title: input.title, originConversationId: cid, originMessageId: sourceId, budget: input.budget, welcomeOperationId:input.operationId }, verifyKey, check);
       await this.store.mutate(db => {
         const main = db.conversations.find(c => own(c, s) && c.id === cid && c.coordinatorMain)!;
         const comic=db.users.find(u=>u.id===s.userId)?.profile?.onboarding.journey?.version===2;
-        const content = comic?`漫画已经安排好了。任务区可以看进度，我们先聊别的也行。\n\n[查看漫画任务](/?task=${encodeURIComponent(taskId)})`:`你的 ONE 小指南已经安排了，做好后放在右边。我们可以先继续聊。\n\n[查看小指南](/?task=${encodeURIComponent(taskId)})`;
+        const content = comic?`设置记好了。给你准备的小礼物已放进任务区，先聊着。\n\n[查看任务](/?task=${encodeURIComponent(taskId)})`:`你的 ONE 小指南已经安排了，做好后放在右边。我们可以先继续聊。\n\n[查看小指南](/?task=${encodeURIComponent(taskId)})`;
         const message = main.messages.find(m => m.id === sourceId)!; message.content = content;
         const record = db.messages.find(m => own(m, s) && m.conversationId === cid && m.id === sourceId); if (record) record.content = content;
-        completeChatOperation(db, { ...s, operationId: input.operationId }, { conversationId: cid, assistantMessageId: sourceId });
         const operation = db.chatOperations!.find(o => own(o, s) && o.operationId === input.operationId)!;
+        // The independent setup receipt joins the dialogue only when complete;
+        // it never acts as a pending chat lock or an ordinary user submission.
+        operation.conversationId=cid;
+        completeChatOperation(db, { ...s, operationId: input.operationId }, { conversationId: cid, assistantMessageId: sourceId });
         operation.dispatchedTaskId = taskId; operation.dispatchedTaskIds = [taskId];
       });
       return taskId;
@@ -1202,7 +1207,7 @@ export class CoordinatorService {
       throw error;
     }
   }
-  private async enqueueImage(s:WorkScope,input:{operationId:string;parentOperationId:string;text:string;prompt:string;originConversationId:string;originMessageId:string;budget:number;title?:string;dependsOnOperationIds?:string[]},verifyKey:()=>Promise<void>, authorizeInput?: (db: Database) => void) {
+  private async enqueueImage(s:WorkScope,input:{operationId:string;parentOperationId:string;text:string;prompt:string;originConversationId:string;originMessageId:string;budget:number;title?:string;dependsOnOperationIds?:string[];welcomeOperationId?:string},verifyKey:()=>Promise<void>, authorizeInput?: (db: Database) => void) {
     await verifyKey();
     const db=await this.store.read();
     featureMember(db,s);
@@ -1228,7 +1233,7 @@ export class CoordinatorService {
       saveMessage(d,s,c,{id:mid,role:'user',content:input.text,createdAt:time});
       const op=d.chatOperations!.find(o=>o.id===claim.operation.id)!;
       op.conversationId=cid;
-      op.workRun={kind:'image',state:'queued',executorId:'image_generation',executorVersion:config.version,values:{...config.values,name:'图片生成',description:'独立生成一张图片',featureIds:[]},modelId:model.id,modelPrompt:model.systemPrompt,instruction:input.prompt,inputMessageId:mid,originConversationId:input.originConversationId,originMessageId:input.originMessageId,parentOperationId:input.parentOperationId,dependsOnOperationIds:input.dependsOnOperationIds,budget:input.budget,webSearch:false,sources:[],skills:[],credentials:[],imagePrice:price,imageCost:cost};
+      op.workRun={kind:'image',welcomeOperationId:input.welcomeOperationId,state:'queued',executorId:'image_generation',executorVersion:config.version,values:{...config.values,name:'图片生成',description:'独立生成一张图片',featureIds:[]},modelId:model.id,modelPrompt:model.systemPrompt,instruction:input.prompt,inputMessageId:mid,originConversationId:input.originConversationId,originMessageId:input.originMessageId,parentOperationId:input.parentOperationId,dependsOnOperationIds:input.dependsOnOperationIds,budget:input.budget,webSearch:false,sources:[],skills:[],credentials:[],imagePrice:price,imageCost:cost};
       return cid;
     });}catch(error){await failChatOperation(this.store,{...s,operationId:input.operationId});throw error;}
   }

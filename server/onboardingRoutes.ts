@@ -1,8 +1,8 @@
 import express, { type Express, type RequestHandler } from "express";
 import type { Store } from "./db.js";
-import { accountInScope, accountProfile, updateAccountProfile, type AccountScope } from "./betaProfile.js";
+import { accountInScope, accountProfile, updateAccountProfile, BetaInputError, type AccountScope } from "./betaProfile.js";
 import { asyncRoute } from "./middleware.js";
-import { onboardingHandbookOffer, resolvedOnboardingHandbookProfile, startOnboardingHandbook, type OnboardingImageInput } from "./onboardingHandbook.js";
+import { onboardingHandbookOffer, resolvedOnboardingHandbookProfile, startOnboardingHandbook, welcomeDelivery, type OnboardingImageInput } from "./onboardingHandbook.js";
 import { updateJourney, welcomeContext, type LocalWelcomeState } from './onboardingJourney.js';
 
 export type OnboardingProfileDependencies = {
@@ -22,10 +22,18 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
   const scope = (req: express.Request): AccountScope => ({ userId: req.user!.id, workspaceId: req.workspaceId! });
   router.get("/", asyncRoute(async (req, res) => {
     const db = await store.read(), current = resolvedOnboardingHandbookProfile(db, scope(req));
-    res.json({ profile: current.profile, welcomeContext: welcomeContext(db,scope(req)), handbookNotice: current.notice, handbookOffer: onboardingHandbookOffer(db, deps.storageAvailable) });
+    res.json({ profile: current.profile, welcomeContext: welcomeContext(db,scope(req)), welcomeDelivery:welcomeDelivery(db,scope(req)), handbookNotice: current.notice, handbookOffer: onboardingHandbookOffer(db, deps.storageAvailable) });
   }));
   router.post('/onboarding',asyncRoute(async(req,res)=>{
     const s=scope(req),input=req.body??{};
+    if(input.action==='retry_delivery') {
+      await deps.verifyKey(req);
+      await store.mutate(db=>{
+        const delivery=welcomeDelivery(db,s),user=accountInScope(db,s),p=accountProfile(db,s),h=p.onboarding.handbook;
+        if(!h||input.operationId!==h.operationId||!delivery?.canRetry)throw new BetaInputError('先查看已有任务，不能重复安排。',409);
+        h.status='pending';h.reason=undefined;h.updatedAt=new Date().toISOString();user.profile=p;
+      });
+    }
     // The server inspects only the authenticated Key's current installation.
     // A browser cannot claim that a folder or executor has been authorized.
     let local:LocalWelcomeState|undefined;
@@ -36,21 +44,21 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
         local??={connected:false,folderSelected:false,executorReady:false,checkedAt:new Date().toISOString()};
       }
     }
-    await store.mutate(db=>updateJourney(db,s,input,local));
+    if(input.action!=='retry_delivery')await store.mutate(db=>updateJourney(db,s,input,local));
     let notice:string|undefined;
-    if(input.action==='finish') {
+    if(input.action==='finish'||input.action==='retry_delivery') {
       try {
         const result=await startOnboardingHandbook(store,s,{storageAvailable:deps.storageAvailable,verifyKey:()=>deps.verifyKey(req),enqueueImage:deps.enqueueImage});
         notice=result.notice;
         if(result.handbook?.status==='queued')void deps.resume(s,()=>deps.verifyKey(req)).catch(()=>{});
       } catch {
         // A pre-queue Key loss is a known failed handoff, never an endless pending state.
-        await store.mutate(db=>{const u=accountInScope(db,s),p=accountProfile(db,s);if(p.onboarding.journey?.id!==input.journeyId||p.onboarding.handbook?.status!=='pending')return;p.onboarding.handbook.status='failed';p.onboarding.handbook.reason='unavailable';u.profile=p;});
+        await store.mutate(db=>{const u=accountInScope(db,s),p=accountProfile(db,s);if((input.action==='retry_delivery'?p.onboarding.handbook?.operationId!==input.operationId:p.onboarding.journey?.id!==input.journeyId)||p.onboarding.handbook?.status!=='pending')return;p.onboarding.handbook.status='failed';p.onboarding.handbook.reason='unavailable';u.profile=p;});
         notice='漫画这次没交接好。可以先聊天，稍后到任务里查看；不会自动重复生成。';
       }
     }
     const db=await store.read(),current=resolvedOnboardingHandbookProfile(db,s);
-    res.json({profile:current.profile,welcomeContext:welcomeContext(db,s),handbookOffer:onboardingHandbookOffer(db,deps.storageAvailable),handbookNotice:notice||current.notice});
+    res.json({profile:current.profile,welcomeContext:welcomeContext(db,s),welcomeDelivery:welcomeDelivery(db,s),handbookOffer:onboardingHandbookOffer(db,deps.storageAvailable),handbookNotice:notice||current.notice});
   }));
   router.patch("/", asyncRoute(async (req, res) => {
     const s = scope(req), body = req.body ?? {};

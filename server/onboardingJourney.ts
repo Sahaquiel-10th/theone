@@ -29,7 +29,7 @@ export function welcomeContext(db: Database, scope: AccountScope): WelcomeContex
   }
   return {platforms,features:features.slice(0,60)};
 }
-export type JourneyInput = { action?:unknown; launchId?:unknown; journeyId?:unknown; step?:unknown; choice?:unknown; displayName?:unknown; featureIds?:unknown; budgetPower?:unknown };
+export type JourneyInput = { action?:unknown; launchId?:unknown; journeyId?:unknown; operationId?:unknown; step?:unknown; choice?:unknown; displayName?:unknown; featureIds?:unknown; budgetPower?:unknown };
 const token=(value:unknown)=>typeof value==='string'&&/^[A-Za-z0-9_-]{16,100}$/.test(value);
 export function updateJourney(db:Database,scope:AccountScope,input:JourneyInput,local?:LocalWelcomeState,time=new Date().toISOString()) {
   const user=accountInScope(db,scope),profile=accountProfile(db,scope);
@@ -53,12 +53,13 @@ export function updateJourney(db:Database,scope:AccountScope,input:JourneyInput,
     if(input.action==='finish') {
       if(j.stage==='complete')return profile;
       if(j.stage!=='ready')throw new BetaInputError('先完成或跳过前面的步骤。',409);
-      if(typeof input.budgetPower!=='number'||!Number.isFinite(input.budgetPower)||input.budgetPower<=0||input.budgetPower>.5)throw new BetaInputError('请先确认这张漫画的电力上限。');
+      const withoutImage=input.choice==='without_image';
+      if(!withoutImage&&(typeof input.budgetPower!=='number'||!Number.isFinite(input.budgetPower)||input.budgetPower<=0||input.budgetPower>.5))throw new BetaInputError('请先确认这张漫画的电力上限。');
       if(j.localChoice==='checked')j.local=local??{connected:false,folderSelected:false,executorReady:false,checkedAt:time};
       const allowed=new Set(welcomeContext(db,scope).features.map(f=>f.id));j.featureIds=j.featureIds.filter(id=>allowed.has(id));
-      j.stage='complete';j.completedAt=time;j.events.push({step:'complete',choice:'create_comic',at:time});
+      j.stage='complete';j.completedAt=time;j.events.push({step:'complete',choice:withoutImage?'finished_without_image':'create_comic',at:time});
       profile.onboarding.completedAt ||= time;
-      profile.onboarding.handbook={operationId:uid('welcome'),status:'pending',maxPower:input.budgetPower,requestedAt:time,updatedAt:time};
+      profile.onboarding.handbook={operationId:uid('welcome'),status:withoutImage?'skipped':'pending',reason:withoutImage?'not_configured':undefined,maxPower:withoutImage?0:input.budgetPower as number,requestedAt:time,updatedAt:time};
     } else if(input.action==='step') {
       if(input.step!==j.stage) {
         // A lost response may repeat the last exact step, never advance another one.

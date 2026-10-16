@@ -12,6 +12,8 @@ export type WorkRun = {
   featurePricingVersion?: 1;
   featureApprovals?: import('./featurePricing.js').FeatureApproval[];
   kind?: "image";
+  /** Server-created welcome handoff. Retained on explicit retries; never client input. */
+  welcomeOperationId?: string;
   imagePrice?: number;
   imageCost?: number;
   state:

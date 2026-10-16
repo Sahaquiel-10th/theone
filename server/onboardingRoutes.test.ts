@@ -53,6 +53,31 @@ async function server(t: TestContext, f: ReturnType<typeof fixture>) {
 }
 const completion = { onboardingAction: "complete", handbookChoice: "create", handbookBudgetPower: .012 };
 
+test('welcome handoff retry accepts only a known unstarted attempt; refresh never queues it and cross-owner IDs cannot retry',async t=>{
+ const f=fixture(),http=await server(t,f),url=http.url+'/onboarding';
+ const post=(body:object)=>fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+ const b=await(await post({action:'begin',launchId:'launch_retry_0123456789'})).json(),id=b.profile.onboarding.journey.id;
+ for(const step of ['name','knowledge','device','features'])await post({action:'step',journeyId:id,step,choice:'skipped'});
+ f.db.powerAccounts[0].balanceMicros=0;
+ const done=await(await post({action:'finish',journeyId:id,budgetPower:.012})).json();
+ assert.equal(done.welcomeDelivery.state,'failed');assert.equal(done.welcomeDelivery.canRetry,true);assert.equal(f.stats().queued,0);
+ assert.equal((await post({action:'retry_delivery',operationId:'foreign_welcome_0123456789'})).status,409);
+ await fetch(http.url);assert.equal(f.stats().queued,0);
+ f.db.powerAccounts[0].balanceMicros=1_000_000;
+ const retry=await(await post({action:'retry_delivery',operationId:done.welcomeDelivery.operationId})).json();
+ assert.equal(retry.welcomeDelivery.taskId,'guide-task');assert.equal(retry.welcomeDelivery.canRetry,false);assert.equal(f.stats().queued,1);
+ assert.equal((await post({action:'retry_delivery',operationId:done.welcomeDelivery.operationId})).status,409);assert.equal(f.stats().queued,1);
+});
+
+test('unavailable image setup can complete without any undisclosed paid budget',async t=>{
+ const f=fixture(),http=await server(t,f),url=http.url+'/onboarding';
+ const post=(body:object)=>fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+ const b=await(await post({action:'begin',launchId:'launch_noimage_0123456789'})).json(),id=b.profile.onboarding.journey.id;
+ for(const step of ['name','knowledge','device','features'])await post({action:'step',journeyId:id,step,choice:'skipped'});
+ const done=await(await post({action:'finish',journeyId:id,choice:'without_image'})).json();
+ assert.equal(done.profile.onboarding.journey.stage,'complete');assert.equal(done.profile.onboarding.handbook.maxPower,0);assert.equal(done.welcomeDelivery.canRetry,false);assert.equal(f.stats().queued,0);
+});
+
 test('comic journey HTTP accepts all skipped steps, queues once, ignores forged device capabilities and can explicitly reopen',async t=>{
  const f=fixture(),http=await server(t,f),url=http.url+'/onboarding';
  const post=(body:object)=>fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});

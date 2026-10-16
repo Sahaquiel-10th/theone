@@ -1,5 +1,5 @@
 import {useEffect,useRef,useState} from 'react';
-import {ArrowLeft,ArrowUpRight,BookOpen,Check,Image,Monitor,Sparkles,X} from 'lucide-react';
+import {ArrowLeft,ArrowUpRight,BookOpen,Check,Monitor,Sparkles,X} from 'lucide-react';
 import type {AccountProfile} from '../server/betaProfile';
 import type {JourneyInput,WelcomeContext} from '../server/onboardingJourney';
 import type {OnboardingHandbookOffer} from '../server/onboardingHandbook';
@@ -29,7 +29,7 @@ export function StoryOnboarding({profile,context,offer,onBegin,onAction,onKnowle
   return <section ref={card} className="one-onboarding one-story-onboarding" aria-labelledby="one-story-title" aria-busy={busy}>
     <div className="one-onboarding-top"><span>认识一下 ONE</span><span>{stages.indexOf(stage as typeof stages[number])+1} / 5<button type="button" className="story-close" aria-label="稍后继续新手引导" onClick={onDismiss}><X size={17}/></button></span></div>
     {stage==='name'?<>
-      <h2 id="one-story-title">我在。怎么称呼你？</h2><p>先走一小圈，最后把你的使用方式画成一张故事漫画。不想填的都可以跳过。</p>
+      <h2 id="one-story-title">我在。怎么称呼你？</h2><p>认识一下，以后一起做点事。不想填的都可以跳过。</p>
       <details className="story-benefits"><summary>ONE 能帮我什么？</summary><div>{welcomeBenefits.map(b=><section key={b.title}><strong>{b.title}</strong><p>{b.description}</p></section>)}</div></details>
       <form onSubmit={e=>{e.preventDefault();void act({action:'step',step:'name',choice:'provided',displayName:name});}}><label htmlFor="one-story-name" className="one-onboarding-label">称呼（选填）</label><input id="one-story-name" autoComplete="nickname" placeholder="比如，小张" value={name} maxLength={40} onChange={e=>setName(e.target.value)} disabled={busy||!j}/><div className="one-onboarding-actions"><button type="submit" disabled={busy||!j||!name.trim()}>就这么叫我<ArrowUpRight size={16}/></button><button type="button" className="one-onboarding-quiet" disabled={busy||!j} onClick={()=>void act({action:'step',step:'name',choice:'skipped'})}>先不填</button></div></form>
     </>:stage==='knowledge'?<>
@@ -40,16 +40,15 @@ export function StoryOnboarding({profile,context,offer,onBegin,onAction,onKnowle
       <Monitor size={25}/><h2 id="one-story-title">这台电脑，能帮你做点什么？</h2><p>只核对 ONE 的本机连接、执行工具和工作文件夹。不扫描私人文件，不会开始执行任务。</p>
       <div className="one-onboarding-actions"><button type="button" disabled={busy||!j} onClick={()=>void act({action:'step',step:'device',choice:'checked'})}>{busy?'正在核对这台电脑…':'检测本机，继续'}<ArrowUpRight size={16}/></button><button type="button" className="one-onboarding-quiet" disabled={busy} onClick={onDevice}>先去设置工作区</button><button type="button" className="one-onboarding-quiet" disabled={busy||!j} onClick={()=>void act({action:'step',step:'device',choice:'skipped'})}>先只在 ONE 里用</button></div>
     </>:stage==='features'?<>
-      <Sparkles size={25}/><h2 id="one-story-title">先挑一件你想试的事</h2><p>这些是你现在已开放的功能。选最多 3 个，让漫画用它们讲故事；选择不会运行或购买功能。</p>
-      {j?.localChoice==='checked'?<p className="story-status">{j.local?.connected&&j.local.folderSelected&&j.local.executorReady?'本机已就绪，漫画里可以演示保存到工作区。':'本机还没完全就绪。这次先演示在 ONE 里拿到成果，以后随时能补设置。'}</p>:null}
+      <Sparkles size={25}/><h2 id="one-story-title">先挑一件你想试的事</h2><p>选最多 3 个感兴趣的就好。这里只记下偏好，不会运行或购买功能。</p>
+      {j?.localChoice==='checked'?<p className="story-status">{j.local?.connected&&j.local.folderSelected&&j.local.executorReady?'本机已就绪，需要做文件时可以用上。':'本机还没完全就绪，可以先聊天，以后再接。'}</p>:null}
       <div className="story-feature-list">{context?.features.map(f=><button type="button" key={f.id} disabled={busy||!chosen.includes(f.id)&&chosen.length>=3} aria-pressed={chosen.includes(f.id)} onClick={()=>setChosen(old=>old.includes(f.id)?old.filter(id=>id!==f.id):[...old,f.id])}><span><strong>{f.name}</strong><small>{f.description}</small></span>{chosen.includes(f.id)?<Check size={17}/>:<span>选择</span>}</button>)}</div>
-      {!context?.features.length?<p>暂时没有已开放的专用功能。漫画会用聊天、写作整理和任务分派来讲故事。</p>:null}
+      {!context?.features.length?<p>先从聊天、写作和整理资料开始，也挺好。</p>:null}
       <div className="one-onboarding-actions"><button type="button" disabled={busy||!j} onClick={()=>void act({action:'step',step:'features',choice:chosen.length?'selected':'skipped',featureIds:chosen})}>{chosen.length?'就用这些':'先用基础能力'}<ArrowUpRight size={16}/></button>{chosen.length?<button type="button" className="one-onboarding-quiet" disabled={busy} onClick={()=>void act({action:'step',step:'features',choice:'skipped'})}>不选了，继续</button>:null}</div>
     </>:<>
-      <Image size={25}/><h2 id="one-story-title">给你画一件，能用 ONE 做的小事</h2><p>主角是{profile.displayName||'你'}，搭档是一只看着没睡醒的猫。怎么开口、怎么分工、怎么拿到结果，放进同一个故事里。</p>
-      <ul className="story-facts"><li>知识来源：{context?.platforms.join('、')||'暂未连接，故事从一个想法开始'}</li><li>功能：{context?.features.filter(f=>j?.featureIds.includes(f.id)).map(f=>f.name).join('、')||'聊天、写作整理与任务分派'}</li><li>交付位置：{j?.localChoice==='checked'&&j.local?.connected&&j.local.folderSelected&&j.local.executorReady?'演示保存到已选工作区':'先在 ONE 对话与任务里查看'}</li></ul>
-      <div className="one-onboarding-guide"><Image size={22}/><div><strong>{profile.onboarding.completedAt?'这张漫画，也是一件任务':'漫画会成为你的第一件任务'}</strong><p>安排后就能开始聊天，不用守着等。画好会在任务区提醒你。</p><small>{canDraw?`1 张图片 · 使用现有额度 ${price.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力`:'图片通道暂时不可用，可以先开始使用，稍后从设置重做引导。'}<br/>只用称呼、连接状态和已开放功能名称，不读取你的知识内容或文件。故事是使用示意，不会真的替你创建 PPT。</small></div></div>
-      <div className="one-onboarding-actions"><button type="button" disabled={busy||!j||!canDraw} onClick={()=>void act({action:'finish',budgetPower:price})}>{busy?'正在安排漫画任务…':'完成引导，画我的漫画'}<ArrowUpRight size={16}/></button>{!canDraw?<button type="button" className="one-onboarding-quiet" onClick={onDismiss}>先开始使用</button>:null}</div>
+      <Check size={25}/><h2 id="one-story-title">都记下了，开聊吧。</h2><p>想做什么，直接告诉我。设置以后随时能改，不用一次弄齐。</p>
+      {canDraw?<small>完成后会安排一张专属欢迎图，使用 {price.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力。</small>:null}
+      <div className="one-onboarding-actions"><button type="button" disabled={busy||!j} onClick={()=>void act({action:'finish',...(canDraw?{budgetPower:price}:{choice:'without_image'})})}>{busy?'正在保存设置…':'开始使用 ONE'}<ArrowUpRight size={16}/></button></div>
     </>}
     {busy?<p className="story-saving" role="status">{stage==='device'?'正在核对本机状态，不会操作文件。':'在保存这一步，稍等一下。'}</p>:null}
     {error?<div className="one-onboarding-error" role="alert"><p>{error}</p>{!j?<button type="button" onClick={()=>{setBusy(true);setError('');void onBegin().catch(e=>setError(e.message)).finally(()=>setBusy(false));}}>重新打开</button>:null}</div>:null}

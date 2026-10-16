@@ -15,7 +15,7 @@ import { NotionDocuments } from './notionDocuments.js';
 import type { NotionMcpService } from './knowledge/notionMcpService.js';
 import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
 import { executorDefaults, updateExecutor } from "./executorProfiles.js";
-import { reconcileInterruptedChatOperations } from "./chatOperations.js";
+import { beginChatOperation,reconcileInterruptedChatOperations } from "./chatOperations.js";
 import { MODEL_MAX_OUTPUT_TOKENS, type ModelToolMessage, type ModelToolDefinition, type ToolChatResult } from "./modelGateway.js";
 
 test('one request runs two tasks concurrently and feeds their durable results into the next answer once',async()=>{
@@ -1796,6 +1796,8 @@ for(const comic of [false,true])test(`server-only onboarding ${comic?'comic':'gu
   const welcome={operationId,title:handbookTitle(db.users.find(u=>u.id==='a')!.profile!),instruction:handbookInstruction(db,a),budget:.012,imageVersion:configuration.version};
   const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw new Error('欢迎图片不得读取知识库');}},
     {artifactDirectory:f.directory,imageCall:async()=>{calls++;return {content:'真实欢迎图片',imageUrl:imageFixturePng};},modelCall:async()=>{throw new Error('欢迎图片不得调用文字模型');}});
+  await f.store.mutate(d=>{d.conversations.push({...a,id:'busy-main',coordinatorMain:true,title:'与 ONE 对话',modelId:d.models[0].id,archived:false,messages:[],createdAt:'now',updatedAt:'now'});});
+  await beginChatOperation(f.store,{...a,operationId:'ordinary_chat_busy_012345',conversationId:'busy-main',requestId:'ordinary-chat',payload:{text:'另一条正在回答的问题'}});
   try{
     await assert.rejects(()=>service.enqueueOnboardingImage(b,welcome,key));
     await assert.rejects(()=>service.enqueueOnboardingImage(a,{...welcome,instruction:'浏览器任意写入任务'},key),/内容已变化/);
@@ -1808,8 +1810,10 @@ for(const comic of [false,true])test(`server-only onboarding ${comic?'comic':'gu
     let saved=await f.store.read();const child=saved.chatOperations!.find(o=>o.operationId===`${operationId}_image`)!;
     assert.equal(child.conversationId,taskId);assert.equal(child.workRun!.state,'queued');assert.equal(calls,0);
     assert.equal(saved.conversations.find(c=>c.coordinatorMain)!.messages.length,1);assert.equal(saved.conversations.find(c=>c.coordinatorMain)!.messages[0].role,'assistant');
-    assert.match(saved.conversations.find(c=>c.coordinatorMain)!.messages[0].content,comic?/查看漫画任务/:/查看小指南/);
-    assert.equal(saved.conversations.find(c=>c.id===taskId)!.messages[0].content,welcome.instruction);
+    assert.match(saved.conversations.find(c=>c.coordinatorMain)!.messages[0].content,comic?/查看任务/:/查看小指南/);
+    assert.equal(saved.conversations.find(c=>c.id===taskId)!.messages[0].content,'根据你刚才的设置，准备一份专属欢迎礼物。');
+    assert.equal(saved.chatOperations!.find(o=>o.conversationId===taskId&&o.workRun)!.workRun!.instruction,welcome.instruction,'only server execution retains the real prompt');
+    assert.doesNotMatch(JSON.stringify(await service.task(a,taskId)),/生成并交付一张|固定故事|JSON 仅为|米白背景/);
     await service.resume(a,key);await waitFor(async()=>(await service.task(a,taskId)).jobs[0].state==='completed');
     saved=await f.store.read();assert.equal(calls,1);assert.equal(saved.modelUsageRecords.filter(r=>r.activity==='image_generation').length,1);
     assert.equal(saved.modelUsageRecords.find(r=>r.activity==='image_generation')!.chargedMicros,12000);
@@ -1818,6 +1822,7 @@ for(const comic of [false,true])test(`server-only onboarding ${comic?'comic':'gu
     assert.ok((await service.state(a)).notices.some(n=>n.taskId===taskId&&!n.read&&!n.reported));
     assert.equal(saved.conversations.find(c=>c.coordinatorMain)!.messages.length,1,'completion stays in the sidebar');
     assert.equal((await startOnboardingHandbook(f.store,a,deps)).handbook!.taskId,taskId);assert.equal(calls,1,'a welcome-flow replay cannot create another image');
+    assert.equal((await f.store.read()).chatOperations!.find(o=>o.operationId==='ordinary_chat_busy_012345')!.status,'pending','independent welcome work never interrupts or locks the existing chat turn');
   }finally{rmSync(f.directory,{recursive:true,force:true});}
 });
 

@@ -19,7 +19,29 @@ const noticeText: Record<NonNullable<OnboardingHandbook["reason"]>, string> = {
 const ownsTask = (db: Database, scope: AccountScope, taskId: string | undefined) => !!taskId && db.conversations.some(c => c.id === taskId && c.workspaceId === scope.workspaceId && c.userId === scope.userId);
 
 export type OnboardingHandbookOffer = { available: boolean; pricePower?: number };
-export function handbookTitle(profile:ReturnType<typeof accountProfile>) { return profile.onboarding.journey?.version===2?`${profile.displayName||'你'}和 ONE 的故事漫画`:`${profile.displayName}的 ONE 小指南`; }
+export type WelcomeDelivery = { operationId:string; state:'preparing'|'queued'|'running'|'completed'|'failed'|'cancelled'; taskId?:string; message:string; canRetry:boolean };
+export function isOnboardingImageOperation(db:Database,scope:AccountScope,operationId:string) {
+  if(!db.users.some(u=>u.id===scope.userId&&u.defaultWorkspaceId===scope.workspaceId&&u.profile?.workspaceId===scope.workspaceId))return false;
+  const p=accountProfile(db,scope);
+  const job=db.chatOperations?.find(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.operationId===operationId)?.workRun;
+  return [p.onboarding.handbook,...(p.onboarding.journeyHistory??[]).map(j=>j.handbook)].some(h=>h&&(operationId===`${h.operationId}_image`||job?.welcomeOperationId===h.operationId));
+}
+/** Persistent, scoped delivery status; no prompt or supplier diagnostics. GET never executes. */
+export function welcomeDelivery(db:Database,scope:AccountScope):WelcomeDelivery|undefined {
+  const p=resolvedOnboardingHandbookProfile(db,scope).profile,h=p.onboarding.handbook;
+  if(!h)return;
+  let op=db.chatOperations?.find(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.operationId===`${h.operationId}_image`&&o.workRun?.kind==='image');
+  if(op?.conversationId)op=db.chatOperations?.filter(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.conversationId===op!.conversationId&&o.workRun?.kind==='image').at(-1)??op;
+  const taskId=ownsTask(db,scope,op?.conversationId)?op!.conversationId:ownsTask(db,scope,h.taskId)?h.taskId:undefined;
+  const state=taskId&&op?.workRun?.state;
+  if(state==='completed')return {operationId:h.operationId,state:'completed',taskId,message:'给你的小礼物准备好了。',canRetry:false};
+  if(state==='running'||state==='queued')return {operationId:h.operationId,state,taskId,message:state==='running'?'在给你准备一份小礼物，先聊着。':'小礼物已经安排了，任务区能看进度。',canRetry:false};
+  if(taskId)return {operationId:h.operationId,state:state==='cancelled'?'cancelled':'failed',taskId,message:state==='cancelled'?'小礼物先停下了。':'小礼物这次没做好，点开任务看看。',canRetry:false};
+  if(['pending','preparing'].includes(h.status))return {operationId:h.operationId,state:'preparing',message:'在给你准备一份小礼物，先聊着。',canRetry:false};
+  const anyAttempt=db.chatOperations?.some(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&(o.operationId===h.operationId||o.operationId===`${h.operationId}_image`));
+  return {operationId:h.operationId,state:'failed',message:h.reason==='insufficient_power'?'设置保存好了，小礼物暂时还没安排：可用电力不足。':'设置保存好了，小礼物暂时没安排成功。',canRetry:!anyAttempt&&h.maxPower>0&&p.onboarding.journey?.stage==='complete'};
+}
+export function handbookTitle(profile:ReturnType<typeof accountProfile>) { return profile.onboarding.journey?.version===2?'给你的欢迎礼物':`${profile.displayName}的 ONE 小指南`; }
 /** Only a public price leaves this resolver; credentials/model prompts do not. */
 export function onboardingHandbookOffer(db: Database, storageAvailable: boolean): OnboardingHandbookOffer {
   try {
@@ -89,7 +111,8 @@ export async function startOnboardingHandbook(store: Store, scope: AccountScope,
       const price = config.billingModel.imagePowerPerCall!;
       if (config.values.enabled === false) reason = "not_configured";
       else if (!Number.isFinite(handbook.maxPower) || handbook.maxPower <= 0 || handbook.maxPower > .5 || price > handbook.maxPower) reason = "budget_required";
-      else if (db.modelUsageRecords.some(row => row.workspaceId === scope.workspaceId && row.userId === scope.userId && row.status === "needs_review")) reason = "billing_review";
+      // An older uncertain call retains its own hold. Like ordinary model
+      // calls, a welcome image may spend only the remaining available balance.
       else if (availablePowerMicros(db, scope.workspaceId, scope.userId) < Math.ceil(price * 1e6 - 1e-7)) reason = "insufficient_power";
       else input = { operationId: handbook.operationId, title: handbookTitle(profile), instruction: handbookInstruction(db, scope), budget: price, imageVersion: config.version };
       handbook.pricePower = price;

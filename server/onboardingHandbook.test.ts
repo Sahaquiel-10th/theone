@@ -3,7 +3,7 @@ import test from "node:test";
 import type { Store } from "./db.js";
 import type { Database, ModelConfig } from "./types.js";
 import { accountProfile, completeOnboardingOnChat, updateAccountProfile } from "./betaProfile.js";
-import { handbookInstruction, onboardingHandbookOffer, resolvedOnboardingHandbookProfile, startOnboardingHandbook, type OnboardingImageInput } from "./onboardingHandbook.js";
+import { handbookInstruction, onboardingHandbookOffer, resolvedOnboardingHandbookProfile, startOnboardingHandbook, welcomeDelivery, type OnboardingImageInput } from "./onboardingHandbook.js";
 import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
 
 const scope = { workspaceId: "wa", userId: "a" };
@@ -113,12 +113,11 @@ test("foreign scope, disabled account and another workspace's profile cannot cla
   assert.equal(calls, 0);
 });
 
-test("missing image configuration, review, budget or allowance do not block onboarding or auto-retry", async () => {
-  for (const scenario of ["not_configured", "insufficient_power", "billing_review", "budget_required"] as const) {
+test("missing image configuration, budget or allowance do not block onboarding or auto-retry", async () => {
+  for (const scenario of ["not_configured", "insufficient_power", "budget_required"] as const) {
     const f = fixture(); f.welcome(); let calls = 0;
     if (scenario === "not_configured") f.db.settings.aiTasks!.image_generation!.published!.enabled = false;
     if (scenario === "insufficient_power") f.db.powerAccounts[0].balanceMicros = 11_999;
-    if (scenario === "billing_review") f.db.modelUsageRecords.push({ ...scope, status: "needs_review" } as never);
     if (scenario === "budget_required") f.db.settings.aiTasks!.image_generation!.published!.imagePowerPerCall = .6;
     const deps = { storageAvailable: true, verifyKey: key, enqueueImage: async () => { calls++; return "bad"; } };
     const result = await startOnboardingHandbook(f.store, scope, deps);
@@ -127,6 +126,30 @@ test("missing image configuration, review, budget or allowance do not block onbo
     f.db.powerAccounts[0].balanceMicros = 1_000_000;
     await startOnboardingHandbook(f.store, scope, deps); assert.equal(calls, 0);
   }
+});
+
+test('an unrelated billing review keeps its hold without blocking a separately affordable welcome image',async()=>{
+  const f=fixture();f.welcome();
+  f.db.modelUsageRecords.push({...scope,id:'older-review',status:'needs_review',reservedMicros:500_000} as never);
+  f.db.powerAccounts[0].reservedMicros=500_000;
+  const before=structuredClone(f.db.modelUsageRecords[0]);
+  const result=await startOnboardingHandbook(f.store,scope,{storageAvailable:true,verifyKey:key,enqueueImage:async(_scope,input)=>f.accepted(input)});
+  assert.equal(result.handbook?.status,'queued');
+  assert.deepEqual(f.db.modelUsageRecords[0],before);
+  assert.equal(f.db.powerAccounts[0].reservedMicros,500_000);
+});
+
+test('welcome status survives read-only refresh, follows actual task results, and never leaks across owners',async()=>{
+  const f=fixture();f.welcome();f.db.users[0].profile!.onboarding.journey={id:'journey_123456789012',launchId:'launch_123456789012',version:2,stage:'complete',startedAt:'now',featureIds:[],events:[]};
+  const h=f.db.users[0].profile!.onboarding.handbook!;h.status='skipped';h.reason='billing_review';
+  const before=JSON.stringify(f.db);assert.equal(welcomeDelivery(f.db,scope)?.canRetry,true);assert.equal(JSON.stringify(f.db),before);
+  assert.equal(welcomeDelivery(f.db,{workspaceId:'wb',userId:'b'}),undefined);
+  h.status='pending';
+  const result=await startOnboardingHandbook(f.store,scope,{storageAvailable:true,verifyKey:key,enqueueImage:async(_s,input)=>f.accepted(input)});
+  assert.equal(welcomeDelivery(f.db,scope)?.state,'queued');assert.equal(welcomeDelivery(f.db,scope)?.canRetry,false);
+  const job=f.db.chatOperations!.find(o=>o.conversationId===result.handbook?.taskId)!;job.workRun!.state='running';
+  assert.equal(welcomeDelivery(f.db,scope)?.state,'running');job.workRun!.state='completed';
+  assert.equal(welcomeDelivery(f.db,scope)?.state,'completed');assert.doesNotMatch(JSON.stringify(welcomeDelivery(f.db,scope)),/SECRET|instruction|prompt/);
 });
 
 test("uncertain enqueue fails once without leaking errors; an already durable image receipt is preserved", async () => {
