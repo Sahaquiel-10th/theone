@@ -39,7 +39,8 @@ export function welcomeDelivery(db:Database,scope:AccountScope):WelcomeDelivery|
   if(taskId)return {operationId:h.operationId,state:state==='cancelled'?'cancelled':'failed',taskId,message:state==='cancelled'?'小礼物先停下了。':'小礼物这次没做好，点开任务看看。',canRetry:false};
   if(['pending','preparing'].includes(h.status))return {operationId:h.operationId,state:'preparing',message:'在给你准备一份小礼物，先聊着。',canRetry:false};
   const anyAttempt=db.chatOperations?.some(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&(o.operationId===h.operationId||o.operationId===`${h.operationId}_image`));
-  return {operationId:h.operationId,state:'failed',message:h.reason==='insufficient_power'?'设置保存好了，小礼物暂时还没安排：可用电力不足。':'设置保存好了，小礼物暂时没安排成功。',canRetry:!anyAttempt&&h.maxPower>0&&p.onboarding.journey?.stage==='complete'};
+  const completedSetup=p.onboarding.journey?.stage==='complete'||p.onboarding.journeyHistory?.some(j=>j.stage==='complete'&&j.handbook?.operationId===h.operationId);
+  return {operationId:h.operationId,state:'failed',message:h.reason==='insufficient_power'?'设置保存好了，小礼物暂时还没安排：可用电力不足。':'设置保存好了，小礼物暂时没安排成功。',canRetry:!anyAttempt&&h.maxPower>0&&!!completedSetup};
 }
 export function handbookTitle(profile:ReturnType<typeof accountProfile>) { return profile.onboarding.journey?.version===2?'给你的欢迎礼物':`${profile.displayName}的 ONE 小指南`; }
 /** Only a public price leaves this resolver; credentials/model prompts do not. */
@@ -57,7 +58,12 @@ export function onboardingHandbookOffer(db: Database, storageAvailable: boolean)
 /** Collect only approved platform labels, never workspace names, tokens or KB contents. */
 export function handbookInstruction(db: Database, scope: AccountScope): string {
   const profile = accountProfile(db, scope);
-  if(profile.onboarding.journey?.version===2)return onboardingComicInstruction(db,scope);
+  if(profile.onboarding.journey?.version===2){
+    // Reopening setup must not replace the completed setup behind an older
+    // unstarted welcome handoff with a new half-filled journey.
+    const previous=profile.onboarding.journeyHistory?.find(j=>j.stage==='complete'&&j.handbook?.operationId===profile.onboarding.handbook?.operationId);
+    return onboardingComicInstruction(db,scope,previous??profile.onboarding.journey);
+  }
   const platforms = [...new Set(db.knowledgeConnections.filter(c => c.workspaceId === scope.workspaceId && c.status === "connected" && canReadKnowledge(db, scope, c.id)).map(c => platformNames[c.provider]).filter(Boolean))];
   const data = { nickname: profile.displayName, platforms, capabilities: ["和 ONE 聊天", ...(platforms.length ? ["询问已连接知识中的资料，并查看引用"] : []), "把明确的工作交给任务，稍后查看结果"] };
   return [

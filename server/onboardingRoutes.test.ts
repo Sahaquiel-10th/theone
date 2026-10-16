@@ -64,8 +64,11 @@ test('welcome handoff retry accepts only a known unstarted attempt; refresh neve
  assert.equal((await post({action:'retry_delivery',operationId:'foreign_welcome_0123456789'})).status,409);
  await fetch(http.url);assert.equal(f.stats().queued,0);
  f.db.powerAccounts[0].balanceMicros=1_000_000;
+ await post({action:'begin',launchId:'reopen_retry_0123456789'});
+ const reopened=await(await fetch(http.url)).json();assert.equal(reopened.welcomeDelivery.canRetry,true);
  const retry=await(await post({action:'retry_delivery',operationId:done.welcomeDelivery.operationId})).json();
  assert.equal(retry.welcomeDelivery.taskId,'guide-task');assert.equal(retry.welcomeDelivery.canRetry,false);assert.equal(f.stats().queued,1);
+ assert.equal(retry.profile.onboarding.journey.stage,'name','retry preserves the separately reopened unfinished setup');
  assert.equal((await post({action:'retry_delivery',operationId:done.welcomeDelivery.operationId})).status,409);assert.equal(f.stats().queued,1);
 });
 

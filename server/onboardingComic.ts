@@ -3,8 +3,8 @@ import { accountProfile, type AccountScope } from './betaProfile.js';
 import { welcomeContext } from './onboardingJourney.js';
 
 /** Fixed storyboard. User-supplied text is material, never executable instructions. */
-export function onboardingComicInstruction(db:Database,scope:AccountScope) {
-  const p=accountProfile(db,scope),j=p.onboarding.journey!,c=welcomeContext(db,scope);
+export function onboardingComicInstruction(db:Database,scope:AccountScope,journey?:import('./onboardingJourney.js').OnboardingJourney) {
+  const p=accountProfile(db,scope),j=journey??p.onboarding.journey!,c=welcomeContext(db,scope);
   const selected=c.features.filter(f=>j.featureIds.includes(f.id)).slice(0,3);
   const localReady=j.localChoice==='checked'&&!!j.local?.connected&&!!j.local.folderSelected&&!!j.local.executorReady;
   const facts={nickname:p.displayName||'你',nameSkipped:j.nameChoice==='skipped',platforms:c.platforms,
