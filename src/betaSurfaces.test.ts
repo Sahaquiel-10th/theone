@@ -46,7 +46,8 @@ test("profile names render as plain text and feedback does not reveal a saved sh
   const name = renderToStaticMarkup(createElement(ProfileNameEditor, { profile: { ...profile, displayName: "<script>bad</script>" }, onSave: async () => undefined }));
   assert.ok(!name.includes("<script>"));
   const feedback = renderToStaticMarkup(createElement(BetaFeedbackControls, { messageId: "m", feedback: { id: "f", messageId: "m", rating: "helped", sharedComment: true, comment: "a saved optional comment", updatedAt: "today" }, onSave: async () => { throw new Error("not clicked"); } }));
-  assert.ok(feedback.includes("帮上忙了"));
+  assert.ok(feedback.includes("已反馈"));
+  assert.ok(!feedback.includes("帮上忙了"));
   assert.ok(!feedback.includes("a saved optional comment"));
 });
 

@@ -10,6 +10,9 @@ import {ProductMetricsPanel} from './ProductMetricsPanel';
 import {OneWaitingCopy,useOneGreeting} from './OnePersonality';
 import {FeatureNav} from './FeatureNav';
 import {ThingsPanel} from './ThingsPanel';
+import {TaskReadAllButton} from './TaskReadAllButton';
+import {ActionMenu} from './ActionMenu';
+import {remainingResultAttachments} from './taskMessagePresentation';
 import {sendThingMessage} from './sendThingMessage';
 import {CoordinatorConversation} from './preview/CoordinatorConversation';
 import {useFollowLatest} from './useFollowLatest';
@@ -103,6 +106,7 @@ import "./one-onboarding.css";
 import "./one-settings.css";
 import './one-product.css';
 import './one-playful.css';
+import './task-message-ux.css';
 import { Pagination, SearchPicker, SettingsDialog } from "./SettingsControls";
 import { BetaUserInsights } from "./BetaUserInsights";
 import { mergeTaskSnapshots, recoverTaskDraft } from "./oneStudioState";
@@ -1947,8 +1951,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <div><div className={`task-current-state ${currentBusy ? "is-active" : ""}`}><span className={`task-indicator ${currentBusy ? "running" : executionTask?.status || "recent"}`} aria-hidden="true" />{currentStatus}</div><h1>{active?.title || "从一个念头开始"}</h1></div>
           <div className="studio-task-controls">
             {preview.enabled&&active?<button type="button" onClick={()=>openSurface('chat')}>回到 ONE <X size={14}/></button>:null}
-            {preview.enabled && active ? <button type="button" className="studio-mode-switch" onClick={()=>{void selectThing(active.id);openSurface('things');}}>继续此任务</button> : null}
-            {coordinator.enabled&&active?<button type="button" onClick={()=>{if(confirm('删除此任务并停止尚未完成的云端处理？历史和用量会保留，可恢复；已发生的外部操作不会撤销。'))void removeCoordinatorTask(active.id).then(()=>openSurface('chat')).catch(e=>setError(e.message));}}>删除任务</button>:null}
+            {preview.enabled && active ? <button type="button" className="studio-mode-switch task-continue-button" onClick={()=>{void selectThing(active.id);openSurface('things');}}>继续任务</button> : null}
+            {coordinator.enabled&&active?<ActionMenu label="更多任务操作"><button type="button" onClick={()=>{if(confirm('删除此任务并停止尚未完成的云端处理？历史和用量会保留，可恢复；已发生的外部操作不会撤销。'))void removeCoordinatorTask(active.id).then(()=>openSurface('chat')).catch(e=>setError(e.message));}}>删除任务</button></ActionMenu>:null}
             {executionShortcut ? <button type="button" onClick={() => { setSelectedExecutionId(executionShortcut.id); setExpandedExecutionId(executionShortcut.id); setRevealExecutionId(executionShortcut.id); void loadLatestExecution(activeId, executionShortcut.id); }} aria-label="查看本机执行"><Zap size={14} /><span>{currentRunningExecution ? "查看执行进展" : "查看执行结果"}</span></button> : null}
             <button type="button" aria-label={focusedTask ? "还原布局" : "放大当前任务"} aria-pressed={focusedTask} onClick={() => transitionInterface(() => setFocusedTask(value => !value))}>{focusedTask ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
           </div>
@@ -1961,39 +1965,28 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                 <article hidden={replyPending&&message.role==='assistant'&&!message.content.trim()} className={`message ${message.role} ${message.id && message.id === (executionTask?.sourceMessageId || executionSourceMessageId) && activeExecutionMode ? "execution-source" : ""}`}>
                   <div className="bubble">
                     <div className="studio-message-author">{message.originalContent ? 'ONE 交给这个任务的要求' : message.role === "assistant" ? "ONE" : "你"}</div>
-                    {message.attachments?.length ? <AttachmentList attachments={message.attachments} /> : null}
-                    {message.originalContent ? <details className="task-original-message"><summary>看看我当时的原话</summary><p>{message.originalContent}</p></details> : null}
+                    {remainingResultAttachments(message.attachments,message.role==='assistant'?message.imageUrl:undefined).length ? <AttachmentList attachments={remainingResultAttachments(message.attachments,message.role==='assistant'?message.imageUrl:undefined)} /> : null}
                     {message.role === "assistant" ? (
                       <>
                         <div className="markdown-body">
                           <MessageMarkdown>{message.content}</MessageMarkdown>
                         </div>
                         {message.finishReason === "length" ? <div className="message-completion-notice" role="status"><span>本次回答达到长度上限，尚未写完。</span>{index === active!.messages.length - 1 && !composeNew ? <button type="button" disabled={activeLoading || executionBusy || uploadingAttachments || !!pendingAttachments.length} onClick={() => { if (confirm("继续生成会产生新的额度消耗，是否继续？")) void sendMessage("请接着上一条未完成的回答继续，从中断处接上，不要重复前文。"); }}>继续生成</button> : null}</div> : message.finishReason === "filtered" ? <p className="message-completion-notice" role="status">模型服务未完整返回这次回答，请调整问题后再试。</p> : null}
-                        <div className="message-actions">
-                          <button title="复制" onClick={() => copyMarkdown(message.content)}>
-                            <Copy size={14} />
-                          </button>
-                          {!demo.enabled && active && message.id ? (
-                            <button className={`execution-trigger ${index === active.messages.length - 1 && !executionTask ? "execution-primary-action" : ""}`} title={taskStatusUnavailable ? "正在确认本机状态" : executionBusy ? "本机正在工作，完成后可执行下一件" : "交给 ONE 执行"} disabled={taskStatusUnavailable || preparingExecution || executionBusy || activeLoading || active.id.startsWith("tmp_")} onClick={(event) => executeFromMessage(message, event.currentTarget)}>
-                              <Zap size={14} />{index === active.messages.length - 1 && !executionTask ? <span>交给 ONE 执行</span> : null}
-                            </button>
-                          ) : null}
-                        </div>
+                        {message.imageUrl ? <div className="task-image-result">{!hasInlineImage(message.content,message.imageUrl) ? <ImagePreview src={message.imageUrl} alt="ONE 生成的图片"/> : null}<a className="one-task-result-link" href={message.imageUrl} download>保存图片 ↗</a></div> : null}
                         <MessageSources message={message} />
-                        {!demo.enabled && message.id && active && !active.id.startsWith("tmp_") ? <BetaFeedbackControls key={message.id} messageId={message.id} requestId={message.requestId} onSave={async input => (await api<{ feedback: import("./Onboarding").OwnBetaFeedback }>("/api/me/feedback", { method: "POST", body: JSON.stringify(input) })).feedback} /> : null}
+                        {!demo.enabled && message.id && active && !active.id.startsWith("tmp_") ? <BetaFeedbackControls key={message.id} messageId={message.id} requestId={message.requestId}
+                          leading={<button type="button" title="复制回答" onClick={() => copyMarkdown(message.content)}><Copy size={14}/>复制</button>}
+                          moreActions={!message.imageUrl&&!/!\[[^\]]*\]\(/.test(message.content) ? <button type="button" className="execution-trigger" title={taskStatusUnavailable ? "正在确认本机状态" : executionBusy ? "本机正在工作，完成后可执行下一件" : "把这条回答交给本机执行"} disabled={taskStatusUnavailable || preparingExecution || executionBusy || activeLoading} onClick={(event) => executeFromMessage(message, event.currentTarget)}><Zap size={14}/>交给本机执行</button> : undefined}
+                          onSave={async input => (await api<{ feedback: import("./Onboarding").OwnBetaFeedback }>("/api/me/feedback", { method: "POST", body: JSON.stringify(input) })).feedback} /> : <div className="message-result-toolbar"><button type="button" onClick={() => copyMarkdown(message.content)}><Copy size={14}/>复制</button></div>}
                       </>
                     ) : (
                       <>
                         <pre>{message.content}</pre>
+                        {message.originalContent ? <details className="task-original-message"><summary>查看你的原话</summary><p>{message.originalContent}</p></details> : null}
                         {preview.enabled && preview.state.tasks.find(task=>task.id===activeId)?.messages.find(item=>item.id===message.id)?.status==='queued' ? <small>{coordinator.snapshot?.tasks.find(t=>t.id===activeId)?.paused?'已保存 · 任务暂停，请确认继续处理':'已收到 · 等待处理'}</small> : null}
-                        {!demo.enabled && active && message.id ? (
-                          <div className="message-actions user-actions">
-                            <button className="execution-trigger" title={taskStatusUnavailable ? "正在确认本机状态" : executionBusy ? "本机正在工作，完成后可执行下一件" : "交给 ONE 执行"} disabled={taskStatusUnavailable || preparingExecution || executionBusy || activeLoading || active.id.startsWith("tmp_")} onClick={(event) => executeFromMessage(message, event.currentTarget)}><Zap size={14} /></button>
-                          </div>
-                        ) : null}
                       </>
                     )}
-                    {message.imageUrl && !hasInlineImage(message.content,message.imageUrl) ? <ImagePreview src={message.imageUrl} alt="ONE 生成的图片"/> : null}
+                    {message.role!=='assistant'&&message.imageUrl&&!hasInlineImage(message.content,message.imageUrl)?<ImagePreview src={message.imageUrl}/>:null}
                     <small className="message-time">{dateTime(message.createdAt)}</small>
                   </div>
                 </article>
@@ -2034,7 +2027,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             <span>{unreadNotices.length > 0 ? <b className="attention-unread-count">{unreadNotices.length} 条更新</b> : <small>{otherRows.length}</small>}<ChevronDown size={14} /></span>
           </button> : null}
           <div id="attention-task-list" className="attention-task-list" hidden={!activityExpanded || otherRows.length === 0}>
-            {unreadNotices.length ? <button type="button" className="attention-all-tasks" onClick={()=>void readAllTaskMessages().catch(e=>setError(e.message))}>全部标为已读</button> : null}
+            {unreadNotices.length ? <TaskReadAllButton count={unreadNotices.length} onReadAll={readAllTaskMessages}/> : null}
             {activeOthers.length > 0 ? <section><h3>进行中</h3>{activeOthers.map(renderActivityRow)}</section> : null}
             {settledOthers.length > 0 ? <section><h3>{settledOthers.some(row => row.unread) ? "结果与最近" : "最近"}</h3>{settledOthers.slice(0, 5).map(renderActivityRow)}</section> : null}
             {otherRows.length === 0 ? <p className="attention-empty">当前没有其他事情。</p> : null}

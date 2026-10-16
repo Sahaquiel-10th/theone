@@ -8,6 +8,7 @@ import { runBilledModel } from "./modelBilling.js";
 import { MODEL_MAX_OUTPUT_TOKENS, parseProviderUsage } from "./modelGateway.js";
 import { fetchWithSafeRetries } from './providerRetry.js';
 import { localDocumentPolicy } from './localDocumentPolicy.js';
+import { friendlyConversationGuidance } from './conversationTone.js';
 
 export type CodexGatewayConfiguration = { baseUrl: string; token: string; model: "one-executor" };
 type Grant = Pick<ExecutionTask, "id" | "workspaceId" | "userId" | "deviceId" | "installationId" | "conversationId" | "batchBudget"> & {
@@ -116,7 +117,7 @@ export class CodexGateway {
     delete forwarded.prompt_cache_key;
     const prefix = `codex_${digest(`${grant.workspaceId}:${grant.userId}:${grant.id}:${grant.round}`).slice(0, 24)}_`;
     const body = { ...forwarded, model: grant.model.model, store: false, max_output_tokens: MODEL_MAX_OUTPUT_TOKENS,
-      prompt_cache_key: prefix, instructions: [grant.model.systemPrompt, localDocumentPolicy, input.instructions].filter(Boolean).join("\n\n") };
+      prompt_cache_key: prefix, instructions: [grant.model.systemPrompt, friendlyConversationGuidance, localDocumentPolicy, input.instructions].filter(Boolean).join("\n\n") };
     const requestId = prefix + digest(canonical(body)).slice(0, 32);
     const attemptId = await this.store.mutate(db => {
       if (signal.aborted || !this.enabled() || this.grants.get(digest(token)) !== grant) throw unavailable();

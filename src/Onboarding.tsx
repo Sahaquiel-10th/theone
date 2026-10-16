@@ -1,5 +1,6 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ArrowUpRight, Check, Image, Lightbulb, MessageSquare, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ActionMenu } from './ActionMenu';
 import type { AccountProfile, ProfilePatch } from "../server/betaProfile";
 import type { BetaFeedbackInput, OwnBetaFeedback } from "../server/betaFeedback";
 import type { OnboardingHandbookOffer } from "../server/onboardingHandbook";
@@ -91,9 +92,10 @@ export function OnboardingHandbookNotice({ profile, onOpenTask }: { profile: Acc
   return <aside className="one-onboarding-handbook-note" role="status"><Lightbulb size={17} aria-hidden="true" /><span>你的个人小指南在「任务」里，想看进度或结果，随时去看看。</span>{onOpenTask ? <button type="button" onClick={() => onOpenTask(guide.taskId!)}>去看看<ArrowUpRight size={13} /></button> : null}</aside>;
 }
 
-export function BetaFeedbackControls({ messageId, requestId, feedback, onSave }: {
+export function BetaFeedbackControls({ messageId, requestId, feedback, onSave, leading, moreActions }: {
   messageId: string; requestId?: string; feedback?: OwnBetaFeedback;
   onSave: (input: BetaFeedbackInput) => Promise<OwnBetaFeedback>;
+  leading?: ReactNode; moreActions?: ReactNode;
 }) {
   const id = useId();
   const [saved, setSaved] = useState(feedback);
@@ -120,13 +122,16 @@ export function BetaFeedbackControls({ messageId, requestId, feedback, onSave }:
     catch { setNotice(`问题编号：${requestId || saved?.requestId || "暂无"}`); }
   }
   return <div className="one-beta-feedback">
-    <div className="one-beta-feedback-actions" aria-label="这次回答帮上忙了吗？">
-      <button type="button" aria-pressed={saved?.rating === "helped"} disabled={busy} onClick={() => void submit("helped")}><ThumbsUp size={13} />帮上忙了</button>
-      <button type="button" aria-pressed={saved?.rating === "not_solved"} disabled={busy} onClick={() => void submit("not_solved")}><ThumbsDown size={13} />没解决</button>
-      <button type="button" aria-expanded={expanded} aria-controls={`${id}-note`} disabled={busy} onClick={() => { setExpanded(!expanded); setNotice(""); }}><MessageSquare size={13} />补充反馈</button>
-      {requestId || saved?.requestId ? <button type="button" onClick={() => void copyRequestId()}>复制问题编号</button> : null}
+    <div className="one-beta-feedback-actions message-result-toolbar" aria-label="回答操作">
+      {leading}
+      <button type="button" aria-expanded={expanded} aria-controls={`${id}-note`} disabled={busy} onClick={() => { setExpanded(!expanded); setNotice(""); }}><MessageSquare size={14} />{saved ? '已反馈' : '反馈'}</button>
+      {moreActions || requestId || saved?.requestId ? <ActionMenu label="更多回答操作">{moreActions}{requestId || saved?.requestId ? <button type="button" onClick={() => void copyRequestId()}>复制问题编号</button> : null}</ActionMenu> : null}
     </div>
     {expanded ? <div className="one-beta-feedback-note" id={`${id}-note`}>
+      <div className="one-beta-feedback-actions" aria-label="这次回答帮上忙了吗？">
+        <button type="button" aria-pressed={saved?.rating === "helped"} disabled={busy} onClick={() => void submit("helped")}><ThumbsUp size={14}/>帮上忙了</button>
+        <button type="button" aria-pressed={saved?.rating === "not_solved"} disabled={busy} onClick={() => void submit("not_solved")}><ThumbsDown size={14}/>没解决</button>
+      </div>
       <label htmlFor={`${id}-text`}>补充说明（选填，最多 500 字）</label>
       <textarea id={`${id}-text`} value={comment} onChange={(event) => setComment(event.target.value)} maxLength={1000} rows={3} placeholder="只填写你愿意分享的内容" disabled={busy} />
       <label className="one-beta-feedback-consent"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} disabled={busy} />我同意将这段说明发给内测管理员。不会附带聊天、附件或知识资料。</label>
