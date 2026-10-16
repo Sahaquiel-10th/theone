@@ -56,7 +56,7 @@ import {
 } from "./conversationAttachments.js";
 import { prepareAttachmentContext } from "./attachmentRetrieval.js";
 import { accountInScope } from './betaProfile.js';
-import { handbookInstruction, type OnboardingImageInput } from './onboardingHandbook.js';
+import { handbookInstruction, handbookTitle, type OnboardingImageInput } from './onboardingHandbook.js';
 import { friendlyConversationGuidance } from './conversationTone.js';
 
 export type WorkScope = { workspaceId: string; userId: string };
@@ -1159,7 +1159,7 @@ export class CoordinatorService {
         || marker.operationId !== input.operationId || marker.pricePower !== input.budget
         || !Number.isFinite(marker.maxPower) || input.budget > marker.maxPower)
         throw new CoordinatorError('图片指南尚未确认或已经安排', 409);
-      if (input.title !== `${profile.displayName}的 ONE 小指南` || input.instruction !== handbookInstruction(db, s))
+      if (input.title !== handbookTitle(profile) || input.instruction !== handbookInstruction(db, s))
         throw new CoordinatorError('图片指南内容已变化，请先开始聊天', 409);
       const config = resolveImageTask(db, Boolean(this.deps.artifactDirectory));
       if (!Number.isFinite(input.budget) || input.budget <= 0 || input.budget > .5
@@ -1182,13 +1182,14 @@ export class CoordinatorService {
       await this.store.mutate(db => {
         check(db);
         const main = db.conversations.find(c => own(c, s) && c.id === cid && c.coordinatorMain)!;
-        saveMessage(db, s, main, { id: sourceId, role: 'assistant', content: '我会给你准备一张 ONE 小指南，做好后放在右边的任务里。', createdAt: at() });
+        saveMessage(db, s, main, { id: sourceId, role: 'assistant', content: current.users.find(u=>u.id===s.userId)?.profile?.onboarding.journey?.version===2?'嗯，给你画一张和 ONE 一起做事的漫画。安排好就放进任务区。':'我会给你准备一张 ONE 小指南，做好后放在右边的任务里。', createdAt: at() });
       });
       const taskId = await this.enqueueImage(s, { operationId: `${input.operationId}_image`, parentOperationId: input.operationId,
         text: input.instruction, prompt: input.instruction, title: input.title, originConversationId: cid, originMessageId: sourceId, budget: input.budget }, verifyKey, check);
       await this.store.mutate(db => {
         const main = db.conversations.find(c => own(c, s) && c.id === cid && c.coordinatorMain)!;
-        const content = `你的 ONE 小指南已经安排了，做好后放在右边。我们可以先继续聊。\n\n[查看小指南](/?task=${encodeURIComponent(taskId)})`;
+        const comic=db.users.find(u=>u.id===s.userId)?.profile?.onboarding.journey?.version===2;
+        const content = comic?`漫画已经安排好了。任务区可以看进度，我们先聊别的也行。\n\n[查看漫画任务](/?task=${encodeURIComponent(taskId)})`:`你的 ONE 小指南已经安排了，做好后放在右边。我们可以先继续聊。\n\n[查看小指南](/?task=${encodeURIComponent(taskId)})`;
         const message = main.messages.find(m => m.id === sourceId)!; message.content = content;
         const record = db.messages.find(m => own(m, s) && m.conversationId === cid && m.id === sourceId); if (record) record.content = content;
         completeChatOperation(db, { ...s, operationId: input.operationId }, { conversationId: cid, assistantMessageId: sourceId });

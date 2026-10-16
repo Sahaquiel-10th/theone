@@ -1780,19 +1780,20 @@ test('read-all HTTP endpoint requires a live Key and only acknowledges the authe
   assert.ok(db.executionTasks.every(task=>!task.reportedToCoordinatorAt));assert.equal(db.messages.length,0);
 });
 
-test('server-only onboarding image requires the claimed profile marker and uses a private normal image job once',async()=>{
+for(const comic of [false,true])test(`server-only onboarding ${comic?'comic':'guide'} requires the claimed profile marker and uses a private normal image job once`,async()=>{
   let calls=0;const f=await imageFixture(async()=>{calls++;return {content:'真实欢迎图片',imageUrl:imageFixturePng};});
   const operationId='welcome_0123456789abcdef';
   await f.store.mutate(d=>{
     const user=d.users.find(u=>u.id==='a')!;user.defaultWorkspaceId='wa';
     user.profile={workspaceId:'wa',displayName:'小明',onboarding:{nameSetAt:'now',knowledgeChoice:'skipped',completedAt:'now',handbook:{operationId,status:'preparing',requestedAt:'now',updatedAt:'now',pricePower:.012,maxPower:.012}},updatedAt:'now'};
+    if(comic)user.profile.onboarding.journey={id:'journey_0123456789',launchId:'launch_0123456789',version:2,stage:'complete',startedAt:'now',completedAt:'now',nameChoice:'provided',knowledgeChoice:'skipped',localChoice:'skipped',featureIds:[],events:[]};
     d.settings.aiTasks!.image_generation!.published!.imagePowerPerCall=.012;
     d.settings.aiTasks!.image_generation!.published!.costImagePowerPerCall=.02;
     d.settings.aiTasks!.image_generation!.published!.enabled=true;
   });
-  const {handbookInstruction,startOnboardingHandbook}=await import('./onboardingHandbook.js');
+  const {handbookInstruction,handbookTitle,startOnboardingHandbook}=await import('./onboardingHandbook.js');
   const db=await f.store.read(),configuration=db.settings.aiTasks!.image_generation!.published!;
-  const welcome={operationId,title:'小明的 ONE 小指南',instruction:handbookInstruction(db,a),budget:.012,imageVersion:configuration.version};
+  const welcome={operationId,title:handbookTitle(db.users.find(u=>u.id==='a')!.profile!),instruction:handbookInstruction(db,a),budget:.012,imageVersion:configuration.version};
   const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw new Error('欢迎图片不得读取知识库');}},
     {artifactDirectory:f.directory,imageCall:async()=>{calls++;return {content:'真实欢迎图片',imageUrl:imageFixturePng};},modelCall:async()=>{throw new Error('欢迎图片不得调用文字模型');}});
   try{
@@ -1807,7 +1808,7 @@ test('server-only onboarding image requires the claimed profile marker and uses 
     let saved=await f.store.read();const child=saved.chatOperations!.find(o=>o.operationId===`${operationId}_image`)!;
     assert.equal(child.conversationId,taskId);assert.equal(child.workRun!.state,'queued');assert.equal(calls,0);
     assert.equal(saved.conversations.find(c=>c.coordinatorMain)!.messages.length,1);assert.equal(saved.conversations.find(c=>c.coordinatorMain)!.messages[0].role,'assistant');
-    assert.match(saved.conversations.find(c=>c.coordinatorMain)!.messages[0].content,/查看小指南/);
+    assert.match(saved.conversations.find(c=>c.coordinatorMain)!.messages[0].content,comic?/查看漫画任务/:/查看小指南/);
     assert.equal(saved.conversations.find(c=>c.id===taskId)!.messages[0].content,welcome.instruction);
     await service.resume(a,key);await waitFor(async()=>(await service.task(a,taskId)).jobs[0].state==='completed');
     saved=await f.store.read();assert.equal(calls,1);assert.equal(saved.modelUsageRecords.filter(r=>r.activity==='image_generation').length,1);

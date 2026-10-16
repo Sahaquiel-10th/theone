@@ -1045,6 +1045,11 @@ installCapabilityRoutes(app,admin,store,{imageStorageAvailable:true});
 const coordinatorService=installCoordinatorRoutes(app,keyAuth,admin,store,confirmKeyBeforeModel,knowledgeService,{cancelLocal:stopLocalPreparation,notionDocuments,artifactDirectory:uploadDir,webSearch:query=>webSearchEnabled()?searchWeb(query):Promise.resolve({status:'unavailable'}),
   executeLocal: async (req, res, cid, mid, operationId) => { const result = await startLocalExecution(req, res, cid, mid, operationId); return { id: result.task.id, status: result.task.status }; }});
 installOnboardingProfileRoutes(app,keyAuth,store,{storageAvailable:Boolean(uploadDir),verifyKey:confirmKeyBeforeModel,
+  inspectLocal:async req=>{
+    const scope={deviceId:req.oneKeyDeviceId!,installationId:req.oneKeyInstallationId,workspaceId:req.workspaceId!,userId:req.user!.id};
+    const [folder,executor]=await Promise.allSettled([oneKeyPresence.localConfiguration(scope,false),codexGateway.enabled()?oneKeyPresence.managedExecutor(scope,runtime=>managedExecutorDistribution.release(runtime),false):Promise.resolve({available:false})]);
+    return {connected:folder.status==='fulfilled',folderSelected:folder.status==='fulfilled'&&!!folder.value.targetName,executorReady:executor.status==='fulfilled'&&'installedVersion' in executor.value&&!!executor.value.installedVersion,checkedAt:new Date().toISOString()};
+  },
   enqueueImage:(scope,input,verify)=>coordinatorService.enqueueOnboardingImage(scope,input,verify),resume:(scope,verify)=>coordinatorService.resume(scope,verify)});
 installOfficialFeaturePilotRoutes(app, admin, store);
 installFeatureTrialRoutes(app, admin, store, confirmKeyBeforeModel);

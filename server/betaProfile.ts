@@ -23,6 +23,8 @@ export type AccountProfile = {
     completedAt?: string;
     /** A new explicit welcome-flow choice, never inferred for existing accounts. */
     handbook?: OnboardingHandbook;
+    journey?: import('./onboardingJourney.js').OnboardingJourney;
+    journeyHistory?: import('./onboardingJourney.js').OnboardingJourney[];
   };
   updatedAt: string;
 };
@@ -85,6 +87,7 @@ export function updateAccountProfile(db: Database, scope: AccountScope, patch: P
     profile.onboarding.nameSetAt ||= currentTime;
   }
   if (patch.onboardingAction !== undefined) {
+    if(patch.onboardingAction==='complete'&&profile.onboarding.journey&&profile.onboarding.journey.stage!=='complete')throw new BetaInputError('请从当前新手引导的最后一步完成。',409);
     if (typeof patch.onboardingAction !== "string" || !["knowledge_connected", "knowledge_skipped", "complete"].includes(patch.onboardingAction)) {
       throw new BetaInputError("引导步骤无效");
     }

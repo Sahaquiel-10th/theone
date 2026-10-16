@@ -3,12 +3,14 @@ import type { Store } from "./db.js";
 import { accountInScope, accountProfile, updateAccountProfile, type AccountScope } from "./betaProfile.js";
 import { asyncRoute } from "./middleware.js";
 import { onboardingHandbookOffer, resolvedOnboardingHandbookProfile, startOnboardingHandbook, type OnboardingImageInput } from "./onboardingHandbook.js";
+import { updateJourney, welcomeContext, type LocalWelcomeState } from './onboardingJourney.js';
 
 export type OnboardingProfileDependencies = {
   storageAvailable: boolean;
   verifyKey: (req: express.Request) => Promise<void>;
   enqueueImage: (scope: AccountScope, input: OnboardingImageInput, verifyKey: () => Promise<void>) => Promise<string>;
   resume: (scope: AccountScope, verifyKey: () => Promise<void>) => Promise<unknown>;
+  inspectLocal?: (req: express.Request) => Promise<LocalWelcomeState>;
 };
 
 /** The middleware supplies the exact authenticated account; bodies cannot
@@ -20,7 +22,35 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
   const scope = (req: express.Request): AccountScope => ({ userId: req.user!.id, workspaceId: req.workspaceId! });
   router.get("/", asyncRoute(async (req, res) => {
     const db = await store.read(), current = resolvedOnboardingHandbookProfile(db, scope(req));
-    res.json({ profile: current.profile, handbookNotice: current.notice, handbookOffer: onboardingHandbookOffer(db, deps.storageAvailable) });
+    res.json({ profile: current.profile, welcomeContext: welcomeContext(db,scope(req)), handbookNotice: current.notice, handbookOffer: onboardingHandbookOffer(db, deps.storageAvailable) });
+  }));
+  router.post('/onboarding',asyncRoute(async(req,res)=>{
+    const s=scope(req),input=req.body??{};
+    // The server inspects only the authenticated Key's current installation.
+    // A browser cannot claim that a folder or executor has been authorized.
+    let local:LocalWelcomeState|undefined;
+    if((input.action==='step'&&input.step==='device'&&input.choice==='checked')||input.action==='finish') {
+      const p=accountProfile(await store.read(),s),j=p.onboarding.journey;
+      if(j&&j.id===input.journeyId&&j.stage!=='complete'&&(j.stage==='device'||input.action==='finish'&&j.localChoice==='checked')) {
+        try { local=await deps.inspectLocal?.(req); } catch { /* No raw device/provider errors are exposed. */ }
+        local??={connected:false,folderSelected:false,executorReady:false,checkedAt:new Date().toISOString()};
+      }
+    }
+    await store.mutate(db=>updateJourney(db,s,input,local));
+    let notice:string|undefined;
+    if(input.action==='finish') {
+      try {
+        const result=await startOnboardingHandbook(store,s,{storageAvailable:deps.storageAvailable,verifyKey:()=>deps.verifyKey(req),enqueueImage:deps.enqueueImage});
+        notice=result.notice;
+        if(result.handbook?.status==='queued')void deps.resume(s,()=>deps.verifyKey(req)).catch(()=>{});
+      } catch {
+        // A pre-queue Key loss is a known failed handoff, never an endless pending state.
+        await store.mutate(db=>{const u=accountInScope(db,s),p=accountProfile(db,s);if(p.onboarding.journey?.id!==input.journeyId||p.onboarding.handbook?.status!=='pending')return;p.onboarding.handbook.status='failed';p.onboarding.handbook.reason='unavailable';u.profile=p;});
+        notice='漫画这次没交接好。可以先聊天，稍后到任务里查看；不会自动重复生成。';
+      }
+    }
+    const db=await store.read(),current=resolvedOnboardingHandbookProfile(db,s);
+    res.json({profile:current.profile,welcomeContext:welcomeContext(db,s),handbookOffer:onboardingHandbookOffer(db,deps.storageAvailable),handbookNotice:notice||current.notice});
   }));
   router.patch("/", asyncRoute(async (req, res) => {
     const s = scope(req), body = req.body ?? {};

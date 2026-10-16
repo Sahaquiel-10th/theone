@@ -11,6 +11,8 @@ import {OneWaitingCopy,useOneGreeting} from './OnePersonality';
 import {FeatureNav} from './FeatureNav';
 import {ThingsPanel} from './ThingsPanel';
 import {TaskReadAllButton} from './TaskReadAllButton';
+import {StoryOnboarding} from './StoryOnboarding';
+import type {JourneyInput,WelcomeContext} from '../server/onboardingJourney';
 import {ActionMenu} from './ActionMenu';
 import {remainingResultAttachments} from './taskMessagePresentation';
 import {sendThingMessage} from './sendThingMessage';
@@ -114,7 +116,7 @@ import { buildTaskActivityRows, getSettledTaskTransitions, selectConversationExe
 import { OneCompanionEye as OneHeroEye } from "./OneCompanionEye";
 import { api, apiForUser, ApiError, expectUser, announceSessionChange, SESSION_EVENT, SESSION_STORAGE_KEY } from "./oneApi";
 import { chatSubmission, forgetChatSubmission, pendingChatSubmissions } from "./chatSubmission";
-import { Onboarding, ProfileNameEditor, BetaFeedbackControls, type AccountProfile, type ProfilePatch } from "./Onboarding";
+import { ProfileNameEditor, BetaFeedbackControls, type AccountProfile, type ProfilePatch } from "./Onboarding";
 import type { OnboardingHandbookOffer } from '../server/onboardingHandbook';
 import { getNotePollFailureAction, prepareGetNoteAuthorizationWindow } from "./getNoteAuthorization";
 import { PaymentPanel } from "./PaymentPanel";
@@ -581,10 +583,11 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const preview = coordinator.enabled ? coordinator : demo;
   const [profile, setProfile] = useState<AccountProfile>(user.profile || { workspaceId: user.defaultWorkspaceId, displayName: "", onboarding: { knowledgeChoice: "pending" }, updatedAt: user.createdAt });
   const [handbookOffer,setHandbookOffer]=useState<OnboardingHandbookOffer>(),[handbookNotice,setHandbookNotice]=useState('');
+  const [welcomeContext,setWelcomeContext]=useState<WelcomeContext>(),[profileLoaded,setProfileLoaded]=useState(false),[storyOpen,setStoryOpen]=useState(false),[storyHidden,setStoryHidden]=useState(false),[storyTaskId,setStoryTaskId]=useState('');
   useEffect(()=>{
-    if(demo.enabled||profile.onboarding.completedAt||user.access?.kind==='company')return;
+    if(demo.enabled)return;
     let live=true;
-    void api<{profile:AccountProfile;handbookOffer?:OnboardingHandbookOffer}>('/api/me/profile').then(result=>{if(live){setProfile(result.profile);setHandbookOffer(result.handbookOffer);}}).catch(()=>{});
+    void api<{profile:AccountProfile;handbookOffer?:OnboardingHandbookOffer;welcomeContext?:WelcomeContext}>('/api/me/profile').then(result=>{if(live){setProfile(result.profile);setHandbookOffer(result.handbookOffer);setWelcomeContext(result.welcomeContext);}}).catch(()=>{}).finally(()=>{if(live)setProfileLoaded(true);});
     return()=>{live=false;};
   },[user.id,profile.workspaceId]);
   const [pendingRequests, setPendingRequests] = useState(() => pendingChatSubmissions(user.id));
@@ -595,6 +598,21 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setProfile(result.profile);setHandbookOffer(result.handbookOffer);setHandbookNotice(result.handbookNotice||'');
     if(patch.onboardingAction==='complete'&&result.profile.onboarding.handbook?.taskId)void coordinator.refresh();
     return result.profile;
+  }
+  async function saveStory(input:JourneyInput) {
+    const result=await api<{profile:AccountProfile;welcomeContext:WelcomeContext;handbookOffer:OnboardingHandbookOffer;handbookNotice?:string}>('/api/me/profile/onboarding',{method:'POST',body:JSON.stringify(input)});
+    setProfile(result.profile);setWelcomeContext(result.welcomeContext);setHandbookOffer(result.handbookOffer);
+    if(input.action==='finish') {
+      setStoryOpen(false);setStoryHidden(true);setComposeNew(true);openSurface('chat');
+      const guide=result.profile.onboarding.handbook;
+      setHandbookNotice(result.handbookNotice||'');
+      setStoryTaskId(guide?.status==='queued'?guide.taskId||'':'');
+      void coordinator.refresh().catch(()=>{if(guide?.status==='queued')setHandbookNotice('漫画已经安排好了，进度暂时没刷新出来。可以先聊，或打开任务看看。');});
+    }
+    return result.profile;
+  }
+  async function startStory() {
+    await saveStory({action:'begin',launchId:crypto.randomUUID()});setStoryOpen(true);setStoryHidden(false);setComposeNew(true);openSurface('chat');
   }
   async function recoverAnswer(operationId: string) {
     try {
@@ -1943,7 +1961,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       ) : view === "features" ? (
         <section className="account-page features-page"><header className="admin-header"><div><h2>功能</h2></div>{preview.enabled?<button type="button" className="feature-shelf-close" onClick={()=>openSurface('chat')} aria-label="收起功能"><X size={16}/></button>:null}</header><div className="account-body settings-account-body">{preview.enabled?<FeatureShelf api={api} models={models} selected={featureForNext.map(item=>item.id)} onChoose={feature=>{setFeatureForNext(previous=>previous.some(item=>item.id===feature.id)?previous.filter(item=>item.id!==feature.id):previous.length<8?[...previous,feature]:previous);}}/>:<FeatureMarketplace api={api} models={models} onAsk={()=>openSurface('chat')}/>}</div></section>
       ) : view === "account" ? (
-        <AccountPage user={user} profile={profile} onSaveProfile={saveProfile} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setHistoryOpen(true)} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgePage onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : next.provider === "flomo" ? setFlomoConnection(next) : setKnowledgeConnection(next)} />} />
+        <AccountPage user={user} profile={profile} onSaveProfile={saveProfile} onOpenGuide={startStory} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setHistoryOpen(true)} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgePage onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : next.provider === "flomo" ? setFlomoConnection(next) : setKnowledgeConnection(next)} />} />
       ) : (
       preview.enabled && !active ? <section className="workspace-task-overview"><h1>手头的事情</h1><div>{preview.state.tasks.filter(task=>task.messages.length).map(task=><button type="button" key={task.id} onClick={()=>void openConversation(conversations.find(item=>item.id===task.id)!)}><strong>{task.title}</strong><small>{task.status==='running'?'正在处理':task.status==='completed'?'结果好了':task.status==='failed'?'需要看一下':'接着聊'} ↗</small></button>)}</div></section> :
       <section className="studio-task" key={activeId}>
@@ -2001,8 +2019,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       </section>
 
       <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 指挥台">
-        {view === "chat" && !hasSubmittedChat && !conversations.length && !profile.onboarding.completedAt && user.access?.kind !== "company" ? <Onboarding profile={profile} handbookOffer={handbookOffer} knowledgeConnected={[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected")} onSave={saveProfile} onOpenKnowledge={() => openSurface("knowledge")} onStartQuestion={suggestion => { if(!currentDraftRef.current.content.trim())setContent(suggestion);setComposeNew(true);setView("chat"); }} /> : null}
-        {handbookNotice && view==='chat' ? <p className="one-onboarding-handbook-notice" role="status">{handbookNotice}<button type="button" onClick={()=>setHandbookNotice('')} aria-label="收起说明">知道了</button></p> : null}
+        {view==='chat'&&profileLoaded&&!storyHidden&&(storyOpen||profile.onboarding.journey?.stage&&profile.onboarding.journey.stage!=='complete'||!hasSubmittedChat&&!conversations.length&&!profile.onboarding.completedAt&&user.access?.kind!=='company')?<StoryOnboarding profile={profile} context={welcomeContext} offer={handbookOffer} onBegin={startStory} onAction={saveStory} onKnowledge={()=>openSurface('knowledge')} onDevice={()=>{setAccountSection('device');openSurface('account');}} onDismiss={()=>{setStoryHidden(true);setStoryOpen(false);}}/>:null}
+        {handbookNotice && view==='chat' ? <p className="one-onboarding-handbook-notice" role="status">{handbookNotice}{storyTaskId?<button type="button" onClick={()=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(storyTaskId)}`).then(result=>openConversation(result.conversation)).catch(e=>setError(e.message))}>查看漫画任务 ↗</button>:null}<button type="button" onClick={()=>setHandbookNotice('')} aria-label="收起说明">知道了</button></p> : null}
         <div className="studio-presence">
           <OneHeroEye mood={heroMood} label={view==='features'?'收起功能，回到 ONE':'打开功能'} onActivate={()=>openSurface(view==='features'?'chat':'features')}/>
           <div className="studio-presence-copy"><span className="studio-eyebrow">ONE IS WITH YOU</span>
@@ -2417,12 +2435,15 @@ function AgentEditorPage({ agent, agents, models, onCancel, onSaved }: {
   </section>;
 }
 
-function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onModelChange, onOpenSidebar, section, setSection, knowledge }: { user: User; profile: AccountProfile; onSaveProfile: (patch: ProfilePatch) => Promise<unknown>; models: Model[]; defaultModelId: string; onModelChange: () => Promise<void>; onOpenSidebar: () => void; section: string; setSection: (section: string) => void; knowledge: React.ReactNode }) {
+function AccountPage({ user, profile, onSaveProfile, onOpenGuide, models, defaultModelId, onModelChange, onOpenSidebar, section, setSection, knowledge }: { user: User; profile: AccountProfile; onSaveProfile: (patch: ProfilePatch) => Promise<unknown>; onOpenGuide:()=>Promise<unknown>; models: Model[]; defaultModelId: string; onModelChange: () => Promise<void>; onOpenSidebar: () => void; section: string; setSection: (section: string) => void; knowledge: React.ReactNode }) {
   const api = useContext(PrivateApiContext);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [notice, setNotice] = useState("");
+  const [openingGuide,setOpeningGuide]=useState(false);
+  const guidePending=!!profile.onboarding.journey&&profile.onboarding.journey.stage!=='complete';
+  const guideButton=<button type="button" disabled={openingGuide} onClick={()=>{setOpeningGuide(true);void onOpenGuide().catch(e=>setNotice(e.message)).finally(()=>setOpeningGuide(false));}}>{openingGuide?'正在打开…':guidePending?'继续新手引导':'重新走一遍引导'}<ArrowUpRight size={15}/></button>;
   const [billing, setBilling] = useState<{ balanceMicros: number; reservedMicros?: number; availableMicros?: number; ledger: PowerLedgerEntry[]; orders: RechargeOrder[]; usage: UsageRecord[]; rechargeCnyPerPower: number } | null>(null);
   const [selectedModelId, setSelectedModelId] = useState(defaultModelId);
 
@@ -2469,8 +2490,10 @@ function AccountPage({ user, profile, onSaveProfile, models, defaultModelId, onM
       </header>
       <nav className="settings-tabs account-settings-tabs" aria-label="设置栏目">{[["profile", "个人设置"], ["device", "本机执行"], ["knowledge", "知识连接"], ["power", "会员与额度"]].map(([id, label]) => <button type="button" key={id} aria-pressed={section === id} onClick={() => setSection(id)}>{label}</button>)}</nav>
       <div className="account-body settings-account-body">
+        {guidePending&&section!=='profile'?<div className="story-settings-return"><span>新手引导还在，接好后回来继续。</span>{guideButton}</div>:null}
         {section === "device" ? <LocalDeviceSettings key={user.id} api={api}/> : section === "knowledge" ? knowledge : section === "power" ? user.access?.kind === "company" ? <div className="settings-empty"><p>费用由公司按协议对公打款承担，无需个人充值。</p><p>公司可用电力：{((billing?.availableMicros??0)/1e6).toFixed(3)}；个人额度由公司管理员配置。</p></div> : billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载会员与额度…</p> : <>
         <section className="account-panel"><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
+        <section className="account-panel story-settings-entry"><div><h3>新手引导</h3><p>看看 ONE 能帮什么忙，再画一张属于你的故事漫画。已有连接、文件和任务不会重置；生成前会显示图片电力。</p></div>{guideButton}</section>
         <FeatureBudgetSettings key={user.id} api={api}/>
         <section className="account-panel">
           <div className="account-panel-title"><Bot size={18} /><h3>默认模型</h3></div>

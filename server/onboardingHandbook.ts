@@ -4,6 +4,7 @@ import { accountInScope, accountProfile, type AccountScope, type OnboardingHandb
 import { canReadKnowledge } from "./enterprisePolicy.js";
 import { resolveImageTask } from "./imageTaskConfiguration.js";
 import { availablePowerMicros } from "./powerBilling.js";
+import { onboardingComicInstruction } from './onboardingComic.js';
 
 const platformNames: Record<KnowledgeProviderId, string> = {
   getnote: "得到大脑", notion: "Notion", yinxiang: "印象笔记", flowus: "FlowUs", feishu: "飞书", flomo: "flomo",
@@ -18,6 +19,7 @@ const noticeText: Record<NonNullable<OnboardingHandbook["reason"]>, string> = {
 const ownsTask = (db: Database, scope: AccountScope, taskId: string | undefined) => !!taskId && db.conversations.some(c => c.id === taskId && c.workspaceId === scope.workspaceId && c.userId === scope.userId);
 
 export type OnboardingHandbookOffer = { available: boolean; pricePower?: number };
+export function handbookTitle(profile:ReturnType<typeof accountProfile>) { return profile.onboarding.journey?.version===2?`${profile.displayName||'你'}和 ONE 的故事漫画`:`${profile.displayName}的 ONE 小指南`; }
 /** Only a public price leaves this resolver; credentials/model prompts do not. */
 export function onboardingHandbookOffer(db: Database, storageAvailable: boolean): OnboardingHandbookOffer {
   try {
@@ -31,6 +33,7 @@ export function onboardingHandbookOffer(db: Database, storageAvailable: boolean)
 /** Collect only approved platform labels, never workspace names, tokens or KB contents. */
 export function handbookInstruction(db: Database, scope: AccountScope): string {
   const profile = accountProfile(db, scope);
+  if(profile.onboarding.journey?.version===2)return onboardingComicInstruction(db,scope);
   const platforms = [...new Set(db.knowledgeConnections.filter(c => c.workspaceId === scope.workspaceId && c.status === "connected" && canReadKnowledge(db, scope, c.id)).map(c => platformNames[c.provider]).filter(Boolean))];
   const data = { nickname: profile.displayName, platforms, capabilities: ["和 ONE 聊天", ...(platforms.length ? ["询问已连接知识中的资料，并查看引用"] : []), "把明确的工作交给任务，稍后查看结果"] };
   return [
@@ -86,7 +89,7 @@ export async function startOnboardingHandbook(store: Store, scope: AccountScope,
       else if (!Number.isFinite(handbook.maxPower) || handbook.maxPower <= 0 || handbook.maxPower > .5 || price > handbook.maxPower) reason = "budget_required";
       else if (db.modelUsageRecords.some(row => row.workspaceId === scope.workspaceId && row.userId === scope.userId && row.status === "needs_review")) reason = "billing_review";
       else if (availablePowerMicros(db, scope.workspaceId, scope.userId) < Math.ceil(price * 1e6 - 1e-7)) reason = "insufficient_power";
-      else input = { operationId: handbook.operationId, title: `${profile.displayName}的 ONE 小指南`, instruction: handbookInstruction(db, scope), budget: price, imageVersion: config.version };
+      else input = { operationId: handbook.operationId, title: handbookTitle(profile), instruction: handbookInstruction(db, scope), budget: price, imageVersion: config.version };
       handbook.pricePower = price;
     } catch { reason = "not_configured"; }
     handbook.status = input ? "preparing" : "skipped";

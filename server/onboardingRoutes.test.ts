@@ -53,6 +53,34 @@ async function server(t: TestContext, f: ReturnType<typeof fixture>) {
 }
 const completion = { onboardingAction: "complete", handbookChoice: "create", handbookBudgetPower: .012 };
 
+test('comic journey HTTP accepts all skipped steps, queues once, ignores forged device capabilities and can explicitly reopen',async t=>{
+ const f=fixture(),http=await server(t,f),url=http.url+'/onboarding';
+ const post=(body:object)=>fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+ const b=await(await post({action:'begin',launchId:'launch_0123456789abcdef',workspaceId:'wb',userId:'b'})).json(),id=b.profile.onboarding.journey.id;
+ for(const step of ['name','knowledge','device','features']) {
+   const r=await post({action:'step',journeyId:id,step,choice:'skipped',local:{connected:true,folderSelected:true,executorReady:true},featureIds:['foreign']});assert.equal(r.status,200);
+ }
+ const finished=await Promise.all([post({action:'finish',journeyId:id,budgetPower:.012}),post({action:'finish',journeyId:id,budgetPower:.012})]);
+ assert.deepEqual(finished.map(r=>r.status),[200,200]);assert.equal(f.stats().queued,1);
+ const state=await(await fetch(http.url)).json();assert.equal(state.profile.displayName,'');assert.equal(state.profile.onboarding.handbook.taskId,'guide-task');assert.equal(state.profile.onboarding.journey.local,undefined);
+ assert.equal(f.db.users[1].profile,undefined);
+ const reopened=await(await post({action:'begin',launchId:'restart_0123456789abcdef'})).json();assert.notEqual(reopened.profile.onboarding.journey.id,id);
+ assert.equal((await post({action:'finish',journeyId:id,budgetPower:.012})).status,409);assert.equal(f.stats().queued,1);
+});
+
+test('comic device step stores only server-inspected current-device state and degrades safely',async t=>{
+ const f=fixture(),http=await server(t,f),url=http.url+'/onboarding';let scans=0;
+ f.deps.inspectLocal=async()=>{scans++;return {connected:true,folderSelected:true,executorReady:true,checkedAt:'today'};};
+ const post=(body:object)=>fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+ const b=await(await post({action:'begin',launchId:'launch_0123456789abcdef'})).json(),id=b.profile.onboarding.journey.id;
+ for(const step of ['name','knowledge'])await post({action:'step',journeyId:id,step,choice:'skipped'});
+ const checked=await(await post({action:'step',journeyId:id,step:'device',choice:'checked',local:{connected:false}})).json();assert.equal(checked.profile.onboarding.journey.local.executorReady,true);assert.equal(scans,1);
+ await post({action:'step',journeyId:id,step:'features',choice:'skipped'});
+ f.deps.inspectLocal=async()=>{throw new Error('PRIVATE_LOCAL_ERROR');};
+ const finished=await(await post({action:'finish',journeyId:id,budgetPower:.012})).json();assert.equal(finished.profile.onboarding.journey.local.connected,false);assert.doesNotMatch(JSON.stringify(finished),/PRIVATE_LOCAL_ERROR/);
+ assert.equal(f.stats().queued,1);
+});
+
 test("HTTP profile uses middleware scope, ignores foreign body IDs, and returns only public guide metadata", async t => {
   const f = fixture(), http = await server(t, f);
   const changed = await http.patch({ displayName: "小马", userId: "b", workspaceId: "wb", instruction: "steal another account" });
