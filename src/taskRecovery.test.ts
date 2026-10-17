@@ -16,3 +16,7 @@ test('welcome recovery explains which stage remains without exposing the plan',(
  assert.equal(taskRecovery([{id:'w',state:'failed',kind:'image',welcomeManual:{document:{}}}]).welcomeStep,'image');
  assert.equal(taskRecovery([{id:'w',state:'failed',kind:'image',welcomeManual:{document:{}},welcomeImageAttachmentId:'saved'}]).welcomeStep,'page');
 });
+test('a stopped prerequisite does not leave a dead-end retry button on its cancelled successor',()=>{
+  const result=taskRecovery([{id:'child',state:'cancelled',dependsOnOperationIds:['parent']}]);
+  assert.equal(result.kind,'none');assert.match(result.message,/补充新的要求/);
+});

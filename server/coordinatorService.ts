@@ -1582,7 +1582,7 @@ export class CoordinatorService {
     await this.store.mutate(d=>{
       for(const op of d.chatOperations??[])if(own(op,s)&&op.workRun&&['queued','prepared'].includes(op.workRun.state)&&op.workRun.dependsOnOperationIds?.length){
         const state=dependencyState(d,s,op.workRun.dependsOnOperationIds);
-        if(state==='cancelled'){op.workRun.state='cancelled';op.workRun.userReport='前面的任务已经停下，这一项也先不做。原要求会留着。';op.status='interrupted';op.updatedAt=at();}
+        if(state==='cancelled'){op.workRun.state='cancelled';op.workRun.userReport='前面的任务已经停下，这一项也先不做。原要求会留着。';op.status='interrupted';op.updatedAt=at();const task=d.conversations.find(c=>own(c,s)&&c.id===op.conversationId);if(task)task.workPaused=true;}
         else if(state==='blocked'){op.workRun.dependencyBlocked=true;op.workRun.userReport='这一步要用到前面的结果，先等一等。把前面卡住的那件事接着做好，这里就能继续；其他不相关的任务照常做。';}
         else if(op.workRun.dependencyBlocked){op.workRun.dependencyBlocked=false;op.workRun.userReport=state==='waiting'?'前面的任务正在处理，结果好了就接着做这一项。':undefined;}
       }
