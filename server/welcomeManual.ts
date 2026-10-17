@@ -15,7 +15,7 @@ export function welcomeCapabilities(f:WelcomeGuideFacts){return [
   ...f.features.map((x,i)=>({id:`feature_${i}`,name:x.name,description:x.description}))
 ];}
 export const manualTool={type:'function' as const,function:{name:'oneManual',description:'交付可供画图与网页复用的个人使用说明。',parameters:visualDocumentSchema}};
-export function welcomeManualMessages(f:WelcomeGuideFacts){return [{role:'system' as const,content:welcomeManualPrompt},{role:'user' as const,content:JSON.stringify({nickname:f.nickname,purposes:f.purposes,platforms:f.platforms,localReady:f.localReady,capabilities:welcomeCapabilities(f)})}];}
+export function welcomeManualMessages(f:WelcomeGuideFacts,prompt=welcomeManualPrompt){return [{role:'system' as const,content:prompt},{role:'user' as const,content:JSON.stringify({nickname:f.nickname,purposes:f.purposes,platforms:f.platforms,localReady:f.localReady,capabilities:welcomeCapabilities(f)})}];}
 export function welcomeManualConfig(db:Database,f:WelcomeGuideFacts){
   const worker=db.settings.aiTasks?.task_worker?.published?.modelId;
   const fallback=db.models.find(m=>m.id===worker&&m.enabled&&m.kind==='chat'&&m.apiKey)??db.models.find(m=>m.enabled&&m.kind==='chat'&&m.isDefault&&m.apiKey)??db.models.find(m=>m.enabled&&m.kind==='chat'&&m.apiKey);
@@ -25,10 +25,10 @@ export function welcomeManualConfig(db:Database,f:WelcomeGuideFacts){
   // Stable upper bound across the last setup choice; actual usage is settled,
   // not this hold. No quote drift when the user picks purposes at the final step.
   const reservation=modelReservationMicros(effectiveModel(model),{contentBudget:'x'.repeat(80000)});
-  if(modelReservationMicros(effectiveModel(model),manualBillingInput(f))>reservation)throw new Error('使用说明材料超出本轮整理上限');
+  if(modelReservationMicros(effectiveModel(model),manualBillingInput(f,model.systemPrompt))>reservation)throw new Error('使用说明材料超出本轮整理上限');
   return {model,version:c.version,reservation};
 }
-export const manualBillingInput=(f:WelcomeGuideFacts)=>({messages:welcomeManualMessages(f),tools:[manualTool]});
+export const manualBillingInput=(f:WelcomeGuideFacts,prompt?:string)=>({messages:welcomeManualMessages(f,prompt),tools:[manualTool]});
 export type WelcomeManualSnapshot={model:ModelConfig;version:number;reservation:number;document?:VisualDocument};
 export function parseWelcomeManual(raw:unknown,f:WelcomeGuideFacts){
   const doc=validateVisualDocument(raw,welcomeCapabilities(f).map(x=>x.id));

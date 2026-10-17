@@ -37,6 +37,11 @@ for(const id of ['one-visual-html','one-visual-flow'])test(`${id}: published nor
  const file=f.db().attachments[0];assert.equal(file.workspaceId,'wa');assert.equal(file.userId,'a');assert.match(file.storagePath,id.endsWith('html')?/\.html$/:/\.svg$/);assert.ok((await fs.readFile(file.storagePath,'utf8')).includes('方案说明'));
  assert.throws(()=>featureRunResult(f.db(),{workspaceId:'wb',userId:'b'},body.operationId));
 });
+for(const id of ['one-visual-html','one-visual-flow'])test(`${id}: model promises without a file cannot mark the feature complete`,async()=>{
+ const f=fixture(),body=publish(f,id);await startFeatureRun(f.store,f.scope,id,body,async()=>{});
+ await executeFeatureRun(f.store,f.scope,body.operationId,async()=>{},noKnowledge,{modelCall:async()=>done});
+ const result=featureRunResult(f.db(),f.scope,body.operationId);assert.equal(result.status,'failed');assert.equal(f.db().attachments.length,0);assert.ok(result.error);
+});
 test('42 first-party recipes have distinct controls, valid defaults and idempotent installation',()=>{
  const f=fixture();assert.equal(oneSkillLibrary.length,42);assert.equal(new Set(oneSkillLibrary.map(s=>s.id)).size,42);
  for(const recipe of oneSkillLibrary){validateFeatureExperience(recipe.values.experience);assert.ok(composeFeatureTask(recipe.values.experience,'我的任务',{},undefined));assert.equal(recipe.values.author,'ONE');}

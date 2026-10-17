@@ -13,7 +13,7 @@ const digest=(token:string)=>createHash('sha256').update(token).digest('hex');
 function fileInScope(db:Database,s:AccountScope,id:string){
   accountInScope(db,s);const f=ownedAttachment(db.attachments,s,id);
   const standalone=!!f.visualDocument&&db.chatOperations?.some(o=>o.workspaceId===s.workspaceId&&o.userId===s.userId&&o.conversationId===f.conversationId&&o.featureRun&&o.status==='completed');
-  if((!f.welcomeGuide&&!f.visualDocument)||f.welcomeGuide&&f.kind!=='image'||f.visualDocument&&f.mimeType!=='text/html'||f.status!=='ready'||!db.conversations.some(c=>c.id===f.conversationId&&c.workspaceId===s.workspaceId&&c.userId===s.userId&&(!c.archived||standalone)))throw new BetaInputError('这份说明暂时不可用',404);
+  if((!f.welcomeGuide&&!f.visualDocument)||f.welcomeGuide&&f.kind!=='image'||f.visualDocument&&!['text/html','image/svg+xml'].includes(f.mimeType)||f.status!=='ready'||!db.conversations.some(c=>c.id===f.conversationId&&c.workspaceId===s.workspaceId&&c.userId===s.userId&&(!c.archived||standalone)))throw new BetaInputError('这份说明暂时不可用',404);
   return f;
 }
 async function dataImage(file:Attachment){

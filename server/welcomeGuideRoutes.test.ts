@@ -42,6 +42,7 @@ test('welcome artifact preview, exports and opt-in shares are private, isolated,
  db.conversations.push({...db.conversations[0],id:'standalone',archived:true});db.chatOperations=[{workspaceId:'wa',userId:'a',conversationId:'standalone',status:'completed',featureRun:{featureId:'one-visual-html'}}] as never;
  const page=await fetch(base+'/api/welcome-pages/page/view');assert.equal(page.status,200);assert.match(page.headers.get('content-security-policy')!,/script-src 'sha256-/);assert.doesNotMatch(page.headers.get('content-security-policy')!,/allow-same-origin/);
  assert.equal((await fetch(base+'/api/welcome-pages/page/view',{headers:{'x-test-user':'b'}})).status,404);
+ db.attachments.find(f=>f.id==='page')!.mimeType='image/svg+xml';assert.equal((await fetch(base+'/api/welcome-pages/page/view')).status,200);
  assert.equal((await fetch(base+'/api/welcome-pages/page/share',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({confirm:true})})).status,403);
  db.conversations[0].archived=true;assert.equal((await get()).status,404);
 });

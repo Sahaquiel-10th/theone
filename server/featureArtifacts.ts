@@ -11,7 +11,7 @@ export function visualArtifactSaver(store:Store,scope:{workspaceId:string;userId
   if(!directory)return;
   return (doc,format)=>createVisualArtifact(doc,format,async(name,bytes,mime,content)=>{
     const file=await saveFeatureArtifact(store,scope,directory,name,bytes,mime,'document',verify);
-    await store.mutate(db=>{verify(db);const f=ownedAttachment(db.attachments,scope,file.id);if(format==='html')f.visualDocument=content;});
+    await store.mutate(db=>{verify(db);const f=ownedAttachment(db.attachments,scope,file.id);f.visualDocument=content;});
     onSaved?.(file.id);return file;
   });
 }
