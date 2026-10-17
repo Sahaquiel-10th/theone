@@ -5,6 +5,8 @@ import {welcomeManualPrompt,welcomeIllustrationPrompt} from './welcomeManualProm
 import {validateVisualDocument,visualDocumentSchema,type VisualDocument} from './visualDocument.js';
 import type {WelcomeGuideFacts} from './welcomeGuide.js';
 import {effectiveModel} from './modelPricing.js';
+import type {WorkRun} from './coordinatorTypes.js';
+import {ModelRequestError} from './modelGateway.js';
 
 export function welcomeCapabilities(f:WelcomeGuideFacts){return [
   {id:'chat',name:'聊天与整理',description:'讨论、写作、理清想法，在对话中查看文字结果。'},
@@ -37,3 +39,15 @@ export function parseWelcomeManual(raw:unknown,f:WelcomeGuideFacts){
   return doc;
 }
 export function welcomeManualImagePrompt(doc:VisualDocument){return welcomeIllustrationPrompt+'\n'+JSON.stringify(doc);}
+export function welcomeRetryPower(job:WorkRun,imagePrice:number){return job.welcomeImageAttachmentId?0:imagePrice+(job.welcomeManual&&!job.welcomeManual.document?job.welcomeManual.reservation/1e6:0);}
+/** Only a pure planning request is retried; never a write, render or image call.
+ * One billing hold covers the bounded attempts; no automatic retry of timeouts
+ * or unknown completion, and every attempt rechecks cancellation and Key. */
+export async function callWelcomePlanner<T>(call:()=>Promise<T>,verify:()=>Promise<void>,onRetry:(attempt:number)=>Promise<void>,pause=(ms:number)=>new Promise<void>(resolve=>setTimeout(resolve,ms))){
+  for(let attempt=0;;attempt++){
+    await verify();try{return await call();}catch(e){
+      if(!(e instanceof ModelRequestError)||![429,502,503,504].includes(e.status)||attempt>=2)throw e;
+      await onRetry(attempt+1);await pause((attempt+1)*1000);await verify();
+    }
+  }
+}

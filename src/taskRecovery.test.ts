@@ -11,3 +11,8 @@ test('recovery offers safe actions for text, images, local execution and ongoing
   assert.equal(taskRecovery([{id:'active',state:'running'},{id:'later',state:'queued'}]).kind,'none');
   assert.equal(taskRecovery([{id:'done',state:'completed'}]).kind,'none');
 });
+test('welcome recovery explains which stage remains without exposing the plan',()=>{
+ assert.equal(taskRecovery([{id:'w',state:'failed',kind:'image',welcomeManual:{}}]).welcomeStep,'manual');
+ assert.equal(taskRecovery([{id:'w',state:'failed',kind:'image',welcomeManual:{document:{}}}]).welcomeStep,'image');
+ assert.equal(taskRecovery([{id:'w',state:'failed',kind:'image',welcomeManual:{document:{}},welcomeImageAttachmentId:'saved'}]).welcomeStep,'page');
+});

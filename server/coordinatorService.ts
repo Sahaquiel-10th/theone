@@ -57,7 +57,7 @@ import {
 import { prepareAttachmentContext } from "./attachmentRetrieval.js";
 import { accountInScope } from './betaProfile.js';
 import { handbookGuide,handbookInstruction, handbookTitle, isOnboardingImageOperation,usesWelcomeManual, type OnboardingImageInput } from './onboardingHandbook.js';
-import {welcomeManualConfig,welcomeManualMessages,manualBillingInput,manualTool,parseWelcomeManual,welcomeManualImagePrompt} from './welcomeManual.js';
+import {welcomeManualConfig,welcomeManualMessages,manualBillingInput,manualTool,parseWelcomeManual,welcomeManualImagePrompt,welcomeRetryPower,callWelcomePlanner} from './welcomeManual.js';
 import {visualTool} from './visualTools.js';
 import { friendlyConversationGuidance } from './conversationTone.js';
 
@@ -361,7 +361,7 @@ export class CoordinatorService {
           id: o.id,
           operationId: o.operationId,
           state: o.workRun!.state,
-          retryPower: o.workRun!.kind==='image'?(()=>{try{return resolveImageTask(db,Boolean(this.deps.artifactDirectory)).billingModel.imagePowerPerCall;}catch{return undefined;}})():undefined,
+          retryPower: o.workRun!.kind==='image'?(()=>{try{return welcomeRetryPower(o.workRun!,resolveImageTask(db,Boolean(this.deps.artifactDirectory)).billingModel.imagePowerPerCall!);}catch{return undefined;}})():undefined,
           error: o.workRun!.error,
           failureCode: o.workRun!.failureCode,
           executorId: o.workRun!.executorId,
@@ -1115,7 +1115,7 @@ export class CoordinatorService {
     const recovery=taskRecovery(jobs.map(o=>({id:o.id,...o.workRun!})));
     if(recovery.kind==='review_image'){
       const config=resolveImageTask(db,Boolean(this.deps.artifactDirectory));
-      if(config.billingModel.imagePowerPerCall!>job.budget)throw new CoordinatorError('图片价格已超过原预算，请先确认新的预算',402);
+      if(welcomeRetryPower(job,config.billingModel.imagePowerPerCall!)>job.budget)throw new CoordinatorError(job.welcomeManual?'本轮恢复已超过原预算，请先重新确认使用说明的预算':'图片价格已超过原预算，请先确认新的预算',402);
       const check=(d:Database)=>{
         const task=taskOf(d,s,taskId),current=(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===taskId&&o.workRun);
         featureMember(d,s);
@@ -1628,7 +1628,7 @@ export class CoordinatorService {
         if(job.welcomeManual&&job.welcomeGuide&&!job.welcomeManual.document){
           const plan=job.welcomeManual,current=d.models.find(m=>m.id===plan.model.id&&m.enabled&&m.apiKey&&m.kind==='chat');
           if(!current)throw new CoordinatorError('整理说明的模型暂时不可用');
-          const result=await runBilledModel(this.store,{...s,conversationId:cid,model:{...plan.model,apiKey:current.apiKey},requestId:op.requestId,activity:'welcome_manual',input:manualBillingInput(job.welcomeGuide,plan.model.systemPrompt),sponsorship:job.welcomeSponsored&&job.welcomeOperationId?{kind:'welcome_gift',operationId:job.welcomeOperationId,stage:'manual'}:undefined,beforeReserve:(db,amount)=>{assertWork(db,s,id,job,cid);assertWorkBudget(db,s,op!,amount);}},model=>(this.deps.modelCall??callModelWithTools)(model,welcomeManualMessages(job.welcomeGuide!,plan.model.systemPrompt),[manualTool],op!.requestId,{requiredTool:'oneManual'}));
+          const result=await runBilledModel(this.store,{...s,conversationId:cid,model:{...plan.model,apiKey:current.apiKey},requestId:op.requestId,activity:'welcome_manual',input:manualBillingInput(job.welcomeGuide,plan.model.systemPrompt),sponsorship:job.welcomeSponsored&&job.welcomeOperationId?{kind:'welcome_gift',operationId:job.welcomeOperationId,stage:'manual'}:undefined,beforeReserve:(db,amount)=>{assertWork(db,s,id,job,cid);assertWorkBudget(db,s,op!,amount);}},model=>callWelcomePlanner(()=>(this.deps.modelCall??callModelWithTools)(model,welcomeManualMessages(job.welcomeGuide!,plan.model.systemPrompt),[manualTool],op!.requestId,{requiredTool:'oneManual'}),verify,async attempt=>{await this.store.mutate(db=>{assertWork(db,s,id,job,cid);db.chatOperations!.find(o=>o.id===id)!.workRun!.retryProgress={attempt,maxRetries:2,nextRetryAt:new Date(Date.now()+attempt*1000).toISOString()};});}));
           await verify();
           if(result.finishReason==='length'||result.finishReason==='filtered'||result.toolCalls.length!==1||result.toolCalls[0].function.name!=='oneManual')throw new CoordinatorError('使用说明没完整整理好，图片还没有生成。');
           const doc=parseWelcomeManual(JSON.parse(result.toolCalls[0].function.arguments),job.welcomeGuide);

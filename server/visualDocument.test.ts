@@ -2,10 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {validateVisualDocument,renderVisualDiagram,renderVisualPage,visualPageCsp,visualPageRuntime,visualScriptHash,visualDiagramHeight,type VisualDocument} from './visualDocument.js';
-import {parseWelcomeManual,welcomeCapabilities} from './welcomeManual.js';
+import {parseWelcomeManual,welcomeCapabilities,callWelcomePlanner,welcomeRetryPower} from './welcomeManual.js';
+import {ModelRequestError} from './modelGateway.js';
 import {visualTool} from './visualTools.js';
 const scene={id:'work',title:'把资料变成说明',situation:'开会前，想把散乱的想法理清楚。',feature:'整理已有材料，列出关键决定。',advantage:'不必自己来回翻页。',benefit:'拿到一份能拿去讨论的提纲。',evidence:'逐条检查结论和待确认项。',steps:['告诉 ONE 目标。','检查提纲再补充要求。'],prompt:'请整理这份材料，缺少的地方单独列出来。',capabilityIds:['chat']};
 const doc:VisualDocument={version:1,title:'小张的 ONE 使用说明',intro:'先把开会前最费劲的那一步交给 ONE。',scenes:[scene,{...scene,id:'next',title:'交给任务去做'}]};
+test('pure planner retries known upstream 502 at most twice, checks cancellation and quotes all unfinished stages',async()=>{
+ let calls=0,retries=0,checks=0;const verify=async()=>{checks++;};
+ assert.equal(await callWelcomePlanner(async()=>{calls++;if(calls<3)throw new ModelRequestError(502,'temporarily unavailable');return 'ok';},verify,async()=>{retries++;},async()=>{}),'ok');assert.equal(calls,3);assert.equal(retries,2);assert.ok(checks>=5);
+ calls=0;await assert.rejects(()=>callWelcomePlanner(async()=>{calls++;throw new ModelRequestError(401,'unauthorized');},verify,async()=>{},async()=>{}));assert.equal(calls,1);
+ calls=0;await assert.rejects(()=>callWelcomePlanner(async()=>{calls++;throw new ModelRequestError(502,'unavailable');},verify,async()=>{},async()=>{}));assert.equal(calls,3);
+ calls=0;await assert.rejects(()=>callWelcomePlanner(async()=>{calls++;throw new ModelRequestError(502,'unavailable');},async()=>{if(calls)throw Error('stopped');},async()=>{},async()=>{}),/stopped/);assert.equal(calls,1);
+ const job={welcomeManual:{reservation:150000}} as any;assert.equal(welcomeRetryPower(job,.012),.162);job.welcomeManual.document=doc;assert.equal(welcomeRetryPower(job,.012),.012);job.welcomeImageAttachmentId='saved';assert.equal(welcomeRetryPower(job,.012),0);
+});
 test('document grammar rejects code, extra fields, malformed and unauthorized scenes',()=>{
  assert.deepEqual(validateVisualDocument(doc,['chat']),doc);
  for(const bad of [{...doc,script:'fetch(secret)'},{...doc,scenes:[scene]},{...doc,scenes:[scene,scene]},{...doc,scenes:[scene,{...scene,id:'bad',capabilityIds:['foreign']}]}])assert.throws(()=>validateVisualDocument(bad,['chat']));
