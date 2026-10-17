@@ -1,6 +1,13 @@
 import {BookOpen,LoaderCircle,X} from 'lucide-react';
 import type {WelcomeDelivery as Delivery} from '../server/onboardingHandbook';
 
+/** Task recovery can be started outside onboarding. Follow that same task back
+ * into progress instead of freezing the welcome banner at its first failure. */
+export function followWelcomeDelivery(delivery:Delivery,taskStatus?:string){
+  return ['preparing','queued','running'].includes(delivery.state)||
+    (['failed','cancelled'].includes(delivery.state)&&!!delivery.taskId&&['running','completed'].includes(taskStatus||''));
+}
+
 export function WelcomeDelivery({delivery,busy,error,onOpen,onCheck,onRetry,onDismiss}:{delivery:Delivery;busy:boolean;error?:string;onOpen:(id:string)=>void;onCheck:()=>void;onRetry:()=>void;onDismiss:()=>void}) {
   const pending=['preparing','queued','running'].includes(delivery.state);
   return <section className="welcome-delivery" role="status" aria-label="使用说明进度">

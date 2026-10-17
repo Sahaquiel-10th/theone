@@ -120,7 +120,7 @@ import { api, apiForUser, ApiError, expectUser, announceSessionChange, SESSION_E
 import { chatSubmission, forgetChatSubmission, pendingChatSubmissions } from "./chatSubmission";
 import { ProfileNameEditor, BetaFeedbackControls, type AccountProfile, type ProfilePatch } from "./Onboarding";
 import type { OnboardingHandbookOffer,WelcomeDelivery as Delivery } from '../server/onboardingHandbook';
-import {WelcomeDelivery} from './WelcomeDelivery';
+import {WelcomeDelivery,followWelcomeDelivery} from './WelcomeDelivery';
 import { getNotePollFailureAction, prepareGetNoteAuthorizationWindow } from "./getNoteAuthorization";
 import { PaymentPanel } from "./PaymentPanel";
 import { EnterpriseKnowledgeCard, FlomoConnectionNotice } from "./EnterpriseConnectionNotice";
@@ -603,12 +603,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     void api<WelcomeResponse>('/api/me/profile').then(result=>{if(live)acceptWelcome(result);}).catch(()=>{}).finally(()=>{if(live)setProfileLoaded(true);});
     return()=>{live=false;};
   },[user.id,profile.workspaceId]);
+  const welcomeTaskStatus=coordinator.state.tasks.find(task=>task.id===delivery?.taskId)?.status;
   useEffect(()=>{
-    if(demo.enabled||!delivery||!['preparing','queued','running'].includes(delivery.state))return;
+    if(demo.enabled||!delivery||!followWelcomeDelivery(delivery,welcomeTaskStatus))return;
     let live=true,busy=false;
-    const timer=setInterval(()=>{if(busy)return;busy=true;void api<WelcomeResponse>('/api/me/profile').then(result=>{if(live){setDelivery(old=>old?.operationId===result.welcomeDelivery?.operationId?result.welcomeDelivery:old);setDeliveryError('');}}).catch(()=>{if(live)setDeliveryError('状态暂时没连上，任务不会重复安排。');}).finally(()=>{busy=false;});},5000);
+    const refresh=()=>{if(busy)return;busy=true;void api<WelcomeResponse>('/api/me/profile').then(result=>{if(live){setDelivery(old=>old?.operationId===result.welcomeDelivery?.operationId?result.welcomeDelivery:old);setDeliveryError('');}}).catch(()=>{if(live)setDeliveryError('状态暂时没连上，任务不会重复安排。');}).finally(()=>{busy=false;});};
+    refresh();const timer=setInterval(refresh,5000);
     return()=>{live=false;clearInterval(timer);};
-  },[user.id,profile.workspaceId,delivery?.operationId,delivery?.state]);
+  },[user.id,profile.workspaceId,delivery?.operationId,delivery?.state,welcomeTaskStatus]);
   const [pendingRequests, setPendingRequests] = useState(() => pendingChatSubmissions(user.id));
   const [hasSubmittedChat, setHasSubmittedChat] = useState(false);
   const failedSubmissions = useRef(new Map<string, { content: string; attachmentIds: string[]; draftKey: string }>());
