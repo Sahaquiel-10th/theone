@@ -29,6 +29,8 @@ test('fixed hash, no arbitrary execution/network, tall complete exports, hostile
 test('function calls require fresh authorization and return a real private file receipt',async()=>{
  let checks=0,saves=0;const t=visualTool('oneHtml','交互说明',async()=>{checks++;},async(d,f)=>{assert.equal(d.title,doc.title);assert.equal(f,'html');saves++;return {id:'owned',name:'说明.html'};});
  const result=await t.structured!.run(t.structured!.validate(doc));assert.equal((result as any).status,'completed');assert.equal(checks,2);assert.equal(saves,1);
+ assert.equal((result as any).file.openUrl,'/api/welcome-pages/owned/view');
+ assert.equal((result as any).file.downloadUrl,'/api/attachments/owned/content');
  await assert.rejects(()=>visualTool('oneFlowchart','画图',async()=>{throw Error('Key lost');},async()=>{saves++;return {id:'x',name:'x'};}).structured!.run(doc),/Key lost/);assert.equal(saves,1);
  await assert.rejects(()=>visualTool('oneHtml','说明',async()=>{}).structured!.run(doc),/存储/);
 });

@@ -1,4 +1,5 @@
 import type {OrchestrationTool} from './taskOrchestrator.js';
+import {artifactResultLinks} from './artifactLinks.js';
 import {visualDocumentSchema,validateVisualDocument,renderVisualDiagram,renderVisualPage,type VisualDocument} from './visualDocument.js';
 export const visualToolPresets=[
   {id:'oneFlowchart',name:'完整流程图',description:'当步骤、分工、资料流向或几个场景需要一张图讲清楚时使用。输入结构化说明，生成可缩放的私有 SVG 全图；不是只有图片提示词。'},
@@ -14,6 +15,6 @@ export function visualTool(id:string,description:string,verify:()=>Promise<void>
   if(!visualToolPresets.some(x=>x.id===id))throw new Error('未知的视觉工具');
   return {name:id,description,label:id==='oneHtml'?'整理网页':'整理流程图',effect:'artifact',run:async()=>{throw new Error('请提供完整的结构化说明');},structured:{schema:visualDocumentSchema,validate:validateVisualDocument,run:async raw=>{
     await verify();if(!save)throw new Error('网页与流程图存储暂时不可用');const file=await save(validateVisualDocument(raw),id==='oneHtml'?'html':'svg');await verify();
-    return {status:'completed',file,format:id==='oneHtml'?'html':'svg',message:'已生成私有成果文件，可以查看或下载；未公开发布。'};
+    return {status:'completed',file:{...file,...artifactResultLinks(file.id,true)},format:id==='oneHtml'?'html':'svg',message:'已生成私有成果文件；查看或下载请使用返回的 openUrl / downloadUrl，不要猜测地址。未公开发布。'};
   }}};
 }

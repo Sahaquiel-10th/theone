@@ -552,6 +552,36 @@ test('failed prerequisites wait without killing their successors; explicit recov
   const parent=await f.service.task(a,result.taskIds[0]);await f.service.retryLatest(a,result.taskIds[0],parent.jobs[0].id,undefined,key);await f.service.resume(a,key);
   await waitFor(async()=>(await f.service.task(a,result.taskIds[1])).jobs[0].state==='completed');assert.equal(parentCalls,2);assert.equal(childCalls,1);assert.equal(otherCalls,1);
 });
+test('two visual features give the summarizing worker actual owned artifact URLs, not guessed links',async()=>{
+ const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-artifact-links-'));
+ const scene={id:'first',title:'开始一天',situation:'开始工作',feature:'喝水后列要事',advantage:'明确下一步',benefit:'开始专注',evidence:'打开核对',steps:['喝水','列要事'],prompt:'开始一天',capabilityIds:[]};
+ const document={version:1,title:'合成指南',intro:'两个场景的晨间指南',scenes:[scene,{...scene,id:'second',title:'结束一轮'}]};
+ await f.store.mutate(d=>{d.settings.officialFeatures=['oneFlowchart','oneHtml'].map((tool,i)=>{
+  const values={name:`视觉功能${i}`,author:'ONE',description:'真实文件',instructions:`VISUAL_FEATURE_${i}`,limitations:'私有文件',integration:'question_answer' as const,modelId:'special',knowledgeMode:'none' as const,usageMultiplier:.6,tools:[{id:tool,name:tool,description:'生成文件',kind:'local' as const}]};
+  const version={version:1,values,evidence:'test',approvedBy:'a',approvedAt:'now'};
+  return {id:`visual-${i}`,revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:`release-${i}`,version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}};
+ });});
+ let summaries=0;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('must not read');}},{artifactDirectory:directory,modelCall:async(model,messages)=>{
+  if(model.id==='special'){
+   if(messages.at(-1)?.role==='tool')return answer('文件已保存');
+   const tool=messages[0].content!.includes('VISUAL_FEATURE_0')?'oneFlowchart':'oneHtml';
+   return {...answer(''),toolCalls:[{id:tool,type:'function',function:{name:tool,arguments:JSON.stringify(document)}}]};
+  }
+  if(messages.at(-1)?.role!=='tool')return {...answer(''),toolCalls:[0,1].map(i=>({id:`feature-${i}`,type:'function' as const,function:{name:`feature_${i}`,arguments:JSON.stringify({query:'生成合成指南'})}}))};
+  const outputs=messages.filter(m=>m.role==='tool').map(m=>JSON.parse(m.content!));
+  assert.equal(outputs.length,2);
+  for(const output of outputs){assert.equal(output.artifacts.length,1);assert.match(output.artifacts[0].openUrl,/^\/api\/welcome-pages\/att_\w+\/view$/);assert.match(output.artifacts[0].downloadUrl,/^\/api\/attachments\/att_\w+\/content$/);}
+  assert.notEqual(outputs[0].artifacts[0].openUrl,outputs[1].artifacts[0].openUrl);
+  summaries++;return answer('两份文件都已保存');
+ }});
+ try{
+  const result=await f.service.dispatch(a,{...input('operation_visual_links_01','两个功能合做一份指南'),featureIds:['visual-0','visual-1'],confirmedExternal:true},key);
+  await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='completed');
+  assert.equal(summaries,1);assert.equal((await f.store.read()).attachments.length,2);
+  await assert.rejects(()=>service.task(b,result.taskId!));
+ }finally{rmSync(directory,{recursive:true,force:true});}
+});
 test('structured HTML deliverable calls the reviewed renderer directly without another model or knowledge read',async()=>{
   const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-direct-contract-'));
   const scene={id:'first',title:'整理说明',situation:'需要一份说明',feature:'整理要点',advantage:'不用反复排版',benefit:'拿到清楚的网页',evidence:'打开网页核对',steps:['整理要点','打开查看'],prompt:'整理说明',capabilityIds:[]};

@@ -33,6 +33,8 @@ export function MessageMarkdown({ children, allowImages = true }: { children: st
     a: ({node: _node, href, children: label, ...props}) => {
       const local = localArtifactPath(href || String(_node?.properties?.href || ''));
       if (local) return <code className="one-local-artifact-path">{local}</code>;
+      // A stripped/placeholder model URL must not turn into a link to the homepage.
+      if (!href || href === '#') return <span>{label}</span>;
       const task = href && typeof window !== 'undefined' ? internalTaskId(href, window.location.href) : undefined;
       return <a {...props} href={href} className={task ? 'one-task-result-link' : 'one-conversation-link'}>{label}{task ? <span aria-hidden="true"> ↗</span> : null}</a>;
     },

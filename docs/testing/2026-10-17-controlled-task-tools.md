@@ -22,3 +22,12 @@
 Automated cases include multi-feature partial preservation and charged-once retry, uncertain-write replay protection, mandatory-tool evidence, no-model private HTML delivery, dependency recovery, cancellation, cross-owner/cross-conversation isolation, revoked-source reuse denial, exhaustive knowledge receipts, bounded read retry, reporting truthfulness, and the existing billing/Notion/local-execution suites.
 
 No production prices or launcher runtime versions are changed by this update. Live acceptance uses independent synthetic tasks; it must not rerun a previous user task.
+
+## Live acceptance
+
+- Production `eec3aa7` passed all workflow jobs; `/api/health` returned `ok: true`.
+- Submitted only `QA1017同任务双功能`, using synthetic morning-routine text, no knowledge bodies, image generation or local executor. One deliverable was created (`cnv_fd84a90c2823cae09818`), not one task per tool.
+- Observed intermediate feedback retaining the completed flowchart while the HTML feature was still working. Both private artifact cards subsequently returned (`att_aaeedb538b6f11bebf2b`, `att_4e072c319816da1951e4`). Opened both, switched scenes, expanded steps, and opened the full flowchart. Chrome confirmed HTML (11.2 KB) and flowchart PNG (159 KB) downloads completed.
+- Completion stayed on the task note until a read-only follow-up. That reply carried the completed task link and removed the reported note, without creating or rerunning work. No earlier business/test task was retried.
+- Found a genuine final-mile defect: the artifact cards opened, but model-written text links were empty/unsupported and navigated to the homepage. Added private result URLs at the visual tool, feature-to-worker handoff and result/read-task context boundaries; empty or stripped Markdown links now render as plain text. Exact owner/task/ready-file checks precede file-link projection. Regression tests cover two actual feature artifacts and foreign owner/task exclusion.
+- Failure recovery, billing and dependency cases above were automated checks; this live case did not simulate provider failure or independently inspect production billing-ledger records. It is not evidence that every supplier/model path is reliable.

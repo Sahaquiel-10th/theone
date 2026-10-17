@@ -324,6 +324,8 @@ test('friendly result context keeps actual failure and file evidence without quo
   assert.doesNotMatch(projected[0].summary,/secret-operation/);
   assert.match(context,/第二个文件写入失败/);assert.match(context,/\/QA\/result.md/);assert.match(context,/task=/);
   assert.equal(result.id,'secret-operation','source identity remains intact server-side');
+  result.attachments=[{id:'att_owned',originalName:'说明.html',mimeType:'text/html',kind:'document',size:12,visualDocument:true}];
+  assert.deepEqual(taskResultConversationContext([result])[0].attachments,[{name:'说明.html',kind:'document',openUrl:'/api/welcome-pages/att_owned/view',downloadUrl:'/api/attachments/att_owned/content'}]);
 });
 
 test('an owned captured old local round reports from immutable evidence without marking the current round', () => {

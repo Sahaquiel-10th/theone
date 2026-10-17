@@ -4,6 +4,14 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MessageMarkdown, hasInlineImage } from "./MessageMarkdown.js";
 const render = (children: string) => renderToStaticMarkup(createElement(MessageMarkdown, { children }));
+test('missing, placeholder and unsupported artifact links never navigate to the homepage',()=>{
+ for(const url of ['', '#', 'attachment:att_test', 'javascript:alert(1)']) {
+  const html=render(`[查看成果](${url})`);
+  assert.doesNotMatch(html, /<a\b/);
+  assert.match(html, /查看成果/);
+ }
+ assert.match(render('[查看成果](/api/welcome-pages/att_test/view)'), /href="\/api\/welcome-pages\/att_test\/view"/);
+});
 test("inline images use a compact accessible preview and repeated attachment images can be omitted",()=>{
  const url='/api/attachments/att_test/content',text=`![结果](${url})`;
  assert.match(render(text),/class="one-image-preview"/);

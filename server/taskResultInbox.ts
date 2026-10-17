@@ -3,6 +3,7 @@ import type { ChatOperation } from './chatOperations.js';
 import { createHash } from 'node:crypto';
 import { localExecutionResultId } from './executionService.js';
 import { executionExplicitlyUnfinished } from './executionResultState.js';
+import {artifactResultLinks} from './artifactLinks.js';
 
 export type TaskResultScope = { workspaceId: string; userId: string };
 export type TaskResultOutcome = 'completed' | 'returned' | 'failed' | 'partial' | 'needs_input' | 'cancelled' | 'interrupted';
@@ -209,7 +210,8 @@ export function taskResultConversationContext(results: TaskResultReceipt[]) {
     summary: result.summary.replace(/^【本机执行回执[^\n]*】\s*\n?/, ''),
     taskUrl: `/?task=${encodeURIComponent(result.taskId)}`, imageUrl: result.imageUrl,
     location: result.location, notionUrl: result.notionUrl,
-    attachments: result.attachments.map(file => ({ name: file.originalName, kind: file.kind })) }));
+    attachments: result.attachments.map(file => ({ name: file.originalName, kind: file.kind,
+      ...artifactResultLinks(file.id,Boolean(file.visualDocument||file.welcomeGuide)) })) }));
 }
 
 /** Call in the same transaction as saving the dispatcher answer. Only the captured result IDs are marked. */

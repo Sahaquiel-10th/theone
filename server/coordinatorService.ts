@@ -35,6 +35,7 @@ import {
 import { callModel, callModelWithTools, ModelRequestError, type ModelToolMessage } from "./modelGateway.js";
 import { featureImageBytes } from "./featureImage.js";
 import { saveFeatureArtifact,visualArtifactSaver } from "./featureArtifacts.js";
+import {ownedArtifactResults} from './artifactLinks.js';
 import { runBilledModel } from "./modelBilling.js";
 import {
   beginChatOperation,
@@ -769,7 +770,7 @@ export class CoordinatorService {
         const matches=exact?[exact]:available.filter(c=>c.title===id.trim());
         if(matches.length!==1)return {status:matches.length?'ambiguous':'not_found',message:'未定位到唯一可用任务。请用 search_tasks 返回的真实编号定位；不要猜测编号，也不要宣称已开始。',candidates:matches.map(c=>({id:c.id,title:c.title}))};
         const c=matches[0];
-        return { id: c.id, title: c.title, messages: c.messages.slice(-20).map(m => ({ role: m.role, content: m.content.slice(-4000) })), executionReceipts: executionReceipts(d, s.workspaceId, s.userId, c.id), handoffs: (d.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === c.id && o.workRun).slice(-5).map(o => isOnboardingImageOperation(d,s,o.operationId)?'根据用户设置准备专属欢迎礼物；内部作图要求不向用户复述。':o.workRun!.instruction) };
+        return { id: c.id, title: c.title, messages: c.messages.slice(-20).map(m => ({ role: m.role, content: m.content.slice(-4000),artifacts:ownedArtifactResults(d,s,c.id,(m.attachments??[]).map(file=>file.id)) })), executionReceipts: executionReceipts(d, s.workspaceId, s.userId, c.id), handoffs: (d.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === c.id && o.workRun).slice(-5).map(o => isOnboardingImageOperation(d,s,o.operationId)?'根据用户设置准备专属欢迎礼物；内部作图要求不向用户复述。':o.workRun!.instruction) };
       }};
       const queueImage=async(prompt:string,title?:string,dependsOnOperationIds:string[]=[])=>{
         await verify();
@@ -1918,7 +1919,12 @@ export class CoordinatorService {
             if(result.finishReason==='length'||result.finishReason==='filtered')throw new CoordinatorError(`${skill.values.name}回答未完整返回，本轮用量已保留，不会自动重跑`);
             if(skill.values.tools?.some(t=>['oneHtml','oneFlowchart'].includes(t.id))&&generatedArtifactIds.length===artifactsBefore&&!completedSteps(steps).some(step=>step.namespace===`feature:${skill.id}:${skill.version}`&&['oneHtml','oneFlowchart'].includes(step.tool)))throw new CoordinatorError('说明文件还没有生成，请查看本轮反馈后重试。');
             const outcome=parseTaskOutcome(result.content);
-            return {feature:skill.values.name,usageMultiplier:price.multiplier,content:result.content,finishReason:result.finishReason,...(result.requiredMissing.length||['partial','failed','needs_input'].includes(outcome.outcome)?{status:'failed',missing:result.requiredMissing}:{})};
+            const saved=await this.store.read();assertWork(saved,s,id,job,cid);
+            const featureFileIds=new Set(completedSteps(steps).filter(step=>step.namespace===`feature:${skill.id}:${skill.version}`).flatMap(step=>{
+              const output=step.output as {file?:{id?:string}}|undefined;return output?.file?.id?[output.file.id]:[];
+            }));
+            const artifacts=ownedArtifactResults(saved,s,cid,[...featureFileIds]);
+            return {feature:skill.values.name,usageMultiplier:price.multiplier,content:result.content,artifacts,finishReason:result.finishReason,...(result.requiredMissing.length||['partial','failed','needs_input'].includes(outcome.outcome)?{status:'failed',missing:result.requiredMissing}:{})};
           }});
           return;
         }
