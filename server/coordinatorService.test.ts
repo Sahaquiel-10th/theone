@@ -51,6 +51,11 @@ for(const sponsored of [true,false])test(`welcome manual → image → shared vi
     await service.retryLatest(a,taskId,source.id,undefined,key);await service.resume(a,key);
     await waitFor(async()=>(await service.task(a,taskId)).jobs.at(-1)!.state==='completed');
     assert.equal(texts,1);assert.equal(images,1);assert.equal((await f.store.read()).modelUsageRecords.length,2);
+    const resumed=(await f.store.read()).chatOperations!.filter(o=>o.conversationId===taskId&&o.workRun).at(-1)!;
+    await f.store.mutate(db=>{db.attachments=db.attachments.filter(f=>f.id!==run.welcomeImageAttachmentId);const op=db.chatOperations!.find(o=>o.id===resumed.id)!;op.status='failed';op.workRun!.state='failed';op.workRun!.resultMessageId=undefined;});
+    await service.retryLatest(a,taskId,resumed.id,undefined,key);await service.resume(a,key);
+    await waitFor(async()=>(await service.task(a,taskId)).jobs.at(-1)!.state==='failed');
+    assert.equal(images,1);assert.equal(texts,1);assert.equal((await f.store.read()).modelUsageRecords.length,2);assert.match((await service.task(a,taskId)).jobs.at(-1)!.error!,/不会自动重新画图/);
   }finally{rmSync(f.directory,{recursive:true,force:true});}
 });
 
