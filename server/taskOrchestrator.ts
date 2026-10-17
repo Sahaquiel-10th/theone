@@ -54,7 +54,7 @@ export async function runTaskOrchestrator(input: {
       return { content: result.content, messages, trace, finishReason: result.finishReason,requiredMissing:missing() };
     }
     if (step === steps) throw new Error("已达到调度步骤上限，未完成任务；请缩小问题范围");
-    const maxCalls=input.entryPoint==='workspace'&&input.tools.some(t=>t.name==='delegate_tasks')?4:2;
+    const maxCalls=input.entryPoint==='workspace'&&(input.tools.some(t=>t.name==='delegate_tasks')||checkpoints?.namespace==='worker'&&input.tools.some(t=>/^feature_\d+$/.test(t.name)))?4:2;
     if (result.toolCalls.length > maxCalls || new Set(result.toolCalls.map(call => call.id)).size !== result.toolCalls.length) throw new Error("调度模型返回了过多或重复的工具调用，已停止");
     messages.push({ role: "assistant", content: result.content || null, tool_calls: result.toolCalls });
     for (const call of result.toolCalls) {
@@ -72,6 +72,7 @@ export async function runTaskOrchestrator(input: {
       else {
         const key = JSON.stringify([tool.name, query]);
         const durableKey=taskStepKey(checkpoints?.namespace??'',tool.name,query);
+        if(checkpoints?.steps.some(s=>s.namespace===checkpoints.namespace&&s.tool===tool.name&&s.state==='started'&&['artifact','external_write'].includes(s.effect)))throw new Error('上次保存的结果还没确认，请先查看已有文件；不会重复写入。');
         const previous=checkpoints?.steps.find(s=>s.namespace===checkpoints.namespace&&s.state==='completed'&&toolSucceeded(s.output)&&s.tool===tool.name&&(s.effect==='artifact'||s.effect==='external_write'||checkpoints.namespace==='worker'&&/^feature_\d+$/.test(tool.name)))??checkpoints?.steps.find(s=>s.key===durableKey&&s.namespace===checkpoints.namespace&&s.tool===tool.name);
         if(previous?.state==='started'&&['artifact','external_write'].includes(previous.effect))throw new Error('上次保存的结果还没确认，请先查看已有文件；不会重复写入。');
         if(previous?.state==='completed'&&toolSucceeded(previous.output)){output=previous.output;status='reused';checkpoints?.onReuse?.(output);}

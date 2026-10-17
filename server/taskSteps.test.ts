@@ -21,6 +21,7 @@ test('uncertain side effect blocks duplicate writes, and revocation also blocks 
   const options={entryPoint:'workspace' as const,messages:[],tools:[{name:'oneHtml',effect:'artifact' as const,run:async()=>{writes++;throw Error('lost receipt');}}],checkpoints:store,maxSteps:2,beforeStep:async()=>{},call:async()=>({content:'',toolCalls:[call('oneHtml')]})};
   await assert.rejects(runTaskOrchestrator(options),/lost receipt/);assert.equal(writes,1);assert.equal(store.steps[0].state,'started');
   await assert.rejects(runTaskOrchestrator(options),/不会重复写入/);assert.equal(writes,1);
+  await assert.rejects(runTaskOrchestrator({...options,call:async()=>({content:'',toolCalls:[call('oneHtml','rephrased goal')]})}),/不会重复写入/);assert.equal(writes,1);
   store.steps[0]={...store.steps[0],state:'completed',output:{file:{id:'private'}}};
   await assert.rejects(runTaskOrchestrator({...options,beforeStep:async()=>{throw Error('revoked');}}),/revoked/);assert.equal(writes,1);
 });
@@ -29,4 +30,9 @@ test('mandatory actions require a successful tool receipt, not model claims or a
   let rounds=0;
   const result=await runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[{name:'knowledge_search',run:async()=>({status:'failed'})}],checkpoints:store,requiredTools:['knowledge_search'],maxSteps:3,beforeStep:async()=>{},call:async()=>{rounds++;return reply('已经全部查过了');}});
   assert.deepEqual(result.requiredMissing,['knowledge_search']);assert.equal(rounds,3);
+});
+test('a bounded task can compose four authorized features in one round without creating extra tasks',async()=>{
+  const store=checkpoints();let round=0,runs=0;const names=Array.from({length:4},(_,i)=>`feature_${i}`);
+  const result=await runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:names.map(name=>({name,run:async()=>{runs++;return{content:name};}})),checkpoints:store,requiredTools:names,maxSteps:2,beforeStep:async()=>{},call:async()=>++round===1?{content:'',toolCalls:names.map(name=>call(name))}:reply('成果')});
+  assert.equal(runs,4);assert.deepEqual(result.requiredMissing,[]);
 });

@@ -20,3 +20,7 @@ test('a stopped prerequisite does not leave a dead-end retry button on its cance
   const result=taskRecovery([{id:'child',state:'cancelled',dependsOnOperationIds:['parent']}]);
   assert.equal(result.kind,'none');assert.match(result.message,/补充新的要求/);
 });
+test('an uncertain save asks for review instead of offering a blind retry',()=>{
+  const result=taskRecovery([{id:'partial',state:'failed',steps:[{effect:'artifact',state:'started'}]}]);
+  assert.equal(result.kind,'none');assert.match(result.message,/先看看已有成果/);
+});
