@@ -69,6 +69,7 @@ import { installAdminPaymentRoutes, installPaymentCallback, installPaymentRoutes
 import { effectiveModel, publishPricing, cancelScheduledPricing, publicPrices } from "./modelPricing.js";
 import {ExecutionPreparationStops} from './executionPreparation.js';
 import {workBatchBudget} from './executionBatchBudget.js';
+import {dependencyState,resolveWorkDependency} from './workDependencies.js';
 import { publicPayment } from "./payments.js";
 import { runtimeUpdateWasCompleted } from "./runtimeUpdate.js";
 import { codexGateway, managedExecutorDistribution } from "./runtime.js";
@@ -881,7 +882,7 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
   const preparedOperation=db.chatOperations?.find(o=>o.workspaceId===req.workspaceId&&o.userId===req.user!.id&&o.conversationId===conversationId&&o.workRun?.inputMessageId===sourceMessageId);
   const prepared=preparedOperation?.workRun;
   const batchBudget=workBatchBudget(db,{workspaceId:req.workspaceId!,userId:req.user!.id},preparedOperation);
-  if(prepared?.dependsOnOperationIds?.some(id=>!db.chatOperations?.some(o=>o.workspaceId===req.workspaceId&&o.userId===req.user!.id&&o.operationId===id&&o.workRun?.state==='completed'&&(!o.workRun.resultOutcome||['completed','returned'].includes(o.workRun.resultOutcome)))))throw new Error('前置任务尚未完成，请先核对前置结果再开始本机执行。');
+  if(dependencyState(db,{workspaceId:req.workspaceId!,userId:req.user!.id},prepared?.dependsOnOperationIds)!=='ready')throw new Error('这一步还在等前面的结果。请先把前面卡住的任务接着做好，再开始本机操作。');
   const model = db.models.find((item) => item.id === conversation.modelId && item.enabled && item.kind === "chat");
   if (!model) throw new Error("当前对话模型不能整理执行指令");
   const requestOperationId = operationId ?? uid("execution");
@@ -910,7 +911,7 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
   const compilerTask = resolveAiTask(db.settings, db.models, "execution_compile", model);
   const compilerMessages = buildExecutionCompilerMessages(prefix, sourceMessageId, compilerTask.replacesPrompt ? "按系统任务指令整理以下对话。" : undefined,
     executionHandoffs(db, prefix, req.workspaceId!, req.user!.id));
-  if(prepared)compilerMessages.unshift({role:'system',content:`本次仅执行这件任务已经保存的交接：${prepared.instruction}。原话中的其他任务只作背景，不得重复执行。前置任务成果：${JSON.stringify((prepared.dependsOnOperationIds??[]).map(id=>{const o=db.chatOperations?.find(o=>o.workspaceId===req.workspaceId&&o.userId===req.user!.id&&o.operationId===id);const c=db.conversations.find(c=>c.id===o?.conversationId&&c.workspaceId===req.workspaceId&&c.userId===req.user!.id);return {taskId:c?.id,title:c?.title,content:c?.messages.find(m=>m.id===o?.workRun?.resultMessageId)?.content.slice(0,6000)};}))}`,createdAt:now()});
+  if(prepared)compilerMessages.unshift({role:'system',content:`本次仅执行这件任务已经保存的交接：${prepared.instruction}。原话中的其他任务只作背景，不得重复执行。前置任务成果：${JSON.stringify((prepared.dependsOnOperationIds??[]).map(id=>{const o=resolveWorkDependency(db,{workspaceId:req.workspaceId!,userId:req.user!.id},id);const c=db.conversations.find(c=>c.id===o?.conversationId&&c.workspaceId===req.workspaceId&&c.userId===req.user!.id);return {taskId:c?.id,title:c?.title,content:c?.messages.find(m=>m.id===o?.workRun?.resultMessageId)?.content.slice(0,6000)};}))}`,createdAt:now()});
   await confirmKeyBeforeModel(req);
   const compiled = await runBilledModel(store, {
     workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id,

@@ -56,6 +56,10 @@ type Job = {
   inputMessageId: string;
   instruction?: string;
   error?: string;
+  userReport?:string;
+  dependencyBlocked?:boolean;
+  waitingFor?:{taskId:string;title:string}[];
+  progress?:{completed:string[];pending:string[]};
 };
 type Detail = { conversation: Conversation; jobs: Job[]; recovery?: import('./taskRecovery').TaskRecovery };
 export type CoordinatorSubmission = {

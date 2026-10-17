@@ -35,7 +35,7 @@ function validateSnapshot(db: Database, scope: Scope, snapshot: ExecutionBatchBu
     throw new ExecutionBatchBudgetError('任务预算记录不可用，尚未开始新的模型调用。');
   const parent = db.chatOperations?.find(o => own(o, scope) && o.operationId === snapshot.parentOperationId && o.createdAt === snapshot.startedAt);
   if (!parent) throw new ExecutionBatchBudgetError('任务预算归属已变化，尚未开始新的模型调用。');
-  const work = (db.chatOperations ?? []).filter(o => own(o, scope) && o.workRun?.parentOperationId === parent.operationId && Date.parse(o.createdAt) >= Date.parse(snapshot.startedAt));
+  const work = (db.chatOperations ?? []).filter(o => own(o, scope) && o.workRun && (o.workRun.parentOperationId === parent.operationId || o.operationId === parent.operationId) && Date.parse(o.createdAt) >= Date.parse(snapshot.startedAt));
   if (!work.length || work.some(o => o.workRun!.budget !== snapshot.budget))
     throw new ExecutionBatchBudgetError('任务预算记录已变化，请核对后重新授权。');
   return work;

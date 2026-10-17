@@ -78,7 +78,7 @@ function cloudResult(db: Database, scope: TaskResultScope, operation: ChatOperat
   let outcome: TaskResultOutcome = run.state === 'completed' ? (run.resultOutcome ?? 'returned')
     : run.state === 'failed' && (run.resultOutcome === 'partial' || run.resultOutcome === 'needs_input') ? run.resultOutcome
     : run.state as TaskResultOutcome;
-  let summary = clip([run.error, result?.content].filter(Boolean).join('\n'), max);
+  let summary = clip([run.userReport||run.error, result?.content].filter(Boolean).join('\n'), max);
   if (run.kind === 'image' && run.state === 'completed') {
     outcome = imageUrl || guideFile ? 'completed' : 'failed';
     if (!imageUrl && !guideFile) summary = '绘图任务没有返回可确认的图片，尚未完成。请查看本轮反馈，不会自动重做。';

@@ -127,7 +127,7 @@ export class NotionDocuments {
   }
   tool(s: WorkScope, opId: string, cid: string, job: WorkRun, verify: () => Promise<void>, current?: string): OrchestrationTool {
     const target = job.notionTarget!;
-    return { name: 'save_notion_draft', description: '由 ONE 写入已授权的 Notion 草稿。首次提供 title/content；继续修改只能提供 old_str/new_str，精确替换本轮读到的一段原文，不修改其他页面。只有 verified 回执才表示已保存。每轮只保存一次。', run: async () => { throw new NotionDocumentError('参数无效'); },
+    return { name: 'save_notion_draft',label:'保存到 Notion',effect:'external_write', description: '由 ONE 写入已授权的 Notion 草稿。首次提供 title/content；继续修改只能提供 old_str/new_str，精确替换本轮读到的一段原文，不修改其他页面。只有 verified 回执才表示已保存。每轮只保存一次。', run: async () => { throw new NotionDocumentError('参数无效'); },
       structured: { schema: { type: 'object', additionalProperties: false, properties: { title: { type: 'string', maxLength: 200 }, content: { type: 'string', maxLength: 50000 }, old_str: { type: 'string', maxLength: 50000 }, new_str: { type: 'string', maxLength: 50000 } } },
         validate: value => {
           const v = value as any;

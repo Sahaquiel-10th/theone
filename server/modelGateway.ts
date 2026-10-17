@@ -251,7 +251,7 @@ export async function callModelWithTools(
   messages: ModelToolMessage[],
   tools: ModelToolDefinition[],
   requestId = "unknown",
-  options: { requiredTool?: string } = {}
+  options: { requiredTool?: string;timeoutMs?:number } = {}
 ): Promise<ToolChatResult> {
   if (!model.enabled) throw new Error("模型未启用");
   if (!model.apiKey) throw new Error("模型缺少 API Key");
@@ -284,7 +284,7 @@ export async function callModelWithTools(
         temperature: 0.2,
         max_tokens: MODEL_MAX_OUTPUT_TOKENS
       })
-    }, requestTimeoutMs);
+    }, options.timeoutMs?Math.min(requestTimeoutMs,Math.max(1000,options.timeoutMs)):requestTimeoutMs);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new ModelRequestError(response.status, safeProviderReason(payload,response.status));
@@ -329,7 +329,7 @@ async function callAnthropicModelWithTools(
   messages: ModelToolMessage[],
   tools: ModelToolDefinition[],
   requestId: string,
-  options: { requiredTool?: string } = {}
+  options: { requiredTool?: string;timeoutMs?:number } = {}
 ): Promise<ToolChatResult> {
   const system = messages
     .filter((message) => message.role === "system" && typeof message.content === "string")
@@ -397,7 +397,7 @@ async function callAnthropicModelWithTools(
         tool_choice: tools.length ? (options.requiredTool ? { type: "tool", name: options.requiredTool, disable_parallel_tool_use: true } : { type: "auto" }) : undefined,
         max_tokens: MODEL_MAX_OUTPUT_TOKENS
       })
-    }, requestTimeoutMs);
+    }, options.timeoutMs?Math.min(requestTimeoutMs,Math.max(1000,options.timeoutMs)):requestTimeoutMs);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new ModelRequestError(response.status, safeProviderReason(payload,response.status));

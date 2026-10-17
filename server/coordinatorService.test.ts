@@ -502,6 +502,65 @@ function fixture() {
   };
 }
 const key = async () => {};
+test('required source searches cannot be replaced by a model claim, including read-only chat',async()=>{
+  const f=fixture();await f.store.mutate(d=>{d.knowledgeConnections.push({id:'notion-required',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now'});});
+  const refusing=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('not actually called');}},{modelCall:async()=>answer('没有找到这份资料')});
+  const notRead=await refusing.dispatch(a,input('operation_required_search_1','帮我去 Notion 查查方案，只回答，不执行任务'),key);
+  assert.match(notRead.message.content,/还没查全/);assert.doesNotMatch(notRead.message.content,/没有找到这份资料/);
+  let selected:readonly string[]|undefined;
+  const reading=new CoordinatorService(f.store,{recallWithDiagnostics:async(_ws,_q,_k,ids)=>{selected=ids;return{chunks:[],failures:[],status:'no_match',coverage:[{connectionId:'notion-required',provider:'notion',status:'no_match',attempts:1}]};}},{modelCall:async(_m,messages)=>messages.at(-1)?.role==='tool'?answer('这次没有找到匹配的方案。'):{...answer(''),toolCalls:[{id:'search',type:'function',function:{name:'knowledge_search',arguments:JSON.stringify({query:'方案'})}}]}});
+  const result=await reading.dispatch(a,input('operation_required_search_2','帮我去 Notion 查查方案，只回答，不执行任务'),key);assert.deepEqual(selected,['notion-required']);assert.match(result.message.content,/这次没有找到匹配/);
+});
+test('a multi-feature deliverable preserves completed work, reports it through ONE, and retries only the missing feature',async()=>{
+  const f=fixture();
+  await f.store.mutate(d=>{d.settings.officialFeatures=['文案','网页'].map((name,i)=>{const values={name,author:'ONE',description:'处理当前成果',instructions:`checkpoint-feature-${i}`,limitations:'只用合成数据',integration:'question_answer' as const,modelId:'special',knowledgeMode:'none' as const,usageMultiplier:.6};const version={version:1,values,evidence:'test',approvedBy:'a',approvedAt:'now'};return{id:`checkpoint-${i}`,revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:`checkpoint-release-${i}`,version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}};});});
+  let first=0,second=0,parentRounds=0,reports=0;
+  f.setRoute(messages=>{
+    if(messages[0].content!.startsWith('你是用户一直在交流的 ONE')){reports++;return answer(JSON.stringify({message:'文案已经做好，网页这次没做成。可以继续补上，不用重写文案。'}));}
+    return messages.at(-1)?.role==='tool'?answer('安排好了'):{...answer(''),toolCalls:[{id:'plan',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'一份完整说明',instruction:'先写文案，再做网页',executorId:'general',outputKind:'text',featureIds:['checkpoint-0','checkpoint-1'],dependsOn:[]}]})}}]};
+  });
+  f.setWorker(async messages=>{
+    if(messages[0].content!.includes('checkpoint-feature-0')){first++;return answer('真实保留的文案');}
+    if(messages[0].content!.includes('checkpoint-feature-1')){second++;if(second===1)throw Error('private provider failure');return answer('真实网页内容');}
+    parentRounds++;if(!messages.some(m=>m.role==='tool'))return {...answer(''),toolCalls:[0,1].map(i=>({id:`part-${i}`,type:'function' as const,function:{name:`feature_${i}`,arguments:JSON.stringify({query:`${parentRounds}：处理第${i}部分`})}}))};
+    return answer(JSON.stringify({outcome:'completed',content:'真实保留的文案，以及真实网页内容',summary:'两部分做好了'}));
+  });
+  const reply=await f.service.dispatch(a,{...input('operation_checkpoints_01','整理说明和网页'),budget:.5},key);
+  await f.service.resume(a,key);const id=reply.taskIds[0];
+  await waitFor(async()=>(await f.service.task(a,id)).jobs.at(-1)!.state==='failed');
+  const partial=await f.service.task(a,id),source=partial.jobs.at(-1)!;
+  assert.equal(first,1);assert.equal(second,1);assert.equal(reports,1);assert.match(source.userReport!,/文案已经做好/);assert.match(partial.conversation.messages.at(-1)!.content,/真实保留的文案/);
+  assert.doesNotMatch(JSON.stringify(partial),/private provider failure|"namespace"|"steps"/);
+  assert.equal(partial.recovery.kind,'retry');await assert.rejects(()=>f.service.retryLatest(b,id,source.id,undefined,key));
+  await f.service.retryLatest(a,id,source.id,undefined,key);await f.service.resume(a,key);
+  await waitFor(async()=>(await f.service.task(a,id)).jobs.at(-1)!.state==='completed');
+  assert.equal(first,1);assert.equal(second,2);assert.equal(reports,1);
+  const db=await f.store.read();assert.equal(db.modelUsageRecords.filter(r=>r.featurePriceSnapshot?.id==='checkpoint-0').length,1);assert.equal(db.powerAccounts[1].balanceMicros,100e6);
+});
+test('failed prerequisites wait without killing their successors; explicit recovery unblocks only their own dependents',async()=>{
+  const f=fixture();let parentCalls=0,childCalls=0,otherCalls=0;
+  f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('安排好了'):{...answer(''),toolCalls:[{id:'chain',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[
+    {taskId:null,title:'准备素材',instruction:'PARENT_ONLY',executorId:'general',outputKind:'text',featureIds:[],dependsOn:[]},
+    {taskId:null,title:'整理成品',instruction:'CHILD_ONLY',executorId:'general',outputKind:'text',featureIds:[],dependsOn:[0]},
+    {taskId:null,title:'独立短文',instruction:'OTHER_ONLY',executorId:'general',outputKind:'text',featureIds:[],dependsOn:[]},
+  ]})}}]});
+  f.setWorker(async messages=>{const last=messages.at(-1)!.content!;if(last.includes('PARENT_ONLY')){parentCalls++;return answer(JSON.stringify({outcome:parentCalls===1?'failed':'completed',content:parentCalls===1?'素材暂时没找齐':'RECOVERED_REAL_SOURCE',summary:'本轮真实状态'}));}if(last.includes('CHILD_ONLY')){childCalls++;assert.match(JSON.stringify(messages),/RECOVERED_REAL_SOURCE/);}else otherCalls++;return answer(JSON.stringify({outcome:'completed',content:'真实成果',summary:'已做好'}));});
+  const result=await f.service.dispatch(a,input('operation_dependency_fix_1','先准备素材，再整理成品，同时写短文'),key);await f.service.resume(a,key);
+  await waitFor(async()=>{const d=await f.store.read();return d.chatOperations!.some(o=>o.conversationId===result.taskIds[2]&&o.workRun?.state==='completed');});
+  await f.service.resume(a,key);
+  const blocked=await f.service.task(a,result.taskIds[1]);assert.equal(childCalls,0);assert.equal(otherCalls,1);assert.equal(blocked.jobs[0].state,'queued');assert.equal(blocked.jobs[0].dependencyBlocked,true);assert.equal(blocked.recovery.kind,'none');
+  const parent=await f.service.task(a,result.taskIds[0]);await f.service.retryLatest(a,result.taskIds[0],parent.jobs[0].id,undefined,key);await f.service.resume(a,key);
+  await waitFor(async()=>(await f.service.task(a,result.taskIds[1])).jobs[0].state==='completed');assert.equal(parentCalls,2);assert.equal(childCalls,1);assert.equal(otherCalls,1);
+});
+test('structured HTML deliverable calls the reviewed renderer directly without another model or knowledge read',async()=>{
+  const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-direct-contract-'));
+  const scene={id:'first',title:'整理说明',situation:'需要一份说明',feature:'整理要点',advantage:'不用反复排版',benefit:'拿到清楚的网页',evidence:'打开网页核对',steps:['整理要点','打开查看'],prompt:'整理说明',capabilityIds:[]};
+  const document={version:1,title:'合成测试说明',intro:'测试结构化资料直接交付',scenes:[scene,{...scene,id:'second'}]};
+  await f.store.mutate(d=>{const values={name:'交互网页',author:'ONE',description:'生成说明网页',instructions:'生成网页',limitations:'私有文件',integration:'question_answer' as const,knowledgeMode:'none' as const,usageMultiplier:.6,tools:[{id:'oneHtml',name:'网页',description:'生成网页',kind:'local' as const}]};const version={version:1,values,evidence:'test',approvedBy:'a',approvedAt:'now'};d.settings.officialFeatures=[{id:'direct-page',revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:'direct-release',version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}}] as any;});
+  let modelCalls=0;
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('must not read');}},{artifactDirectory:directory,modelCall:async(model,messages)=>{modelCalls++;assert.equal(model.id,'router');return messages.at(-1)?.role==='tool'?answer('网页正在整理'):{...answer(''),toolCalls:[{id:'direct',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'合成说明网页',instruction:'把结构化说明保存成网页',executorId:'direct',outputKind:'text',featureIds:['direct-page'],dependsOn:[],requiredTools:['oneHtml'],direct:{tool:'oneHtml',document}}]})}}]};}});
+  try{const result=await service.dispatch(a,input('operation_direct_page_01','把说明保存成网页'),key);await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskIds[0])).jobs[0].state==='completed');assert.equal(modelCalls,2);const d=await f.store.read();assert.equal(d.modelUsageRecords.filter(r=>r.activity==='task_worker'||r.activity==='task_feature').length,0);assert.equal(d.attachments.length,1);assert.equal(d.attachments[0].mimeType,'text/html');await assert.rejects(()=>service.task(b,result.taskIds[0]));}finally{rmSync(directory,{recursive:true,force:true});}
+});
 test('Notion dispatcher and queued continuation create once, revise the same document, keep original words and scoped receipts',async()=>{
   const f=fixture(),parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',pageId='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
   await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:'a',authorizedAt:'now',parentId}}));

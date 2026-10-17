@@ -1,9 +1,10 @@
 export type TaskRecovery = { kind: 'retry' | 'resume' | 'review_image' | 'review_notion' | 'review_local' | 'none'; message: string; sourceJobId?: string; welcomeStep?:'manual'|'image'|'page' };
 
 /** A recovery action follows the persisted latest job, not a guessed UI state. */
-export function taskRecovery(jobs: { id: string; state: string; kind?: string; notionTarget?: unknown; notionReceipt?: {state: string};welcomeManual?:{document?:unknown};welcomeImageAttachmentId?:string }[]): TaskRecovery {
+export function taskRecovery(jobs: { id: string; state: string; kind?: string;dependencyBlocked?:boolean; notionTarget?: unknown; notionReceipt?: {state: string};welcomeManual?:{document?:unknown};welcomeImageAttachmentId?:string }[]): TaskRecovery {
   const latest = jobs.at(-1);
   if (!latest) return { kind: 'none', message: '原话仍在，请核对已有结果后发送新的要求。' };
+  if(latest.dependencyBlocked)return {kind:'none',message:'先继续前面卡住的任务。它做好后，这一项会接着处理，不用重新交代。'};
   if (jobs.some(job => job.state === 'running')) return { kind: 'none', message: '本轮仍在处理，请查看进展或停止，暂不重复启动。' };
   if (latest.state === 'prepared') return { kind: 'review_local', message: '请先查看本机执行回执；确认已完成的修改后，再从本机执行入口继续。' };
   if (latest.state === 'completed') return { kind: 'none', message: '最新一轮已有结果，请查看结果或提出新的修改要求。' };

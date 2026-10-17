@@ -12,7 +12,7 @@ export async function createVisualArtifact(doc:VisualDocument,format:'html'|'svg
 }
 export function visualTool(id:string,description:string,verify:()=>Promise<void>,save?:SaveVisual):OrchestrationTool{
   if(!visualToolPresets.some(x=>x.id===id))throw new Error('未知的视觉工具');
-  return {name:id,description,run:async()=>{throw new Error('请提供完整的结构化说明');},structured:{schema:visualDocumentSchema,validate:validateVisualDocument,run:async raw=>{
+  return {name:id,description,label:id==='oneHtml'?'整理网页':'整理流程图',effect:'artifact',run:async()=>{throw new Error('请提供完整的结构化说明');},structured:{schema:visualDocumentSchema,validate:validateVisualDocument,run:async raw=>{
     await verify();if(!save)throw new Error('网页与流程图存储暂时不可用');const file=await save(validateVisualDocument(raw),id==='oneHtml'?'html':'svg');await verify();
     return {status:'completed',file,format:id==='oneHtml'?'html':'svg',message:'已生成私有成果文件，可以查看或下载；未公开发布。'};
   }}};

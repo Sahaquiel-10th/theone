@@ -854,17 +854,21 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const conversation=coordinator.details[id]?.conversation||conversations.find(c=>c.id===id);
     const local=executionTasks.filter(item=>item.conversationId===id).sort((a,b)=>a.updatedAt.localeCompare(b.updatedAt)).at(-1);
     const localNeedsAction=local&&(['failed','cancelled'].includes(local.status)||executionNeedsReview(local))&&!task?.running&&!task?.queued;
-    if(!coordinator.enabled||!(task?.paused||conversation?.workPaused||localNeedsAction))return null;
     const detail=coordinator.details[id];
-    const error=detail?.jobs.filter(job=>job.error).at(-1)?.error;
+    const lastJob=detail?.jobs.at(-1);
+    if(!coordinator.enabled)return null;
+    if(!(task?.paused||conversation?.workPaused||localNeedsAction||lastJob?.dependencyBlocked))return task?.running&&lastJob?.progress?.completed.length?<section className="task-recovery" role="status"><strong>正在接着做</strong><p>已做好：{lastJob.progress.completed.join('、')}。{lastJob.progress.pending.length?`正在处理：${lastJob.progress.pending.join('、')}。`:'后续内容还在整理。'}</p></section>:null;
+    const error=lastJob?.error;
     const recovery=detail?.recovery;
     const latest=taskRetryScope(detail?.jobs||[],conversation?.messages.filter(m=>m.role==='user').at(-1)?.content);
     const title=conversation?.title||task?.title||'当前任务';
     const retrying=coordinator.retryingTasks.includes(id);
-    const actionLabel=recovery?.welcomeStep?'继续制作使用说明':recovery?.kind==='review_image'?'重新生成图片':recovery?.kind==='resume'?'开始处理最新要求':'重新处理最新要求';
+    const actionLabel=recovery?.welcomeStep?'继续制作使用说明':recovery?.kind==='review_image'?'重新生成图片':recovery?.kind==='resume'?'开始处理最新要求':lastJob?.progress?.completed.length?'继续未完成的部分':'重新处理最新要求';
     return <section className="task-recovery" role="status">
-      <strong>这轮还没做完</strong><p>{error||'原要求还在，下面可以查看下一步。'}</p>
+      <strong>{lastJob?.dependencyBlocked?'在等前面的结果':'还有部分没做好'}</strong><p>{lastJob?.userReport||error||'原要求还在，下面可以查看下一步。'}</p>
+      {lastJob?.userReport&&error?<details><summary>查看详细记录</summary><p>{error}</p></details>:null}
       <p>{recovery?.message||'正在读取恢复方式…'}</p>
+      {lastJob?.dependencyBlocked?lastJob.waitingFor?.map(parent=><button type="button" key={parent.taskId} onClick={()=>void selectThing(parent.taskId)}>看看「{parent.title}」</button>):null}
       {recovery&&['retry','resume'].includes(recovery.kind)?<p>本轮范围：{latest}</p>:null}
       {recovery&&['retry','resume','review_image'].includes(recovery.kind)?<button type="button" disabled={retrying} onClick={()=>{
         const price=detail?.jobs.at(-1)?.retryPower;

@@ -15,6 +15,7 @@ export type KnowledgeFailure = {
 };
 
 export type KnowledgeRecallResult = {
+  coverage?:{connectionId?:string;provider:string;status:'used'|'no_match'|'failed'|'unavailable';attempts:number}[];
   chunks: KnowledgeChunk[];
   status: "used" | "no_match" | "not_connected" | "partial" | "failed";
   failures: KnowledgeFailure[];
@@ -67,7 +68,7 @@ export class KnowledgeService {
     return result.chunks;
   }
 
-  async recallWithDiagnostics(workspaceId: string, query: string, topK = 5, allowedConnectionIds?: readonly string[], userId?: string): Promise<KnowledgeRecallResult> {
+  async recallWithDiagnostics(workspaceId: string, query: string, topK = 5, allowedConnectionIds?: readonly string[], userId?: string, options?:{retry?:boolean}): Promise<KnowledgeRecallResult> {
     topK = Number.isFinite(topK) ? Math.max(1, Math.min(10, Math.floor(topK))) : 5;
     const db = await this.store.read();
     if (companyWorkspace(db, workspaceId)) {
@@ -87,22 +88,26 @@ export class KnowledgeService {
       const health = adapter.status(db, { workspaceId, userId: "" });
       // No connection is normal, not a failed retrieval. This also avoids
       // invoking Notion's remote/token path before it has been connected.
-      if (["not_connected", "pending", "disabled", "unavailable"].includes(health.state)) return { chunks: [], attempted: false };
+      const connection=db.knowledgeConnections.find(c=>c.workspaceId===workspaceId&&c.provider===adapter.manifest.id);
+      if (["not_connected", "pending", "disabled", "unavailable"].includes(health.state)) return { chunks: [], attempted: false,coverage:connection?{connectionId:connection.id,provider:adapter.manifest.id,status:'unavailable' as const,attempts:0}:undefined };
       const startedAt = new Date().toISOString();
       const stored = db.knowledgeConnections.find(item => item.workspaceId === workspaceId && item.provider === adapter.manifest.id);
       const snapshot = stored ? structuredClone(stored) : undefined;
       let chunks: KnowledgeChunk[] = [];
       let failure: KnowledgeFailure | undefined;
-      try {
-        chunks = (await adapter.recall(db, workspaceId, query, topK)).slice(0, topK).map(boundedChunk).filter((item): item is KnowledgeChunk => Boolean(item));
-      } catch (error) {
-        failure = safeFailure(adapter.manifest.id, error);
+      let attempts=0;
+      for(;;){
+        attempts++;
+        const fresh=await this.store.read();
+        if(snapshot&&userId&&(!fresh.knowledgeConnections.some(c=>c.id===snapshot.id&&c.workspaceId===workspaceId&&['connected','error'].includes(c.status)&&c.clientId===snapshot.clientId&&c.encryptedApiKey===snapshot.encryptedApiKey&&c.encryptedAccessToken===snapshot.encryptedAccessToken)||!canReadKnowledge(fresh,{workspaceId,userId},snapshot.id)))throw new Error('知识授权已撤销');
+        try {chunks=(await adapter.recall(fresh,workspaceId,query,topK)).slice(0,topK).map(boundedChunk).filter((item):item is KnowledgeChunk=>Boolean(item));failure=undefined;break;}
+        catch(error){failure=safeFailure(adapter.manifest.id,error);if(!options?.retry||!failure.retryable||attempts>=3)break;await new Promise(resolve=>setTimeout(resolve,attempts*250));}
       }
       if (userId && companyWorkspace(db, workspaceId) && (!snapshot || !canReadKnowledge(await this.store.read(), {workspaceId,userId}, snapshot.id))) throw new Error("企业知识授权已撤销");
       // A persistence failure is an application failure, not a knowledge-provider
       // error. Let the chat request abort before model billing in that case.
       await this.recordOutcome(snapshot, startedAt, failure);
-      return { chunks, attempted: true, failure };
+      return { chunks, attempted: true, failure,coverage:{connectionId:stored?.id,provider:adapter.manifest.id,status:failure?'failed' as const:chunks.length?'used' as const:'no_match' as const,attempts} };
     }));
     const resultSets = outcomes.map(outcome => outcome.chunks);
     const failures = outcomes.flatMap(outcome => outcome.failure ? [outcome.failure] : []);
@@ -118,7 +123,8 @@ export class KnowledgeService {
       if (!found) break;
     }
     const attempted = outcomes.filter(outcome => outcome.attempted).length;
-    return { chunks: results, failures, status: failures.length ? failures.length < attempted ? "partial" : "failed" : results.length ? "used" : attempted ? "no_match" : "not_connected" };
+    const coverage=outcomes.flatMap(o=>'coverage' in o&&o.coverage?[o.coverage]:[]);
+    return { chunks: results, failures, status: failures.length ? failures.length < attempted ? "partial" : "failed" : results.length ? "used" : attempted ? "no_match" : "not_connected",...(coverage.length?{coverage}:{}) };
   }
 
   private async recordOutcome(snapshot: KnowledgeConnection | undefined, startedAt: string, failure?: KnowledgeFailure) {

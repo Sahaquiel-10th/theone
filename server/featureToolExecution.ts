@@ -11,7 +11,7 @@ export function executableFeatureTools(store:Store,scope:{workspaceId:string;use
   return choices.map(choice=>{
     if(isLocalFeatureTool(choice))return localSkillTool(choice.id,choice.description,verify,deps.localContext);
     const endpoint=featureToolEndpoint(choice),http=choice.mcp?undefined:resolveFeatureTool(choice),mcp=choice.mcp?.tool;
-    return{name:choice.id,description:choice.description,run:async()=>{throw new Error('需要结构化参数');},structured:{
+    return{name:choice.id,description:choice.description,label:choice.description.slice(0,40),effect:'read',tolerateFailure:true,run:async()=>{throw new Error('需要结构化参数');},structured:{
       schema:mcp?{...mcp.inputSchema,additionalProperties:false}:{type:'object',additionalProperties:false,properties:http!.input,required:http!.required},
       validate:input=>mcp?mcpValidate(mcp,input):validateFields(input,http!.input,http!.required),
       run:async input=>{

@@ -2,6 +2,12 @@ import type { ExecutorValues } from "./executorProfiles.js";
 import type { OfficialFeatureValues } from "./officialFeatures.js";
 import type { CredentialBinding } from "./featureCredentials.js";
 export type WorkRun = {
+  steps?:import('./taskSteps.js').TaskStep[];
+  contract?:{version:1;requiredFeatureIds:string[];requiredTools:string[];knowledgeSourceIds?:string[];execution:'model'|'direct'};
+  directVisual?:{tool:'oneHtml'|'oneFlowchart';document:import('./visualDocument.js').VisualDocument};
+  userReport?:string;
+  retryOfOperationId?:string;
+  dependencyBlocked?:boolean;
   /** Reporting to ONE and the user's review are independent durable acknowledgements. */
   reportedToCoordinatorAt?: string;
   reportMessageId?: string;

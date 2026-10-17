@@ -6,8 +6,26 @@ import { ConnectorRegistry, type KnowledgeAdapter } from "../connectors/registry
 import { encryptCredential } from "./credentialCipher.js";
 import { KnowledgeService } from "./knowledgeService.js";
 
+test('opt-in knowledge reads retry at most twice and report real source coverage',async()=>{
+  const store=storeWithConnection('workspace-a');let attempts=0;
+  const adapter:KnowledgeAdapter={kind:'knowledge',manifest:{id:'getnote',name:'test',version:'1.0.0',kind:'knowledge',capabilities:['knowledge.read'],auth:'oauth_pkce',security:{trust:'untrusted_reference',transport:'fixed_https',access:'read_only',allowedHosts:['example.com']}},status:()=>({state:'configured',code:'OK',message:'ok',evidence:'stored'}),recall:async()=>{attempts++;if(attempts<3)throw Error('timeout private-token');return[{provider:'getnote',title:'result',content:'found'}];}};
+  const service=new KnowledgeService(store,new ConnectorRegistry([adapter]));
+  const result=await service.recallWithDiagnostics('workspace-a','question',5,['connection-a'],'owner',{retry:true});
+  assert.equal(attempts,3);assert.equal(result.status,'used');assert.deepEqual(result.coverage,[{connectionId:'connection-a',provider:'getnote',status:'used',attempts:3}]);
+  attempts=0;adapter.recall=async()=>{attempts++;throw Error('timeout private-token');};
+  const failed=await new KnowledgeService(store,new ConnectorRegistry([adapter])).recallWithDiagnostics('workspace-a','question',5,['connection-a'],'owner',{retry:true});
+  assert.equal(attempts,3);assert.equal(failed.status,'failed');assert.equal(failed.coverage![0].status,'failed');assert.doesNotMatch(JSON.stringify(failed),/private-token/);
+});
+test('revoking a source during read retry aborts before another provider call',async()=>{
+  const store=storeWithConnection('workspace-a');let attempts=0;
+  const adapter:KnowledgeAdapter={kind:'knowledge',manifest:{id:'getnote',name:'test',version:'1.0.0',kind:'knowledge',capabilities:['knowledge.read'],auth:'oauth_pkce',security:{trust:'untrusted_reference',transport:'fixed_https',access:'read_only',allowedHosts:['example.com']}},status:()=>({state:'configured',code:'OK',message:'ok',evidence:'stored'}),recall:async()=>{attempts++;await store.mutate(d=>{d.knowledgeConnections[0].status='revoked';});throw Error('timeout');}};
+  await assert.rejects(new KnowledgeService(store,new ConnectorRegistry([adapter])).recallWithDiagnostics('workspace-a','question',5,['connection-a'],'owner',{retry:true}),/撤销/);
+  assert.equal(attempts,1);
+});
+
 function storeWithConnection(workspaceId: string): Store {
   const database = {
+    users:[{id:'owner',enabled:true}],workspaceMembers:[{workspaceId,userId:'owner'}],workspaces:[{id:workspaceId,status:'active'}],
     knowledgeConnections: [{
       id: "connection-a",
       workspaceId,
@@ -194,7 +212,7 @@ test("unconnected providers are not queried and are different from a successful 
   assert.deepEqual(noConnections, { chunks: [], failures: [], status: "not_connected" });
   const empty = adapter("source_b", async () => []);
   const noMatch = await new KnowledgeService(storeWithConnection("workspace-a"), new ConnectorRegistry([unconnected, empty])).recallWithDiagnostics("workspace-a", "question");
-  assert.deepEqual(noMatch, { chunks: [], failures: [], status: "no_match" });
+  assert.deepEqual(noMatch, { chunks: [], failures: [], status: "no_match",coverage:[{connectionId:undefined,provider:'source_b',status:'no_match',attempts:1}] });
 });
 
 test("parallel provider results preserve round-robin fairness and bounded topK", async () => {
