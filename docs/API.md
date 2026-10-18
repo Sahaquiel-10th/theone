@@ -1,5 +1,12 @@
 # ONE MVP API
 
+## 2026-10-18 能力发现与固定流程
+
+- 新增服务器提供给调度的 function `discover_capabilities({query,industry?,category?,outputKind?,offset?})`，不是公共 HTTP 执行入口。query 最多 300 字，每页最多 8 个；返回当前已授权能力的 name/description/真实调用标识/倍率与发现信息，以及 total/nextOffset。行业影响排序，不隔绝通用能力。返回不包含提示词、凭据、平台正文或执行结果。明确只回答、不执行的请求也允许只读查目录。
+- 原官方功能草稿/认定/发布接口与执行 AI 草稿/发布接口增加可选 `discovery`：`industries/scenarios/aliases` 各最多 12 项，每项 60 字；`avoidWhen` 最多 500 字。描述不增加权限，草稿不影响已发布行为。
+- `GET /api/admin/capabilities` 增加 `kind:workflow` 的个人使用说明卡片，展示固定阶段及触发入口；仍由超管 Key 保护。其策划模型/提示词复用 welcome_manual 配置，图片通道沿用 image_generation。
+- 资料完成继续使用原引导接口，不新增浏览器可指定任意流程、用户、Workspace 或免费次数的接口。服务端记录固定流程版本并通过已有任务引擎生成；旧接收回执与未决尝试不重跑。
+
 ## 对话附件（2026-09-20）
 
 以下接口均强制登录、精确用户/Workspace 及在线 Key 证明：

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import {DiscoveryMetadataEditor} from './DiscoveryMetadataEditor';
 import type { api as Api } from "./oneApi";
 import { Pagination, SearchPicker, SettingsDialog } from "./SettingsControls";
 import type {
@@ -226,6 +227,7 @@ export function ExecutorEditor({
             }
           />
         </label>
+        <DiscoveryMetadataEditor value={values.discovery} disabled={busy} onChange={discovery=>setValues({...values,discovery})}/>
         <SearchPicker
           label="执行模型"
           value={values.modelId}

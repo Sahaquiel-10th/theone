@@ -9,7 +9,7 @@ export class OrchestrationToolError extends Error {
   constructor(readonly code: "TOOL_DEFINITION_CHANGED", message: string) { super(message); }
 }
 
-export type OrchestrationTool = { name: string; description?: string; label?:string; effect?:TaskStep['effect']; tolerateFailure?:boolean; run: (query: string) => Promise<unknown>;
+export type OrchestrationTool = { name: string; description?: string; label?:string; effect?:TaskStep['effect']; tolerateFailure?:boolean; cacheable?:boolean; run: (query: string) => Promise<unknown>;
   structured?: { schema: Record<string, unknown>; validate: (input: unknown) => unknown; run: (input: unknown) => Promise<unknown> } };
 
 /** Sequential, bounded read-only execution. Handlers own scope and fresh authorization. */
@@ -76,7 +76,7 @@ export async function runTaskOrchestrator(input: {
         const previous=checkpoints?.steps.find(s=>s.namespace===checkpoints.namespace&&s.state==='completed'&&toolSucceeded(s.output)&&s.tool===tool.name&&(s.effect==='artifact'||s.effect==='external_write'||checkpoints.namespace==='worker'&&/^feature_\d+$/.test(tool.name)))??checkpoints?.steps.find(s=>s.key===durableKey&&s.namespace===checkpoints.namespace&&s.tool===tool.name);
         if(previous?.state==='started'&&['artifact','external_write'].includes(previous.effect))throw new Error('上次保存的结果还没确认，请先查看已有文件；不会重复写入。');
         if(previous?.state==='completed'&&toolSucceeded(previous.output)){output=previous.output;status='reused';checkpoints?.onReuse?.(output);}
-        else if (cache.has(key)) { output = cache.get(key); status = "reused"; }
+        else if (tool.cacheable!==false && cache.has(key)) { output = cache.get(key); status = "reused"; }
         else {
           const checkpoint:TaskStep={key:durableKey,namespace:checkpoints?.namespace??'',tool:tool.name,label:tool.label||tool.description?.slice(0,60)||'处理资料',effect:tool.effect??'read',state:'started',updatedAt:new Date().toISOString()};
           if(checkpoints){if(checkpoints.steps.length>=64&&!previous)throw new Error('这件事的步骤较多，先保留已有结果，请分批继续。');await checkpoints.save(checkpoint);}
@@ -101,7 +101,7 @@ export async function runTaskOrchestrator(input: {
             if(!tool.tolerateFailure||error instanceof OrchestrationToolError)throw error;
             output={status:'failed',message:'这一步暂时没做好，其他独立部分可以继续。'};
           }
-          cache.set(key, output); status = "returned";
+          if(tool.cacheable!==false)cache.set(key, output); status = "returned";
         }
       }
       if(tool&&status!=='rejected'&&toolSucceeded(output))satisfied.add(tool.name);

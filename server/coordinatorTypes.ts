@@ -2,6 +2,7 @@ import type { ExecutorValues } from "./executorProfiles.js";
 import type { OfficialFeatureValues } from "./officialFeatures.js";
 import type { CredentialBinding } from "./featureCredentials.js";
 export type WorkRun = {
+  fixedWorkflow?:import('./fixedWorkflows.js').FixedWorkflowInvocation;
   steps?:import('./taskSteps.js').TaskStep[];
   contract?:{version:1;requiredFeatureIds:string[];requiredTools:string[];knowledgeSourceIds?:string[];execution:'model'|'direct'};
   directVisual?:{tool:'oneHtml'|'oneFlowchart';document:import('./visualDocument.js').VisualDocument};

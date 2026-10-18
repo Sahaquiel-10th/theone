@@ -26,6 +26,7 @@ export const taskToolDescriptions: Record<string, string> = {
   generate_image: "用户明确要求作图时，将已确定的主体、构图、文字与限制交给独立图片任务。每条请求最多一张 1K 图片，入队不是完成；文字先回答，图片稍后回到同一对话。若图片依赖尚未确认的内容，先确认；不要重复调用，也不要在未收到图片时声称已生成。",
   execute_local_task: "用户明确要求创建或修改本地文件等本机操作时调用。必须定位事情并带上目标、已确认内容和最新补充；普通讨论不调用。本机授权仍独立确认，不能凭摘要扩大权限。",
   search_tasks: "当最近事情目录不足以定位用户指定的旧任务时，用项目或主题关键词搜索本人事情名片。",
+  discover_capabilities: '按用途查找本账号已开放的执行 AI、功能和平台；支持行业、分类和分页。只查目录，不执行或购买。分类没有结果时扩大搜索，并考虑通用能力。',
   read_task: "对已经定位的事情，用事情 ID 读取其最近原文和交接，确认具体目标、数字与限制后再分派。",
   delegate_task: "需要完成独立工作或给一件已有事情补充要求时使用。只选本轮目录允许的执行器和事情；将目标、限制及补充整理成简短交接。用户指定事情必须遵守；不确定就询问。成功表示入队，不表示已经完成。",
   list_files: "需要了解授权文件夹结构、寻找文件位置时使用。先列目录再决定读取哪些文件，不盲目读取全部文件。",
@@ -39,6 +40,7 @@ export const taskToolDescriptions: Record<string, string> = {
 };
 
 export const registeredToolCatalog = [
+  {name:'discover_capabilities',label:'按需查找可用能力',localOnly:false,readOnly:true},
   { name: 'delegate_tasks', label: '一次安排多个任务', localOnly: false, readOnly: false },
   { name: "generate_image", label: "生成图片（独立任务）", localOnly: false, readOnly: false },
   { name: "execute_local_task", label: "交给本机执行", localOnly: true, readOnly: false },
@@ -56,7 +58,7 @@ export const registeredToolCatalog = [
 ] as const;
 
 export function taskToolNames(id: string): string[] {
-  return id === "coordinator" ? ["delegate_task", "delegate_tasks", "execute_local_task", "search_tasks", "read_task", "knowledge_search", "web_search", "generate_image"] : id === "local_agent" ? ["list_files", "read_file", "search_text", "write_file", "replace_in_file", "run_command"]
+  return id === "coordinator" ? ["delegate_task", "delegate_tasks", "execute_local_task", "search_tasks", "read_task", "knowledge_search", "web_search", "generate_image", "discover_capabilities"] : id === "local_agent" ? ["list_files", "read_file", "search_text", "write_file", "replace_in_file", "run_command"]
     : ["orchestrator", "task_worker"].includes(id) ? ["knowledge_search", "web_search"] : [];
 }
 import {welcomeManualPrompt} from './welcomeManualPrompts.js';

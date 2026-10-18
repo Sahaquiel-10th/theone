@@ -2,6 +2,7 @@ import type { Database, User } from "./types.js";
 import { uid } from "./security.js";
 
 export type OnboardingHandbook = {
+  fixedWorkflow?:import('./fixedWorkflows.js').FixedWorkflowInvocation;
   funding?: 'one' | 'customer';
   operationId: string;
   status: "pending" | "preparing" | "queued" | "skipped" | "failed";

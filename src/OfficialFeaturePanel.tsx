@@ -7,6 +7,7 @@ import { FeatureBuilder, FeatureTrial } from "./FeatureBuilder";
 import { FeatureRelease } from "./FeatureRelease";
 import {OneSkillLibrary} from './OneSkillLibrary';
 import {PublicCommercePolicyPanel} from './PublicServicePanels';
+import {DiscoveryMetadataEditor} from './DiscoveryMetadataEditor';
 
 type Row={id:string;name:string;author:string;status:string;version:number;releaseVersion?:number;hasChanges:boolean};
 type Detail=OfficialFeatureRecord & {total:number};
@@ -57,6 +58,7 @@ export function FeatureEditor({api,featureId,onChanged}:{api:typeof Api;featureI
     <label>使用倍率<input aria-label="功能使用倍率" type="number" min="0.001" max="100" step="0.1" disabled={busy} value={values.usageMultiplier??.6} onChange={e=>setValues({...values,usageMultiplier:Number(e.target.value)})}/></label><p className="hint">默认 0.6 倍。替换模型售价倍率，不再叠乘；保存、认定并上架后只对新任务生效。</p>
     {([['name','名称',60],['author','作者或合作方',100],['description','什么时候用',500],['instructions','具体怎么做',12000],['limitations','适用边界与限制',2000]] as const).map(([key,label,max])=><label key={key}>{label}{key==='name'||key==='author'?<input value={values[key]} maxLength={max} disabled={busy} onChange={e=>setValues({...values,[key]:e.target.value})}/>:<textarea rows={key==='instructions'?5:3} value={values[key]} maxLength={max} disabled={busy} onChange={e=>setValues({...values,[key]:e.target.value})}/>}</label>)}
     {values.skillAttribution!==undefined?<label>来源、许可与署名记录<textarea rows={5} maxLength={30000} disabled={busy} value={values.skillAttribution} onChange={e=>setValues({...values,skillAttribution:e.target.value})}/></label>:null}
+    <DiscoveryMetadataEditor value={values.discovery} disabled={busy} onChange={discovery=>setValues({...values,discovery})}/>
     {values.experience?.mode==='image'?<p className="hint">图片功能请认定后上架给自己，在功能入口上传参考图并验证；后台文字试运行不调用图片模型。</p>:null}
     <FeatureBuilder api={api} values={values} onChange={setValues} disabled={busy}/>
     <button type="button" className="primary" disabled={busy|| (!!featureId&&!detail)} onClick={()=>void act("save")}>保存草稿</button>

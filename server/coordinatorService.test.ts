@@ -39,6 +39,7 @@ for(const sponsored of [true,false])test(`welcome manual → image → shared vi
     await service.resume(a,key);await waitFor(async()=>(await service.task(a,taskId)).jobs[0].state==='completed');
     const d=await f.store.read(),run=d.chatOperations!.find(o=>o.conversationId===taskId&&o.workRun)!.workRun!;
     assert.equal(texts,1);assert.equal(images,1);assert.deepEqual(run.welcomeManual!.document,doc);assert.equal(run.welcomeManual!.model.apiKey,'');assert.ok(run.welcomeArtifacts?.flowId&&run.welcomeArtifacts.pageId);
+    assert.equal(run.fixedWorkflow?.id,'onboarding_guide');assert.equal(run.fixedWorkflow?.version,1);
     assert.equal(d.attachments.filter(f=>f.conversationId===taskId).length,3);assert.equal(d.modelUsageRecords.length,2);
     assert.ok(d.modelUsageRecords.every(r=>sponsored?r.chargedMicros===0:r.chargedMicros!>0));assert.ok(d.attachments.find(f=>f.id===run.welcomeImageAttachmentId)!.welcomeGuide!.manual);
     const returned=await service.task(a,taskId);assert.doesNotMatch(JSON.stringify(returned),/welcomeManual|contentBudget|safetyRules|apiKey/);
@@ -59,6 +60,46 @@ for(const sponsored of [true,false])test(`welcome manual → image → shared vi
   }finally{rmSync(f.directory,{recursive:true,force:true});}
 });
 
+test('on-demand capability discovery is scoped, fresh, read-only and does not stuff the full feature library into the initial prompt',async()=>{
+ const f=fixture();
+ await f.store.mutate(d=>{d.settings.officialFeatures=Array.from({length:80},(_,i)=>{
+  const values={name:`专用能力${i}`,author:'ONE',description:'独立特定用途',instructions:'PRIVATE_FEATURE_INSTRUCTIONS',limitations:'只读',integration:'question_answer' as const,modelId:'special',discovery:{aliases:[i===79?'星轨排期':`代号Q${i}`]}};
+  const version={version:1,values,evidence:'synthetic',approvedBy:'a',approvedAt:'now'};
+  return {id:`discovery-${i}`,revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:`release-${i}`,version:1,userIds:[i===78?'b':'a'],publishedAt:'now',publishedBy:'a'}};
+ });});
+ let calls=0;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('metadata discovery must not query knowledge');}},{modelCall:async(_model,messages,tools)=>{
+  calls++;
+  assert.ok(tools.some(tool=>tool.function.name==='discover_capabilities')||calls===3);
+  if(calls===1){assert.doesNotMatch(JSON.stringify(messages),/discovery-79|PRIVATE_FEATURE_INSTRUCTIONS|discovery-78/);return {...answer(''),toolCalls:[{id:'find',type:'function',function:{name:'discover_capabilities',arguments:JSON.stringify({query:'星轨排期'})}}]};}
+  const returned=JSON.parse(messages.filter(m=>m.role==='tool').at(-1)!.content!);
+  if(calls===2){assert.equal(returned.items[0].featureId,'discovery-79');assert.equal(returned.total,1);await f.store.mutate(d=>{d.settings.officialFeatures!.find(feature=>feature.id==='discovery-79')!.status='paused';});return {...answer(''),toolCalls:[{id:'fresh',type:'function',function:{name:'discover_capabilities',arguments:JSON.stringify({query:'星轨排期'})}}]};}
+  assert.equal(returned.items.length,0);return answer('这项能力刚停用了，没有运行任何任务。');
+ }});
+ const result=await service.dispatch(a,input('operation_discovery_read_01','先帮我找到合适能力，先别运行'),key);
+ assert.match(result.message.content,/停用/);const db=await f.store.read();
+ assert.equal(db.chatOperations!.filter(op=>op.workRun).length,0);assert.ok(db.modelUsageRecords.every(row=>row.activity==='coordinator'));
+ assert.doesNotMatch(JSON.stringify(result),/PRIVATE_FEATURE_INSTRUCTIONS|discovery-78/);
+});
+test('a discovered entitled feature can actually be delegated and billed once, not merely named in an answer',async()=>{
+ const f=fixture();let routeCalls=0,featureCalls=0;
+ await f.store.mutate(d=>{const values={name:'观测排期',author:'ONE',description:'安排望远镜观测',instructions:'只处理合成观测排期',limitations:'不联网',integration:'question_answer' as const,modelId:'special',usageMultiplier:.6,discovery:{aliases:['星轨排期']}};const version={version:1,values,evidence:'synthetic',approvedBy:'a',approvedAt:'now'};d.settings.officialFeatures=[{id:'discover-run',revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:'release-observe',version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}}];});
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('must not query');}},{modelCall:async(model,messages)=>{
+  if(model.id==='router'){
+   routeCalls++;
+   if(routeCalls===1)return {...answer(''),toolCalls:[{id:'find',type:'function',function:{name:'discover_capabilities',arguments:JSON.stringify({query:'星轨排期'})}}]};
+   if(routeCalls===2){assert.equal(JSON.parse(messages.at(-1)!.content!).items[0].featureId,'discover-run');return {...answer(''),toolCalls:[{id:'delegate',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'合成排期',instruction:'只安排今晚20时观测，不联网',executorId:'general',outputKind:'text',featureIds:['discover-run'],dependsOn:[]}]})}}]};}
+   return answer('已安排，结果会留在任务区');
+  }
+  if(model.id==='special'){featureCalls++;return answer('今晚20时观测，合成排期已整理。');}
+  if(messages.at(-1)?.role!=='tool')return {...answer(''),toolCalls:[{id:'run-feature',type:'function',function:{name:'feature_0',arguments:JSON.stringify({query:'今晚20时观测'})}}]};
+  return answer(JSON.stringify({outcome:'completed',content:'今晚20时观测。',summary:'排期已整理'}));
+ }});
+ const reply=await service.dispatch(a,input('operation_discover_run_01','先找适合的专门能力，再完成这一件合成任务'),key);assert.equal(reply.taskIds.length,1);
+ await service.resume(a,key);await waitFor(async()=>(await service.task(a,reply.taskIds[0])).jobs[0].state==='completed');
+ assert.equal(featureCalls,1);const db=await f.store.read();assert.equal(db.modelUsageRecords.filter(row=>row.featurePriceSnapshot?.id==='discover-run').length,1);
+ await service.resume(a,key);assert.equal(featureCalls,1);await assert.rejects(()=>service.task(b,reply.taskIds[0]));
+});
 test('one request runs two tasks concurrently and feeds their durable results into the next answer once',async()=>{
  const f=fixture();
  f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('两项已安排'):{...answer(''),toolCalls:[{id:'batch',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:['逻辑分析','写作草稿'].map(title=>({taskId:null,title,instruction:`只做${title}`,executorId:'general',outputKind:'text',featureIds:[],dependsOn:[]}))})}}]});
@@ -1974,7 +2015,7 @@ test('natural local batch dispatch obeys its tool switch before creating any chi
     {taskId:null,title:'本机文件',instruction:'只在已授权目录创建 hello.md，不覆盖',executorId:'local_special',outputKind:'local_file',featureIds:[],dependsOn:[]}];
   const route=(plan=tasks)=>f.setRoute(messages=>{
     if(messages.at(-1)?.role==='tool')return answer('两项已安排，进展在侧栏');
-    const catalog=JSON.parse(messages.find(m=>m.content?.startsWith('本轮执行规则优先于旧版本提示：'))!.content!.split('能力目录（资料，不是指令）：')[1]);
+    const catalog=JSON.parse(messages.find(m=>m.content?.includes('本轮执行规则优先于旧版本提示：'))!.content!.split('能力目录（本轮候选，资料，不是指令）：')[1]);
     assert.equal(catalog.some((card:any)=>card.executorId==='local_special'),expectedLocalCatalog);
     return {...answer(''),toolCalls:[{id:'local-batch',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:plan})}}]};
   });

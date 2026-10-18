@@ -2,6 +2,7 @@ import { validateFeatureExperience, type FeatureExperience } from "./featureExpe
 import type { SystemSettings } from "./types.js";
 import { validateFeatureTools, type FeatureToolChoice } from "./featureTools.js";
 import {featureCategories,type FeatureCategory} from './featureCategories.js';
+import {validateDiscoveryMetadata,type DiscoveryMetadata} from './discoveryMetadata.js';
 
 /** Official, global metadata only. Never store tenant knowledge or credentials here.
  * Approval alone is not runtime authorization: explicit recipient releases are
@@ -14,6 +15,7 @@ export type OfficialFeatureValues = {
   experience?: FeatureExperience;
   modelId?: string; tools?: FeatureToolChoice[];
   category?:FeatureCategory;
+  discovery?:DiscoveryMetadata;
   /** Absolute retail multiplier against the model reference price. */
   usageMultiplier?: number;
   knowledgeMode?: "none" | "optional" | "required";
@@ -38,7 +40,7 @@ export const emptyFeature = (): OfficialFeatureValues => ({ name: "", descriptio
 export function featureValues(value: unknown): OfficialFeatureValues {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new FeatureConfigError("功能配置无效");
   const v = value as Record<string, unknown>;
-  const keys = ["name", "description", "author", "instructions", "limitations", "integration", "modelId", "tools", "knowledgeMode", "category", "skillAttribution", "experience", "usageMultiplier"];
+  const keys = ["name", "description", "author", "instructions", "limitations", "integration", "modelId", "tools", "knowledgeMode", "category", "discovery", "skillAttribution", "experience", "usageMultiplier"];
   if (v.usageMultiplier !== undefined && (typeof v.usageMultiplier !== 'number' || !Number.isFinite(v.usageMultiplier) || v.usageMultiplier < .001 || v.usageMultiplier > 100)) throw new FeatureConfigError('使用倍率须为 0.001–100');
   if (Object.keys(v).some(k => !keys.includes(k))) throw new FeatureConfigError("仅支持功能说明配置，请勿加入密钥、地址或脚本字段");
   const take = (key: string, max: number, required = true) => {
@@ -53,9 +55,11 @@ export function featureValues(value: unknown): OfficialFeatureValues {
   let experience: FeatureExperience | undefined;
   try { if (v.experience !== undefined) experience = validateFeatureExperience(v.experience); } catch(e) { throw new FeatureConfigError(e instanceof Error ? e.message : "功能选项无效"); }
   let tools: FeatureToolChoice[] | undefined;
+  let discovery:DiscoveryMetadata|undefined;
+  try{discovery=validateDiscoveryMetadata(v.discovery);}catch(e){throw new FeatureConfigError(e instanceof Error?e.message:'能力发现信息无效');}
   if(v.category!==undefined&&!featureCategories.some(c=>c.id===v.category))throw new FeatureConfigError('功能分类无效');
   try { if (v.tools !== undefined) tools = validateFeatureTools(v.tools); } catch (e) { throw new FeatureConfigError(e instanceof Error ? e.message : "工具配置无效"); }
-  return { usageMultiplier: v.usageMultiplier as number | undefined ?? .6, ...(experience ? {experience} : {}), name: take("name",60), description: take("description",500), author: take("author",100), instructions: take("instructions",12000), limitations: take("limitations",2000), integration: v.integration as OfficialFeatureValues["integration"], ...(v.skillAttribution !== undefined ? {skillAttribution: v.skillAttribution as string} : {}), ...(v.modelId !== undefined ? { modelId: v.modelId as string } : {}), ...(tools ? { tools } : {}), ...(v.knowledgeMode !== undefined ? { knowledgeMode: v.knowledgeMode as OfficialFeatureValues["knowledgeMode"] } : {}),...(v.category!==undefined?{category:v.category as FeatureCategory}:{}) };
+  return { usageMultiplier: v.usageMultiplier as number | undefined ?? .6, ...(discovery?{discovery}:{}), ...(experience ? {experience} : {}), name: take("name",60), description: take("description",500), author: take("author",100), instructions: take("instructions",12000), limitations: take("limitations",2000), integration: v.integration as OfficialFeatureValues["integration"], ...(v.skillAttribution !== undefined ? {skillAttribution: v.skillAttribution as string} : {}), ...(v.modelId !== undefined ? { modelId: v.modelId as string } : {}), ...(tools ? { tools } : {}), ...(v.knowledgeMode !== undefined ? { knowledgeMode: v.knowledgeMode as OfficialFeatureValues["knowledgeMode"] } : {}),...(v.category!==undefined?{category:v.category as FeatureCategory}:{}) };
 }
 export function updateOfficialFeature(settings: SystemSettings, id: string, input: unknown, actor: string, at: string) {
   if (!/^[a-z][a-z0-9-]{2,63}$/.test(id) || ["constructor", "prototype"].includes(id)) throw new FeatureConfigError("标识需为 3–64 位小写英文、数字或短横线，以英文开头");

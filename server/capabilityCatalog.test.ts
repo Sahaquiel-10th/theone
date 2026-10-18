@@ -25,6 +25,25 @@ function feature(id: string, userId: string, mode: "text" | "image" = "text"): O
   return { id, revision: 2, status: "approved", draft: values, current: version, history: [version], release: { id: `release-${id}`, version: 1, userIds: [userId], publishedAt: "fixture", publishedBy: "admin" } };
 }
 
+test('fixed workflows share the capability inventory and knowledge discovery never exposes another owner or credentials',()=>{
+ const db=fixture();
+ db.knowledgeConnections=[{id:'own',workspaceId:'wa',provider:'notion',status:'connected',encryptedAccessToken:'DO_NOT_EXPOSE'},{id:'foreign',workspaceId:'wb',provider:'getnote',status:'connected'},{id:'off',workspaceId:'wa',provider:'flomo',status:'disconnected'}] as any;
+ db.settings.officialFeatures=[feature('visible','a')];
+ db.settings.officialFeatures[0].history[0].values.discovery={industries:['宠物'],aliases:['宠物说明']};
+ db.settings.officialFeatures[0].draft={...db.settings.officialFeatures[0].draft,discovery:{industries:['未发布的行业']}};
+ const cards=routingCapabilities(db,{workspaceId:'wa',userId:'a'});
+ assert.deepEqual(cards.filter(c=>c.kind==='knowledge').map(c=>c.sourceId),['own']);
+ assert.deepEqual(cards.find(c=>c.featureId==='visible')!.discovery,{industries:['宠物'],aliases:['宠物说明']});
+ assert.doesNotMatch(JSON.stringify(cards),/DO_NOT_EXPOSE|foreign|未发布的行业/);
+ assert.ok(!cards.some(c=>c.kind==='workflow'),'setup-only workflows are not offered for arbitrary chat invocation');
+ const workflow=adminCapabilityCatalog(db,{imageStorageAvailable:true}).find(c=>c.kind==='workflow')!;
+ assert.equal(workflow.workflowId,'onboarding_guide');assert.equal(workflow.available,true);assert.equal(workflow.stages!.length,4);
+ db.workspaces.find(workspace=>workspace.id==='wa')!.kind='company';
+ const member=db.workspaceMembers.find(member=>member.userId==='a')!;member.role='member';member.permissions={featureIds:[],knowledgeConnectionIds:['own']};
+ assert.equal(routingCapabilities(db,{workspaceId:'wa',userId:'a'}).filter(card=>card.kind==='knowledge').length,1);
+ member.permissions.knowledgeConnectionIds=[];
+ assert.equal(routingCapabilities(db,{workspaceId:'wa',userId:'a'}).filter(card=>card.kind==='knowledge').length,0);
+});
 test("routing catalog only exposes real output types and scoped released capabilities without credentials", () => {
   const db = fixture(); setupDefaultExecutors(db, "admin", { publish: true });
   db.settings.officialFeatures = [feature("own-text", "a"), feature("own-image", "a", "image"), feature("foreign-secret", "b")];

@@ -11,7 +11,7 @@ import { OneSkillLibrary } from "./OneSkillLibrary";
 
 type Model = { id: string; name: string; kind: string; enabled: boolean };
 type Catalog = { items: CapabilityCard[]; executorDefaults: ExecutorValues; defaultPlan: { id: string; name: string; family: string; installed: boolean }[] };
-const kindNames = { executor: "执行 AI", feature: "业务功能", builtin: "平台能力" };
+const kindNames = { executor: "执行 AI", feature: "业务功能", builtin: "平台能力",workflow:'固定流程功能',knowledge:'已连接知识' };
 const outputNames = { text: "文字成果", image: "图片", local_file: "本机文件" };
 
 export function UnifiedCapabilityPanel({ api, models }: { api: typeof Api; models: Model[] }) {
@@ -50,7 +50,7 @@ export function UnifiedCapabilityPanel({ api, models }: { api: typeof Api; model
       {selected === "new-executor" ? <ExecutorEditor key="new-executor" api={api} id="new" defaults={catalog.executorDefaults} models={models} onChanged={(id) => { changed(); setSelected({ id: `executor:${id}`, executorId: id, kind: "executor", mode: "text", name: "执行 AI 配置", description: "", version: 0, available: false, outputKinds: ["text"], tools: [] }); }} />
         : selected === "new-feature" ? <FeatureEditor api={api} featureId="" onChanged={changed} />
         : selected.kind === "feature" ? <FeatureEditor key={selected.id} api={api} featureId={selected.featureId!} onChanged={changed} />
-        : task ? <TaskEditor key={task.id} api={api} models={models} task={{ ...task, version: selected.version }} onChanged={changed} />
+        : task ? <>{selected.kind==='workflow'?<div><p>{selected.description}</p><ol>{selected.stages?.map(stage=><li key={stage.id}>{stage.name}</li>)}</ol><p className="hint">这是官方固定流程。资料设置完成后自动调用；重新制作仍从设置进入。下方修改说明策划模型与提示词，图片通道在“图片生成”中配置。不会增加一步额外的调度模型调用。</p></div>:null}<TaskEditor key={task.id} api={api} models={models} task={{ ...task, version: selected.kind==='workflow'?catalog.items.find(card=>card.taskKind==='welcome_manual'&&card.kind==='builtin')?.version??0:selected.version }} onChanged={changed} /></>
         : <ExecutorEditor key={selected.id} api={api} id={selected.executorId!} defaults={catalog.executorDefaults} models={models} onChanged={changed} />}
     </SettingsDialog> : null}
   </section>;

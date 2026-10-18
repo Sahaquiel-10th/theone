@@ -26,6 +26,15 @@ test("explicit default setup publishes versioned GPT logic and Claude writing, p
   assert.throws(() => setupDefaultExecutors(db, "user", { publish: true }), /无权/);
 });
 
+test('executor discovery hints are configurable, versioned, and independent of execution instructions and prices',()=>{
+ const db=fixture();const before=structuredClone(db.models);
+ const record=updateExecutor(db,'admin',undefined,{revision:0,action:'draft',values:{...executorDefaults(),name:'行业分析',modelId:'gpt',discovery:{industries:['宠物'],scenarios:['营销核算'],aliases:['活动核算'],avoidWhen:'不用于文章润色'}}});
+ updateExecutor(db,'admin',record.id,{revision:1,action:'publish'});
+ const value=resolveExecutor(db,record.id,db.models[0]).values;
+ assert.deepEqual(value.discovery?.industries,['宠物']);assert.equal(value.discovery?.avoidWhen,'不用于文章润色');assert.deepEqual(db.models,before);
+ assert.throws(()=>updateExecutor(db,'admin',record.id,{revision:2,action:'draft',values:{...record.draft,discovery:{endpoint:'https://unreviewed.invalid'} as any}}));
+});
+
 test("missing or ambiguous Claude stays unpublished and never silently switches to GPT", () => {
   for (const ambiguous of [false, true]) {
     const db = fixture();

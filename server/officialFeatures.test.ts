@@ -9,6 +9,8 @@ import type { Store } from "./db.js";
 const values={name:"测试功能",description:"回答公开测试问题",author:"ONE",instructions:"仅根据用户提供的测试资料作答",limitations:"不做外部写入，不读取他人资料",integration:"question_answer"};
 const evidence="公开测试集通过；仅认定配置，实际接口接入与运行验证仍需下一阶段完成。";
 test('feature rates default to 0.6, reject invalid prices and preserve approved price during edits',()=>{
+  assert.deepEqual(featureValues({...values,discovery:{industries:['宠物'],scenarios:['开业促销'],aliases:['攻略']}}).discovery,{industries:['宠物'],scenarios:['开业促销'],aliases:['攻略']});
+  assert.throws(()=>featureValues({...values,discovery:{apiKey:'secret'}}));
   assert.equal(featureValues(values).usageMultiplier,.6);
   for(const usageMultiplier of [0,-1,101,NaN,Infinity,'1.2',null])assert.throws(()=>featureValues({...values,usageMultiplier}));
   const settings:SystemSettings={safetyRules:'safe',rechargeCnyPerPower:7};

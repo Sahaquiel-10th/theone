@@ -7,6 +7,7 @@ import { availablePowerMicros } from "./powerBilling.js";
 import { onboardingComicInstruction } from './onboardingComic.js';
 import {welcomeGuideFacts,type WelcomeGuideFacts} from './welcomeGuide.js';
 import {welcomeManualConfig} from './welcomeManual.js';
+import {invokeFixedWorkflow,type FixedWorkflowInvocation} from './fixedWorkflows.js';
 
 const platformNames: Record<KnowledgeProviderId, string> = {
   getnote: "得到大脑", notion: "Notion", yinxiang: "印象笔记", flowus: "FlowUs", feishu: "飞书", flomo: "flomo",
@@ -90,7 +91,7 @@ export function handbookInstruction(db: Database, scope: AccountScope): string {
   ].join("\n");
 }
 
-export type OnboardingImageInput = { operationId: string; title: string; instruction: string; budget: number; imageVersion: number; sponsored?:boolean;guide?:WelcomeGuideFacts };
+export type OnboardingImageInput = { operationId: string; title: string; instruction: string; budget: number; imageVersion: number; sponsored?:boolean;guide?:WelcomeGuideFacts;fixedWorkflow?:FixedWorkflowInvocation };
 export type OnboardingHandbookDependencies = {
   storageAvailable: boolean;
   verifyKey: () => Promise<void>;
@@ -119,6 +120,18 @@ export function resolvedOnboardingHandbookProfile(db: Database, scope: AccountSc
  * user's existing scoped record, so refreshes, concurrent requests and restarts
  * cannot turn an uncertain attempt into an automatic second paid picture. */
 export async function startOnboardingHandbook(store: Store, scope: AccountScope, deps: OnboardingHandbookDependencies): Promise<OnboardingHandbookResult> {
+  const db=await store.read(),profile=accountProfile(db,scope);
+  // Pre-manual guide attempts retain their original contract; do not upgrade a paid retry.
+  if(!usesWelcomeManual(db,scope))return startOnboardingWorkflow(store,scope,deps);
+  const handbook=profile.onboarding.handbook;
+  if(!handbook||db.chatOperations?.some(op=>op.workspaceId===scope.workspaceId&&op.userId===scope.userId&&op.operationId===handbook.operationId)&&!handbook.fixedWorkflow)return startOnboardingWorkflow(store,scope,deps);
+  const trigger=handbook.fixedWorkflow?.trigger??(handbook.operationId===profile.onboarding.welcomeGiftOperationId?'onboarding.complete':'onboarding.remake');
+  return invokeFixedWorkflow({id:'onboarding_guide',trigger,scope},{authorize:async()=>{await deps.verifyKey();accountInScope(await store.read(),scope);},run:async fixedWorkflow=>{
+    await store.mutate(current=>{const user=accountInScope(current,scope),p=accountProfile(current,scope),h=p.onboarding.handbook;if(h?.operationId===handbook.operationId&&h.status==='pending'){h.fixedWorkflow??=fixedWorkflow;user.profile=p;}});
+    return startOnboardingWorkflow(store,scope,{...deps,enqueueImage:(owner,input,verify)=>deps.enqueueImage(owner,{...input,fixedWorkflow},verify)});
+  }});
+}
+async function startOnboardingWorkflow(store: Store, scope: AccountScope, deps: OnboardingHandbookDependencies): Promise<OnboardingHandbookResult> {
   await deps.verifyKey();
   const claim = await store.mutate(db => {
     const user = accountInScope(db, scope), profile = accountProfile(db, scope);

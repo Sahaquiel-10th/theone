@@ -7,12 +7,14 @@ import {
   type AiTaskValues,
 } from "./aiTaskConfig.js";
 import { uid } from "./security.js";
+import {validateDiscoveryMetadata,type DiscoveryMetadata} from './discoveryMetadata.js';
 
 export type ExecutorValues = AiTaskValues & {
   name: string;
   description: string;
   featureIds: string[];
   routingRole?: "logic" | "writing" | "custom";
+  discovery?: DiscoveryMetadata;
 };
 export type ExecutorVersion = ExecutorValues & {
   version: number;
@@ -72,8 +74,11 @@ export function validateExecutor(db: Database, input: unknown): ExecutorValues {
     throw new CoordinatorError("只能绑定最多八个已认定功能", 400);
   if (v.routingRole !== undefined && !["logic", "writing", "custom"].includes(v.routingRole))
     throw new CoordinatorError("执行器用途无效", 400);
+  let discovery:DiscoveryMetadata|undefined;
+  try{discovery=validateDiscoveryMetadata(v.discovery);}catch(e){throw new CoordinatorError(e instanceof Error?e.message:'能力发现信息无效',400);}
   return {
     ...validateTaskValues("task_worker", v, db.models),
+    ...(discovery?{discovery}:{}),
     name: v.name.trim(),
     description: v.description.trim(),
     featureIds: [...new Set(v.featureIds)],

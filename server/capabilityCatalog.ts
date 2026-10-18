@@ -7,15 +7,24 @@ import { featureEntitled, featureRelease } from "./enterprisePolicy.js";
 import { featureMultiplier } from "./featurePricing.js";
 import { effectiveModel } from "./modelPricing.js";
 import { resolveImageTask } from "./imageTaskConfiguration.js";
+import {canReadKnowledge} from './enterprisePolicy.js';
+import type {DiscoveryMetadata} from './discoveryMetadata.js';
+import {onboardingWorkflow} from './fixedWorkflows.js';
 
 export type CapabilityOutputKind = "text" | "image" | "local_file";
 export type CapabilityRuntimeOptions = { localAvailable?: boolean; imageStorageAvailable?: boolean };
 export type CapabilityCard = {
   id: string;
-  kind: "executor" | "feature" | "builtin";
+  kind: "executor" | "feature" | "builtin" | "knowledge" | "workflow";
   mode: "text" | "image" | "local";
   name: string;
   description: string;
+  category?:string;
+  discovery?:DiscoveryMetadata;
+  sourceId?:string;
+  workflowId?:string;
+  entryPoints?:string[];
+  stages?:{id:string;name:string}[];
   version: number;
   modelId?: string;
   modelName?: string;
@@ -47,6 +56,8 @@ export function executorCapabilityCards(db: Database): CapabilityCard[] {
     const card: CapabilityCard = {
       id: `executor:${record.id}`, kind: "executor", mode: "text", name: values.name,
       description: values.description, version: record.published?.version ?? 0,
+      discovery:values.discovery,
+      category:values.routingRole==='writing'?'writing':values.routingRole==='logic'?'research':'general',
       modelId: values.modelId || undefined, available: false, outputKinds: ["text"],
       tools: [...values.tools], executorId: record.id, routingRole: values.routingRole ?? "custom",
     };
@@ -86,6 +97,7 @@ export function builtinCapabilityCards(db: Database, options: CapabilityRuntimeO
         : definition.id === "local_agent" ? "在用户已授权的本机目录内完成受限文件操作。"
         : definition.id === "notion_writer" ? "根据要求准备文章并交给已授权的 Notion 写入流程。" : "ONE 内部处理步骤，可调整执行模型与提示词。",
       version: saved?.version ?? 0, available: false, outputKinds: mode === "image" ? ["image"] : mode === "local" ? ["local_file"] : ["text"],
+      category:mode==='image'?'creative':mode==='local'?'office':'general',
       tools: [...values.tools], taskKind: definition.id,
       ...(definition.id === "image_generation" ? { executorId: "image_generation" } : mode === "local" ? { executorId: "local_special", requiresLocalConnection: true } : {}),
     };
@@ -125,6 +137,7 @@ function featureCard(db: Database, record: NonNullable<Database["settings"]["off
   const available = record.status === "approved" && !!release && !!version && !!model;
   return {
     id: `feature:${record.id}`, kind: "feature", mode, name: values.name, description: values.description,
+    category:values.category??'general',discovery:values.discovery,
     version: version?.version ?? 0, modelId: values.modelId, modelName: model?.name,
     available, unavailableReason: available ? undefined : record.status === "paused" ? "已停用" : !release ? "尚未上架给使用者" : "发布版本或执行模型不可用",
     outputKinds: mode === "image" ? ["image"] : ["text"], tools: values.tools?.map((tool) => tool.id) ?? [],
@@ -134,7 +147,12 @@ function featureCard(db: Database, record: NonNullable<Database["settings"]["off
 
 /** Admin catalog is global configuration only. Scope catalog never exposes another workspace's private features. */
 export function adminCapabilityCatalog(db: Database, options: CapabilityRuntimeOptions = {}): CapabilityCard[] {
-  return [...executorCapabilityCards(db), ...builtinCapabilityCards(db, options), ...(db.settings.officialFeatures ?? []).map((record) => featureCard(db, record))];
+  const builtins=builtinCapabilityCards(db,options),available=builtins.some(card=>card.taskKind==='welcome_manual'&&card.available)&&builtins.some(card=>card.taskKind==='image_generation'&&card.available);
+  const workflow:CapabilityCard={id:`workflow:${onboardingWorkflow.id}`,kind:'workflow',mode:'text',name:onboardingWorkflow.name,
+    description:onboardingWorkflow.description,version:onboardingWorkflow.version,available,unavailableReason:available?undefined:'请检查说明策划模型、图片通道和成果存储',
+    modelName:'说明策划 + 图片生成',outputKinds:['text','image'],tools:onboardingWorkflow.stages.map(stage=>stage.id),workflowId:onboardingWorkflow.id,
+    entryPoints:[...onboardingWorkflow.entryPoints],stages:onboardingWorkflow.stages.map(stage=>({...stage})),taskKind:'welcome_manual'};
+  return [...executorCapabilityCards(db), ...builtins,workflow, ...(db.settings.officialFeatures ?? []).map((record) => featureCard(db, record))];
 }
 
 /** A routing card describes a real server capability, not an authorization to execute it. */
@@ -149,5 +167,12 @@ export function routingCapabilities(db: Database, scope: FeatureScope, options: 
   });
   const builtins = builtinCapabilityCards(db, options).filter((card) => ["image_generation", "codex_execution"].includes(card.taskKind ?? "") && card.available);
   const features = (db.settings.officialFeatures ?? []).filter((record) => featureEntitled(db, scope, record)).map((record) => featureCard(db, record, scope)).filter((card) => card.available);
-  return [...executors, ...builtins, ...features];
+  const names:Record<string,string>={getnote:'得到大脑',notion:'Notion',feishu:'飞书',flowus:'FlowUs',yinxiang:'印象笔记',flomo:'flomo'};
+  const sources:CapabilityCard[]=(db.knowledgeConnections??[]).filter(connection=>connection.workspaceId===scope.workspaceId&&connection.status==='connected'&&canReadKnowledge(db,scope,connection.id)).map(connection=>({
+    id:`knowledge:${connection.id}`,kind:'knowledge',mode:'text',name:`查询${names[connection.provider]??connection.provider}`,
+    description:`按需检索已连接的${names[connection.provider]??connection.provider}中的资料，返回来源或真实无匹配结果。不代表写入、同步或读取所有正文。`,
+    category:'knowledge',discovery:{aliases:[names[connection.provider]??connection.provider],scenarios:['查资料','知识检索','查自己的记录']},
+    version:1,available:true,outputKinds:['text'],tools:['knowledge_search'],sourceId:connection.id
+  }));
+  return [...executors, ...builtins, ...features, ...sources];
 }
