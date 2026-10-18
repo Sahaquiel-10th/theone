@@ -154,7 +154,7 @@ export function setupDefaultExecutors(
   let coordinatorUpdated = false;
   const coordinator = db.settings.aiTasks?.coordinator;
   if (input.publish === true && coordinator?.published?.enabled === true) {
-    const tools = [...new Set([...coordinator.published.tools, "delegate_tasks", "generate_image"])];
+    const tools = [...new Set([...coordinator.published.tools, "delegate_tasks", "generate_image", "discover_capabilities"])];
     if (tools.length !== coordinator.published.tools.length) {
       const draft = structuredClone(coordinator.draft);
       const at = new Date().toISOString();

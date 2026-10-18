@@ -4,21 +4,27 @@ import { taskPrompts, taskToolDescriptions, taskToolNames } from "./aiTaskPreset
 import { validateImageTaskFields, type ImageTaskFields } from "./imageTaskConfiguration.js";
 
 export const localTaskTools = ["list_files", "read_file", "search_text", "write_file", "replace_in_file", "run_command"] as const;
-export type AiTaskValues = ImageTaskFields & { modelId: string; prompt: string; tools: string[]; maxSteps: number; promptMode?: "replace"; toolDescriptions?: Record<string, string>; enabled?: boolean };
+export type AiTaskValues = ImageTaskFields & { modelId: string; prompt: string; tools: string[]; maxSteps: number; promptMode?: "replace"; toolDescriptions?: Record<string, string>; enabled?: boolean; capabilityDiscoveryVersion?:1 };
 export type AiTaskVersion = AiTaskValues & { version: number; publishedAt: string; publishedBy: string };
 export type AiTaskRecord = { revision: number; draft: AiTaskValues; published?: AiTaskVersion; history: AiTaskVersion[] };
 export type AiTaskConfigs = Partial<Record<AiTaskKind, AiTaskRecord>>;
 
 export function defaultTaskValues(id: string): AiTaskValues {
   const tools = taskToolNames(id);
-  return { modelId: "", prompt: taskPrompts[id] ?? "", promptMode: "replace", toolDescriptions: Object.fromEntries(tools.map(name => [name, taskToolDescriptions[name]])), tools, maxSteps: id === "local_agent" ? 24 : ["orchestrator", "task_worker", "coordinator"].includes(id) ? 4 : 1, ...(["orchestrator", "coordinator"].includes(id) ? { enabled: false } : {}) };
+  return { modelId: "", prompt: taskPrompts[id] ?? "", promptMode: "replace", toolDescriptions: Object.fromEntries(tools.map(name => [name, taskToolDescriptions[name]])), tools, maxSteps: id === "local_agent" ? 24 : ["orchestrator", "task_worker", "coordinator"].includes(id) ? 4 : 1, ...(["orchestrator", "coordinator"].includes(id) ? { enabled: false } : {}),...(id==='coordinator'?{capabilityDiscoveryVersion:1 as const}:{}) };
+}
+
+/** Old published dispatchers gain metadata discovery without rewriting their snapshots.
+ * Once edited, an explicit tool switch is authoritative, including disable. */
+export function capabilityDiscoveryEnabled(values:Pick<AiTaskValues,'tools'|'capabilityDiscoveryVersion'>){
+  return values.tools.includes('discover_capabilities')||values.capabilityDiscoveryVersion!==1&&values.tools.some(name=>['delegate_task','delegate_tasks'].includes(name));
 }
 
 /** Show legacy additive configurations faithfully; conversion is explicit on save. */
 export function editableTaskValues(id: string, values?: AiTaskValues): AiTaskValues {
   const defaults = defaultTaskValues(id);
   if (!values) return defaults;
-  return { ...defaults, ...values, promptMode: "replace", prompt: values.promptMode === "replace" ? values.prompt : [defaults.prompt, values.prompt].filter(Boolean).join("\n\n"), toolDescriptions: { ...defaults.toolDescriptions, ...values.toolDescriptions } };
+  return { ...defaults, ...values, ...(id==='coordinator'&&values.capabilityDiscoveryVersion!==1&&capabilityDiscoveryEnabled(values)?{tools:[...new Set([...values.tools,'discover_capabilities'])]}:{}), promptMode: "replace", prompt: values.promptMode === "replace" ? values.prompt : [defaults.prompt, values.prompt].filter(Boolean).join("\n\n"), toolDescriptions: { ...defaults.toolDescriptions, ...values.toolDescriptions } };
 }
 
 export function validateTaskValues(id: string, value: unknown, models: ModelConfig[]): AiTaskValues {
@@ -43,7 +49,7 @@ export function validateTaskValues(id: string, value: unknown, models: ModelConf
   }
   if (input.promptMode !== undefined && input.promptMode !== "replace") throw new Error("提示词模式无效");
   if (input.enabled !== undefined && typeof input.enabled !== "boolean") throw new Error("启用状态无效");
-  return { ...imageFields, modelId: input.modelId, prompt: input.prompt.trim(), tools: [...new Set(input.tools as string[])], maxSteps: Number(input.maxSteps), ...(["orchestrator", "coordinator"].includes(id) ? { enabled: input.enabled === true } : {}), ...(input.promptMode === "replace" ? { promptMode: "replace" as const } : {}), ...(input.toolDescriptions ? { toolDescriptions: descriptions } : {}) };
+  return { ...imageFields, ...(id==='coordinator'?{capabilityDiscoveryVersion:1 as const}:{}), modelId: input.modelId, prompt: input.prompt.trim(), tools: [...new Set(input.tools as string[])], maxSteps: Number(input.maxSteps), ...(["orchestrator", "coordinator"].includes(id) ? { enabled: input.enabled === true } : {}), ...(input.promptMode === "replace" ? { promptMode: "replace" as const } : {}), ...(input.toolDescriptions ? { toolDescriptions: descriptions } : {}) };
 }
 
 /** Global administrator-owned configuration, never a store for user context. */

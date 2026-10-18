@@ -3,7 +3,16 @@ import assert from 'node:assert/strict';
 import {discoverCapabilities,initialCapabilityContext,validateDiscoveryQuery} from './capabilityDiscovery.js';
 import {validateDiscoveryMetadata} from './discoveryMetadata.js';
 import type {CapabilityCard} from './capabilityCatalog.js';
+import {capabilityDiscoveryEnabled,defaultTaskValues,editableTaskValues,validateTaskValues} from './aiTaskConfig.js';
 const card=(id:string,extra:Partial<CapabilityCard>={}):CapabilityCard=>({id:`feature:${id}`,featureId:id,kind:'feature',mode:'text',name:id,description:'通用说明',version:1,available:true,outputKinds:['text'],tools:[],...extra});
+test('legacy dispatchers gain discovery without snapshot mutation, but a later explicit disable is respected',()=>{
+ const legacy={...defaultTaskValues('coordinator'),capabilityDiscoveryVersion:undefined,tools:['delegate_task']};
+ assert.equal(capabilityDiscoveryEnabled(legacy),true);
+ const editable=editableTaskValues('coordinator',legacy);assert.ok(editable.tools.includes('discover_capabilities'));assert.deepEqual(legacy.tools,['delegate_task']);
+ const disabled=validateTaskValues('coordinator',{...editable,tools:editable.tools.filter(name=>name!=='discover_capabilities')},[]);
+ assert.equal(disabled.capabilityDiscoveryVersion,1);assert.equal(capabilityDiscoveryEnabled(disabled),false);
+ assert.equal(capabilityDiscoveryEnabled({...disabled,tools:[...disabled.tools,'discover_capabilities']}),true);
+});
 test('large libraries yield a bounded shortlist, keep explicit selections and discover less common capabilities on demand',()=>{
  const cards=Array.from({length:400},(_,i)=>card(`feature-${i}`,{name:`测试能力${i}`,description:'普通材料整理'}));
  cards.push(card('rare',{name:'天文观测日志',description:'规划望远镜观测',discovery:{aliases:['望远镜排期']}}));
