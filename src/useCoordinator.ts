@@ -217,6 +217,7 @@ export function useCoordinator(
               try {localStorage.removeItem(pendingKey(userId));}catch{}
               setPending(null);
               setProgress(null);
+              setOutgoing(old=>old?{...old,failed:true}:null);
               setFailureReply({scope:userId,operationId:operation,text:coordinatorRecoveryCopy('暂未找到接收记录')});
               submissionError.current='';setError('');
               return;

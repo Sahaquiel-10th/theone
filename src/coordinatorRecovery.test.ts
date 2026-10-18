@@ -10,6 +10,6 @@ test('recovery is actionable and does not echo diagnostics, credentials or claim
  for(const reason of ['upstream api_key=SECRET','stream disconnected before response.completed','execution_unconfirmed']){
   const text=coordinatorRecoveryCopy(reason);assert.doesNotMatch(text,/SECRET|api_key|execution_unconfirmed|response.completed/);assert.match(text,/核对/);
  }
- assert.match(coordinatorRecoveryCopy('暂未找到接收记录'),/先别重复发送/);
+ assert.match(coordinatorRecoveryCopy('暂未找到接收记录'),/放回输入框.*再发送.*沿用这次的提交编号/);
  assert.match(coordinatorRecoveryCopy('',true),/单独停止/);
 });
