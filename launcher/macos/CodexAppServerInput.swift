@@ -97,7 +97,7 @@ final class CodexAppServerInput: @unchecked Sendable {
             guard !closed else { throw CodexAppServerInputError.closed }
             waiting.append(ticket)
         }
-        try await withTaskCancellationHandler(operation: {
+        do { try await withTaskCancellationHandler(operation: {
             var completed = false
             defer { self.finish(ticket, completed: completed) }
             try await self.acquire(ticket, deadline: deadline)
@@ -115,6 +115,13 @@ final class CodexAppServerInput: @unchecked Sendable {
             try self.checkDeadline(deadline)
             completed = true
         }, onCancel: { self.cancel(ticket) })
+        } catch {
+            // onCancel closes an active stream before the writer resumes. A
+            // racing fd check may therefore observe `closed`; preserve the
+            // caller's explicit cancellation instead of misreporting a fault.
+            try Task.checkCancellation()
+            throw error
+        }
     }
 
     func close() { synchronized { closeLocked() } }
