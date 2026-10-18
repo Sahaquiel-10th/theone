@@ -12,4 +12,6 @@ test('recovery is actionable and does not echo diagnostics, credentials or claim
  }
  assert.match(coordinatorRecoveryCopy('暂未找到接收记录'),/放回输入框.*再发送.*沿用这次的提交编号/);
  assert.match(coordinatorRecoveryCopy('',true),/单独停止/);
+ assert.match(coordinatorRecoveryCopy('ONE Key 连接已失效'),/双击盘里的 ONE.*不重复安排/);
+ assert.doesNotMatch(coordinatorRecoveryCopy('ONE Key 连接已失效'),/本机执行|工作区/,'cloud-task authentication loss must not be described as a folder permission issue');
 });
