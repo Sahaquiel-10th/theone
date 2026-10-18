@@ -76,7 +76,7 @@ test('on-demand capability discovery is scoped, fresh, read-only and does not st
   if(calls===2){assert.equal(returned.items[0].featureId,'discovery-79');assert.equal(returned.total,1);await f.store.mutate(d=>{d.settings.officialFeatures!.find(feature=>feature.id==='discovery-79')!.status='paused';});return {...answer(''),toolCalls:[{id:'fresh',type:'function',function:{name:'discover_capabilities',arguments:JSON.stringify({query:'星轨排期'})}}]};}
   assert.equal(returned.items.length,0);return answer('这项能力刚停用了，没有运行任何任务。');
  }});
- const result=await service.dispatch(a,input('operation_discovery_read_01','先帮我找到合适能力，先别运行'),key);
+ const result=await service.dispatch(a,input('operation_discovery_read_01','只回答，不要安排新任务；先帮我查找能力目录'),key);
  assert.match(result.message.content,/停用/);const db=await f.store.read();
  assert.equal(db.chatOperations!.filter(op=>op.workRun).length,0);assert.ok(db.modelUsageRecords.every(row=>row.activity==='coordinator'));
  assert.doesNotMatch(JSON.stringify(result),/PRIVATE_FEATURE_INSTRUCTIONS|discovery-78/);
