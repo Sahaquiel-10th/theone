@@ -603,7 +603,7 @@ test('failed prerequisites wait without killing their successors; explicit recov
   const parent=await f.service.task(a,result.taskIds[0]);await f.service.retryLatest(a,result.taskIds[0],parent.jobs[0].id,undefined,key);await f.service.resume(a,key);
   await waitFor(async()=>(await f.service.task(a,result.taskIds[1])).jobs[0].state==='completed');assert.equal(parentCalls,2);assert.equal(childCalls,1);assert.equal(otherCalls,1);
 });
-test('two visual features give the summarizing worker actual owned artifact URLs, not guessed links',async()=>{
+for(const interruptedSummary of [false,true])test(`two visual features return owned artifact URLs and preserve them across summary failure=${interruptedSummary}`,async()=>{
  const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-artifact-links-'));
  const scene={id:'first',title:'开始一天',situation:'开始工作',feature:'喝水后列要事',advantage:'明确下一步',benefit:'开始专注',evidence:'打开核对',steps:['喝水','列要事'],prompt:'开始一天',capabilityIds:[]};
  const document={version:1,title:'合成指南',intro:'两个场景的晨间指南',scenes:[scene,{...scene,id:'second',title:'结束一轮'}]};
@@ -615,6 +615,7 @@ test('two visual features give the summarizing worker actual owned artifact URLs
  let summaries=0;
  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('must not read');}},{artifactDirectory:directory,modelCall:async(model,messages,tools)=>{
   if(model.id==='router'){
+   if(messages[0].content?.startsWith('你是用户一直在交流的 ONE'))return answer(JSON.stringify({message:'两份文件已保存，最后的说明还没整理好，可以继续。'}));
    const schema=tools.find(tool=>tool.function.name==='delegate_task')!.function.parameters as {required:string[]};assert.ok(schema.required.includes('featureIds'));
    return messages.at(-1)?.role==='tool'?answer('两份文件已安排在同一件任务'):{...answer(''),toolCalls:[{id:'single-two-features',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'合成双文件指南',instruction:'生成同一指南的流程图与网页',executorId:'general',featureIds:['visual-0','visual-1']})}}]};
   }
@@ -628,12 +629,18 @@ test('two visual features give the summarizing worker actual owned artifact URLs
   assert.equal(outputs.length,2);
   for(const output of outputs){assert.equal(output.artifacts.length,1);assert.match(output.artifacts[0].openUrl,/^\/api\/welcome-pages\/att_\w+\/view$/);assert.match(output.artifacts[0].downloadUrl,/^\/api\/attachments\/att_\w+\/content$/);}
   assert.notEqual(outputs[0].artifacts[0].openUrl,outputs[1].artifacts[0].openUrl);
-  summaries++;return answer('两份文件都已保存');
+  summaries++;if(interruptedSummary&&summaries===1)throw Error('private_summary_failure SECRET');return answer('两份文件都已保存');
  }});
  try{
   const result=await service.dispatch(a,input('operation_visual_links_01','两个功能合做一份指南，无需用户手动勾选'),key);
-  await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='completed');
-  assert.equal(summaries,1);assert.equal((await f.store.read()).attachments.length,2);
+  await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state===(interruptedSummary?'failed':'completed'));
+  if(interruptedSummary){
+   const partial=await service.task(a,result.taskId!);assert.equal(partial.conversation.messages.at(-1)!.attachments!.length,2);assert.equal(partial.jobs[0].failureCode,'task_execution_failed');assert.doesNotMatch(JSON.stringify(partial),/private_summary_failure|SECRET/);
+   const before=(await f.store.read()).modelUsageRecords.filter(row=>row.featurePriceSnapshot).length;
+   await service.retryLatest(a,result.taskId!,partial.jobs[0].id,undefined,key);await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.at(-1)!.state==='completed');
+   assert.equal((await f.store.read()).modelUsageRecords.filter(row=>row.featurePriceSnapshot).length,before,'saved feature results must not be purchased again');
+  }
+  assert.equal(summaries,interruptedSummary?2:1);assert.equal((await f.store.read()).attachments.length,2);
   await assert.rejects(()=>service.task(b,result.taskId!));
  }finally{rmSync(directory,{recursive:true,force:true});}
 });

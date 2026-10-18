@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runTaskOrchestrator, OrchestrationToolError } from "./taskOrchestrator.js";
+import { runTaskOrchestrator, OrchestrationToolError,orchestrationFailureCode } from "./taskOrchestrator.js";
+test('known orchestration failures have bounded diagnostic codes and unknown secrets are never copied',()=>{
+ assert.equal(orchestrationFailureCode(new Error('已达到调度步骤上限，未完成任务；请缩小问题范围')),'task_step_limit');
+ assert.equal(orchestrationFailureCode(new Error('provider.invalid api_key=SECRET')),undefined);
+ assert.equal(orchestrationFailureCode(new Error('__proto__')),undefined);
+ assert.equal(orchestrationFailureCode({message:'调度模型没有返回结果'}),undefined);
+});
 const call = (id: string, query = "project", name = "knowledge_search") => ({ id, type: "function" as const, function: { name, arguments: JSON.stringify({ query }) } });
 test('progress reports actual tool boundaries, not fabricated completion',async()=>{
  const stages:string[]=[];let calls=0;

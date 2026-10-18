@@ -8,6 +8,16 @@ import {taskStepKey,toolSucceeded,type TaskStepStore,type TaskStep} from './task
 export class OrchestrationToolError extends Error {
   constructor(readonly code: "TOOL_DEFINITION_CHANGED", message: string) { super(message); }
 }
+/** Stable diagnostics for known local failures; never persist arbitrary exception text. */
+export function orchestrationFailureCode(error:unknown){
+  const codes:Record<string,string>={
+    '已达到调度步骤上限，未完成任务；请缩小问题范围':'task_step_limit',
+    '调度模型返回了过多或重复的工具调用，已停止':'task_tool_call_limit',
+    '调度模型没有返回结果':'task_empty_response',
+    '这一步结果较大，已停止后续操作，请先查看已有成果。':'task_result_limit',
+  };
+  return error instanceof Error&&Object.hasOwn(codes,error.message)?codes[error.message]:undefined;
+}
 
 export type OrchestrationTool = { name: string; description?: string; label?:string; effect?:TaskStep['effect']; tolerateFailure?:boolean; cacheable?:boolean; run: (query: string) => Promise<unknown>;
   structured?: { schema: Record<string, unknown>; validate: (input: unknown) => unknown; run: (input: unknown) => Promise<unknown> } };
