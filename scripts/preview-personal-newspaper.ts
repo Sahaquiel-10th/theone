@@ -1,0 +1,10 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {guideDocument} from '../server/welcomeGuide.js';
+import {renderVisualPage,type VisualDocument} from '../server/visualDocument.js';
+const first={id:'column',title:'下期专栏，先从自己的笔记里找线索',situation:'小禾，写专栏前，别再到处翻笔记了。',feature:'先从已连接的 Notion 查相关记录，再把观点、例子和待核实的部分整理成文章提纲。',advantage:'找资料与列提纲接在一起，省掉在几个窗口之间来回搬运。',benefit:'拿到带来源的提纲，先挑最值得写的那一条。',evidence:'点开来源看原文，再决定哪些材料写进文章。',steps:['说清这期想写的主题。','从已连接的 Notion 找材料，保留来源。','看提纲和待确认项，再补一句调整。'],prompt:'我想写一篇关于开始行动的专栏。先从已连接的 Notion 找我自己的记录，给我一份带来源的提纲；不要替我编经历。',capabilityIds:['knowledge','chat']};
+const doc:VisualDocument={version:1,title:'小禾的 ONE 使用说明',intro:'你想写得更顺，也想少一点开工前的折腾。Notion 里的记录可以先变成专栏的线索；写着文章时，让配图与流程图分头去做，你继续琢磨那句最想说的话。',scenes:[first,{...first,id:'parallel',title:'文章、配图，分头去做',situation:'写到一半，又冒出一个画面？',feature:'把文章提纲与配图分别安排；插画需要用到的文字，等提纲确定后再接过去。',advantage:'互不依赖的部分先动起来，不必等一件做完才能说下一件。',benefit:'文章结构和配图各有成果，你继续聊想法。',steps:['告诉 ONE 两件事各要什么。','独立部分同时处理。','需要前置结果的步骤按顺序接力。'],capabilityIds:['tasks','visual']},{...first,id:'delivery',title:'把方法，做成能点开的说明',situation:'想把这套写作方法讲给朋友？',feature:'将同一份说明做成交互网页与完整流程图，在 ONE 里打开，也能保存下来。',advantage:'网页和流程图共用同一份内容，不用自己再排一遍。',benefit:'一份清楚、可以放大阅读的个人方法说明。',steps:['说明要讲给谁听。','打开网页，点开具体步骤。','保存全图，或主动创建分享链接。'],capabilityIds:['visual']} ]};
+const directory=path.resolve('output/playwright');await fs.mkdir(directory,{recursive:true});
+await fs.writeFile(path.join(directory,'newspaper-personal-preview.html'),renderVisualPage({...doc,presentation:'newspaper'},undefined,undefined,{avatarAllowed:true,platforms:['Notion'],sponsored:true}));
+await fs.writeFile(path.join(directory,'newspaper-sparse-preview.html'),renderVisualPage({...guideDocument({version:1,nickname:'你',purposes:[],platforms:[],localReady:false,features:[]}),presentation:'newspaper'}));
+console.log('Generated synthetic newspaper previews; no model calls or private data.');

@@ -14,12 +14,15 @@ test('welcome artifact preview, exports and opt-in shares are private, isolated,
  const directory=await mkdtemp(path.join(tmpdir(),'one-welcome-page-'));t.after(()=>rm(directory,{recursive:true,force:true}));
  const bytes=Buffer.from('89504e470d0a1a0a','hex'),storagePath=path.join(directory,'image.png');await writeFile(storagePath,bytes);
  const db={users:[{id:'a',enabled:true,defaultWorkspaceId:'wa'},{id:'b',enabled:true,defaultWorkspaceId:'wb'}],workspaces:[{id:'wa',status:'active'},{id:'wb',status:'active'}],workspaceMembers:[{userId:'a',workspaceId:'wa'},{userId:'b',workspaceId:'wb'}],conversations:[{id:'task',workspaceId:'wa',userId:'a',archived:false}],attachments:[{id:'mine',workspaceId:'wa',userId:'a',conversationId:'task',kind:'image',status:'ready',mimeType:'image/png',size:bytes.length,storagePath,originalName:'小张.png',welcomeGuide:{version:1,nickname:'小张',purposes:['处理工作'],platforms:['Notion'],localReady:false,features:[]}}]} as unknown as Database;
+ db.attachments[0].createdAt='2026-10-18T02:00:00Z';
+ db.attachments.push({...db.attachments[0],id:'older',createdAt:'2026-10-17T02:00:00Z'}, {...db.attachments[0],id:'failed-remake',status:'failed',createdAt:'2026-10-19T02:00:00Z'}, {...db.attachments[0],id:'foreign-guide',workspaceId:'wb',userId:'b',conversationId:'foreign'});
  const store:Store={read:async()=>db,mutate:async fn=>fn(db)};
  const app=express();app.use(express.json());
  installWelcomeGuideRoutes(app,[(req,res,next)=>{if(req.headers['x-test-key']==='absent'){res.status(428).json({error:'Key required'});return;}req.user=db.users.find(u=>u.id===(req.headers['x-test-user']||'a'))!;req.workspaceId=req.user.defaultWorkspaceId;next();}],store);
  app.use((e:Error&{status?:number},_req:express.Request,res:express.Response,_next:express.NextFunction)=>{res.status(e.status||404).json({error:e.message});});
  const listener=app.listen(0,'127.0.0.1');await once(listener,'listening');t.after(()=>{listener.closeAllConnections();listener.close();});const address=listener.address();assert.ok(address&&typeof address!=='string');const base=`http://127.0.0.1:${address.port}`;
  const get=(suffix='',headers={})=>fetch(base+'/api/welcome-pages/mine'+suffix,{headers});
+ const ownedGuides=await fetch(base+'/api/me/welcome-guides');assert.equal(ownedGuides.status,200);const list=await ownedGuides.json();assert.deepEqual(list.guides.map((g:{id:string})=>g.id),['mine','older']);assert.doesNotMatch(JSON.stringify(list),/storagePath|Notion|nickname|workspaceId|hash|failed-remake|foreign-guide/);assert.deepEqual((await(await fetch(base+'/api/me/welcome-guides',{headers:{'x-test-user':'b'}})).json()).guides,[]);assert.equal((await fetch(base+'/api/me/welcome-guides',{headers:{'x-test-key':'absent'}})).status,428);
  const share=(body:object,headers={})=>fetch(base+'/api/welcome-pages/mine/share',{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify(body)});
  assert.equal((await get('',{'x-test-key':'absent'})).status,428);
  assert.equal((await get('',{'x-test-user':'b'})).status,404);assert.equal((await get('/view',{'x-test-user':'b'})).status,404);
@@ -42,6 +45,7 @@ test('welcome artifact preview, exports and opt-in shares are private, isolated,
  db.conversations.push({...db.conversations[0],id:'standalone',archived:true});db.chatOperations=[{workspaceId:'wa',userId:'a',conversationId:'standalone',status:'completed',featureRun:{featureId:'one-visual-html'}}] as never;
  const page=await fetch(base+'/api/welcome-pages/page/view');assert.equal(page.status,200);assert.match(page.headers.get('content-security-policy')!,/script-src 'sha256-/);assert.doesNotMatch(page.headers.get('content-security-policy')!,/allow-same-origin/);
  assert.equal((await fetch(base+'/api/welcome-pages/page/view',{headers:{'x-test-user':'b'}})).status,404);
+ const linked=db.attachments.find(f=>f.id==='page')!;linked.welcomeImageId='foreign-guide';assert.equal((await fetch(base+'/api/welcome-pages/page/view')).status,404);assert.equal((await fetch(base+'/api/welcome-pages/page')).status,404);delete linked.welcomeImageId;
  db.attachments.find(f=>f.id==='page')!.mimeType='image/svg+xml';assert.equal((await fetch(base+'/api/welcome-pages/page/view')).status,200);
  assert.equal((await fetch(base+'/api/welcome-pages/page/share',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({confirm:true})})).status,403);
  db.conversations[0].archived=true;assert.equal((await get()).status,404);

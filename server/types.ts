@@ -48,6 +48,8 @@ export type Agent = {
 export type AttachmentKind = "image" | "document" | "spreadsheet" | "presentation" | "text";
 export type Attachment = {
   visualDocument?:import('./visualDocument.js').VisualDocument;
+  /** Owned welcome image associated server-side, never accepted from tool input. */
+  welcomeImageId?:string;
   /** Server-generated personal explanation; never accepted from uploads. */
   welcomeGuide?:import('./welcomeGuide.js').WelcomeGuideFacts;
   welcomeShare?:{hash:string;expiresAt:string};

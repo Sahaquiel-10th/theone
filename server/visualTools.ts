@@ -7,9 +7,9 @@ export const visualToolPresets=[
 ];
 export type SaveVisual=(doc:VisualDocument,format:'html'|'svg')=>Promise<{id:string;name:string}>;
 /** Shared function implementation. Onboarding and normal features use the same renderer. */
-export async function createVisualArtifact(doc:VisualDocument,format:'html'|'svg',save:(name:string,bytes:Buffer,mime:string,doc:VisualDocument)=>Promise<{id:string;name:string}>){
+export async function createVisualArtifact(doc:VisualDocument,format:'html'|'svg',save:(name:string,bytes:Buffer,mime:string,doc:VisualDocument)=>Promise<{id:string;name:string}>,assets?:{image?:string;context?:import('./welcomeNewspaper.js').NewspaperContext}){
   const valid=validateVisualDocument(doc),html=format==='html';
-  return save(valid.title.replace(/[\\/:*?"<>|\u0000-\u001f]/g,'').slice(0,90)+(html?'.html':'.svg'),Buffer.from(html?renderVisualPage(valid):renderVisualDiagram(valid)),html?'text/html':'image/svg+xml',valid);
+  return save(valid.title.replace(/[\\/:*?"<>|\u0000-\u001f]/g,'').slice(0,90)+(html?'.html':'.svg'),Buffer.from(html?renderVisualPage(valid,assets?.image,undefined,assets?.context):renderVisualDiagram(valid)),html?'text/html':'image/svg+xml',valid);
 }
 export function visualTool(id:string,description:string,verify:()=>Promise<void>,save?:SaveVisual):OrchestrationTool{
   if(!visualToolPresets.some(x=>x.id===id))throw new Error('未知的视觉工具');

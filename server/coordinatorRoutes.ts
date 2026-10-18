@@ -59,6 +59,7 @@ export function installCoordinatorRoutes(
       res.json(await service.task(scope(req), String(req.params.id))),
     ),
   );
+  router.get('/history', asyncRoute(async (req, res) => res.json(await service.history(scope(req), req.query.before))));
   router.get(
     "/messages/:operationId",
     asyncRoute(async (req, res) => {

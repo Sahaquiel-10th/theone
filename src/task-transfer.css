@@ -9,6 +9,13 @@
 .one-studio.coordinator-preview.studio-open .studio-presence{gap:10px}
 .one-studio.coordinator-preview.studio-open .studio-assistant{gap:10px;padding-top:14px}
 .one-studio .coordinator-messages{gap:10px;padding-bottom:12px}
+.coordinator-history-button{align-self:center;border:1px solid #aeb7a5;border-radius:20px;background:#fafbf4;color:#425239;padding:9px 18px;margin:6px 0 14px;font:inherit;cursor:pointer}
+.coordinator-history-button:disabled{opacity:.65;cursor:wait}
+.saved-welcome-guides .welcome-guide-card{flex-wrap:wrap;margin:14px 0 0}
+.saved-welcome-guides summary{cursor:pointer;margin-top:16px;font-weight:600}
+.capability-health-panel{border:1px solid #b5bfaa;border-radius:12px;padding:16px;margin:20px 0;background:#f7f8f1}
+.capability-health-panel>summary{font-size:16px;font-weight:650;cursor:pointer;padding:6px}
+.capability-health-panel section{border-top:1px solid #d7ddcc;padding:12px 0}.capability-health-panel h4{margin:6px 0}.capability-health-panel p{line-height:1.7}
 .one-studio .coordinator-message{padding:10px 14px}
 .one-studio .coordinator-message.user{padding:10px 14px}
 .one-studio button.task-transfer-bubble{display:flex;align-items:center;gap:9px;padding:12px 14px;border:1px solid var(--studio-line);border-radius:18px 18px 5px 18px;background:var(--studio-paper);color:var(--studio-ink);font:inherit;text-align:left;cursor:pointer}

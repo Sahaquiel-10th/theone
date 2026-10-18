@@ -13,6 +13,7 @@ import {ThingsPanel} from './ThingsPanel';
 import {TaskReadAllButton} from './TaskReadAllButton';
 import {StoryOnboarding} from './StoryOnboarding';
 import {WelcomeGuideCard} from './WelcomeGuideCard';
+import {SavedWelcomeGuides} from './SavedWelcomeGuides';
 import './welcome-guide.css';
 import type {JourneyInput,WelcomeContext} from '../server/onboardingJourney';
 import {ActionMenu} from './ActionMenu';
@@ -2056,7 +2057,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {demo.enabled?<ResultSignal tasks={lampTasks} busy={Boolean(content.trim()||preview.state.pending||view==='things')} ambient={view==='chat'&&!active} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)} onDismiss={closeResultLamp}/>:null}
         </div>
 
-{preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation visible={view==='chat'||view==='features'||view==='account'} messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} completed={coordinator.settlement?.status==='completed'&&!coordinator.error} progress={coordinator.enabled?coordinator.progress:null} onStop={coordinator.enabled?coordinator.stop:undefined} onRestore={text=>{
+{preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation hasEarlierHistory={coordinator.hasEarlierHistory} loadingHistory={coordinator.loadingHistory} onLoadHistory={coordinator.enabled?coordinator.loadHistory:undefined} visible={view==='chat'||view==='features'||view==='account'} messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} completed={coordinator.settlement?.status==='completed'&&!coordinator.error} progress={coordinator.enabled?coordinator.progress:null} onStop={coordinator.enabled?coordinator.stop:undefined} onRestore={text=>{
           if(currentDraftRef.current.content.trim()){setError('输入框已有新草稿，先保留或发送它，再恢复原话。');return;}
           setContent(text);const failed=coordinatorFailedDraft.current;
           if(failed?.text===text){
@@ -2521,6 +2522,7 @@ function AccountPage({ user, profile, onSaveProfile, onOpenGuide, models, defaul
         {guidePending&&section!=='profile'?<div className="story-settings-return"><span>新手引导还在，接好后回来继续。</span>{guideButton}</div>:null}
         {section === "device" ? <LocalDeviceSettings key={user.id} api={api}/> : section === "knowledge" ? knowledge : section === "power" ? user.access?.kind === "company" ? <div className="settings-empty"><p>费用由公司按协议对公打款承担，无需个人充值。</p><p>公司可用电力：{((billing?.availableMicros??0)/1e6).toFixed(3)}；个人额度由公司管理员配置。</p></div> : billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载会员与额度…</p> : <>
         <section className="account-panel"><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
+        <SavedWelcomeGuides api={api}/>
         <section className="account-panel story-settings-entry"><div><h3>新手引导</h3><p>重新认识一下 ONE，按自己的节奏设置。已有连接、文件和任务都保留。</p></div>{guideButton}</section>
         <FeatureBudgetSettings key={user.id} api={api}/>
         <section className="account-panel">

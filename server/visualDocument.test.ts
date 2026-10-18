@@ -2,11 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {validateVisualDocument,renderVisualDiagram,renderVisualPage,visualPageCsp,visualPageRuntime,visualScriptHash,visualDiagramHeight,type VisualDocument} from './visualDocument.js';
-import {parseWelcomeManual,welcomeCapabilities,callWelcomePlanner,welcomeRetryPower} from './welcomeManual.js';
+import {parseWelcomeManual,welcomeCapabilities,callWelcomePlanner,welcomeRetryPower,welcomeManualMessages} from './welcomeManual.js';
 import {ModelRequestError} from './modelGateway.js';
 import {visualTool} from './visualTools.js';
 const scene={id:'work',title:'把资料变成说明',situation:'开会前，想把散乱的想法理清楚。',feature:'整理已有材料，列出关键决定。',advantage:'不必自己来回翻页。',benefit:'拿到一份能拿去讨论的提纲。',evidence:'逐条检查结论和待确认项。',steps:['告诉 ONE 目标。','检查提纲再补充要求。'],prompt:'请整理这份材料，缺少的地方单独列出来。',capabilityIds:['chat']};
 const doc:VisualDocument={version:1,title:'小张的 ONE 使用说明',intro:'先把开会前最费劲的那一步交给 ONE。',scenes:[scene,{...scene,id:'next',title:'交给任务去做'}]};
+test('personal planning uses actual account facts and mandatory newspaper guidance even with an older published prompt',()=>{
+ const f={version:1 as const,nickname:'小禾',purposes:['写作与表达'],platforms:['Notion'],localReady:false,features:[{name:'文章写作',description:'写专栏'},{name:'附件工作',description:'上传附件'},{name:'Notion 写入',description:'写入平台'}]};
+ const messages=welcomeManualMessages(f,'CUSTOM_PUBLISHED_PROMPT');assert.match(messages[0].content,/CUSTOM_PUBLISHED_PROMPT/);assert.match(messages[0].content,/年代报刊/);assert.match(messages[0].content,/不是把姓名替换/);
+ const payload=JSON.parse(messages[1].content);assert.equal(payload.nickname,'小禾');assert.deepEqual(payload.purposes,['写作与表达']);assert.deepEqual(payload.platforms,['Notion']);assert.equal(payload.localReady,false);assert.ok(payload.capabilities.some((c:{name:string})=>c.name==='文章写作'));assert.ok(!payload.capabilities.some((c:{name:string})=>c.name==='附件工作'||c.name==='Notion 写入'));
+ assert.ok(!payload.capabilities.some((c:{id:string})=>c.id==='avatar'));const withAvatar=JSON.parse(welcomeManualMessages({...f,avatarAllowed:true,avatars:['小禾写作答疑']})[1].content);assert.ok(withAvatar.capabilities.some((c:{id:string})=>c.id==='avatar'));assert.deepEqual(withAvatar.avatars,['小禾写作答疑']);
+ const other=welcomeManualMessages({...f,nickname:'小林',purposes:['安排日常生活'],platforms:[],localReady:true});assert.notEqual(messages[1].content,other[1].content);assert.doesNotMatch(other[1].content,/知识正文|storagePath|apiKey/);
+ const paper={...doc,presentation:'newspaper' as const};assert.equal(validateVisualDocument(paper).presentation,'newspaper');assert.match(renderVisualPage(paper),/one-newspaper/);assert.doesNotMatch(renderVisualPage(doc),/class="one-newspaper"/);assert.throws(()=>validateVisualDocument({...doc,presentation:'<script>'}),/版式/);
+});
 test('pure planner retries known upstream 502 at most twice, checks cancellation and quotes all unfinished stages',async()=>{
  let calls=0,retries=0,checks=0;const verify=async()=>{checks++;};
  assert.equal(await callWelcomePlanner(async()=>{calls++;if(calls<3)throw new ModelRequestError(502,'temporarily unavailable');return 'ok';},verify,async()=>{retries++;},async()=>{}),'ok');assert.equal(calls,3);assert.equal(retries,2);assert.ok(checks>=5);

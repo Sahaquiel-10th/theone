@@ -1,6 +1,6 @@
 import test from "node:test";
 import express from "express";
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -17,6 +17,20 @@ import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
 import { executorDefaults, updateExecutor } from "./executorProfiles.js";
 import { beginChatOperation,reconcileInterruptedChatOperations } from "./chatOperations.js";
 import { MODEL_MAX_OUTPUT_TOKENS, type ModelToolMessage, type ModelToolDefinition, type ToolChatResult } from "./modelGateway.js";
+
+test('main-chat display history is scoped and retains old task links, separate from task pagination',async()=>{
+ const f=fixture();await f.store.mutate(d=>{
+  const messages=Array.from({length:92},(_,i)=>({id:`history_${i}`,role:i%2?'assistant' as const:'user' as const,content:`history ${i}`,createdAt:String(i).padStart(5,'0')}));
+  d.conversations.push({...a,id:'history_main',coordinatorMain:true,title:'main',modelId:'router',archived:false,messages,createdAt:'now',updatedAt:'now'});
+  d.conversations.push({...a,id:'history_task',title:'old task',modelId:'router',archived:false,messages:[],createdAt:'now',updatedAt:'now'});
+  d.chatOperations!.push({...a,id:'history_op',operationId:'history_operation_01',requestId:'r',payloadHash:'h',status:'completed',createdAt:'now',updatedAt:'now',assistantMessageId:'history_13',dispatchedTaskId:'history_task'});
+ });
+ const state=await f.service.state(a);assert.equal(state.conversation!.messages.length,40);assert.equal(state.history.total,92);
+ const page=await f.service.history(a,state.history.before);assert.equal(page.messages.length,40);
+ const first=await f.service.history(a,page.history.before);assert.equal(first.messages.length,12);assert.equal(first.history.hasMore,false);
+ assert.equal(page.links.some(link=>link.messageId==='history_13'&&link.taskId==='history_task'),true);
+ const foreign=await f.service.history(b);assert.equal(foreign.messages.length,0);assert.equal(foreign.links.length,0);await assert.rejects(()=>f.service.history(b,'history_13'));
+});
 
 for(const sponsored of [true,false])test(`welcome manual → image → shared visual functions is durable, scoped and billed by stage (gift=${sponsored})`,async()=>{
   const f=await imageFixture(async()=>({content:'',imageUrl:imageFixturePng})),operationId='welcome_manual_0123456789';let texts=0,images=0;
@@ -42,6 +56,8 @@ for(const sponsored of [true,false])test(`welcome manual → image → shared vi
     assert.equal(run.fixedWorkflow?.id,'onboarding_guide');assert.equal(run.fixedWorkflow?.version,1);
     assert.equal(d.attachments.filter(f=>f.conversationId===taskId).length,3);assert.equal(d.modelUsageRecords.length,2);
     assert.ok(d.modelUsageRecords.every(r=>sponsored?r.chargedMicros===0:r.chargedMicros!>0));assert.ok(d.attachments.find(f=>f.id===run.welcomeImageAttachmentId)!.welcomeGuide!.manual);
+    assert.equal(d.attachments.find(f=>f.id===run.welcomeImageAttachmentId)!.welcomeGuide!.sponsored,sponsored);
+    const page=d.attachments.find(f=>f.id===run.welcomeArtifacts!.pageId)!;assert.equal(page.welcomeImageId,run.welcomeImageAttachmentId);const pageHtml=readFileSync(page.storagePath,'utf8');assert.match(pageHtml,/id="whole-illustration" src="data:image\/png;base64,/);assert.equal(pageHtml.includes('这期，ONE 老板请了'),sponsored);
     const returned=await service.task(a,taskId);assert.doesNotMatch(JSON.stringify(returned),/welcomeManual|contentBudget|safetyRules|apiKey/);
     await startOnboardingHandbook(f.store,a,deps);await service.resume(a,key);assert.equal(texts,1);assert.equal(images,1);
     await assert.rejects(()=>service.task(b,taskId));

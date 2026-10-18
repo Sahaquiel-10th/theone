@@ -9,7 +9,7 @@ import {useEffect,useRef,useState} from 'react';
 import {WelcomeGuideCard} from '../WelcomeGuideCard';
 
 /** Local presentation prototype: a single assistant conversation, not another task dashboard. */
-export function CoordinatorConversation({messages,tasks,pending,onOpen,visible=true,progress,onStop,onRestore,completed=false}:{messages:Message[];tasks:Task[];pending:boolean;onOpen:(id:string)=>void;visible?:boolean;progress?:{phase:string;startedAt:string}|null;onStop?:()=>Promise<void>;onRestore?:(text:string)=>void;completed?:boolean}) {
+export function CoordinatorConversation({messages,tasks,pending,onOpen,visible=true,progress,onStop,onRestore,completed=false,hasEarlierHistory=false,loadingHistory=false,onLoadHistory}:{messages:Message[];tasks:Task[];pending:boolean;onOpen:(id:string)=>void;visible?:boolean;progress?:{phase:string;startedAt:string}|null;onStop?:()=>Promise<void>;onRestore?:(text:string)=>void;completed?:boolean;hasEarlierHistory?:boolean;loadingHistory?:boolean;onLoadHistory?:()=>Promise<void>}) {
  const [retainProgress,setRetainProgress]=useState(pending),lastProgress=useRef(progress);
  if(pending&&progress)lastProgress.current=progress;
  useEffect(()=>{if(pending){setRetainProgress(true);return;}if(!completed){setRetainProgress(false);return;}const timer=setTimeout(()=>setRetainProgress(false),350);return()=>clearTimeout(timer);},[pending,completed]);
@@ -17,6 +17,7 @@ export function CoordinatorConversation({messages,tasks,pending,onOpen,visible=t
  const latestAssistantId=messages.filter(message=>message.role==='assistant').at(-1)?.id;
  return <div className="coordinator-conversation">
   <div ref={scroll} className="coordinator-messages" aria-label="与 ONE 的持续对话" role="log" aria-live="polite" onScroll={onScroll}>
+   {hasEarlierHistory&&onLoadHistory?<button className="coordinator-history-button" type="button" disabled={loadingHistory} onClick={async()=>{const node=scroll.current;if(!node)return;const height=node.scrollHeight,top=node.scrollTop;await onLoadHistory();requestAnimationFrame(()=>{node.scrollTop=top+node.scrollHeight-height;});}}>{loadingHistory?'正在翻更早的记录…':'查看更早的聊天记录 ↑'}</button>:null}
    {messages.map(message=><article key={message.id} className={`coordinator-message ${message.role}`} data-message-kind={message.kind||'conversation'} data-task-return-anchor={message.role==='assistant'&&message.id===latestAssistantId?'':undefined}>
     {message.featureName?<span className="coordinator-feature-label">{message.featureName}</span>:null}{message.role==='assistant'?<MessageMarkdown>{message.text}</MessageMarkdown>:<p>{message.text}</p>}
     {privateImageUrl(message.imageUrl)&&!hasInlineImage(message.text,message.imageUrl!)?<><ImagePreview src={message.imageUrl!} alt="ONE 生成的图片"/><a className="coordinator-task-link" href={message.imageUrl} download>下载图片</a></>:null}

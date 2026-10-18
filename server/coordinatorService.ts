@@ -61,6 +61,8 @@ import {
 import { prepareAttachmentContext } from "./attachmentRetrieval.js";
 import { accountInScope } from './betaProfile.js';
 import { handbookGuide,handbookInstruction, handbookTitle, isOnboardingImageOperation,usesWelcomeManual, type OnboardingImageInput } from './onboardingHandbook.js';
+import { coordinatorHistoryPage } from './coordinatorHistory.js';
+import {OneKeyPresenceError} from './oneKeyPresence.js';
 import {welcomeManualConfig,welcomeManualMessages,manualBillingInput,manualTool,parseWelcomeManual,welcomeManualImagePrompt,welcomeRetryPower,callWelcomePlanner} from './welcomeManual.js';
 import {visualTool} from './visualTools.js';
 import { friendlyConversationGuidance } from './conversationTone.js';
@@ -348,13 +350,20 @@ export class CoordinatorService {
           taskId,
         }))),
       enabled: db.settings.aiTasks?.coordinator?.published?.enabled === true,
-      conversation: c ? { ...c, messages: c.messages.slice(-40) } : null,
+      conversation: c ? { ...c, messages: coordinatorHistoryPage(c).messages } : null,
+      history: coordinatorHistoryPage(c).history,
       tasks: metas.slice((page - 1) * 20, page * 20),
       transfers: metas.filter(task => task.running || task.queued || task.localPrepared || task.paused && notices.some(n => n.taskId === task.id && !n.reported)),
       total: tasks.length,
       notices,
       recentReportedReceiptIds: taskResultIdsReportedInMessage(db, s, c?.messages.filter(message => message.role === 'assistant').at(-1)?.id),
     };
+  }
+  async history(s: WorkScope, before?: unknown) {
+    const db = await this.store.read(); featureMember(db, s);
+    const conversation = db.conversations.find(c => own(c, s) && c.coordinatorMain);
+    const page = coordinatorHistoryPage(conversation, before), ids = new Set(page.messages.map(m => m.id));
+    return { conversationId: conversation?.id, ...page, links: (db.chatOperations ?? []).filter(o => own(o, s) && o.assistantMessageId && ids.has(o.assistantMessageId)).flatMap(o => [...new Set([...(o.dispatchedTaskIds ?? []), ...(o.dispatchedTaskId ? [o.dispatchedTaskId] : [])])].filter(id => db.conversations.some(c => own(c, s) && c.id === id && !c.archived)).map(taskId => ({ messageId: o.assistantMessageId!, taskId }))) };
   }
   async task(s: WorkScope, id: string) {
     const db = await this.store.read(),
@@ -1729,16 +1738,18 @@ export class CoordinatorService {
           const bytes=await featureImageBytes(result.imageUrl||'');
           await verify();
           const file=await saveFeatureArtifact(this.store,{...s,conversationId:cid},this.deps.artifactDirectory!,'ONE生成图片'+bytes.extension,bytes.data,bytes.mimeType,'image',db=>assertWork(db,s,id,job,cid));
-          if(job.welcomeGuide)await this.store.mutate(db=>{assertWork(db,s,id,job,cid);const saved=db.attachments.find(a=>own(a,s)&&a.id===file.id)!;saved.welcomeGuide=structuredClone(job.welcomeGuide!);saved.originalName=`${job.welcomeGuide!.nickname}的 ONE 使用说明${bytes.extension}`;db.chatOperations!.find(o=>o.id===id)!.workRun!.welcomeImageAttachmentId=file.id;});
+          if(job.welcomeGuide)await this.store.mutate(db=>{assertWork(db,s,id,job,cid);const saved=db.attachments.find(a=>own(a,s)&&a.id===file.id)!;saved.welcomeGuide={...structuredClone(job.welcomeGuide!),sponsored:job.welcomeSponsored===true};saved.originalName=`${job.welcomeGuide!.nickname}的 ONE 使用说明${bytes.extension}`;db.chatOperations!.find(o=>o.id===id)!.workRun!.welcomeImageAttachmentId=file.id;});
           return {...result,imageUrl:`/api/attachments/${file.id}/content`,raw:undefined};
         });
         await verify();
         if(job.welcomeManual?.document){
-          const save=visualArtifactSaver(this.store,{...s,conversationId:cid},this.deps.artifactDirectory,db=>assertWork(db,s,id,job,cid));
+          const savedImage=(await this.store.read()).chatOperations!.find(o=>o.id===id)!.workRun!.welcomeImageAttachmentId;
+          if(!savedImage)throw new CoordinatorError('个人配图还没有保存好，先保留已完成的内容，不会重新画图。');
+          const save=visualArtifactSaver(this.store,{...s,conversationId:cid},this.deps.artifactDirectory,db=>assertWork(db,s,id,job,cid),undefined,savedImage);
           for(const {tool:name,key} of onboardingArtifactStages){
             const current=(await this.store.read()).chatOperations!.find(o=>o.id===id)!.workRun!;
             if(current.welcomeArtifacts?.[key])continue;
-            const output=await visualTool(name,'根据已完成的使用说明生成私有成果',verify,save).structured!.run(job.welcomeManual.document) as {file:{id:string}};
+            const output=await visualTool(name,'根据已完成的个人使用说明，制作黑红复古报纸版式的私有成果',verify,save).structured!.run({...job.welcomeManual.document,presentation:'newspaper'}) as {file:{id:string}};
             await this.store.mutate(db=>{assertWork(db,s,id,job,cid);const run=db.chatOperations!.find(o=>o.id===id)!.workRun!;run.welcomeArtifacts={...run.welcomeArtifacts,[key]:output.file.id};});
           }
         }
@@ -2164,7 +2175,7 @@ export class CoordinatorService {
           : error instanceof ModelRequestError ? `${error.message}。原话和附件都还在，可在下方重新处理。` : error instanceof NotionDocumentError || error instanceof CoordinatorError || error instanceof FeatureConfigError ? error.message :
           "本轮未完成，请检查授权、模型和电力；可能已有实际用量，不会自动重跑。";
         if(error instanceof ChatImageGatewayError)o.workRun.failureCode=`image_${['authorization','configuration','model_unavailable','quota','tool_or_parameter','timeout','connection','invalid_response','incomplete','image_count','invalid_image','oversized_response','duplicate_completion','upstream_unknown'].includes(error.code)?error.code:'unknown'}${error.httpStatus?`_${error.httpStatus}`:''}`;
-        else o.workRun.failureCode=orchestrationFailureCode(error)??'task_execution_failed';
+        else o.workRun.failureCode=error instanceof OneKeyPresenceError?'task_key_required':(error instanceof CoordinatorError||error instanceof FeatureConfigError)&&error.status===402?'task_budget_required':(error instanceof CoordinatorError||error instanceof FeatureConfigError)&&[403,428].includes(error.status)?'task_authorization_required':orchestrationFailureCode(error)??'task_execution_failed';
         o.updatedAt = at();
         const c = d.conversations.find(
           (c) => c.id === o.conversationId && own(c, s),

@@ -6,6 +6,7 @@ import { coordinatorMessage } from './coordinatorMessage';
 import {chatSubmission,forgetChatSubmission} from './chatSubmission';
 import {receiptMayBeMissing} from './responseProgressState';
 import {applyReviewedReceipts} from './taskTransferLifecycle';
+import {mergeCoordinatorMessages, mergeCoordinatorLinks} from './coordinatorHistory';
 import type { Conversation } from "../server/types";
 import type {
   Action,
@@ -37,6 +38,8 @@ type Notice = {
   outcome?: string;
 };
 type Snapshot = {
+  clientScope?: string;
+  history?: {hasMore:boolean;before?:string;total:number};
   enabled: boolean;
   conversation: Conversation | null;
   tasks: Meta[];
@@ -81,7 +84,9 @@ export function useCoordinator(
   userId: string,
   enabled: boolean,
 ) {
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null),
+  const [storedSnapshot, setSnapshot] = useState<Snapshot | null>(null),
+    [loadingHistory,setLoadingHistory] = useState(false),
+    [historyError,setHistoryError] = useState(''),
     [outgoing, setOutgoing] = useState<{id:string;text:string;priorIds:string[];failed?:boolean} | null>(null),
     [progress, setProgress] = useState<{phase:string;startedAt:string} | null>(null),
     [details, setDetails] = useState<Record<string, Detail>>({}),
@@ -91,6 +96,8 @@ export function useCoordinator(
     [error, setError] = useState(""),
     [settlement, setSettlement] = useState<{operationId:string;status:string;taskId?:string;taskIds?:string[]} | null>(null),
     [page, setPage] = useState(1);
+  const snapshot=storedSnapshot?.clientScope===userId?storedSnapshot:null;
+  const scopeRef=useRef(userId);scopeRef.current=userId;
   const live = useRef(true),
     refreshing = useRef(false),
     sending = useRef(false),
@@ -136,9 +143,15 @@ export function useCoordinator(
       try {
         const pages = await Promise.all(Array.from({length: Math.max(nextPage, pageRef.current)}, (_, i) => api<Snapshot>(`/api/coordinator?page=${i+1}`)));
         const next = {...pages[0], tasks: [...new Map(pages.flatMap(p=>p.tasks).map(t=>[t.id,t])).values()]};
-        if (!live.current) return;
+        if (!live.current || scopeRef.current!==userId) return;
         setSnapshot((old) => ({
           ...next,
+          clientScope:userId,
+          ...(old?.clientScope===userId&&old.conversation?.id===next.conversation?.id&&next.conversation?{
+            conversation:{...next.conversation,messages:mergeCoordinatorMessages(old.conversation!.messages,next.conversation.messages)},
+            links:mergeCoordinatorLinks(old.links??[],next.links??[]),
+            history:old.history?{...old.history,total:next.history?.total??old.history.total}:next.history,
+          }:{}),
           tasks:
             nextPage === 1
               ? next.tasks
@@ -246,6 +259,17 @@ export function useCoordinator(
       window.removeEventListener("focus", focus);
     };
   }, [enabled, refresh]);
+  async function loadHistory() {
+    const current=snapshotRef.current;
+    if(loadingHistory||current?.clientScope!==userId||!current.history?.hasMore||!current.history.before||!current.conversation)return;
+    setLoadingHistory(true);setHistoryError('');
+    try {
+      const page=await api<{conversationId:string;messages:Conversation['messages'];history:NonNullable<Snapshot['history']>;links:{messageId:string;taskId:string}[]}>(`/api/coordinator/history?before=${encodeURIComponent(current.history.before)}`);
+      if(!live.current||scopeRef.current!==userId)return;
+      setSnapshot(old=>old?.clientScope===userId&&old.conversation?.id===page.conversationId?{...old,conversation:{...old.conversation,messages:mergeCoordinatorMessages(page.messages,old.conversation.messages)},history:page.history,links:mergeCoordinatorLinks(page.links,old.links??[])}:old);
+    }catch(e){if(live.current&&scopeRef.current===userId)setHistoryError(e instanceof Error?e.message:'更早的记录暂时没打开，可以再试一次');}
+    finally{if(live.current)setLoadingHistory(false);}
+  }
   async function submit(input: CoordinatorSubmission) {
     if (
       sending.current ||
@@ -448,9 +472,9 @@ export function useCoordinator(
       setDetails(old=>{const next={...old};delete next[id];return next;});await refresh();
     },
     restoreTask: async () => {if(!removedTask)return;await api(`/api/coordinator/tasks/${encodeURIComponent(removedTask)}/restore`,{method:'POST',body:'{}'});setRemovedTask(null);await refresh();},
-    error,
+    error:error||historyError,
     settlement,
-    clearError: () => setError(""),
+    clearError: () => {setError("");setHistoryError('');},
     progress,
     stop: async () => {const id=localPending||snapshotRef.current?.pendingOperationId;if(!id)return;await api(`/api/coordinator/messages/${encodeURIComponent(id)}/stop`,{method:'POST',body:'{}'});await refresh();},
     stopTask: async (id:string) => {await api(`/api/coordinator/tasks/${encodeURIComponent(id)}/stop`,{method:'POST',body:'{}'});await refresh();},
@@ -458,5 +482,9 @@ export function useCoordinator(
     details,
     page,
     loadMore: () => refresh(page + 1),
+    loadHistory,
+    loadingHistory,
+    historyError,
+    hasEarlierHistory:snapshot?.clientScope===userId&&snapshot.history?.hasMore===true,
   };
 }

@@ -21,6 +21,12 @@ async function dataImage(file:Attachment){
   const bytes=await fs.readFile(file.storagePath).catch(()=>{throw new BetaInputError('说明图片暂时没打开，稍后再试。',404);});if(bytes.length!==file.size)throw new BetaInputError('说明图片尚未就绪',404);
   return `data:${file.mimeType};base64,${bytes.toString('base64')}`;
 }
+async function visualHtml(db:Database,s:AccountScope,f:Attachment){
+  if(!f.welcomeImageId)return renderVisualPage(f.visualDocument!);
+  const image=fileInScope(db,s,f.welcomeImageId);
+  if(image.conversationId!==f.conversationId||!image.welcomeGuide)throw new BetaInputError('说明配图暂时不可用',404);
+  return renderVisualPage(f.visualDocument!,await dataImage(image),undefined,image.welcomeGuide);
+}
 function sharable(db:Database,s:AccountScope){
   const w=db.workspaces.find(w=>w.id===s.workspaceId)!;
   if(w.kind==='company'&&!w.company?.allowPublicSharing)throw new BetaInputError('公司暂未开放对外分享',403);
@@ -28,18 +34,23 @@ function sharable(db:Database,s:AccountScope){
 /** A narrow artifact surface: only server-created welcome facts, no arbitrary
  * HTML upload, prompt, knowledge body, file path or execution capability. */
 export function installWelcomeGuideRoutes(app:Express,keyAuth:readonly RequestHandler[],store:Store){
+  app.get('/api/me/welcome-guides',...keyAuth,asyncRoute(async(req,res)=>{
+    const db=await store.read(),s={userId:req.user!.id,workspaceId:req.workspaceId!};accountInScope(db,s);
+    const guides=db.attachments.filter(f=>f.workspaceId===s.workspaceId&&f.userId===s.userId&&f.welcomeGuide&&f.kind==='image'&&f.status==='ready').filter(f=>{try{fileInScope(db,s,f.id);return true;}catch{return false;}}).sort((a,b)=>String(b.createdAt??'').localeCompare(String(a.createdAt??''))).slice(0,10).map(f=>({id:f.id,title:f.originalName,createdAt:f.createdAt,taskId:f.conversationId}));
+    res.setHeader('Cache-Control','no-store');res.json({guides});
+  }));
   app.get('/api/welcome-pages/:id/view',...keyAuth,asyncRoute(async(req,res)=>{
-    const f=fileInScope(await store.read(),{userId:req.user!.id,workspaceId:req.workspaceId!},String(req.params.id));
+    const db=await store.read(),s={userId:req.user!.id,workspaceId:req.workspaceId!},f=fileInScope(db,s,String(req.params.id));
     res.setHeader('Cache-Control','no-store');res.setHeader('X-Frame-Options','SAMEORIGIN');res.setHeader('Referrer-Policy','no-referrer');
     res.setHeader('Content-Security-Policy',visualPageCsp("'self'"));
-    res.type('html').send(f.visualDocument?renderVisualPage(f.visualDocument):renderWelcomeGuide(f.welcomeGuide!,await dataImage(f)));
+    res.type('html').send(f.visualDocument?await visualHtml(db,s,f):renderWelcomeGuide(f.welcomeGuide!,await dataImage(f)));
   }));
   app.get('/api/welcome-pages/:id',...keyAuth,asyncRoute(async(req,res)=>{
-    const s={userId:req.user!.id,workspaceId:req.workspaceId!},f=fileInScope(await store.read(),s,String(req.params.id));
+    const db=await store.read(),s={userId:req.user!.id,workspaceId:req.workspaceId!},f=fileInScope(db,s,String(req.params.id));
     res.setHeader('Cache-Control','no-store');
     if(f.visualDocument){const doc=f.visualDocument;
       if(req.query.format==='poster')res.json({svg:renderVisualDiagram(doc),name:doc.title+'.svg',width:1920,height:visualDiagramHeight(doc)});
-      else res.json({html:renderVisualPage(doc),name:doc.title+'.html',shared:false,shareable:false});return;
+      else res.json({html:await visualHtml(db,s,f),name:doc.title+'.html',shared:false,shareable:false});return;
     }
     const image=await dataImage(f);
     if(req.query.format==='poster')res.json({svg:renderWelcomePoster(f.welcomeGuide!,image),name:`${f.welcomeGuide!.nickname}的 ONE 使用说明.svg`,width:1920,height:Number(/height="(\d+)"/.exec(renderWelcomePoster(f.welcomeGuide!,image))![1])});

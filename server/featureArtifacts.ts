@@ -7,13 +7,22 @@ import { ownedAttachment } from './attachmentService.js';
 import { tableFileToCsv } from './skillTables.js';
 import {createVisualArtifact,type SaveVisual} from './visualTools.js';
 
-export function visualArtifactSaver(store:Store,scope:{workspaceId:string;userId:string;conversationId:string},directory:string|undefined,verify:(db:Database)=>void,onSaved?:(id:string)=>void):SaveVisual|undefined {
+export function visualArtifactSaver(store:Store,scope:{workspaceId:string;userId:string;conversationId:string},directory:string|undefined,verify:(db:Database)=>void,onSaved?:(id:string)=>void,welcomeImageId?:string):SaveVisual|undefined {
   if(!directory)return;
-  return (doc,format)=>createVisualArtifact(doc,format,async(name,bytes,mime,content)=>{
+  return async(doc,format)=>{
+    let assets:Parameters<typeof createVisualArtifact>[3];
+    if(welcomeImageId&&format==='html'){
+      const db=await store.read();verify(db);const image=ownedAttachment(db.attachments,scope,welcomeImageId);
+      if(image.conversationId!==scope.conversationId||image.kind!=='image'||image.status!=='ready'||!image.welcomeGuide||!/^image\/(png|jpeg|webp)$/.test(image.mimeType)||image.size>25*1024*1024)throw new Error('说明配图暂时不可用');
+      const bytes=await fs.readFile(image.storagePath);if(bytes.length!==image.size)throw new Error('说明配图尚未就绪');
+      assets={image:`data:${image.mimeType};base64,${bytes.toString('base64')}`,context:image.welcomeGuide};
+    }
+    return createVisualArtifact(doc,format,async(name,bytes,mime,content)=>{
     const file=await saveFeatureArtifact(store,scope,directory,name,bytes,mime,'document',verify);
-    await store.mutate(db=>{verify(db);const f=ownedAttachment(db.attachments,scope,file.id);f.visualDocument=content;});
+    await store.mutate(db=>{verify(db);const f=ownedAttachment(db.attachments,scope,file.id);f.visualDocument=content;if(welcomeImageId&&format==='html')f.welcomeImageId=welcomeImageId;});
     onSaved?.(file.id);return file;
-  });
+    },assets);
+  };
 }
 
 export async function selectedFeatureFiles(store:Store,scope:{workspaceId:string;userId:string},ids:unknown):Promise<Attachment[]> {

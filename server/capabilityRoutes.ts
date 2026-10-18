@@ -3,6 +3,7 @@ import type { Store } from "./db.js";
 import { asyncRoute } from "./middleware.js";
 import { adminCapabilityCatalog, type CapabilityRuntimeOptions } from "./capabilityCatalog.js";
 import { CoordinatorError, defaultExecutorDefinitions, executorDefaults, setupDefaultExecutors } from "./executorProfiles.js";
+import {capabilityHealth} from './capabilityHealth.js';
 
 export function installCapabilityRoutes(app: Express, admin: readonly RequestHandler[], store: Store, runtime: CapabilityRuntimeOptions = {}) {
   const router = express.Router();
@@ -10,7 +11,8 @@ export function installCapabilityRoutes(app: Express, admin: readonly RequestHan
   router.use((_req, res, next) => { res.setHeader("Cache-Control", "no-store"); next(); });
   router.get("/", asyncRoute(async (_req, res) => {
     const db = await store.read();
-    res.json({ items: adminCapabilityCatalog(db, runtime), executorDefaults: executorDefaults(), defaultPlan: defaultExecutorDefinitions.map((definition) => ({ id: definition.id, name: definition.name, family: definition.family, installed: !!db.settings.executorProfiles?.some((profile) => profile.id === definition.id || profile.draft.routingRole === definition.id) })) });
+    const items=adminCapabilityCatalog(db,runtime);
+    res.json({ items, health:capabilityHealth(db,items), executorDefaults: executorDefaults(), defaultPlan: defaultExecutorDefinitions.map((definition) => ({ id: definition.id, name: definition.name, family: definition.family, installed: !!db.settings.executorProfiles?.some((profile) => profile.id === definition.id || profile.draft.routingRole === definition.id) })) });
   }));
   router.post("/defaults/setup", asyncRoute(async (req, res) => {
     const body = req.body;
