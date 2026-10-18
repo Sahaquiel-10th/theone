@@ -3,6 +3,7 @@ import type { api as Api } from "./oneApi";
 import { ApiError } from "./oneApi";
 import { approveFeaturePrices } from './FeatureBudgetSettings';
 import { coordinatorMessage } from './coordinatorMessage';
+import {coordinatorRecoveryCopy} from './coordinatorRecovery';
 import {chatSubmission,forgetChatSubmission} from './chatSubmission';
 import {receiptMayBeMissing} from './responseProgressState';
 import {applyReviewedReceipts} from './taskTransferLifecycle';
@@ -94,6 +95,7 @@ export function useCoordinator(
     [bound, setBound] = useState<string | null>(null),
     [localPending, setPending] = useState<string | null>(null),
     [error, setError] = useState(""),
+    [failureReply,setFailureReply]=useState<{scope:string;operationId:string;text:string}|null>(null),
     [settlement, setSettlement] = useState<{operationId:string;status:string;taskId?:string;taskIds?:string[]} | null>(null),
     [page, setPage] = useState(1);
   const snapshot=storedSnapshot?.clientScope===userId?storedSnapshot:null;
@@ -215,8 +217,8 @@ export function useCoordinator(
               try {localStorage.removeItem(pendingKey(userId));}catch{}
               setPending(null);
               setProgress(null);
-              submissionError.current = "暂未找到接收记录，原话仍保留；可重试同一条消息，系统会沿用原提交编号，避免重复执行。";
-              setError(submissionError.current);
+              setFailureReply({scope:userId,operationId:operation,text:coordinatorRecoveryCopy('暂未找到接收记录')});
+              submissionError.current='';setError('');
               return;
             }
             throw e;
@@ -230,8 +232,8 @@ export function useCoordinator(
             setPending(null);
             forgetChatSubmission(`coordinator:${userId}`,operation);
             if (status.status !== "completed") {
-              submissionError.current = status.status==='interrupted' ? "回复已停止，原话保留；已经交出的任务可在任务区单独停止，不会自动重跑。" : status.error ? `${status.error}。原话和已产生的用量保留；不会自动重跑。` : "这条消息未完成，原话和已产生的用量保留；不会自动重跑。";
-              setError(submissionError.current);
+              setFailureReply({scope:userId,operationId:operation,text:coordinatorRecoveryCopy(status.error??'',status.status==='interrupted')});
+              submissionError.current='';setError('');
             }
           } else setProgress(status.progress || {phase:'正在等待处理结果',startedAt:next.conversation?.messages.at(-1)?.createdAt || new Date().toISOString()});
         } else {setPending(null);setProgress(null);}
@@ -282,6 +284,7 @@ export function useCoordinator(
     setProgress({phase:'正在发送你的要求',startedAt:new Date().toISOString()});
     setPending(input.operationId);
     submissionError.current = "";
+    setFailureReply(null);
     setError("");
     try {
       input={...input,operationId:await chatSubmission(`coordinator:${userId}`,{...input,operationId:undefined})};
@@ -303,7 +306,18 @@ export function useCoordinator(
         setPending(null);
       }
       await refresh();
-      throw e;
+      if(e instanceof ApiError&&e.code==='SESSION_CHANGED'||scopeRef.current!==userId)throw e;
+      // A response may be lost after the server saved the reply. Reconcile the
+      // same receipt before adding a fallback; never send the request again.
+      try {
+        const receipt=await api<{status:string}>(`/api/coordinator/messages/${encodeURIComponent(input.operationId)}`);
+        if(scopeRef.current!==userId)throw e;
+        if(receipt.status==='completed'){setFailureReply(null);submissionError.current='';setError('');return input.operationId;}
+      } catch {if(scopeRef.current!==userId)throw e;}
+      setFailureReply({scope:userId,operationId:input.operationId,text:coordinatorRecoveryCopy(e instanceof Error?e.message:'')});
+      submissionError.current='';setError('');
+      if(input.localExecution)throw e;
+      return input.operationId;
     } finally {
       sending.current = false;
     }
@@ -431,7 +445,7 @@ export function useCoordinator(
       ...coordinatorMessage(m),
       taskId: snapshot?.links?.find((l) => l.messageId === m.id)?.taskId,
       taskIds: [...new Set(snapshot?.links?.filter(l => l.messageId === m.id).map(l => l.taskId) ?? [])],
-    })), ...(outgoing && !snapshot?.conversation?.messages.some(m=>m.role==='user'&&!outgoing.priorIds.includes(m.id!)&&m.content===outgoing.text) ? [{id:`outgoing_${outgoing.id}`,role:'user' as const,text:outgoing.text,status:outgoing.failed?'failed' as const:undefined,featureName:outgoing.failed?'发送状态待确认 · 原话保留':'发送中'}] : [])],
+    })), ...(outgoing && !snapshot?.conversation?.messages.some(m=>m.role==='user'&&!outgoing.priorIds.includes(m.id!)&&m.content===outgoing.text) ? [{id:`outgoing_${outgoing.id}`,role:'user' as const,text:outgoing.text,status:outgoing.failed?'failed' as const:undefined,featureName:outgoing.failed?'发送状态待确认 · 原话保留':'发送中'}] : []),...(failureReply?.scope===userId?[{id:`feedback_${failureReply.operationId}`,role:'assistant' as const,text:failureReply.text}]:[])],
     pending:
       localPending || snapshot?.pendingOperationId
         ? {

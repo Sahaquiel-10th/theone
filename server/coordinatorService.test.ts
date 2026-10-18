@@ -250,7 +250,7 @@ test('legacy drawing routes to actual images; an unavailable image blocks the wh
   const reply=await service.dispatch(a,input('operation_real_draw_001','画奥特曼大战孙悟空'),key);await service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.some(o=>o.workRun?.state==='completed'));assert.equal(worker,0);assert.ok((await f.store.read()).conversations.find(c=>c.id===reply.taskIds[0])!.messages.some(m=>m.imageUrl));
   await f.store.mutate(d=>{d.settings.aiTasks!.image_generation!.published!.modelId='missing';});const before=(await f.store.read()).chatOperations!.filter(o=>o.workRun).length;
   const denied=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{artifactDirectory:f.directory,modelCall:async()=>({...answer(''),toolCalls:[{id:'bad-batch',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'表',instruction:'战力表',executorId:'general',outputKind:'text',featureIds:[],dependsOn:[]},{taskId:null,title:'图',instruction:'图片',executorId:'image_generation',outputKind:'image',featureIds:[],dependsOn:[]}]})}}]})});
-  await assert.rejects(()=>denied.dispatch(a,input('operation_no_image_batch','图和表都做'),key),/图片生成尚未配置/);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,before);
+  const blocked=await denied.dispatch(a,input('operation_no_image_batch','图和表都做'),key);assert.match(blocked.message.content,/还没接上|没能开始|中断/);assert.equal(blocked.taskIds.length,0);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,before);
  }finally{rmSync(f.directory,{recursive:true,force:true});}
 });
 
@@ -740,6 +740,14 @@ async function imageFixture(imageCall:NonNullable<import('./featureRuns.js').Fea
   const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{artifactDirectory:directory,imageCall,modelCall:async(_model,messages)=>messages.at(-1)?.role==='tool'?answer('活动文案先给你；图片正在制作。'):{...answer(''),toolCalls:[{id:'draw',type:'function',function:{name:'generate_image',arguments:JSON.stringify({query:'蓝色圆圈，没有文字'})}}]}});
   return {...f,service,directory};
 }
+test('discovered builtin image card in legacy featureIds creates an actual private image once',async()=>{
+ let images=0;const f=await imageFixture(async()=>({content:'',imageUrl:imageFixturePng}));
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('no knowledge');}},{artifactDirectory:f.directory,imageCall:async()=>{images++;return{content:'',imageUrl:imageFixturePng};},modelCall:async(_model,messages)=>messages.at(-1)?.role==='tool'?answer('画图已经安排。'):{...answer(''),toolCalls:[{id:'discovered-image',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'合成图案',instruction:'画一个绿色圆圈',executorId:'general',outputKind:'image',featureIds:['builtin:image_generation'],dependsOn:[]}]})}}]}});
+ try{const request=input('operation_card_image_001','画一个合成图案');const reply=await service.dispatch(a,request,key);assert.equal(reply.taskIds.length,1);await service.resume(a,key);await waitFor(async()=>(await service.task(a,reply.taskIds[0])).jobs[0].state==='completed');
+  const detail=await service.task(a,reply.taskIds[0]);assert.match(detail.conversation.messages.at(-1)!.imageUrl!,/^\/api\/attachments\//);assert.equal((await f.store.read()).attachments.length,1);
+  await service.dispatch(a,request,key);assert.equal(images,1);await assert.rejects(()=>service.task(b,reply.taskIds[0]));
+ }finally{rmSync(f.directory,{recursive:true,force:true});}
+});
 test('failed image shows a safe reason and explicit retry reuses its task with one new billed attempt',async()=>{
   let calls=0,fail=true;const f=await imageFixture(async()=>{calls++;if(fail)throw new ChatImageGatewayError('authorization',403);return {content:'图片好了',imageUrl:imageFixturePng};});
   try{
@@ -1000,7 +1008,7 @@ test('local notices acknowledge their own execution round without suppressing a 
 test('saving a task alone is not proof that the local executor accepted it',async()=>{
  const f=fixture();let runs=0;
  const result=await f.service.dispatch(a,{...input('operation_local_rejected','UI 改标题'),localExecution:true},key,undefined,async()=>{runs++;throw new Error('连接执行器失败');});
- assert.match(result.conversation.messages.at(-1)?.content ?? '',/(尚|还)不能确认已开始或完成/);
+ assert.match(result.conversation.messages.at(-1)?.content ?? '',/(尚|还)不能确认(?:已开始或完成|是否已经开始)/);
  assert.equal(runs,1);
  const db=await f.store.read();
  assert.ok(db.messages.some(m=>m.role==='user'&&m.content==='UI 改标题'));
@@ -1062,6 +1070,32 @@ test("failed core routing preserves only its owner's safe diagnostic receipt", a
   assert.match(traces[0].responsePreview, /未完成分派/);
   assert.doesNotMatch(JSON.stringify(traces), /api_key|SECRET/);
   assert.equal(db.contextTraces.filter(t => t.workspaceId === b.workspaceId).length, 0);
+});
+test('a bare promise is repaired in the same turn into a real durable receipt, and replay never dispatches twice',async()=>{
+ const f=fixture();let turns=0;
+ f.setRoute(messages=>{turns++;if(turns===1)return answer('我会制作一份简短说明，并保存结果。');if(turns===2){assert.match(messages.at(-1)!.content!,/还没有成功分派的回执/);return {...answer(''),toolCalls:[{id:'actually-start',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'合成说明',instruction:'只整理合成测试材料',executorId:'general',featureIds:[]})}}]};}return answer('已安排好了。');});
+ const request=input('operation_promise_repair_01','没事儿，随便你编，开始做吧');
+ const result=await f.service.dispatch(a,request,key);assert.equal(result.taskIds.length,1);assert.equal(turns,3);
+ const replay=await f.service.dispatch(a,request,key);assert.deepEqual(replay.taskIds,result.taskIds);assert.equal(turns,3);
+ assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun?.parentOperationId===request.operationId).length,1);
+ await assert.rejects(()=>f.service.task(b,result.taskIds[0]));
+});
+test('a real clarification is not forced into execution; unavailable card is repaired or returned with a next step',async()=>{
+ const question=fixture();question.setRoute(()=>answer('这张图想用什么风格？'));
+ assert.equal((await question.service.dispatch(a,input('operation_question_0001','帮我做一张图'),key)).taskIds.length,0);
+ const f=fixture();let turns=0;
+ f.setRoute(messages=>{turns++;if(turns===1)return {...answer(''),toolCalls:[{id:'wrong',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'合成任务',instruction:'只用合成资料',executorId:'general',outputKind:'text',featureIds:['feature:unknown-private'],dependsOn:[]}]})}}]};assert.match(messages.at(-1)!.content!,/TOOL_INPUT_REPAIR/);return answer('好像工具还没就位，这次还没开始。可以稍后告诉我继续。');});
+ const request=input('operation_unknown_card_01','做个合成成果');const result=await f.service.dispatch(a,request,key);
+ assert.equal(result.taskIds.length,0);assert.match(result.message.content,/工具还没就位/);assert.equal(turns,2);
+ const db=await f.store.read();assert.equal(db.chatOperations!.filter(o=>o.workRun).length,0);assert.equal(db.conversations.find(c=>c.coordinatorMain)!.messages.at(-1)!.content,result.message.content);
+ assert.equal((await f.service.dispatch(a,request,key)).message.content,result.message.content);assert.equal(turns,2);
+});
+test('discovered feature namespace dispatches the actual authorized feature, never another tenant release',async()=>{
+ const f=fixture();await f.store.mutate(d=>{const values={name:'合成说明',author:'ONE',description:'整理合成资料',instructions:'只整理合成资料',limitations:'不读取外部资料',integration:'question_answer' as const,knowledgeMode:'none' as const,modelId:'special',usageMultiplier:.6,tools:[]};const version={version:1,values,evidence:'test',approvedBy:'a',approvedAt:'now'};d.settings.officialFeatures=[{id:'namespace-test',revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:'namespace-release',version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}}];});
+ f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('已经接到任务。'):{...answer(''),toolCalls:[{id:'namespace',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'合成说明',instruction:'整理合成资料',executorId:'general',outputKind:'text',featureIds:['feature:namespace-test'],dependsOn:[]}]})}}]});
+ const reply=await f.service.dispatch(a,input('operation_namespace_0001','整理合成资料'),key);assert.equal(reply.taskIds.length,1);
+ const job=(await f.store.read()).chatOperations!.find(o=>o.workRun?.parentOperationId==='operation_namespace_0001')!.workRun!;assert.deepEqual(job.skills.map(f=>f.id),['namespace-test']);
+ await assert.rejects(()=>f.service.task(b,reply.taskIds[0]));
 });
 test("omitted task budget has a usable bounded default; explicit smaller caps remain unchanged", async () => {
   const f = fixture();
@@ -1660,7 +1694,7 @@ test('a lost acknowledgement after saving a paused task supplement explains the 
  });
  await f.service.dispatch(a,{...input('operation_paused_ack2','UI 追加要求'),boundTaskId:r.taskId},key);
  const db=await f.store.read();const main=db.conversations.find(c=>c.coordinatorMain&&c.userId===a.userId)!;
- assert.match(main.messages.at(-1)!.content,/任务仍暂停/);assert.doesNotMatch(main.messages.at(-1)!.content,/结果会回到/);
+ assert.match(main.messages.at(-1)!.content,/任务仍暂停|还暂停着/);assert.doesNotMatch(main.messages.at(-1)!.content,/结果会回到/);
  await f.service.resume(a,key);assert.equal(f.calls.filter(c=>c.modelId==='worker').length,0);
 });
 test('uncertain Notion saves block replay while verified saves allow explicit latest queued continuation',async()=>{
