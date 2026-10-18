@@ -676,7 +676,7 @@ export class CoordinatorService {
         await verify();
         const fresh=await this.store.read();
         const raw=value as PlannedTask;
-        const v=resolveDispatchCapabilities({...raw,outputKind:'text',dependsOn:[],featureIds:raw.featureIds??[]},routingCapabilities(fresh,s,{localAvailable:Boolean(executeLocal)&&(input.localExecution===true||config.values.tools.includes('execute_local_task')),imageStorageAvailable:Boolean(this.deps.artifactDirectory)}));
+        const v=resolveDispatchCapabilities({...raw,outputKind:'text',dependsOn:[],featureIds:raw.featureIds??[]},routingCapabilities(fresh,s,{localAvailable:Boolean(executeLocal)&&(input.localExecution===true||config.values.tools.includes('execute_local_task')),imageStorageAvailable:Boolean(this.deps.artifactDirectory),webSearchAvailable:publicSearchAllowed&&!!this.deps.webSearch&&config.values.tools.includes('web_search')}));
         if(v.outputKind==='local_file'&&!localForThisCall)throw new OrchestrationInputError('本机任务请使用 execute_local_task；仍需本机连接和目录授权。');
         const selectedFeatures=v.featureIds?.length?v.featureIds:features;
         if ((v.outputKind==='image'||isImageInstruction(v.title)) && !selectedFeatures.some(id => availableFeature(fresh, s, id).version.values.experience?.mode === 'image')) {
@@ -823,7 +823,7 @@ export class CoordinatorService {
       let delegatedKnowledge=false;
       const batchTool:OrchestrationTool={name:'delegate_tasks',description:'安排可单独跟进的交付任务，一件任务可以组合多个功能。featureIds 填本任务确定要用的功能，只有可选的不要填。图片使用 image_generation，写作使用 writing，分析使用 logic，本机文件使用 local_special。独立任务同时处理；dependsOn只填写前面任务的数组下标。',run:async()=>{},structured:{schema:dispatchPlanSchema,validate:validateDispatchPlan,run:async value=>{
         await verify();const fresh=await this.store.read();
-        const cards=routingCapabilities(fresh,s,{localAvailable:Boolean(executeLocal)&&(input.localExecution===true||config.values.tools.includes('execute_local_task')),imageStorageAvailable:Boolean(this.deps.artifactDirectory)});
+        const cards=routingCapabilities(fresh,s,{localAvailable:Boolean(executeLocal)&&(input.localExecution===true||config.values.tools.includes('execute_local_task')),imageStorageAvailable:Boolean(this.deps.artifactDirectory),webSearchAvailable:publicSearchAllowed&&!!this.deps.webSearch&&config.values.tools.includes('web_search')});
         const plan={tasks:(value as {tasks:PlannedTask[]}).tasks.map(t=>resolveDispatchCapabilities(t,cards,t.direct?id=>{
           const record=fresh.settings.officialFeatures?.find(f=>f.id===id||`feature:${f.id}`===id);
           if(!record)return undefined;
