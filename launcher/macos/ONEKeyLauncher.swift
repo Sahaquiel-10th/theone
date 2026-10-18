@@ -658,9 +658,9 @@ func executionProject(deviceId: String, change: Bool = false) -> String? {
     if !change, let saved = oneDefaults().string(forKey: key), FileManager.default.fileExists(atPath: saved) { return saved }
     NSApplication.shared.activate(ignoringOtherApps: true)
     let panel = NSOpenPanel()
-    panel.title = "选择允许 ONE 执行任务的文件夹"
-    panel.message = "选择本轮工作的文件夹。ONE 原生文件工具限于此目录；外部执行器的权限另由其安全机制约束。可在 ONE 设置中更换。"
-    panel.prompt = "使用此文件夹"
+    panel.title = "选择 ONE 工作文件夹"
+    panel.message = "ONE 默认在这里做文件，以后可以在设置中更换。选择后，ONE 的文件工具可以在这里读取和按要求创建、修改文件，不代表全盘授权；其他执行工具仍受各自权限限制。"
+    panel.prompt = "在这里工作"
     panel.canChooseDirectories = true
     panel.canChooseFiles = false
     panel.allowsMultipleSelection = false
@@ -939,7 +939,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
         var projectPath = synchronized { projectPaths[taskId] }
         let configuredPath = oneDefaults().string(forKey: "one.execution.project.\(deviceId)")
         if let projectPath, let configuredPath, projectPath != configuredPath {
-            await report(taskId: taskId, kind: "error", text: "授权目录已更换。请从这件事重新发起执行，不会复用旧目录或旧会话。", status: "failed")
+            await report(taskId: taskId, kind: "error", text: "ONE 工作文件夹已更换。请回到这件事继续，本轮不会在原文件夹里执行。", status: "failed")
             return
         }
         if projectPath == nil {
@@ -1481,7 +1481,7 @@ func serveProofs(_ transport: LauncherLiveSocket, credentialUrl: URL, deviceId: 
             do {
                 var output = ""
                 if message.type == "preview_start" {
-                    guard let root = oneDefaults().string(forKey: "one.execution.project.\(deviceId)"), let path = message.previewPath else { throw LocalFileFailure.message("请先在设置中授权工作文件夹") }
+                    guard let root = oneDefaults().string(forKey: "one.execution.project.\(deviceId)"), let path = message.previewPath else { throw LocalFileFailure.message("请先在设置 → 本机执行中选择 ONE 工作文件夹") }
                     output = try await previews.start(taskId, root: root, entry: path, present: {
                         transport.active && (try? signNonce(Data("one-static-preview".utf8).base64EncodedString(), credentialUrl: credentialUrl, deviceId: deviceId)) != nil
                     })

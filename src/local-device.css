@@ -2,3 +2,5 @@
 .local-device-settings .local-directory-actions>button{width:auto;padding:9px 14px;border:1px solid var(--studio-line,#dce0d6);border-radius:9px;font:inherit;cursor:pointer}
 .local-device-settings .local-directory-actions>button:not(.primary){background:transparent;color:inherit}
 .local-device-settings .local-directory-actions>button:disabled{opacity:.5;cursor:default}
+.local-device-settings .local-directory-actions>.folder-permission-help{display:inline-flex;align-items:center;justify-content:center;flex:0 0 30px;width:30px;height:30px;padding:0;border-radius:50%;font-weight:700}
+.local-device-settings .folder-permission-help:focus-visible{outline:2px solid var(--studio-ink,#30372a);outline-offset:3px}

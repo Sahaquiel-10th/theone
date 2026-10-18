@@ -32,7 +32,7 @@ export function StaticPreviewPanel({taskId, request}: {taskId: string; request: 
     finally { if (round === generation.current) setBusy(false); }
   }
   return <details className="execution-step-history"><summary>Mac 静态网页预览</summary>
-    <p>只预览 HTML、CSS、JS、SVG，不运行工程命令。启动新预览会停止之前的预览。路径相对于上方授权文件夹，例如 qa-codex-20261010/index.html。</p>
+    <p>只预览 HTML、CSS、JS、SVG，不运行工程命令。启动新预览会停止之前的预览。填写 ONE 工作文件夹里的相对路径，例如 qa-codex-20261010/index.html。</p>
     <label>网页相对路径 <input aria-label="预览网页相对路径" value={path} onChange={event => setPath(event.target.value)} disabled={busy}/></label>
     <button type="button" disabled={busy || !path.trim()} onClick={() => void change('start')}>{busy ? '正在确认…' : url ? '重新启动预览' : '启动本机预览'}</button>
     {url ? <a href={url} target="_blank" rel="noopener noreferrer">打开预览 ↗</a> : null}

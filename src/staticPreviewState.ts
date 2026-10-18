@@ -5,5 +5,5 @@ export function previewReceiptMatches(expectedURL: string, reply: PreviewReply) 
 export function previewUnavailableMessage(reply?: PreviewReply) {
   return reply?.status === 'stopped' ? '预览已停止，可以重新启动。'
     : reply?.status === 'unknown' ? '当前启动器不能确认预览状态，请更新 ONE 后重新启动预览。'
-    : '预览连接尚未确认，已隐藏旧链接；请确认 Key 和授权目录后重新启动。';
+    : '预览连接尚未确认，已隐藏旧链接；请检查 Key 和 ONE 工作文件夹，再启动预览。';
 }

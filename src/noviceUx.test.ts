@@ -71,3 +71,17 @@ test('tool status check is visible and prevents duplicate checks',()=>{
   assert.match(source,/状态已更新/);
   assert.match(source,/尚未确认本机工具/);
 });
+test('work folder uses everyday labels and puts permission details beside the chooser',()=>{
+  const source=readFileSync(new URL('./LocalDeviceSettings.tsx',import.meta.url),'utf8');
+  assert.match(source,/<h3>ONE 工作文件夹<\/h3>/);
+  assert.match(source,/选择 ONE 工作文件夹/);
+  assert.match(source,/aria-label="了解工作文件夹的权限" aria-haspopup="dialog"/);
+  assert.match(source,/这个文件夹会用来做什么？/);
+  assert.match(source,/聊天和搜索不用先选文件夹/);
+  assert.doesNotMatch(source,/核对授权目录|暂时无法确认授权范围/);
+  const launcher=readFileSync(new URL('../launcher/macos/ONEKeyLauncher.swift',import.meta.url),'utf8');
+  assert.match(launcher,/panel.title = "选择 ONE 工作文件夹"/);
+  assert.match(launcher,/panel.prompt = "在这里工作"/);
+  const windows=readFileSync(new URL('../launcher/windows/main_windows.go',import.meta.url),'utf8');
+  assert.match(windows,/Description = '选择 ONE 工作文件夹/);
+});

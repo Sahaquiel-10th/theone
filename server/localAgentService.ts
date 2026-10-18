@@ -140,13 +140,13 @@ export class LocalAgentService {
       let taskTools = tools.filter(tool => configuredTask.values.tools.includes(tool.function.name)).map(tool => ({ ...tool, function: { ...tool.function, description: configuredTask.values.toolDescriptions?.[tool.function.name] ?? taskToolDescriptions[tool.function.name] ?? tool.function.description } }));
       const stepLimit = configuredTask.values.maxSteps;
 
-      await this.update(task, "selecting_target", task.targetName ? "正在确认本机授权文件夹" : "请在电脑上选择 ONE 可以操作的文件夹");
+      await this.update(task, "selecting_target", task.targetName ? "正在连接 ONE 工作文件夹" : "请在电脑上选择 ONE 工作文件夹");
       if (!await this.active(task)) return;
       const prepared = await this.presence.prepareLocalExecution(task.deviceId, task.id, task.installationId);
       if (!await this.active(task)) return;
       if (prepared.output === "files_only") taskTools = taskTools.filter(tool => tool.function.name !== "run_command").map(tool => tool.function.name === "write_file" ? { ...tool, function: { ...tool.function, description: "在授权目录内新建 UTF-8 文本文件，必须使用相对路径。本机询问用户，已有文件绝不覆盖。自动回读验证。不支持 Word、Excel、PDF 或其他二进制格式，不得用文本伪装扩展名。" } } : tool);
       if (this.cancelled.has(task.id)) return;
-      task = { ...task, targetName: prepared.targetName || task.targetName || "已授权文件夹" };
+      task = { ...task, targetName: prepared.targetName || task.targetName || "ONE 工作文件夹" };
       await this.update(task, "running", `ONE Local Agent 已连接：${task.targetName}`);
 
       const messages: ModelToolMessage[] = [

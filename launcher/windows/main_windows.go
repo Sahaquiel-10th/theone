@@ -1397,7 +1397,7 @@ func loadSavedWorkspace(deviceID string) string {
 func saveWorkspace(deviceID, workspace string) error {
 	path := workspaceConfigPath(deviceID)
 	if path == "" {
-		return errors.New("无法保存授权文件夹")
+		return errors.New("没能记住 ONE 工作文件夹，请重新选择")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
@@ -1406,7 +1406,7 @@ func saveWorkspace(deviceID, workspace string) error {
 }
 
 func chooseWorkspace() (string, error) {
-	script := `Add-Type -AssemblyName System.Windows.Forms; $owner = New-Object System.Windows.Forms.Form; $owner.TopMost = $true; $owner.ShowInTaskbar = $false; $owner.WindowState = 'Minimized'; $owner.Show(); $dialog = New-Object System.Windows.Forms.FolderBrowserDialog; $dialog.Description = '选择允许 ONE 读取和修改的文件夹'; $dialog.ShowNewFolderButton = $true; $result = $dialog.ShowDialog($owner); $owner.Close(); if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($dialog.SelectedPath) }`
+	script := `Add-Type -AssemblyName System.Windows.Forms; $owner = New-Object System.Windows.Forms.Form; $owner.TopMost = $true; $owner.ShowInTaskbar = $false; $owner.WindowState = 'Minimized'; $owner.Show(); $dialog = New-Object System.Windows.Forms.FolderBrowserDialog; $dialog.Description = '选择 ONE 工作文件夹。ONE 默认在这里读取和按要求创建、修改文件，以后可以在设置里更换。不代表全盘授权。'; $dialog.ShowNewFolderButton = $true; $result = $dialog.ShowDialog($owner); $owner.Close(); if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($dialog.SelectedPath) }`
 	output, err := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-STA", "-Command", script).Output()
 	selected := strings.TrimSpace(string(output))
 	if err != nil || selected == "" {
