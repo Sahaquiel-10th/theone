@@ -22,4 +22,7 @@ export async function invokeFixedWorkflow<T>(input:{id:string;trigger:string;sco
 export function validateFixedWorkflowInvocation(value:FixedWorkflowInvocation|undefined){
   if(value&&(value.id!==onboardingWorkflow.id||value.version!==onboardingWorkflow.version||!onboardingWorkflow.entryPoints.includes(value.trigger)))throw new Error('固定流程版本或入口无效');
 }
+export function sameFixedWorkflowInvocation(a:FixedWorkflowInvocation,b:FixedWorkflowInvocation|undefined){
+  return Boolean(b&&a.id===b.id&&a.version===b.version&&a.trigger===b.trigger);
+}
 export const onboardingArtifactStages=[{tool:'oneFlowchart',key:'flowId'},{tool:'oneHtml',key:'pageId'}] as const;

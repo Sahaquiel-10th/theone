@@ -9,7 +9,7 @@ import {discussionOnly} from './executionIntent.js';
 import {dispatchPlanSchema,validateDispatchPlan,isImageInstruction,parseTaskOutcome,taskOutcomeGuidance,type PlannedTask} from './dispatchPlan.js';
 import {routingCapabilities} from './capabilityCatalog.js';
 import {discoverCapabilities,discoverySchema,validateDiscoveryQuery,initialCapabilityContext,type DiscoveryQuery} from './capabilityDiscovery.js';
-import {validateFixedWorkflowInvocation,onboardingArtifactStages} from './fixedWorkflows.js';
+import {validateFixedWorkflowInvocation,sameFixedWorkflowInvocation,onboardingArtifactStages} from './fixedWorkflows.js';
 import type {
   Database,
   Conversation,
@@ -1187,7 +1187,7 @@ export class CoordinatorService {
     const check = (db: Database) => {
       featureMember(db, s);
       const profile = accountInScope(db, s).profile, marker = profile?.onboarding.handbook;
-      if(input.fixedWorkflow&&JSON.stringify(input.fixedWorkflow)!==JSON.stringify(marker?.fixedWorkflow))throw new CoordinatorError('固定流程交接已变化',409);
+      if(input.fixedWorkflow&&!sameFixedWorkflowInvocation(input.fixedWorkflow,marker?.fixedWorkflow))throw new CoordinatorError('固定流程交接已变化',409);
       if(Boolean(input.sponsored)!==(marker?.funding==='one')||(input.sponsored&&profile?.onboarding.welcomeGiftOperationId!==input.operationId))throw new CoordinatorError('欢迎礼物资格已变化',409);
       if (profile?.workspaceId !== s.workspaceId || !profile.onboarding.completedAt || marker?.status !== 'preparing'
         || marker.operationId !== input.operationId || marker.pricePower !== input.budget

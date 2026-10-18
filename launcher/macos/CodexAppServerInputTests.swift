@@ -266,20 +266,30 @@ private final class InputWriteMock: @unchecked Sendable {
         precondition(fcntl(fd, F_GETFD) == -1 && errno == EBADF)
     }
 
+    static func run(_ name: String, _ body: () async throws -> Void) async throws {
+        do { try await body() }
+        catch {
+            // Keep a failing CI attempt attributable instead of only printing
+            // a top-level `closed` error without the affected contract.
+            fputs("CodexAppServerInputTests failed [\(name)]: \(error)\n", stderr)
+            throw error
+        }
+    }
+
     static func main() async throws {
-        try await testNormalLineAndDescriptorFlags()
-        try await testValidationAndExactByteLimit()
-        try await testPartialWritesAgainAndConcurrentLines()
-        try await testMaximumFrameAndOneByteOver()
-        try await testFullPipeDeadlineClosesWithoutReplay()
-        try await testCloseWhilePipeBlocked()
-        try await testInterruptCannotWaitForeverBehindLargeFrame()
-        try await testCancelActiveWriteClosesPromptly()
-        try await testQueuedCancellationDoesNotCloseAnotherFrame()
-        try await testBrokenPipeDoesNotRaiseSIGPIPE()
-        try await testPartialFailureIsNotRetriedOrRecovered()
-        try await testDeadlineAfterLastSyscallStillFailsClosed()
-        try testInvalidConfigurationClosesTransferredHandle()
+        try await run("normal line and descriptor flags", testNormalLineAndDescriptorFlags)
+        try await run("validation and byte limit", testValidationAndExactByteLimit)
+        try await run("partial concurrent lines", testPartialWritesAgainAndConcurrentLines)
+        try await run("maximum frame", testMaximumFrameAndOneByteOver)
+        try await run("full pipe deadline", testFullPipeDeadlineClosesWithoutReplay)
+        try await run("close while blocked", testCloseWhilePipeBlocked)
+        try await run("queued interrupt", testInterruptCannotWaitForeverBehindLargeFrame)
+        try await run("active cancellation", testCancelActiveWriteClosesPromptly)
+        try await run("queued cancellation", testQueuedCancellationDoesNotCloseAnotherFrame)
+        try await run("broken pipe", testBrokenPipeDoesNotRaiseSIGPIPE)
+        try await run("partial write failure", testPartialFailureIsNotRetriedOrRecovered)
+        try await run("late syscall deadline", testDeadlineAfterLastSyscallStillFailsClosed)
+        try await run("invalid configuration") { try testInvalidConfigurationClosesTransferredHandle() }
         print("CodexAppServerInputTests: 13 groups passed")
     }
 }
