@@ -23,6 +23,7 @@ export async function api<T>(path: string, options: RequestInit = {}, ownerId?: 
   }
   const identityFree = path === "/api/me" || path.startsWith("/api/auth/");
   const headers = new Headers(options.headers);
+  try{headers.set('X-ONE-Time-Zone',Intl.DateTimeFormat().resolvedOptions().timeZone);}catch{/* Server uses the saved zone or its explicit default. */}
   if (!(options.body instanceof FormData) && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (!identityFree && identity) headers.set("X-ONE-User", identity);
   if (!identityFree && workspaceId) headers.set("X-ONE-Workspace", workspaceId);

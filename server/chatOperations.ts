@@ -5,6 +5,7 @@ import type { Conversation, Database, Message } from "./types.js";
 /** Durable submission records. Ordinary chat keeps compact tombstones;
  * private queued work additionally stores its immutable execution configuration. */
 export type ChatOperation = {
+  runtimeContext?:import('./runtimeContext.js').RuntimeContext;
   executionCancelled?: boolean;
   workRun?: import('./coordinatorTypes.js').WorkRun; dispatchedTaskId?: string; dispatchedTaskIds?: string[];
   id: string; workspaceId: string; userId: string; operationId: string;

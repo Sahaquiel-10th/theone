@@ -11,6 +11,9 @@ const cards:CapabilityCard[]=[
 ];
 const task=(ids:string[]):PlannedTask=>({taskId:null,title:'合成测试',instruction:'只处理合成材料',executorId:'general',outputKind:'text',featureIds:ids,dependsOn:[]});
 test('exact discovered card IDs normalize image, feature and model routes without mutating originals',()=>{
+ const queryCard={id:'builtin:public_web_search',kind:'builtin' as const,mode:'text' as const,name:'联网',description:'查公开网页',version:1,available:true,outputKinds:['text' as const],tools:['web_search'],readOnlyTool:'web_search' as const};
+ assert.deepEqual(callableCapabilities([queryCard])[0].invocation,{tool:'web_search'});
+ assert.throws(()=>resolveDispatchCapabilities(task([queryCard.id]),[queryCard]),/当前回答中直接调用/);
  const old=task(['builtin:image_generation']);const image=resolveDispatchCapabilities(old,cards);
  assert.equal(image.executorId,'image_generation');assert.equal(image.outputKind,'image');assert.deepEqual(image.featureIds,[]);assert.deepEqual(old.featureIds,['builtin:image_generation']);
  assert.deepEqual(resolveDispatchCapabilities(task(['feature:page']),cards).featureIds,['page']);

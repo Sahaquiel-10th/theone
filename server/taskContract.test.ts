@@ -15,6 +15,8 @@ test('explicit platform requests and exhaustive recall stay inside the authorize
   assert.deepEqual(knowledgePolicy(db,scope,'去飞书看看资料').missing,['飞书']);
   assert.deepEqual(knowledgePolicy(db,scope,'查查资料库',['foreign']).sourceIds,[]);
   assert.equal(knowledgePolicy(db,scope,'聊聊网页怎么设计').required,false);
+  assert.deepEqual(knowledgePolicy(db,scope,'昨天我的会议说了什么？').sourceIds,['n','g']);
+  assert.equal(knowledgePolicy(db,scope,'查昨天联合国会议的公开新闻').required,false);
   assert.equal(knowledgePolicy(db,scope,'只用公开素材，不查知识库，不联网').required,false);
 });
 test('no match is a real completed search, not a euphemism for an outage',()=>{

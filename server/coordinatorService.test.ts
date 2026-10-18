@@ -14,6 +14,41 @@ import {ChatImageGatewayError} from './responsesImageGateway.js';
 import { NotionDocuments } from './notionDocuments.js';
 import type { NotionMcpService } from './knowledge/notionMcpService.js';
 import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
+import {runtimeContext} from './runtimeContext.js';
+
+test('automatic public search is real, scoped, carries request time and does not create a task for a tool step',async()=>{
+  const f=fixture();let searches=0,calls=0;
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({status:'no_match',chunks:[],failures:[]})},{webSearch:async q=>{searches++;assert.equal(q,'公开测试新闻');return [{title:'公开来源',url:'https://example.com/source',snippet:'已核对的公开素材'}];},modelCall:async(_m,messages,tools)=>{
+    calls++;assert.match(JSON.stringify(messages),/时间与城市参考/);assert.ok(tools.length===0||tools.some(t=>t.function.name==='web_search'));
+    if(calls===1)return answer('这条回复尚未搜索。');
+    if(calls===2)return {...answer(''),toolCalls:[{id:'public-search',type:'function',function:{name:'web_search',arguments:JSON.stringify({query:'公开测试新闻'})}}]};
+    assert.equal(JSON.parse(messages.at(-1)!.content!).status,'used');return answer('查到了，参考[公开来源](https://example.com/source)。');
+  }});
+  await service.dispatch(a,{...input('operation_public_search_001','请联网查今天的新闻，只查公开资料'),webSearch:true},key,undefined,undefined,'America/Los_Angeles');
+  const db=await f.store.read(),op=db.chatOperations!.find(o=>o.operationId==='operation_public_search_001')!;
+  assert.equal(searches,1);assert.equal(calls,3);assert.equal(op.runtimeContext?.timeZone,'America/Los_Angeles');assert.equal(db.chatOperations?.filter(o=>o.workRun).length,0);
+  await service.dispatch(a,{...input('operation_public_search_001','请联网查今天的新闻，只查公开资料'),webSearch:true},key,undefined,undefined,'Asia/Shanghai');
+  assert.equal(searches,1,'restoring the same attempt does not search or charge again when device time zone changed');
+});
+test('yesterday meeting recall gets a fixed date and honest non-exhaustive time metadata, never another workspace city',async()=>{
+  const f=fixture();await f.store.mutate(db=>{db.knowledgeConnections.push({id:'ka',workspaceId:'wa',provider:'getnote',status:'connected',clientId:'test'} as any);db.users[1].contextPreferences=[{...b,timeZone:'Asia/Shanghai',city:'FOREIGN_PRIVATE_CITY'}];});let query='';
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async(_ws,q,_k,ids)=>{query=q;assert.deepEqual(ids,['ka']);return {status:'used',chunks:[{title:'会议',content:'合成会议内容',createdAt:'2026-10-17 10:00:00'}],failures:[]};}},{modelCall:async(_m,messages)=>{
+    assert.doesNotMatch(JSON.stringify(messages),/FOREIGN_PRIVATE_CITY/);
+    if(messages.at(-1)?.role!=='tool')return {...answer(''),toolCalls:[{id:'private-date',type:'function',function:{name:'knowledge_search',arguments:JSON.stringify({query:'会议'})}}]};
+    assert.equal(JSON.parse(messages.at(-1)!.content!).timeConstraint.strictFilter,false);return answer('查到了相关片段，还要按会议正文核对日期。');
+  }});
+  await service.dispatch(a,input('operation_meeting_date_01','昨天我的会议说了什么？'),key,undefined,undefined,'Asia/Shanghai');
+  const db=await f.store.read(),op=db.chatOperations!.find(o=>o.operationId==='operation_meeting_date_01')!;assert.ok(query.includes(runtimeContext(db,a,op.createdAt,'Asia/Shanghai').yesterday));
+});
+test('a no-internet request cannot call public search even if the browser enables it',async()=>{
+  const f=fixture();let calls=0;
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({status:'no_match',chunks:[],failures:[]})},{webSearch:async()=>{throw Error('must not search');},modelCall:async(_m,messages,tools)=>{
+    assert.equal(tools.some(t=>t.function.name==='web_search'),false);calls++;
+    if(calls===1)return {...answer(''),toolCalls:[{id:'forged-search',type:'function',function:{name:'web_search',arguments:JSON.stringify({query:'forbidden'})}}]};
+    assert.equal(JSON.parse(messages.at(-1)!.content!).status,'rejected');return answer('不联网，只根据你给的内容讨论。');
+  }});
+  await service.dispatch(a,{...input('operation_no_internet_01','只讨论，不联网'),webSearch:true},key);assert.equal(calls,2);
+});
 import { executorDefaults, updateExecutor } from "./executorProfiles.js";
 import { beginChatOperation,reconcileInterruptedChatOperations } from "./chatOperations.js";
 import { MODEL_MAX_OUTPUT_TOKENS, ModelRequestError, type ModelToolMessage, type ModelToolDefinition, type ToolChatResult } from "./modelGateway.js";

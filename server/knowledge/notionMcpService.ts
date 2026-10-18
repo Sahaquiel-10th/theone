@@ -144,7 +144,7 @@ function objectString(value: unknown, keys: string[]) {
 }
 
 function searchCandidates(value: unknown) {
-  const found: Array<{ id?: string; title?: string; url?: string; excerpt?: string }> = [];
+  const found: Array<{ id?: string; title?: string; url?: string; excerpt?: string;createdAt?:string;updatedAt?:string }> = [];
   const seen = new Set<unknown>();
   function visit(current: unknown, depth = 0) {
     if (!current || typeof current !== "object" || seen.has(current) || seen.size >= 2_000 || depth > 12) return;
@@ -154,7 +154,7 @@ function searchCandidates(value: unknown) {
     const url = safeNotionSourceUrl(objectString(current, ["url", "href"]));
     const title = objectString(current, ["title", "name"]);
     const excerpt = objectString(current, ["highlight", "excerpt", "snippet", "text"]);
-    if ((id || url) && (title || excerpt)) found.push({ id, url, title, excerpt });
+    if ((id || url) && (title || excerpt)) found.push({ id, url, title, excerpt,createdAt:objectString(current,['created_time','created_at'])?.slice(0,40),updatedAt:objectString(current,['last_edited_time','updated_at'])?.slice(0,40) });
     Object.values(current as Record<string, unknown>).forEach(item => visit(item, depth + 1));
   }
   visit(value);
@@ -163,13 +163,13 @@ function searchCandidates(value: unknown) {
   return [...unique.values()];
 }
 
-function fetchedChunk(result: unknown, fallback: { id?: string; title?: string; url?: string; excerpt?: string }): KnowledgeChunk {
+function fetchedChunk(result: unknown, fallback: { id?: string; title?: string; url?: string; excerpt?: string;createdAt?:string;updatedAt?:string }): KnowledgeChunk {
   const text = textContent(result);
   const parsed = jsonContent(text);
   const title = objectString(parsed, ["title", "name"]) || fallback.title || "Notion 页面";
   const sourceUrl = safeNotionSourceUrl(objectString(parsed, ["url", "href"]) || fallback.url);
   const body = objectString(parsed, ["text", "content", "markdown"]) || text || fallback.excerpt || "";
-  return { id: fallback.id, provider: "notion", title, sourceUrl, content: body.slice(0, maxChunkChars) };
+  return { id: fallback.id, provider: "notion", title, sourceUrl, content: body.slice(0, maxChunkChars),createdAt:objectString(parsed,['created_time','created_at'])?.slice(0,40)??fallback.createdAt,updatedAt:objectString(parsed,['last_edited_time','updated_at'])?.slice(0,40)??fallback.updatedAt };
 }
 
 export class NotionMcpService {
@@ -348,7 +348,7 @@ export class NotionMcpService {
             // A search excerpt is still useful when one page cannot be fetched.
           }
         }
-        chunks.push({ id: candidate.id, provider: "notion", title: candidate.title || "Notion 页面", sourceUrl: candidate.url, content: (candidate.excerpt || candidate.title || "").slice(0, maxChunkChars) });
+        chunks.push({ id: candidate.id, provider: "notion", title: candidate.title || "Notion 页面", sourceUrl: candidate.url, content: (candidate.excerpt || candidate.title || "").slice(0, maxChunkChars),createdAt:candidate.createdAt,updatedAt:candidate.updatedAt });
       }
       return chunks.filter(chunk => chunk.content);
     } finally {

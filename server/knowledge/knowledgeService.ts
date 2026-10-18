@@ -44,6 +44,8 @@ function boundedChunk(chunk: KnowledgeChunk): KnowledgeChunk | undefined {
     sourceUrl: typeof chunk.sourceUrl === "string" ? chunk.sourceUrl.slice(0, 2_000) : undefined,
     content: chunk.content.slice(0, maxConnectorChunkChars),
     score: Number.isFinite(chunk.score) ? chunk.score : undefined
+    ,createdAt:typeof chunk.createdAt==='string'?chunk.createdAt.slice(0,40):undefined,
+    updatedAt:typeof chunk.updatedAt==='string'?chunk.updatedAt.slice(0,40):undefined
   };
 }
 

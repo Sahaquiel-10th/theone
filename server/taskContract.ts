@@ -10,7 +10,7 @@ export function knowledgePolicy(db:Database,scope:{workspaceId:string;userId:str
   const connected=db.knowledgeConnections.filter(c=>c.workspaceId===scope.workspaceId&&['connected','error'].includes(c.status)&&canReadKnowledge(db,scope,c.id)&&(allowed===undefined||allowed.includes(c.id)));
   const named=Object.entries(knowledgeNames).filter(([id,name])=>new RegExp(id+'|'+name,'i').test(text)).map(([id])=>id);
   const query=/(?:找|查|搜索|检索|看看|寻找)/.test(text);
-  const all=choice==='all'||(!named.length&&((/(?:我记得|知识库|资料库|笔记|自己的资料|所有.*资料)/.test(text)&&query)||/我记得有(?:个|一|件)/.test(text)));
+  const all=choice==='all'||(!named.length&&((/(?:我记得|知识库|资料库|笔记|自己的资料|所有.*资料)/.test(text)&&query)||/我记得有(?:个|一|件)/.test(text)||/(?:昨天|前天|今天|上周|本周)(?:.{0,12}我的.{0,8}(?:会议|录音|笔记)|.{0,12}(?:会议记录|会议纪要|录音|笔记))/.test(text)));
   const requested=choice&&choice!=='none'&&choice!=='all'?[choice]:query?named:[];
   const required=all||requested.length>0;
   return {required,sourceIds:connected.filter(c=>all||requested.includes(c.provider)).map(c=>c.id),requested,missing:requested.filter(id=>!connected.some(c=>c.provider===id)).map(id=>knowledgeNames[id]||'指定资料来源')};

@@ -104,6 +104,7 @@ export function installCoordinatorRoutes(
           .status(202)
           .json({ status: "pending", operationId: req.body.operationId }),
         deps.executeLocal ? (cid, mid, operationId) => deps.executeLocal!(req, res, cid, mid, operationId) : undefined,
+        req.get('X-ONE-Time-Zone'),
       );
       if (!res.headersSent) res.json({ status: "completed", ...result });
       void service.resume(s, verify).catch(() => {});

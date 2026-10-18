@@ -5,6 +5,7 @@ import React, { FormEvent, createContext, useContext, useEffect, useLayoutEffect
 import { UnifiedCapabilityPanel } from "./UnifiedCapabilityPanel";
 import { OfficialFeaturePanel } from "./OfficialFeaturePanel";
 import { FeatureBudgetSettings, approveFeaturePrices } from './FeatureBudgetSettings';
+import {ContextSettings,AttentionSettings,AttentionInbox} from './AttentionPanel';
 import { FeatureMarketplace } from "./FeatureMarketplace";
 import {ProductMetricsPanel} from './ProductMetricsPanel';
 import {OneWaitingCopy,useOneGreeting} from './OnePersonality';
@@ -2049,6 +2050,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       </section>
 
       <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 指挥台">
+        {!demo.enabled&&view==='chat'?<AttentionInbox key={user.id+user.defaultWorkspaceId} api={api} onDraft={text=>{if(currentDraftRef.current.content.trim())return false;setContent(text);return true;}}/>:null}
         {view==='chat'&&profileLoaded&&!storyHidden&&(storyOpen||profile.onboarding.journey?.stage&&profile.onboarding.journey.stage!=='complete'||!hasSubmittedChat&&!conversations.length&&!profile.onboarding.completedAt&&user.access?.kind!=='company')?<StoryOnboarding profile={profile} context={welcomeContext} offer={handbookOffer} onBegin={startStory} onAction={saveStory} onKnowledge={()=>openSurface('knowledge')} onDevice={()=>{setAccountSection('device');openSurface('account');}} onDismiss={()=>{setStoryHidden(true);setStoryOpen(false);}}/>:null}
         {delivery&&delivery.operationId!==dismissedDelivery&&view==='chat'&&(storyHidden||profile.onboarding.journey?.stage==='complete')?<WelcomeDelivery delivery={delivery} busy={deliveryBusy} error={deliveryError} onOpen={id=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(id)}`).then(result=>openConversation(result.conversation)).catch(e=>setDeliveryError(e.message))} onCheck={()=>void checkWelcome()} onRetry={()=>void retryWelcome()} onDismiss={dismissWelcome}/>:null}
         {!delivery&&handbookNotice && view==='chat' ? <p className="one-onboarding-handbook-notice" role="status">{handbookNotice}{storyTaskId?<button type="button" onClick={()=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(storyTaskId)}`).then(result=>openConversation(result.conversation)).catch(e=>setError(e.message))}>查看任务 ↗</button>:null}<button type="button" onClick={()=>setHandbookNotice('')} aria-label="收起说明">知道了</button></p> : null}
@@ -2527,6 +2529,8 @@ function AccountPage({ user, profile, onSaveProfile, onOpenGuide, models, defaul
         <div className="account-profile-grid">
         <section className="account-panel"><h3>个人资料</h3><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
         <FeatureBudgetSettings key={user.id} api={api}/>
+        <ContextSettings key={'context-'+user.id} api={api}/>
+        <AttentionSettings key={'attention-'+user.id} api={api}/>
         <SavedWelcomeGuides api={api}/>
         <section className="account-panel story-settings-entry"><h3>新手引导</h3><p className="settings-muted">重新填写偏好，现有资料和任务都保留。</p>{guideButton}</section>
         <section className="account-panel">

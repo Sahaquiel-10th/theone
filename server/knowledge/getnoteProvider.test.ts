@@ -26,7 +26,7 @@ test("uses GetNote device authorization and global knowledge search", async () =
   const responses = [
     { data: { code: "device-code", verification_uri: "https://www.biji.com/auth", user_code: "ABCD", expires_in: 600, interval: 5 } },
     { data: { client_id: "cli_one", api_key: "test_provider_key", expires_at: 2_000_000_000 } },
-    { data: { results: [{ note_id: "note-1", title: "说明", content: "租户知识", score: 0.9 }] } },
+    { data: { results: [{ note_id: "note-1", title: "说明", content: "租户知识", score: 0.9,created_at:'2026-10-17 10:00:00',updated_at:'2026-10-18 10:00:00' }] } },
     { data: { results: [] } }
   ];
   globalThis.fetch = (async (input, init) => {
@@ -41,7 +41,7 @@ test("uses GetNote device authorization and global knowledge search", async () =
     const token = await provider.pollDeviceFlow("cli_one", device.code);
     assert.equal(token.status, "connected");
     const credentials = { clientId: "cli_one", apiKey: "test_provider_key" };
-    assert.equal((await provider.search(credentials, "问题", 5))[0]?.content, "租户知识");
+    const found=await provider.search(credentials, "问题", 5);assert.equal(found[0]?.content, "租户知识");assert.equal(found[0]?.createdAt,'2026-10-17 10:00:00');assert.equal(found[0]?.updatedAt,'2026-10-18 10:00:00');
     await provider.verify(credentials);
     assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
       "/open/api/v1/oauth/device/code",

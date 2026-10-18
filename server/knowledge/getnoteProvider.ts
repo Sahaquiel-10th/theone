@@ -210,9 +210,9 @@ export class GetNoteProvider implements KnowledgeProvider {
   }
 
   async search(credentials: KnowledgeCredentials, query: string, topK: number): Promise<KnowledgeChunk[]> {
-    const data = await request<{ results?: Array<{ note_id?: string; title?: string; content?: string; score?: number; url?: string }> }>("/resource/recall", credentials, { method: "POST", body: JSON.stringify({ query, top_k: Math.max(1, Math.min(10, topK)) }) }, "recall");
+    const data = await request<{ results?: Array<{ note_id?: string; title?: string; content?: string; score?: number; url?: string;created_at?:string;updated_at?:string }> }>("/resource/recall", credentials, { method: "POST", body: JSON.stringify({ query, top_k: Math.max(1, Math.min(10, topK)) }) }, "recall");
     const results = Array.isArray(data.results) ? data.results : [];
-    return results.slice(0, 10).filter((item): item is NonNullable<typeof item> => Boolean(item && typeof item === "object")).map((item) => ({ id: item.note_id ? String(item.note_id).slice(0, 500) : undefined, title: String(item.title ?? "得到大脑笔记").slice(0, 300), content: String(item.content ?? "").slice(0, 24_000), score: Number.isFinite(item.score) ? item.score : undefined, sourceUrl: safeGetNoteUrl(item.url) })).filter((item) => item.content);
+    return results.slice(0, 10).filter((item): item is NonNullable<typeof item> => Boolean(item && typeof item === "object")).map((item) => ({ id: item.note_id ? String(item.note_id).slice(0, 500) : undefined, title: String(item.title ?? "得到大脑笔记").slice(0, 300), content: String(item.content ?? "").slice(0, 24_000), score: Number.isFinite(item.score) ? item.score : undefined, sourceUrl: safeGetNoteUrl(item.url),createdAt:typeof item.created_at==='string'?item.created_at.slice(0,40):undefined,updatedAt:typeof item.updated_at==='string'?item.updated_at.slice(0,40):undefined })).filter((item) => item.content);
   }
 }
 

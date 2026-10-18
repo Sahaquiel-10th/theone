@@ -13,6 +13,7 @@ export function resolveDispatchCapabilities(task:PlannedTask,cards:CapabilityCar
     // independently authorize the exact release and matching renderer first.
     if(!card&&task.direct&&directFeature){const featureId=directFeature(id);if(featureId){result.featureIds.push(featureId);continue;}}
     if(!card)throw new OrchestrationInputError('所选能力当前不在授权目录中。请重新查找能力，选择返回的真实编号；不要猜编号或扩大权限。');
+    if(card.readOnlyTool)throw new OrchestrationInputError(`这是查询工具，请在当前回答中直接调用 ${card.readOnlyTool}；需要交付成果时，把查询作为任务的工具步骤，不要把它当成执行模型或独立功能。`);
     if(card.kind==='feature'&&card.featureId)result.featureIds.push(card.featureId);
     else if(card.executorId==='image_generation')image=true;
     else if(card.executorId==='local_special')local=true;
@@ -35,5 +36,5 @@ export function resolveDispatchCapabilities(task:PlannedTask,cards:CapabilityCar
 
 /** Make the callable form explicit next to discovery metadata, not hidden in a distant prompt. */
 export function callableCapabilities(cards:CapabilityCard[]){
-  return cards.map(card=>({...card,invocation:card.kind==='feature'?{capabilityIds:[card.id],featureIds:[card.featureId],outputKind:card.mode==='image'?'image':'text'}:card.executorId?{capabilityIds:[card.id],executorId:card.executorId,featureIds:[],outputKind:card.mode==='image'?'image':card.mode==='local'?'local_file':'text'}:{tool:'knowledge_search',sourceId:card.sourceId}}));
+  return cards.map(card=>({...card,invocation:card.readOnlyTool?{tool:card.readOnlyTool}:card.kind==='feature'?{capabilityIds:[card.id],featureIds:[card.featureId],outputKind:card.mode==='image'?'image':'text'}:card.executorId?{capabilityIds:[card.id],executorId:card.executorId,featureIds:[],outputKind:card.mode==='image'?'image':card.mode==='local'?'local_file':'text'}:{tool:'knowledge_search',sourceId:card.sourceId}}));
 }
