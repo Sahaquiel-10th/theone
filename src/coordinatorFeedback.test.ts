@@ -8,7 +8,7 @@ test('background refresh preserves friendly scoped feedback until the next expli
   assert.match(refresh, /setError\(submissionError\.current\)/);
   assert.doesNotMatch(refresh, /setError\(""\)/);
   assert.match(refresh, /setFailureReply\(\{scope:userId,operationId:operation,text:coordinatorRecoveryCopy/);
-  assert.doesNotMatch(refresh, /setFailureReply\(null\)/);
+  assert.match(refresh, /setFailureReply\(old=>old\?\.scope===userId&&old.operationId===operation\?null:old\)/,'a late success clears only its own temporary failure reply');
   assert.match(source,/failureReply\?\.scope===userId/);
   const submit = source.slice(source.indexOf('async function submit'), source.indexOf('async function direct'));
   assert.match(submit, /submissionError\.current = ""/);

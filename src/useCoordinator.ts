@@ -234,7 +234,7 @@ export function useCoordinator(
             if (status.status !== "completed") {
               setFailureReply({scope:userId,operationId:operation,text:coordinatorRecoveryCopy(status.error??'',status.status==='interrupted')});
               submissionError.current='';setError('');
-            }
+            } else setFailureReply(old=>old?.scope===userId&&old.operationId===operation?null:old);
           } else setProgress(status.progress || {phase:'正在等待处理结果',startedAt:next.conversation?.messages.at(-1)?.createdAt || new Date().toISOString()});
         } else {setPending(null);setProgress(null);}
       } catch (e) {
