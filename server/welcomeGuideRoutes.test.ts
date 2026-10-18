@@ -42,10 +42,23 @@ test('welcome artifact preview, exports and opt-in shares are private, isolated,
  db.workspaces[0].kind='company';db.workspaces[0].company={agreementRef:'x',billing:'bank_transfer',allowPublicSharing:false};assert.equal((await share({confirm:true})).status,403);
  const scene={id:'first',title:'整理',situation:'开会前',feature:'整理资料',advantage:'少搬运',benefit:'一份提纲',evidence:'对照原文',steps:['说目标','看结果'],prompt:'帮我整理提纲',capabilityIds:[]};
  db.attachments.push({...db.attachments[0],id:'page',conversationId:'standalone',welcomeGuide:undefined,welcomeShare:undefined,kind:'document',mimeType:'text/html',visualDocument:{version:1,title:'私有说明',intro:'这是说明',scenes:[scene,{...scene,id:'second'}]}});
- db.conversations.push({...db.conversations[0],id:'standalone',archived:true});db.chatOperations=[{workspaceId:'wa',userId:'a',conversationId:'standalone',status:'completed',featureRun:{featureId:'one-visual-html'}}] as never;
+ db.conversations.push({...db.conversations[0],id:'standalone',archived:true});db.chatOperations=[{workspaceId:'wa',userId:'a',conversationId:'standalone',status:'completed',featureRun:{featureId:'one-visual-html'}}] as NonNullable<Database['chatOperations']>;
  const page=await fetch(base+'/api/welcome-pages/page/view');assert.equal(page.status,200);assert.match(page.headers.get('content-security-policy')!,/script-src 'sha256-/);assert.doesNotMatch(page.headers.get('content-security-policy')!,/allow-same-origin/);
  assert.equal((await fetch(base+'/api/welcome-pages/page/view',{headers:{'x-test-user':'b'}})).status,404);
  const linked=db.attachments.find(f=>f.id==='page')!;linked.welcomeImageId='foreign-guide';assert.equal((await fetch(base+'/api/welcome-pages/page/view')).status,404);assert.equal((await fetch(base+'/api/welcome-pages/page')).status,404);delete linked.welcomeImageId;
+ // Normal task pages must preserve their exact prerequisite illustration in
+ // preview AND export, including old saved pages without welcome metadata.
+ db.conversations.push({...db.conversations[0],id:'normal-image',messages:[{id:'image-result',role:'assistant',content:'图片好了',imageUrl:'/api/attachments/normal-image-file/content'}]} as never);
+ db.attachments.push({...db.attachments[0],id:'normal-image-file',conversationId:'normal-image',welcomeGuide:undefined,welcomeShare:undefined});
+ linked.messageId='page-result';
+ db.chatOperations!.push({workspaceId:'wa',userId:'a',operationId:'normal-image-op',conversationId:'normal-image',workRun:{kind:'image',state:'completed',resultMessageId:'image-result'}} as never,{workspaceId:'wa',userId:'a',conversationId:'standalone',workRun:{state:'failed',resultMessageId:'page-result',dependsOnOperationIds:['normal-image-op']}} as never);
+ let normalView=await fetch(base+'/api/welcome-pages/page/view');assert.equal(normalView.status,200);assert.ok((await normalView.text()).includes(`src="data:image/png;base64,${bytes.toString('base64')}"`));
+ assert.ok((await(await fetch(base+'/api/welcome-pages/page')).json()).html.includes(`src="data:image/png;base64,${bytes.toString('base64')}"`));
+ assert.equal((await fetch(base+'/api/welcome-pages/page/view',{headers:{'x-test-user':'b'}})).status,404);
+ const imageOp=db.chatOperations!.find(o=>o.operationId==='normal-image-op')!;imageOp.userId='b';assert.equal((await fetch(base+'/api/welcome-pages/page/view')).status,404);imageOp.userId='a';
+ db.conversations.find(c=>c.id==='normal-image')!.archived=true;assert.equal((await fetch(base+'/api/welcome-pages/page/view')).status,404);db.conversations.find(c=>c.id==='normal-image')!.archived=false;
+ db.attachments.find(f=>f.id==='normal-image-file')!.status='failed';assert.equal((await fetch(base+'/api/welcome-pages/page/view')).status,404);db.attachments.find(f=>f.id==='normal-image-file')!.status='ready';
+ db.chatOperations=db.chatOperations!.filter(o=>!o.workRun);delete linked.messageId;
  db.attachments.find(f=>f.id==='page')!.mimeType='image/svg+xml';assert.equal((await fetch(base+'/api/welcome-pages/page/view')).status,200);
  assert.equal((await fetch(base+'/api/welcome-pages/page/share',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({confirm:true})})).status,403);
  db.conversations[0].archived=true;assert.equal((await get()).status,404);

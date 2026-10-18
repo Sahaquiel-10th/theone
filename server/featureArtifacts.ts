@@ -8,7 +8,7 @@ import { tableFileToCsv } from './skillTables.js';
 import {createVisualArtifact,type SaveVisual} from './visualTools.js';
 import type {OfficeContext} from './officeTools.js';
 import {validateDeck} from './officeSlides.js';
-import {resolveWorkDependency} from './workDependencies.js';
+import {visualPrerequisiteImage} from './visualPrerequisites.js';
 
 export function officeArtifactContext(store:Store,scope:{workspaceId:string;userId:string;conversationId:string},directory:string|undefined,verify:(db:Database)=>void,allowedIds:string[],onSaved?:(id:string)=>void):OfficeContext {
  return {
@@ -30,17 +30,10 @@ export function visualArtifactSaver(store:Store,scope:{workspaceId:string;userId
       assets={image:`data:${image.mimeType};base64,${bytes.toString('base64')}`,context:image.welcomeGuide};
     }else if(format==='html'&&dependencyOperationIds.length){
       const db=await store.read();verify(db);
-      // Only server-recorded prerequisite receipts may supply an illustration.
-      // Never accept an arbitrary model URL, file ID, sibling or workspace.
-      for(const operationId of dependencyOperationIds){
-        const parent=resolveWorkDependency(db,scope,operationId);
-        if(parent?.workRun?.state!=='completed')throw new Error('前面的结果还不能使用，请先核对原任务');
-        const message=db.conversations.find(c=>c.id===parent.conversationId&&c.workspaceId===scope.workspaceId&&c.userId===scope.userId)?.messages.find(m=>m.id===parent.workRun!.resultMessageId);
-        const image=db.attachments.find(a=>a.workspaceId===scope.workspaceId&&a.userId===scope.userId&&a.conversationId===parent.conversationId&&a.kind==='image'&&(message?.imageUrl===`/api/attachments/${a.id}/content`||message?.attachments?.some(file=>file.id===a.id)));
-        if(!image){if(parent.workRun.kind==='image'||parent.workRun.expectedOutput==='image')throw new Error('前面的图片暂时找不到，先核对原结果；不会重新画图');continue;}
-        if(image.status!=='ready'||!/^image\/(png|jpeg|webp)$/.test(image.mimeType)||image.size>25*1024*1024)throw new Error('前面的配图暂时不可用');
+      const image=visualPrerequisiteImage(db,scope,dependencyOperationIds);
+      if(image){
         const bytes=await fs.readFile(image.storagePath);if(bytes.length!==image.size)throw new Error('前面的配图尚未就绪');
-        verify(await store.read());assets={image:`data:${image.mimeType};base64,${bytes.toString('base64')}`};break;
+        verify(await store.read());assets={image:`data:${image.mimeType};base64,${bytes.toString('base64')}`};
       }
     }
     return createVisualArtifact(doc,format,async(name,bytes,mime,content)=>{

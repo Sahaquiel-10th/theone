@@ -8,6 +8,7 @@ import {ownedAttachment} from './attachmentService.js';
 import {asyncRoute} from './middleware.js';
 import {renderWelcomeGuide,renderWelcomePoster} from './welcomeGuide.js';
 import {visualPageCsp,renderVisualPage,renderVisualDiagram,visualDiagramHeight} from './visualDocument.js';
+import {visualPrerequisiteImage,visualArtifactPrerequisites} from './visualPrerequisites.js';
 
 const digest=(token:string)=>createHash('sha256').update(token).digest('hex');
 function fileInScope(db:Database,s:AccountScope,id:string){
@@ -22,7 +23,11 @@ async function dataImage(file:Attachment){
   return `data:${file.mimeType};base64,${bytes.toString('base64')}`;
 }
 async function visualHtml(db:Database,s:AccountScope,f:Attachment){
-  if(!f.welcomeImageId)return renderVisualPage(f.visualDocument!);
+  if(!f.welcomeImageId){
+    let image:Attachment|undefined;
+    try{image=visualPrerequisiteImage(db,s,visualArtifactPrerequisites(db,s,f));}catch{throw new BetaInputError('这份网页的配图暂时不可用，请先核对前面的任务',404);}
+    return renderVisualPage(f.visualDocument!,image?await dataImage(image):undefined);
+  }
   const image=fileInScope(db,s,f.welcomeImageId);
   if(image.conversationId!==f.conversationId||!image.welcomeGuide)throw new BetaInputError('说明配图暂时不可用',404);
   return renderVisualPage(f.visualDocument!,await dataImage(image),undefined,image.welcomeGuide);
