@@ -49,6 +49,12 @@ test('a no-internet request cannot call public search even if the browser enable
   }});
   await service.dispatch(a,{...input('operation_no_internet_01','只讨论，不联网'),webSearch:true},key);assert.equal(calls,2);
 });
+test('an unavailable public search has a plain next step, never a successful search claim',async()=>{
+  const f=fixture();let calls=0;
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({status:'no_match',chunks:[],failures:[]})},{webSearch:async()=>({status:'unavailable'}),modelCall:async()=>++calls===1?{...answer(''),toolCalls:[{id:'search',type:'function',function:{name:'web_search',arguments:JSON.stringify({query:'公开新闻'})}}]}:answer('没有查到真实结果。')});
+  const result=await service.dispatch(a,{...input('operation_search_unavailable_01','请联网查今天的新闻'),webSearch:true},key);
+  assert.match(result.message.content,/公开搜索这次没查成/);assert.match(result.message.content,/继续查刚才的问题/);assert.doesNotMatch(result.message.content,/API_KEY|未开放、已下架/);
+});
 import { executorDefaults, updateExecutor } from "./executorProfiles.js";
 import { beginChatOperation,reconcileInterruptedChatOperations } from "./chatOperations.js";
 import { MODEL_MAX_OUTPUT_TOKENS, ModelRequestError, type ModelToolMessage, type ModelToolDefinition, type ToolChatResult } from "./modelGateway.js";

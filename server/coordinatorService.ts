@@ -1002,7 +1002,7 @@ export class CoordinatorService {
         cid,
         requestId,
         content,
-        localClarification ? `还没开始操作电脑。${localClarification}` : result.requiredMissing.length ? (mainKnowledge.missing.length?`${mainKnowledge.missing.join('、')}还没有连好，这次没能查询。先连接好它，再继续查这件事就行。`:'这次还没查全你要找的资料，不能当作没有找到。原问题还在，可以接着查。') : result.content,
+        localClarification ? `还没开始操作电脑。${localClarification}` : result.requiredMissing.length ? (result.requiredMissing.includes('web_search')?'公开搜索这次没查成，还不能替你核实最新消息。可以稍后说“继续查刚才的问题”；我会重新核对，不会把旧知识当成最新结果。':mainKnowledge.missing.length?`${mainKnowledge.missing.join('、')}还没有连好，这次没能查询。先连接好它，再继续查这件事就行。`:'这次还没查全你要找的资料，不能当作没有找到。原问题还在，可以接着查。') : result.content,
         config.model.id,
         trace,
         dispatched??imageTask,

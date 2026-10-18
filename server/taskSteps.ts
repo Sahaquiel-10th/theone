@@ -7,7 +7,7 @@ export const taskStepKey=(namespace:string,tool:string,args:string)=>createHash(
 export function toolSucceeded(value:unknown){
   if(!value||typeof value!=='object')return true;
   const v=value as {status?:string;outcome?:string};
-  return !['failed','partial','rejected','uncertain','not_connected','truncated'].includes(v.status||'')&&!['failed','needs_input','partial'].includes(v.outcome||'');
+  return !['failed','partial','rejected','uncertain','not_connected','unavailable','not_configured','needs_input','truncated'].includes(v.status||'')&&!['failed','needs_input','partial'].includes(v.outcome||'');
 }
 export function completedSteps(steps:TaskStep[]){return steps.filter(s=>s.state==='completed'&&toolSucceeded(s.output));}
 export const stepProgress=(steps:TaskStep[])=>({completed:[...new Set(completedSteps(steps).map(s=>s.label))],pending:[...new Set(steps.filter(s=>s.state!=='completed').map(s=>s.label))]});

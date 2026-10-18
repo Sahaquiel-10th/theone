@@ -1,7 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {runTaskOrchestrator} from './taskOrchestrator.js';
-import {taskStepKey,completedSteps,type TaskStep,type TaskStepStore} from './taskSteps.js';
+import {taskStepKey,completedSteps,toolSucceeded,type TaskStep,type TaskStepStore} from './taskSteps.js';
+test('unavailable and unconfigured tools never satisfy required steps or become reusable completed work',async()=>{
+  for(const status of ['unavailable','not_configured','needs_input']){
+    assert.equal(toolSucceeded({status}),false);
+    let calls=0;const result=await runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[{name:'web_search',run:async()=>({status})}],requiredTools:['web_search'],maxSteps:2,beforeStep:async()=>{},call:async()=>++calls===1?{content:'',toolCalls:[{id:'x',type:'function',function:{name:'web_search',arguments:JSON.stringify({query:'public'})}}]}:{content:'没查成',toolCalls:[]}});
+    assert.deepEqual(result.requiredMissing,['web_search']);
+  }
+});
 const reply=(content:string)=>({content,toolCalls:[]});
 const call=(name:string,query='goal')=>({id:name,type:'function' as const,function:{name,arguments:JSON.stringify({query})}});
 function checkpoints(namespace='worker'){
