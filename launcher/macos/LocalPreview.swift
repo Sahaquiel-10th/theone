@@ -71,6 +71,9 @@ final class LocalPreview: @unchecked Sendable {
                     }
                     server.newConnectionHandler = { [weak self, weak server] connection in
                         guard let self else { connection.cancel(); return }
+                        // Listener cancellation is asynchronous. A callback
+                        // already queued after stop must never reopen access.
+                        guard !stopped else { connection.cancel(); return }
                         guard clients.count < 16 else { connection.cancel(); return }
                         clients[ObjectIdentifier(connection)] = connection
                         connection.start(queue: queue)
@@ -100,7 +103,7 @@ final class LocalPreview: @unchecked Sendable {
             let headers = "HTTP/1.1 \(status)\r\nContent-Type: \(mime)\r\nContent-Length: \(bytes.count)\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'\r\n\r\n"
             return Data(headers.utf8) + bytes
         }
-        guard present(), Date() <= expires else { close(); return response("403 Forbidden") }
+        guard !stopped, present(), Date() <= expires else { close(); return response("403 Forbidden") }
         guard data.count <= 8192, let request = String(data: data, encoding: .utf8), request.contains("\r\n\r\n") else { return response("400 Bad Request") }
         let lines = request.components(separatedBy: "\r\n"), first = lines[0].split(separator: " ")
         guard first.count == 3, first[0] == "GET", first[2] == "HTTP/1.1" else { return response("405 Method Not Allowed") }
