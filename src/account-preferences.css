@@ -1,0 +1,50 @@
+/* A settings workspace, not another long chat transcript. */
+.account-preferences-layout{display:grid;grid-template-columns:176px minmax(0,1fr);align-items:start;gap:28px;max-width:1100px;margin:0 auto;padding:0 24px 40px;box-sizing:border-box}
+.account-preferences-nav{display:grid;gap:6px;position:sticky;top:20px;padding-top:6px}
+.account-preferences-nav>button{display:flex;align-items:flex-start;gap:11px;text-align:left;min-height:64px;padding:14px 12px;border:1px solid transparent;border-radius:12px;background:transparent;color:#75796e;font:inherit;cursor:pointer}
+.account-preferences-nav>button>svg{flex:none;margin-top:2px}
+.account-preferences-nav strong,.account-preferences-nav small{display:block}
+.account-preferences-nav strong{font-size:14px;font-weight:600;line-height:1.5}
+.account-preferences-nav small{font-size:11px;line-height:1.6;margin-top:3px;font-weight:400;color:#85897d}
+.account-preferences-nav>button[aria-current=page]{background:#e9eddf;border-color:#d9dfcd;color:#34432e}
+.account-preferences-nav>button:hover{background:#eef0e7}
+.one-studio .studio-surface .account-page.account-preferences>.admin-header{max-width:1100px;padding:28px 24px 24px}
+.one-studio .studio-surface .account-preferences .account-body.account-preferences-content,.account-preferences .account-body.account-preferences-content{display:block;max-width:none;min-width:0;margin:0;padding:0;box-sizing:border-box}
+.account-profile-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:stretch}
+.local-device-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:16px}
+.account-span-full{grid-column:1/-1}
+.one-studio .studio-surface .account-preferences .account-panel,.account-preferences .account-panel{display:flex;flex-direction:column;align-items:stretch;gap:14px;width:100%;box-sizing:border-box;min-width:0;margin:0;padding:22px;border:1px solid #dfe3d6;border-radius:16px;background:#fbfcf6;box-shadow:none}
+.account-preferences .account-panel h3{margin:0;font-size:16px;font-weight:620;line-height:1.5}
+.account-preferences .account-panel p{margin:0;line-height:1.7;font-size:13px}
+.account-preferences .settings-muted,.settings-muted{color:#797f70;font-size:13px;line-height:1.7}
+.account-preferences .account-panel label{display:grid;gap:8px;font-size:13px;color:#616956;margin:0}
+.account-preferences .account-panel input{min-width:0;width:100%;box-sizing:border-box;padding:11px 12px;border:1px solid #d9dfce;border-radius:10px;background:#fffef9;color:#2d3528;font:inherit}
+.one-studio .studio-surface .account-preferences .account-panel button,.account-preferences .account-panel button{display:inline-flex;align-items:center;justify-content:center;gap:7px;align-self:flex-start;width:auto;max-width:100%;min-height:38px;padding:8px 13px;border:1px solid #d7ddcd;border-radius:10px;background:#fffef9;color:#35412e;font:500 13px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;cursor:pointer;box-shadow:none}
+.account-preferences .account-panel button:disabled{opacity:.45;cursor:default}
+.account-preferences .account-panel button:hover:not(:disabled){border-color:#a4b094;background:#f0f3e8}
+.settings-card-heading{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:28px}
+.one-studio .studio-surface .account-preferences .settings-card-heading .settings-help-button{padding:2px;min-height:28px;width:28px;border:0;background:transparent;color:#7b866f;font-size:18px}
+.settings-value-field{position:relative}.settings-value-field input{padding-right:38px!important}.settings-value-field>span{position:absolute;right:14px;top:50%;transform:translateY(-50%);font-size:12px;color:#7c8472}
+.account-preferences .one-profile-name{display:grid;gap:14px}.account-preferences .one-profile-name-row{display:flex;flex-direction:column;align-items:stretch;gap:12px}.account-preferences .one-profile-name-row>button{align-self:flex-start;white-space:nowrap}
+.account-preferences .account-panel .hint{font-size:12px;margin:0}
+.account-preferences .account-panel .settings-history-button{min-height:32px;padding:6px 10px;font-size:12px;background:transparent;flex:none;align-self:center}
+.settings-history-button>span{display:grid;place-items:center;min-width:20px;height:20px;border-radius:6px;background:#e9eddf;color:#4b6040;font-size:11px}
+.welcome-guide-card.welcome-guide-card-compact{max-width:none;width:100%;margin:0;padding:16px 0 0;gap:12px;border:0;border-top:1px solid #e1e5d9;border-radius:0;background:transparent;box-sizing:border-box;flex-wrap:nowrap}
+.welcome-guide-card-compact .welcome-guide-card-icon{width:40px;height:40px;border-radius:11px}
+.welcome-guide-card-compact strong{font-size:14px;font-weight:600}.welcome-guide-card-compact small{font-size:12px;margin-top:5px}
+.welcome-guide-card-compact>button{align-self:center!important;margin:0!important;white-space:nowrap}
+.one-studio .studio-surface .account-preferences .welcome-guide-card-compact>button:not(.welcome-guide-share-action),.welcome-guide-card-compact>button:not(.welcome-guide-share-action){background:#35432e;color:#fffef4;border-color:#35432e}
+.one-studio .studio-surface .account-preferences .welcome-guide-card-compact>button.welcome-guide-share-action,.welcome-guide-card-compact>button.welcome-guide-share-action{background:transparent;color:#54634a;border:1px solid #d9dfce}
+.saved-guide-history-dialog{width:min(680px,calc(100vw - 32px))}.saved-guide-history-list{display:grid;gap:14px}.saved-guide-history-list .welcome-guide-card-compact{padding:0 0 14px;border-top:0;border-bottom:1px solid #e1e5d9}.saved-guide-history-list .welcome-guide-card-compact:last-child{border-bottom:0;padding-bottom:0}
+.account-preferences .story-settings-entry{display:flex;flex-direction:column;justify-content:flex-start;align-items:flex-start}
+.account-preferences .settings-security-entry{flex-direction:row;align-items:center;justify-content:space-between;gap:20px}.settings-security-entry p{margin-top:6px!important}.settings-security-entry>button{flex:none;align-self:center!important}
+.settings-password-form{display:grid;gap:16px}.settings-password-form label{display:grid;gap:8px;color:#58644f;font-size:13px}.settings-password-form>button{justify-self:end}
+.account-wide-notice{grid-column:1/-1;margin-top:16px}.settings-inline-error{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.one-confirmation-dialog{width:min(480px,calc(100vw - 32px))}.one-confirmation-dialog .confirmation-message{font-size:15px;line-height:1.7;white-space:pre-line;margin:0 0 16px;color:#30392c}.confirmation-details{padding:0 0 0 18px;margin:0;color:#717a66;font-size:13px;line-height:1.8}.confirmation-details li{padding:3px 0}.confirmation-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:26px}.one-confirmation-dialog .confirmation-danger{background:#8b4038;border-color:#8b4038}.one-confirmation-dialog .confirmation-actions>button{min-height:40px}.one-confirmation-dialog .settings-dialog-body{padding-top:8px}
+.account-preferences button:focus-visible,.saved-guide-history-dialog button:focus-visible{outline:2px solid #758765;outline-offset:3px}
+@container one-surface (max-width:820px){.account-preferences-layout{grid-template-columns:minmax(0,1fr);gap:18px}.account-preferences-nav{position:static;grid-template-columns:repeat(4,minmax(0,1fr));padding:0}.account-preferences-nav>button{padding:11px 8px;min-height:48px;gap:7px;align-items:center;justify-content:center}.account-preferences-nav small{display:none}.account-preferences-nav strong{font-size:12px}.account-preferences-nav svg{width:16px;height:16px;margin:0}}
+@container one-surface (max-width:560px){.account-profile-grid{grid-template-columns:minmax(0,1fr)}.account-preferences-layout{padding-inline:16px}.one-studio .studio-surface .account-preferences .account-panel{padding:18px}.welcome-guide-card.welcome-guide-card-compact{flex-wrap:wrap}.welcome-guide-card-compact>div{flex-basis:calc(100% - 54px)}.account-preferences-nav>button{flex-direction:column;gap:4px}}
+@media(max-width:820px){.account-preferences-layout{grid-template-columns:minmax(0,1fr);gap:18px}.account-preferences-nav{position:static;grid-template-columns:repeat(4,minmax(0,1fr))}.account-preferences-nav>button{justify-content:center;padding:10px 6px;gap:7px;min-height:48px}.account-preferences-nav small{display:none}.account-preferences-nav strong{font-size:12px}}
+@media(max-width:560px){.account-profile-grid{grid-template-columns:minmax(0,1fr)}.account-preferences-layout{padding-inline:16px}.welcome-guide-card.welcome-guide-card-compact{flex-wrap:wrap}.welcome-guide-card-compact>div{flex-basis:calc(100% - 54px)}.saved-guide-history-list .welcome-guide-card-compact{gap:10px}.confirmation-actions{flex-wrap:wrap}.account-preferences-nav>button{flex-direction:column;gap:4px}}
+.welcome-guide-dialog{margin:auto;width:100vw;max-width:none;height:100dvh;max-height:none;border:0;box-sizing:border-box;background:transparent;color:inherit}.welcome-guide-dialog::backdrop{background:#19211880}.welcome-guide-dialog:not([open]){display:none}
+.one-confirmation-dialog .confirmation-actions>button{box-sizing:border-box;width:auto;height:44px;min-height:44px;flex:0 0 auto;white-space:nowrap;padding:10px 16px;margin:0;align-self:center;border-radius:10px;font-size:13px;line-height:1.5}

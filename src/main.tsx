@@ -14,6 +14,7 @@ import {TaskReadAllButton} from './TaskReadAllButton';
 import {StoryOnboarding} from './StoryOnboarding';
 import {WelcomeGuideCard} from './WelcomeGuideCard';
 import {SavedWelcomeGuides} from './SavedWelcomeGuides';
+import {AccountPreferencesLayout} from './AccountPreferencesLayout';
 import './welcome-guide.css';
 import type {JourneyInput,WelcomeContext} from '../server/onboardingJourney';
 import {ActionMenu} from './ActionMenu';
@@ -110,6 +111,7 @@ import "./one-beta.css";
 import "./one-onboarding.css";
 import "./one-settings.css";
 import './one-product.css';
+import './account-preferences.css';
 import './one-playful.css';
 import './task-message-ux.css';
 import { Pagination, SearchPicker, SettingsDialog } from "./SettingsControls";
@@ -2471,6 +2473,7 @@ function AccountPage({ user, profile, onSaveProfile, onOpenGuide, models, defaul
   const [confirmPassword, setConfirmPassword] = useState("");
   const [notice, setNotice] = useState("");
   const [openingGuide,setOpeningGuide]=useState(false);
+  const [passwordOpen,setPasswordOpen]=useState(false);
   const guidePending=!!profile.onboarding.journey&&profile.onboarding.journey.stage!=='complete';
   const guideButton=<button type="button" disabled={openingGuide} onClick={()=>{setOpeningGuide(true);void onOpenGuide().catch(e=>setNotice(e.message)).finally(()=>setOpeningGuide(false));}}>{openingGuide?'正在打开…':guidePending?'继续新手引导':'重新走一遍引导'}<ArrowUpRight size={15}/></button>;
   const [billing, setBilling] = useState<{ balanceMicros: number; reservedMicros?: number; availableMicros?: number; ledger: PowerLedgerEntry[]; orders: RechargeOrder[]; usage: UsageRecord[]; rechargeCnyPerPower: number } | null>(null);
@@ -2503,13 +2506,14 @@ function AccountPage({ user, profile, onSaveProfile, onOpenGuide, models, defaul
       setNewPassword("");
       setConfirmPassword("");
       setNotice("密码已更新");
+      setPasswordOpen(false);
     } catch (err) {
       setNotice(err instanceof Error ? err.message : "密码修改失败");
     }
   }
 
   return (
-    <section className="account-page">
+    <section className="account-page account-preferences">
       <header className="admin-header">
         <button className="mobile-menu" title="打开导航" onClick={onOpenSidebar}><Menu size={20} /></button>
         <div>
@@ -2517,28 +2521,30 @@ function AccountPage({ user, profile, onSaveProfile, onOpenGuide, models, defaul
           <p>{profile.displayName || user.username} · {user.role === "admin" ? "管理员" : "ONE 用户"}</p>
         </div>
       </header>
-      <nav className="settings-tabs account-settings-tabs" aria-label="设置栏目">{[["profile", "个人设置"], ["device", "本机执行"], ["knowledge", "知识连接"], ["power", "会员与额度"]].map(([id, label]) => <button type="button" key={id} aria-pressed={section === id} onClick={() => setSection(id)}>{label}</button>)}</nav>
-      <div className="account-body settings-account-body">
+      <AccountPreferencesLayout section={section} onChange={setSection}>
         {guidePending&&section!=='profile'?<div className="story-settings-return"><span>新手引导还在，接好后回来继续。</span>{guideButton}</div>:null}
         {section === "device" ? <LocalDeviceSettings key={user.id} api={api}/> : section === "knowledge" ? knowledge : section === "power" ? user.access?.kind === "company" ? <div className="settings-empty"><p>费用由公司按协议对公打款承担，无需个人充值。</p><p>公司可用电力：{((billing?.availableMicros??0)/1e6).toFixed(3)}；个人额度由公司管理员配置。</p></div> : billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载会员与额度…</p> : <>
-        <section className="account-panel"><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
-        <SavedWelcomeGuides api={api}/>
-        <section className="account-panel story-settings-entry"><div><h3>新手引导</h3><p>重新认识一下 ONE，按自己的节奏设置。已有连接、文件和任务都保留。</p></div>{guideButton}</section>
+        <div className="account-profile-grid">
+        <section className="account-panel"><h3>个人资料</h3><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
         <FeatureBudgetSettings key={user.id} api={api}/>
+        <SavedWelcomeGuides api={api}/>
+        <section className="account-panel story-settings-entry"><h3>新手引导</h3><p className="settings-muted">重新填写偏好，现有资料和任务都保留。</p>{guideButton}</section>
         <section className="account-panel">
           <div className="account-panel-title"><Bot size={18} /><h3>默认模型</h3></div>
           <SearchPicker label="默认模型" value={selectedModelId} onChange={chooseModel} options={models.filter(model => model.kind === "chat").map(model => ({ value: model.id, label: model.name }))} />
         </section>
-        {user.role === "admin" ? <form className="account-panel" onSubmit={changePassword}>
-          <div className="account-panel-title"><LockKeyhole size={18} /><h3>修改密码</h3></div>
+        {user.role === "admin" ? <section className="account-panel account-span-full settings-security-entry"><div><div className="account-panel-title"><LockKeyhole size={18} /><h3>账号安全</h3></div><p className="settings-muted">需要时再更新登录密码。</p></div><button type="button" onClick={()=>{setNotice('');setPasswordOpen(true);}}>修改密码</button></section> : null}
+        </div>
+        {passwordOpen?<SettingsDialog title="修改密码" onClose={()=>{setPasswordOpen(false);setCurrentPassword('');setNewPassword('');setConfirmPassword('');}}><form className="settings-password-form" onSubmit={changePassword}>
           <label>当前密码<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
           <label>新密码<input type="password" autoComplete="new-password" placeholder="至少 8 个字符" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label>
           <label>确认新密码<input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label>
+          {notice?<p role="status">{notice}</p>:null}
           <button className="primary" type="submit" disabled={!currentPassword || newPassword.length < 8 || !confirmPassword}>更新密码</button>
-        </form> : null}
+        </form></SettingsDialog>:null}
         </>}
         {notice ? <div className="notice account-wide-notice">{notice}</div> : null}
-      </div>
+      </AccountPreferencesLayout>
     </section>
   );
 }

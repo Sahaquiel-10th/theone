@@ -6,10 +6,10 @@ export function Pagination({ page, total, size = 10, onChange }: { page: number;
   if(pages===1)return null;
   return <div className="settings-pagination"><button type="button" disabled={page <= 1} onClick={() => onChange(page - 1)}>上一页</button><span>{Math.min(page, pages)} / {pages} · {total} 项</span><button type="button" disabled={page >= pages} onClick={() => onChange(page + 1)}>下一页</button></div>;
 }
-export function SettingsDialog({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
+export function SettingsDialog({ title, children, onClose, className='' }: { title: string; children: ReactNode; onClose: () => void; className?:string }) {
   const ref = useRef<HTMLDialogElement>(null), titleId = useId();
-  useEffect(() => { const dialog = ref.current!; dialog.showModal(); dialog.querySelector<HTMLInputElement>('input[type="search"]')?.focus(); return () => dialog.close(); }, []);
-  return <dialog ref={ref} className="one-settings-dialog" aria-labelledby={titleId} onCancel={e => { e.preventDefault(); onClose(); }} onClick={e => { if (e.target === e.currentTarget) { const r = e.currentTarget.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) onClose(); } }}>
+  useEffect(() => { const dialog = ref.current!,opener=document.activeElement; dialog.showModal(); dialog.querySelector<HTMLElement>('[data-dialog-focus],input[type="search"]')?.focus(); return () => {dialog.close();if(opener instanceof HTMLElement&&opener.isConnected)opener.focus();}; }, []);
+  return <dialog ref={ref} className={`one-settings-dialog ${className}`} aria-labelledby={titleId} onCancel={e => { e.preventDefault(); onClose(); }} onClick={e => { if (e.target === e.currentTarget) { const r = e.currentTarget.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) onClose(); } }}>
     <header><h2 id={titleId}>{title}</h2><button type="button" aria-label="关闭" className="settings-icon-button" onClick={onClose}><X size={20} /></button></header><div className="settings-dialog-body">{children}</div>
   </dialog>;
 }

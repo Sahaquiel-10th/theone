@@ -61,7 +61,8 @@ test('main composer integrates keyboard picker and displays an explicit bound ta
   assert.match(source,/featurePicker\.keyDown\(event\)/);
   assert.match(source,/发送到任务：/);
   assert.match(source,/回到主对话/);
-  assert.match(source,/\["device", "本机执行"\]/);
+  assert.match(source,/AccountPreferencesLayout section=\{section\}/);
+  assert.match(readFileSync(new URL('./AccountPreferencesLayout.tsx',import.meta.url),'utf8'),/id:'device',label:'本机执行'/);
 });
 test('tool status check is visible and prevents duplicate checks',()=>{
   const source=readFileSync(new URL('./LocalDeviceSettings.tsx',import.meta.url),'utf8');

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import {confirmAction} from './ConfirmAction';
 import { Check, ChevronDown, ChevronRight, FileText, Folder, MessageCircle, Settings2 } from 'lucide-react';
 import type { api as Api } from './oneApi';
 import './document-destination.css';
@@ -66,7 +67,7 @@ export function NotionWritingSettings({ api }: { api: typeof Api }) {
   const [settings, setSettings] = useState<WritingSettings>(), [parent, setParent] = useState(''), [refs, setRefs] = useState(''), [busy, setBusy] = useState(false), [notice, setNotice] = useState('');
   useEffect(() => { let alive = true; void api<WritingSettings>('/api/knowledge/connections/notion/writing').then(s => { if (alive) { setSettings(s); setParent(url(s.parentId)); setRefs(s.referenceIds.map(url).join('\n')); } }).catch(() => { if (alive) setNotice('写入设置暂未加载，请重新打开'); }); return () => { alive = false; }; }, [api]);
   async function authorize() {
-    if (!window.confirm('新增权限：在你选择的页面下创建草稿，以及修订由 ONE 创建并绑定到任务的草稿。\n不会自动修改其他页面，也不调用 Notion AI。继续到 Notion 重新授权？')) return;
+    if (!await confirmAction({title:'为 Notion 补充写作权限？',message:'接下来会打开 Notion 重新授权。',details:['新增：在你选择的页面下创建草稿，修订由 ONE 创建并绑定到任务的草稿。','不会自动修改其他页面，也不调用 Notion AI。'],confirmLabel:'前往重新授权'})) return;
     setBusy(true); setNotice('');
     try { const r = await api<{ authorizationUrl: string }>('/api/knowledge/connections/notion/oauth/start', { method: 'POST', body: JSON.stringify({ enableWriting: true, confirmed: true }) }); window.location.assign(r.authorizationUrl); }
     catch (e) { setNotice(e instanceof Error ? e.message : '无法打开授权'); setBusy(false); }

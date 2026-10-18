@@ -4,6 +4,7 @@ import type {AccountProfile} from '../server/betaProfile';
 import type {JourneyInput,WelcomeContext} from '../server/onboardingJourney';
 import type {OnboardingHandbookOffer} from '../server/onboardingHandbook';
 import {onboardingPurposes,type OnboardingPurpose} from './onboardingPurposes';
+import {confirmAction} from './ConfirmAction';
 
 export const welcomeBenefits=[
   {title:'用自己的资料找答案',description:'需要时查找已连接的资料，保留引用。'},
@@ -19,17 +20,20 @@ export function StoryOnboarding({profile,context,offer,onBegin,onAction,onKnowle
   const j=profile.onboarding.journey,stage=j?.stage??'name';
   const [name,setName]=useState(profile.displayName),[chosen,setChosen]=useState<OnboardingPurpose[]>(j?.purposeIds??[]),[busy,setBusy]=useState(false),[error,setError]=useState('');
   const started=useRef(false),finishing=useRef(''),card=useRef<HTMLElement>(null);
+  const generationAbort=useRef<AbortController|undefined>(undefined);
+  useEffect(()=>()=>generationAbort.current?.abort(),[]);
   const price=offer?.pricePower,canDraw=offer?.available===true&&typeof price==='number'&&price>0&&price<=.5;
   useEffect(()=>{if(j||started.current)return;started.current=true;setBusy(true);void onBegin().catch(e=>setError(e instanceof Error?e.message:'引导暂时没打开，再试一次？')).finally(()=>setBusy(false));},[j,onBegin]);
   useEffect(()=>{setName(profile.displayName);setChosen(j?.purposeIds??[]);setError('');},[j?.id]);
   useEffect(()=>{card.current?.scrollIntoView({block:'start',behavior:'auto'});},[stage,j?.id]);
-  function generationChoice(){
+  async function generationChoice(signal:AbortSignal){
     if(!canDraw)return {createGuide:false,choice:'without_image'};
-    if(!offer?.firstGift&&!window.confirm(`重新制作你的 ONE 使用说明，将整理说明并配一张图，最多使用 ${price} 电力，按实际用量结算。继续吗？取消也能保存设置，不重新生成。`))return {createGuide:false,choice:'without_image'};
+    if(!offer?.firstGift&&!await confirmAction({title:'再做一份使用说明？',message:`这次会整理说明并配图，最多使用 ${price} 电力，按实际用量结算。`,details:['之前的说明会保留。','也可以只保存设置，不重新制作。'],confirmLabel:'确认制作',cancelLabel:'只保存设置'},signal))return {createGuide:false,choice:'without_image'};
     return {createGuide:true,budgetPower:offer?.firstGift?undefined:price};
   }
   async function act(input:JourneyInput){if(busy)return;setBusy(true);setError('');try{await onAction({...input,journeyId:j?.id});}catch(e){setError(e instanceof Error?e.message:'这一步没保存好，再试一次？');}finally{setBusy(false);}}
-  async function finishLegacy(){await act({action:'finish',...generationChoice()});}
+  async function finishWithChoice(input:JourneyInput){if(busy||generationAbort.current)return;const controller=new AbortController();generationAbort.current=controller;try{const generation=await generationChoice(controller.signal);if(!controller.signal.aborted)await act({...generation,...input});}finally{if(generationAbort.current===controller)generationAbort.current=undefined;}}
+  async function finishLegacy(){await finishWithChoice({action:'finish'});}
   useEffect(()=>{if(stage!=='ready'||!j||finishing.current===j.id)return;finishing.current=j.id;void finishLegacy();},[stage,j?.id]);
   if(stage==='complete')return null;
   if(stage==='ready')return <section className="one-onboarding" role="status"><p>{error||'在保存设置，马上就好。'}</p>{error?<button onClick={()=>void finishLegacy()} disabled={busy}>重新保存</button>:null}</section>;
@@ -50,7 +54,7 @@ export function StoryOnboarding({profile,context,offer,onBegin,onAction,onKnowle
     </>:<>
       <Sparkles size={25}/><h2 id="one-story-title">你主要想用 ONE 做什么？</h2><p>选一两个就好，之后随时能改。</p>
       <div className="story-feature-list story-purpose-list">{onboardingPurposes.map(p=><button type="button" key={p.id} disabled={busy||!chosen.includes(p.id)&&chosen.length>=2} aria-pressed={chosen.includes(p.id)} onClick={()=>setChosen(old=>old.includes(p.id)?old.filter(id=>id!==p.id):[...old,p.id])}><span><strong>{p.title}</strong><small>{p.description}</small></span>{chosen.includes(p.id)?<Check size={17}/>:null}</button>)}</div>
-      <div className="one-onboarding-actions"><button type="button" disabled={busy||!j} onClick={()=>{const generation=generationChoice();void act({action:'step',step:'features',...generation,choice:'purposes',purposeIds:chosen,experience:4});}}>{busy?'正在保存设置…':'开始使用 ONE'}<ArrowUpRight size={16}/></button></div>
+      <div className="one-onboarding-actions"><button type="button" disabled={busy||!j} onClick={()=>void finishWithChoice({action:'step',step:'features',choice:'purposes',purposeIds:chosen,experience:4})}>{busy?'正在保存设置…':'开始使用 ONE'}<ArrowUpRight size={16}/></button></div>
     </>}
     {busy?<p className="story-saving" role="status">{stage==='device'?'正在核对本机状态。':'在保存这一步，稍等一下。'}</p>:null}
     {error?<div className="one-onboarding-error" role="alert"><p>{error}</p></div>:null}
