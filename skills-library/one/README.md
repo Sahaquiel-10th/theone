@@ -1,4 +1,4 @@
-# ONE 40项技能首版
+# ONE基础功能库（46项）
 
 这批功能由 ONE 独立编写。公开项目只用于了解需求切入点，没有复制他人的提示词、代码或付费技能。
 
@@ -37,7 +37,7 @@
 
 每个目录有 SKILL.md、config.json 和参考示例。共享金额脚本在 shared/scripts/finance.mjs；报价与利润示例在 shared/examples。表格脚本在 server/skillTables.ts，通过受限工具运行，不执行用户上传的任意脚本。
 
-`node scripts/build-one-skills.mjs` 重建40项配置；提示词与选项的维护源是该脚本。`node scripts/package-one-skills.mjs` 在 output/one-skills 保存每项 ZIP 和合集。后台支持 .md，以及包含一个 SKILL.md、可选 config.json 和 Markdown 参考资料的 ZIP。
+`node scripts/build-one-skills.mjs` 重建46项配置；提示词与选项的维护源是该脚本。`node scripts/package-one-skills.mjs` 在 output/one-skills 保存每项 ZIP 和合集。后台支持 .md，以及包含一个 SKILL.md、可选 config.json 和 Markdown 参考资料的 ZIP。
 
 ## 首版边界
 
@@ -78,3 +78,7 @@
 | 项目案例与销售素材 | 素材用途、目标读者、匿名客户信息 | 写项目案例 / 提炼销售问答 | 独立提示词、文稿下载与后续修改 |
 
 工程功能只整理有依据的材料；设计选型、危险设备操作、法律与验收结论须由有权限专业人员确认。报价不生成未确认价格、税率或范围。
+
+## 日常办公新增6项
+
+功能表、导出操作和处理边界见 [办公功能说明](../../docs/ONE-OFFICE-KIT-2026-10-18.md)。包括HTML演示稿与一键导出、一句话创建Excel、按模板自动填表、跨表匹配与差异对账、数据图表与分类分析、Word正式文档排版。每项可独立配置。基础定义46项，加上运行时原有的2项视觉功能，共48项。

@@ -385,7 +385,7 @@ app.get("/api/attachments/:id", ...keyAuth, asyncRoute(async (req, res) => {
 app.get("/api/attachments/:id/content", ...keyAuth, asyncRoute(async (req, res) => {
   const attachment = ownedAttachment((await store.read()).attachments, { workspaceId: req.workspaceId!, userId: req.user!.id }, String(req.params.id));
   if ((attachment.status && attachment.status !== "ready") || !fs.existsSync(attachment.storagePath)) return res.status(404).json({ error: "附件尚未就绪", code: "NOT_FOUND" });
-  res.setHeader("Content-Type", attachment.mimeType); res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(attachment.originalName)}`); fs.createReadStream(attachment.storagePath).on("error", () => res.destroy()).pipe(res);
+  res.setHeader("Content-Type", attachment.mimeType); res.setHeader("Content-Disposition", `${attachment.officeArtifact==='slides'?'attachment':'inline'}; filename*=UTF-8''${encodeURIComponent(attachment.originalName)}`); fs.createReadStream(attachment.storagePath).on("error", () => res.destroy()).pipe(res);
 }));
 app.delete("/api/attachments/:id", ...keyAuth, asyncRoute(async (req, res) => {
   let storagePath = ""; await store.mutate((db) => { const index = db.attachments.findIndex((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id); if (index === -1) throw new Error("附件不存在"); if (db.attachments[index].messageId) throw new Error("对话中的附件不能删除"); storagePath = db.attachments[index].storagePath; db.attachments.splice(index, 1); }); if (storagePath) await removeAttachmentFiles(storagePath); res.json({ ok: true });

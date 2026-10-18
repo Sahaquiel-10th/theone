@@ -6,6 +6,17 @@ import type { Attachment, Database } from './types.js';
 import { ownedAttachment } from './attachmentService.js';
 import { tableFileToCsv } from './skillTables.js';
 import {createVisualArtifact,type SaveVisual} from './visualTools.js';
+import type {OfficeContext} from './officeTools.js';
+import {validateDeck} from './officeSlides.js';
+
+export function officeArtifactContext(store:Store,scope:{workspaceId:string;userId:string;conversationId:string},directory:string|undefined,verify:(db:Database)=>void,allowedIds:string[],onSaved?:(id:string)=>void):OfficeContext {
+ return {
+  readTable:async id=>{const d=await store.read();verify(d);return selectedTableCsv(store,scope,allowedIds,id);},
+  readOffice:async id=>{const d=await store.read();verify(d);if(!allowedIds.includes(id))throw new Error('未选择此模板');const file=ownedAttachment(d.attachments,scope,id);if(file.status!=='ready'||!/\.xlsx$/i.test(file.originalName)||file.size>2*1024*1024)throw new Error('模板需要已就绪且不超过2MB的XLSX');const bytes=await fs.readFile(file.storagePath);if(bytes.length!==file.size)throw new Error('模板文件已变化');verify(await store.read());return bytes;},
+  readSlides:async id=>{const d=await store.read();verify(d);if(!allowedIds.includes(id))throw new Error('未选择上一版演示稿');const file=ownedAttachment(d.attachments,scope,id);if(file.officeArtifact!=='slides'||file.status!=='ready'||file.size>25*1024*1024)throw new Error('上一版演示稿不可用');const html=await fs.readFile(file.storagePath,'utf8'),content=/<script id="deckData" type="application\/json">([\s\S]*?)<\/script>/.exec(html)?.[1];verify(await store.read());if(!content)throw new Error('上一版演示稿缺少完整页面内容');return validateDeck(JSON.parse(content));},
+  ...(directory?{saveOffice:async file=>{const kind=file.mime.endsWith('spreadsheetml.sheet')?'spreadsheet' as const:'document' as const;const saved=await saveFeatureArtifact(store,scope,directory,file.name,file.bytes,file.mime,kind,verify);await store.mutate(db=>{verify(db);ownedAttachment(db.attachments,scope,saved.id).officeArtifact=file.mime==='text/html'?'slides':'file';});onSaved?.(saved.id);return saved;}}:{})
+ };
+}
 
 export function visualArtifactSaver(store:Store,scope:{workspaceId:string;userId:string;conversationId:string},directory:string|undefined,verify:(db:Database)=>void,onSaved?:(id:string)=>void,welcomeImageId?:string):SaveVisual|undefined {
   if(!directory)return;
@@ -39,7 +50,7 @@ export async function selectedTableCsv(store:Store,scope:{workspaceId:string;use
 }
 export async function saveFeatureArtifact(store:Store,scope:{workspaceId:string;userId:string;conversationId:string},directory:string,name:string,bytes:Buffer,mimeType:string,kind:Attachment['kind'],verify:(db:Database)=>void){
   if(!directory||!bytes.length||bytes.length>25*1024*1024)throw new Error('成果文件存储不可用或过大');
-  const formats:Record<string,string>={'image/jpeg':'.jpg','image/webp':'.webp','image/png':'.png','image/svg+xml':'.svg','text/html':'.html','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'.xlsx'};
+  const formats:Record<string,string>={'image/jpeg':'.jpg','image/webp':'.webp','image/png':'.png','image/svg+xml':'.svg','text/html':'.html','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'.xlsx','application/vnd.openxmlformats-officedocument.presentationml.presentation':'.pptx','application/vnd.openxmlformats-officedocument.wordprocessingml.document':'.docx'};
   const extension=formats[mimeType];if(!extension)throw new Error('成果格式不支持');
   const id=uid('att');
   const storagePath=path.join(directory,id+extension);

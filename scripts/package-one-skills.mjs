@@ -4,6 +4,7 @@ import JSZip from 'jszip';
 const root=path.resolve('skills-library/one'),out=path.resolve('output/one-skills');await fs.mkdir(out,{recursive:true});
 const manifest=JSON.parse(await fs.readFile(path.join(root,'manifest.json'),'utf8')),bundle=new JSZip();
 for(const skill of manifest){const zip=new JSZip();for(const file of ['SKILL.md','config.json','references/examples.md']){const bytes=await fs.readFile(path.join(root,skill.id,file));zip.file(file,bytes);bundle.file(`本地技能/${skill.id}/${file}`,bytes);}const bytes=await zip.generateAsync({type:'nodebuffer',compression:'DEFLATE'});await fs.writeFile(path.join(out,skill.id+'.zip'),bytes);bundle.file(`后台单项导入包/${skill.id}.zip`,bytes);}
+bundle.file('办公功能说明.md',await fs.readFile('docs/ONE-OFFICE-KIT-2026-10-18.md'));
 bundle.file('本地技能/README.md',await fs.readFile(path.join(root,'README.md')));bundle.file('本地技能/manifest.json',await fs.readFile(path.join(root,'manifest.json')));
 for(const file of ['profit.json','promotion.json','quote.json'])bundle.file('本地技能/shared/examples/'+file,await fs.readFile(path.join(root,'shared/examples',file)));
 for(const file of ['finance.mjs','finance.d.mts'])bundle.file('本地技能/shared/scripts/'+file,await fs.readFile(path.join(root,'shared/scripts',file)));
@@ -20,3 +21,9 @@ if(engineering.length){
  topic.file('使用说明.txt','16项ONE独立编写的设备、工程与通用商务功能。首次部署先供管理员调试。后台单项导入请用各ZIP，外层合集用于本地备份。每项可配置自己的文字模型、选项和按钮。金额脚本复用已审查的ONE内置能力；工程与安全内容需专业人员复核。');
  await fs.writeFile(path.join(out,`ONE-设备工程与商务-${engineering.length}项.zip`),await topic.generateAsync({type:'nodebuffer',compression:'DEFLATE'}));
 }
+
+const office=manifest.filter(s=>/^one-o\d\d$/.test(s.id));
+if(office.length){const pack=new JSZip();for(const skill of office){pack.file('后台单项导入包/'+skill.id+'.zip',await fs.readFile(path.join(out,skill.id+'.zip')));for(const file of ['SKILL.md','config.json','references/examples.md'])pack.file('本地技能/'+skill.id+'/'+file,await fs.readFile(path.join(root,skill.id,file)));}
+pack.file('功能表与使用说明.md',await fs.readFile('docs/ONE-OFFICE-KIT-2026-10-18.md'));pack.file('本地技能/manifest.json',JSON.stringify(office,null,2));
+for(const file of ['officeXml.ts','officeSlides.ts','officeWorkbook.ts','officeDocument.ts','officeTools.ts'])pack.file('ONE自有运行实现/'+file,await fs.readFile('server/'+file));
+await fs.writeFile(path.join(out,'ONE-日常办公-6项.zip'),await pack.generateAsync({type:'nodebuffer',compression:'DEFLATE'}));}

@@ -47,6 +47,7 @@ export type Agent = {
 
 export type AttachmentKind = "image" | "document" | "spreadsheet" | "presentation" | "text";
 export type Attachment = {
+  officeArtifact?:'slides'|'file';
   visualDocument?:import('./visualDocument.js').VisualDocument;
   /** Owned welcome image associated server-side, never accepted from tool input. */
   welcomeImageId?:string;

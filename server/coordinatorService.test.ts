@@ -660,6 +660,20 @@ for(const interruptedSummary of [false,true])test(`two visual features return ow
   await assert.rejects(()=>service.task(b,result.taskId!));
  }finally{rmSync(directory,{recursive:true,force:true});}
 });
+for(const interrupted of [false,true])test(`office feature preserves its HTML and PPTX receipts through coordinator recovery=${interrupted}`,async()=>{
+ const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-office-checkpoint-'));let generations=0,summaries=0;
+ await f.store.mutate(d=>{const values={name:'演示稿',author:'ONE',description:'真实HTML与PPTX文件',instructions:'OFFICE_SLIDES',limitations:'私有文件',integration:'question_answer' as const,modelId:'special',knowledgeMode:'none' as const,usageMultiplier:.6,tools:[{id:'oneSlides',description:'生成两份演示文件'}]};const version={version:1,values,evidence:'test',approvedBy:'a',approvedAt:'now'};d.settings.officialFeatures=[{id:'office-slides',revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:'office-release',version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}}];});
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('no knowledge');}},{artifactDirectory:directory,modelCall:async(model,messages)=>{
+  if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('已安排演示稿'):{...answer(''),toolCalls:[{id:'dispatch',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'制作演示稿',instruction:'生成可导出的演示稿',executorId:'general',featureIds:['office-slides']})}}]};
+  if(model.id==='special'){if(messages.at(-1)?.role==='tool')return answer('两份文件已保存');generations++;return {...answer(''),toolCalls:[{id:'slides',type:'function',function:{name:'oneSlides',arguments:JSON.stringify({operation:'create',dataJson:JSON.stringify({title:'演示稿',theme:'paper',slides:[{title:'项目目标',layout:'cover'}]})})}}]};}
+  if(messages.at(-1)?.role!=='tool')return {...answer(''),toolCalls:[{id:'office-feature',type:'function',function:{name:'feature_0',arguments:JSON.stringify({query:'生成演示稿'})}}]};
+  const output=JSON.parse(messages.filter(m=>m.role==='tool').at(-1)!.content!);assert.equal(output.artifacts.length,2);assert.ok(output.artifacts.some((a:any)=>/^\/api\/office-files\/att_\w+\/view$/.test(a.openUrl)));summaries++;if(interrupted&&summaries===1)throw Error('summary interrupted');return answer('演示稿可以打开和导出');
+ }});
+ try{const result=await service.dispatch(a,input('office_receipt_12345678','请做演示稿'),key);await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state===(interrupted?'failed':'completed'));
+  if(interrupted){const task=await service.task(a,result.taskId!);assert.equal(task.conversation.messages.at(-1)!.attachments!.length,2);await service.retryLatest(a,result.taskId!,task.jobs[0].id,undefined,key);await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.at(-1)!.state==='completed');}
+  assert.equal(generations,1);assert.equal((await f.store.read()).attachments.length,2);await assert.rejects(()=>service.task(b,result.taskId!));
+ }finally{rmSync(directory,{recursive:true,force:true});}
+});
 test('structured HTML deliverable calls the reviewed renderer directly without another model or knowledge read',async()=>{
   const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-direct-contract-'));
   const scene={id:'first',title:'整理说明',situation:'需要一份说明',feature:'整理要点',advantage:'不用反复排版',benefit:'拿到清楚的网页',evidence:'打开网页核对',steps:['整理要点','打开查看'],prompt:'整理说明',capabilityIds:[]};

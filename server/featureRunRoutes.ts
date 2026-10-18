@@ -1,3 +1,4 @@
+import {installOfficeRoutes} from './officeRoutes.js';
 import express, { type Express, type RequestHandler } from "express";
 import type { Store } from "./db.js";
 import type { KnowledgeService } from "./knowledge/knowledgeService.js";
@@ -10,6 +11,7 @@ import { featureEntitled, canReadKnowledge } from "./enterprisePolicy.js";
 import { featureBudgetPolicy, saveFeatureBudgetPolicy } from './featurePricing.js';
 
 export function installFeatureRunRoutes(app: Express, keyAuth: readonly RequestHandler[], store: Store, verifyKey: (req: express.Request) => Promise<void>, knowledge: Pick<KnowledgeService, "recallWithDiagnostics">, deps: FeatureRunDependencies = {}) {
+  installOfficeRoutes(app,keyAuth,store);
   const router = express.Router();
   router.use(...keyAuth);
   router.use((_req,res,next) => { res.setHeader("Cache-Control", "no-store"); next(); });

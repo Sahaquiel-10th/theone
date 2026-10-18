@@ -27,6 +27,24 @@ function fixture(){
 }
 function publish(f:ReturnType<typeof fixture>,id:string){installOneSkillLibrary(f.db(),'a',[id]);let r=f.db().settings.officialFeatures!.find(s=>s.id===id)!;updateOfficialFeature(f.db().settings,id,{action:'approve',revision:r.revision,confirmed:true,evidence:'本次测试以合成输入验证第一版配置、收费隔离与文件输出'},'a','t');r=f.db().settings.officialFeatures!.find(s=>s.id===id)!;releaseFeature(f.db(),id,{action:'publish',revision:r.revision,version:1,userIds:['a'],confirmed:true},'a');return {operationId:'operation_1234567890',releaseId:r.release!.id,prompt:'请使用我提供的真实材料',sourceIds:[],confirmed:true,budget:.1};}
 const noKnowledge={recallWithDiagnostics:async()=>{assert.fail('unexpected knowledge');}};
+test('office slides produce both private formats; continuing a task revises only the requested page',async t=>{
+ const f=fixture(),body=publish(f,'one-o01'),directory=await fs.mkdtemp(path.join(os.tmpdir(),'one-office-feature-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+ const deck={title:'测试演示',theme:'paper',slides:[{title:'原封面',layout:'cover'},{title:'第二页',layout:'bullets',bullets:['原内容']},{title:'保留这一页',layout:'bullets',bullets:['不能丢失']} ]};
+ await startFeatureRun(f.store,f.scope,'one-o01',{...body,actionId:'generate'},async()=>{});let calls=0;
+ await executeFeatureRun(f.store,f.scope,body.operationId,async()=>{},noKnowledge,{artifactDirectory:directory,modelCall:async()=>++calls===1?{...done,content:'',toolCalls:[{id:'office',type:'function',function:{name:'oneSlides',arguments:JSON.stringify({operation:'create',dataJson:JSON.stringify(deck)})}}]}:done});
+ const r=featureRunResult(f.db(),f.scope,body.operationId);assert.equal(r.status,'completed');assert.equal(r.files!.length,2);const html=f.db().attachments.find(a=>a.officeArtifact==='slides')!;assert.match(await fs.readFile(html.storagePath,'utf8'),/导出 PowerPoint/);
+ const next=await continueFeatureRun(f.store,f.scope,body.operationId,{operationId:'office_revision_12345678',prompt:'仅把第二页改为客户确认',confirmed:true,budget:.1},async()=>{});const op=f.db().chatOperations!.find(o=>o.operationId===next.result.operationId)!;assert.equal(op.featureRun!.actionId,'revise');
+ let revisions=0;await executeFeatureRun(f.store,f.scope,op.operationId,async()=>{},noKnowledge,{artifactDirectory:directory,modelCall:async(_m,messages)=>{assert.match(JSON.stringify(messages),new RegExp(html.id));return ++revisions===1?{...done,content:'',toolCalls:[{id:'revision',type:'function',function:{name:'oneSlides',arguments:JSON.stringify({operation:'revise',dataJson:JSON.stringify({attachmentId:html.id,changes:[{page:2,slide:{title:'客户确认',layout:'bullets',bullets:['新内容']}}]})})}}]}:done;}});
+ const output=f.db().attachments.find(a=>a.conversationId===op.conversationId&&a.officeArtifact==='slides')!,text=await fs.readFile(output.storagePath,'utf8');assert.match(text,/原封面/);assert.match(text,/客户确认/);assert.match(text,/不能丢失/);assert.equal(featureRunResult(f.db(),f.scope,op.operationId).status,'completed');assert.equal(f.db().powerAccounts[1].balanceMicros,1000000);
+});
+for(const [id,tool,payload,actionId] of [
+ ['one-o02','oneWorkbook',{title:'项目表',sheets:[{name:'项目',headers:['项目','状态'],rows:[['甲','待确认']]}]},'create'],
+ ['one-o06','oneDocument',{title:'项目报告',style:'business',sections:[{heading:'目标',paragraphs:['确认本轮事项']}]},'document']
+] as const)test(`${id}: genuine owned office output is required for a completed generation`,async t=>{
+ const f=fixture(),body=publish(f,id),directory=await fs.mkdtemp(path.join(os.tmpdir(),'one-office-file-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));let calls=0;await startFeatureRun(f.store,f.scope,id,{...body,actionId},async()=>{});await executeFeatureRun(f.store,f.scope,body.operationId,async()=>{},noKnowledge,{artifactDirectory:directory,modelCall:async()=>++calls===1?{...done,content:'',toolCalls:[{id:'save',type:'function',function:{name:tool,arguments:JSON.stringify({operation:'create',dataJson:JSON.stringify(payload)})}}]}:done});assert.equal(featureRunResult(f.db(),f.scope,body.operationId).status,'completed');assert.equal(f.db().attachments.length,1);
+ const g=fixture(),missing=publish(g,id);await startFeatureRun(g.store,g.scope,id,{...missing,actionId},async()=>{});await executeFeatureRun(g.store,g.scope,missing.operationId,async()=>{},noKnowledge,{artifactDirectory:directory,modelCall:async()=>done});assert.equal(featureRunResult(g.db(),g.scope,missing.operationId).status,'failed');
+});
+test('outline is a deliberate planning action and does not pretend to create a file',async()=>{const f=fixture(),body=publish(f,'one-o01');await startFeatureRun(f.store,f.scope,'one-o01',{...body,actionId:'outline'},async()=>{});await executeFeatureRun(f.store,f.scope,body.operationId,async()=>{},noKnowledge,{modelCall:async()=>done});assert.equal(featureRunResult(f.db(),f.scope,body.operationId).status,'completed');assert.equal(f.db().attachments.length,0);});
 for(const id of ['one-visual-html','one-visual-flow'])test(`${id}: published normal feature really calls its function, saves a private artifact and preserves owner isolation`,async t=>{
  const f=fixture(),body=publish(f,id),directory=await fs.mkdtemp(path.join(os.tmpdir(),'one-visual-feature-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
  const scene={id:'first',title:'整理方案',situation:'开会前要讲清方案。',feature:'整理现有材料。',advantage:'不用重复搬运。',benefit:'拿到清晰提纲。',evidence:'对照原资料检查。',steps:['告诉 ONE 目标。','检查结果。'],prompt:'把方案整理清楚。',capabilityIds:[]};
@@ -42,11 +60,11 @@ for(const id of ['one-visual-html','one-visual-flow'])test(`${id}: model promise
  await executeFeatureRun(f.store,f.scope,body.operationId,async()=>{},noKnowledge,{modelCall:async()=>done});
  const result=featureRunResult(f.db(),f.scope,body.operationId);assert.equal(result.status,'failed');assert.equal(f.db().attachments.length,0);assert.ok(result.error);
 });
-test('42 first-party recipes have distinct controls, valid defaults and idempotent installation',()=>{
- const f=fixture();assert.equal(oneSkillLibrary.length,42);assert.equal(new Set(oneSkillLibrary.map(s=>s.id)).size,42);
+test('48 first-party recipes have distinct controls, valid defaults and idempotent installation',()=>{
+ const f=fixture();assert.equal(oneSkillLibrary.length,48);assert.equal(new Set(oneSkillLibrary.map(s=>s.id)).size,48);
  for(const recipe of oneSkillLibrary){validateFeatureExperience(recipe.values.experience);assert.ok(composeFeatureTask(recipe.values.experience,'我的任务',{},undefined));assert.equal(recipe.values.author,'ONE');}
  assert.throws(()=>installOneSkillLibrary(f.db(),'b'),/无权/);
- assert.equal(installOneSkillLibrary(f.db(),'a').added.length,42);const record=f.db().settings.officialFeatures![0];record.draft.instructions='用户修改的独立版本';assert.equal(installOneSkillLibrary(f.db(),'a').existing.length,42);assert.equal(record.draft.instructions,'用户修改的独立版本');assert.equal(f.db().settings.officialFeatures!.every(s=>!s.release&&s.status==='draft'),true);
+ assert.equal(installOneSkillLibrary(f.db(),'a').added.length,48);const record=f.db().settings.officialFeatures![0];record.draft.instructions='用户修改的独立版本';assert.equal(installOneSkillLibrary(f.db(),'a').existing.length,48);assert.equal(record.draft.instructions,'用户修改的独立版本');assert.equal(f.db().settings.officialFeatures!.every(s=>!s.release&&s.status==='draft'),true);
 });
 test('options reject forged fields, languages, numeric ranges, script fields and invalid actions',()=>{
  const e=oneSkillLibrary.find(s=>s.id==='one-g04')!.values.experience!;
@@ -116,11 +134,11 @@ test('ONE ZIP preserves options and reviewed tools but drops uploaded model bind
  const recipe=oneSkillLibrary[0],zip=new JSZip();zip.file('SKILL.md','---\nname: demo\ndescription: 功能测试\n---\n示例说明');zip.file('config.json',JSON.stringify({...recipe,values:{...recipe.values,modelId:'untrusted'}}));const r=await importSkill(await zip.generateAsync({type:'nodebuffer'}),'skill.zip');assert.equal(r.values?.name,recipe.values.name);assert.equal('modelId' in r.values!,false);assert.equal(r.values?.tools?.[0].id,'oneFinance');assert.ok(r.values?.experience?.inputs.length);
 });
 
-test('first edition bootstraps only missing skills, opens admin testing and preserves operator changes',()=>{const f=fixture();const first=bootstrapOneSkills(f.db());assert.equal(first.added.length,42);assert.equal(first.opened.length,42);for(const s of f.db().settings.officialFeatures!)assert.deepEqual(s.release?.userIds,['a']);assert.throws(()=>availableFeature(f.db(),{workspaceId:'wb',userId:'b'},'one-g04'));const r=f.db().settings.officialFeatures![0];delete r.release;r.draft.instructions='管理员自己的修改';assert.equal(bootstrapOneSkills(f.db()).added.length,0);assert.equal(r.release,undefined);assert.equal(r.draft.instructions,'管理员自己的修改');});
+test('first edition bootstraps only missing skills, opens admin testing and preserves operator changes',()=>{const f=fixture();const first=bootstrapOneSkills(f.db());assert.equal(first.added.length,48);assert.equal(first.opened.length,48);for(const s of f.db().settings.officialFeatures!)assert.deepEqual(s.release?.userIds,['a']);assert.throws(()=>availableFeature(f.db(),{workspaceId:'wb',userId:'b'},'one-g04'));const r=f.db().settings.officialFeatures![0];delete r.release;r.draft.instructions='管理员自己的修改';assert.equal(bootstrapOneSkills(f.db()).added.length,0);assert.equal(r.release,undefined);assert.equal(r.draft.instructions,'管理员自己的修改');});
 
 test('a full existing catalog cannot make first-party bootstrap stop application startup',()=>{const f=fixture();f.db().settings.officialFeatures=Array.from({length:100},(_,i)=>({id:'existing-'+i})) as any;assert.equal(bootstrapOneSkills(f.db()).added.length,0);assert.equal(f.db().settings.officialFeatures!.length,100);});
 
-test('upgrading the 24-skill catalog installs 18 additions without altering releases or operator drafts',()=>{
+test('upgrading the 24-skill catalog installs 24 additions without altering releases or operator drafts',()=>{
  const f=fixture(),previous=oneSkillLibrary.filter(s=>/^one-[sgv]\d/.test(s.id)).map(s=>s.id);
  assert.equal(previous.length,24);installOneSkillLibrary(f.db(),'a',previous);
  const original=f.db().settings.officialFeatures!.find(s=>s.id==='one-g04')!;
@@ -129,7 +147,7 @@ test('upgrading the 24-skill catalog installs 18 additions without altering rele
  const approved=f.db().settings.officialFeatures!.find(s=>s.id===original.id)!;
  releaseFeature(f.db(),original.id,{action:'publish',revision:approved.revision,version:1,userIds:['a','b'],confirmed:true},'a');
  const before=structuredClone(f.db().settings.officialFeatures);
- const result=bootstrapOneSkills(f.db());assert.equal(result.added.length,18);assert.equal(result.opened.length,18);
+ const result=bootstrapOneSkills(f.db());assert.equal(result.added.length,24);assert.equal(result.opened.length,24);
  assert.deepEqual(f.db().settings.officialFeatures!.filter(s=>previous.includes(s.id)),before);
  assert.throws(()=>availableFeature(f.db(),{workspaceId:'wb',userId:'b'},'one-p02'));
  assert.equal(bootstrapOneSkills(f.db()).added.length,0);
