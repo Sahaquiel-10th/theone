@@ -38,7 +38,7 @@ async function main() {
   const response = await fetch(endpoint, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(90_000),
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify({ model: model.model, stream: true, store: false, max_output_tokens: 1800,
-      tools: [{ type: tool }], tool_choice: 'required',
+      tools: [{ type: tool }], tool_choice: 'required', include: ['web_search_call.action.sources'],
       input: 'Perform one real web search to find the official MDN Geolocation API documentation. In at most two sentences, say whether browser geolocation requires user permission and cite the MDN source. Use only this public question. Do not create files, use other tools, or pretend to search if web search is unavailable.' }) });
   const requestIdValue = response.headers.get('x-request-id');
   const requestId = requestIdValue && /^[A-Za-z0-9_.:-]{1,160}$/.test(requestIdValue) && !requestIdValue.startsWith('sk-') ? requestIdValue : undefined;
