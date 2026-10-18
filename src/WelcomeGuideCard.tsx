@@ -19,7 +19,7 @@ export function WelcomeGuideCard({id,title,showShareAction=false}:{id:string;tit
     const image=new window.Image();await new Promise<void>((resolve,reject)=>{image.onload=()=>resolve();image.onerror=()=>reject(new Error('大图暂时没保存好，可以先保存网页。'));image.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(p.svg);});const canvas=document.createElement('canvas');canvas.width=p.width;canvas.height=p.height;const ctx=canvas.getContext('2d');if(!ctx)throw new Error('当前浏览器无法导出大图，可以先保存网页。');ctx.drawImage(image,0,0);const bytes=await new Promise<Blob|null>(resolve=>canvas.toBlob(resolve,'image/png'));if(!bytes)throw new Error('大图暂时没保存好，可以先保存网页。');download(bytes,p.name.replace(/\.svg$/,'.png'));
   }catch(e){setError(e instanceof Error?e.message:'大图暂时没保存好。');}finally{setBusy(false);}}
   async function publish(){
-    if(!window.confirm('创建分享链接后，拿到链接的人能看到你的称呼、说明图片、用途和已连接平台名称。不含知识正文、聊天记录或本地文件。链接 7 天有效，你可以随时关闭。确定分享吗？'))return;
+    if(!window.confirm('创建分享链接后，拿到链接的人能看到整份使用说明，包括称呼、图片、用途、已连接平台和文中提到的分身名称。不含知识正文、聊天记录或本地文件。链接 7 天有效，你可以随时关闭。确定分享吗？'))return;
     setBusy(true);setError('');try{const p=await api<{url:string}>(`/api/welcome-pages/${encodeURIComponent(id)}/share`,{method:'POST',body:JSON.stringify({confirm:true})});setShare(new URL(p.url,window.location.origin).href);setPreview(old=>old?{...old,shared:true}:old);}catch(e){setError(e instanceof Error?e.message:'分享暂时没创建好。');}finally{setBusy(false);}
   }
   async function revoke(){setBusy(true);setError('');try{await api(`/api/welcome-pages/${encodeURIComponent(id)}/share`,{method:'DELETE'});setShare('');setPreview(old=>old?{...old,shared:false}:old);}catch(e){setError(e instanceof Error?e.message:'分享暂时没关闭。');}finally{setBusy(false);}}
