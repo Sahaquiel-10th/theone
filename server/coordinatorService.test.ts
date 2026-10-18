@@ -16,7 +16,7 @@ import type { NotionMcpService } from './knowledge/notionMcpService.js';
 import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
 import { executorDefaults, updateExecutor } from "./executorProfiles.js";
 import { beginChatOperation,reconcileInterruptedChatOperations } from "./chatOperations.js";
-import { MODEL_MAX_OUTPUT_TOKENS, type ModelToolMessage, type ModelToolDefinition, type ToolChatResult } from "./modelGateway.js";
+import { MODEL_MAX_OUTPUT_TOKENS, ModelRequestError, type ModelToolMessage, type ModelToolDefinition, type ToolChatResult } from "./modelGateway.js";
 
 test('main-chat display history is scoped and retains old task links, separate from task pagination',async()=>{
  const f=fixture();await f.store.mutate(d=>{
@@ -1079,6 +1079,19 @@ test('a bare promise is repaired in the same turn into a real durable receipt, a
  const replay=await f.service.dispatch(a,request,key);assert.deepEqual(replay.taskIds,result.taskIds);assert.equal(turns,3);
  assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun?.parentOperationId===request.operationId).length,1);
  await assert.rejects(()=>f.service.task(b,result.taskIds[0]));
+});
+test('friendly provider feedback is durable, but revocation immediately before save cannot leave pending or leak a reply',async()=>{
+ for(const revoke of [false,true]){
+  const f=fixture();let threw=false,armed=false,calls=0;
+  f.setRoute(()=>{calls++;threw=true;throw new ModelRequestError(503,'暂时无法连接');});
+  const read=f.store.read.bind(f.store);
+  f.store.read=async()=>{const snapshot=await read();if(armed){armed=false;await f.store.mutate(d=>{d.users.find(u=>u.id===a.userId)!.enabled=false;});}return snapshot;};
+  const verify=async()=>{if(revoke&&threw){armed=true;threw=false;}};
+  const request=input(`operation_provider_feedback_${revoke}`,'只整理合成测试资料');
+  if(revoke){await assert.rejects(()=>f.service.dispatch(a,request,verify),/账号或空间不可用/);const db=await read();assert.equal(db.chatOperations!.find(o=>o.operationId===request.operationId)!.status,'failed');assert.equal(db.messages.filter(m=>m.role==='assistant').length,0);}
+  else{const reply=await f.service.dispatch(a,request,verify);assert.match(reply.message.content,/中断.*核对/);assert.equal(reply.taskIds.length,0);await f.service.dispatch(a,request,verify);}
+  assert.equal(calls,1);
+ }
 });
 test('a real clarification is not forced into execution; unavailable card is repaired or returned with a next step',async()=>{
  const question=fixture();question.setRoute(()=>answer('这张图想用什么风格？'));

@@ -1044,9 +1044,11 @@ export class CoordinatorService {
       // Re-check Key, membership, source grants and cancellation before writing.
       const reason=error instanceof CoordinatorError||error instanceof FeatureConfigError||error instanceof ModelRequestError||error instanceof OrchestrationInputError?error.message:'';
       if(verifyRouting&&(error instanceof OrchestrationInputError||error instanceof FeatureConfigError&&/功能未开放|发布版本/.test(reason)||error instanceof ModelRequestError||/图片生成尚未配置/.test(reason))){
-        try {await verifyRouting();}catch(verificationError){await failChatOperation(this.store,scope);throw verificationError;}
+        try {
+        await verifyRouting();
         const feedback=coordinatorRecoveryCopy(error instanceof ModelRequestError?'模型回复中断':reason||'回复中断');
         return await this.finishDispatch(s,scope.operationId,cid,requestId,content,feedback,config.model.id,trace,undefined,[...sections,{key:'current_input',title:'本轮未开始的原因',content:JSON.stringify({code:error instanceof OrchestrationInputError?'TOOL_INPUT_REPAIR':error instanceof ModelRequestError?'MODEL_UNAVAILABLE':'DISPATCH_NOT_STARTED'})}],capturedResults,assertRouting);
+        }catch(verificationError){await failChatOperation(this.store,scope);throw verificationError;}
       }
       // Failed routing is still a real, possibly billed attempt. Keep the same
       // owner's diagnostic record even when no worker was created. Never store
