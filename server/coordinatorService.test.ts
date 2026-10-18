@@ -81,14 +81,14 @@ test('on-demand capability discovery is scoped, fresh, read-only and does not st
  assert.equal(db.chatOperations!.filter(op=>op.workRun).length,0);assert.ok(db.modelUsageRecords.every(row=>row.activity==='coordinator'));
  assert.doesNotMatch(JSON.stringify(result),/PRIVATE_FEATURE_INSTRUCTIONS|discovery-78/);
 });
-test('a discovered entitled feature can actually be delegated and billed once, not merely named in an answer',async()=>{
+for(const delegateName of ['delegate_tasks','delegate_task'])test(`a discovered entitled feature can actually be delegated and billed once through ${delegateName}, not merely named in an answer`,async()=>{
  const f=fixture();let routeCalls=0,featureCalls=0;
  await f.store.mutate(d=>{const values={name:'观测排期',author:'ONE',description:'安排望远镜观测',instructions:'只处理合成观测排期',limitations:'不联网',integration:'question_answer' as const,modelId:'special',usageMultiplier:.6,discovery:{aliases:['星轨排期']}};const version={version:1,values,evidence:'synthetic',approvedBy:'a',approvedAt:'now'};d.settings.officialFeatures=[{id:'discover-run',revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:'release-observe',version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}}];});
  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('must not query');}},{modelCall:async(model,messages)=>{
   if(model.id==='router'){
    routeCalls++;
    if(routeCalls===1)return {...answer(''),toolCalls:[{id:'find',type:'function',function:{name:'discover_capabilities',arguments:JSON.stringify({query:'星轨排期'})}}]};
-   if(routeCalls===2){assert.equal(JSON.parse(messages.at(-1)!.content!).items[0].featureId,'discover-run');return {...answer(''),toolCalls:[{id:'delegate',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'合成排期',instruction:'只安排今晚20时观测，不联网',executorId:'general',outputKind:'text',featureIds:['discover-run'],dependsOn:[]}]})}}]};}
+   if(routeCalls===2){assert.equal(JSON.parse(messages.at(-1)!.content!).items[0].featureId,'discover-run');const task={taskId:null,title:'合成排期',instruction:'只安排今晚20时观测，不联网',executorId:'general',featureIds:['discover-run']};return {...answer(''),toolCalls:[{id:'delegate',type:'function',function:{name:delegateName,arguments:JSON.stringify(delegateName==='delegate_task'?task:{tasks:[{...task,outputKind:'text',dependsOn:[]}]})}}]};}
    return answer('已安排，结果会留在任务区');
   }
   if(model.id==='special'){featureCalls++;return answer('今晚20时观测，合成排期已整理。');}
@@ -99,6 +99,16 @@ test('a discovered entitled feature can actually be delegated and billed once, n
  await service.resume(a,key);await waitFor(async()=>(await service.task(a,reply.taskIds[0])).jobs[0].state==='completed');
  assert.equal(featureCalls,1);const db=await f.store.read();assert.equal(db.modelUsageRecords.filter(row=>row.featurePriceSnapshot?.id==='discover-run').length,1);
  await service.resume(a,key);assert.equal(featureCalls,1);await assert.rejects(()=>service.task(b,reply.taskIds[0]));
+});
+test('single-task function selection cannot bypass entitlement, pause or multiplier approval',async()=>{
+ for(const mode of ['foreign','paused','approval'] as const){
+  const f=fixture();
+  await f.store.mutate(d=>{const values={name:'专门功能',author:'ONE',description:'合成验收',instructions:'不得执行',limitations:'合成资料',integration:'question_answer' as const,modelId:'special',usageMultiplier:mode==='approval'?3:.6};const version={version:1,values,evidence:'test',approvedBy:'a',approvedAt:'now'};d.settings.officialFeatures=[{id:'restricted',revision:1,draft:values,status:mode==='paused'?'paused':'approved',current:version,history:[version],release:{id:'restricted-release',version:1,userIds:[mode==='foreign'?'b':'a'],publishedAt:'now',publishedBy:'a'}}];});
+  f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('未分派，先检查可用范围。'):{...answer(''),toolCalls:[{id:'denied',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'隔离检查',instruction:'只做合成检查',executorId:'general',featureIds:['restricted']})}}]});
+  const dispatch=()=>f.service.dispatch(a,input(`operation_single_restrict_${mode}`,'新建合成检查'),key);
+  if(mode==='approval')await assert.rejects(dispatch,/超过你的 2 倍门槛/);else await dispatch();
+  assert.equal((await f.store.read()).chatOperations!.filter(op=>op.workRun).length,0,mode);
+ }
 });
 test('one request runs two tasks concurrently and feeds their durable results into the next answer once',async()=>{
  const f=fixture();
@@ -603,7 +613,11 @@ test('two visual features give the summarizing worker actual owned artifact URLs
   return {id:`visual-${i}`,revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:`release-${i}`,version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}};
  });});
  let summaries=0;
- const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('must not read');}},{artifactDirectory:directory,modelCall:async(model,messages)=>{
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('must not read');}},{artifactDirectory:directory,modelCall:async(model,messages,tools)=>{
+  if(model.id==='router'){
+   const schema=tools.find(tool=>tool.function.name==='delegate_task')!.function.parameters as {required:string[]};assert.ok(schema.required.includes('featureIds'));
+   return messages.at(-1)?.role==='tool'?answer('两份文件已安排在同一件任务'):{...answer(''),toolCalls:[{id:'single-two-features',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'合成双文件指南',instruction:'生成同一指南的流程图与网页',executorId:'general',featureIds:['visual-0','visual-1']})}}]};
+  }
   if(model.id==='special'){
    if(messages.at(-1)?.role==='tool')return answer('文件已保存');
    const tool=messages[0].content!.includes('VISUAL_FEATURE_0')?'oneFlowchart':'oneHtml';
@@ -617,7 +631,7 @@ test('two visual features give the summarizing worker actual owned artifact URLs
   summaries++;return answer('两份文件都已保存');
  }});
  try{
-  const result=await f.service.dispatch(a,{...input('operation_visual_links_01','两个功能合做一份指南'),featureIds:['visual-0','visual-1'],confirmedExternal:true},key);
+  const result=await service.dispatch(a,input('operation_visual_links_01','两个功能合做一份指南，无需用户手动勾选'),key);
   await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='completed');
   assert.equal(summaries,1);assert.equal((await f.store.read()).attachments.length,2);
   await assert.rejects(()=>service.task(b,result.taskId!));
