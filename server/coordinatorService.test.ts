@@ -748,6 +748,31 @@ test('discovered builtin image card in legacy featureIds creates an actual priva
   await service.dispatch(a,request,key);assert.equal(images,1);await assert.rejects(()=>service.task(b,reply.taskIds[0]));
  }finally{rmSync(f.directory,{recursive:true,force:true});}
 });
+for(const direct of [false,true])test(`image → webpage embeds the actual owned prerequisite bytes, not a placeholder (direct=${direct})`,async()=>{
+ let images=0;const f=await imageFixture(async()=>({content:'',imageUrl:imageFixturePng}));
+ const scene={id:'first',title:'休息一下',situation:'工作间隙想缓一缓',feature:'喝一杯水',advantage:'不用复杂准备',benefit:'重新找回节奏',evidence:'看真实配图',steps:['放下手头工作','喝水休息'],prompt:'休息一下',capabilityIds:[]};
+ const document={version:1 as const,title:'合成休息指南',intro:'图和说明放在一起',scenes:[scene,{...scene,id:'second',title:'伸展一下'}]};
+ await f.store.mutate(d=>{const values={name:'交互网页',author:'ONE',description:'整理网页',instructions:'调用 oneHtml 保存网页',limitations:'不读取外部资料',integration:'question_answer' as const,modelId:'special',knowledgeMode:'none' as const,usageMultiplier:.6,tools:[{id:'oneHtml',description:'生成网页'}]};const version={version:1,values,evidence:'test',approvedBy:'a',approvedAt:'now'};d.settings.officialFeatures=[{id:'image-page',revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:'page-release',version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}}];});
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('no knowledge');}},{artifactDirectory:f.directory,imageCall:async()=>{images++;return{content:'',imageUrl:imageFixturePng};},modelCall:async(model,messages)=>{
+  if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('两件事已经接到。'):{...answer(''),toolCalls:[{id:'image-page',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'合成配图',instruction:'画一个圆圈',executorId:'general',outputKind:'image',featureIds:['builtin:image_generation'],dependsOn:[]},{taskId:null,title:'合成网页',instruction:'把真图放进网页，不使用占位图',executorId:direct?'direct':'general',outputKind:'text',capabilityIds:['feature:image-page'],featureIds:[],dependsOn:[0],requiredTools:['oneHtml'],...(direct?{direct:{tool:'oneHtml',document}}:{})}]})}}]};
+  if(messages.at(-1)?.role==='tool')return answer(model.id==='special'?'网页已保存':JSON.stringify({outcome:'completed',content:'网页做好了。',summary:'包含真实配图'}));
+  return {...answer(''),toolCalls:[{id:model.id==='special'?'html':'feature',type:'function',function:{name:model.id==='special'?'oneHtml':'feature_0',arguments:JSON.stringify(model.id==='special'?document:{query:'生成包含前置真图的网页'})}}]};
+ }});
+ try{
+  const request={...input(`operation_image_page_${direct}`,'只用合成资料画图，再做网页'),budget:1};const reply=await service.dispatch(a,request,key);assert.equal(reply.taskIds.length,2);
+  await service.resume(a,key);await waitFor(async()=>(await service.task(a,reply.taskIds[1])).jobs[0].state==='completed').catch(async()=>assert.fail(JSON.stringify((await service.task(a,reply.taskIds[1])).jobs)));
+  const db=await f.store.read(),page=db.attachments.find(a=>a.mimeType==='text/html')!,image=db.attachments.find(a=>a.kind==='image')!;
+  assert.ok(page&&image);assert.equal(images,1);assert.ok(readFileSync(page.storagePath,'utf8').includes(`src="${imageFixturePng}"`));assert.equal(page.welcomeGuide,undefined,'normal work is not an onboarding gift');
+  const parent=db.chatOperations!.find(o=>o.workRun?.kind==='image')!;
+  const {visualArtifactSaver}=await import('./featureArtifacts.js');
+  const foreign=visualArtifactSaver(f.store,{...b,conversationId:'foreign'},f.directory,()=>{},undefined,undefined,[parent.operationId])!;
+  await assert.rejects(()=>foreign(document,'html'),/前面的结果/);
+  await service.dispatch(a,request,key);assert.equal(images,1);await assert.rejects(()=>service.task(b,reply.taskIds[1]));
+  await f.store.mutate(d=>{d.attachments=d.attachments.filter(a=>a.id!==image.id);});
+  const missing=visualArtifactSaver(f.store,{...a,conversationId:reply.taskIds[1]},f.directory,()=>{},undefined,undefined,[parent.operationId])!;
+  await assert.rejects(()=>missing(document,'html'),/图片暂时找不到/);assert.equal(images,1,'missing image is not a reason to buy another one');
+ }finally{rmSync(f.directory,{recursive:true,force:true});}
+});
 test('failed image shows a safe reason and explicit retry reuses its task with one new billed attempt',async()=>{
   let calls=0,fail=true;const f=await imageFixture(async()=>{calls++;if(fail)throw new ChatImageGatewayError('authorization',403);return {content:'图片好了',imageUrl:imageFixturePng};});
   try{
