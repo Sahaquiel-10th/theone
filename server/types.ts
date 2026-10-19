@@ -60,7 +60,7 @@ export type Attachment = {
   status?: "uploading" | "queued" | "parsing" | "ready" | "failed";
   uploadedBytes?: number; parseError?: string; textChars?: number; segmentCount?: number;
 };
-export type AttachmentSummary = Pick<Attachment, "id" | "originalName" | "mimeType" | "kind" | "size" | "status" | "uploadedBytes" | "parseError" | "textChars" | "segmentCount"> & {welcomeGuide?:boolean;visualDocument?:boolean};
+export type AttachmentSummary = Pick<Attachment, "id" | "originalName" | "mimeType" | "kind" | "size" | "status" | "uploadedBytes" | "parseError" | "textChars" | "segmentCount" | "officeArtifact"> & {welcomeGuide?:boolean;visualDocument?:boolean};
 export type SearchSource = { title: string; url: string; snippet: string };
 export type SystemSettings = { membershipOnlyRollout?: { id: string; activatedAt: string; giftedUsers: number }; membershipTrialRollout?: string; membershipBilling?: import("./memberships.js").MembershipCatalog; executorProfiles?: import('./executorProfiles.js').ExecutorProfile[]; safetyRules: string; rechargeCnyPerPower: number; aiTasks?: import("./aiTaskConfig.js").AiTaskConfigs; officialFeatures?: import("./officialFeatures.js").OfficialFeatureRecord[];publicCommercePolicy?:import('./publicSharingTypes.js').PublicCommercePolicy };
 

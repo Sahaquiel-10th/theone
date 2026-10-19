@@ -14,6 +14,7 @@ import {ThingsPanel} from './ThingsPanel';
 import {TaskReadAllButton} from './TaskReadAllButton';
 import {StoryOnboarding} from './StoryOnboarding';
 import {WelcomeGuideCard} from './WelcomeGuideCard';
+import {AttachmentActions} from './AttachmentActions';
 import {SavedWelcomeGuides} from './SavedWelcomeGuides';
 import {AccountPreferencesLayout} from './AccountPreferencesLayout';
 import './welcome-guide.css';
@@ -193,6 +194,7 @@ type Message = {
 };
 
 type AttachmentSummary = {
+  officeArtifact?:'slides'|'file';
   welcomeGuide?:boolean;visualDocument?:boolean;
   id: string;
   originalName: string;
@@ -459,6 +461,7 @@ function AttachmentList({ attachments, removable, onRemove, onRetry }: {
           <span className="attachment-meta">
             <strong title={attachment.originalName}>{attachment.originalName}</strong>
             <small title={attachment.parseError}>{attachment.status === "uploading" ? `上传 ${Math.floor((attachment.uploadedBytes || 0) / attachment.size * 100)}%` : attachment.status === "queued" ? "等待解析" : attachment.status === "parsing" ? "正在解析" : attachment.status === "failed" ? "解析失败" : readableFileSize(attachment.size)}</small>
+            {!removable?<AttachmentActions file={attachment}/>:null}
           </span>
           {removable && attachment.status === "failed" && onRetry ? <button className="attachment-retry" type="button" title="重试解析" onClick={() => onRetry(attachment)}>重试</button> : null}
           {removable && attachment.status !== "uploading" ? (

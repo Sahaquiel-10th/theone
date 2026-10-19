@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildConversationAttachmentContext, restoreConversationMessages, selectConversationAttachments,detachConversationAttachments } from "./conversationAttachments.js";
+import { buildConversationAttachmentContext, restoreConversationMessages, selectConversationAttachments,detachConversationAttachments,publicAttachmentSummary } from "./conversationAttachments.js";
 import type { Attachment, Conversation, Database, MessageRecord } from "./types.js";
 
 const createdAt = "2026-09-01T00:00:00.000Z";
+
+test('office viewer marker survives safe summaries and scoped restoration without exposing file internals',()=>{
+ const file=attachment('slides',{officeArtifact:'slides',mimeType:'text/html',status:'ready'});
+ const summary=publicAttachmentSummary(file);assert.equal(summary.officeArtifact,'slides');assert.doesNotMatch(JSON.stringify(summary),/storagePath|private\/mock|contents/);
+ const own=database([file],[message('own',['slides'])]);assert.equal(restoreConversationMessages(own.conversations[0],own.messages,own.attachments)[0].attachments?.[0].officeArtifact,'slides');
+ assert.equal(restoreConversationMessages({...own.conversations[0],userId:'other'},own.messages,own.attachments).length,0);
+ assert.equal(restoreConversationMessages({...own.conversations[0],workspaceId:'other'},own.messages,own.attachments).length,0);
+});
 
 test('explicit server handoff survives source deletion but corrupt references do not grant another conversation access',()=>{
  const file=attachment('shared',{conversationId:'conversation-a',sharedConversationIds:['task-a']});const db=database([file],[message('source',['shared']),message('target',['shared'],{conversationId:'task-a'})]);

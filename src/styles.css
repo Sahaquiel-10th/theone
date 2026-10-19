@@ -901,6 +901,12 @@ pre {
   font-size: 10px;
 }
 
+.attachment-chip:has(.attachment-actions) { height: auto; min-height: 62px; }
+.attachment-actions { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 12px; }
+.attachment-actions a { color: #48583b; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.attachment-actions a:hover, .attachment-actions a:focus-visible { color: #202b18; background: #eef1e7; }
+.things-thread-messages .attachment-actions { margin: 10px 0; }
+
 .attachment-chip > button {
   width: 24px;
   height: 24px;
