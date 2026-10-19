@@ -21,6 +21,9 @@ export function featureEntitled(db: Database, scope: EnterpriseScope, f: Officia
   const member = activeMember(db, scope);
   if (!member || !db.users.some(u => u.id === scope.userId && u.enabled) || !db.workspaces.some(w => w.id === scope.workspaceId && w.status === "active")) return false;
   if (f.workspaceId && f.workspaceId !== scope.workspaceId) return false;
+  // Public capability access never grants access to another user's inputs,
+  // knowledge, files or credentials. Those remain independently scoped.
+  if (!f.workspaceId && f.release?.audience === 'all') return true;
   if (companyWorkspace(db, scope.workspaceId)) {
     return !!f.companyReleases?.some(r=>r.workspaceId===scope.workspaceId) && (member.role === "owner" || !!member.permissions?.featureIds.includes(f.id));
   }
@@ -29,7 +32,7 @@ export function featureEntitled(db: Database, scope: EnterpriseScope, f: Officia
 export function featureRelease(db: Database, scope: EnterpriseScope, f: OfficialFeatureRecord) {
   if(companyWorkspace(db,scope.workspaceId)) {
     const release=f.companyReleases?.find(r=>r.workspaceId===scope.workspaceId);
-    return release ? {...release,userIds:[] as string[]} : undefined;
+    return release ? {...release,userIds:[] as string[]} : !f.workspaceId && f.release?.audience === 'all' ? f.release : undefined;
   }
   return f.release;
 }

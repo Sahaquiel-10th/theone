@@ -31,7 +31,7 @@ export type OfficialFeatureRecord = {
   id: string; revision: number; draft: OfficialFeatureValues;
   status: "draft" | "approved" | "paused";
   current?: OfficialFeatureVersion; history: OfficialFeatureVersion[];
-  release?: { id: string; version: number; userIds: string[]; publishedAt: string; publishedBy: string };
+  release?: { id: string; version: number; audience?: 'all'; userIds: string[]; publishedAt: string; publishedBy: string };
 };
 export class FeatureConfigError extends Error {
   constructor(message: string, readonly status = 400) { super(message); }

@@ -197,7 +197,7 @@ test('HTTP retry needs Key and owner, ignores client input substitution and retu
 });
 test('publication requires approval/admin; immutable released version survives drafts; pause does not auto-resume',()=>{
   const f=fixture(),record=f.db().settings.officialFeatures![0];
-  assert.throws(()=>availableFeature(f.db(),{workspaceId:'wb',userId:'b'},'research'));
+  assert.equal(availableFeature(f.db(),{workspaceId:'wb',userId:'b'},'research').record.release?.audience,'all');
   assert.throws(()=>releaseFeature(f.db(),'research',{action:'publish',revision:record.revision,version:1,userIds:['a'],confirmed:true},'a'));
   updateOfficialFeature(f.db().settings,'research',{action:'save',revision:record.revision,values:{...record.draft,instructions:'changed',category:'research'}},'b','t');
   assert.equal(availableFeature(f.db(),f.scope,'research').version.values.instructions,'根据工具结果回答');
@@ -258,7 +258,7 @@ test('concurrent distinct requests have one claimant; restart interrupts without
   assert.equal(featureRunResult(f.db(),f.scope,f.body.operationId).status,'interrupted');
   assert.equal((await startFeatureRun(f.store,f.scope,'research',f.body,async()=>{})).created,false);
 });
-test('HTTP consumer routes require Key, separate recipients and hide definitions; async receipt survives refresh',async t=>{
+test('HTTP public features require Key, isolate user data and hide definitions; async receipt survives refresh',async t=>{
   const f=fixture();const app=express();app.use(express.json());
   installFeatureRunRoutes(app,[(req,res,next)=>{if(req.headers['x-key']!=='present'){res.sendStatus(428);return;}const b=req.headers['x-account']==='b';req.user={id:b?'b':'a'} as any;req.workspaceId=b?'wb':'wa';next();}],f.store,async()=>{},noKnowledge,{modelCall:async()=>done});
   const server=app.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});
@@ -272,15 +272,17 @@ test('HTTP consumer routes require Key, separate recipients and hide definitions
   assert.equal((await(await fetch(url+'/budget-policy',{headers:{...headers,'x-account':'b'}})).json()).approvalThreshold,2);
   assert.equal((await fetch(url+'/budget-policy',{method:'POST',headers,body:JSON.stringify({approvalThreshold:-1})})).status,400);
   const quote=await(await fetch(url+'/quote',{method:'POST',headers,body:JSON.stringify({featureIds:['research']})})).json();assert.equal(quote.features[0].multiplier,.6);
-  assert.equal((await fetch(url+'/quote',{method:'POST',headers:{...headers,'x-account':'b'},body:JSON.stringify({featureIds:['research']})})).status,403);
+  assert.equal((await fetch(url+'/quote',{method:'POST',headers:{...headers,'x-account':'b'},body:JSON.stringify({featureIds:['research']})})).status,200);
   assert.equal((await fetch(url+'/quote',{method:'POST',headers,body:JSON.stringify({featureIds:[],taskId:'foreign'})})).status,403);
   await fetch(url+'/budget-policy',{method:'POST',headers,body:JSON.stringify({approvalThreshold:2})});
   assert.equal((await(await fetch(url+'?category=general',{headers})).json()).items.length,1);
   assert.equal((await(await fetch(url+'?category=research',{headers})).json()).items.length,0);
   assert.equal((await fetch(url+'?category=unreviewed',{headers})).status,400);
-  assert.equal((await(await fetch(url+'?category=general',{headers:{...headers,'x-account':'b'}})).json()).items.length,0);
-  assert.equal((await(await fetch(url,{headers:{...headers,'x-account':'b'}})).json()).items.length,0);
-  assert.equal((await fetch(url+'/research',{headers:{...headers,'x-account':'b'}})).status,403);
+  assert.equal((await(await fetch(url+'?category=general',{headers:{...headers,'x-account':'b'}})).json()).items.length,1);
+  assert.equal((await(await fetch(url,{headers:{...headers,'x-account':'b'}})).json()).items.length,1);
+  const otherDetails=await(await fetch(url+'/research',{headers:{...headers,'x-account':'b'}})).json();
+  assert.deepEqual(otherDetails.sources.map((s:{id:string})=>s.id),['kb']);
+  assert.doesNotMatch(JSON.stringify(otherDetails),/根据工具结果回答|remote-a|"ka"/);
   const body=JSON.stringify({...f.body,sourceIds:[],workspaceId:'wb',userId:'b'});
   assert.equal((await fetch(url+'/research/runs',{method:'POST',body,headers})).status,202);
   for(let i=0;i<30;i++){const r=await(await fetch(url+'/runs/'+f.body.operationId,{headers})).json();if(r.status!=='pending')break;await new Promise(resolve=>setTimeout(resolve,5));}

@@ -60,14 +60,13 @@ export function releaseFeature(db: Database, id: string, body: any, actor: strin
   else {
     if (body.action !== "publish" || body.confirmed !== true || f.status !== "approved" || !f.current || body.version !== f.current.version) throw new FeatureConfigError("请先认定配置，并确认上架版本");
     if(f.workspaceId)throw new FeatureConfigError("企业私有功能请从公司交付入口上架",403);
-    if (!Array.isArray(body.userIds) || !body.userIds.length || body.userIds.length > 100 || body.userIds.some((id: unknown) => typeof id !== "string" || !db.users.some(u => u.id === id && u.enabled))) throw new FeatureConfigError("请选择 1–100 个有效内测账号");
     const values = featureValues(f.current.values);
     if (!db.models.some(m => m.id === values.modelId && m.enabled && m.kind === (values.experience?.mode === "image" ? "image" : "chat") && m.apiKey)) throw new FeatureConfigError("请先配置可用模型");
     if (values.tools?.some(t => t.id === "knowledge_search")) throw new FeatureConfigError("knowledge_search 是保留工具名");
-    f.release = { id: uid("frel"), version: f.current.version, userIds: [...new Set<string>(body.userIds)], publishedAt: new Date().toISOString(), publishedBy: actor };
+    f.release = { id: uid("frel"), version: f.current.version, audience: 'all', userIds: [], publishedAt: new Date().toISOString(), publishedBy: actor };
   }
   f.revision++;
-  db.auditLogs.push({ id: uid("aud"), actorUserId: actor, action: `admin.official_feature.${body.action}`, targetType: "official_feature", targetId: id, details: { version: f.release?.version, recipients: f.release?.userIds.length ?? 0 }, createdAt: new Date().toISOString() });
+  db.auditLogs.push({ id: uid("aud"), actorUserId: actor, action: `admin.official_feature.${body.action}`, targetType: "official_feature", targetId: id, details: { version: f.release?.version, audience: f.release?.audience, recipients: f.release?.userIds.length ?? 0 }, createdAt: new Date().toISOString() });
   return f;
 }
 export function featureSummary(f: OfficialFeatureRecord) {

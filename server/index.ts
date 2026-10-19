@@ -29,6 +29,7 @@ import { installOfficialFeaturePilotRoutes } from "./officialFeaturePilotRoutes.
 import { installAdapterSandbox } from "./adapterSandbox.js";
 import { installFeatureTrialRoutes } from "./featureTrialRoutes.js";
 import { bootstrapOneSkills } from './oneSkillLibrary.js';
+import { openPublishedOfficialFeatures } from './publicFeatureRollout.js';
 import { installFeatureRunRoutes } from "./featureRunRoutes.js";
 import { installPublicSharingRoutes } from "./publicSharingRoutes.js";
 import { installPublicApiRoutes } from './publicApiRoutes.js';
@@ -1270,6 +1271,7 @@ if (process.env.NODE_ENV === "production") {
 
 await store.mutate(db=>{activateMembershipTrial(db);activateMembershipOnly(db);});
 await store.mutate(db=>bootstrapOneSkills(db));
+await store.mutate(db=>openPublishedOfficialFeatures(db));
 const server = createServer(app);
 oneKeyPresence.attach(server);
 await attachmentService.recover();
