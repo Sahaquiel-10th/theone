@@ -94,8 +94,11 @@ test('a no-internet request cannot call public search even if the browser enable
 test('an unavailable public search has a plain next step, never a successful search claim',async()=>{
   const f=fixture();let calls=0;
   const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({status:'no_match',chunks:[],failures:[]})},{webSearch:async()=>({status:'unavailable'}),modelCall:async()=>++calls===1?{...answer(''),toolCalls:[{id:'search',type:'function',function:{name:'web_search',arguments:JSON.stringify({query:'公开新闻'})}}]}:answer('没有查到真实结果。')});
-  const result=await service.dispatch(a,{...input('operation_search_unavailable_01','请联网查今天的新闻'),webSearch:true},key);
+  const result=await service.dispatch(a,{...input('operation_search_unavailable_01','请联网查今天的新闻，另外今天和昨天的具体日期、当前时区和已设置的城市是什么'),webSearch:true},key);
   assert.match(result.message.content,/公开搜索这次没查成/);assert.match(result.message.content,/继续查刚才的问题/);assert.doesNotMatch(result.message.content,/API_KEY|未开放、已下架/);
+  const context=(await f.store.read()).chatOperations!.find(o=>o.operationId==='operation_search_unavailable_01')!.runtimeContext!;
+  assert.ok(result.message.content.includes(context.today)&&result.message.content.includes(context.yesterday));
+  assert.match(result.message.content,/Asia\/Shanghai/);assert.match(result.message.content,/还没有设置常驻城市/);
 });
 import { executorDefaults, updateExecutor } from "./executorProfiles.js";
 import { beginChatOperation,reconcileInterruptedChatOperations } from "./chatOperations.js";
@@ -715,10 +718,21 @@ test('a multi-feature deliverable preserves completed work, reports it through O
   assert.ok(retained.content.length>3000,'full content remains available for recovery, not repeated in the brief receipt');
   assert.doesNotMatch(JSON.stringify(partial),/private provider failure|"namespace"|"steps"/);
   assert.equal(partial.recovery.kind,'retry');await assert.rejects(()=>f.service.retryLatest(b,id,source.id,undefined,key));
-  await f.service.retryLatest(a,id,source.id,undefined,key);await f.service.resume(a,key);
+  const beforeBudgetRetry=(await f.store.read()).chatOperations!.length;
+  for(const requested of [0,11,NaN,'1',null])await assert.rejects(()=>f.service.retryLatest(a,id,source.id,undefined,key,requested as number),/电力上限/);
+  assert.equal((await f.store.read()).chatOperations!.length,beforeBudgetRetry);
+  await f.service.retryLatest(a,id,source.id,undefined,key,1);
+  await f.service.retryLatest(a,id,source.id,undefined,key,1);
+  await assert.rejects(()=>f.service.retryLatest(a,id,source.id,undefined,key,2),/已经受理/);
+  assert.equal((await f.service.task(a,id)).jobs.at(-1)!.budget,1);
+  assert.equal(source.budget,.5);
+  await f.service.resume(a,key);
   await waitFor(async()=>(await f.service.task(a,id)).jobs.at(-1)!.state==='completed');
   assert.equal(first,1);assert.equal(second,2);assert.equal(reports,1);
   const db=await f.store.read();assert.equal(db.modelUsageRecords.filter(r=>r.featurePriceSnapshot?.id==='checkpoint-0').length,1);assert.equal(db.powerAccounts[1].balanceMicros,100e6);
+  const recovery=db.chatOperations!.filter(o=>o.conversationId===id&&o.workRun).at(-1)!;
+  assert.equal(recovery.workRun!.parentOperationId,recovery.operationId);
+  assert.ok(db.modelUsageRecords.filter(r=>r.requestId===recovery.requestId).every(r=>r.batchBudget?.parentOperationId===recovery.operationId&&r.batchBudget.budget===1));
 });
 test('failed prerequisites wait without killing their successors; explicit recovery unblocks only their own dependents',async()=>{
   const f=fixture();let parentCalls=0,childCalls=0,otherCalls=0;

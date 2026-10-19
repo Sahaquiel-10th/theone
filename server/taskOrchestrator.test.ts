@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { runTaskOrchestrator, OrchestrationToolError,orchestrationFailureCode } from "./taskOrchestrator.js";
 test('known orchestration failures have bounded diagnostic codes and unknown secrets are never copied',()=>{
  assert.equal(orchestrationFailureCode(new Error('已达到调度步骤上限，未完成任务；请缩小问题范围')),'task_step_limit');
+ assert.equal(orchestrationFailureCode(new Error('本批任务超过已授权预算，已停止新的调用')),'task_budget_limit');
+ assert.equal(orchestrationFailureCode(new Error('本批任务达到已授权预算，已停止新的模型调用；已产生的结果与用量保留。')),'task_budget_limit');
  assert.equal(orchestrationFailureCode(new Error('provider.invalid api_key=SECRET')),undefined);
  assert.equal(orchestrationFailureCode(new Error('__proto__')),undefined);
  assert.equal(orchestrationFailureCode({message:'调度模型没有返回结果'}),undefined);

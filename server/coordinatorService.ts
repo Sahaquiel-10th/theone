@@ -9,7 +9,7 @@ import {discussionOnly} from './executionIntent.js';
 import {dispatchPlanSchema,validateDispatchPlan,isImageInstruction,parseTaskOutcome,taskOutcomeGuidance,type PlannedTask} from './dispatchPlan.js';
 import {routingCapabilities} from './capabilityCatalog.js';
 import {resolveDispatchCapabilities,callableCapabilities} from './dispatchCapabilities.js';
-import {runtimeContext,runtimeContextText,datedKnowledgeQuery,temporalKnowledgeResult} from './runtimeContext.js';
+import {runtimeContext,runtimeContextText,datedKnowledgeQuery,temporalKnowledgeResult,requestedRuntimeFacts} from './runtimeContext.js';
 import {explicitlyNeedsPublicSearch,publicSearchOutcome,reviewedPublicQuery,publicSearchPermitted} from './publicSearch.js';
 import {coordinatorRecoveryCopy,dispatchCommitment} from '../src/coordinatorRecovery.js';
 import {discoverCapabilities,discoverySchema,validateDiscoveryQuery,initialCapabilityContext,mandatoryOfficeTools,type DiscoveryQuery} from './capabilityDiscovery.js';
@@ -384,6 +384,8 @@ export class CoordinatorService {
           id: o.id,
           operationId: o.operationId,
           state: o.workRun!.state,
+          budget:o.workRun!.budget,
+          kind:o.workRun!.kind,
           retryPower: o.workRun!.kind==='image'?(()=>{try{return welcomeRetryPower(o.workRun!,resolveImageTask(db,Boolean(this.deps.artifactDirectory)).billingModel.imagePowerPerCall!);}catch{return undefined;}})():undefined,
           error: o.workRun!.error,
           userReport:o.workRun!.userReport,
@@ -1015,7 +1017,7 @@ export class CoordinatorService {
         cid,
         requestId,
         content,
-        localClarification ? `还没开始操作电脑。${localClarification}` : result.requiredMissing.length ? (result.requiredMissing.includes('web_search')?'公开搜索这次没查成，还不能替你核实最新消息。可以稍后说“继续查刚才的问题”；我会重新核对，不会把旧知识当成最新结果。':mainKnowledge.missing.length?`${mainKnowledge.missing.join('、')}还没有连好，这次没能查询。先连接好它，再继续查这件事就行。`:'这次还没查全你要找的资料，不能当作没有找到。原问题还在，可以接着查。') : result.content,
+        localClarification ? `还没开始操作电脑。${localClarification}` : result.requiredMissing.length ? (result.requiredMissing.includes('web_search')?['公开搜索这次没查成，还不能替你核实最新消息。可以稍后说“继续查刚才的问题”；我会重新核对，不会把旧知识当成最新结果。',requestedRuntimeFacts(input.text,timeContext)].filter(Boolean).join('\n\n'):mainKnowledge.missing.length?`${mainKnowledge.missing.join('、')}还没有连好，这次没能查询。先连接好它，再继续查这件事就行。`:'这次还没查全你要找的资料，不能当作没有找到。原问题还在，可以接着查。') : result.content,
         config.model.id,
         trace,
         dispatched??imageTask,
@@ -1198,18 +1200,24 @@ export class CoordinatorService {
       ),
     };
   }
-  async retryLatest(s:WorkScope,taskId:string,sourceJobId:string,featureApprovals:FeatureApproval[]|undefined,verifyKey:()=>Promise<void>) {
+  async retryLatest(s:WorkScope,taskId:string,sourceJobId:string,featureApprovals:FeatureApproval[]|undefined,verifyKey:()=>Promise<void>,requestedBudget?:number) {
     await verifyKey();
     const db=await this.store.read(),c=taskOf(db,s,taskId);
     const source=db.chatOperations?.find(o=>own(o,s)&&o.conversationId===taskId&&o.id===sourceJobId&&o.workRun);
     if(!source)throw new CoordinatorError('原要求不可用，请重新打开任务',404);
+    if(requestedBudget!==undefined&&typeof requestedBudget!=='number')throw new CoordinatorError('电力上限应为 0.001–10',400);
+    const recoveryBudget=budget(requestedBudget,source.workRun!.budget);
+    if(requestedBudget!==undefined&&source.workRun!.kind==='image')throw new CoordinatorError('图片恢复仍按原确认的价格和额度处理',400);
     let operationId=`retry_${createHash('sha256').update(source.id).digest('hex')}`;
     // Failed admission has no worker or model usage. A fresh explicit attempt
     // can advance past that tombstone, while all concurrent clicks share one ID.
     for(let attempts=0;;attempts++){
       const existing=db.chatOperations?.find(o=>own(o,s)&&o.operationId===operationId);
       if(!existing)break;
-      if(existing.workRun)return {taskId,status:existing.workRun.state};
+      if(existing.workRun){
+        if(requestedBudget!==undefined&&existing.workRun.budget!==recoveryBudget)throw new CoordinatorError('这次恢复已经受理，不能通过重复点击变更上限；请先查看本轮进展。',409);
+        return {taskId,status:existing.workRun.state};
+      }
       if(existing.status==='pending')throw new CoordinatorError('恢复请求正在确认，请稍后查看任务状态',409);
       if(attempts>=20||!['failed','interrupted'].includes(existing.status)||db.modelUsageRecords.some(u=>own(u,s)&&u.requestId===existing.requestId))throw new CoordinatorError('上次恢复未确认，请先核对任务记录后发送新要求',409);
       operationId=`retry_${createHash('sha256').update(`${source.id}:${existing.id}`).digest('hex')}`;
@@ -1242,6 +1250,7 @@ export class CoordinatorService {
       return {taskId,status:'queued'};
     }
     if(recovery.kind==='resume'){
+      if(requestedBudget!==undefined)throw new CoordinatorError('这轮还在排队，请先沿用原上限继续；尚未开始新的恢复调用。',409);
       await this.store.mutate(d=>{
         const task=taskOf(d,s,taskId);
         const current=(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===taskId&&o.workRun);
@@ -1259,7 +1268,9 @@ export class CoordinatorService {
     if(recovery.kind!=='retry')throw new CoordinatorError(recovery.message);
     const original=c.messages.find(m=>m.id===job.inputMessageId);
     if(!original)throw new CoordinatorError('原话不可用');
-    await this.enqueue(s,{operationId,text:original.content,instruction:job.instruction,title:c.title,taskId,executorId:c.executorProfileId||'general',features:job.skills.map(f=>f.id),requiredFeatureIds:job.contract?.requiredFeatureIds,sources:job.sources.map(s=>s.id),budget:job.budget,webSearch:job.webSearch,confirmedExternal:true,featureApprovals,originConversationId:taskId,originMessageId:original.id,attachmentIds:original.attachments?.map(a=>a.id),outputDestination:'chat',parentOperationId:job.parentOperationId||source.operationId,dependsOnOperationIds:job.dependsOnOperationIds,expectedOutput:job.expectedOutput,requiredTools:job.contract?.requiredTools,directVisual:job.directVisual,retrySourceJobId:source.id,retrySourceVersion:{state:job.state,updatedAt:source.updatedAt,taskUpdatedAt:c.updatedAt}},verifyKey);
+    // An explicit recovery allowance is a NEW authorization for only this
+    // attempt. Never rewrite the immutable original batch or its siblings.
+    await this.enqueue(s,{operationId,text:original.content,instruction:job.instruction,title:c.title,taskId,executorId:c.executorProfileId||'general',features:job.skills.map(f=>f.id),requiredFeatureIds:job.contract?.requiredFeatureIds,sources:job.sources.map(s=>s.id),budget:recoveryBudget,webSearch:job.webSearch,confirmedExternal:true,featureApprovals,originConversationId:taskId,originMessageId:original.id,attachmentIds:original.attachments?.map(a=>a.id),outputDestination:'chat',parentOperationId:requestedBudget===undefined?(job.parentOperationId||source.operationId):operationId,dependsOnOperationIds:job.dependsOnOperationIds,expectedOutput:job.expectedOutput,requiredTools:job.contract?.requiredTools,directVisual:job.directVisual,retrySourceJobId:source.id,retrySourceVersion:{state:job.state,updatedAt:source.updatedAt,taskUpdatedAt:c.updatedAt}},verifyKey);
     return {taskId,status:'queued'};
   }
   /** Server-only first-flow welcome image; a claimed profile marker is mandatory. */
@@ -2137,7 +2148,9 @@ export class CoordinatorService {
       if(missing.length){
         const done=stepProgress(steps).completed;
         const pending=missing.map(name=>name.startsWith('feature_')?job.skills[Number(name.slice(8))]?.values.name||'整理内容':({knowledge_search:'查找资料',oneHtml:'保存网页',oneFlowchart:'保存流程图'} as Record<string,string>)[name]||'后续处理');
-        job.userReport=await this.describeProgress(s,op,{done,pending,files:[],reason:'有必需的步骤尚未完成，不能当作整件事已经做完。'},verify);
+        const budgetBlocked=trace.some(step=>step.status==='failed'&&step.resultPreview?.includes('"code":"task_budget_limit"'));
+        if(budgetBlocked)job.failureCode='task_budget_limit';
+        job.userReport=await this.describeProgress(s,op,{done,pending,files:[],reason:budgetBlocked?'剩余预算不足以预留下一步，已暂停新的调用。已有成果保留；可以在任务恢复处确认继续的电力上限，只补未完成部分。':'有必需的步骤尚未完成，不能当作整件事已经做完。'},verify);
         // Files are attached below; retain a short usable text result too,
         // while full sub-results stay in the scoped recovery checkpoints.
         const parts=completedSteps(steps).filter(step=>step.namespace==='worker'&&step.tool.startsWith('feature_')).flatMap(step=>{
@@ -2182,6 +2195,7 @@ export class CoordinatorService {
         );
         o.workRun!.state = "completed";
         o.workRun!.userReport=job.userReport;
+        o.workRun!.failureCode=job.failureCode;
         const outcome=parseTaskOutcome(result.content);
         o.workRun!.resultOutcome=outcome.outcome;
         if(job.expectedOutput==='image'&&outputFiles.some(file=>file.kind==='image'))o.workRun!.resultOutcome='completed';

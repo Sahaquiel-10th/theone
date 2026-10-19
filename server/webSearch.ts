@@ -49,11 +49,12 @@ export function createWorkspaceSearch(store: Store, deps: {fetch?: typeof fetch;
             const current = fresh.models.find(candidate => candidate.id === model.id);
             if (!current || !nativeSearchModel(current) || current.model !== model.model || current.baseUrl !== model.baseUrl || current.apiKey !== model.apiKey) throw new Error('搜索配置刚有变化，请稍后再试。');
             context.beforeReserve?.(fresh, amount);
-          }}, selected => callNativeSearch(selected, query, {fetch: deps.fetch, maxResults: Number(env.WEB_SEARCH_MAX_RESULTS) || 5, timeoutMs: Number(env.NATIVE_SEARCH_TIMEOUT_MS) || 45000}));
+          }}, selected => callNativeSearch(selected, query, {fetch: deps.fetch, maxResults: Number(env.WEB_SEARCH_MAX_RESULTS) || 5, timeoutMs: Number(env.NATIVE_SEARCH_TIMEOUT_MS) || 90000}));
         await context.verify(); authorize(await store.read(), context);
-        if (!result.searchCompleted || !result.usage) throw new NativeSearchError();
+        if (!result.searchCompleted || !result.usage) throw new NativeSearchError(false,'search_evidence_missing');
         return result.sources;
       } catch (error) {
+        if(error instanceof NativeSearchError)console.warn(JSON.stringify({event:'public_search_failed',requestId:context.requestId,code:error.code,httpStatus:error.httpStatus,attempt:attempt+1}));
         if (!(error instanceof NativeSearchError) || !error.retryable || attempt > 0) throw error;
       }
     }

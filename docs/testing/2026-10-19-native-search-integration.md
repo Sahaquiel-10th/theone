@@ -17,11 +17,13 @@
 ```dotenv
 SEARCH_PROVIDER=native
 WEB_SEARCH_MODEL_ID=
-NATIVE_SEARCH_TIMEOUT_MS=45000
+NATIVE_SEARCH_TIMEOUT_MS=90000
 WEB_SEARCH_MAX_RESULTS=5
 ```
 
 已有环境如果明确设置了 `SEARCH_PROVIDER=tavily`，发布后需由运营切换到 `native`；不得把代码默认值改变当成线上配置已经切换。无需更新或回收 ONE Key。
+
+2026-10-20 定向复测观察到一次原生搜索约 45 秒结束，与当时默认等待上限一致；线上确认没有显式设置 NATIVE_SEARCH_TIMEOUT_MS。后续将默认等待放宽为 90 秒（仍有界），显式环境设置继续优先。新增超时、HTTP 拒绝、流未结束/响应未完整、无搜索证据等受审错误分类，按请求编号记录，不保留上游原始正文或秘密。已受理流中断不自动重放；只有明确被拒绝的暂时性 HTTP 错误允许一次原有重试。历史成功样例不能据此扩为供应商始终稳定，新的实测结果另记。
 
 ## 本地验证
 

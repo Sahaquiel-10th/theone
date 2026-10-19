@@ -2,10 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type {Database, ModelConfig} from './types.js';
 import type {Store} from './db.js';
-import {callNativeSearch, nativeSearchModel, nativeSearchResult} from './providerNativeSearch.js';
+import {callNativeSearch, nativeSearchModel, nativeSearchResult,NativeSearchError} from './providerNativeSearch.js';
+import {publicSearchOutcome} from './publicSearch.js';
 import {createWorkspaceSearch, type PublicSearchContext} from './webSearch.js';
 
 const model = {id:'model',name:'GPT',kind:'chat',protocol:'openai',model:'configured-model',baseUrl:'https://app.yylx.io/v1',apiKey:'TEST_SECRET',enabled:true,isDefault:true,systemPrompt:'PRIVATE_MODEL_PROMPT',inputPowerPerMillion:1,outputPowerPerMillion:1,costInputPowerPerMillion:.5,costOutputPowerPerMillion:.5} as ModelConfig;
+test('search diagnostics classify timeout, incomplete stream and HTTP rejection without exposing upstream text or auto-replaying accepted requests',async()=>{
+ const timeout=new NativeSearchError(false,'search_timeout');
+ const result=await publicSearchOutcome(async()=>{throw timeout;},'public query');
+ assert.ok('code' in result&&'message' in result);
+ assert.equal(result.code,'search_timeout');assert.match(result.message!,/等得有点久/);
+ await assert.rejects(()=>callNativeSearch(model,'public query',{fetch:async()=>new Response('TEST_SECRET',{status:400})}),error=>error instanceof NativeSearchError&&error.code==='search_http_rejected'&&error.httpStatus===400&&!error.retryable&&!error.message.includes('TEST_SECRET'));
+ await assert.rejects(()=>callNativeSearch(model,'public query',{fetch:async()=>new Response('data: {"type":"response.created"}\n\n',{headers:{'content-type':'text/event-stream'}})}),error=>error instanceof NativeSearchError&&error.code==='search_stream_incomplete'&&!error.retryable);
+});
 const payload = () => ({status:'completed',usage:{input_tokens:100,output_tokens:10,total_tokens:110},output:[
   {type:'web_search_call',status:'completed',action:{sources:[{url:'https://example.com/reference'}]}},
   {type:'message',role:'assistant',content:[{type:'output_text',text:'公开资料摘要',annotations:[{type:'url_citation',title:'正式资料',url:'https://example.com/reference?utm_source=openai'}]}]},
@@ -44,7 +53,7 @@ test('native stream truncation, failure, oversize and body timeout remain bounde
     new Response('TEST_SECRET',{status:401}),new Response('x'.repeat(2*1024*1024+1))]){
     await assert.rejects(callNativeSearch(model,'公开资料',{fetch:async()=>response}),error=>error instanceof Error&&!error.message.includes('TEST_SECRET'));
   }
-  await assert.rejects(callNativeSearch(model,'公开资料',{timeoutMs:3000,fetch:async(_url,init)=>new Response(new ReadableStream({start(controller){init!.signal!.addEventListener('abort',()=>controller.error(Error('aborted')));}}),{headers:{'content-type':'text/event-stream'}})}),/联网没查成/);
+  await assert.rejects(callNativeSearch(model,'公开资料',{timeoutMs:3000,fetch:async(_url,init)=>new Response(new ReadableStream({start(controller){init!.signal!.addEventListener('abort',()=>controller.error(Error('aborted')));}}),{headers:{'content-type':'text/event-stream'}})}),error=>error instanceof NativeSearchError&&error.code==='search_timeout'&&!error.retryable);
 });
 
 function fixture(){

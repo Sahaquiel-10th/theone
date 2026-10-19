@@ -20,6 +20,8 @@ export function orchestrationFailureCode(error:unknown){
     '调度模型没有返回结果':'task_empty_response',
     '这一步结果较大，已停止后续操作，请先查看已有成果。':'task_result_limit',
     '模型工具指令未完整返回，已停止执行；本次已产生的用量可在账单中查看':'task_tool_instruction_incomplete',
+    '本批任务超过已授权预算，已停止新的调用':'task_budget_limit',
+    '本批任务达到已授权预算，已停止新的模型调用；已产生的结果与用量保留。':'task_budget_limit',
   };
   return error instanceof Error&&Object.hasOwn(codes,error.message)?codes[error.message]:undefined;
 }
@@ -132,7 +134,7 @@ export async function runTaskOrchestrator(input: {
               durationMs: Date.now() - started });
             input.onTrace?.(structuredClone(trace));
             if(!tool.tolerateFailure||error instanceof OrchestrationToolError)throw error;
-            output={status:'failed',message:'这一步暂时没做好，其他独立部分可以继续。'};
+            output=orchestrationFailureCode(error)==='task_budget_limit'?{status:'failed',code:'task_budget_limit',message:'这件事的剩余额度不够预留下一步，已暂停新的调用。已有成果保留；可以确认本次继续的电力上限，再补未完成部分。'}:{status:'failed',message:'这一步暂时没做好，其他独立部分可以继续。'};
             }
           }
           if(tool.cacheable!==false&&status!=='rejected')cache.set(key, output); if(status!=='rejected')status = "returned";

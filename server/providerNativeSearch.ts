@@ -1,10 +1,10 @@
 import type {ModelConfig, SearchSource} from './types.js';
 import {parseProviderUsage} from './modelGateway.js';
-import {reviewedPublicQuery, safePublicUrl} from './publicSearch.js';
+import {reviewedPublicQuery, safePublicUrl,PublicSearchError,type PublicSearchFailureCode} from './publicSearch.js';
 
-export class NativeSearchError extends Error {
-  constructor(readonly retryable = false) {
-    super('这次联网没查成，可以稍后再试；我还没有核实最新资料。');
+export class NativeSearchError extends PublicSearchError {
+  constructor(readonly retryable = false,code:PublicSearchFailureCode='search_unavailable',readonly httpStatus?:number) {
+    super(code);
   }
 }
 
@@ -56,7 +56,7 @@ export async function callNativeSearch(model: ModelConfig, query: string, option
   if (typeof query !== 'string' || !query.trim() || query.length > 1200) throw new NativeSearchError();
   reviewedPublicQuery(query);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.max(3000, Math.min(90000, options.timeoutMs ?? 45000)));
+  const timer = setTimeout(() => controller.abort(), Math.max(3000, Math.min(90000, options.timeoutMs ?? 90000)));
   try {
     const response = await (options.fetch ?? fetch)('https://app.yylx.io/v1/responses', {
       method: 'POST', redirect: 'error', signal: controller.signal,
@@ -69,9 +69,9 @@ export async function callNativeSearch(model: ModelConfig, query: string, option
     });
     if (!response.ok) {
       await response.body?.cancel();
-      throw new NativeSearchError(response.status === 429 || response.status === 502 || response.status === 503 || response.status === 504);
+      throw new NativeSearchError(response.status === 429 || response.status === 502 || response.status === 503 || response.status === 504,'search_http_rejected',response.status);
     }
-    if (!response.body) throw new NativeSearchError();
+    if (!response.body) throw new NativeSearchError(false,'search_invalid_response');
     const streaming = response.headers.get('content-type')?.includes('text/event-stream');
     const reader = response.body.getReader(), decoder = new TextDecoder();
     let pending = '', bytes = 0, completed: unknown;
@@ -79,13 +79,13 @@ export async function callNativeSearch(model: ModelConfig, query: string, option
       const data = raw.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
       if (!data || data === '[DONE]') return;
       const event = JSON.parse(data);
-      if (['error', 'response.failed', 'response.incomplete'].includes(event.type)) throw new NativeSearchError();
+      if (['error', 'response.failed', 'response.incomplete'].includes(event.type)) throw new NativeSearchError(false,event.type==='response.incomplete'?'search_response_incomplete':'search_response_failed');
       if (event.type === 'response.completed') completed = event.response;
     };
     try {
       while (true) {
         const part = await reader.read(); if (part.done) break;
-        bytes += part.value.length; if (bytes > 2 * 1024 * 1024) throw new NativeSearchError();
+        bytes += part.value.length; if (bytes > 2 * 1024 * 1024) throw new NativeSearchError(false,'search_response_limit');
         pending += decoder.decode(part.value, {stream: true});
         if (!streaming) continue;
         pending = pending.replace(/\r\n/g, '\n');
@@ -97,13 +97,13 @@ export async function callNativeSearch(model: ModelConfig, query: string, option
       if (streaming && pending.trim()) frame(pending);
       if (!streaming) completed = JSON.parse(pending);
     } finally { await reader.cancel().catch(() => undefined); }
-    if (!completed) throw new NativeSearchError();
+    if (!completed) throw new NativeSearchError(false,'search_stream_incomplete');
     const result = nativeSearchResult(completed, options.maxResults);
     if (JSON.stringify(result).includes(model.apiKey)) throw new NativeSearchError();
     return result;
   } catch (error) {
     // Never silently replay an accepted, potentially billed search after a broken stream.
     if (error instanceof NativeSearchError) throw error;
-    throw new NativeSearchError();
+    throw new NativeSearchError(false,controller.signal.aborted?'search_timeout':error instanceof SyntaxError?'search_invalid_response':'search_connection_interrupted');
   } finally { clearTimeout(timer); }
 }

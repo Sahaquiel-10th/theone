@@ -52,6 +52,8 @@ type Snapshot = {
   recentReportedReceiptIds?: string[];
 };
 type Job = {
+  budget?:number;
+  kind?:string;
   retryPower?:number;
   notionReceipt?: { state: 'pending' | 'verified' | 'uncertain'; url?: string; error?: string };
   id: string;
@@ -380,16 +382,17 @@ export function useCoordinator(
     await load(id);
     await refresh();
   }
-  async function retryTask(id:string) {
+  async function retryTask(id:string,budget?:number,confirmedJobId?:string) {
     if(retrying.current.has(id))return;
     retrying.current.add(id);
     setRetryingTasks([...retrying.current]);
     try{
     const detail=await load(id),job=detail.jobs.at(-1);
     if(!job)throw new Error('此任务没有可重新处理的要求');
+    if(confirmedJobId&&job.id!==confirmedJobId)throw new Error('任务已有新要求或进展，请重新看一眼再确认。');
     if(!detail.recovery||!['retry','resume','review_image'].includes(detail.recovery.kind))throw new Error(detail.recovery?.message||'请刷新后查看任务恢复方式');
     const featureApprovals=await approveFeaturePrices(api,[],id);
-    await api(`/api/coordinator/tasks/${encodeURIComponent(id)}/retry`,{method:'POST',body:JSON.stringify({sourceJobId:job.id,confirmed:true,featureApprovals})});
+    await api(`/api/coordinator/tasks/${encodeURIComponent(id)}/retry`,{method:'POST',body:JSON.stringify({sourceJobId:job.id,confirmed:true,featureApprovals,budget})});
     await load(id);await refresh();
     }finally{retrying.current.delete(id);if(live.current)setRetryingTasks([...retrying.current]);}
   }

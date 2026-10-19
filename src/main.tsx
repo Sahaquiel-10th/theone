@@ -673,6 +673,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [activeId, setActiveId] = useState<string>("");
   const [thingId,setThingId] = useState('');
   const [thingDrafts,setThingDrafts] = useState<Record<string,string>>({});
+  const [taskRetryBudgets,setTaskRetryBudgets]=useState<Record<string,string>>({});
   const [resultLampOpen,setResultLampOpen] = useState(false);
   const [dismissedResults,setDismissedResults] = useState<string[]>([]);
   const [previewHome,setPreviewHome] = useState(true);
@@ -867,6 +868,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const latest=taskRetryScope(detail?.jobs||[],conversation?.messages.filter(m=>m.role==='user').at(-1)?.content);
     const title=conversation?.title||task?.title||'当前任务';
     const retrying=coordinator.retryingTasks.includes(id);
+    const canAdjustBudget=Boolean(lastJob&&lastJob.kind!=='image'&&recovery?.kind==='retry');
+    const retryBudget=Number(taskRetryBudgets[lastJob?.id??'']??lastJob?.budget??.5);
+    const invalidBudget=canAdjustBudget&&(!Number.isFinite(retryBudget)||retryBudget<.001||retryBudget>10);
     const actionLabel=recovery?.welcomeStep?'继续制作使用说明':recovery?.kind==='review_image'?'重新生成图片':recovery?.kind==='resume'?'开始处理最新要求':lastJob?.progress?.completed.length?'继续未完成的部分':'重新处理最新要求';
     return <section className="task-recovery" role="status">
       <strong>{lastJob?.dependencyBlocked?'在等前面的结果':'还有部分没做好'}</strong><p>{lastJob?.userReport||error||'原要求还在，下面可以查看下一步。'}</p>
@@ -874,10 +878,11 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       <p>{recovery?.message||'正在读取恢复方式…'}</p>
       {lastJob?.dependencyBlocked?lastJob.waitingFor?.map(parent=><button type="button" key={parent.taskId} onClick={()=>void selectThing(parent.taskId)}>看看「{parent.title}」</button>):null}
       {recovery&&['retry','resume'].includes(recovery.kind)?<p>本轮范围：{latest}</p>:null}
-      {recovery&&['retry','resume','review_image'].includes(recovery.kind)?<button type="button" disabled={retrying} onClick={()=>{
+      {canAdjustBudget?<label>这次继续，最多使用多少电力<input aria-label="本次恢复电力上限" type="number" min="0.001" max="10" step="0.001" disabled={retrying} value={taskRetryBudgets[lastJob?.id??'']??lastJob?.budget??.5} onChange={e=>setTaskRetryBudgets(old=>({...old,[lastJob!.id]:e.target.value}))}/><small>这是本次继续的上限，不含以前已用的电力，也不会一次扣完。只补没完成的部分，按实际使用结算。</small></label>:null}
+      {recovery&&['retry','resume','review_image'].includes(recovery.kind)?<button type="button" disabled={retrying||Boolean(invalidBudget)} onClick={()=>{
         const price=detail?.jobs.at(-1)?.retryPower;
         if(recovery.kind==='review_image'&&!(typeof price==='number'&&(price>0||price===0&&recovery.welcomeStep==='page'))){setError('这次图片价格还没确认，请稍后刷新任务再试。');return;}
-        if(confirm(`${actionLabel} · ${title}\n本轮范围：${latest.slice(0,480)}\n${recovery.welcomeStep?`只补未完成的步骤，最多使用 ${price!.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力，按实际用量结算；已保存的说明和图片会复用。`:recovery.kind==='review_image'?`这次新生成一张图片，使用 ${price!.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力；已有结果和历史都会保留。`:'将沿用原附件和功能，可能产生新用量；不会重复执行较早待办。'}`))void coordinator.retryTask(id).then(()=>refresh()).catch(e=>setError(e.message));
+        if(confirm(`${actionLabel} · ${title}\n本轮范围：${latest.slice(0,480)}\n${recovery.welcomeStep?`只补未完成的步骤，最多使用 ${price!.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力，按实际用量结算；已保存的说明和图片会复用。`:recovery.kind==='review_image'?`这次新生成一张图片，使用 ${price!.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力；已有结果和历史都会保留。`:canAdjustBudget?`本次继续最多使用 ${retryBudget} 电力，不含以前已用的电力，按实际用量结算。将沿用原附件和功能，只补未完成部分。`:'沿用原上限开始处理最新要求，不重复已有成果。'}`))void coordinator.retryTask(id,canAdjustBudget?retryBudget:undefined,lastJob?.id).then(()=>refresh()).catch(e=>setError(e.message));
       }}>{retrying?'正在恢复…':actionLabel}</button>:null}
       {recovery?.kind==='review_notion'?<NotionReceiptNotice api={api} taskId={id} receipt={detail?.jobs.filter(j=>j.notionReceipt).at(-1)?.notionReceipt} onRefresh={()=>coordinator.load(id)} />:null}
 {localNeedsAction?<><p>{local.status==='cancelled'?'这轮已经停下，不会自己再启动。':'这轮本机操作还没完成。'}先看看操作记录；想接着做，可以回到这件事补一句要求，ONE 会先核对已有结果。</p><button type="button" onClick={()=>{setSelectedExecutionId(local.id);setExpandedExecutionId(local.id);setRevealExecutionId(local.id);void loadLatestExecution(id,local.id);}}>查看本轮操作</button><button type="button" onClick={()=>{if(currentDraftRef.current.content.trim()){setError('输入框里还有一段没发出的内容，先保留或发完它，再继续这件事。');return;}coordinator.dispatch({type:'bind',taskId:id});openSurface('chat');setContent('请先核对上一轮实际结果，只继续未完成的部分，不要重复已有修改。补充本轮要求：若本任务是新建文档，同名文件（即使为空）请保留，另存为原名-2、-3等编号版本；允许回读本轮目标文件验证，不读取无关文件。若原任务是修改已有文件，则先核对原目标，不擅自另存或扩大授权。');}}>核对后继续这件事</button></>:null}

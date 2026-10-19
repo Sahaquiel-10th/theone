@@ -133,7 +133,7 @@ export function installCoordinatorRoutes(
   router.post('/tasks/:id/retry',asyncRoute(async(req,res)=>{
     if(req.body?.confirmed!==true||typeof req.body?.sourceJobId!=='string')throw new CoordinatorError('重新处理需确认最新要求',400);
     const verify=()=>verifyKey(req),s=scope(req);
-    res.status(202).json(await service.retryLatest(s,String(req.params.id),req.body.sourceJobId,req.body.featureApprovals,verify));
+    res.status(202).json(await service.retryLatest(s,String(req.params.id),req.body.sourceJobId,req.body.featureApprovals,verify,req.body.budget));
     void service.resume(s,verify).catch(()=>{});
   }));
   router.post('/tasks/:id/notion/verify', asyncRoute(async(req,res)=>{
