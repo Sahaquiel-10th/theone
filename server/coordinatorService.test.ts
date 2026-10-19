@@ -18,7 +18,7 @@ import {runtimeContext} from './runtimeContext.js';
 
 test('automatic public search is real, scoped, carries request time and does not create a task for a tool step',async()=>{
   const f=fixture();let searches=0,calls=0;
-  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({status:'no_match',chunks:[],failures:[]})},{webSearch:async q=>{searches++;assert.equal(q,'公开测试新闻');return [{title:'公开来源',url:'https://example.com/source',snippet:'已核对的公开素材'}];},modelCall:async(_m,messages,tools)=>{
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({status:'no_match',chunks:[],failures:[]})},{webSearch:async(q,context)=>{searches++;assert.equal(q,'公开测试新闻');assert.equal(context.workspaceId,a.workspaceId);assert.equal(context.userId,a.userId);assert.ok(context.conversationId);assert.match(context.requestId,/^coord_/);assert.equal(typeof context.beforeReserve,'function');await context.verify();return [{title:'公开来源',url:'https://example.com/source',snippet:'已核对的公开素材'}];},modelCall:async(_m,messages,tools)=>{
     calls++;assert.match(JSON.stringify(messages),/时间与城市参考/);assert.ok(tools.length===0||tools.some(t=>t.function.name==='web_search'));
     if(calls===1)return answer('这条回复尚未搜索。');
     if(calls===2)return {...answer(''),toolCalls:[{id:'public-search',type:'function',function:{name:'web_search',arguments:JSON.stringify({query:'公开测试新闻'})}}]};

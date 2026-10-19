@@ -17,6 +17,7 @@ import { FeatureConfigError } from './officialFeatures.js';
 import {TaskResultInboxError} from './taskResultInbox.js';
 import {ImageTaskConfigurationError} from './imageTaskConfiguration.js';
 import type { NotionDocuments } from './notionDocuments.js';
+import type {ScopedPublicSearch} from './webSearch.js';
 export function installCoordinatorRoutes(
   app: Express,
   keyAuth: readonly RequestHandler[],
@@ -27,7 +28,7 @@ export function installCoordinatorRoutes(
   deps: FeatureRunDependencies & {
     notionDocuments?: NotionDocuments;
     cancelLocal?: (req:express.Request,operationId:string)=>Promise<void>;
-    webSearch?: (query: string) => Promise<unknown>;
+    webSearch?: ScopedPublicSearch;
     executeLocal?: (req: express.Request, res: express.Response, cid: string, mid: string, operationId: string) => Promise<{ id: string; status: string }>;
   } = {},
 ) {

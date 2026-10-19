@@ -212,7 +212,7 @@ type SearchSource = {
 
 type AppCapabilities = {
   attachments: { enabled: boolean; maxFiles: number; maxBytes: number; imageMaxBytes?: number; extensions: string[] };
-  webSearch: { enabled: boolean; provider: string };
+  webSearch: { enabled: boolean };
   knowledge?: { providers: KnowledgeConnection["provider"][] };
 };
 
@@ -702,7 +702,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [collapsedWorkspaceIds, setCollapsedWorkspaceIds] = useState<Set<string>>(() => new Set());
   const [capabilities, setCapabilities] = useState<AppCapabilities>({
     attachments: { enabled: true, maxFiles: 4, maxBytes: 10 * 1024 * 1024, extensions: [] },
-    webSearch: { enabled: false, provider: "tavily" }
+    webSearch: { enabled: false }
   });
   const [pendingAttachments, setPendingAttachments] = useState<AttachmentSummary[]>([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);

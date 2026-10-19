@@ -45,6 +45,7 @@ import { featureImageBytes } from "./featureImage.js";
 import { saveFeatureArtifact,visualArtifactSaver,officeArtifactContext } from "./featureArtifacts.js";
 import {ownedArtifactResults} from './artifactLinks.js';
 import { runBilledModel } from "./modelBilling.js";
+import type {ScopedPublicSearch} from './webSearch.js';
 import {
   beginChatOperation,
   completeChatOperation,
@@ -98,7 +99,7 @@ type Deps = FeatureRunDependencies & {
   reportCall?:typeof callModelWithTools;
   notionDocuments?: NotionDocuments;
   modelCall?: typeof callModelWithTools;
-  webSearch?: (query: string) => Promise<unknown>;
+  webSearch?: ScopedPublicSearch;
 };
 const at = () => new Date().toISOString();
 const own = (item: { workspaceId: string; userId: string }, s: WorkScope) =>
@@ -887,7 +888,12 @@ export class CoordinatorService {
       const privateSearchTexts:string[]=[];
       if(authorizedSources.length||mainKnowledge.required)referenceTools.push({name:'knowledge_search',description:config.values.toolDescriptions?.knowledge_search,label:'查找你的资料',effect:'read',run:async query=>{await verify();if(mainKnowledge.missing.length)return {status:'not_connected',message:`${mainKnowledge.missing.join('、')}还没连好，这次没有查询到它。`};const selected=mainKnowledge.required?mainKnowledge.sourceIds:authorizedSources.map(source=>source.id);const result=await this.knowledge.recallWithDiagnostics(s.workspaceId,datedKnowledgeQuery(query,input.text,timeContext),5,selected,s.userId,{retry:true});await verify();privateSearchTexts.push(...result.chunks.map(c=>c.content));return temporalKnowledgeResult(knowledgeResultComplete(result,selected)?result:{...result,status:'partial'},input.text,timeContext);}});
       const publicSearchAllowed=webPermission&&(!mainKnowledge.required||explicitlyNeedsPublicSearch(input.text));
-      if(input.webSearch&&this.deps.webSearch&&publicSearchAllowed)referenceTools.push({name:'web_search',description:config.values.toolDescriptions?.web_search,run:async query=>{await verify();try{reviewedPublicQuery(query,privateSearchTexts);}catch{return {status:'rejected',message:'搜索词夹带了个人资料，请只用必要的公开关键词，不得发送私人内容。'};}const result=await publicSearchOutcome(this.deps.webSearch!,query);await verify();return result;}});
+      if(input.webSearch&&this.deps.webSearch&&publicSearchAllowed)referenceTools.push({name:'web_search',description:config.values.toolDescriptions?.web_search,run:async query=>{await verify();try{reviewedPublicQuery(query,privateSearchTexts);}catch{return {status:'rejected',message:'搜索词夹带了个人资料，请只用必要的公开关键词，不得发送私人内容。'};}const result=await publicSearchOutcome(q=>this.deps.webSearch!(q,{...s,conversationId:cid,requestId,modelId:config.model.id,verify,beforeReserve:(fresh,amount)=>{
+        featureMember(fresh,s);
+        if(!fresh.chatOperations?.some(o=>own(o,s)&&o.operationId===input.operationId&&o.status==='pending'))throw new CoordinatorError('本轮已停止，未开始新的联网查询',409);
+        if(fresh.settings.aiTasks?.coordinator?.published?.enabled!==true)throw new CoordinatorError('调度已停用');
+        if(spent(fresh,s,requestId)+amount>Math.floor(routeBudget*1e6))throw new CoordinatorError('这轮预算不够继续查询，可以调整预算后再试。',402);
+      }}),query);await verify();return result;}});
       const capabilities=routingCapabilities(current,s,{localAvailable:Boolean(executeLocal) && (input.localExecution === true || config.values.tools.includes('execute_local_task')),imageStorageAvailable:Boolean(this.deps.artifactDirectory),webSearchAvailable:input.webSearch===true&&!!this.deps.webSearch&&publicSearchAllowed&&config.values.tools.includes('web_search')});
       const discoveryEnabled=capabilityDiscoveryEnabled(config.values);
       const allowedCapabilities=capabilities.filter(card=>card.kind!=='knowledge'||authorizedSources.some(source=>source.id===card.sourceId));
@@ -1980,7 +1986,7 @@ export class CoordinatorService {
         tools.push({
           name: "web_search",
           description: job.values.toolDescriptions?.web_search,
-          run: async query=>{await verify();try{reviewedPublicQuery(query,workerPrivateTexts);}catch{return {status:'rejected',message:'不要将私人资料或整段对话发给公开搜索，请只使用必要的公开关键词。'};}const result=await publicSearchOutcome(this.deps.webSearch!,query);await verify();return result;},
+          run: async query=>{await verify();try{reviewedPublicQuery(query,workerPrivateTexts);}catch{return {status:'rejected',message:'不要将私人资料或整段对话发给公开搜索，请只使用必要的公开关键词。'};}const result=await publicSearchOutcome(q=>this.deps.webSearch!(q,{...s,conversationId:cid,requestId:op!.requestId,modelId:m.id,verify,beforeReserve:(fresh,amount)=>{assertWork(fresh,s,id,job,cid);assertWorkBudget(fresh,s,op!,amount);}}),query);await verify();return result;},
         });
       job.skills.forEach((skill, index) => {
         if(job.featurePricingVersion===1){
