@@ -43,6 +43,19 @@ function fixture() {
 }
 const usage = { inputTokens: 10, outputTokens: 5, totalTokens: 15, source: "provider" };
 const scope = (id: string) => ({ usageId: id, workspaceId: "wa", userId: "a" });
+test('trusted larger output limits reserve the same ceiling before calling and preserve tenant/budget isolation',async()=>{
+ const f=fixture();
+ const ordinary=modelReservationMicros(f.model,f.params.input);
+ const large=modelReservationMicros(f.model,f.params.input,10000);
+ assert.ok(large>ordinary);
+ let calls=0;
+ await runBilledModel(f.store,{...f.params,maxOutputTokens:10000},async()=>{calls++;assert.equal(f.db().modelUsageRecords[0].reservedMicros,large);return {usage};});
+ assert.equal(f.db().modelUsageRecords[0].chargedMicros,40);
+ for(const maxOutputTokens of [0,12001,1.5,NaN])await assert.rejects(()=>runBilledModel(f.store,{...f.params,maxOutputTokens},async()=>{calls++;return {usage};}),/输出上限/);
+ await assert.rejects(()=>runBilledModel(f.store,{...f.params,maxOutputTokens:10000,beforeReserve:()=>{throw Error('budget');}},async()=>{calls++;return {usage};}),/budget/);
+ await assert.rejects(()=>runBilledModel(f.store,{...f.params,userId:'b',maxOutputTokens:10000},async()=>{calls++;return {usage};}),/账号或个人空间/);
+ assert.equal(calls,1);assert.equal(f.db().modelUsageRecords.length,1);assert.equal(f.db().powerAccounts[1].balanceMicros,1000000);
+});
 test('welcome sponsorship is scoped, once-only and keeps procurement cost without a user hold or debit',async()=>{
  const f=fixture(),gift='welcome_gift_0123456789';
  f.model.kind='image';f.model.imagePowerPerCall=.012;f.model.costImagePowerPerCall=.02;

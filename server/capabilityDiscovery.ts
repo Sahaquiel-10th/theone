@@ -27,11 +27,28 @@ function tokens(query:string) {
   }
   return [...result];
 }
+/** Reviewed output affordances, not inferred from a feature's marketing name. */
+const officeAffordances:Record<string,{pattern:RegExp;words:string}>={
+  oneSlides:{pattern:/\b(?:pptx?|powerpoint)\b|演示稿|幻灯片/i,words:'PPT PPTX PowerPoint 演示稿 幻灯片'},
+  oneDocument:{pattern:/\b(?:word|docx)\b/i,words:'Word DOCX 可编辑文档'},
+  oneWorkbook:{pattern:/\b(?:excel|xlsx?)\b/i,words:'Excel XLSX 电子表格 预算表'},
+};
+function requestedOfficeTools(query:string){return Object.keys(officeAffordances).filter(tool=>officeAffordances[tool].pattern.test(query));}
+/** Narrow guard for explicit multi-file creation, not a general intent parser. */
+export function mandatoryOfficeTools(query:string){
+  if(!/准备|生成|交付|制作|做/.test(query))return [];
+  return requestedOfficeTools(query).filter(tool=>{
+    const match=officeAffordances[tool].pattern.exec(query)!;
+    const prefix=query.slice(Math.max(0,match.index-18),match.index);
+    const suffix=query.slice(match.index+match[0].length,match.index+match[0].length+10);
+    return !/(?:不要|不用|不需要|可选|最好|有空|如果方便)[^，。；;!?！？]{0,12}$/.test(prefix)&&!/^\s*(?:是可选|可选|不需要|不用做)/.test(suffix);
+  });
+}
 function score(card:CapabilityCard,query:string) {
   const terms=tokens(query),q=normalized(query);
   const fields:[string,number][]=[
     [card.name,8],[card.description,1],[(card.discovery?.aliases??[]).join(' '),8],[(card.discovery?.scenarios??[]).join(' '),5],
-    [(card.discovery?.industries??[]).join(' '),5],[featureCategories.find(item=>item.id===card.category)?.name??'',3],[(card.tools??[]).join(' '),2]
+    [(card.discovery?.industries??[]).join(' '),5],[featureCategories.find(item=>item.id===card.category)?.name??'',3],[(card.tools??[]).map(t=>officeAffordances[t]?.words??t).join(' '),2]
   ];
   let value=0;
   for(const [text,weight] of fields){const body=normalized(text);value+=terms.filter(term=>body.includes(term)).length*weight;}
@@ -55,6 +72,12 @@ export function initialCapabilityContext(cards:CapabilityCard[],query:string,fea
   const keep=new Map<string,CapabilityCard>();
   let sources=0;
   for(const card of cards)if(['general','logic','writing','image_generation','local_special'].includes(card.executorId??'')||featureIds.includes(card.featureId??'')||card.kind==='knowledge'&&sources++<6)keep.set(card.id,card);
+  // One authorized representative per explicitly requested office format.
+  // Long compound requests must not crowd a mandatory PPT out of the shortlist.
+  for(const tool of requestedOfficeTools(query)){
+    const match=discoverCapabilities(cards.filter(c=>c.tools.includes(tool)),{query:officeAffordances[tool].words}).items[0];
+    if(match)keep.set(match.id,match);
+  }
   for(const card of discoverCapabilities(cards,{query:query.slice(0,300)}).items.slice(0,6))keep.set(card.id,card);
   return [...keep.values()].sort((a,b)=>a.id.localeCompare(b.id));
 }

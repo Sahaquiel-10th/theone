@@ -33,6 +33,14 @@ test('new workbooks calculate whitelisted formulas, preserve literal text and cr
  const book=XLSX.read(file.bytes,{type:'buffer',cellFormula:true});assert.equal(book.Sheets['预算'].D4.v,0.7);assert.equal(book.Sheets['说明'].B2.v,0.7);assert.equal(book.Sheets['说明'].A2.f,undefined);const zip=await JSZip.loadAsync(file.bytes),sheet=await zip.file('xl/worksheets/sheet1.xml')!.async('string');assert.match(sheet,/dataValidation/);assert.match(sheet,/state="frozen"/);assert.match(sheet,/autoFilter/);
  for(const formula of ['D2+1','B2/0','HYPERLINK("https://bad")','SUM([other.xlsx]Sheet1!B2)'])await assert.rejects(createWorkbook({title:'坏公式',sheets:[{name:'数据',headers:['名','值','值2','合计'],rows:[['x',1,2,null]],formulas:[{cell:'D2',formula}]}]}));
 });
+test('break-even ROUNDUP is cached as four and rounds away from zero without enabling external functions',async()=>{
+ const formulas=['ROUNDUP(120/(50-15),0)','ROUNDUP(-1.01,0)','ROUNDUP(2.2,1)','ROUNDUP(123,-1)'];
+ const file=await createWorkbook({title:'保本',sheets:[{name:'预算',headers:['公式结果'],rows:formulas.map(()=>[null]),formulas:formulas.map((formula,i)=>({cell:`A${i+2}`,formula}))}]});
+ const b=XLSX.read(file.bytes,{type:'buffer',cellFormula:true});
+ assert.deepEqual(formulas.map((_,i)=>b.Sheets['预算'][`A${i+2}`].v),[4,-2,2.2,130]);
+ assert.equal(b.Sheets['预算'].A2.f,formulas[0]);
+ for(const formula of ['ROUNDUP()','ROUNDUP(1,11)','ROUNDUP(1,0.5)','ROUNDUP([secret.xlsx]Sheet1!A1,0)'])await assert.rejects(createWorkbook({title:'拒绝',sheets:[{name:'数据',headers:['值'],rows:[[null]],formulas:[{cell:'A2',formula}]}]}));
+});
 test('formula-derived chart values use recalculated numbers, including negative ROUND half values',async()=>{
  const file=await createWorkbook({title:'公式图表',sheets:[{name:'计算',headers:['分类','数值'],rows:[['甲',null],['乙',null]],formulas:[{cell:'B2',formula:'ROUND(-1.5,0)'},{cell:'B3',formula:'0.1+0.2'}],chart:{type:'bar',categoryColumn:'分类',valueColumn:'数值',title:'计算结果'}}]});const b=XLSX.read(file.bytes,{type:'buffer'});assert.equal(b.Sheets['计算'].B2.v,-2);assert.equal(b.Sheets['计算'].B3.v,.3);const z=await JSZip.loadAsync(file.bytes);assert.match(await z.file('xl/charts/chart1.xml')!.async('string'),/<c:v>-2<\/c:v>/);
 });

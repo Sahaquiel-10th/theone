@@ -1,10 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {discoverCapabilities,initialCapabilityContext,validateDiscoveryQuery} from './capabilityDiscovery.js';
+import {discoverCapabilities,initialCapabilityContext,validateDiscoveryQuery,mandatoryOfficeTools} from './capabilityDiscovery.js';
 import {validateDiscoveryMetadata} from './discoveryMetadata.js';
 import type {CapabilityCard} from './capabilityCatalog.js';
 import {capabilityDiscoveryEnabled,defaultTaskValues,editableTaskValues,validateTaskValues} from './aiTaskConfig.js';
 const card=(id:string,extra:Partial<CapabilityCard>={}):CapabilityCard=>({id:`feature:${id}`,featureId:id,kind:'feature',mode:'text',name:id,description:'通用说明',version:1,available:true,outputKinds:['text'],tools:[],...extra});
+test('compound office requests keep each requested authorized file format, not just name matches',()=>{
+ const cards=Array.from({length:30},(_,i)=>card(`noisy-${i}`,{name:'活动方案预算表志愿者收支介绍'}));
+ cards.push(card('slides',{name:'HTML演示稿与一键导出',tools:['oneSlides']}),card('doc',{tools:['oneDocument']}),card('sheet',{tools:['oneWorkbook']}),card('foreign',{tools:['oneSlides'],available:false}));
+ const query='请准备Word活动执行方案、6页PPT介绍，最好也能网页翻页，和Excel预算表';
+ const initial=initialCapabilityContext(cards,query);
+ for(const id of ['slides','doc','sheet'])assert.ok(initial.some(c=>c.featureId===id));
+ assert.equal(initial.some(c=>c.featureId==='foreign'),false);
+ assert.equal(discoverCapabilities(cards,{query:'PPT'}).items[0].featureId,'slides');
+ assert.deepEqual(mandatoryOfficeTools(query),['oneSlides','oneDocument','oneWorkbook']);
+ assert.deepEqual(mandatoryOfficeTools('做Word；PPT可选；不用Excel'),['oneDocument']);
+ assert.deepEqual(mandatoryOfficeTools('Word和Excel有什么区别'),[]);
+});
 test('legacy dispatchers gain discovery without snapshot mutation, but a later explicit disable is respected',()=>{
  const legacy={...defaultTaskValues('coordinator'),capabilityDiscoveryVersion:undefined,tools:['delegate_task']};
  assert.equal(capabilityDiscoveryEnabled(legacy),true);

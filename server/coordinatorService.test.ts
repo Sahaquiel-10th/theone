@@ -15,6 +15,48 @@ import { NotionDocuments } from './notionDocuments.js';
 import type { NotionMcpService } from './knowledge/notionMcpService.js';
 import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
 import {runtimeContext} from './runtimeContext.js';
+import JSZip from 'jszip';
+import XLSX from 'xlsx';
+
+test('a missing mandatory PPT is repaired before queueing; one office bundle saves and reads back all real formats',async()=>{
+ const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-office-bundle-'));let route=0;
+ const ids=['doc','sheet','slides'],names=['oneDocument','oneWorkbook','oneSlides'];
+ await f.store.mutate(d=>{d.settings.officialFeatures=ids.map((id,i)=>{
+  const values={name:`办公${id}`,author:'ONE',description:'办公成果',instructions:`OFFICE_BUNDLE_${id}`,limitations:'合成私有资料',integration:'question_answer' as const,modelId:'special',knowledgeMode:'none' as const,usageMultiplier:.6,tools:[{id:names[i],description:'生成私有文件'}]};
+  const version={version:1,values,evidence:'test',approvedBy:'a',approvedAt:'now'};
+  return {id,revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:`release-${id}`,version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}};
+ });});
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('no knowledge');}},{artifactDirectory:directory,modelCall:async(model,messages,tools,_request,options)=>{
+  if(model.id==='router'){
+   route++;
+   if(route===3)return answer('三份材料已经安排。');
+   if(route===2){assert.match(messages.at(-1)!.content!,/oneSlides/);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,0);}
+   return {...answer(''),toolCalls:[{id:`plan-${route}`,type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'办公包',instruction:'Word方案、Excel预算、6页PPT，PPT必须交付，网页可选',executorId:'general',featureIds:route===1?ids.slice(0,2):ids,outputKind:'text',dependsOn:[]}]})}}]};
+  }
+  if(model.id==='special'){
+   if(messages.at(-1)?.role==='tool')return answer('文件已保存。');
+   assert.equal(options?.maxOutputTokens,10000);
+   const index=ids.findIndex(id=>messages[0].content?.includes(`OFFICE_BUNDLE_${id}`));
+   const data=index===0?{title:'读书会方案',style:'manual',sections:[{heading:'执行安排',paragraphs:['小林负责活动；场地待定。']}]}:index===1?{title:'预算',sheets:[{name:'预算',headers:['人数','净收益'],rows:[[4,null],[6,null],[10,null],['保本人数',null]],formulas:[{cell:'B2',formula:'A2*(50-15)-120'},{cell:'B3',formula:'A3*(50-15)-120'},{cell:'B4',formula:'A4*(50-15)-120'},{cell:'B5',formula:'ROUNDUP(120/(50-15),0)'}]}]}:{title:'合作介绍',theme:'paper',slides:Array.from({length:6},(_,i)=>({title:`第${i+1}页`,layout:'bullets',bullets:['活动场地待定']}))};
+   return {...answer(''),toolCalls:[{id:`file-${index}`,type:'function',function:{name:names[index],arguments:JSON.stringify({operation:'create',dataJson:JSON.stringify(data)})}}]};
+  }
+  if(messages.at(-1)?.role!=='tool')return {...answer(''),toolCalls:ids.map((_,i)=>({id:`feature-${i}`,type:'function' as const,function:{name:`feature_${i}`,arguments:JSON.stringify({query:'生成本功能对应文件，PPT为6页'})}}))};
+  return answer(JSON.stringify({outcome:'completed',content:'三份材料好了。',summary:'三份都好了'}));
+ }});
+ try{
+  const reply=await service.dispatch(a,input('operation_office_bundle_01','请准备Word执行方案、一份6页PPT介绍，最好也能网页翻页，以及Excel预算表'),key);
+  await service.resume(a,key);await waitFor(async()=>(await service.task(a,reply.taskId!)).jobs[0].state==='completed');
+  const db=await f.store.read(),files=db.attachments.filter(file=>file.conversationId===reply.taskId);
+  assert.deepEqual(files.map(f=>path.extname(f.originalName)).sort(),['.docx','.html','.pptx','.xlsx']);
+  const bytes=(ext:string)=>readFileSync(files.find(f=>f.originalName.endsWith(ext))!.storagePath);
+  const word=await JSZip.loadAsync(bytes('.docx'));assert.match(await word.file('word/document.xml')!.async('string'),/场地待定/);
+  const ppt=await JSZip.loadAsync(bytes('.pptx'));assert.equal(Object.keys(ppt.files).filter(n=>/^ppt\/slides\/slide\d+\.xml$/.test(n)).length,6);
+  const workbook=XLSX.read(bytes('.xlsx'),{type:'buffer',cellFormula:true});assert.deepEqual([2,3,4,5].map(i=>workbook.Sheets['预算'][`B${i}`].v),[20,90,230,4]);assert.match(workbook.Sheets['预算'].B5.f,/ROUNDUP/);
+  const trace=db.contextTraces.find(t=>t.conversationId===reply.taskId)!.executionSteps!;
+  for(const name of names)assert.ok(trace.some(t=>t.tool.endsWith(`.${name}`)));
+  await assert.rejects(()=>service.task(b,reply.taskId!));assert.equal(db.powerAccounts[1].balanceMicros,100e6);
+ }finally{rmSync(directory,{recursive:true,force:true});}
+});
 
 test('automatic public search is real, scoped, carries request time and does not create a task for a tool step',async()=>{
   const f=fixture();let searches=0,calls=0;
@@ -658,7 +700,7 @@ test('a multi-feature deliverable preserves completed work, reports it through O
     return messages.at(-1)?.role==='tool'?answer('安排好了'):{...answer(''),toolCalls:[{id:'plan',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'一份完整说明',instruction:'先写文案，再做网页',executorId:'general',outputKind:'text',featureIds:['checkpoint-0','checkpoint-1'],dependsOn:[]}]})}}]};
   });
   f.setWorker(async messages=>{
-    if(messages[0].content!.includes('checkpoint-feature-0')){first++;return answer('真实保留的文案');}
+    if(messages[0].content!.includes('checkpoint-feature-0')){first++;return answer('真实保留的文案'+ '合成段落'.repeat(800));}
     if(messages[0].content!.includes('checkpoint-feature-1')){second++;if(second===1)throw Error('private provider failure');return answer('真实网页内容');}
     parentRounds++;if(!messages.some(m=>m.role==='tool'))return {...answer(''),toolCalls:[0,1].map(i=>({id:`part-${i}`,type:'function' as const,function:{name:`feature_${i}`,arguments:JSON.stringify({query:`${parentRounds}：处理第${i}部分`})}}))};
     return answer(JSON.stringify({outcome:'completed',content:'真实保留的文案，以及真实网页内容',summary:'两部分做好了'}));
@@ -668,6 +710,9 @@ test('a multi-feature deliverable preserves completed work, reports it through O
   await waitFor(async()=>(await f.service.task(a,id)).jobs.at(-1)!.state==='failed');
   const partial=await f.service.task(a,id),source=partial.jobs.at(-1)!;
   assert.equal(first,1);assert.equal(second,1);assert.equal(reports,1);assert.match(source.userReport!,/文案已经做好/);assert.match(partial.conversation.messages.at(-1)!.content,/真实保留的文案/);
+  assert.ok(partial.conversation.messages.at(-1)!.content.length<1000);
+  const retained=(await f.store.read()).chatOperations!.find(o=>o.conversationId===id&&o.workRun)!.workRun!.steps!.find(step=>step.namespace==='worker'&&step.tool==='feature_0')!.output as {content:string};
+  assert.ok(retained.content.length>3000,'full content remains available for recovery, not repeated in the brief receipt');
   assert.doesNotMatch(JSON.stringify(partial),/private provider failure|"namespace"|"steps"/);
   assert.equal(partial.recovery.kind,'retry');await assert.rejects(()=>f.service.retryLatest(b,id,source.id,undefined,key));
   await f.service.retryLatest(a,id,source.id,undefined,key);await f.service.resume(a,key);

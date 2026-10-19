@@ -1,4 +1,5 @@
-import type { ModelToolDefinition, ModelToolMessage, ToolChatResult } from "./modelGateway.js";
+import type { ModelToolDefinition, ModelToolMessage, ToolChatResult, ToolModelOptions } from "./modelGateway.js";
+import {ModelRequestError} from './modelGateway.js';
 import type { ExecutionTraceStep } from "./types.js";
 import { taskToolDescriptions } from "./aiTaskPresets.js";
 import { entryAllowsTool, type TaskEntryPoint } from "./aiTaskCatalog.js";
@@ -12,11 +13,13 @@ export class OrchestrationToolError extends Error {
 export class OrchestrationInputError extends Error { readonly code='TOOL_INPUT_REPAIR'; }
 /** Stable diagnostics for known local failures; never persist arbitrary exception text. */
 export function orchestrationFailureCode(error:unknown){
+  if(error instanceof ModelRequestError)return `model_http_${Number.isInteger(error.status)?error.status:'unknown'}`;
   const codes:Record<string,string>={
     '已达到调度步骤上限，未完成任务；请缩小问题范围':'task_step_limit',
     '调度模型返回了过多或重复的工具调用，已停止':'task_tool_call_limit',
     '调度模型没有返回结果':'task_empty_response',
     '这一步结果较大，已停止后续操作，请先查看已有成果。':'task_result_limit',
+    '模型工具指令未完整返回，已停止执行；本次已产生的用量可在账单中查看':'task_tool_instruction_incomplete',
   };
   return error instanceof Error&&Object.hasOwn(codes,error.message)?codes[error.message]:undefined;
 }
@@ -39,7 +42,7 @@ export async function runTaskOrchestrator(input: {
   beforeStep: () => Promise<void>;
   onTrace?: (steps: ExecutionTraceStep[]) => void;
   onStage?: (stage: 'model' | 'tool' | 'tool_returned', tool?: string) => void;
-  call: (messages: ModelToolMessage[], tools: ModelToolDefinition[]) => Promise<ToolChatResult>;
+  call: (messages: ModelToolMessage[], tools: ModelToolDefinition[], options?: ToolModelOptions) => Promise<ToolChatResult>;
 }) {
   if (!["workspace", "published_web", "published_api"].includes(input.entryPoint)) throw new Error("执行入口无效");
   if(input.maxToolCallsPerTurn!==undefined&&(!Number.isInteger(input.maxToolCallsPerTurn)||input.maxToolCallsPerTurn<1||input.maxToolCallsPerTurn>4))throw new Error('工具调用上限配置无效');
@@ -65,7 +68,10 @@ export async function runTaskOrchestrator(input: {
   for (let step = 1; step <= steps; step++) {
     await input.beforeStep();
     input.onStage?.('model');
-    const result = await input.call(messages, step === steps ? [] : tools);
+    // Keep schemas needed to interpret native history, without allowing any
+    // new execution in the final answer-only turn.
+    const result = await input.call(messages, step === steps ? [] : tools,
+      step === steps && tools.length ? {finalSummaryTools: tools} : undefined);
     if (result.toolCalls.length && (result.finishReason === "length" || result.finishReason === "filtered")) throw new Error("模型工具指令未完整返回，已停止执行；本次已产生的用量可在账单中查看");
     if (!result.toolCalls.length) {
       if (!result.content.trim()) throw new Error("调度模型没有返回结果");
@@ -122,7 +128,7 @@ export async function runTaskOrchestrator(input: {
               repair(step);output={status:'rejected',code:error.code,message:error.message};status='rejected';
             }else{
             trace.push({ step, tool: tool.name, status: "failed", query,
-              resultPreview: JSON.stringify({ status: "failed", code: error instanceof OrchestrationToolError ? error.code : "TOOL_EXECUTION_FAILED" }),
+              resultPreview: JSON.stringify({ status: "failed", code: error instanceof OrchestrationToolError ? error.code : orchestrationFailureCode(error)??"TOOL_EXECUTION_FAILED" }),
               durationMs: Date.now() - started });
             input.onTrace?.(structuredClone(trace));
             if(!tool.tolerateFailure||error instanceof OrchestrationToolError)throw error;

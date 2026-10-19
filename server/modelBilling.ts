@@ -1,6 +1,6 @@
 import type { Store } from "./db.js";
 import type { CacheUsage, Database, ModelConfig, ModelUsageRecord } from "./types.js";
-import { MODEL_MAX_OUTPUT_TOKENS } from "./modelGateway.js";
+import { outputTokenLimit } from "./modelGateway.js";
 import { calculateModelPower, contextPricedModel, chargePower, estimateTokenCeiling, MICROS_PER_POWER, powerAccount, releasePower, reservePower } from "./powerBilling.js";
 import { uid } from "./security.js";
 import { effectiveModel } from "./modelPricing.js";
@@ -11,7 +11,7 @@ import { featurePricedModel, type FeaturePrice } from './featurePricing.js';
 import { reserveExecutionBatchBudget, type ExecutionBatchBudget } from './executionBatchBudget.js';
 
 export type ModelUsage = { inputTokens: number; outputTokens: number; totalTokens: number; cacheUsage?: CacheUsage; source: string };
-type BillingParams = { sponsorship?:{kind:'welcome_gift';operationId:string;stage?:'manual'|'image'}; batchBudget?: ExecutionBatchBudget; featurePrice?: FeaturePrice; workspaceId: string; userId: string; conversationId?: string; model: ModelConfig; input: unknown; activity: string; requestId: string; beforeReserve?: (db: Database, amountMicros: number) => void;commerce?:PublicCommerceSnapshot };
+type BillingParams = { maxOutputTokens?: number; sponsorship?:{kind:'welcome_gift';operationId:string;stage?:'manual'|'image'}; batchBudget?: ExecutionBatchBudget; featurePrice?: FeaturePrice; workspaceId: string; userId: string; conversationId?: string; model: ModelConfig; input: unknown; activity: string; requestId: string; beforeReserve?: (db: Database, amountMicros: number) => void;commerce?:PublicCommerceSnapshot };
 type BillingScope = { usageId: string; workspaceId: string; userId: string };
 
 export class BillingReviewRequiredError extends Error {
@@ -43,7 +43,8 @@ function estimateInputCeiling(input: unknown) {
   return estimateTokenCeiling(text) + images * 32_768;
 }
 
-export function modelReservationMicros(model: ModelConfig, input: unknown) {
+export function modelReservationMicros(model: ModelConfig, input: unknown, maxOutputTokens?: number) {
+  const outputLimit = outputTokenLimit(maxOutputTokens);
   if (model.kind === "image") {
     if (typeof model.imagePowerPerCall !== "number" || !Number.isFinite(model.imagePowerPerCall) || model.imagePowerPerCall <= 0
       || typeof model.costImagePowerPerCall !== "number" || !Number.isFinite(model.costImagePowerPerCall) || model.costImagePowerPerCall < 0) {
@@ -56,7 +57,7 @@ export function modelReservationMicros(model: ModelConfig, input: unknown) {
   }
   const high = model.pricing?.longContext ? contextPricedModel(model, model.pricing.longContext.thresholdInputTokens + 1) : model;
   const maximumInput = Math.max(model.inputPowerPerMillion, ...Object.values(model.cachePrices || {}), high.inputPowerPerMillion, ...Object.values(high.cachePrices || {}));
-  const amount = calculateModelPower({ ...model, pricing: undefined, inputPowerPerMillion: maximumInput, outputPowerPerMillion: Math.max(model.outputPowerPerMillion, high.outputPowerPerMillion) }, estimateInputCeiling({ input, modelPrompt: model.systemPrompt }), MODEL_MAX_OUTPUT_TOKENS).chargedMicros;
+  const amount = calculateModelPower({ ...model, pricing: undefined, inputPowerPerMillion: maximumInput, outputPowerPerMillion: Math.max(model.outputPowerPerMillion, high.outputPowerPerMillion) }, estimateInputCeiling({ input, modelPrompt: model.systemPrompt }), outputLimit).chargedMicros;
   if (!Number.isSafeInteger(amount) || amount < 0) throw new Error("本次请求超过电力计费范围，请缩短输入");
   return amount;
 }
@@ -115,7 +116,7 @@ export function settleBillingRecord(db: Database, scope: BillingScope, usage: Mo
 
 export async function runBilledModel<T extends { usage?: ModelUsage; finishReason?: import("./modelGateway.js").ModelFinishReason }>(store: Store, params: BillingParams, call: (modelSnapshot: ModelConfig) => Promise<T>): Promise<T> {
   const model = params.featurePrice ? featurePricedModel(params.model, params.featurePrice.multiplier) : effectiveModel(params.model);
-  const amountMicros = modelReservationMicros(model, params.input);
+  const amountMicros = modelReservationMicros(model, params.input, params.maxOutputTokens);
   const timestamp = new Date().toISOString();
   const row: ModelUsageRecord = {
     sponsorship:params.sponsorship?structuredClone(params.sponsorship):undefined,

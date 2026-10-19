@@ -44,6 +44,21 @@ export type ToolChatResult = {
   usage?: ChatResult["usage"];
 };
 
+/** Server-owned call controls, never accepted from a tool's JSON arguments. */
+export type ToolModelOptions = {
+  requiredTool?: string;
+  timeoutMs?: number;
+  /** Retain native tool history definitions while forbidding new calls. */
+  finalSummaryTools?: ModelToolDefinition[];
+  maxOutputTokens?: number;
+};
+
+export function outputTokenLimit(value?: number) {
+  if (value === undefined) return MODEL_MAX_OUTPUT_TOKENS;
+  if (!Number.isSafeInteger(value) || value < 1 || value > 12000) throw new Error('模型输出上限配置无效');
+  return value;
+}
+
 const requestTimeoutMs = numberEnv("MODEL_REQUEST_TIMEOUT_MS", 150000);
 export class ModelRequestError extends Error {
   constructor(readonly status:number, readonly reason:string) {
@@ -55,6 +70,7 @@ export function safeProviderReason(payload:unknown,status:number):string {
   const p=payload as {error?:{message?:unknown}};
   const message=typeof p?.error?.message==='string'?p.error.message:'';
   if(status===400){
+    if(/tool_use|tool_result|tool_call_id|tool_calls.*(match|preced|response)|tools.*(history|previous)/i.test(message))return '工具结果与对话记录格式不兼容，请检查功能接口';
     if(/tool.?choice|tools.*(empty|required)|without.*tools/i.test(message))return '工具调用参数不兼容，请检查功能接口';
     if(/temperature/i.test(message))return '模型不支持当前温度参数，请检查接口配置';
     if(/max.?tokens|context.*(length|limit)|too.*(long|tokens)/i.test(message))return '输入或输出长度超过模型限制，请调整任务范围';
@@ -251,13 +267,17 @@ export async function callModelWithTools(
   messages: ModelToolMessage[],
   tools: ModelToolDefinition[],
   requestId = "unknown",
-  options: { requiredTool?: string;timeoutMs?:number } = {}
+  options: ToolModelOptions = {}
 ): Promise<ToolChatResult> {
   if (!model.enabled) throw new Error("模型未启用");
   if (!model.apiKey) throw new Error("模型缺少 API Key");
   if (model.kind !== "chat") throw new Error("ONE Local Agent 需要支持 function calling 的对话模型");
+  outputTokenLimit(options.maxOutputTokens);
+  if (options.finalSummaryTools && (tools.length || options.requiredTool)) throw new Error('结果汇总不能同时要求执行工具');
   if (options.requiredTool && !tools.some(t => t.function.name === options.requiredTool)) throw new Error("指定工具未授权");
   if (model.protocol === "anthropic") return callAnthropicModelWithTools(model, messages, tools, requestId, options);
+
+  const definitions = options.finalSummaryTools ?? tools;
 
   const endpoint = `${model.baseUrl.replace(/\/$/, "")}/chat/completions`;
   const startedAt = Date.now();
@@ -279,10 +299,9 @@ export async function callModelWithTools(
       body: JSON.stringify({
         model: model.model,
         messages: messages.map(({inputImageDataUrls,...message})=>({...message,content:inputImageDataUrls?.length?[{type:'text',text:message.content||''},...inputImageDataUrls.map(url=>({type:'image_url',image_url:{url}}))]:message.content})),
-        tools,
-        tool_choice: options.requiredTool ? { type: "function", function: { name: options.requiredTool } } : "auto",
+        ...(definitions.length ? {tools: definitions, tool_choice: options.finalSummaryTools ? 'none' : options.requiredTool ? { type: "function", function: { name: options.requiredTool } } : "auto"} : {}),
         temperature: 0.2,
-        max_tokens: MODEL_MAX_OUTPUT_TOKENS
+        max_tokens: outputTokenLimit(options.maxOutputTokens)
       })
     }, options.timeoutMs?Math.min(requestTimeoutMs,Math.max(1000,options.timeoutMs)):requestTimeoutMs);
     const payload = await response.json().catch(() => ({}));
@@ -329,8 +348,9 @@ async function callAnthropicModelWithTools(
   messages: ModelToolMessage[],
   tools: ModelToolDefinition[],
   requestId: string,
-  options: { requiredTool?: string;timeoutMs?:number } = {}
+  options: ToolModelOptions = {}
 ): Promise<ToolChatResult> {
+  const definitions = options.finalSummaryTools ?? tools;
   const system = messages
     .filter((message) => message.role === "system" && typeof message.content === "string")
     .map((message) => message.content?.trim())
@@ -389,13 +409,13 @@ async function callAnthropicModelWithTools(
         model: model.model,
         system: system || undefined,
         messages: anthropicMessages,
-        tools: tools.length ? tools.map((tool) => ({
+        tools: definitions.length ? definitions.map((tool) => ({
           name: tool.function.name,
           description: tool.function.description,
           input_schema: tool.function.parameters
         })) : undefined,
-        tool_choice: tools.length ? (options.requiredTool ? { type: "tool", name: options.requiredTool, disable_parallel_tool_use: true } : { type: "auto" }) : undefined,
-        max_tokens: MODEL_MAX_OUTPUT_TOKENS
+        tool_choice: definitions.length ? (options.finalSummaryTools ? {type:'none'} : options.requiredTool ? { type: "tool", name: options.requiredTool, disable_parallel_tool_use: true } : { type: "auto" }) : undefined,
+        max_tokens: outputTokenLimit(options.maxOutputTokens)
       })
     }, options.timeoutMs?Math.min(requestTimeoutMs,Math.max(1000,options.timeoutMs)):requestTimeoutMs);
     const payload = await response.json().catch(() => ({}));

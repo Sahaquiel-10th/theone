@@ -496,9 +496,9 @@ app.post("/api/chat", ...keyAuth, asyncRoute(async (req, res) => {
         } }] : []),
         ...(legacyWebAllowed && config.values.tools.includes("web_search") ? [{ name: "web_search", description: config.values.toolDescriptions?.web_search, run: async (query: string) => { const found = await legacyPublicSearch(query); searchSources.push(...(found.sources ?? [])); return found; } }] : [])
       ],
-      call: async (baseMessages, tools) => {
+      call: async (baseMessages, tools, callOptions) => {
         const messages=[baseMessages[0],{role:'system' as const,content:runtimeContextText(runtimeContext(db,scope,userMessage.createdAt,req.get('X-ONE-Time-Zone')))},...baseMessages.slice(1)];
-        const result = await runBilledModel(store, { workspaceId: scope.workspaceId, userId: scope.userId, conversationId: conversation.id, model: config.model, input: { messages, tools, taskVersion: config.version }, activity: "orchestrator", requestId: res.locals.requestId }, snapshot => callModelWithTools(snapshot, messages, tools, res.locals.requestId));
+        const result = await runBilledModel(store, { workspaceId: scope.workspaceId, userId: scope.userId, conversationId: conversation.id, model: config.model, input: { messages, tools:callOptions?.finalSummaryTools??tools, taskVersion: config.version }, activity: "orchestrator", requestId: res.locals.requestId }, snapshot => callModelWithTools(snapshot, messages, tools, res.locals.requestId, callOptions));
         modelSucceeded = true;
         return result;
       }

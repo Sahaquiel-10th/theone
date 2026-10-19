@@ -4,6 +4,29 @@ import { createServer } from "node:http";
 import test from "node:test";
 import { callModel, callModelWithTools, fetchWithTimeout, parseProviderUsage, safeProviderReason } from "./modelGateway.js";
 import type { ModelConfig } from "./types.js";
+import {runTaskOrchestrator} from './taskOrchestrator.js';
+
+for(const protocol of ['openai','anthropic'] as const)test(`${protocol}: final answer retains native tool history schemas, forbids another call and omits empty tool fields`,async()=>{
+ const requests:any[]=[];
+ const server=createServer((req,res)=>{let body='';req.on('data',c=>body+=c);req.on('end',()=>{
+  const data=JSON.parse(body);requests.push(data);res.setHeader('Content-Type','application/json');
+  const final=data.tool_choice==='none'||data.tool_choice?.type==='none';
+  if(requests.length===2&&(!data.tools?.length||!final)){res.writeHead(400);res.end(JSON.stringify({error:{message:'tool_use history requires tools'}}));return;}
+  const response=protocol==='openai'?{choices:[{message:final||!data.tools?{content:'查好了',tool_calls:[]}:{content:null,tool_calls:[{id:'call-search',type:'function',function:{name:'web_search',arguments:'{"query":"MDN"}'}}]},finish_reason:final?'stop':'tool_calls'}]}:{content:final||!data.tools?[{type:'text',text:'查好了'}]:[{type:'tool_use',id:'call-search',name:'web_search',input:{query:'MDN'}}],stop_reason:final?'end_turn':'tool_use'};
+  res.end(JSON.stringify(response));
+ });});server.listen(0,'127.0.0.1');await once(server,'listening');const addr=server.address();if(!addr||typeof addr==='string')throw Error('no address');
+ const model={id:'test',kind:'chat',enabled:true,apiKey:'test',model:'fixture',baseUrl:`http://127.0.0.1:${addr.port}`,protocol} as ModelConfig;
+ let executions=0,verified=0;
+ try{
+  const result=await runTaskOrchestrator({entryPoint:'workspace',messages:[{role:'user',content:'查MDN'}],tools:[{name:'web_search',run:async()=>{executions++;return {sources:[{url:'https://developer.mozilla.org/'}]};}}],maxSteps:2,beforeStep:async()=>{verified++;},call:(messages,tools,options)=>callModelWithTools(model,messages,tools,'final-test',{...options,maxOutputTokens:10000})});
+  assert.equal(result.content,'查好了');assert.equal(executions,1);assert.equal(verified,3);
+  assert.equal(requests[1].max_tokens,10000);assert.equal(requests[1].tools.length,1);
+  await assert.rejects(()=>callModelWithTools(model,[],[],undefined,{finalSummaryTools:[],requiredTool:'web_search'}),/不能同时/);
+  await assert.rejects(()=>callModelWithTools(model,[],[],undefined,{maxOutputTokens:12001}),/输出上限/);
+  await callModelWithTools(model,[{role:'user',content:'只回答'}],[]);
+  assert.equal(requests[2].tools,undefined);assert.equal(requests[2].tool_choice,undefined);
+ }finally{server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}
+});
 
 test("passes OpenAI function tools and returns tool calls", async () => {
   let received: any;

@@ -7,7 +7,7 @@ const cellAddress=(v:unknown)=>{if(typeof v!=='string'||!/^\$?[A-Z]{1,2}\$?[1-9]
 function literal(v:unknown){if(v!==null&&!['string','number','boolean'].includes(typeof v)||typeof v==='number'&&!Number.isFinite(v)||typeof v==='string'&&v.length>5000)throw new Error('单元格需有限数字、文字、布尔或空值');return v as string|number|boolean|null;}
 function tokens(formula:string){
  const s=formula.replace(/^=/,'');if(!s||s.length>500)throw new Error('公式需1–500字');let pos=0;const out:string[]=[];
- while(pos<s.length){const m=/^(\s+|(?:'[^']{1,31}'|[\p{L}_][\p{L}\p{N}_ ]{0,30})!\$?[A-Z]{1,2}\$?[1-9]\d{0,3}|\$?[A-Z]{1,2}\$?[1-9]\d{0,3}|(?:\d+(?:\.\d*)?|\.\d+)|[A-Z]+|[+\-*/(),:])/u.exec(s.slice(pos));if(!m)throw new Error('公式仅支持本工作簿引用、四则运算、SUM/AVERAGE/MIN/MAX/ROUND');pos+=m[0].length;if(!/^\s+$/.test(m[0]))out.push(m[0]);if(out.length>250)throw new Error('公式过于复杂');}return out;
+ while(pos<s.length){const m=/^(\s+|(?:'[^']{1,31}'|[\p{L}_][\p{L}\p{N}_ ]{0,30})!\$?[A-Z]{1,2}\$?[1-9]\d{0,3}|\$?[A-Z]{1,2}\$?[1-9]\d{0,3}|(?:\d+(?:\.\d*)?|\.\d+)|[A-Z]+|[+\-*/(),:])/u.exec(s.slice(pos));if(!m)throw new Error('公式仅支持本工作簿引用、四则运算、SUM/AVERAGE/MIN/MAX/ROUND/ROUNDUP');pos+=m[0].length;if(!/^\s+$/.test(m[0]))out.push(m[0]);if(out.length>250)throw new Error('公式过于复杂');}return out;
 }
 /** A bounded arithmetic parser. Never eval formulas or follow external links. */
 export function recalculateBook(book:XLSX.WorkBook){
@@ -19,9 +19,9 @@ export function recalculateBook(book:XLSX.WorkBook){
   visiting.add(key);const ts=tokens(c.f);let i=0;
   const refval=(t:string)=>{const cut=t.lastIndexOf('!');return cut<0?{sheet,ref:t}:{sheet:t.slice(0,cut).replace(/^'|'$/g,''),ref:t.slice(cut+1)};};
   const primary=():number=>{const t=ts[i++];if(t===undefined)throw new Error('公式不完整');if(t==='-'||t==='+')return (t==='-'?-1:1)*primary();if(t==='('){const n=expr();if(ts[i++]!==')')throw new Error('公式括号不匹配');return n;}if(/^\d|^\./.test(t))return Number(t);
-   if(/^(SUM|AVERAGE|MIN|MAX|ROUND)$/.test(t)&&ts[i++]==='('){const args:number[]=[];
+   if(/^(SUM|AVERAGE|MIN|MAX|ROUND|ROUNDUP)$/.test(t)&&ts[i++]==='('){const args:number[]=[];
     if(ts[i]!==')')while(true){if(ts[i+1]===':'){const from=refval(ts[i]),to=refval(ts[i+2]);if(from.sheet!==to.sheet&&ts[i+2].includes('!'))throw new Error('范围需在同一工作表');const a=cellAddress(from.ref),b=cellAddress(to.ref);if(b.r<a.r||b.c<a.c)throw new Error('范围顺序无效');i+=3;for(let r=a.r;r<=b.r;r++)for(let c=a.c;c<=b.c;c++){const ref=XLSX.utils.encode_cell({r,c}),cell=book.Sheets[from.sheet]?.[ref];if(cell?.f||typeof cell?.v==='number')args.push(value(from.sheet,ref));};}else args.push(expr());if(ts[i]!==',')break;i++;}
-    if(ts[i++]!==')')throw new Error('函数参数无效');if(!args.length){if(t==='AVERAGE')throw new Error('平均范围没有数字');return 0;}if(t==='SUM')return args.reduce((a,b)=>a+b,0);if(t==='AVERAGE')return args.reduce((a,b)=>a+b,0)/args.length;if(t==='MIN')return Math.min(...args);if(t==='MAX')return Math.max(...args);if(args.length!==2||!Number.isInteger(args[1])||Math.abs(args[1])>10)throw new Error('ROUND需数值及-10至10位数');return Math.sign(args[0])*Math.round((Math.abs(args[0])+Number.EPSILON)*10**args[1])/10**args[1];
+    if(ts[i++]!==')')throw new Error('函数参数无效');if(!args.length){if(t==='AVERAGE')throw new Error('平均范围没有数字');if(t==='ROUND'||t==='ROUNDUP')throw new Error('舍入函数需要两个参数');return 0;}if(t==='SUM')return args.reduce((a,b)=>a+b,0);if(t==='AVERAGE')return args.reduce((a,b)=>a+b,0)/args.length;if(t==='MIN')return Math.min(...args);if(t==='MAX')return Math.max(...args);if(args.length!==2||!Number.isInteger(args[1])||Math.abs(args[1])>10)throw new Error('ROUND/ROUNDUP需数值及-10至10位数');const scaled=Math.abs(args[0])*10**args[1];return Math.sign(args[0])*(t==='ROUNDUP'?Math.ceil(Number(scaled.toPrecision(14))):Math.round((Math.abs(args[0])+Number.EPSILON)*10**args[1]))/10**args[1];
    }
    if(/(?:^|!)\$?[A-Z]{1,2}\$?[1-9]\d{0,3}$/.test(t)){const r=refval(t);return value(r.sheet,r.ref);}throw new Error('不支持的公式函数或引用');
   };
