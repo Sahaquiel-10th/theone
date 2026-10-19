@@ -1,7 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {runTaskOrchestrator} from './taskOrchestrator.js';
-import {taskStepKey,completedSteps,toolSucceeded,type TaskStep,type TaskStepStore} from './taskSteps.js';
+import {taskStepKey,completedSteps,toolSucceeded,stepProgress,type TaskStep,type TaskStepStore} from './taskSteps.js';
+test('rephrased recovery supersedes only the same delivery failure, not independent reads or uncertain saves',()=>{
+ const base={namespace:'worker',tool:'feature_2',label:'预算表',effect:'model' as const,updatedAt:'now'};
+ const old:TaskStep={...base,key:'old',state:'failed'};
+ const done:TaskStep={...base,key:'new',state:'completed',output:{content:'真实结果'}};
+ assert.deepEqual(stepProgress([old,done]),{completed:['预算表'],pending:[]});assert.equal(old.state,'failed');
+ assert.deepEqual(stepProgress([old,{...done,namespace:'foreign'}]).pending,['预算表']);
+ assert.deepEqual(stepProgress([{...old,namespace:'source',tool:'knowledge_search',label:'另一个查询',effect:'read'}, {...done,namespace:'source',tool:'knowledge_search',effect:'read'}]).pending,['另一个查询']);
+ const started={...old,tool:'oneWorkbook',effect:'artifact' as const,state:'started' as const};
+ assert.deepEqual(stepProgress([started,{...done,tool:'oneWorkbook',effect:'artifact'}]).pending,['预算表']);
+});
 test('unavailable and unconfigured tools never satisfy required steps or become reusable completed work',async()=>{
   for(const status of ['unavailable','not_configured','needs_input']){
     assert.equal(toolSucceeded({status}),false);

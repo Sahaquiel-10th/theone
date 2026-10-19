@@ -14,6 +14,12 @@ import {officeArtifactContext} from './featureArtifacts.js';
 import {installOfficeRoutes} from './officeRoutes.js';
 import type {Database} from './types.js';
 import type {Store} from './db.js';
+test('workbook tool advertises the actually implemented ROUNDUP function to execution models',()=>{
+ const tool=officeTool('oneWorkbook','创建预算表',async()=>{},{});
+ assert.match(tool.description!,/ROUNDUP\(120\/\(50-15\),0\)/);
+ assert.match(tool.description!,/其他函数与外部引用不支持/);
+ assert.doesNotMatch(officeTool('oneDocument','Word文档',async()=>{},{}).description!,/ROUNDUP/);
+});
 export const officeDemo:SlideDeck={title:'项目交付与经营复盘',theme:'paper',slides:[
  {title:'项目交付与经营复盘',layout:'cover',subtitle:'演示资料 · 所有数据均为虚构',notes:'先说明本演示不代表任何企业的实际业绩。'},
  {title:'本轮需要确认的事项',layout:'bullets',bullets:['确认客户图纸和现场接口','对齐供货与安装的责任范围','用交付证据确认下一次付款节点'],source:'来源：本地虚构演示资料'},
