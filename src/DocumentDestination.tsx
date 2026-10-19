@@ -3,6 +3,7 @@ import {confirmAction} from './ConfirmAction';
 import { Check, ChevronDown, ChevronRight, FileText, Folder, MessageCircle, Settings2 } from 'lucide-react';
 import type { api as Api } from './oneApi';
 import './document-destination.css';
+import {parseNotionPageLink} from './notionPageLink';
 export type DocumentDestination = 'chat' | 'local' | 'notion';
 export function NotionReceiptNotice({ api, taskId, receipt, onRefresh }: { api: typeof Api; taskId: string; receipt?: {state: string; url?: string; error?: string}; onRefresh: () => Promise<unknown> }) {
   const [busy,setBusy]=useState(false),[notice,setNotice]=useState('');
@@ -73,16 +74,24 @@ export function NotionWritingSettings({ api }: { api: typeof Api }) {
     catch (e) { setNotice(e instanceof Error ? e.message : '无法打开授权'); setBusy(false); }
   }
   async function save() {
+    const parsed=parseNotionPageLink(parent);
+    if(parsed.error){setNotice(parsed.error);return;}
+    const references=refs.split('\n').map(s=>s.trim()).filter(Boolean);
+    if(references.length>5){setNotice('参考文章最多放五篇就好。');return;}
+    for(const [index,reference] of references.entries()){
+      const parsedReference=parseNotionPageLink(reference);
+      if(parsedReference.error){setNotice(`第 ${index+1} 篇参考文章：${parsedReference.error}`);return;}
+    }
     setBusy(true); setNotice('正在核对页面访问权限…');
     try {
-      const next = await api<WritingSettings>('/api/knowledge/connections/notion/writing', { method: 'PUT', body: JSON.stringify({ parent, references: refs.split('\n').map(s => s.trim()).filter(Boolean) }) });
+      const next = await api<WritingSettings>('/api/knowledge/connections/notion/writing', { method: 'PUT', body: JSON.stringify({ parent, references }) });
       setSettings(next); setNotice('保存位置已设置，可以在输入框选择 Notion。'); window.dispatchEvent(new Event('one-writing-settings'));
     } catch (e) { setNotice(e instanceof Error ? e.message : '保存未完成'); }
     finally { setBusy(false); }
   }
   return <section className="notion-writing-settings" aria-label="Notion 写入设置"><header className="notion-writing-heading"><div><h4>让 ONE 写到 Notion</h4><p>写作、保存、续改，都在 ONE 里完成。</p></div>{settings?.writeAuthorized ? <span className="notion-writing-badge"><Check size={12} />已授权</span> : null}</header>
     {!settings ? <p>{notice || '正在读取设置…'}</p> : !settings.writeAuthorized ? <><p>当前可读取知识。开启写入后，ONE 还能创建文章并继续修改自己的草稿。</p><button type="button" className="primary notion-writing-save" disabled={busy} onClick={() => void authorize()}>{busy ? '正在打开授权…' : '开启草稿写入'}<ChevronRight size={14} /></button></> : <>
-      <label>保存位置<input aria-label="Notion 草稿保存页面" type="url" value={parent} onChange={e => setParent(e.target.value)} placeholder="粘贴一个已有 Notion 页面链接" disabled={busy} /><small>选一次即可，新文章会自动创建在这个页面下。</small></label>
+      <label>保存位置<input aria-label="Notion 草稿保存页面" type="text" inputMode="url" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={parent} onChange={e => {setParent(e.target.value);setNotice('');}} placeholder="粘贴 Notion 页面里的“复制链接”" disabled={busy} aria-describedby="notion-parent-help" /><small id="notion-parent-help">打开想放草稿的普通页面 → 右上角“分享” → “复制链接”。不用发布或公开页面；选好一次，以后会保留。</small>{parent.trim()&&!parseNotionPageLink(parent).error?<small>链接格式已识别，点下方按钮核对访问权限。</small>:null}</label>
       <details className="notion-reference-settings"><summary>参考我的文章风格{refs.trim() ? <span>已设置</span> : <span>可选</span>}</summary><label>参考文章<textarea aria-label="Notion 参考文章" placeholder="每行粘贴一篇文章链接，最多五篇" rows={3} value={refs} onChange={e => setRefs(e.target.value)} disabled={busy} /><small>写作时按需参考，不复制整库。</small></label></details>
       <button type="button" className="primary notion-writing-save" disabled={busy || !parent.trim()} onClick={() => void save()}>{busy ? '正在核对…' : settings.ready ? '保存修改' : '确认保存位置'}</button>
       <details className="notion-permission-details"><summary>权限与费用说明</summary><p>由 ONE 写作，使用 ONE 额度，不调用 Notion AI。只修订该任务绑定的草稿，不删除或移动页面，不修改数据库。</p><p>改变授权或保存位置后，旧任务会暂停。你在 Notion 手工修改过的内容，写入前会重新核对。</p></details>

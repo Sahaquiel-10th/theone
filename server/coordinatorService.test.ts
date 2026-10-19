@@ -324,6 +324,36 @@ test('worker independently invokes two priced features; third unused feature cos
   await f.service.resume(a,key);assert.equal((await f.store.read()).modelUsageRecords.filter(r=>r.featurePriceSnapshot).length,2);
 });
 
+test('one task composes two priced features and each executes three distinct calculation calls',async()=>{
+  const f=fixture();
+  await f.store.mutate(d=>{d.settings.officialFeatures=['profit','promotion'].map((operation,i)=>{
+    const values={name:`测算${i}`,author:'ONE',description:'根据合成数据测算',instructions:`batch-calculation-${operation}`,limitations:'只用用户数据',integration:'question_answer' as const,modelId:'special',knowledgeMode:'none' as const,usageMultiplier:.6,tools:[{id:'oneFinance',description:'执行真实金额测算'}]};
+    const version={version:1,values,evidence:'合成测试',approvedBy:'a',approvedAt:'now'};
+    return{id:`batch-${i}`,revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:`batch-release-${i}`,version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}};
+  });});
+  const returned:Record<string,number[]>={};
+  f.setWorker(async messages=>{
+    const instructions=messages[0].content||'',operation=instructions.includes('batch-calculation-profit')?'profit':instructions.includes('batch-calculation-promotion')?'promotion':undefined;
+    if(operation){
+      if(messages.at(-1)?.role==='tool'){
+        returned[operation]=messages.filter(m=>m.role==='tool').map(m=>JSON.parse(m.content!)[operation==='profit'?'operatingProfit':'campaignProfit']);
+        return answer(JSON.stringify({outcome:'completed',content:`${operation}: ${returned[operation].join('/')}`,summary:'三组结果已返回'}));
+      }
+      return {...answer(''),toolCalls:(operation==='profit'?[4,6,10]:[0,2.5,10]).map((n,index)=>({id:`${operation}-${index}`,type:'function' as const,function:{name:'oneFinance',arguments:JSON.stringify({operation,dataJson:JSON.stringify(operation==='profit'?{revenue:n*50,variableCost:n*15,fixedCost:120,quantity:n}:{price:50,discount:n,variableCost:15,giftCost:0,channelRate:0,fixedCampaignCost:120,participants:6})})}}))};
+    }
+    if(messages.at(-1)?.role!=='tool')return {...answer(''),toolCalls:[0,1].map(i=>({id:`batch-part-${i}`,type:'function' as const,function:{name:`feature_${i}`,arguments:JSON.stringify({query:'完成本功能的三组计算'})}}))};
+    return answer(JSON.stringify({outcome:'completed',content:'利润20/90/230；优惠90/75/30。',summary:'两部分都好了'}));
+  });
+  const reply=await f.service.dispatch(a,{...input('operation_two_feature_batch','做利润和优惠测算'),featureIds:['batch-0','batch-1'],confirmedExternal:true},key);
+  await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,reply.taskId!)).jobs[0].state==='completed');
+  assert.deepEqual(returned,{profit:[20,90,230],promotion:[90,75,30]});
+  const db=await f.store.read(),op=db.chatOperations!.find(o=>o.conversationId===reply.taskId&&o.workRun)!;
+  assert.equal(op.workRun!.steps!.filter(step=>step.tool==='oneFinance'&&step.state==='completed'&&step.effect==='read').length,6);
+  assert.equal(op.workRun!.steps!.filter(step=>step.namespace==='worker'&&step.state==='completed').length,2);
+  assert.equal(db.powerAccounts[1].balanceMicros,100e6);await assert.rejects(()=>f.service.task(b,reply.taskId!));
+  assert.match((await f.service.task(a,reply.taskId!)).conversation.messages.at(-1)!.content,/20\/90\/230/);
+});
+
 test('legacy assistant restrictions remain enforced before accepting or charging a task supplement',async()=>{
  const f=fixture(),stamp=new Date().toISOString();
  await f.store.mutate(d=>{

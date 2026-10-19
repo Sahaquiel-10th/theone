@@ -21,6 +21,9 @@ export function localSkillTool(id:string, description:string, verify:()=>Promise
   if(visualToolPresets.some(x=>x.id===id))return visualTool(id,description,verify,context.saveVisual);
   if(!['oneFinance','oneTable'].includes(id))throw new Error('未知的内置工具');
   return {name:id,description,label:id==='oneFinance'?'核对金额':'整理表格',effect:context.saveTable?'artifact':'read',run:async()=>{throw new Error('需要结构化参数');},structured:{
+    // Pure calculations must be keyed by their inputs. Only quote/table exports
+    // have a file side effect and retain the conservative no-duplicate-write lock.
+    effect:raw=>context.saveTable&&(id==='oneTable'||(raw as {operation:string}).operation==='quote')?'artifact':'read',
     schema:{type:'object',additionalProperties:false,properties:{operation:{type:'string',enum:id==='oneFinance'?['profit','promotion','quote']:['clean','customers','merge']},dataJson:{type:'string',maxLength:120000}},required:['operation','dataJson']},
     validate:raw=>{
       if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('工具输入无效');

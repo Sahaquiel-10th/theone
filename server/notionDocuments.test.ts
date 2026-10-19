@@ -43,6 +43,28 @@ test('Notion readback extracts body, refuses truncated/unsupported pages',()=>{
   assert.throws(()=>notionBody({text:'正文',truncated:true}));
   assert.throws(()=>notionBody({text:'正文',unknown_block_count:1}));
 });
+test('Notion destination config normalizes links before scoped reads and never changes settings on malformed links',async()=>{
+  const f=fixture(),read=f.mcp.readDocument.bind(f.mcp),reads:string[]=[];
+  f.mcp.readDocument=async(ws,id)=>{reads.push(id);return read(ws,id);};
+  const configured=await f.docs.configure(s,{parent:`notion://www.notion.so/草稿-${parentId}/?source=copy_link`,references:[`https://app.notion.com/${pageId}/`,`https://notion.so/${pageId}`]});
+  assert.equal(configured.parentId,parentId);assert.deepEqual(configured.referenceIds,[pageId]);assert.deepEqual(reads,[parentId,pageId]);assert.equal(f.calls.length,0,'configuration does not write a Notion document');
+  const before=structuredClone(f.db.knowledgeConnections);
+  await assert.rejects(()=>f.docs.configure(s,{parent:`https://notion.so/${pageId}`,references:['wrong reference']}),/第 1 篇参考文章/);
+  await assert.rejects(()=>f.docs.configure(s,{parent:'https://notion.so/home',references:[]}),/复制链接/);
+  assert.deepEqual(f.db.knowledgeConnections,before);assert.equal(reads.length,2);
+  await assert.rejects(()=>f.docs.configure({workspaceId:'wb',userId:'b'},{parent:`https://notion.so/${parentId}`,references:[]}));assert.equal(reads.length,2);
+  await assert.rejects(()=>f.docs.configure({workspaceId:'wa',userId:'b'},{parent:`https://notion.so/${parentId}`,references:[]}));assert.equal(reads.length,2);
+});
+test('recognized Notion links distinguish inaccessible pages, databases and revoked grants without exposing provider errors',async()=>{
+  const f=fixture(),before=structuredClone(f.db.knowledgeConnections);
+  f.mcp.readDocument=async()=>{throw Error('provider token=private-secret');};
+  await assert.rejects(()=>f.docs.configure(s,{parent:`https://app.notion.com/${pageId}`,references:[]}),error=>{assert.match((error as Error).message,/链接识别到了/);assert.match((error as Error).message,/账号和工作区/);assert.doesNotMatch((error as Error).message,/private-secret/);return true;});
+  assert.deepEqual(f.db.knowledgeConnections,before);
+  f.mcp.readDocument=async()=>({type:'database'});
+  await assert.rejects(()=>f.docs.configure(s,{parent:`https://notion.so/${pageId}`,references:[]}),/这是数据库/);assert.deepEqual(f.db.knowledgeConnections,before);
+  f.mcp.readDocument=async()=>{f.db.knowledgeConnections[0].notionWriting!.grantId='revoked-during-read';return{text:'<page></page>'};};
+  await assert.rejects(()=>f.docs.configure(s,{parent:`https://notion.so/${pageId}`,references:[]}),/授权已改变/);assert.equal(f.db.knowledgeConnections[0].notionWriting!.parentId,parentId);
+});
 test('Notion create is scoped to the selected parent, verified and deduplicated; next round edits the same page',async()=>{
   const f=fixture(),job=f.job(),tool=f.docs.tool(s,'op','task',job,async()=>{});
   const args=tool.structured!.validate({title:'测试文章',content:'正文只写这一句。'});

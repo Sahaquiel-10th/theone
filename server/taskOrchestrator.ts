@@ -22,7 +22,7 @@ export function orchestrationFailureCode(error:unknown){
 }
 
 export type OrchestrationTool = { name: string; description?: string; label?:string; effect?:TaskStep['effect']; tolerateFailure?:boolean; cacheable?:boolean; run: (query: string) => Promise<unknown>;
-  structured?: { schema: Record<string, unknown>; validate: (input: unknown) => unknown; run: (input: unknown) => Promise<unknown> } };
+  structured?: { schema: Record<string, unknown>; validate: (input: unknown) => unknown; effect?: (validatedInput: unknown) => TaskStep['effect']; run: (input: unknown) => Promise<unknown> } };
 
 /** Sequential, bounded read-only execution. Handlers own scope and fresh authorization. */
 export async function runTaskOrchestrator(input: {
@@ -30,6 +30,8 @@ export async function runTaskOrchestrator(input: {
   messages: ModelToolMessage[];
   tools: OrchestrationTool[];
   maxSteps: number;
+  /** Trusted workspace wiring only; never taken from model arguments. Public entry points stay at two. */
+  maxToolCallsPerTurn?:number;
   maxCorrections?:number;
   actionRequired?:(content:string)=>string|undefined;
   checkpoints?:TaskStepStore;
@@ -40,6 +42,7 @@ export async function runTaskOrchestrator(input: {
   call: (messages: ModelToolMessage[], tools: ModelToolDefinition[]) => Promise<ToolChatResult>;
 }) {
   if (!["workspace", "published_web", "published_api"].includes(input.entryPoint)) throw new Error("执行入口无效");
+  if(input.maxToolCallsPerTurn!==undefined&&(!Number.isInteger(input.maxToolCallsPerTurn)||input.maxToolCallsPerTurn<1||input.maxToolCallsPerTurn>4))throw new Error('工具调用上限配置无效');
   // Reject miswiring before a model call can incur any charge. Descriptions and
   // global configuration cannot lift the public question-answering ceiling.
   if (input.tools.some(tool => !entryAllowsTool(input.entryPoint, tool.name))) throw new Error("分享分身仅允许读取授权知识并回答问题");
@@ -73,7 +76,7 @@ export async function runTaskOrchestrator(input: {
       return { content: result.content, messages, trace, finishReason: result.finishReason,requiredMissing:missing() };
     }
     if (step === steps) throw new Error("已达到调度步骤上限，未完成任务；请缩小问题范围");
-    const maxCalls=input.entryPoint==='workspace'&&(input.tools.some(t=>t.name==='delegate_tasks')||checkpoints?.namespace==='worker'&&input.tools.some(t=>/^feature_\d+$/.test(t.name)))?4:2;
+    const maxCalls=input.entryPoint==='workspace'?(input.maxToolCallsPerTurn??(input.tools.some(t=>t.name==='delegate_tasks')||checkpoints?.namespace==='worker'&&input.tools.some(t=>/^feature_\d+$/.test(t.name))?4:2)):2;
     if (result.toolCalls.length > maxCalls || new Set(result.toolCalls.map(call => call.id)).size !== result.toolCalls.length) throw new Error("调度模型返回了过多或重复的工具调用，已停止");
     messages.push({ role: "assistant", content: result.content || null, tool_calls: result.toolCalls });
     for (const call of result.toolCalls) {
@@ -92,13 +95,14 @@ export async function runTaskOrchestrator(input: {
         status='returned';
         const key = JSON.stringify([tool.name, query]);
         const durableKey=taskStepKey(checkpoints?.namespace??'',tool.name,query);
+        const effect=tool.structured?.effect?.(structuredArgs)??tool.effect??'read';
         if(checkpoints?.steps.some(s=>s.namespace===checkpoints.namespace&&s.tool===tool.name&&s.state==='started'&&['artifact','external_write'].includes(s.effect)))throw new Error('上次保存的结果还没确认，请先查看已有文件；不会重复写入。');
-        const previous=checkpoints?.steps.find(s=>s.namespace===checkpoints.namespace&&s.state==='completed'&&toolSucceeded(s.output)&&s.tool===tool.name&&(s.effect==='artifact'||s.effect==='external_write'||checkpoints.namespace==='worker'&&/^feature_\d+$/.test(tool.name)))??checkpoints?.steps.find(s=>s.key===durableKey&&s.namespace===checkpoints.namespace&&s.tool===tool.name);
+        const previous=checkpoints?.steps.find(s=>s.namespace===checkpoints.namespace&&s.state==='completed'&&toolSucceeded(s.output)&&s.tool===tool.name&&((effect==='artifact'||effect==='external_write')&&s.effect===effect||checkpoints.namespace==='worker'&&/^feature_\d+$/.test(tool.name)))??checkpoints?.steps.find(s=>s.key===durableKey&&s.namespace===checkpoints.namespace&&s.tool===tool.name);
         if(previous?.state==='started'&&['artifact','external_write'].includes(previous.effect))throw new Error('上次保存的结果还没确认，请先查看已有文件；不会重复写入。');
         if(previous?.state==='completed'&&toolSucceeded(previous.output)){output=previous.output;status='reused';checkpoints?.onReuse?.(output);}
         else if (tool.cacheable!==false && cache.has(key)) { output = cache.get(key); status = "reused"; }
         else {
-          const checkpoint:TaskStep={key:durableKey,namespace:checkpoints?.namespace??'',tool:tool.name,label:tool.label||tool.description?.slice(0,60)||'处理资料',effect:tool.effect??'read',state:'started',updatedAt:new Date().toISOString()};
+          const checkpoint:TaskStep={key:durableKey,namespace:checkpoints?.namespace??'',tool:tool.name,label:tool.label||tool.description?.slice(0,60)||'处理资料',effect,state:'started',updatedAt:new Date().toISOString()};
           if(checkpoints){if(checkpoints.steps.length>=64&&!previous)throw new Error('这件事的步骤较多，先保留已有结果，请分批继续。');await checkpoints.save(checkpoint);}
           // Handler errors propagate: do not disguise revoked authorization as no matches.
           let handlerReturned=false;

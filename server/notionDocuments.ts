@@ -7,21 +7,13 @@ import type { OrchestrationTool } from './taskOrchestrator.js';
 import { CoordinatorError } from './executorProfiles.js';
 import { featureMember } from './featureRuns.js';
 import type { NotionMcpService } from './knowledge/notionMcpService.js';
+import {parseNotionPageLink} from '../src/notionPageLink.js';
 
 export class NotionDocumentError extends CoordinatorError {}
 export function notionPageId(value: unknown): string {
-  if (typeof value !== 'string') throw new NotionDocumentError('请填写 Notion 页面链接', 400);
-  let id = value.trim();
-  let linked = false;
-  if (id.startsWith('https://')) {
-    const url = new URL(id);
-    if (!['notion.so', 'www.notion.so'].includes(url.hostname) && !url.hostname.endsWith('.notion.site')) throw new NotionDocumentError('请使用 Notion 页面链接', 400);
-    id = url.pathname.split('/').at(-1) || '';
-    linked = true;
-  }
-  const match = id.match(/([a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}|[a-f\d]{32})$/i);
-  if (!match || (!linked && match[0] !== id)) throw new NotionDocumentError('页面链接缺少有效的 Notion 页面编号', 400);
-  return match[1].replaceAll('-', '').toLowerCase();
+  const parsed=parseNotionPageLink(value);
+  if(parsed.error)throw new NotionDocumentError(parsed.error,400);
+  return parsed.pageId!;
 }
 function resultData(value: unknown): any {
   if (!value || typeof value !== 'object') return value;
@@ -73,13 +65,15 @@ export class NotionDocuments {
     if (!c?.notionWriting || c.notionWriting.userId !== s.userId) throw new NotionDocumentError('请先重新授权 Notion 写入', 428);
     const parentId = notionPageId(input.parent);
     if (!Array.isArray(input.references) || input.references.length > 5) throw new NotionDocumentError('最多选择五篇参考文章', 400);
-    const referenceIds = [...new Set(input.references.map(notionPageId))];
+    const referenceIds = [...new Set(input.references.map((value,index)=>{
+      try{return notionPageId(value);}catch(error){throw new NotionDocumentError(`第 ${index+1} 篇参考文章：${error instanceof NotionDocumentError?error.message:'链接没识别出来，请重新复制。'}`,400);}
+    }))];
     // Verify access now. These are user-selected pages, not a background sync.
     try {
       const parent = resultData(await this.mcp.readDocument(s.workspaceId, parentId));
-      if (parent?.type === 'database' || (/<database\b/.test(parent?.text || '') && !/<page\b/.test(parent?.text || ''))) throw new NotionDocumentError('第一版请选普通页面作为草稿目录，不选择数据库', 400);
+      if (parent?.type === 'database' || (/<database\b/.test(parent?.text || '') && !/<page\b/.test(parent?.text || ''))) throw new NotionDocumentError('链接识别到了，不过这是数据库。先在 Notion 新建一个普通页面（比如“ONE 草稿”），再复制它的链接。', 400);
       for (const id of referenceIds) notionBody(await this.mcp.readDocument(s.workspaceId, id));
-    } catch (error) { throw error instanceof NotionDocumentError ? error : new NotionDocumentError('页面权限暂未确认，请检查 Notion 连接与链接；原设置未更改'); }
+    } catch (error) { throw error instanceof NotionDocumentError ? error : new NotionDocumentError('链接识别到了，但当前 Notion 连接还没能读到这个页面。请确认页面属于已连接的账号和工作区，并检查连接状态后再试；不用把页面设为公开。原保存位置没变。'); }
     await this.store.mutate(d => {
       featureMember(d, s);
       const current = d.knowledgeConnections.find(item => item.id === c.id && item.workspaceId === s.workspaceId && item.status === 'connected');
