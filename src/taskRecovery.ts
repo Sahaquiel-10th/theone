@@ -7,6 +7,20 @@ export function notionReceiptForReview<T extends {notionReceipt?: {state:string}
   return receipts.filter(job=>job.notionReceipt!.state!=='verified').at(-1) ?? receipts.at(-1);
 }
 
+/** Only offer a first start for the saved latest handoff, never for an
+ * existing/uncertain execution. Server authorization remains mandatory. */
+export function unstartedLocalInput<T extends {id?:string;role:string}>(
+  conversationId:string,
+  jobs:{state:string;inputMessageId:string;dependencyBlocked?:boolean;dependenciesReady?:boolean;waitingFor?:unknown[]}[],
+  messages:T[],
+  executions:{conversationId:string;sourceMessageId:string}[],
+) {
+  const latest=jobs.at(-1);
+  if(!latest||!latest.inputMessageId||latest.state!=='prepared'||latest.dependencyBlocked||latest.dependenciesReady===false||latest.waitingFor?.length&&latest.dependenciesReady!==true)return undefined;
+  if(executions.some(task=>task.conversationId===conversationId&&task.sourceMessageId===latest.inputMessageId))return undefined;
+  return messages.find(message=>message.id===latest.inputMessageId&&message.role==='user');
+}
+
 /** A recovery action follows the persisted latest job, not a guessed UI state. */
 export function taskRecovery(jobs: { id: string; state: string; kind?: string;steps?:{effect:string;state:string}[];dependencyBlocked?:boolean;dependsOnOperationIds?:string[]; notionTarget?: unknown; notionReceipt?: {state: string};welcomeManual?:{document?:unknown};welcomeImageAttachmentId?:string }[]): TaskRecovery {
   const latest = jobs.at(-1);

@@ -64,6 +64,7 @@ type Job = {
   error?: string;
   userReport?:string;
   dependencyBlocked?:boolean;
+  dependenciesReady?:boolean;
   waitingFor?:{taskId:string;title:string}[];
   progress?:{completed:string[];pending:string[]};
 };

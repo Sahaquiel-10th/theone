@@ -1,6 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {taskRecovery,notionReceiptForReview} from './taskRecovery';
+import {taskRecovery,notionReceiptForReview,unstartedLocalInput} from './taskRecovery';
+
+test('a saved local handoff has a first-start entry, never a blind replay of an existing execution',()=>{
+ const messages=[{id:'input',role:'user'},{id:'result',role:'assistant'}];
+ const job={state:'prepared',inputMessageId:'input'};
+ assert.equal(unstartedLocalInput('own',[job],messages,[])?.id,'input');
+ assert.equal(unstartedLocalInput('own',[job],messages,[{conversationId:'foreign',sourceMessageId:'input'}])?.id,'input');
+ assert.equal(unstartedLocalInput('own',[job],messages,[{conversationId:'own',sourceMessageId:'older'}])?.id,'input');
+ for(const state of ['queued','running','completed','failed','cancelled'])assert.equal(unstartedLocalInput('own',[{...job,state}],messages,[]),undefined);
+ assert.equal(unstartedLocalInput('own',[job],messages,[{conversationId:'own',sourceMessageId:'input'}]),undefined);
+ assert.equal(unstartedLocalInput('own',[{...job,dependencyBlocked:true}],messages,[]),undefined);
+ assert.equal(unstartedLocalInput('own',[{...job,waitingFor:[{taskId:'before'}]}],messages,[]),undefined);
+ assert.equal(unstartedLocalInput('own',[{...job,waitingFor:[{taskId:'before'}],dependenciesReady:true}],messages,[])?.id,'input');
+ assert.equal(unstartedLocalInput('own',[{...job,dependenciesReady:false}],messages,[]),undefined);
+ assert.equal(unstartedLocalInput('own',[{...job,inputMessageId:'result'}],messages,[]),undefined);
+ assert.equal(unstartedLocalInput('own',[job,{state:'cancelled',inputMessageId:'later'}],messages,[]),undefined);
+});
 
 test('recovery offers safe actions for text, images, local execution and ongoing work',()=>{
   assert.equal(taskRecovery([{id:'text',state:'failed'}]).kind,'retry');

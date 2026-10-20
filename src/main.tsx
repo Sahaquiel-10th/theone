@@ -29,7 +29,7 @@ import {executionNeedsReview} from './executionReview';
 import {TaskTransferRail, dismissibleReceiptIds, type Transfer} from './TaskTransferRail';
 import {taskCategory,taskUiOutcome} from './taskAttention';
 import {taskRetryScope} from './taskRetryScope';
-import {notionReceiptForReview} from './taskRecovery';
+import {notionReceiptForReview,unstartedLocalInput} from './taskRecovery';
 import {taskConversationView} from './taskConversationView';
 import {friendlyExecutionProgress,readCapturedNotices} from './friendlyTaskStatus';
 import {internalTaskId} from './taskLink';
@@ -866,6 +866,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const detail=coordinator.details[id];
     const lastJob=detail?.jobs.at(-1);
     if(!coordinator.enabled)return null;
+    const localInput=unstartedLocalInput(id,detail?.jobs||[],conversation?.messages||[],executionTasks);
+    if(localInput)return <section className="task-recovery" role="status"><strong>本机这件事还没开始</strong><p>要求已经保存好了。确认 ONE 已连接后，就可以从这里开始；不会重做其他任务。</p><button type="button" disabled={preparingExecution||executionBusy||taskStatusUnavailable||loadingByConversation[id]} onClick={event=>void executeFromMessage(localInput,event.currentTarget,id)}>{preparingExecution&&preparingConversationId===id?'正在连接本机…':'开始本机任务'}</button></section>;
     if(!(task?.paused||conversation?.workPaused||localNeedsAction||lastJob?.dependencyBlocked))return task?.running&&lastJob?.progress?.completed.length?<section className="task-recovery" role="status"><strong>正在接着做</strong><p>已做好：{lastJob.progress.completed.join('、')}。{lastJob.progress.pending.length?`正在处理：${lastJob.progress.pending.join('、')}。`:'后续内容还在整理。'}</p></section>:null;
     const error=lastJob?.error;
     const recovery=detail?.recovery;

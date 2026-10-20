@@ -2316,6 +2316,31 @@ test('natural local batch dispatch obeys its tool switch before creating any chi
   assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,before);
 });
 
+test('batch saves all independent tasks before a failed local start and still completes its cloud sibling',async()=>{
+  const f=fixture();
+  const profile=await f.store.mutate(d=>updateExecutor(d,'a',undefined,{revision:0,action:'draft',values:{...executorDefaults(),name:'逻辑处理',modelId:'worker',routingRole:'logic'}}));
+  await f.store.mutate(d=>updateExecutor(d,'a',profile.id,{revision:1,action:'publish'}));
+  const tasks=[{taskId:null,title:'本机先保存',instruction:'LOCAL_ONLY 创建 local.html',executorId:'local_special',outputKind:'local_file',featureIds:[],dependsOn:[]},
+    {taskId:null,title:'云端不能丢',instruction:'CLOUD_ONLY 只写一句茶的短文',executorId:'general',outputKind:'text',featureIds:[],dependsOn:[]},
+    {taskId:null,title:'第二件本机',instruction:'SECOND_LOCAL 创建 second.html',executorId:'local_special',outputKind:'local_file',featureIds:[],dependsOn:[]}];
+  f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('本机还没确认开始，云端照常处理。'):{...answer(''),toolCalls:[{id:'batch-local-first',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks})}}]});
+  f.setWorker(async messages=>{assert.match(messages.at(-1)!.content!,/CLOUD_ONLY/);assert.doesNotMatch(JSON.stringify(messages),/LOCAL_ONLY|SECOND_LOCAL/);return answer('茶暖了，歇一歇。');});
+  let calls=0;
+  const accepted=await f.service.dispatch(a,input('operation_local_start_failure','两件本机文件和独立短文'),key,undefined,async()=>{
+    calls++;
+    assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,3,'every child is durable before local startup');
+    throw new Error('fixture-only device startup failure');
+  });
+  assert.equal(accepted.taskIds.length,3);assert.equal(calls,1,'ambiguous first local failure must not start another local write');
+  await waitFor(async()=>(await f.service.task(a,accepted.taskIds[1])).jobs[0].state==='completed');
+  assert.equal((await f.service.task(a,accepted.taskIds[0])).jobs[0].state,'prepared');
+  assert.equal((await f.service.task(a,accepted.taskIds[2])).jobs[0].state,'prepared');
+  assert.match((await f.service.task(a,accepted.taskIds[1])).conversation.messages.at(-1)!.content,/茶暖了/);
+  await assert.rejects(()=>f.service.task(b,accepted.taskIds[0]));
+  await assert.rejects(()=>f.service.task(b,accepted.taskIds[1]));
+  assert.doesNotMatch(JSON.stringify(await f.service.state(a)),/fixture-only device startup failure/);
+});
+
 test('a natural local task does not turn the following ordinary text delegate into another local execution',async()=>{
   const f=fixture();
   const profile=await f.store.mutate(d=>updateExecutor(d,'a',undefined,{revision:0,action:'draft',values:{...executorDefaults(),name:'逻辑交接',modelId:'worker',routingRole:'logic'}}));

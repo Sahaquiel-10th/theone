@@ -390,6 +390,7 @@ export class CoordinatorService {
           error: o.workRun!.error,
           userReport:o.workRun!.userReport,
           dependencyBlocked:o.workRun!.dependencyBlocked,
+          dependenciesReady:dependencyState(db,s,o.workRun!.dependsOnOperationIds)==='ready',
           waitingFor:(o.workRun!.dependsOnOperationIds??[]).flatMap(id=>{const parent=resolveWorkDependency(db,s,id),task=db.conversations.find(c=>own(c,s)&&c.id===parent?.conversationId);return task?[{taskId:task.id,title:task.title}]:[];}),
           progress:o.workRun!.steps?stepProgress(o.workRun!.steps):undefined,
           failureCode: o.workRun!.failureCode,
@@ -813,7 +814,7 @@ export class CoordinatorService {
         const c=matches[0];
         return { id: c.id, title: c.title, messages: c.messages.slice(-20).map(m => ({ role: m.role, content: m.content.slice(-4000),artifacts:ownedArtifactResults(d,s,c.id,(m.attachments??[]).map(file=>file.id)) })), executionReceipts: executionReceipts(d, s.workspaceId, s.userId, c.id), handoffs: (d.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === c.id && o.workRun).slice(-5).map(o => isOnboardingImageOperation(d,s,o.operationId)?'根据用户设置准备专属欢迎礼物；内部作图要求不向用户复述。':o.workRun!.instruction) };
       }};
-      const queueImage=async(prompt:string,title?:string,dependsOnOperationIds:string[]=[])=>{
+      const queueImage=async(prompt:string,title?:string,dependsOnOperationIds:string[]=[],deferStart=false)=>{
         await verify();
         if(localClarification)throw new CoordinatorError('正在等待你补充确认，本轮不会继续分派或操作电脑',409);
         if(dispatchedTasks.length>=4)throw new CoordinatorError('本条消息最多安排四个任务');
@@ -821,7 +822,7 @@ export class CoordinatorService {
         const taskId=await this.enqueueImage(s,{operationId,parentOperationId:input.operationId,text:content,prompt:text(prompt,4000,'图片要求'),originConversationId:cid,originMessageId:mid,budget:workerBudget,title,dependsOnOperationIds},verifyKey);
         dispatchedTasks.push(taskId);childOperations.push(operationId);imageTask??=taskId;
         await this.store.mutate(d=>{const o=d.chatOperations!.find(o=>own(o,s)&&o.operationId===input.operationId)!;o.dispatchedTaskIds=[...new Set(dispatchedTasks)];o.dispatchedTaskId??=taskId;});
-        await this.resume(s,verifyKey);return taskId;
+        if(!deferStart)await this.resume(s,verifyKey);return taskId;
       };
       let delegatedKnowledge=false;
       const batchTool:OrchestrationTool={name:'delegate_tasks',description:'安排可单独跟进的交付任务，一件任务可以组合多个功能。featureIds 填本任务确定要用的功能，只有可选的不要填。图片使用 image_generation，写作使用 writing，分析使用 logic，本机文件使用 local_special。独立任务同时处理；dependsOn只填写前面任务的数组下标。',run:async()=>{},structured:{schema:dispatchPlanSchema,validate:validateDispatchPlan,run:async value=>{
@@ -860,25 +861,48 @@ export class CoordinatorService {
           if(t.outputKind==='image'&&t.featureIds.length&&!t.featureIds.some(id=>availableFeature(current,s,id).version.values.experience?.mode==='image'))throw new CoordinatorError('所选功能没有实际图片能力，请选择绘图功能',400);
         }
         if(imageMinimum>workerBudget)throw new CoordinatorError('本批图片最低额度超过已授权预算',402);
-        const childIds:string[]=[];const replies:unknown[]=[];
+        const childIds:string[]=[];
+        const replies:{taskId:string;title:string;status:string;message?:string}[]=[];
+        const localStarts:{taskId:string;operationId:string;reply:number;hasDependencies:boolean}[]=[];
+        // Commit every independent handoff before starting any fallible executor.
+        // A disconnected local device must not discard a later cloud task.
         for(const t of plan.tasks){await verify();
           const dependencies=t.dependsOn.map(i=>childIds[i]);
-          if(t.outputKind==='image'&&!t.featureIds.length){const id=await queueImage(t.instruction,t.title,dependencies);childIds.push(childOperations.at(-1)!);replies.push({taskId:id,title:t.title,status:'queued'});continue;}
+          if(t.outputKind==='image'&&!t.featureIds.length){const id=await queueImage(t.instruction,t.title,dependencies,true);childIds.push(childOperations.at(-1)!);replies.push({taskId:id,title:t.title,status:'queued'});continue;}
           const operationId=`${input.operationId}_work${dispatchedTasks.length?'_'+dispatchedTasks.length:''}`;
           const isLocal=t.outputKind==='local_file';
           const executorId=t.executorId==='direct'?'general':t.executorId==='local_special'||t.executorId==='image_generation'?resolveRoutingExecutorId(current,'logic'):t.executorId;
-          const latest=await this.store.read();
-          const localDeferred=isLocal&&(dependencies.length>0||(latest.executionTasks??[]).some(x=>own(x,s)&&['queued','selecting_target','running'].includes(x.status)));
           const taskId=await this.enqueue(s,{operationId,parentOperationId:input.operationId,text:content,instruction:t.instruction,title:t.title,taskId:t.taskId??undefined,executorId,features:t.featureIds.length?t.featureIds:features,requiredFeatureIds:t.featureIds,sources,budget:workerBudget,webSearch:webPermission,confirmedExternal:true,featureApprovals:input.featureApprovals,originConversationId:cid,originMessageId:mid,attachmentIds:attachments,localExecution:isLocal,outputDestination:input.outputDestination,dependsOnOperationIds:dependencies,expectedOutput:t.outputKind,knowledge:t.knowledge,requiredTools:t.requiredTools,directVisual:t.direct},verifyKey);
           const childKnowledge=knowledgePolicy(current,s,t.instruction,sources,t.knowledge);
           if(!isLocal&&childKnowledge.required&&!childKnowledge.missing.length&&!mainKnowledge.missing.length&&mainKnowledge.sourceIds.every(id=>childKnowledge.sourceIds.includes(id)))delegatedKnowledge=true;
           dispatched=taskId;dispatchedTasks.push(taskId);childOperations.push(operationId);childIds.push(operationId);
           await this.store.mutate(d=>{const o=d.chatOperations!.find(o=>own(o,s)&&o.operationId===input.operationId)!;o.dispatchedTaskId??=taskId;o.dispatchedTaskIds=[...new Set(dispatchedTasks)];});
-          let execution;
-          if(isLocal&&!localDeferred){await verify();const saved=await this.store.read();const job=saved.chatOperations!.find(o=>own(o,s)&&o.operationId===operationId)!;execution=await executeLocal!(taskId,job.workRun!.inputMessageId,`local_${operationId}`);localAccepted=Boolean(execution.id);}
-          replies.push({taskId,title:t.title,status:isLocal?(execution?.status??'prepared'):'queued',message:localDeferred?'本机交接已准备，请等待前置任务完成后点本机执行。':undefined});
+          if(isLocal)localStarts.push({taskId,operationId,reply:replies.length,hasDependencies:dependencies.length>0});
+          replies.push({taskId,title:t.title,status:isLocal?'prepared':'queued'});
         }
-        await this.resume(s,verifyKey);return {tasks:replies};
+        await this.resume(s,verifyKey);
+        // Recheck authorization and device exclusivity at the point of use.
+        // Even an ambiguous failed start consumes this batch's one local slot:
+        // do not accidentally start another file-changing task behind it.
+        let attemptedLocal=false;
+        for(const start of localStarts){
+          await verify();const saved=await this.store.read();const reply=replies[start.reply];
+          if(start.hasDependencies||attemptedLocal||(saved.executionTasks??[]).some(x=>own(x,s)&&['queued','selecting_target','running'].includes(x.status))){
+            reply.message='本机要求已保存。前面的事情结束后，可以在任务里开始。';continue;
+          }
+          const job=saved.chatOperations!.find(o=>own(o,s)&&o.operationId===start.operationId)!;
+          if(job.workRun?.state!=='prepared')continue;
+          attemptedLocal=true;
+          try{
+            const execution=await executeLocal!(start.taskId,job.workRun.inputMessageId,`local_${start.operationId}`);
+            localAccepted=Boolean(execution.id)||localAccepted;reply.status=execution.status;
+          }catch{
+            // The executor may already have accepted a write. Keep its receipt
+            // authoritative; never label this as a safe automatic retry.
+            reply.message='本机这边还没确认开始。要求已保存，打开任务查看进展；其他独立任务照常处理。';
+          }
+        }
+        return {tasks:replies};
       }}};
       const referenceTools:OrchestrationTool[]=[];
       const imageTool: OrchestrationTool = {
