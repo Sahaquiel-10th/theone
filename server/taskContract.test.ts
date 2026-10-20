@@ -25,10 +25,13 @@ test('Notion writing and readback do not require unrelated knowledge search beca
   '在当前已选的 Notion 草稿保存页面下面新建文档。正文：明天15时检查小苗。保存后实际回读，不读取知识库或参考文章。',
   '写一篇文章保存到 Notion，检查正文和保存结果。',
   '保存到 Notion 后查看原页面，核对保存结果。',
+  '只修改同一篇 Notion 文档，实际保存后回读核对。不读其他页面或知识库，不联网搜索、不操作本机。',
  ])assert.equal(knowledgePolicy(db,scope,text).required,false,text);
  assert.deepEqual(knowledgePolicy(db,scope,'在 Notion 新建草稿；先去得到大脑找一下会议资料').sourceIds,['g']);
  assert.deepEqual(knowledgePolicy(db,scope,'查 Notion 里面的会议资料').sourceIds,['n']);
  assert.deepEqual(knowledgePolicy(db,scope,'我记得 Notion 有个方案').sourceIds,['n']);
+ assert.deepEqual(knowledgePolicy(db,scope,'不联网搜索；去 Notion 查会议资料').sourceIds,['n']);
+ assert.deepEqual(knowledgePolicy(db,scope,'不读其他页面或知识库；去得到大脑找一下会议资料').sourceIds,['g']);
 });
 test('no match is a real completed search, not a euphemism for an outage',()=>{
   assert.equal(knowledgeResultComplete({status:'no_match',coverage:[{connectionId:'n',status:'no_match'}]},['n']),true);

@@ -6,7 +6,7 @@ export type KnowledgePolicy={required:boolean;sourceIds:string[];requested:strin
  * Semantic planning still decides the work; exact named-source requirements
  * and exhaustive authorized searches are checked by the server. */
 export function knowledgePolicy(db:Database,scope:{workspaceId:string;userId:string},text:string,allowed?:readonly string[],choice?:string):KnowledgePolicy{
-  text=text.replace(/(?:不要|不|无需|不用)(?:查找|查询|检索|搜索|查|读取)[^，。；;\n]{0,40}/g,'');
+  text=text.replace(/(?:不要|不|无需|不用)(?:联网)?(?:查找|查询|检索|搜索|查|读取|读)[^，。；;\n]{0,40}/g,'');
   const connected=db.knowledgeConnections.filter(c=>c.workspaceId===scope.workspaceId&&['connected','error'].includes(c.status)&&canReadKnowledge(db,scope,c.id)&&(allowed===undefined||allowed.includes(c.id)));
   // A named write destination is not a retrieval request. In particular the
   // single character 查 in 检查 used to turn "save to Notion; check the result"
