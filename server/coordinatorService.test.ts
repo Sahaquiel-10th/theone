@@ -841,20 +841,23 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
     body=body.replace(args.content_updates[0].old_str,args.content_updates[0].new_str);return {id:pageId};
   }} as unknown as NotionMcpService;
   const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages,tools)=>{
-    if(messages.at(-1)?.role==='tool')return answer('已收到真实工具回执。');
+    if(messages.at(-1)?.role==='tool'){
+      if(JSON.parse(messages.at(-1)!.content!).code==='TOOL_INPUT_REPAIR')return {...answer(''),toolCalls:[{id:'corrected-save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({old_str:'第一段。',new_str:'修改后的第一段。'})}}]};
+      return answer('已收到真实工具回执。');
+    }
     if(model.id==='router')return {...answer(''),toolCalls:[{id:'route',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'专栏草稿',instruction:'请写专栏并保存到已授权的 Notion 目录',executorId:'general'})}}]};
     if(messages.at(-1)?.content?.includes('只读核对'))return answer('正文是修改后的第一段，没有再次写入。');
     assert.ok(tools.some(t=>t.function.name==='save_notion_draft'));
-    return {...answer(''),toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify(body?{old_str:'第一段',new_str:'修改后的第一段'}:{title:'专栏',content:'第一段'})}}]};
+    return {...answer(''),toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify(body?{old_str:'第一段。',new_str:'修改后的第一段.'}:{title:'专栏',content:'第一段。'})}}]};
   }});
   await assert.rejects(()=>service.dispatch(b,{...input('operation_notion_foreign','写篇文章'),outputDestination:'notion'},key));
   const result=await service.dispatch(a,{...input('operation_notion_first','讨论之后请写专栏'),outputDestination:'notion'},key);
   await service.resume(a,key);await waitFor(async()=>mutations.length===1);
-  await service.direct(a,result.taskId!,{operationId:'operation_notion_second',text:'第一段改一下'},key);
+  await service.direct(a,result.taskId!,{operationId:'operation_notion_second',text:'只把“第一段。”改为“修改后的第一段。”，其余不动。'},key);
   release();await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.every(j=>j.state==='completed'));
-  assert.deepEqual(mutations,['notion-create-pages','notion-update-page']);assert.equal(body,'修改后的第一段');
+  assert.deepEqual(mutations,['notion-create-pages','notion-update-page']);assert.equal(body,'修改后的第一段。');
   const task=await service.task(a,result.taskId!);
-  assert.equal(task.conversation.notionDocument?.pageId,pageId);assert.match(JSON.stringify(task.conversation.messages),/讨论之后请写专栏|第一段改一下|已保存到 Notion/);
+  assert.equal(task.conversation.notionDocument?.pageId,pageId);assert.match(JSON.stringify(task.conversation.messages),/讨论之后请写专栏|修改后的第一段。|已保存到 Notion/);
   assert.ok(task.jobs.every(j=>j.notionReceipt?.state==='verified'));
   await service.direct(a,result.taskId!,{operationId:'operation_notion_readonly',text:'只读核对正文，不修改'},key);
   await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.at(-1)!.state==='completed');

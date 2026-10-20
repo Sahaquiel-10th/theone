@@ -51,3 +51,12 @@ Release/live ONE end-to-end verification is recorded after deployment; interface
 - A real local socket regression proves a dead first DNS address can fall back to a live one while sending exactly one POST. Unknown sent writes remain protected.
 - Same-server credential-free comparison with a fresh failover-enabled Agent for each request: six of six returned expected unauthenticated 401 (0.8–2.9 seconds), versus one connection refusal in three default-fetch attempts. This is transport evidence only, not a document-write pass.
 - Transport release checks: 976 total tests, 975 passed, one existing optional skip, zero failures; type check/build/diff passed. Newly pinned `undici@7.30.1` has no audit advisory; existing unrelated dependency advisories are not silently upgraded as part of this fix.
+
+## QA16 normal-flow acceptance
+
+- Release `7cbb09a0c8c9b43cbb7ec66fce117cbd35d912a8`, CI `39412260365`: verify/Mac/Windows/deploy succeeded; server symlink and public health confirmed.
+- Main-chat Notion destination, old task binding cleared, one submission: child `cnv_cc880d048fc77d381529`, create request `work_a9644e283ae3c8bba5dd`. Completed with verified receipt; page `3ffa5015999181cbbd90d023554199cb`, under the user's new parent.
+- Opened the returned page in Notion itself: all three synthetic lines were visible and exact. This verifies the normal ONE path, not just a standalone SDK create.
+- Same-task update `work_15ece8d65afa98928b3` completed and verified against its submitted content, with the same page ID and no second create. Actual page refresh showed the time changed 15→16 and the other two lines unchanged, BUT the model also changed the second line's Chinese full stop to ASCII. Delivery passed; exact intent fidelity did not pass. Do not treat a tool-vs-readback digest as proof of fidelity to the user's original words.
+- Add a pre-write guard for one unambiguous explicitly quoted replacement in the original same-owner user turn, not the model's rewritten instruction. Reject changes beyond that replacement before any write/checkpoint; allow bounded argument correction. General rewrites remain model-led. Cross-owner/task checks and unknown-write protection remain unchanged.
+- Regression simulates the extra punctuation change, rejects it, then repairs arguments and sends exactly one same-page update. Full suite: 977 total, 976 passed, one existing optional skip; type/build/diff passed. Final exact-edit live acceptance remains pending after this patch.

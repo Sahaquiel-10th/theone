@@ -81,6 +81,21 @@ test('Notion create is scoped to the selected parent, verified and deduplicated;
   assert.equal(f.getBody(),'正文只写新的这一句。');
   assert.equal(f.calls.filter(c=>c.name==='notion-create-pages').length,1);
 });
+test('Notion exact quoted replacements reject extra punctuation or unrelated edits before any write',async()=>{
+  const f=fixture(),job=f.job('precise',pageId),current='今天整理了一份合成便笺。\n明天15时检查小苗。\n核对标记：SYNTHETIC。';
+  f.setBody(current);
+  const tool=f.docs.tool(s,'precise','task',job,async()=>{},current,'只把第二行“明天15时检查小苗。”改为“明天16时检查小苗。”，其余不动。');
+  for(const new_str of ['明天16时检查小苗.','明天16时检查小苗。\n额外文字'])
+    assert.throws(()=>tool.structured!.validate({old_str:'明天15时检查小苗。',new_str}),/逐字/);
+  assert.equal(f.calls.length,0);assert.equal(job.notionReceipt,undefined);
+  const args=tool.structured!.validate({old_str:'15时',new_str:'16时'});
+  await tool.structured!.run(args);
+  assert.equal(f.getBody(),current.replace('15时','16时'));assert.equal(f.calls.length,1);
+  const general=fixture(),generalJob=general.job('general',pageId);
+  assert.doesNotThrow(()=>general.docs.tool(s,'general','task',generalJob,async()=>{},'原来的文章','请整体润色文章。').structured!.validate({old_str:'原来的文章',new_str:'润色后的文章。'}));
+  const ambiguous=f.docs.tool(s,'precise','task',job,async()=>{},current+'\n明天15时检查小苗。','把“明天15时检查小苗。”改为“明天16时检查小苗。”');
+  assert.throws(()=>ambiguous.structured!.validate({old_str:'15时检查小苗。\n核对',new_str:'16时检查小苗。\n核对'}),/不唯一/);
+});
 test('Notion concurrent user edit, revoked grant, foreign operation and unsafe structure cannot write',async()=>{
   const f=fixture(),job=f.job('op',pageId),tool=f.docs.tool(s,'op','task',job,async()=>{},'原来的文章');
   const args=tool.structured!.validate({old_str:'原来的文章',new_str:'新的文章'});

@@ -2012,7 +2012,7 @@ export class CoordinatorService {
       const workerTime=job.runtimeContext??runtimeContext(db,s,op!.createdAt);
       const workerPrivateTexts=[attachmentResult.text,...previous.map(message=>message.content)];
       const notionContext = job.notionTarget ? await this.deps.notionDocuments!.context(s, job) : undefined;
-      if (notionContext) tools.push(this.deps.notionDocuments!.tool(s, id, cid, job, verify, notionContext.currentDocument));
+      if (notionContext) tools.push(this.deps.notionDocuments!.tool(s, id, cid, job, verify, notionContext.currentDocument, c.messages[start].content));
       const requiredKnowledge=job.contract?.requiredTools.includes('knowledge_search');
       if ((job.values.tools.includes("knowledge_search") && job.sources.length)||requiredKnowledge)
         tools.push({

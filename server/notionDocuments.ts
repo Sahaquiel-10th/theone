@@ -3,7 +3,7 @@ import type { Store } from './db.js';
 import type { Database } from './types.js';
 import type { WorkScope } from './coordinatorService.js';
 import type { WorkRun } from './coordinatorTypes.js';
-import type { OrchestrationTool } from './taskOrchestrator.js';
+import { OrchestrationInputError, type OrchestrationTool } from './taskOrchestrator.js';
 import { CoordinatorError } from './executorProfiles.js';
 import { featureMember } from './featureRuns.js';
 import { NotionWriteError, type NotionMcpService } from './knowledge/notionMcpService.js';
@@ -38,6 +38,13 @@ export function notionBody(value: unknown): string {
 }
 const hash = (body: string) => crypto.createHash('sha256').update(body).digest('hex');
 const normalized = (body: string) => body.split('\n').map(line => line.trimEnd()).filter(line => line.trim()).join('\n').trim();
+function quotedReplacement(request: string) {
+  // Only an unambiguous, explicitly quoted replacement in the real user turn.
+  // General rewrites and multi-edit requests remain model-led, not regex plans.
+  const matches=[...request.matchAll(/(?:把|将)[^“「"\n]{0,24}(?:“([^”\n]{1,4000})”|「([^」\n]{1,4000})」|"([^"\n]{1,4000})")\s*(?:精确|逐字)?(?:改为|改成|替换为|替换成)\s*(?:“([^”\n]{1,4000})”|「([^」\n]{1,4000})」|"([^"\n]{1,4000})")/g)];
+  if(matches.length!==1)return undefined;
+  const m=matches[0];return {old:m[1]??m[2]??m[3],replacement:m[4]??m[5]??m[6]};
+}
 function safeArticle(value: unknown) {
   if (typeof value !== 'string' || !value.trim() || value.length > 50000) throw new NotionDocumentError('文章正文应为 1–50000 字符', 400);
   if (/<\/?(?:page|database|folder|synced_block|synced_block_reference|custom-block|meeting-notes|unknown)\b/i.test(value)) throw new NotionDocumentError('文章不能包含移动页面或修改关联内容的结构标签', 400);
@@ -121,7 +128,7 @@ export class NotionDocuments {
     const current = target.pageId ? notionBody(await this.mcp.readDocument(s.workspaceId, target.pageId)) : undefined;
     return { references: refs, currentDocument: current, pageId: target.pageId, location: `https://www.notion.so/${target.parentId}` };
   }
-  tool(s: WorkScope, opId: string, cid: string, job: WorkRun, verify: () => Promise<void>, current?: string): OrchestrationTool {
+  tool(s: WorkScope, opId: string, cid: string, job: WorkRun, verify: () => Promise<void>, current?: string, originalRequest = ''): OrchestrationTool {
     const target = job.notionTarget!;
     return { name: 'save_notion_draft',label:'保存到 Notion',effect:'external_write', description: '由 ONE 写入已授权的 Notion 草稿。首次提供 title/content；继续修改只能提供 old_str/new_str，精确替换本轮读到的一段原文，不修改其他页面。只有 verified 回执才表示已保存。每轮只保存一次。', run: async () => { throw new NotionDocumentError('参数无效'); },
       structured: { schema: { type: 'object', additionalProperties: false, properties: { title: { type: 'string', maxLength: 200 }, content: { type: 'string', maxLength: 50000 }, old_str: { type: 'string', maxLength: 50000 }, new_str: { type: 'string', maxLength: 50000 } } },
@@ -131,6 +138,9 @@ export class NotionDocuments {
           if (target.pageId) {
             if (v.content !== undefined || v.title !== undefined || !current || typeof v.old_str !== 'string' || !v.old_str || current.split(v.old_str).length !== 2 || !v.new_str?.trim()) throw new NotionDocumentError('请精确选择一处原文再修改，不支持删除整篇内容');
             safeArticle(v.old_str); safeArticle(v.new_str);
+            const exact=quotedReplacement(originalRequest);
+            if(exact&&(current.split(exact.old).length!==2||current.replace(v.old_str,v.new_str)!==current.replace(exact.old,exact.replacement)))
+              throw new OrchestrationInputError('用户明确引用了要替换的原文和新文字。请逐字执行这一处替换，其余文字、标点和换行保持原样；原文不唯一时先核对，不要猜测或扩大修改。');
           } else { if (v.old_str !== undefined || v.new_str !== undefined || typeof v.title !== 'string' || !v.title.trim() || v.title.length > 200) throw new NotionDocumentError('草稿标题无效'); safeArticle(v.content); }
           return v;
         }, run: async value => {
