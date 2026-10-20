@@ -1525,7 +1525,7 @@ export class CoordinatorService {
       skills.flatMap((f) => f.values.tools ?? []),
     );
     const policy=knowledgePolicy(db,s,input.instruction,sourceIds,input.knowledge);
-    const requiredTools=[...new Set([...(input.requiredTools??[]),...(policy.required?['knowledge_search']:[])])];
+    const requiredTools=[...new Set([...(input.requiredTools??[]).filter(name=>name!=='knowledge_search'||!policy.declined),...(policy.required?['knowledge_search']:[])])];
     const allowedTools=new Set([...config.values.tools,...skills.flatMap(f=>f.values.tools?.map(t=>t.id)??[]),...(sources.length?['knowledge_search']:[])]);
     if(requiredTools.some(name=>!allowedTools.has(name))&&!policy.missing.length)throw new CoordinatorError('这件事需要的工具尚未开放，请先检查对应功能。');
     if(input.directVisual){validateVisualDocument(input.directVisual.document);if(notionTarget||input.localExecution||policy.required||!skills.some(f=>f.values.tools?.some(t=>t.id===input.directVisual!.tool)))throw new CoordinatorError('本轮不能直接生成这份说明，请先确认功能与保存范围。');}
@@ -2129,6 +2129,10 @@ export class CoordinatorService {
         onTrace: (t) => {workerTrace=t;collectTrace();},
         call: async (messages, tools, callOptions) => {
           sections = inputTrace(messages);
+          // Document bodies travel inside tool arguments too. The short-chat
+          // default must not cut a complete article before its save can run.
+          const maxOutputTokens = tools.some(t => t.function.name === 'save_notion_draft')
+            || /长文|专栏|文章|报告|调研|白皮书|论文|文稿|写作/.test(job.instruction) ? 12000 : undefined;
           const response = await runBilledModel(
             this.store,
             {
@@ -2137,6 +2141,7 @@ export class CoordinatorService {
               model: m,
               requestId: op!.requestId,
               activity: "task_worker",
+              maxOutputTokens,
               input: { messages, tools:callOptions?.finalSummaryTools??tools, taskVersion: job.executorVersion },
               beforeReserve: (d, amount) => {
                 assertWork(d, s, id, job, cid);
@@ -2149,7 +2154,7 @@ export class CoordinatorService {
                 messages,
                 tools,
                 op!.requestId,
-                callOptions,
+                { ...callOptions, maxOutputTokens },
               ),
           );
           // Preserve actual user-facing text even when the orchestrator rejects
