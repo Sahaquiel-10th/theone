@@ -850,12 +850,18 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
     if(name==='notion-create-pages'){await hold;body=args.pages[0].content;return {pages:[{id:pageId}]};}
     body=body.replace(args.content_updates[0].old_str,args.content_updates[0].new_str);return {id:pageId};
   }} as unknown as NotionMcpService;
-  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages,tools)=>{
+  let freshReadRoutes=0;
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages,tools,_req,options)=>{
     if(messages.at(-1)?.role==='tool'){
       if(JSON.parse(messages.at(-1)!.content!).code==='TOOL_INPUT_REPAIR')return {...answer(''),toolCalls:[{id:'corrected-save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({old_str:'第一段。',new_str:'修改后的第一段。'})}}]};
       return answer('已收到真实工具回执。');
     }
-    if(model.id==='router')return {...answer(''),toolCalls:[{id:'route',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'专栏草稿',instruction:'请写专栏并保存到已授权的 Notion 目录',executorId:'general'})}}]};
+    if(model.id==='router'){
+      const readonly=messages.at(-1)?.content?.includes('新的只读核对');
+      if(readonly){freshReadRoutes++;assert.equal(options?.requiredTool,'delegate_task');assert.match(JSON.stringify(messages),new RegExp(pageId));}
+      const taskId=readonly?(await f.store.read()).conversations.find(c=>c.notionDocument?.pageId===pageId)!.id:null;
+      return {...answer(''),toolCalls:[{id:'route',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId,title:'专栏草稿',instruction:readonly?'只读核对正文，不修改、不保存，不查知识库。':'请写专栏并保存到已授权的 Notion 目录',executorId:'general'})}}]};
+    }
     if(messages.at(-1)?.content?.includes('只读核对')){
       assert.match(JSON.stringify(messages),new RegExp(pageId));
       const content='正文是修改后的第一段，没有再次写入。';
@@ -878,6 +884,12 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
   assert.deepEqual(mutations,['notion-create-pages','notion-update-page'],'ordinary follow-up on the saved draft must not force another write');
   const readback=(await service.task(a,result.taskId!)).conversation.messages.at(-1)!.content;
   assert.match(readback,new RegExp(`打开 Notion 原文.*${pageId}`));assert.doesNotMatch(readback,/尚未|已保存到 Notion|"outcome"/);
+  const before=(await service.task(a,result.taskId!)).jobs.length;
+  await assert.rejects(()=>service.dispatch(b,{...input('operation_notion_fresh_foreign','请实际回读本任务原文。'),boundTaskId:result.taskId,outputDestination:'notion'},key));
+  const again=await service.dispatch(a,{...input('operation_notion_fresh_read','只在这件任务做一次新的只读核对：读取本任务已保存文章，不修改、不保存、不新建文档，不查知识库。'),boundTaskId:result.taskId,outputDestination:'notion'},key);
+  assert.equal(again.taskId,result.taskId,JSON.stringify({again,freshReadRoutes}));assert.equal(freshReadRoutes,1);
+  await service.resume(a,key);await waitFor(async()=>{const t=await service.task(a,result.taskId!);return t.jobs.length===before+1&&t.jobs.at(-1)!.state==='completed';});
+  assert.deepEqual(mutations,['notion-create-pages','notion-update-page'],'fresh read must not repeat any old writes');
   await assert.rejects(()=>service.task(b,result.taskId!));
 });
 test('long Notion article arguments use a document allowance, save once and retain owner and budget checks',async()=>{
