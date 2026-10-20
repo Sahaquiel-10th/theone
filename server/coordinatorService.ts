@@ -1036,6 +1036,9 @@ export class CoordinatorService {
         throw new CoordinatorError(
           "未完成分派，请明确任务；本次模型用量已记录",
         );
+      // tool_choice is a provider request, not evidence of execution. If the
+      // provider ignores it, never present cached prose as a fresh read.
+      if(freshDocumentRead&&!dispatched)result.content='这次还没能重新读取文章，不能把旧结果当作刚核对过。你可以稍后在这件任务里说“重新回读”；这轮没有修改或重复写入文章。';
       if(localClarification)await verify();
       return await this.finishDispatch(
         s,
