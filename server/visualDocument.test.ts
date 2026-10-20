@@ -5,8 +5,15 @@ import {validateVisualDocument,renderVisualDiagram,renderVisualPage,visualPageCs
 import {parseWelcomeManual,welcomeCapabilities,callWelcomePlanner,welcomeRetryPower,welcomeManualMessages} from './welcomeManual.js';
 import {ModelRequestError} from './modelGateway.js';
 import {visualTool} from './visualTools.js';
+import {OrchestrationInputError} from './taskOrchestrator.js';
 const scene={id:'work',title:'把资料变成说明',situation:'开会前，想把散乱的想法理清楚。',feature:'整理已有材料，列出关键决定。',advantage:'不必自己来回翻页。',benefit:'拿到一份能拿去讨论的提纲。',evidence:'逐条检查结论和待确认项。',steps:['告诉 ONE 目标。','检查提纲再补充要求。'],prompt:'请整理这份材料，缺少的地方单独列出来。',capabilityIds:['chat']};
 const doc:VisualDocument={version:1,title:'小张的 ONE 使用说明',intro:'先把开会前最费劲的那一步交给 ONE。',scenes:[scene,{...scene,id:'next',title:'交给任务去做'}]};
+test('visual tools provide reviewed schema repair hints without including rejected input',()=>{
+ const tool=visualTool('oneFlowchart','生成流程图',async()=>{});
+ assert.match(tool.description!,/平铺对象/);
+ assert.throws(()=>tool.structured!.validate({document:'api_key=SECRET'}),error=>error instanceof OrchestrationInputError&&/version=1/.test(error.message)&&!/SECRET/.test(error.message));
+ assert.deepEqual(tool.structured!.validate(doc),doc);
+});
 test('personal planning uses actual account facts and mandatory newspaper guidance even with an older published prompt',()=>{
  const f={version:1 as const,nickname:'小禾',purposes:['写作与表达'],platforms:['Notion'],localReady:false,features:[{name:'文章写作',description:'写专栏'},{name:'附件工作',description:'上传附件'},{name:'Notion 写入',description:'写入平台'}]};
  const messages=welcomeManualMessages(f,'CUSTOM_PUBLISHED_PROMPT');assert.match(messages[0].content,/CUSTOM_PUBLISHED_PROMPT/);assert.match(messages[0].content,/年代报刊/);assert.match(messages[0].content,/不是把姓名替换/);

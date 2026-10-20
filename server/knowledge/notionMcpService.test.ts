@@ -148,3 +148,49 @@ test('Notion explicit writing OAuth grants only the authorizing user, rejects un
   assert.equal(f.database.knowledgeConnections[0].status,'connected');
   assert.ok(calls.every(n=>n==='notion-fetch'));
 });
+
+function writingFixture() {
+  const f=fixture();
+  f.database.knowledgeConnections.push({id:'notion-a',workspaceId:'workspace-a',provider:'notion',status:'connected',clientId:'client-a',encryptedAccessToken:encryptCredential('own-token'),createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),notionWriting:{userId:'user-a',grantId:'grant-a',authorizedAt:new Date().toISOString(),parentId:'parent-a',referenceIds:[]}});
+  return f;
+}
+
+test('Notion reconnects once before sending a write, with the same workspace token', async () => {
+  const f=writingFixture();let connects=0,writes=0,closed=0;
+  const service=new NotionMcpService(f.store,{createClient:async token=>{
+    assert.equal(token,'own-token');connects++;
+    if(connects===1)throw new TypeError('fetch failed',{cause:new AggregateError([Object.assign(new Error('network'),{code:'ETIMEDOUT'})])});
+    return {listTools:async()=>({tools:[{name:'notion-update-page'}]}),callTool:async()=>{writes++;return {content:[]};},close:async()=>{closed++;}};
+  }});
+  await assert.rejects(service.callDocumentTool('workspace-b','notion-a','grant-a','user-a','notion-update-page',{}));
+  await assert.rejects(service.callDocumentTool('workspace-a','notion-a','grant-a','other-user','notion-update-page',{}));
+  assert.equal(connects,0);
+  await service.callDocumentTool('workspace-a','notion-a','grant-a','user-a','notion-update-page',{});
+  assert.equal(connects,2);assert.equal(writes,1);assert.equal(closed,1);
+});
+
+test('Notion persistent connection failure is bounded and never sends a write', async () => {
+  const f=writingFixture();let connects=0;
+  const service=new NotionMcpService(f.store,{createClient:async()=>{connects++;throw Object.assign(new Error('network'),{code:'ENETUNREACH'});}});
+  await assert.rejects(service.callDocumentTool('workspace-a','notion-a','grant-a','user-a','notion-create-pages',{}));
+  assert.equal(connects,2);
+});
+
+test('Notion never retries tool writes or authorization failures', async () => {
+  const f=writingFixture();let connects=0,writes=0;
+  const service=new NotionMcpService(f.store,{createClient:async()=>{connects++;return {listTools:async()=>({tools:[{name:'notion-update-page'}]}),callTool:async()=>{writes++;throw Object.assign(new Error('network'),{code:'ECONNRESET'});},close:async()=>{}};}});
+  await assert.rejects(service.callDocumentTool('workspace-a','notion-a','grant-a','user-a','notion-update-page',{}));
+  assert.equal(connects,1);assert.equal(writes,1);
+  connects=0;
+  const denied=new NotionMcpService(f.store,{createClient:async()=>{connects++;throw new Error('HTTP 401 unauthorized');}});
+  await assert.rejects(denied.callDocumentTool('workspace-a','notion-a','grant-a','user-a','notion-update-page',{}));assert.equal(connects,1);
+});
+
+test('Notion reconnect cannot cross a revoked connection or changed writing grant', async () => {
+  const f=writingFixture();let connects=0,writes=0;
+  const revoked=new NotionMcpService(f.store,{createClient:async()=>{connects++;f.database.knowledgeConnections[0].status='revoked';throw Object.assign(new Error('network'),{code:'ETIMEDOUT'});}});
+  await assert.rejects(revoked.callDocumentTool('workspace-a','notion-a','grant-a','user-a','notion-update-page',{}),/连接已改变/);assert.equal(connects,1);
+  f.database.knowledgeConnections[0].status='connected';
+  const changed=new NotionMcpService(f.store,{createClient:async()=>({listTools:async()=>{f.database.knowledgeConnections[0].notionWriting!.grantId='changed';return {tools:[{name:'notion-update-page'}]};},callTool:async()=>{writes++;return {};},close:async()=>{}})});
+  await assert.rejects(changed.callDocumentTool('workspace-a','notion-a','grant-a','user-a','notion-update-page',{}),/授权已改变/);assert.equal(writes,0);
+});

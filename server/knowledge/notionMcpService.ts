@@ -86,6 +86,14 @@ async function closeClient(client: McpClient) {
   await withinDeadline(client.close(), "Notion MCP 连接关闭超时", 2_000).catch(() => undefined);
 }
 
+function transientConnectionFailure(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== 'object' || depth > 3) return false;
+  const e = error as {code?: unknown; message?: unknown; cause?: unknown; errors?: unknown};
+  if (typeof e.code === 'string' && ['ETIMEDOUT','ENETUNREACH','EHOSTUNREACH','ECONNRESET','ECONNREFUSED','EAI_AGAIN','UND_ERR_CONNECT_TIMEOUT','UND_ERR_SOCKET'].includes(e.code)) return true;
+  if (typeof e.message === 'string' && /^(?:fetch failed|Notion MCP 连接超时)$/.test(e.message)) return true;
+  return transientConnectionFailure(e.cause, depth + 1) || Array.isArray(e.errors) && e.errors.slice(0,8).some(e => transientConnectionFailure(e, depth + 1));
+}
+
 export type NotionMcpServiceOptions = {
   fetch?: typeof fetch;
   createClient?: (accessToken: string) => Promise<McpClient>;
@@ -186,7 +194,8 @@ export class NotionMcpService {
       const transport = new StreamableHTTPClientTransport(assertAllowedConnectorUrl(MCP_URL, notionHosts), {
         requestInit: { redirect: "error", headers: { Authorization: `Bearer ${accessToken}` } }
       });
-      await withinDeadline(client.connect(transport), "Notion MCP 连接超时");
+      try { await withinDeadline(client.connect(transport), "Notion MCP 连接超时"); }
+      catch (error) { await closeClient(client); throw error; }
       return client;
     });
   }
@@ -384,6 +393,10 @@ export class NotionMcpService {
     try {
       const listed = await withinDeadline(client.listTools(), 'Notion 写入工具查询超时');
       if (!listed.tools.some(tool => tool.name === name)) throw new Error('Notion 写入工具不可用');
+      // Connection establishment can wait/retry. Recheck the exact grant before
+      // sending any write, rather than trusting the pre-connect snapshot.
+      const current = await this.connected(workspaceId);
+      if (current.id !== connectionId || current.status !== 'connected' || current.notionWriting?.grantId !== grantId || current.notionWriting.userId !== userId) throw new Error('Notion 写入授权已改变，请重新确认');
       const result = await withinDeadline(client.callTool({ name, arguments: args }), 'Notion 写入结果未知，请在 Notion 核对；不会自动重跑');
       this.assertToolResult(result);
       return result;
@@ -436,7 +449,19 @@ export class NotionMcpService {
   }
 
   private async clientFor(connection: KnowledgeConnection) {
-    return withinDeadline(this.createClient(connectionSecret(connection, "access_token", connection.encryptedAccessToken!)), "Notion MCP 连接超时");
+    const connectionId = connection.id, encryptedToken = connection.encryptedAccessToken;
+    for (let attempt = 0; ; attempt++) {
+      const current = connectionFor(await this.store.read(), connection.workspaceId);
+      if (!current || current.id !== connectionId || current.status !== 'connected' || current.encryptedAccessToken !== encryptedToken) throw new Error('Notion 连接已改变，请重新检查');
+      try {
+        return await withinDeadline(this.createClient(connectionSecret(current, "access_token", encryptedToken!)), "Notion MCP 连接超时");
+      } catch (error) {
+        // Only reconnect before any tool request exists. Never replay a callTool
+        // (including a possibly-applied write) after a timeout or disconnect.
+        if (attempt >= 1 || this.isAuthorizationError(error) || !transientConnectionFailure(error)) throw error;
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+    }
   }
 
   private async refreshAccessToken(connection: KnowledgeConnection) {

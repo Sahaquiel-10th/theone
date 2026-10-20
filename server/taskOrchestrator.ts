@@ -92,13 +92,18 @@ export async function runTaskOrchestrator(input: {
       const tool = entryAllowsTool(input.entryPoint, call.function.name) ? input.tools.find(tool => tool.name === call.function.name) : undefined;
       let query: string | undefined;
       let structuredArgs: unknown;
+      let inputRepair: string | undefined;
       try {
         const args = JSON.parse(call.function.arguments);
         if (tool?.structured) { structuredArgs = tool.structured.validate(args); query = JSON.stringify(structuredArgs); }
         else if (args && Object.keys(args).length === 1 && typeof args.query === "string" && args.query.trim() && args.query.length <= 1000) query = args.query.trim();
-      } catch { /* Invalid parameters are returned to the model, never executed. */ }
+      } catch (error) {
+        // Only reviewed, code-owned hints may reach the model. Arbitrary
+        // validator/provider exceptions can contain credentials or user data.
+        if (tool && error instanceof OrchestrationInputError) inputRepair = error.message.slice(0,1000);
+      }
       let output: unknown; let status = "rejected"; const started = Date.now();
-      if (!tool || !query) output = { status: "rejected", error: "工具未授权或参数无效" };
+      if (!tool || !query) output = inputRepair ? {status:'rejected',code:'TOOL_INPUT_REPAIR',message:inputRepair} : { status: "rejected", error: "工具未授权或参数无效" };
       else {
         status='returned';
         const key = JSON.stringify([tool.name, query]);

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runTaskOrchestrator, OrchestrationToolError,orchestrationFailureCode } from "./taskOrchestrator.js";
+import { runTaskOrchestrator, OrchestrationToolError,OrchestrationInputError,orchestrationFailureCode } from "./taskOrchestrator.js";
 test('known orchestration failures have bounded diagnostic codes and unknown secrets are never copied',()=>{
  assert.equal(orchestrationFailureCode(new Error('已达到调度步骤上限，未完成任务；请缩小问题范围')),'task_step_limit');
  assert.equal(orchestrationFailureCode(new Error('本批任务超过已授权预算，已停止新的调用')),'task_budget_limit');
@@ -10,6 +10,18 @@ test('known orchestration failures have bounded diagnostic codes and unknown sec
  assert.equal(orchestrationFailureCode({message:'调度模型没有返回结果'}),undefined);
 });
 const call = (id: string, query = "project", name = "knowledge_search") => ({ id, type: "function" as const, function: { name, arguments: JSON.stringify({ query }) } });
+test('reviewed structured validation hints permit bounded repair without executing invalid or unavailable tools',async()=>{
+ let turns=0,runs=0;
+ const result=await runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:3,beforeStep:async()=>{},tools:[{name:'oneFlowchart',run:async()=>{},structured:{schema:{type:'object'},validate:raw=>{if(!(raw as {valid?:boolean}).valid)throw new OrchestrationInputError('使用平铺 version=1 和两个场景');return raw;},run:async()=>{runs++;return {status:'completed'};}}}],call:async messages=>{
+   turns++;if(turns===1)return {content:'',toolCalls:[{id:'bad',type:'function',function:{name:'oneFlowchart',arguments:'{"valid":false}'}}]};
+   if(turns===2){assert.match(JSON.stringify(messages),/TOOL_INPUT_REPAIR/);return {content:'',toolCalls:[{id:'fixed',type:'function',function:{name:'oneFlowchart',arguments:'{"valid":true}'}}]};}
+   return {content:'done',toolCalls:[]};
+ }});
+ assert.equal(runs,1);assert.equal(turns,3);assert.equal(result.trace[0].status,'rejected');assert.equal(result.trace[1].status,'returned');
+ let called=0;
+ const hidden=await runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:2,beforeStep:async()=>{},tools:[{name:'oneFlowchart',run:async()=>{},structured:{schema:{type:'object'},validate:()=>{throw new Error('api_key=SECRET');},run:async()=>{called++;}}}],call:async messages=>messages.length?{content:'stopped',toolCalls:[]}:{content:'',toolCalls:[{id:'x',type:'function',function:{name:'oneFlowchart',arguments:'{}'}}]}});
+ assert.equal(called,0);assert.doesNotMatch(JSON.stringify(hidden),/SECRET/);
+});
 test('progress reports actual tool boundaries, not fabricated completion',async()=>{
  const stages:string[]=[];let calls=0;
  await runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:2,beforeStep:async()=>{},onStage:(stage,tool)=>stages.push(`${stage}:${tool||''}`),tools:[{name:'knowledge_search',run:async()=>{stages.push('actual-read');return{chunks:[]};}}],call:async()=>++calls===1?{content:'',toolCalls:[call('read')]}:{content:'没有匹配资料',toolCalls:[]}});
