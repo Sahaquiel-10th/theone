@@ -44,7 +44,7 @@ import { callModel, callModelWithTools, ModelRequestError, type ModelToolMessage
 import { featureImageBytes } from "./featureImage.js";
 import { saveFeatureArtifact,visualArtifactSaver,officeArtifactContext } from "./featureArtifacts.js";
 import {ownedArtifactResults} from './artifactLinks.js';
-import { runBilledModel } from "./modelBilling.js";
+import { runBilledModel, affordableDocumentOutput } from "./modelBilling.js";
 import type {ScopedPublicSearch} from './webSearch.js';
 import {
   beginChatOperation,
@@ -2134,8 +2134,12 @@ export class CoordinatorService {
           sections = inputTrace(messages);
           // Document bodies travel inside tool arguments too. The short-chat
           // default must not cut a complete article before its save can run.
-          const maxOutputTokens = tools.some(t => t.function.name === 'save_notion_draft')
-            || /长文|专栏|文章|报告|调研|白皮书|论文|文稿|写作/.test(job.instruction) ? 12000 : undefined;
+          const documentCall=tools.some(t => t.function.name === 'save_notion_draft')
+            || /长文|专栏|文章|报告|调研|白皮书|论文|文稿|写作/.test(job.instruction);
+          const billingInput={messages,tools:callOptions?.finalSummaryTools??tools,taskVersion:job.executorVersion};
+          const fresh=documentCall?await this.store.read():undefined;
+          const maxOutputTokens=documentCall?affordableDocumentOutput(m,billingInput,Math.max(0,Math.floor(job.budget*1e6)-spent(fresh!,s,op!.requestId))):undefined;
+          if(documentCall&&maxOutputTokens===undefined)throw new CoordinatorError('本批任务超过已授权预算，已停止新的调用',402);
           const response = await runBilledModel(
             this.store,
             {
@@ -2145,7 +2149,7 @@ export class CoordinatorService {
               requestId: op!.requestId,
               activity: "task_worker",
               maxOutputTokens,
-              input: { messages, tools:callOptions?.finalSummaryTools??tools, taskVersion: job.executorVersion },
+              input: billingInput,
               beforeReserve: (d, amount) => {
                 assertWork(d, s, id, job, cid);
                 assertWorkBudget(d,s,op!,amount);

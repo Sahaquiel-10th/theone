@@ -62,6 +62,17 @@ export function modelReservationMicros(model: ModelConfig, input: unknown, maxOu
   return amount;
 }
 
+/** Size a document call to existing authorized headroom, without enlarging the
+ * budget or starting a call with only a token-sized allowance left. The atomic
+ * reservation still rechecks races immediately before calling the provider. */
+export function affordableDocumentOutput(model:ModelConfig,input:unknown,availableMicros:number){
+  const priced=effectiveModel(model);
+  if(!Number.isSafeInteger(availableMicros)||availableMicros<0||modelReservationMicros(priced,input,3000)>availableMicros)return undefined;
+  let low=3000,high=12000;
+  while(low<high){const middle=Math.ceil((low+high)/2);if(modelReservationMicros(priced,input,middle)<=availableMicros)low=middle;else high=middle-1;}
+  return low;
+}
+
 function scopedRecord(db: Database, scope: BillingScope) {
   const row = db.modelUsageRecords.find((item) => item.id === scope.usageId && item.workspaceId === scope.workspaceId && item.userId === scope.userId);
   if (!row) throw new Error("用量记录不存在或不属于此用户");

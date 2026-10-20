@@ -2,9 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Database, ModelConfig } from "./types.js";
 import type { Store } from "./db.js";
-import { modelReservationMicros, reconcileInterruptedBilling, resolveBillingReview, runBilledModel, settleBillingRecord } from "./modelBilling.js";
+import { affordableDocumentOutput, modelReservationMicros, reconcileInterruptedBilling, resolveBillingReview, runBilledModel, settleBillingRecord } from "./modelBilling.js";
 import { publicUsageRecord } from "./serializers.js";
 
+test('document allowance fits existing budget headroom instead of reserving an unaffordable maximum',()=>{
+ const f=fixture(),input={messages:[{role:'user',content:'合成长文'}]};
+ const available=modelReservationMicros(f.model,input,6000);
+ assert.equal(affordableDocumentOutput(f.model,input,available),6000);
+ assert.equal(affordableDocumentOutput(f.model,input,modelReservationMicros(f.model,input,12000)+1),12000);
+ assert.equal(affordableDocumentOutput(f.model,input,modelReservationMicros(f.model,input,3000)-1),undefined);
+ for(const invalid of [-1,NaN,Infinity])assert.equal(affordableDocumentOutput(f.model,input,invalid),undefined);
+ assert.equal(f.db().modelUsageRecords.length,0);assert.equal(f.db().powerLedger.length,0);
+});
 test('feature rates replace base rate once; independent 1 and 1.2 calls add, costs and history stay frozen',async()=>{
   const f=fixture();f.model.pricing={version:1,label:'base',publishedAt:'2026-01-01',multiplier:.6,referenceInput:2,referenceOutput:4};
   const price=(multiplier:number)=>({id:`feature-${multiplier}`,name:'测试功能',releaseId:'r1',version:1,multiplier});
