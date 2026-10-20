@@ -1649,7 +1649,7 @@ export class CoordinatorService {
           runtimeContext:restore?.runtimeContext??db.chatOperations?.find(o=>own(o,s)&&o.operationId===input.parentOperationId)?.runtimeContext??runtimeContext(db,s,op.createdAt),
           steps:restore?.steps?structuredClone(restore.steps.filter(step=>!(step.tool==='save_notion_draft'&&step.state==='started'&&['not_sent','rejected'].includes(restore.notionReceipt?.delivery||'')))):[],
           retryOfOperationId:input.retrySourceJobId?db.chatOperations?.find(o=>own(o,s)&&o.id===input.retrySourceJobId)?.operationId:undefined,
-          contract:{version:1,requiredFeatureIds:input.directVisual?[]:input.requiredFeatureIds??[],requiredTools,knowledgeSourceIds:restore?.contract?.knowledgeSourceIds??(policy.required?policy.sourceIds:undefined),execution:input.directVisual?'direct':'model'},
+          contract:{version:1,requiredFeatureIds:input.directVisual?[]:input.requiredFeatureIds??[],requiredTools,knowledgeSourceIds:knowledgeDeclined?undefined:restore?.contract?.knowledgeSourceIds??(policy.required?policy.sourceIds:undefined),execution:input.directVisual?'direct':'model'},
           directVisual:input.directVisual,
           notionTarget,
           featurePricingVersion: 1,

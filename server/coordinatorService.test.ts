@@ -895,6 +895,23 @@ test('long Notion article arguments use a document allowance, save once and reta
  await assert.rejects(()=>service.task(b,reply.taskId!));
  const usage=(await f.store.read()).modelUsageRecords.filter(u=>u.conversationId===reply.taskId);assert.ok(usage.every(u=>u.reservedMicros===0));
 });
+test('a first-turn truncated Notion instruction has a safe same-task recovery without weakening unknown-write protection',async()=>{
+ const f=fixture(),parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',pageId='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';let truncate=true,writes=0,body='';
+ await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:'a',authorizedAt:'now',parentId}}));
+ const mcp={readDocument:async()=>({text:body||'保存目录'}),callDocumentTool:async(_w:string,_c:string,_g:string,_u:string,_n:string,args:any)=>{writes++;body=args.pages[0].content;return {pages:[{id:pageId}]};}} as unknown as NotionMcpService;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{assert.fail('no retrieval allowed');}},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages)=>{
+  if(messages.at(-1)?.role==='tool')return answer('已经保存并回读。');
+  if(model.id==='router')return {...answer(''),toolCalls:[{id:'plan',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'长文截断恢复',instruction:'将合成文章保存到 Notion，不查知识库。',executorId:'general'})}}]};
+  return {...answer(''),finishReason:truncate?'length':'tool_calls',toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:truncate?'溢出但未执行':JSON.stringify({title:'合成专栏',content:'这是完整的合成文章。'})}}]};
+ }});
+ const reply=await service.dispatch(a,{...input('operation_notion_truncated_01','在 Notion 新建合成文章，不查知识库。'),outputDestination:'notion'},key);
+ await service.resume(a,key);await waitFor(async()=>(await service.task(a,reply.taskId!)).jobs[0].state==='failed');
+ const failed=await service.task(a,reply.taskId!);assert.equal(failed.jobs[0].failureCode,'task_tool_instruction_incomplete');assert.equal(failed.recovery.kind,'retry');assert.equal(writes,0);
+ const source=(await f.store.read()).chatOperations!.find(o=>o.conversationId===reply.taskId&&o.workRun)!.workRun!;assert.deepEqual(source.steps,[]);assert.equal(source.notionReceipt,undefined);
+ await assert.rejects(()=>service.retryLatest(b,reply.taskId!,failed.jobs[0].id,undefined,key));
+ truncate=false;await service.retryLatest(a,reply.taskId!,failed.jobs[0].id,undefined,key);await service.resume(a,key);await waitFor(async()=>(await service.task(a,reply.taskId!)).jobs.at(-1)?.state==='completed');
+ const recovered=await service.task(a,reply.taskId!);assert.equal(recovered.conversation.id,reply.taskId);assert.equal(recovered.conversation.notionDocument?.pageId,pageId);assert.equal(writes,1);assert.equal(body,'这是完整的合成文章。');assert.equal(recovered.jobs.at(-1)?.notionReceipt?.state,'verified');
+});
 test('a proven unsent Notion save can retry on the same task and destination without replaying unknown writes',async()=>{
  const f=fixture(),parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',pageId='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
  await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:'a',authorizedAt:'now',parentId}}));

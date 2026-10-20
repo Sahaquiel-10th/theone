@@ -27,6 +27,15 @@ test('recovery offers safe actions for text, images, local execution and ongoing
   assert.equal(taskRecovery([{id:'active',state:'running'},{id:'later',state:'queued'}]).kind,'none');
   assert.equal(taskRecovery([{id:'done',state:'completed'}]).kind,'none');
 });
+test('a recorded first-turn truncation can retry Notion, but missing history and unknown effects cannot',()=>{
+ const job={id:'first',state:'failed',notionTarget:{},failureCode:'task_tool_instruction_incomplete',steps:[]};
+ assert.equal(taskRecovery([job]).kind,'retry');
+ assert.equal(taskRecovery([{...job,steps:undefined}]).kind,'review_notion');
+ assert.equal(taskRecovery([{...job,failureCode:'task_execution_failed'}]).kind,'review_notion');
+ assert.equal(taskRecovery([{...job,steps:[{effect:'read',state:'completed'}]}]).kind,'review_notion');
+ assert.equal(taskRecovery([{...job,notionReceipt:{state:'uncertain',delivery:'unknown'}}]).kind,'review_notion');
+ assert.equal(taskRecovery([{id:'old',state:'failed',notionReceipt:{state:'uncertain',delivery:'unknown'}},job]).kind,'review_notion');
+});
 test('welcome recovery explains which stage remains without exposing the plan',()=>{
  assert.equal(taskRecovery([{id:'w',state:'failed',kind:'image',welcomeManual:{}}]).welcomeStep,'manual');
  assert.equal(taskRecovery([{id:'w',state:'failed',kind:'image',welcomeManual:{document:{}}}]).welcomeStep,'image');
