@@ -897,6 +897,25 @@ test('long Notion article arguments use a document allowance, save once and reta
  const usage=(await f.store.read()).modelUsageRecords.filter(u=>u.conversationId===reply.taskId);assert.ok(usage.every(u=>u.reservedMicros===0));
  }
 });
+test('a verified new document still completes when the remaining budget cannot reserve another acknowledgement',async()=>{
+ const f=fixture(),parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',pageId='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';let body='',writes=0,workerCalls=0;
+ const article='Synthetic paragraph for isolated document acceptance.\n'.repeat(300);
+ await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:'a',authorizedAt:'now',parentId}}));
+ const mcp={readDocument:async()=>({text:body||'保存目录'}),callDocumentTool:async(_w:string,_c:string,_g:string,_u:string,_n:string,args:any)=>{writes++;body=args.pages[0].content;return {pages:[{id:pageId}]};}} as unknown as NotionMcpService;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{assert.fail('declined retrieval');}},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages,tools)=>{
+  if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('已经安排。'):{...answer(''),toolCalls:[{id:'plan',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'预算内文章',instruction:'写好合成文章并保存到 Notion，保存后回读。不必联网或查知识库。',executorId:'general'})}}]};
+  workerCalls++;assert.equal(workerCalls,1,'no extra model call should be billed just to acknowledge a verified save');assert.ok(!tools.some(t=>t.function.name==='knowledge_search'));
+  const hold=(await f.store.read()).modelUsageRecords.find(u=>u.modelId===model.id&&u.status==='pending')!.reservedMicros!;
+  return {...answer(''),usage:{inputTokens:hold-1,outputTokens:1,totalTokens:hold,source:'provider'},toolCalls:[{id:'save-budget',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({title:'预算内文章',content:article})}}]};
+ }});
+ const result=await service.dispatch(a,{...input('operation_notion_budget_finish','写好一篇文章并保存到 Notion'),budget:.03,outputDestination:'notion'},key);
+ // Reproduce an older snapshot's stale mandatory search without modifying its
+ // original record at execution time. Current restrictions must still win.
+ await f.store.mutate(d=>{const w=d.chatOperations!.find(o=>o.conversationId===result.taskId&&o.workRun)!.workRun!;w.contract!.requiredTools=['knowledge_search'];w.contract!.knowledgeSourceIds=['notion'];});
+ await service.resume(a,key);await waitFor(async()=>['completed','failed'].includes((await service.task(a,result.taskId!)).jobs[0].state));
+ const task=await service.task(a,result.taskId!);assert.equal(task.jobs[0].state,'completed',JSON.stringify(task.jobs));assert.equal(task.jobs[0].notionReceipt?.state,'verified');assert.equal(writes,1);assert.equal(workerCalls,1);assert.equal(body,article);assert.match(task.conversation.messages.at(-1)!.content,new RegExp(pageId));
+ const rows=(await f.store.read()).modelUsageRecords.filter(u=>u.conversationId===result.taskId);assert.equal(rows.length,1);assert.ok(rows[0].chargedMicros!<=30000);assert.equal(rows[0].reservedMicros,0);await assert.rejects(()=>service.task(b,result.taskId!));
+});
 test('a first-turn truncated Notion instruction has a safe same-task recovery without weakening unknown-write protection',async()=>{
  const f=fixture(),parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',pageId='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';let truncate=true,writes=0,body='';
  await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:'a',authorizedAt:'now',parentId}}));
