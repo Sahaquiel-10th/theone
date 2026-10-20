@@ -5,7 +5,7 @@ import mysql from "mysql2/promise";
 import { Database, ModelConfig, User, Workspace } from "./types.js";
 import { hashPassword, uid } from "./security.js";
 import { decryptCredential, encryptCredential } from "./knowledge/credentialCipher.js";
-import { relationalRecordMetadata } from "./dbRelationalMetadata.js";
+import { relationalRecordMetadata, restoreRelationalRecordOrder } from "./dbRelationalMetadata.js";
 import type { CollectionName, StoredRecord } from "./dbRelationalMetadata.js";
 import { reconcileInterruptedBilling } from "./modelBilling.js";
 import { reconcileInterruptedChatOperations } from "./chatOperations.js";
@@ -354,7 +354,7 @@ function migrateDatabase(raw: Record<string, any>): Database {
     attachments,
     executionTasks: collection("executionTasks"),
     executionEvents: collection("executionEvents"),
-    chatOperations: collection("chatOperations"),
+    chatOperations: restoreRelationalRecordOrder('chatOperations', collection("chatOperations")) as Database['chatOperations'],
     publications: Array.isArray(raw.publications) ? raw.publications : undefined,
     publicSessions: Array.isArray(raw.publicSessions) ? raw.publicSessions : undefined,
     publicRuns: Array.isArray(raw.publicRuns) ? raw.publicRuns : undefined,

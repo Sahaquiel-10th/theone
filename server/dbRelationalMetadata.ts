@@ -3,6 +3,17 @@ import type { Database } from "./types.js";
 export type CollectionName = Exclude<keyof Database, "settings">;
 export type StoredRecord = { id: string; workspaceId?: string; userId?: string; [key: string]: unknown };
 
+/** SQL row order is not insertion order. Latest-job consumers require creation
+ * order after restart, not primary-key or last-update order. Leave other
+ * collections (including explicitly arranged catalogs) unchanged. */
+export function restoreRelationalRecordOrder(collection: CollectionName, records: StoredRecord[]) {
+  if (collection !== 'chatOperations') return records;
+  return [...records].sort((a,b) => {
+    if (typeof a.createdAt !== 'string' || typeof b.createdAt !== 'string') return 0;
+    return a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id);
+  });
+}
+
 export function relationalRecordMetadata(collection: CollectionName, item: StoredRecord, db: Database) {
   return {
     workspaceId: recordWorkspaceId(collection, item, db),

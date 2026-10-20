@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {taskRecovery} from './taskRecovery';
+import {taskRecovery,notionReceiptForReview} from './taskRecovery';
 
 test('recovery offers safe actions for text, images, local execution and ongoing work',()=>{
   assert.equal(taskRecovery([{id:'text',state:'failed'}]).kind,'retry');
@@ -29,4 +29,15 @@ test('an uncertain Notion write keeps its dedicated readback entry even with an 
   assert.equal(taskRecovery([job]).kind,'review_notion');
   assert.equal(taskRecovery([{...job,state:'running'}]).kind,'none');
   assert.equal(taskRecovery([{...job,notionReceipt:{state:'verified'}}]).kind,'none','verification must not silently clear another unresolved write');
+});
+
+test('a verified receipt never hides an unresolved write from the task or composer review entry',()=>{
+ const uncertain={id:'update',state:'failed',notionReceipt:{state:'uncertain',url:'https://notion.so/test'}};
+ const verified={id:'create',state:'completed',notionReceipt:{state:'verified'}};
+ for(const jobs of [[verified,uncertain],[uncertain,verified]]){
+   assert.equal(taskRecovery(jobs).kind,'review_notion');
+   assert.equal(notionReceiptForReview(jobs),uncertain);
+ }
+ assert.equal(notionReceiptForReview([verified]),verified);
+ assert.equal(notionReceiptForReview([]),undefined);
 });

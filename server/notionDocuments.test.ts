@@ -144,6 +144,25 @@ test('Notion uncertain save can be reconciled by readback only without restartin
   assert.equal(f.db.chatOperations![0].workRun!.state,'cancelled');
   assert.equal(f.db.chatOperations![0].workRun!.notionReceipt!.state,'verified');
 });
+test('readback selects the unresolved round after a shuffled restart, never the older verified create',async()=>{
+  const f=fixture(),first=f.job('create');
+  await f.docs.tool(s,'create','task',first,async()=>{}).structured!.run({title:'测试',content:'旧正文14时'});
+  f.db.chatOperations![0].createdAt='2026-10-20T00:22:00Z';first.state='completed';
+  const second=f.job('update',pageId);
+  f.db.chatOperations![1].createdAt='2026-10-20T00:27:00Z';
+  f.mcp.callDocumentTool=async()=>{throw new Error('connection lost before confirmation');};
+  await assert.rejects(()=>f.docs.tool(s,'update','task',second,async()=>{},'旧正文14时').structured!.run({old_str:'14时',new_str:'15时'}));
+  second.state='failed';f.db.conversations[0].workPaused=true;
+  f.db.chatOperations!.reverse();
+  await assert.rejects(()=>f.docs.reconcile(s,'task',async()=>{}),/与本轮拟保存内容不同/);
+  assert.equal(first.notionReceipt!.state,'verified');assert.equal(second.notionReceipt!.state,'uncertain');
+  f.setBody('旧正文15时');
+  await assert.rejects(()=>f.docs.reconcile({workspaceId:'wb',userId:'b'},'task',async()=>{}));
+  const result=await f.docs.reconcile(s,'task',async()=>{});
+  assert.equal(result.state,'verified');assert.equal(second.notionReceipt!.state,'verified');
+  assert.equal(second.state,'failed');assert.equal(f.db.conversations[0].workPaused,true);
+  assert.equal(f.calls.length,1,'readback never repeats the write');
+});
 test('Notion readback keeps a paused task paused and its queued supplements ineligible to resume',async()=>{
   const f=fixture(),job=f.job();
   const read=f.mcp.readDocument.bind(f.mcp);

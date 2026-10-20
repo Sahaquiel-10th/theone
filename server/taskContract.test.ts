@@ -46,6 +46,8 @@ test('friendly reports preserve actual accomplishments without overstating compl
   for(const message of ['API 调用失败了','大部分完成了，文案已做好','文案和网页全部完成','文案已做好。全部搞定了'])assert.equal(validateTaskReport(JSON.stringify({message}),facts),taskReportFallback(facts));
   assert.match(validateTaskReport('not json',facts),/文案.*已经做好/);
   assert.doesNotMatch(taskReportFallback({...facts,done:[]}),/成果已|全部|大部分/);
+  for(const message of ['文案已经做好，网页还没好。下一步我接着把网页补齐，补完就给你。','文案已做好，网页还差一些，我会继续。','文案已经做好，网页还在处理，我正在补。'])
+    assert.equal(validateTaskReport(JSON.stringify({message}),facts),taskReportFallback(facts));
 });
 test('revoked source results cannot be reused through a prerequisite after authorization changes',()=>{
   const db=database(),connection=db.knowledgeConnections[0];

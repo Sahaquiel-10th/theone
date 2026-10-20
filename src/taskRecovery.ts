@@ -1,5 +1,12 @@
 export type TaskRecovery = { kind: 'retry' | 'resume' | 'review_image' | 'review_notion' | 'review_local' | 'none'; message: string; sourceJobId?: string; welcomeStep?:'manual'|'image'|'page' };
 
+/** An earlier unresolved write must not disappear behind a verified receipt.
+ * Callers pass chronological, owner-scoped jobs; no authorization is granted here. */
+export function notionReceiptForReview<T extends {notionReceipt?: {state:string}}>(jobs: T[]) {
+  const receipts=jobs.filter(job=>job.notionReceipt);
+  return receipts.filter(job=>job.notionReceipt!.state!=='verified').at(-1) ?? receipts.at(-1);
+}
+
 /** A recovery action follows the persisted latest job, not a guessed UI state. */
 export function taskRecovery(jobs: { id: string; state: string; kind?: string;steps?:{effect:string;state:string}[];dependencyBlocked?:boolean;dependsOnOperationIds?:string[]; notionTarget?: unknown; notionReceipt?: {state: string};welcomeManual?:{document?:unknown};welcomeImageAttachmentId?:string }[]): TaskRecovery {
   const latest = jobs.at(-1);

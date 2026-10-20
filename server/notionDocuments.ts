@@ -91,7 +91,9 @@ export class NotionDocuments {
     await verify(); const db = await this.store.read(); featureMember(db, s);
     const task = db.conversations.find(c => c.id === cid && c.workspaceId === s.workspaceId && c.userId === s.userId && !c.coordinatorMain);
     if (!task) throw new NotionDocumentError('任务不存在', 404);
-    const op = (db.chatOperations || []).filter(o => o.conversationId === cid && o.workspaceId === s.workspaceId && o.userId === s.userId && o.workRun?.notionReceipt).at(-1);
+    const jobs = (db.chatOperations || []).filter(o => o.conversationId === cid && o.workspaceId === s.workspaceId && o.userId === s.userId && o.workRun?.notionReceipt)
+      .sort((a,b)=>a.createdAt?.localeCompare(b.createdAt)||0);
+    const op = jobs.filter(o=>o.workRun!.notionReceipt!.state!=='verified').at(-1) ?? jobs.at(-1);
     const receipt = op?.workRun?.notionReceipt, target = op?.workRun?.notionTarget;
     if (!receipt || !target || !receipt.pageId || !receipt.expectedDigest) throw new NotionDocumentError('尚未取得可核对的页面编号，请在 Notion 检查原文；不会自动创建替代文档');
     if (op!.workRun!.state === 'running') throw new NotionDocumentError('保存仍在进行，请等待这轮结束后核对');

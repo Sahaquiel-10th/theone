@@ -29,6 +29,7 @@ import {executionNeedsReview} from './executionReview';
 import {TaskTransferRail, dismissibleReceiptIds, type Transfer} from './TaskTransferRail';
 import {taskCategory,taskUiOutcome} from './taskAttention';
 import {taskRetryScope} from './taskRetryScope';
+import {notionReceiptForReview} from './taskRecovery';
 import {taskConversationView} from './taskConversationView';
 import {friendlyExecutionProgress,readCapturedNotices} from './friendlyTaskStatus';
 import {internalTaskId} from './taskLink';
@@ -887,7 +888,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         if(recovery.kind==='review_image'&&!(typeof price==='number'&&(price>0||price===0&&recovery.welcomeStep==='page'))){setError('这次图片价格还没确认，请稍后刷新任务再试。');return;}
         if(confirm(`${actionLabel} · ${title}\n本轮范围：${latest.slice(0,480)}\n${recovery.welcomeStep?`只补未完成的步骤，最多使用 ${price!.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力，按实际用量结算；已保存的说明和图片会复用。`:recovery.kind==='review_image'?`这次新生成一张图片，使用 ${price!.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力；已有结果和历史都会保留。`:canAdjustBudget?`本次继续最多使用 ${retryBudget} 电力，不含以前已用的电力，按实际用量结算。将沿用原附件和功能，只补未完成部分。`:'沿用原上限开始处理最新要求，不重复已有成果。'}`))void coordinator.retryTask(id,canAdjustBudget?retryBudget:undefined,lastJob?.id).then(()=>refresh()).catch(e=>setError(e.message));
       }}>{retrying?'正在恢复…':actionLabel}</button>:null}
-      {recovery?.kind==='review_notion'?<NotionReceiptNotice api={api} taskId={id} receipt={detail?.jobs.filter(j=>j.notionReceipt).at(-1)?.notionReceipt} onRefresh={()=>coordinator.load(id)} />:null}
+      {recovery?.kind==='review_notion'?<NotionReceiptNotice api={api} taskId={id} receipt={notionReceiptForReview(detail?.jobs||[])?.notionReceipt} onRefresh={()=>coordinator.load(id)} />:null}
 {localNeedsAction?<><p>{local.status==='cancelled'?'这轮已经停下，不会自己再启动。':'这轮本机操作还没完成。'}先看看操作记录；想接着做，可以回到这件事补一句要求，ONE 会先核对已有结果。</p><button type="button" onClick={()=>{setSelectedExecutionId(local.id);setExpandedExecutionId(local.id);setRevealExecutionId(local.id);void loadLatestExecution(id,local.id);}}>查看本轮操作</button><button type="button" onClick={()=>{if(currentDraftRef.current.content.trim()){setError('输入框里还有一段没发出的内容，先保留或发完它，再继续这件事。');return;}coordinator.dispatch({type:'bind',taskId:id});openSurface('chat');setContent('请先核对上一轮实际结果，只继续未完成的部分，不要重复已有修改。补充本轮要求：若本任务是新建文档，同名文件（即使为空）请保留，另存为原名-2、-3等编号版本；允许回读本轮目标文件验证，不读取无关文件。若原任务是修改已有文件，则先核对原目标，不擅自另存或扩大授权。');}}>核对后继续这件事</button></>:null}
       {!detail?<button type="button" onClick={()=>void coordinator.load(id).catch(e=>setError(e.message))}>查看恢复方式</button>:null}
     </section>;
@@ -1976,7 +1977,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         onDraftChange={(id,text)=>setThingDrafts(previous=>({...previous,[id]:text}))}
         onExecuteDraft={outputDestination === 'notion' ? undefined : (id,text,source)=>executeDraft(text,source,id)}
         sendLabel={outputDestination === 'notion' ? '写到 Notion' : outputDestination === 'local' ? '本机执行' : '发送'}
-        destinationPicker={!demo.enabled ? <><NotionReceiptNotice key={thingId} api={api} taskId={thingId} receipt={coordinator.details[thingId]?.jobs.filter(j=>j.notionReceipt).at(-1)?.notionReceipt} onRefresh={()=>coordinator.load(thingId)} /><DocumentDestinationPicker api={api} value={outputDestination} onChange={setOutputDestination} localDisabled={taskStatusUnavailable || executionBusy || preparingExecution} onSettings={() => openSurface('knowledge')} /></> : undefined}
+        destinationPicker={!demo.enabled ? <><NotionReceiptNotice key={thingId} api={api} taskId={thingId} receipt={notionReceiptForReview(coordinator.details[thingId]?.jobs||[])?.notionReceipt} onRefresh={()=>coordinator.load(thingId)} /><DocumentDestinationPicker api={api} value={outputDestination} onChange={setOutputDestination} localDisabled={taskStatusUnavailable || executionBusy || preparingExecution} onSettings={() => openSurface('knowledge')} /></> : undefined}
         onSelect={id=>void selectThing(id)} onSend={continueThing}
         onWorkbench={id=>{void openConversation(conversations.find(item=>item.id===id)!);setResultLampOpen(false);}}
         onRemove={coordinator.enabled?removeCoordinatorTask:undefined}
