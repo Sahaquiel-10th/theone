@@ -757,26 +757,26 @@ export class CoordinatorService {
                 "executorId,instruction,taskId,title" ||
               (v.taskId !== null && typeof v.taskId !== "string")
             )
-              throw new Error("参数无效");
-            text(v.title, 80, "标题");
-            text(v.instruction, 4000, "交接");
+              throw new OrchestrationInputError('delegate_task 必须包含 taskId、title、instruction、executorId；新任务 taskId 为 null。只可额外包含 featureIds、capabilityIds，保存位置由本轮设置传入，不要另加字段。');
+            if(typeof v.title!=='string'||!v.title.trim()||v.title.length>80||typeof v.instruction!=='string'||!v.instruction.trim()||v.instruction.length>4000)
+              throw new OrchestrationInputError('title 必须是 1–80 字的非空字符串，instruction 必须是 1–4000 字的非空字符串。');
             // Preserve old four-field callers, but advertise the complete
             // contract to new model turns. Function names in prose are not grants.
             if(v.featureIds!==undefined){
-              if(!Array.isArray(v.featureIds)||v.featureIds.length>8||v.featureIds.some(id=>typeof id!=='string'||!id)||new Set(v.featureIds).size!==v.featureIds.length)throw new Error('任务功能选择无效');
+              if(!Array.isArray(v.featureIds)||v.featureIds.length>8||v.featureIds.some(id=>typeof id!=='string'||!id)||new Set(v.featureIds).size!==v.featureIds.length)throw new OrchestrationInputError('featureIds 必须是最多八个不同的真实功能编号数组；不使用功能填 []。');
             }
-            if(v.capabilityIds!==undefined&&(!Array.isArray(v.capabilityIds)||v.capabilityIds.length>8||v.capabilityIds.some(id=>typeof id!=='string'||!id)))throw new Error('能力选择无效');
+            if(v.capabilityIds!==undefined&&(!Array.isArray(v.capabilityIds)||v.capabilityIds.length>8||v.capabilityIds.some(id=>typeof id!=='string'||!id)))throw new OrchestrationInputError('capabilityIds 必须是最多八个真实能力编号的数组；不要填写能力名称。');
             // The explicit local button makes delegate_task a local handoff too.
             // Normalize the public capability alias before the same owner and
             // bound-task checks; ordinary cloud delegation must still reject it.
             if (input.localExecution && v.executorId === 'local_special')
               v.executorId = resolveRoutingExecutorId(current, 'logic');
             if (!profiles.some((p) => p.id === v.executorId)&&!routingCapabilities(current,s,{localAvailable:Boolean(executeLocal),imageStorageAvailable:Boolean(this.deps.artifactDirectory)}).some(c=>c.id===v.executorId||c.executorId===v.executorId))
-              throw new Error("执行器未授权");
+              throw new OrchestrationInputError('executorId 不在当前授权目录。请从执行模型目录复制真实 executorId；功能编号应填 featureIds 或 capabilityIds，不能当作执行模型。');
             if (v.taskId && !candidates.some((c) => c.id === v.taskId))
-              throw new Error("事情未授权");
+              throw new OrchestrationInputError('taskId 不在本轮可继续的任务列表。新任务请填 null；不得引用其他用户或未授权任务。');
             if (input.boundTaskId && v.taskId !== input.boundTaskId)
-              throw new Error("必须尊重指定事情");
+              throw new OrchestrationInputError('当前已指定要继续的任务，请使用本轮指定 taskId，不能改成其他任务或新建。');
             return v;
           },
           run: value => runDelegate(value, input.localExecution === true),

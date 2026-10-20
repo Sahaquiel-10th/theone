@@ -874,7 +874,8 @@ test('a proven unsent Notion save can retry on the same task and destination wit
   if(model.id==='router')return {...answer(''),toolCalls:[{id:'route',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'连接恢复草稿',instruction:'将合成正文保存到 Notion',executorId:'general'})}}]};
   return {...answer(''),toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({title:'合成标题',content:'合成正文'})}}]};
  }});
- const r=await service.dispatch(a,{...input('operation_unsent_notion','保存合成短文'),outputDestination:'notion'},key);
+ const r=await service.dispatch(a,{...input('operation_unsent_notion','在 Notion 新建合成短文，正文：明天15时检查小苗。保存后回读，不读取知识库或参考文章。'),outputDestination:'notion'},key);
+ assert.doesNotMatch(r.message.content,/还没查全/);
  await service.resume(a,key);await waitFor(async()=>(await service.task(a,r.taskId!)).jobs.at(-1)?.state==='failed');
  const detail=await service.task(a,r.taskId!);assert.equal(detail.recovery.kind,'retry');assert.equal(writes,0);
  await assert.rejects(()=>service.retryLatest(b,r.taskId!,detail.jobs[0].id,undefined,key));
@@ -1277,6 +1278,23 @@ test('a bare promise is repaired in the same turn into a real durable receipt, a
  const replay=await f.service.dispatch(a,request,key);assert.deepEqual(replay.taskIds,result.taskIds);assert.equal(turns,3);
  assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun?.parentOperationId===request.operationId).length,1);
  await assert.rejects(()=>f.service.task(b,result.taskIds[0]));
+});
+test('single-task validation returns reviewed repair hints without queueing invalid or foreign tasks',async()=>{
+ for(const bad of [{outputDestination:'notion'},{executorId:'unknown-private-executor'},{taskId:'foreign-private-task'},{featureIds:['duplicate','duplicate']},{instruction:''}]){
+  const f=fixture();let turns=0;
+  const valid={taskId:null,title:'合成便笺',instruction:'只整理合成材料',executorId:'general',featureIds:[]};
+  f.setRoute(messages=>{turns++;
+   if(turns===2){const feedback=JSON.parse(messages.at(-1)!.content!);assert.equal(feedback.code,'TOOL_INPUT_REPAIR');assert.doesNotMatch(JSON.stringify(feedback),/unknown-private-executor|foreign-private-task/);}
+   if(turns<3)return {...answer(''),toolCalls:[{id:`repair-${turns}`,type:'function',function:{name:'delegate_task',arguments:JSON.stringify(turns===1?{...valid,...bad}:valid)}}]};
+   return answer('已经安排好了。');
+  });
+  const request=input('operation_delegate_repair_01','新建一份合成便笺');
+  const result=await f.service.dispatch(a,request,key);assert.equal(turns,3);assert.equal(result.taskIds.length,1);
+  const db=await f.store.read();assert.equal(db.chatOperations!.filter(o=>o.workRun).length,1);
+  assert.equal(db.contextTraces.find(t=>t.requestId===db.chatOperations!.find(o=>o.operationId===request.operationId)!.requestId)!.executionSteps![0].status,'rejected');
+  assert.equal((await f.service.dispatch(a,request,key)).taskIds.length,1);assert.equal(turns,3);
+  await assert.rejects(()=>f.service.task(b,result.taskIds[0]));
+ }
 });
 test('friendly provider feedback is durable, but revocation immediately before save cannot leave pending or leak a reply',async()=>{
  for(const revoke of [false,true]){

@@ -19,6 +19,17 @@ test('explicit platform requests and exhaustive recall stay inside the authorize
   assert.equal(knowledgePolicy(db,scope,'查昨天联合国会议的公开新闻').required,false);
   assert.equal(knowledgePolicy(db,scope,'只用公开素材，不查知识库，不联网').required,false);
 });
+test('Notion writing and readback do not require unrelated knowledge search because of 检查',()=>{
+ const db=database();
+ for(const text of [
+  '在当前已选的 Notion 草稿保存页面下面新建文档。正文：明天15时检查小苗。保存后实际回读，不读取知识库或参考文章。',
+  '写一篇文章保存到 Notion，检查正文和保存结果。',
+  '保存到 Notion 后查看原页面，核对保存结果。',
+ ])assert.equal(knowledgePolicy(db,scope,text).required,false,text);
+ assert.deepEqual(knowledgePolicy(db,scope,'在 Notion 新建草稿；先去得到大脑找一下会议资料').sourceIds,['g']);
+ assert.deepEqual(knowledgePolicy(db,scope,'查 Notion 里面的会议资料').sourceIds,['n']);
+ assert.deepEqual(knowledgePolicy(db,scope,'我记得 Notion 有个方案').sourceIds,['n']);
+});
 test('no match is a real completed search, not a euphemism for an outage',()=>{
   assert.equal(knowledgeResultComplete({status:'no_match',coverage:[{connectionId:'n',status:'no_match'}]},['n']),true);
   for(const status of ['failed','unavailable'])assert.equal(knowledgeResultComplete({status:'used',coverage:[{connectionId:'n',status:'used'},{connectionId:'g',status}]},['n','g']),false);

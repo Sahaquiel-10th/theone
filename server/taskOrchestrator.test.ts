@@ -22,6 +22,16 @@ test('reviewed structured validation hints permit bounded repair without executi
  const hidden=await runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:2,beforeStep:async()=>{},tools:[{name:'oneFlowchart',run:async()=>{},structured:{schema:{type:'object'},validate:()=>{throw new Error('api_key=SECRET');},run:async()=>{called++;}}}],call:async messages=>messages.length?{content:'stopped',toolCalls:[]}:{content:'',toolCalls:[{id:'x',type:'function',function:{name:'oneFlowchart',arguments:'{}'}}]}});
  assert.equal(called,0);assert.doesNotMatch(JSON.stringify(hidden),/SECRET/);
 });
+test('validation repair gets one bounded execution opportunity even at the last callable turn',async()=>{
+ let turns=0,runs=0;
+ const result=await runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:2,maxCorrections:1,beforeStep:async()=>{},tools:[{name:'oneFlowchart',run:async()=>{},structured:{schema:{type:'object'},validate:value=>{if(!(value as {valid:boolean}).valid)throw new OrchestrationInputError('必须提供有效说明');return value;},run:async()=>{runs++;return {status:'completed'};}}}],call:async()=>{
+  turns++;return turns<=2?{content:'',toolCalls:[{id:`attempt-${turns}`,type:'function',function:{name:'oneFlowchart',arguments:JSON.stringify({valid:turns===2})}}]}:{content:'done',toolCalls:[]};
+ }});
+ assert.equal(turns,3);assert.equal(runs,1);assert.equal(result.trace[0].status,'rejected');
+ let rejectedTurns=0;
+ await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:2,maxCorrections:1,beforeStep:async()=>{},tools:[{name:'oneFlowchart',run:async()=>{},structured:{schema:{type:'object'},validate:()=>{throw new OrchestrationInputError('仍无效');},run:async()=>{throw Error('must not run');}}}],call:async()=>{rejectedTurns++;return {content:'',toolCalls:[{id:`invalid-${rejectedTurns}`,type:'function',function:{name:'oneFlowchart',arguments:'{}'}}]};}}),/步骤上限/);
+ assert.equal(rejectedTurns,3);
+});
 test('progress reports actual tool boundaries, not fabricated completion',async()=>{
  const stages:string[]=[];let calls=0;
  await runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:2,beforeStep:async()=>{},onStage:(stage,tool)=>stages.push(`${stage}:${tool||''}`),tools:[{name:'knowledge_search',run:async()=>{stages.push('actual-read');return{chunks:[]};}}],call:async()=>++calls===1?{content:'',toolCalls:[call('read')]}:{content:'没有匹配资料',toolCalls:[]}});

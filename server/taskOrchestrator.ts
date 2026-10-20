@@ -103,7 +103,10 @@ export async function runTaskOrchestrator(input: {
         if (tool && error instanceof OrchestrationInputError) inputRepair = error.message.slice(0,1000);
       }
       let output: unknown; let status = "rejected"; const started = Date.now();
-      if (!tool || !query) output = inputRepair ? {status:'rejected',code:'TOOL_INPUT_REPAIR',message:inputRepair} : { status: "rejected", error: "工具未授权或参数无效" };
+      if (!tool || !query) {
+        if(inputRepair)repair(step);
+        output = inputRepair ? {status:'rejected',code:'TOOL_INPUT_REPAIR',message:inputRepair} : { status: "rejected", error: "工具未授权或参数无效" };
+      }
       else {
         status='returned';
         const key = JSON.stringify([tool.name, query]);
