@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Database, ExecutionTask, MessageRecord } from "./types.js";
 import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, saveExecutionInput, messagesThrough, publicExecutionTask, taskEvents, executionTrace, type ExecutionHandoff } from "./executionService.js";
-import { saveExecutionReceipt, executionReceipts, assertLocalExecutionAvailable, executionDeliveryPending } from './executionService.js';
+import { saveExecutionReceipt, executionReceipts, assertLocalExecutionAvailable, executionDeliveryPending, executionBlocksDevice } from './executionService.js';
 
 test('unacknowledged disconnected rounds block repeat work only for their exact owner and device', () => {
   const scope = {workspaceId:'a', userId:'u', deviceId:'d', installationId:'i'};
@@ -11,12 +11,16 @@ test('unacknowledged disconnected rounds block repeat work only for their exact 
     transportInterruption:{attemptId:'attempt',round:1,reason:'socket_close',at:'now'}} as ExecutionTask;
   const db = {executionTasks:[task]} as Database;
   assert.equal(executionDeliveryPending(task),true);
+  assert.equal(executionBlocksDevice(task,scope),true);
   assert.throws(() => assertLocalExecutionAvailable(db,scope), /避免重复操作/);
-  for (const foreign of [{...scope,workspaceId:'b'},{...scope,userId:'v'},{...scope,deviceId:'e'},{...scope,installationId:'j'}])
+  for (const foreign of [{...scope,workspaceId:'b'},{...scope,userId:'v'},{...scope,deviceId:'e'},{...scope,installationId:'j'}]){
     assert.doesNotThrow(() => assertLocalExecutionAvailable(db,foreign));
+    assert.equal(executionBlocksDevice(task,foreign),false,'another Key or computer must not get a false blocking UI');
+  }
   task.status='cancelled'; assert.equal(executionDeliveryPending(task),true);
   task.terminalReceipt={id:'receipt',hash:'h',attemptId:'attempt',round:1,outcome:'cancelled',disposition:'supplemental',receivedAt:'now'};
   assert.equal(executionDeliveryPending(task),false);
+  assert.equal(executionBlocksDevice(task,scope),false);
   assert.doesNotThrow(() => assertLocalExecutionAvailable(db,scope));
 });
 

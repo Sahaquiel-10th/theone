@@ -14,6 +14,9 @@ export function executionDeliveryPending(task: ExecutionTask) {
     && task.transportInterruption.round === (task.reportRound ?? 0)
     && !(task.terminalReceipt?.attemptId === task.deliveryAttempt.id && task.terminalReceipt.round === task.deliveryAttempt.round));
 }
+export function executionBlocksDevice(task:ExecutionTask,scope:Pick<ExecutionTask,'workspaceId'|'userId'|'deviceId'|'installationId'>){
+  return task.workspaceId===scope.workspaceId&&task.userId===scope.userId&&task.deviceId===scope.deviceId&&task.installationId===scope.installationId&&executionDeliveryPending(task);
+}
 export function assertLocalExecutionAvailable(database: Database, scope: Pick<ExecutionTask, 'workspaceId' | 'userId' | 'deviceId' | 'installationId'>) {
   if (database.executionTasks.some(t => t.workspaceId === scope.workspaceId && t.userId === scope.userId
     && t.deviceId === scope.deviceId && t.installationId === scope.installationId && t.executionSafetyHold))

@@ -243,6 +243,7 @@ type ExecutionTask = {
   finalResponse?: string;
   lastError?: string;
   resultDeliveryPending?: boolean;
+  blocksCurrentDevice?: boolean;
   requiresExecutionCheck?: boolean;
   createdAt: string;
   updatedAt: string;
@@ -867,7 +868,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const lastJob=detail?.jobs.at(-1);
     if(!coordinator.enabled)return null;
     const localInput=unstartedLocalInput(id,detail?.jobs||[],conversation?.messages||[],executionTasks);
-    if(localInput)return <section className="task-recovery" role="status"><strong>本机这件事还没开始</strong><p>要求已经保存好了。确认 ONE 已连接后，就可以从这里开始；不会重做其他任务。</p><button type="button" disabled={preparingExecution||executionBusy||taskStatusUnavailable||loadingByConversation[id]} onClick={event=>void executeFromMessage(localInput,event.currentTarget,id)}>{preparingExecution&&preparingConversationId===id?'正在连接本机…':'开始本机任务'}</button></section>;
+    const blockingLocal=localInput&&executionTasks.find(item=>item.blocksCurrentDevice);
+    if(localInput)return <section className="task-recovery" role="status"><strong>{blockingLocal?'先确认上次的本机操作':'本机这件事还没开始'}</strong><p>{blockingLocal?'上次断线后的结果还没确认，为了不重复改文件，这件事先等一等。原要求会保留，其他云端任务不受影响。':'要求已经保存好了。确认 ONE 已连接后，就可以从这里开始；不会重做其他任务。'}</p>{blockingLocal?<button type="button" onClick={()=>void openLinkedTask(blockingLocal.conversationId)}>查看上次本机任务</button>:<button type="button" disabled={preparingExecution||executionBusy||taskStatusUnavailable||loadingByConversation[id]} onClick={event=>void executeFromMessage(localInput,event.currentTarget,id)}>{preparingExecution&&preparingConversationId===id?'正在连接本机…':'开始本机任务'}</button>}</section>;
     if(!(task?.paused||conversation?.workPaused||localNeedsAction||lastJob?.dependencyBlocked))return task?.running&&lastJob?.progress?.completed.length?<section className="task-recovery" role="status"><strong>正在接着做</strong><p>已做好：{lastJob.progress.completed.join('、')}。{lastJob.progress.pending.length?`正在处理：${lastJob.progress.pending.join('、')}。`:'后续内容还在整理。'}</p></section>:null;
     const error=lastJob?.error;
     const recovery=detail?.recovery;

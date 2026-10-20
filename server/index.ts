@@ -64,7 +64,7 @@ import { connectorRegistry, connectorService, notionMcpService, yinxiangService,
 import { installFeishuRoutes } from "./feishuRoutes.js";
 import { connectorRoutes } from "./connectorRoutes.js";
 import { AuthorizationSessionError, AuthorizationSessions } from "./connectors/authorizationSessions.js";
-import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, saveExecutionInput, messagesThrough, publicExecutionTask, taskEvents, executionTrace, executionReceipts, saveExecutionReceipt, executionTerminal, assertLocalExecutionAvailable } from "./executionService.js";
+import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, saveExecutionInput, messagesThrough, publicExecutionTask, taskEvents, executionTrace, executionReceipts, saveExecutionReceipt, executionTerminal, assertLocalExecutionAvailable, executionBlocksDevice } from "./executionService.js";
 import { buildDirectExecutionInstruction } from "./directExecutionInstruction.js";
 import { adminUsageSummaries, adminUserUsageDetail } from "./adminUsage.js";
 import { operationsHealth } from "./operationsHealth.js";
@@ -827,7 +827,7 @@ app.get("/api/executions", ...keyAuth, asyncRoute(async (req, res) => {
   const tasks = db.executionTasks
     .filter((item) => item.workspaceId === req.workspaceId && item.userId === req.user!.id && (!conversationId || item.conversationId === conversationId))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  res.json({ tasks: tasks.map(publicExecutionTask) });
+  res.json({ tasks: tasks.map(task=>({...publicExecutionTask(task),blocksCurrentDevice:executionBlocksDevice(task,{workspaceId:req.workspaceId!,userId:req.user!.id,deviceId:req.oneKeyDeviceId!,installationId:req.oneKeyInstallationId})})) });
 }));
 
 app.get("/api/executions/:id", ...keyAuth, asyncRoute(async (req, res) => {
