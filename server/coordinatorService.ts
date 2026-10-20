@@ -60,7 +60,7 @@ import type { FeatureRunDependencies } from "./featureRuns.js";
 import fs from "node:fs/promises";
 import {createHash} from 'node:crypto';
 import { NotionDocuments, NotionDocumentError, writingTarget } from './notionDocuments.js';
-import {verifiedNotionCompletion} from './notionCompletion.js';
+import {verifiedNotionCompletion,notionDeliveryNote} from './notionCompletion.js';
 import {
   publicAttachmentSummary,
   selectConversationAttachments,
@@ -2224,7 +2224,7 @@ export class CoordinatorService {
         saveMessage(d, s, target, {
           id: mid,
           role: "assistant",
-          content: result.content + (job.notionTarget ? (o.workRun!.notionReceipt?.state === 'verified' ? `\n\n[已保存到 Notion · 已回读核对](${o.workRun!.notionReceipt.url})` : '\n\n本轮尚未保存到 Notion。') : ''),
+          content: result.content + (job.notionTarget ? notionDeliveryNote(o.workRun!.notionReceipt,notionContext?.pageId) : ''),
           modelId: m.id,
           attachments:outputFiles.length?outputFiles.map(publicAttachmentSummary):undefined,
           imageUrl:outputFiles.find(file=>file.kind==='image')?`/api/attachments/${outputFiles.find(file=>file.kind==='image')!.id}/content`:undefined,
@@ -2249,7 +2249,7 @@ export class CoordinatorService {
         o.workRun!.resultOutcome=outcome.outcome;
         if(job.expectedOutput==='image'&&outputFiles.some(file=>file.kind==='image'))o.workRun!.resultOutcome='completed';
         if(['failed','needs_input','partial'].includes(outcome.outcome)){o.workRun!.state='failed';target.workPaused=true;}
-        const resultMessage=target.messages.find(m=>m.id===mid)!;resultMessage.content=outcome.content+(job.notionTarget?(o.workRun!.notionReceipt?.state==='verified'?`\n\n[已保存到 Notion · 已回读核对](${o.workRun!.notionReceipt.url})`:'\n\n本轮尚未保存到 Notion。'):'');
+        const resultMessage=target.messages.find(m=>m.id===mid)!;resultMessage.content=outcome.content+(job.notionTarget?notionDeliveryNote(o.workRun!.notionReceipt,notionContext?.pageId):'');
         const relational=d.messages.find(m=>m.id===mid&&m.conversationId===cid&&own(m,s));if(relational)relational.content=resultMessage.content;
         o.workRun!.resultMessageId = mid;
         o.workRun!.unread = true;

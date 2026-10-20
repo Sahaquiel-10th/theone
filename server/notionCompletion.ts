@@ -1,6 +1,16 @@
 import type {WorkRun} from './coordinatorTypes.js';
 import {toolSucceeded,type TaskStep} from './taskSteps.js';
 
+/** This round's write status is distinct from an already existing document. */
+export function notionDeliveryNote(receipt:WorkRun['notionReceipt'],existingPageId?:string){
+ const id=receipt?.state==='verified'?receipt.pageId:existingPageId;
+ if(id&&/^[a-f0-9]{32}$/i.test(id.replaceAll('-',''))){
+  const label=receipt?.state==='verified'?'已保存到 Notion · 已回读核对':'打开 Notion 原文';
+  return `\n\n[${label}](https://www.notion.so/${id.replaceAll('-','')})`;
+ }
+ return '\n\n本轮尚未确认保存到 Notion。';
+}
+
 /** A receipt-only fallback for a newly created document, not a content review.
  * The caller still verifies the Key, workspace, grants and immutable task.
  * Never use mere file existence or a model's completion claim as evidence. */

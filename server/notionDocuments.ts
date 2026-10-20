@@ -126,7 +126,9 @@ export class NotionDocuments {
     const refs = [];
     for (const id of target.referenceIds) refs.push({ id, content: notionBody(await this.mcp.readDocument(s.workspaceId, id)).slice(0, 12000) });
     const current = target.pageId ? notionBody(await this.mcp.readDocument(s.workspaceId, target.pageId)) : undefined;
-    return { references: refs, currentDocument: current, pageId: target.pageId, location: `https://www.notion.so/${target.parentId}` };
+    return { references: refs, currentDocument: current, pageId: target.pageId,
+      location: `https://www.notion.so/${target.pageId || target.parentId}`,
+      parentLocation: `https://www.notion.so/${target.parentId}` };
   }
   tool(s: WorkScope, opId: string, cid: string, job: WorkRun, verify: () => Promise<void>, current?: string, originalRequest = ''): OrchestrationTool {
     const target = job.notionTarget!;

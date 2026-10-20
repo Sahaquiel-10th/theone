@@ -856,7 +856,11 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
       return answer('已收到真实工具回执。');
     }
     if(model.id==='router')return {...answer(''),toolCalls:[{id:'route',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'专栏草稿',instruction:'请写专栏并保存到已授权的 Notion 目录',executorId:'general'})}}]};
-    if(messages.at(-1)?.content?.includes('只读核对'))return answer('正文是修改后的第一段，没有再次写入。');
+    if(messages.at(-1)?.content?.includes('只读核对')){
+      assert.match(JSON.stringify(messages),new RegExp(pageId));
+      const content='正文是修改后的第一段，没有再次写入。';
+      return answer(content+'\n\n'+JSON.stringify({outcome:'completed',content,summary:'只读核对完成'}));
+    }
     assert.ok(tools.some(t=>t.function.name==='save_notion_draft'));
     return {...answer(''),toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify(body?{old_str:'第一段。',new_str:'修改后的第一段.'}:{title:'专栏',content:'第一段。'})}}]};
   }});
@@ -872,6 +876,8 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
   await service.direct(a,result.taskId!,{operationId:'operation_notion_readonly',text:'只读核对正文，不修改'},key);
   await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.at(-1)!.state==='completed');
   assert.deepEqual(mutations,['notion-create-pages','notion-update-page'],'ordinary follow-up on the saved draft must not force another write');
+  const readback=(await service.task(a,result.taskId!)).conversation.messages.at(-1)!.content;
+  assert.match(readback,new RegExp(`打开 Notion 原文.*${pageId}`));assert.doesNotMatch(readback,/尚未|已保存到 Notion|"outcome"/);
   await assert.rejects(()=>service.task(b,result.taskId!));
 });
 test('long Notion article arguments use a document allowance, save once and retain owner and budget checks',async()=>{

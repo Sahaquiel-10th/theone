@@ -13,6 +13,13 @@ test('legacy refusal is a returned answer, never a fabricated successful deliver
   assert.equal(parseTaskOutcome(JSON.stringify({outcome:'needs_input',content:'请补充目标',summary:'缺少目标'})).outcome,'needs_input');
   assert.equal(isImageInstruction('绘制奥特曼大战孙悟空'),true);assert.equal(isImageInstruction('绘制表格'),false);
 });
+test('duplicate prose followed by its result envelope is unwrapped, not exposed as raw JSON',()=>{
+ const body='文章已读到。\n\n正文和结尾都在。';
+ const envelope=JSON.stringify({outcome:'completed',content:body,summary:'已只读核对'});
+ assert.deepEqual(parseTaskOutcome(body+'\n\n'+envelope),{outcome:'completed',content:body,summary:'已只读核对'});
+ assert.equal(parseTaskOutcome('这里讲一个 JSON 示例：\n'+envelope).outcome,'returned');
+ assert.equal(parseTaskOutcome(body+'\n'+JSON.stringify({outcome:'failed',content:'不同内容',summary:'示例'})).outcome,'returned');
+});
 test('direct execution accepts only reviewed visual documents, not arbitrary tools, scripts or hidden scope',()=>{
   const scene={id:'first',title:'说明',situation:'使用场景',feature:'整理内容',advantage:'省去排版',benefit:'清楚说明',evidence:'查看结果',steps:['整理','查看'],prompt:'整理说明',capabilityIds:[]};
   const direct={tool:'oneHtml',document:{version:1,title:'说明',intro:'合成说明',scenes:[scene,{...scene,id:'second'}]}};
