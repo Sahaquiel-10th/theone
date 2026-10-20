@@ -2110,6 +2110,7 @@ export class CoordinatorService {
       // Keep the exact original in stored history/provenance, not in every
       // child's model input. Actual dependencies enter through their receipts.
       messages.splice(1,0,{role:'system',content:runtimeContextText(workerTime)});
+      messages.splice(1,0,{role:'system',content:'执行位置：你已经在 ONE 保存好的独立任务中工作。创建任务、并行调度、把成果归入任务区和下次聊天汇报均由平台完成，不是你的交付步骤，也不需要你再次调用任务管理工具。交接中的“新建独立任务、留在任务区、不打断聊天”描述平台安排，不表示你还要再创建一个任务。只按本任务所需的实际内容、工具结果和文件判断完成情况；不要因为缺少任务管理或浏览器工具而虚构缺项，也不要把真实未完成的交付说成已完成。'});
       messages.splice(1, 0, {
         role: 'system',
         content: `执行范围由服务端锁定：本轮只完成下面的「当前任务交接」。每轮交接已整理为本任务的具体要求；相关讨论、附件和真实前置成果仅是完成本任务的上下文，不会扩大本轮执行范围。其他目标属于其他任务，不要执行、重做、汇总或判断它们是否完成。\n当前任务交接（服务端确定的唯一执行目标）：\n${JSON.stringify({taskId:cid,title:c.title,instruction:job.instruction,expectedOutput:job.expectedOutput??'text'})}\n最终结果只描述本任务实际完成和未完成的部分，不因缺少其他任务的工具而把本任务标成失败或部分完成。结果封套只写在最外层；content 字段应是本任务可直接使用的正文，不嵌入第二份结果 JSON 或其他任务的总结。`,

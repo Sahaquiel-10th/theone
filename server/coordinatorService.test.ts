@@ -770,6 +770,7 @@ for(const interruptedSummary of [false,true])test(`two visual features return ow
    const tool=messages[0].content!.includes('VISUAL_FEATURE_0')?'oneFlowchart':'oneHtml';
    return {...answer(''),toolCalls:[{id:tool,type:'function',function:{name:tool,arguments:JSON.stringify(document)}}]};
   }
+  assert.ok(messages.some(message=>message.role==='system'&&message.content?.includes('你已经在 ONE 保存好的独立任务中工作')),'the worker must not treat platform task creation or filing as a missing delivery');
   if(messages.at(-1)?.role!=='tool')return {...answer(''),toolCalls:[0,1].map(i=>({id:`feature-${i}`,type:'function' as const,function:{name:`feature_${i}`,arguments:JSON.stringify({query:'生成合成指南'})}}))};
   const outputs=messages.filter(m=>m.role==='tool').map(m=>JSON.parse(m.content!));
   assert.equal(outputs.length,2);
