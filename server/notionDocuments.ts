@@ -8,6 +8,9 @@ import { CoordinatorError } from './executorProfiles.js';
 import { featureMember } from './featureRuns.js';
 import { NotionWriteError, type NotionMcpService } from './knowledge/notionMcpService.js';
 import {parseNotionPageLink} from '../src/notionPageLink.js';
+import {freshDocumentReadRequested} from './executionIntent.js';
+
+const readOnlyRequest=(text:string)=>freshDocumentReadRequested(text)&&/只读|(?:不|不要)(?:修改|保存|写入)/.test(text);
 
 export class NotionDocumentError extends CoordinatorError {}
 export function notionPageId(value: unknown): string {
@@ -120,13 +123,14 @@ export class NotionDocuments {
     });
     return { state: 'verified', url: receipt.url };
   }
-  async context(s: WorkScope, job: WorkRun) {
+  async context(s: WorkScope, job: WorkRun, originalRequest=job.instruction||'') {
     const target = job.notionTarget!;
     this.assertTarget(await this.store.read(), s, target);
+    const readOnly=readOnlyRequest(originalRequest);
     const refs = [];
-    for (const id of target.referenceIds) refs.push({ id, content: notionBody(await this.mcp.readDocument(s.workspaceId, id)).slice(0, 12000) });
+    for (const id of readOnly?[]:target.referenceIds) refs.push({ id, content: notionBody(await this.mcp.readDocument(s.workspaceId, id)).slice(0, 12000) });
     const current = target.pageId ? notionBody(await this.mcp.readDocument(s.workspaceId, target.pageId)) : undefined;
-    return { references: refs, currentDocument: current, pageId: target.pageId,
+    return { references: refs, currentDocument: current, pageId: target.pageId, readOnly,
       location: `https://www.notion.so/${target.pageId || target.parentId}`,
       parentLocation: `https://www.notion.so/${target.parentId}` };
   }
@@ -135,6 +139,7 @@ export class NotionDocuments {
     return { name: 'save_notion_draft',label:'保存到 Notion',effect:'external_write', description: '由 ONE 写入已授权的 Notion 草稿。首次提供 title/content；继续修改只能提供 old_str/new_str，精确替换本轮读到的一段原文，不修改其他页面。只有 verified 回执才表示已保存。每轮只保存一次。', run: async () => { throw new NotionDocumentError('参数无效'); },
       structured: { schema: { type: 'object', additionalProperties: false, properties: { title: { type: 'string', maxLength: 200 }, content: { type: 'string', maxLength: 50000 }, old_str: { type: 'string', maxLength: 50000 }, new_str: { type: 'string', maxLength: 50000 } } },
         validate: value => {
+          if(readOnlyRequest(originalRequest))throw new NotionDocumentError('这轮只读，不会修改或保存文章。');
           const v = value as any;
           if (!v || typeof v !== 'object' || Object.keys(v).some(k => !['title','content','old_str','new_str'].includes(k))) throw new NotionDocumentError('保存参数无效');
           if (target.pageId) {
@@ -146,6 +151,7 @@ export class NotionDocuments {
           } else { if (v.old_str !== undefined || v.new_str !== undefined || typeof v.title !== 'string' || !v.title.trim() || v.title.length > 200) throw new NotionDocumentError('草稿标题无效'); safeArticle(v.content); }
           return v;
         }, run: async value => {
+          if(readOnlyRequest(originalRequest))throw new NotionDocumentError('这轮只读，不会修改或保存文章。');
           const v = value as any;
           await verify(); this.assertTarget(await this.store.read(), s, target);
           if (target.pageId && notionBody(await this.mcp.readDocument(s.workspaceId, target.pageId)) !== current) throw new NotionDocumentError('Notion 文档已被修改，请重新读取后再继续；本轮没有覆盖原文');

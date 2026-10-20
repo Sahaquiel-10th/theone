@@ -865,6 +865,7 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
     }
     if(messages.at(-1)?.content?.includes('只读核对')){
       assert.match(JSON.stringify(messages),new RegExp(pageId));
+      assert.ok(!tools.some(t=>t.function.name==='save_notion_draft'),'explicit read-only continuation must not expose a write tool');
       const content='正文是修改后的第一段，没有再次写入。';
       return answer(content+'\n\n'+JSON.stringify({outcome:'completed',content,summary:'只读核对完成'}));
     }

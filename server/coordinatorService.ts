@@ -2019,8 +2019,8 @@ export class CoordinatorService {
       const tools: OrchestrationTool[] = [];
       const workerTime=job.runtimeContext??runtimeContext(db,s,op!.createdAt);
       const workerPrivateTexts=[attachmentResult.text,...previous.map(message=>message.content)];
-      const notionContext = job.notionTarget ? await this.deps.notionDocuments!.context(s, job) : undefined;
-      if (notionContext) tools.push(this.deps.notionDocuments!.tool(s, id, cid, job, verify, notionContext.currentDocument, c.messages[start].content));
+      const notionContext = job.notionTarget ? await this.deps.notionDocuments!.context(s, job, c.messages[start].content) : undefined;
+      if (notionContext&&!notionContext.readOnly) tools.push(this.deps.notionDocuments!.tool(s, id, cid, job, verify, notionContext.currentDocument, c.messages[start].content));
       const executionKnowledgeDeclined=knowledgePolicy(db,s,job.instruction).declined||knowledgePolicy(db,s,c.messages[start].content).declined;
       const requiredWorkerTools=(job.contract?.requiredTools??[]).filter(name=>name!=='knowledge_search'||!executionKnowledgeDeclined);
       const requiredKnowledge=requiredWorkerTools.includes('knowledge_search');

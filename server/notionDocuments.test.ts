@@ -43,6 +43,17 @@ test('Notion readback extracts body, refuses truncated/unsupported pages',()=>{
   assert.throws(()=>notionBody({text:'正文',truncated:true}));
   assert.throws(()=>notionBody({text:'正文',unknown_block_count:1}));
 });
+test('explicit read-only continuation reads only its own page and rejects even a direct write-tool invocation',async()=>{
+ const f=fixture(),job=f.job('readonly',pageId),request='只读核对本任务的原文，不修改、不保存。',reads:string[]=[];
+ job.notionTarget!.referenceIds=['cccccccccccccccccccccccccccccccc'];
+ const read=f.mcp.readDocument.bind(f.mcp);f.mcp.readDocument=async(ws,id)=>{reads.push(id);return read(ws,id);};
+ const context=await f.docs.context(s,job,request);assert.equal(context.readOnly,true);assert.deepEqual(reads,[pageId]);assert.deepEqual(context.references,[]);
+ const tool=f.docs.tool(s,'readonly','task',job,async()=>{},context.currentDocument,request);
+ assert.throws(()=>tool.structured!.validate({old_str:'原来的文章',new_str:'不该写入'}),/只读/);
+ await assert.rejects(()=>tool.structured!.run({old_str:'原来的文章',new_str:'不该写入'}),/只读/);
+ assert.equal(f.calls.length,0);assert.equal(f.getBody(),'原来的文章');
+ await assert.rejects(()=>f.docs.context({workspaceId:'wb',userId:'b'},job,request));assert.deepEqual(reads,[pageId]);
+});
 test('Notion destination config normalizes links before scoped reads and never changes settings on malformed links',async()=>{
   const f=fixture(),read=f.mcp.readDocument.bind(f.mcp),reads:string[]=[];
   f.mcp.readDocument=async(ws,id)=>{reads.push(id);return read(ws,id);};
