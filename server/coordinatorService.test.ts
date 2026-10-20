@@ -888,7 +888,7 @@ test('long Notion article arguments use a document allowance, save once and reta
   assert.ok(tools.some(t=>t.function.name==='save_notion_draft'));assert.ok(!tools.some(t=>t.function.name==='knowledge_search'));
   return {...answer(''),toolCalls:[{id:'save-long',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({title:'长文草稿',content:article})}}]};
  }});
- const reply=await service.dispatch(a,{...input('operation_long_notion_article','请写一篇合成长文章并保存，不查知识库。'),outputDestination:'notion'},key);
+ const reply=await service.dispatch(a,{...input('operation_long_notion_article','请写一篇合成长文章并保存，不必联网或查知识库。'),outputDestination:'notion'},key);
  await service.resume(a,key);await waitFor(async()=>['failed','completed'].includes((await service.task(a,reply.taskId!)).jobs[0].state));
  const task=await service.task(a,reply.taskId!);assert.equal(task.jobs[0].state,'completed');assert.equal(task.jobs[0].notionReceipt?.state,'verified');assert.equal(writes,1);assert.equal(body,article);assert.equal(workerCalls,2);
  const run=(await f.store.read()).chatOperations!.find(o=>o.conversationId===reply.taskId&&o.workRun)!.workRun!;assert.deepEqual(run.contract?.requiredTools,[]);assert.deepEqual(run.sources,[]);

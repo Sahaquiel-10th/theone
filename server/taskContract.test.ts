@@ -32,8 +32,8 @@ test('Notion writing and readback do not require unrelated knowledge search beca
  assert.deepEqual(knowledgePolicy(db,scope,'我记得 Notion 有个方案').sourceIds,['n']);
  assert.deepEqual(knowledgePolicy(db,scope,'不联网搜索；去 Notion 查会议资料').sourceIds,['n']);
  assert.deepEqual(knowledgePolicy(db,scope,'不读其他页面或知识库；去得到大脑找一下会议资料').sourceIds,['g']);
- for(const choice of ['all','notion',undefined]){
-  const p=knowledgePolicy(db,scope,'只依据用户给出的主题创作，不必联网查知识库。保存到 Notion 后回读。',undefined,choice);
+ for(const choice of ['all','notion',undefined])for(const negative of ['不必联网查知识库','不必联网或查知识库','不需要上网和查询知识库','无需联网及检索知识库']){
+  const p=knowledgePolicy(db,scope,`只依据用户给出的主题创作，${negative}。保存到 Notion 后回读。`,undefined,choice);
   assert.equal(p.required,false);assert.equal(p.declined,true);assert.deepEqual(p.sourceIds,[]);
  }
  assert.equal(knowledgePolicy(db,scope,'不联网搜索；去 Notion 查会议资料',undefined,'notion').required,true);
