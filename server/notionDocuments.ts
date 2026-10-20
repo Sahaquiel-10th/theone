@@ -105,7 +105,7 @@ export class NotionDocuments {
       this.assertTarget(d, s, target);
       const own = d.chatOperations?.find(o => o.id === op!.id && o.workspaceId === s.workspaceId && o.userId === s.userId && o.conversationId === cid);
       if (!own?.workRun?.notionReceipt || own.workRun.notionReceipt.expectedDigest !== receipt.expectedDigest || own.workRun.state === 'running') throw new NotionDocumentError('保存记录已改变，请重新检查');
-      own.workRun.notionReceipt.state = 'verified'; own.workRun.notionReceipt.digest = hash(body); own.workRun.notionReceipt.error = undefined;
+      own.workRun.notionReceipt.state = 'verified'; own.workRun.notionReceipt.digest = hash(body); own.workRun.notionReceipt.error = undefined; own.workRun.notionReceipt.failureCode = undefined;
       // This reconciles the save only. Never change cancelled/failed task state
       // or lift the pause: the connected client resumes any unpaused queue.
     });
@@ -153,14 +153,17 @@ export class NotionDocuments {
             job.notionReceipt = { ...o.workRun.notionReceipt };
           });
           let pageId = target.pageId;
+          let failureCode: NonNullable<WorkRun['notionReceipt']>['failureCode'] = 'write_unconfirmed';
           try {
             await verify();
             let response = resultData(await this.mcp.callDocumentTool(s.workspaceId, target.connectionId, target.grantId, s.userId,
               pageId ? 'notion-update-page' : 'notion-create-pages', pageId ? { page_id: pageId, command: 'update_content', content_updates: [{ old_str: v.old_str, new_str: v.new_str }], allow_async: false } : { parent: { page_id: target.parentId }, pages: [{ properties: { title: v.title }, content: v.content }], allow_async: false }));
-            if (response?.async_task || response?.type === 'async_task') {
-              const taskId = response.async_task?.task_id || response.async_task?.id || response.task_id;
+            failureCode = 'response_unrecognized';
+            if (response?.async_task || response?.type === 'async_task' || response?.object === 'async_task') {
+              const taskId = response.async_task?.task_id || response.async_task?.id || response.task_id || response.id;
               if (typeof taskId !== 'string') throw new Error('async response unavailable');
               await record({ state: 'pending', asyncTaskId: taskId });
+              failureCode = 'async_unconfirmed';
               for (let i = 0; i < 10; i++) {
                 await verify(); await new Promise(resolve => setTimeout(resolve, 1500));
                 response = resultData(await this.mcp.callDocumentTool(s.workspaceId, target.connectionId, target.grantId, s.userId, 'notion-get-async-task', { task_id: taskId }));
@@ -173,13 +176,15 @@ export class NotionDocuments {
             const url = `https://www.notion.so/${pageId}`;
             // Retain the created page even if readback/cancellation fails.
             await record({ state: 'pending', pageId, url });
+            failureCode = 'readback_failed';
             const actual = notionBody(await this.mcp.readDocument(s.workspaceId, pageId));
+            failureCode = 'readback_mismatch';
             if (normalized(actual) !== normalized(expected)) throw new Error('readback mismatch');
-            await record({ state: 'verified', pageId, url, digest: hash(actual) });
+            await record({ state: 'verified', pageId, url, digest: hash(actual), failureCode: undefined });
             await verify();
             return { state: 'verified', url, pageId, message: '已保存并回读核对；可打开 Notion。后续修改继续这一篇。' };
           } catch {
-            await record({ state: 'uncertain', pageId, url: pageId ? `https://www.notion.so/${pageId}` : undefined, error: 'Notion 保存未确认，可能已产生文档或修改；请核对原页面，不会自动重跑。' });
+            await record({ state: 'uncertain', pageId, url: pageId ? `https://www.notion.so/${pageId}` : undefined, failureCode, error: 'Notion 保存未确认，可能已产生文档或修改；请核对原页面，不会自动重跑。' });
             throw new NotionDocumentError('Notion 保存未确认，可能已写入；请核对原页面，不会自动重跑。');
           }
         } }

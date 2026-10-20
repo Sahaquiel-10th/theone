@@ -24,3 +24,9 @@ test('an uncertain save asks for review instead of offering a blind retry',()=>{
   const result=taskRecovery([{id:'partial',state:'failed',steps:[{effect:'artifact',state:'started'}]}]);
   assert.equal(result.kind,'none');assert.match(result.message,/先看看已有成果/);
 });
+test('an uncertain Notion write keeps its dedicated readback entry even with an unresolved external-write checkpoint',()=>{
+  const job={id:'notion',state:'failed',notionTarget:{},notionReceipt:{state:'uncertain'},steps:[{effect:'external_write',state:'started'}]};
+  assert.equal(taskRecovery([job]).kind,'review_notion');
+  assert.equal(taskRecovery([{...job,state:'running'}]).kind,'none');
+  assert.equal(taskRecovery([{...job,notionReceipt:{state:'verified'}}]).kind,'none','verification must not silently clear another unresolved write');
+});

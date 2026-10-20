@@ -97,7 +97,33 @@ test('Notion timeout never replays, retains uncertain receipt and created-page l
   await assert.rejects(()=>tool.structured!.run({title:'测试',content:'实际已创建'}),/未确认/);
   const receipt=f.db.chatOperations![0].workRun!.notionReceipt!;
   assert.equal(receipt.state,'uncertain');assert.equal(receipt.pageId,pageId);assert.doesNotMatch(JSON.stringify(receipt),/must-not-leak/);
+  assert.equal(receipt.failureCode,'readback_failed');
   await assert.rejects(()=>tool.structured!.run({title:'测试',content:'实际已创建'}),/已经提交/);assert.equal(f.calls.length,1);
+});
+test('Notion official flat async task handles are polled once, never treated as page IDs or repeated writes',async()=>{
+  const f=fixture(),job=f.job(),call=f.mcp.callDocumentTool.bind(f.mcp);let writes=0,polls=0;
+  f.mcp.callDocumentTool=async(...args)=>{
+    if(args[4]==='notion-create-pages'){
+      writes++;await call(...args);
+      return {content:[{type:'text',text:JSON.stringify({object:'async_task',id:'task_synthetic',status:'queued',poll_after_seconds:1})}]};
+    }
+    assert.equal(args[4],'notion-get-async-task');assert.deepEqual(args[5],{task_id:'task_synthetic'});polls++;
+    return {structuredContent:{status:'succeeded',result:{pages:[{id:pageId}]}}};
+  };
+  const tool=f.docs.tool(s,'op','task',job,async()=>{});
+  const result=await tool.structured!.run({title:'异步合成草稿',content:'正文完整保留'}) as any;
+  assert.equal(result.state,'verified');assert.equal(result.pageId,pageId);assert.equal(writes,1);assert.equal(polls,1);
+  assert.equal(job.notionReceipt!.asyncTaskId,'task_synthetic');assert.equal(job.notionReceipt!.failureCode,undefined);
+});
+test('Notion write and response failures retain only bounded stage codes, not upstream secrets',async()=>{
+  for(const malformed of [false,true]){
+    const f=fixture(),job=f.job();
+    f.mcp.callDocumentTool=async()=>{if(malformed)return {unexpected:'provider-secret'};throw Error('provider-secret');};
+    const tool=f.docs.tool(s,'op','task',job,async()=>{});
+    await assert.rejects(()=>tool.structured!.run({title:'合成草稿',content:'合成正文'}),/保存未确认/);
+    assert.equal(job.notionReceipt!.failureCode,malformed?'response_unrecognized':'write_unconfirmed');
+    assert.doesNotMatch(JSON.stringify(job.notionReceipt),/provider-secret/);
+  }
 });
 test('Notion cancelled task retains a receipt but does not report success or write again',async()=>{
   const f=fixture(),job=f.job();let n=0;

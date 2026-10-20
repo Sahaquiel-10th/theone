@@ -813,6 +813,23 @@ test('structured HTML deliverable calls the reviewed renderer directly without a
   const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('must not read');}},{artifactDirectory:directory,modelCall:async(model,messages)=>{modelCalls++;assert.equal(model.id,'router');return messages.at(-1)?.role==='tool'?answer('网页正在整理'):{...answer(''),toolCalls:[{id:'direct',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'合成说明网页',instruction:'把结构化说明保存成网页',executorId:'direct',outputKind:'text',featureIds:['direct-page'],dependsOn:[],requiredTools:['oneHtml'],direct:{tool:'oneHtml',document}}]})}}]};}});
   try{const result=await service.dispatch(a,input('operation_direct_page_01','把说明保存成网页'),key);await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskIds[0])).jobs[0].state==='completed');assert.equal(modelCalls,2);const d=await f.store.read();assert.equal(d.modelUsageRecords.filter(r=>r.activity==='task_worker'||r.activity==='task_feature').length,0);assert.equal(d.attachments.length,1);assert.equal(d.attachments[0].mimeType,'text/html');await assert.rejects(()=>service.task(b,result.taskIds[0]));}finally{rmSync(directory,{recursive:true,force:true});}
 });
+test('a new Notion draft cannot be completed by a model claim without a verified save',async()=>{
+  const f=fixture();
+  await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:'a',authorizedAt:'now',parentId:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}}));
+  let writes=0;
+  const mcp={readDocument:async()=>({text:'保存目录'}),callDocumentTool:async()=>{writes++;throw Error('must not be called');}} as unknown as NotionMcpService;
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('no private recall');}},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages)=>{
+    if(model.id==='router'&&messages.at(-1)?.role!=='tool')return {...answer(''),toolCalls:[{id:'route',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'测试草稿',instruction:'把合成短文保存到 Notion',executorId:'general'})}}]};
+    return answer(JSON.stringify({outcome:'completed',content:'已经保存好了。',summary:'保存好了'}));
+  }});
+  const r=await service.dispatch(a,{...input('operation_notion_missing_save','新建一篇合成短文'),outputDestination:'notion'},key);
+  await service.resume(a,key);await waitFor(async()=>['failed','completed'].includes((await service.task(a,r.taskId!)).jobs[0].state));
+  const task=await service.task(a,r.taskId!);
+  assert.equal(task.jobs[0].state,'failed');assert.notEqual((await f.store.read()).chatOperations!.find(o=>o.conversationId===r.taskId&&o.workRun)!.workRun!.resultOutcome,'completed');
+  assert.equal(writes,0);assert.equal(task.jobs[0].notionReceipt,undefined);
+  assert.doesNotMatch(task.conversation.messages.at(-1)!.content,/已保存到 Notion/);
+  await assert.rejects(()=>service.task(b,r.taskId!));
+});
 test('Notion dispatcher and queued continuation create once, revise the same document, keep original words and scoped receipts',async()=>{
   const f=fixture(),parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',pageId='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
   await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:'a',authorizedAt:'now',parentId}}));
@@ -825,6 +842,7 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
   const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages,tools)=>{
     if(messages.at(-1)?.role==='tool')return answer('已收到真实工具回执。');
     if(model.id==='router')return {...answer(''),toolCalls:[{id:'route',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'专栏草稿',instruction:'请写专栏并保存到已授权的 Notion 目录',executorId:'general'})}}]};
+    if(messages.at(-1)?.content?.includes('只读核对'))return answer('正文是修改后的第一段，没有再次写入。');
     assert.ok(tools.some(t=>t.function.name==='save_notion_draft'));
     return {...answer(''),toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify(body?{old_str:'第一段',new_str:'修改后的第一段'}:{title:'专栏',content:'第一段'})}}]};
   }});
@@ -837,6 +855,9 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
   const task=await service.task(a,result.taskId!);
   assert.equal(task.conversation.notionDocument?.pageId,pageId);assert.match(JSON.stringify(task.conversation.messages),/讨论之后请写专栏|第一段改一下|已保存到 Notion/);
   assert.ok(task.jobs.every(j=>j.notionReceipt?.state==='verified'));
+  await service.direct(a,result.taskId!,{operationId:'operation_notion_readonly',text:'只读核对正文，不修改'},key);
+  await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.at(-1)!.state==='completed');
+  assert.deepEqual(mutations,['notion-create-pages','notion-update-page'],'ordinary follow-up on the saved draft must not force another write');
   await assert.rejects(()=>service.task(b,result.taskId!));
 });
 const imageFixturePng='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jF1sAAAAASUVORK5CYII=';

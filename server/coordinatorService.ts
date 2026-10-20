@@ -2098,7 +2098,7 @@ export class CoordinatorService {
         messages,
         tools,
         checkpoints:checkpoint('worker'),
-        requiredTools:[...(job.contract?.requiredFeatureIds??[]).flatMap(id=>{const i=job.skills.findIndex(f=>f.id===id);return i<0?[]:[`feature_${i}`];}),...(job.contract?.requiredTools??[]).filter(name=>tools.some(t=>t.name===name))],
+        requiredTools:[...(!notionContext?.pageId&&job.notionTarget?['save_notion_draft']:[]),...(job.contract?.requiredFeatureIds??[]).flatMap(id=>{const i=job.skills.findIndex(f=>f.id===id);return i<0?[]:[`feature_${i}`];}),...(job.contract?.requiredTools??[]).filter(name=>tools.some(t=>t.name===name))],
         maxSteps: job.values.maxSteps,
         beforeStep: verify,
         onTrace: (t) => {workerTrace=t;collectTrace();},
@@ -2147,7 +2147,7 @@ export class CoordinatorService {
       const missing=[...new Set([...result.requiredMissing,...(job.contract?.requiredTools??[]).filter(name=>!completedSteps(steps).some(step=>step.tool===name))])];
       if(missing.length){
         const done=stepProgress(steps).completed;
-        const pending=missing.map(name=>name.startsWith('feature_')?job.skills[Number(name.slice(8))]?.values.name||'整理内容':({knowledge_search:'查找资料',oneHtml:'保存网页',oneFlowchart:'保存流程图'} as Record<string,string>)[name]||'后续处理');
+        const pending=missing.map(name=>name.startsWith('feature_')?job.skills[Number(name.slice(8))]?.values.name||'整理内容':({knowledge_search:'查找资料',oneHtml:'保存网页',oneFlowchart:'保存流程图',save_notion_draft:'保存到 Notion'} as Record<string,string>)[name]||'后续处理');
         const budgetBlocked=trace.some(step=>step.status==='failed'&&step.resultPreview?.includes('"code":"task_budget_limit"'));
         if(budgetBlocked)job.failureCode='task_budget_limit';
         job.userReport=await this.describeProgress(s,op,{done,pending,files:[],reason:budgetBlocked?'剩余预算不足以预留下一步，已暂停新的调用。已有成果保留；可以在任务恢复处确认继续的电力上限，只补未完成部分。':'有必需的步骤尚未完成，不能当作整件事已经做完。'},verify);
