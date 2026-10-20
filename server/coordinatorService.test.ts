@@ -91,6 +91,16 @@ test('a no-internet request cannot call public search even if the browser enable
   }});
   await service.dispatch(a,{...input('operation_no_internet_01','只讨论，不联网'),webSearch:true},key);assert.equal(calls,2);
 });
+test('explicit knowledge opt-out removes private retrieval and rejects a forged coordinator call',async()=>{
+ const f=fixture();let calls=0;
+ await f.store.mutate(d=>d.knowledgeConnections.push({id:'private',workspaceId:'wa',provider:'getnote',status:'connected',clientId:'test'} as any));
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{assert.fail('private knowledge was not requested');}},{modelCall:async(_m,messages,tools)=>{
+  assert.ok(!tools.some(t=>t.function.name==='knowledge_search'));calls++;
+  if(calls===1)return {...answer(''),toolCalls:[{id:'forged-private',type:'function',function:{name:'knowledge_search',arguments:JSON.stringify({query:'forbidden'})}}]};
+  assert.equal(JSON.parse(messages.at(-1)!.content!).status,'rejected');return answer('只用你提供的内容。');
+ }});
+ await service.dispatch(a,input('operation_no_knowledge_01','只讨论给出的主题，不查知识库。'),key);assert.equal(calls,2);
+});
 test('an unavailable public search has a plain next step, never a successful search claim',async()=>{
   const f=fixture();let calls=0;
   const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({status:'no_match',chunks:[],failures:[]})},{webSearch:async()=>({status:'unavailable'}),modelCall:async()=>++calls===1?{...answer(''),toolCalls:[{id:'search',type:'function',function:{name:'web_search',arguments:JSON.stringify({query:'公开新闻'})}}]}:answer('没有查到真实结果。')});
@@ -872,16 +882,16 @@ test('long Notion article arguments use a document allowance, save once and reta
   assert.deepEqual([ws,user],['wa','a']);writes++;body=args.pages[0].content;return {pages:[{id:pageId}]};
  }} as unknown as NotionMcpService;
  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('no knowledge requested');}},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages,tools,_request,options)=>{
-  if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('已经安排。'):{...answer(''),toolCalls:[{id:'route',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'长文草稿',instruction:'请将合成长文章保存到 Notion 并回读。只依据给出的主题创作，不必联网查知识库。',executorId:'general',featureIds:[],outputKind:'text',dependsOn:[],knowledge:'all',requiredTools:['knowledge_search']}]})}}]};
+  if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('已经安排。'):{...answer(''),toolCalls:[{id:'route',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'长文草稿',instruction:'请将合成长文章保存到 Notion 并回读。',executorId:'general',featureIds:[],outputKind:'text',dependsOn:[],knowledge:'all',requiredTools:['knowledge_search']}]})}}]};
   workerCalls++;assert.equal(options?.maxOutputTokens,12000);
   if(messages.at(-1)?.role==='tool')return answer('已保存并回读。');
-  assert.ok(tools.some(t=>t.function.name==='save_notion_draft'));
+  assert.ok(tools.some(t=>t.function.name==='save_notion_draft'));assert.ok(!tools.some(t=>t.function.name==='knowledge_search'));
   return {...answer(''),toolCalls:[{id:'save-long',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({title:'长文草稿',content:article})}}]};
  }});
- const reply=await service.dispatch(a,{...input('operation_long_notion_article','请写一篇合成长文章并保存'),outputDestination:'notion'},key);
+ const reply=await service.dispatch(a,{...input('operation_long_notion_article','请写一篇合成长文章并保存，不查知识库。'),outputDestination:'notion'},key);
  await service.resume(a,key);await waitFor(async()=>['failed','completed'].includes((await service.task(a,reply.taskId!)).jobs[0].state));
  const task=await service.task(a,reply.taskId!);assert.equal(task.jobs[0].state,'completed');assert.equal(task.jobs[0].notionReceipt?.state,'verified');assert.equal(writes,1);assert.equal(body,article);assert.equal(workerCalls,2);
- const run=(await f.store.read()).chatOperations!.find(o=>o.conversationId===reply.taskId&&o.workRun)!.workRun!;assert.deepEqual(run.contract?.requiredTools,[]);
+ const run=(await f.store.read()).chatOperations!.find(o=>o.conversationId===reply.taskId&&o.workRun)!.workRun!;assert.deepEqual(run.contract?.requiredTools,[]);assert.deepEqual(run.sources,[]);
  await assert.rejects(()=>service.task(b,reply.taskId!));
  const usage=(await f.store.read()).modelUsageRecords.filter(u=>u.conversationId===reply.taskId);assert.ok(usage.every(u=>u.reservedMicros===0));
 });

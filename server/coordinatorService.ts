@@ -918,7 +918,7 @@ export class CoordinatorService {
       };
       const mainKnowledge=knowledgePolicy(current,s,input.text,sources);
       const privateSearchTexts:string[]=[];
-      if(authorizedSources.length||mainKnowledge.required)referenceTools.push({name:'knowledge_search',description:config.values.toolDescriptions?.knowledge_search,label:'查找你的资料',effect:'read',run:async query=>{await verify();if(mainKnowledge.missing.length)return {status:'not_connected',message:`${mainKnowledge.missing.join('、')}还没连好，这次没有查询到它。`};const selected=mainKnowledge.required?mainKnowledge.sourceIds:authorizedSources.map(source=>source.id);const result=await this.knowledge.recallWithDiagnostics(s.workspaceId,datedKnowledgeQuery(query,input.text,timeContext),5,selected,s.userId,{retry:true});await verify();privateSearchTexts.push(...result.chunks.map(c=>c.content));return temporalKnowledgeResult(knowledgeResultComplete(result,selected)?result:{...result,status:'partial'},input.text,timeContext);}});
+      if(!mainKnowledge.declined&&(authorizedSources.length||mainKnowledge.required))referenceTools.push({name:'knowledge_search',description:config.values.toolDescriptions?.knowledge_search,label:'查找你的资料',effect:'read',run:async query=>{await verify();if(mainKnowledge.missing.length)return {status:'not_connected',message:`${mainKnowledge.missing.join('、')}还没连好，这次没有查询到它。`};const selected=mainKnowledge.required?mainKnowledge.sourceIds:authorizedSources.map(source=>source.id);const result=await this.knowledge.recallWithDiagnostics(s.workspaceId,datedKnowledgeQuery(query,input.text,timeContext),5,selected,s.userId,{retry:true});await verify();privateSearchTexts.push(...result.chunks.map(c=>c.content));return temporalKnowledgeResult(knowledgeResultComplete(result,selected)?result:{...result,status:'partial'},input.text,timeContext);}});
       const publicSearchAllowed=webPermission&&(!mainKnowledge.required||explicitlyNeedsPublicSearch(input.text));
       if(input.webSearch&&this.deps.webSearch&&publicSearchAllowed)referenceTools.push({name:'web_search',description:config.values.toolDescriptions?.web_search,run:async query=>{await verify();try{reviewedPublicQuery(query,privateSearchTexts);}catch{return {status:'rejected',message:'搜索词夹带了个人资料，请只用必要的公开关键词，不得发送私人内容。'};}const result=await publicSearchOutcome(q=>this.deps.webSearch!(q,{...s,conversationId:cid,requestId,modelId:config.model.id,verify,beforeReserve:(fresh,amount)=>{
         featureMember(fresh,s);
@@ -1496,7 +1496,10 @@ export class CoordinatorService {
       throw new CoordinatorError("请确认执行器的功能和外部数据使用范围", 400);
     if (previous && input.sources === undefined)
       assertSources(db, s, previous.sources);
-    const sourceIds =
+    // The user's original restriction survives model-written handoffs. A model
+    // cannot reopen private retrieval by selecting knowledge:'all'.
+    const knowledgeDeclined=knowledgePolicy(db,s,input.text).declined||knowledgePolicy(db,s,input.instruction).declined;
+    const sourceIds = knowledgeDeclined ? [] :
       input.sources ??
       previous?.sources.map((s) => s.id) ??
       db.knowledgeConnections
@@ -1524,7 +1527,7 @@ export class CoordinatorService {
       s,
       skills.flatMap((f) => f.values.tools ?? []),
     );
-    const policy=knowledgePolicy(db,s,input.instruction,sourceIds,input.knowledge);
+    const policy=knowledgeDeclined?{required:false,sourceIds:[],requested:[],missing:[],declined:true}:knowledgePolicy(db,s,input.instruction,sourceIds,input.knowledge);
     const requiredTools=[...new Set([...(input.requiredTools??[]).filter(name=>name!=='knowledge_search'||!policy.declined),...(policy.required?['knowledge_search']:[])])];
     const allowedTools=new Set([...config.values.tools,...skills.flatMap(f=>f.values.tools?.map(t=>t.id)??[]),...(sources.length?['knowledge_search']:[])]);
     if(requiredTools.some(name=>!allowedTools.has(name))&&!policy.missing.length)throw new CoordinatorError('这件事需要的工具尚未开放，请先检查对应功能。');
