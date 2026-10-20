@@ -8,6 +8,7 @@ import { uid } from "../security.js";
 import type { ConnectorAuthorizationSession, Database, KnowledgeConnection } from "../types.js";
 import { decryptCredential, encryptCredential, knowledgeCredentialContext } from "./credentialCipher.js";
 import type { KnowledgeChunk } from "./provider.js";
+import { createNotionFetch } from './notionTransport.js';
 
 const MCP_URL = "https://mcp.notion.com/mcp";
 const AUTHORIZATION_URL = "https://mcp.notion.com/authorize";
@@ -217,11 +218,12 @@ export class NotionMcpService {
   private readonly refreshes = new Map<string, Promise<string>>();
 
   constructor(private store: Store, options: NotionMcpServiceOptions = {}) {
-    this.fetcher = options.fetch || fetch;
+    this.fetcher = options.fetch || createNotionFetch();
     this.authorizationSessions = new AuthorizationSessions(store);
     this.createClient = options.createClient || (async (accessToken) => {
       const client = new Client({ name: "ONE", version: "0.1.0" });
       const transport = new StreamableHTTPClientTransport(assertAllowedConnectorUrl(MCP_URL, notionHosts), {
+        fetch: this.fetcher,
         requestInit: { redirect: "error", headers: { Authorization: `Bearer ${accessToken}` } }
       });
       try { await withinDeadline(client.connect(transport), "Notion MCP 连接超时"); }
