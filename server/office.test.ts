@@ -18,7 +18,20 @@ test('workbook tool advertises the actually implemented ROUNDUP function to exec
  const tool=officeTool('oneWorkbook','创建预算表',async()=>{},{});
  assert.match(tool.description!,/ROUNDUP\(120\/\(50-15\),0\)/);
  assert.match(tool.description!,/其他函数与外部引用不支持/);
+ assert.match(tool.description!,/rows\[0\].*第2行/);assert.match(tool.description!,/空白分隔行也占行/);
  assert.doesNotMatch(officeTool('oneDocument','Word文档',async()=>{},{}).description!,/ROUNDUP/);
+});
+test('workbook creation returns bounded actual cell readback, including formula evidence, without reading existing files',async()=>{
+ let saved=0;
+ const tool=officeTool('oneWorkbook','创建预算表',async()=>{},{readOffice:async()=>{throw Error('must not read an existing file');},saveOffice:async file=>{saved++;assert.ok(file.bytes.length>0);return{id:'synthetic-file',name:file.name};}});
+ const data={title:'合成核对',sheets:[{name:'核对',headers:['人数','净收益'],rows:[[4,null],[6,null],[10,null]],formulas:[{cell:'B2',formula:'A2*35-120'},{cell:'B3',formula:'A3*35-120'},{cell:'B4',formula:'A4*35-120'}]}]};
+ const result=await tool.structured!.run({operation:'create',dataJson:JSON.stringify(data)}) as any;
+ assert.equal(saved,1);assert.equal(result.summary.previewOnly,true);assert.equal(result.summary.sheets[0].truncated,false);
+ assert.deepEqual(result.summary.sheets[0].cells.find((cell:any)=>cell.cell==='B4'),{cell:'B4',value:'230',valueTruncated:false,formula:'A4*35-120'});
+ const many={title:'较长的合成核对',sheets:[{name:'核对',headers:['一','二','三','四','五'],rows:Array.from({length:100},()=>[1,2,3,4,5])},{name:'未展示页',headers:['值'],rows:[[123]]}]};
+ const bounded=await tool.structured!.run({operation:'create',dataJson:JSON.stringify(many)}) as any;
+ assert.equal(bounded.summary.sheets[0].cells.length,120);assert.equal(bounded.summary.sheets[0].truncated,true);
+ assert.equal(bounded.summary.sheets[1].cells.length,0);assert.equal(bounded.summary.sheets[1].truncated,true);
 });
 export const officeDemo:SlideDeck={title:'项目交付与经营复盘',theme:'paper',slides:[
  {title:'项目交付与经营复盘',layout:'cover',subtitle:'演示资料 · 所有数据均为虚构',notes:'先说明本演示不代表任何企业的实际业绩。'},

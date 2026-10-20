@@ -10,7 +10,7 @@ export const officeToolPresets=[
  {id:'oneDocument',name:'正式Word文档生成',description:'将结构化章节与表格生成有目录、标题样式、A4版式和页码的可编辑DOCX，不输出伪装的HTML或Markdown。'}
 ];
 export type OfficeContext={saveOffice?:(file:OfficeFile)=>Promise<{id:string;name:string}>;readOffice?:(id:string)=>Promise<Buffer>;readSlides?:(id:string)=>Promise<SlideDeck>;readTable?:(id:string)=>Promise<string>};
-export const workbookFormulaGuidance='本工具实际支持本工作簿引用、四则运算和 SUM/AVERAGE/MIN/MAX/ROUND/ROUNDUP。需要整数保本人数时可用 ROUNDUP(120/(50-15),0)，结果为4；不能把已支持的公式误说成不支持或替换为待定。其他函数与外部引用不支持。';
+export const workbookFormulaGuidance='create 的 dataJson 结构为 {title,sheets:[{name,headers,rows,formulas:[{cell,formula}]}]}。headers 占 Excel 第1行，rows[0] 对应第2行，空白分隔行也占行；公式使用 Excel 地址，不是 rows 的数组索引。公式目标在 rows 中留 null。先按行列映射逐一核对全部请求情形，尤其最后一行，不要把公式写到空白分隔行而漏掉末行。创建返回实际文件回读预览，必须核对请求情形的值与公式再宣告完成；预览截断不代表未展示的内容已核对。本工具实际支持本工作簿引用、四则运算和 SUM/AVERAGE/MIN/MAX/ROUND/ROUNDUP。需要整数保本人数时可用 ROUNDUP(120/(50-15),0)，结果为4；不能把已支持的公式误说成不支持或替换为待定。其他函数与外部引用不支持。';
 export function officeTool(id:string,description:string,verify:()=>Promise<void>,context:OfficeContext):OrchestrationTool{
  const operations=id==='oneSlides'?['create','inspect','revise']:id==='oneDocument'?['create']:['create','inspect','fill','reconcile','analyze'];
  return {name:id,description:description+(id==='oneWorkbook'?'\n'+workbookFormulaGuidance:''),label:officeToolPresets.find(p=>p.id===id)!.name,effect:'artifact',run:async()=>{throw new Error('请提供结构化参数');},structured:{schema:{type:'object',additionalProperties:false,properties:{operation:{type:'string',enum:operations},dataJson:{type:'string',maxLength:120000}},required:['operation','dataJson']},validate:raw=>{const d=obj(raw,['operation','dataJson']);if(!operations.includes(d.operation)||typeof d.dataJson!=='string'||d.dataJson.length>120000)throw new Error('办公工具参数无效');JSON.parse(d.dataJson);return d;},run:async raw=>{
@@ -23,7 +23,13 @@ export function officeTool(id:string,description:string,verify:()=>Promise<void>
    }
   }
   else if(id==='oneDocument')files=[await createWord(payload)];
-  else if(d.operation==='create')files=[await createWorkbook(payload)];
+  else if(d.operation==='create'){
+   files=[await createWorkbook(payload)];
+   // Return evidence from the actual XLSX, not a model's claimed cell layout.
+   // Keep this bounded and scoped to the file just created; no existing file reads.
+   const checked=await inspectWorkbook(files[0].bytes);let remaining=120;
+   summary={previewOnly:true,message:'刚生成文件的实际回读预览。请核对每个请求情形的值和公式；文件生成不代表内容已完整。',sheets:checked.sheets.map(sheet=>{const exhausted=remaining===0,cells=sheet.cells.slice(0,remaining);remaining-=cells.length;return {...sheet,cells,truncated:exhausted&&Boolean(sheet.range)||cells.length<sheet.cells.length};})};
+  }
   else if(d.operation==='fill'){const p=obj(payload,['attachmentId','title','updates']);if(typeof p.attachmentId!=='string'||!context.readOffice)throw new Error('需要本次选中的XLSX模板');files=[await fillWorkbook(await context.readOffice(p.attachmentId),{title:p.title,updates:p.updates})];summary={updatedCells:p.updates.length,recalculateOnOpen:true};}
   else if(d.operation==='reconcile'){const p=obj(payload,['leftId','rightId','title','leftKeys','rightKeys','leftAmount','rightAmount','tolerance','trim']);if(typeof p.leftId!=='string'||typeof p.rightId!=='string'||p.leftId===p.rightId||!context.readTable)throw new Error('需要两个不同的已选中表格');const {leftId,rightId,...options}=p;const r=await reconcileWorkbook(await context.readTable(leftId),await context.readTable(rightId),options);files=[r.file];summary=r.summary;}
   else {const p=obj(payload,['attachmentId','title','groupBy','valueColumn','aggregation','chartType']);if(typeof p.attachmentId!=='string'||!context.readTable)throw new Error('需要本次选中的表格');const {attachmentId,...options}=p;const r=await analyzeWorkbook(await context.readTable(attachmentId),options);files=[r.file];summary={...r.summary,preview:r.preview};}
