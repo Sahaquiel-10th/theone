@@ -67,3 +67,18 @@ Release/live ONE end-to-end verification is recorded after deployment; interface
 - One same-task update `work_06431a1829ed609b791f` changed the second line to exactly `明天17时检查小苗。`; readback receipt verified digest `83ae8af1c3f4401e856282a51083eaeb6e3c31bf3d92b39327d93de607a9b5b3`. Opened and refreshed the same Notion page: the other two lines were unchanged and no new page was created. Exact-edit delivery passed.
 - Overall task still failed because the contract incorrectly required knowledge search. The exclusion phrases `不读其他页面或知识库，不联网搜索` were not removed by the intent guard (`读` and `联网搜索` variants), so a forbidden search became a mandatory search. No knowledge-search step ran; the saved document remains intact. This is a functional completion-policy defect, not a new Notion permission failure.
 - Extend negative-intent handling for those variants, with regression checks that explicit positive named-platform queries in other clauses still remain required. Do not erase the failed attempt, replay its write, or remove unknown-write protection. Full suite remains 977 total / 976 passed / one existing skip, build/type/diff passed. Live completion verification after this follow-up is pending.
+
+## Final completion verification — passed for the stated synthetic scope
+
+- Release `d99616b485b32cbd96a6699713197e0eb5a9e37f`, CI `39417609745`: application/Mac/Windows/deploy succeeded; actual current symlink, active service and public health confirmed.
+- Submitted one new explicit 17→18 edit on the same QA16 task, not a replay of the already-applied 16→17 write. Because the prior task was paused, the new requirement was durably saved first; clicked “开始处理最新要求” once and confirmed its exact scope once. No old article or uncertain write was resumed.
+- Request `work_ea31842795984c4dc29b`, operation `cop_b599db9a750821d6cf05ed78cae1262f18c7976aee3a5177a8bbf9ff6d0dd9cf`: overall work state `completed`, `save_notion_draft` completed, receipt `verified`, required knowledge tools empty. Same conversation and same page `3ffa5015999181cbbd90d023554199cb`; no new document.
+- Expected/actual digest matched: `f4026d33e37efaa0cd618a43d3dca1edbbfcb79bcf168df526ec2dc2faded927`. Notion itself was refreshed and independently showed exactly these three lines:
+
+```text
+今天整理了一份合成便笺。
+明天18时检查小苗。
+核对标记：ONE-QA16-1020。
+```
+
+- ONE task output and “做好了” result notification were observed. New-parent create/readback/open and same-page exact edit/readback/overall completion now pass this narrow end-to-end test. This does not establish arbitrary rich-Markdown fidelity, every Notion operation, legacy unknown-write reconciliation, billing acceptance, or completion of the wider 1.0 matrix. All failed historical attempts remain in place.
