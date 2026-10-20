@@ -1294,7 +1294,7 @@ export class CoordinatorService {
     if(!original)throw new CoordinatorError('原话不可用');
     // An explicit recovery allowance is a NEW authorization for only this
     // attempt. Never rewrite the immutable original batch or its siblings.
-    await this.enqueue(s,{operationId,text:original.content,instruction:job.instruction,title:c.title,taskId,executorId:c.executorProfileId||'general',features:job.skills.map(f=>f.id),requiredFeatureIds:job.contract?.requiredFeatureIds,sources:job.sources.map(s=>s.id),budget:recoveryBudget,webSearch:job.webSearch,confirmedExternal:true,featureApprovals,originConversationId:taskId,originMessageId:original.id,attachmentIds:original.attachments?.map(a=>a.id),outputDestination:'chat',parentOperationId:requestedBudget===undefined?(job.parentOperationId||source.operationId):operationId,dependsOnOperationIds:job.dependsOnOperationIds,expectedOutput:job.expectedOutput,requiredTools:job.contract?.requiredTools,directVisual:job.directVisual,retrySourceJobId:source.id,retrySourceVersion:{state:job.state,updatedAt:source.updatedAt,taskUpdatedAt:c.updatedAt}},verifyKey);
+    await this.enqueue(s,{operationId,text:original.content,instruction:job.instruction,title:c.title,taskId,executorId:c.executorProfileId||'general',features:job.skills.map(f=>f.id),requiredFeatureIds:job.contract?.requiredFeatureIds,sources:job.sources.map(s=>s.id),budget:recoveryBudget,webSearch:job.webSearch,confirmedExternal:true,featureApprovals,originConversationId:taskId,originMessageId:original.id,attachmentIds:original.attachments?.map(a=>a.id),outputDestination:job.notionTarget?'notion':'chat',parentOperationId:requestedBudget===undefined?(job.parentOperationId||source.operationId):operationId,dependsOnOperationIds:job.dependsOnOperationIds,expectedOutput:job.expectedOutput,requiredTools:job.contract?.requiredTools,directVisual:job.directVisual,retrySourceJobId:source.id,retrySourceVersion:{state:job.state,updatedAt:source.updatedAt,taskUpdatedAt:c.updatedAt}},verifyKey);
     return {taskId,status:'queued'};
   }
   /** Server-only first-flow welcome image; a claimed profile marker is mandatory. */
@@ -1438,7 +1438,7 @@ export class CoordinatorService {
     if (notionTarget) {
       if (input.localExecution || !this.deps.notionDocuments) throw new CoordinatorError('Notion 写入尚未连接', 428);
       this.deps.notionDocuments.assertTarget(db, s, notionTarget);
-      if ((db.chatOperations || []).some(o => own(o, s) && o.conversationId === existing?.id && o.workRun?.notionReceipt && o.workRun.notionReceipt.state !== 'verified' && o.workRun.state !== 'running')) throw new NotionDocumentError('前一轮 Notion 保存未确认，请先核对原页面；不会重复创建或修改');
+      if ((db.chatOperations || []).some(o => own(o, s) && o.conversationId === existing?.id && o.workRun?.notionReceipt && o.workRun.notionReceipt.state !== 'verified' && !['not_sent','rejected'].includes(o.workRun.notionReceipt.delivery || '') && o.workRun.state !== 'running')) throw new NotionDocumentError('前一轮 Notion 保存未确认，请先核对原页面；不会重复创建或修改');
     }
     const agent=existing?.agentId?db.agents.find(a=>a.id===existing.agentId&&a.workspaceId===s.workspaceId&&(a.ownerId===s.userId||a.published)):undefined;
     if(existing?.agentId&&!agent)throw new CoordinatorError("原分身已不可用",403);
@@ -1644,7 +1644,7 @@ export class CoordinatorService {
         op.conversationId = c.id;
         op.workRun = {
           runtimeContext:restore?.runtimeContext??db.chatOperations?.find(o=>own(o,s)&&o.operationId===input.parentOperationId)?.runtimeContext??runtimeContext(db,s,op.createdAt),
-          steps:restore?.steps?structuredClone(restore.steps):[],
+          steps:restore?.steps?structuredClone(restore.steps.filter(step=>!(step.tool==='save_notion_draft'&&step.state==='started'&&['not_sent','rejected'].includes(restore.notionReceipt?.delivery||'')))):[],
           retryOfOperationId:input.retrySourceJobId?db.chatOperations?.find(o=>own(o,s)&&o.id===input.retrySourceJobId)?.operationId:undefined,
           contract:{version:1,requiredFeatureIds:input.directVisual?[]:input.requiredFeatureIds??[],requiredTools,knowledgeSourceIds:restore?.contract?.knowledgeSourceIds??(policy.required?policy.sourceIds:undefined),execution:input.directVisual?'direct':'model'},
           directVisual:input.directVisual,

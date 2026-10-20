@@ -12,7 +12,7 @@ import type { Database, ModelConfig } from "./types.js";
 import { CoordinatorService } from "./coordinatorService.js";
 import {ChatImageGatewayError} from './responsesImageGateway.js';
 import { NotionDocuments } from './notionDocuments.js';
-import type { NotionMcpService } from './knowledge/notionMcpService.js';
+import { NotionWriteError, type NotionMcpService } from './knowledge/notionMcpService.js';
 import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
 import {runtimeContext} from './runtimeContext.js';
 import JSZip from 'jszip';
@@ -860,6 +860,27 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
   await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.at(-1)!.state==='completed');
   assert.deepEqual(mutations,['notion-create-pages','notion-update-page'],'ordinary follow-up on the saved draft must not force another write');
   await assert.rejects(()=>service.task(b,result.taskId!));
+});
+test('a proven unsent Notion save can retry on the same task and destination without replaying unknown writes',async()=>{
+ const f=fixture(),parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',pageId='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+ await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:'a',authorizedAt:'now',parentId}}));
+ let fail=true,body='',writes=0;
+ const mcp={readDocument:async()=>({text:body||'保存目录'}),callDocumentTool:async(_ws:string,_cid:string,_grant:string,_user:string,_name:string,args:any)=>{
+  if(fail)throw new NotionWriteError('connect','not_sent','connection');
+  writes++;body=args.pages[0].content;return {pages:[{id:pageId}]};
+ }} as unknown as NotionMcpService;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages)=>{
+  if(messages.at(-1)?.role==='tool')return answer('已取得保存回执');
+  if(model.id==='router')return {...answer(''),toolCalls:[{id:'route',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'连接恢复草稿',instruction:'将合成正文保存到 Notion',executorId:'general'})}}]};
+  return {...answer(''),toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({title:'合成标题',content:'合成正文'})}}]};
+ }});
+ const r=await service.dispatch(a,{...input('operation_unsent_notion','保存合成短文'),outputDestination:'notion'},key);
+ await service.resume(a,key);await waitFor(async()=>(await service.task(a,r.taskId!)).jobs.at(-1)?.state==='failed');
+ const detail=await service.task(a,r.taskId!);assert.equal(detail.recovery.kind,'retry');assert.equal(writes,0);
+ await assert.rejects(()=>service.retryLatest(b,r.taskId!,detail.jobs[0].id,undefined,key));
+ fail=false;await service.retryLatest(a,r.taskId!,detail.jobs[0].id,undefined,key);await service.resume(a,key);
+ await waitFor(async()=>(await service.task(a,r.taskId!)).jobs.at(-1)?.state==='completed');
+ const done=await service.task(a,r.taskId!);assert.equal(done.jobs.length,2);assert.equal(writes,1);assert.equal(done.jobs.at(-1)?.notionReceipt?.state,'verified');assert.equal(done.conversation.notionDocument?.pageId,pageId);
 });
 const imageFixturePng='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jF1sAAAAASUVORK5CYII=';
 test('image feature uses its image model and own rate, without changing base image price or tenant scope',async()=>{

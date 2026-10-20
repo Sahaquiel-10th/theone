@@ -3,7 +3,7 @@ import test from "node:test";
 import type { Store } from "../db.js";
 import type { Database } from "../types.js";
 import { decryptCredential, encryptCredential, knowledgeCredentialContext } from "./credentialCipher.js";
-import { NotionMcpService } from "./notionMcpService.js";
+import { NotionMcpService, NotionWriteError } from "./notionMcpService.js";
 
 function fixture() {
   const database = { knowledgeConnections: [], auditLogs: [] } as unknown as Database;
@@ -193,4 +193,40 @@ test('Notion reconnect cannot cross a revoked connection or changed writing gran
   f.database.knowledgeConnections[0].status='connected';
   const changed=new NotionMcpService(f.store,{createClient:async()=>({listTools:async()=>{f.database.knowledgeConnections[0].notionWriting!.grantId='changed';return {tools:[{name:'notion-update-page'}]};},callTool:async()=>{writes++;return {};},close:async()=>{}})});
   await assert.rejects(changed.callDocumentTool('workspace-a','notion-a','grant-a','user-a','notion-update-page',{}),/授权已改变/);assert.equal(writes,0);
+});
+
+test('Notion records pre-send, explicit rejection and uncertain delivery separately without provider text', async () => {
+  for (const scenario of ['connect','tools','validation','permission','server','disconnect'] as const) {
+    const f=writingFixture();let sends=0,checkpoints=0;
+    const service=new NotionMcpService(f.store,{createClient:async()=>{
+      if(scenario==='connect')throw Object.assign(new Error('token=PRIVATE'),{code:'ECONNREFUSED'});
+      return {listTools:async()=>{
+        if(scenario==='tools')throw new Error('token=PRIVATE');
+        return {tools:[{name:'notion-create-pages'}]};
+      },callTool:async()=>{sends++;if(scenario==='disconnect')throw Error('token=PRIVATE');
+        return {isError:true,content:[{type:'text',text:JSON.stringify({code:scenario==='validation'?'validation_error':scenario==='permission'?'restricted_resource':'internal_server_error',message:'token=PRIVATE article=PRIVATE'})}]};
+      },close:async()=>{}};
+    }});
+    await assert.rejects(service.callDocumentTool('workspace-a','notion-a','grant-a','user-a','notion-create-pages',{},async()=>{checkpoints++;}),error=>{
+      assert.ok(error instanceof NotionWriteError);
+      assert.equal(error.delivery,['connect','tools'].includes(scenario)?'not_sent':['validation','permission'].includes(scenario)?'rejected':'unknown');
+      assert.doesNotMatch(JSON.stringify(error)+error.message,/PRIVATE/);return true;
+    });
+    assert.equal(sends,['connect','tools'].includes(scenario)?0:1);assert.equal(checkpoints,sends);
+  }
+});
+test('Notion rechecks the exact parent immediately before sending a document mutation', async()=>{
+  const f=writingFixture();let sends=0;
+  const service=new NotionMcpService(f.store,{createClient:async()=>({listTools:async()=>({tools:[{name:'notion-create-pages'}]}),callTool:async()=>{sends++;return{};},close:async()=>{}})});
+  await assert.rejects(service.callDocumentTool('workspace-a','notion-a','grant-a','user-a','notion-create-pages',{},async()=>{throw Error('parent changed');}),error=>error instanceof NotionWriteError&&error.delivery==='not_sent');
+  assert.equal(sends,0);
+});
+test('Notion retries failed discovery and readback, but sends a mutation only once',async()=>{
+  const f=writingFixture();let discoveries=0,sends=0,reads=0;
+  const service=new NotionMcpService(f.store,{createClient:async()=>({listTools:async()=>{
+    discoveries++;if(discoveries===1)throw Object.assign(Error('network'),{code:'ECONNRESET'});
+    return {tools:[{name:'notion-create-pages'},{name:'notion-fetch'}]};
+  },callTool:async({name})=>{if(name==='notion-create-pages'){sends++;return {pages:[]};}reads++;if(reads===1)throw Object.assign(Error('network'),{code:'ECONNREFUSED'});return {text:'合成正文'};},close:async()=>{}})});
+  await service.callDocumentTool('workspace-a','notion-a','grant-a','user-a','notion-create-pages',{});
+  await service.readDocument('workspace-a','page');assert.equal(sends,1);assert.equal(reads,2);
 });

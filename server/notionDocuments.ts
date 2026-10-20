@@ -6,7 +6,7 @@ import type { WorkRun } from './coordinatorTypes.js';
 import type { OrchestrationTool } from './taskOrchestrator.js';
 import { CoordinatorError } from './executorProfiles.js';
 import { featureMember } from './featureRuns.js';
-import type { NotionMcpService } from './knowledge/notionMcpService.js';
+import { NotionWriteError, type NotionMcpService } from './knowledge/notionMcpService.js';
 import {parseNotionPageLink} from '../src/notionPageLink.js';
 
 export class NotionDocumentError extends CoordinatorError {}
@@ -144,7 +144,7 @@ export class NotionDocuments {
             this.assertTarget(d, s, target);
             const o = d.chatOperations?.find(o => o.id === opId && o.workspaceId === s.workspaceId && o.userId === s.userId && o.conversationId === cid);
             if (o?.workRun?.state !== 'running' || o.workRun.notionReceipt) throw new NotionDocumentError('本轮保存已经提交或任务已停止，请查看原回执，不会重复写入');
-            o.workRun.notionReceipt = { state: 'pending', pageId: target.pageId, url: target.url, expectedDigest: hash(normalized(expected)) };
+            o.workRun.notionReceipt = { state: 'pending', delivery: 'not_sent', pageId: target.pageId, url: target.url, expectedDigest: hash(normalized(expected)) };
           });
           const record = async (receipt: NonNullable<WorkRun['notionReceipt']>) => this.store.mutate(d => {
             const o = d.chatOperations?.find(o => o.id === opId && o.workspaceId === s.workspaceId && o.userId === s.userId && o.conversationId === cid);
@@ -159,7 +159,15 @@ export class NotionDocuments {
           try {
             await verify();
             let response = resultData(await this.mcp.callDocumentTool(s.workspaceId, target.connectionId, target.grantId, s.userId,
-              pageId ? 'notion-update-page' : 'notion-create-pages', pageId ? { page_id: pageId, command: 'update_content', content_updates: [{ old_str: v.old_str, new_str: v.new_str }], allow_async: false } : { parent: { page_id: target.parentId }, pages: [{ properties: { title: v.title }, content: v.content }], allow_async: false }));
+              pageId ? 'notion-update-page' : 'notion-create-pages', pageId ? { page_id: pageId, command: 'update_content', content_updates: [{ old_str: v.old_str, new_str: v.new_str }], allow_async: false } : { parent: { page_id: target.parentId }, pages: [{ properties: { title: v.title }, content: v.content }], allow_async: false }, async () => {
+                await verify(); this.assertTarget(await this.store.read(), s, target);
+                await this.store.mutate(d => {
+                  this.assertTarget(d, s, target);
+                  const o = d.chatOperations?.find(o => o.id === opId && o.workspaceId === s.workspaceId && o.userId === s.userId && o.conversationId === cid);
+                  if (o?.workRun?.state !== 'running' || o.workRun.notionReceipt?.state !== 'pending' || o.workRun.notionReceipt.delivery !== 'not_sent') throw new NotionDocumentError('本轮保存已改变或停止，没有重复发送');
+                  o.workRun.notionReceipt.delivery = 'unknown';
+                });
+              }));
             failureCode = 'response_unrecognized';
             if (response?.async_task || response?.type === 'async_task' || response?.object === 'async_task') {
               const taskId = response.async_task?.task_id || response.async_task?.id || response.task_id || response.id;
@@ -182,12 +190,14 @@ export class NotionDocuments {
             const actual = notionBody(await this.mcp.readDocument(s.workspaceId, pageId));
             failureCode = 'readback_mismatch';
             if (normalized(actual) !== normalized(expected)) throw new Error('readback mismatch');
-            await record({ state: 'verified', pageId, url, digest: hash(actual), failureCode: undefined });
+            await record({ state: 'verified', pageId, url, digest: hash(actual), failureCode: undefined, delivery: undefined, diagnostic: undefined });
             await verify();
             return { state: 'verified', url, pageId, message: '已保存并回读核对；可打开 Notion。后续修改继续这一篇。' };
-          } catch {
-            await record({ state: 'uncertain', pageId, url: pageId ? `https://www.notion.so/${pageId}` : undefined, failureCode, error: 'Notion 保存未确认，可能已产生文档或修改；请核对原页面，不会自动重跑。' });
-            throw new NotionDocumentError('Notion 保存未确认，可能已写入；请核对原页面，不会自动重跑。');
+          } catch (error) {
+            const failure = error instanceof NotionWriteError && failureCode === 'write_unconfirmed' ? error : undefined;
+            const message = failure && failure.delivery !== 'unknown' ? failure.message : 'Notion 保存未确认，可能已写入；请核对原页面，不会自动重跑。';
+            await record({ state: 'uncertain', pageId, url: pageId ? `https://www.notion.so/${pageId}` : undefined, failureCode, delivery: failure?.delivery ?? 'unknown', diagnostic: failure ? {phase: failure.phase, reason: failure.reason, upstreamCode: failure.upstreamCode} : undefined, error: message });
+            throw new NotionDocumentError(message);
           }
         } }
     };

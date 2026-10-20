@@ -46,6 +46,16 @@ test('an uncertain Notion write keeps its dedicated readback entry even with an 
   assert.equal(taskRecovery([{...job,state:'running'}]).kind,'none');
   assert.equal(taskRecovery([{...job,notionReceipt:{state:'verified'}}]).kind,'none','verification must not silently clear another unresolved write');
 });
+test('only proven unsent or rejected Notion writes allow manual retry; legacy and other effects remain protected',()=>{
+ const job={id:'notion',state:'failed',notionTarget:{},steps:[{tool:'save_notion_draft',effect:'external_write',state:'started'}]};
+ for(const delivery of ['not_sent','rejected']){
+  const safe={...job,notionReceipt:{state:'uncertain',delivery}};
+  assert.equal(taskRecovery([safe]).kind,'retry');
+  assert.equal(taskRecovery([{id:'old',state:'failed',notionReceipt:{state:'uncertain'}},safe]).kind,'review_notion');
+  assert.equal(taskRecovery([{...safe,steps:[...safe.steps,{tool:'another_tool',effect:'artifact',state:'started'}]}]).kind,'none');
+ }
+ assert.equal(taskRecovery([{...job,notionReceipt:{state:'uncertain',delivery:'unknown'}}]).kind,'review_notion');
+});
 
 test('a verified receipt never hides an unresolved write from the task or composer review entry',()=>{
  const uncertain={id:'update',state:'failed',notionReceipt:{state:'uncertain',url:'https://notion.so/test'}};

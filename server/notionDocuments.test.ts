@@ -4,7 +4,7 @@ import type { Database } from './types.js';
 import type { Store } from './db.js';
 import type { WorkRun } from './coordinatorTypes.js';
 import { NotionDocuments, notionPageId, notionBody, writingTarget } from './notionDocuments.js';
-import type { NotionMcpService } from './knowledge/notionMcpService.js';
+import { NotionWriteError, type NotionMcpService } from './knowledge/notionMcpService.js';
 const s = { workspaceId: 'wa', userId: 'a' };
 const parentId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', pageId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 function fixture() {
@@ -123,6 +123,15 @@ test('Notion write and response failures retain only bounded stage codes, not up
     await assert.rejects(()=>tool.structured!.run({title:'合成草稿',content:'合成正文'}),/保存未确认/);
     assert.equal(job.notionReceipt!.failureCode,malformed?'response_unrecognized':'write_unconfirmed');
     assert.doesNotMatch(JSON.stringify(job.notionReceipt),/provider-secret/);
+  }
+});
+test('Notion save retains safe failure provenance and distinguishes unsent writes from unknown effects',async()=>{
+  for(const delivery of ['not_sent','rejected','unknown'] as const){
+    const f=fixture(),job=f.job();
+    f.mcp.callDocumentTool=async()=>{throw new NotionWriteError(delivery==='not_sent'?'connect':'send',delivery,delivery==='not_sent'?'connection':'validation',delivery==='rejected'?'validation_error':undefined);};
+    await assert.rejects(()=>f.docs.tool(s,'op','task',job,async()=>{}).structured!.run({title:'合成标题',content:'合成正文'}));
+    assert.equal(job.notionReceipt!.delivery,delivery);assert.equal(job.notionReceipt!.diagnostic!.phase,delivery==='not_sent'?'connect':'send');
+    assert.equal(f.calls.length,0);assert.equal(job.notionReceipt!.state,'uncertain');
   }
 });
 test('Notion cancelled task retains a receipt but does not report success or write again',async()=>{

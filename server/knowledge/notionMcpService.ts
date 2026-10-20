@@ -94,6 +94,36 @@ function transientConnectionFailure(error: unknown, depth = 0): boolean {
   return transientConnectionFailure(e.cause, depth + 1) || Array.isArray(e.errors) && e.errors.slice(0,8).some(e => transientConnectionFailure(e, depth + 1));
 }
 
+export type NotionWritePhase = 'authorization' | 'connect' | 'tools' | 'send';
+export class NotionWriteError extends Error {
+  constructor(readonly phase: NotionWritePhase, readonly delivery: 'not_sent' | 'rejected' | 'unknown', readonly reason: 'connection' | 'authorization' | 'permission' | 'validation' | 'unavailable' | 'upstream', readonly upstreamCode?: string) {
+    super(delivery === 'not_sent' ? reason === 'authorization' ? 'Notion 授权或连接已改变，保存请求尚未发出。' : 'Notion 保存请求尚未发出，请检查连接后继续。' : delivery === 'rejected' ? 'Notion 没有接受这次保存，请检查连接和页面权限后继续。' : 'Notion 保存未确认，请先核对原页面；不会重复写入。');
+    this.name = 'NotionWriteError';
+  }
+}
+
+/** Keep only a reviewed error code. Never persist raw provider text: it can
+ * contain article content, URLs, credentials, or untrusted instructions. */
+function notionErrorCode(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const v = value as Record<string, unknown>;
+  const codes = ['unauthorized','restricted_resource','object_not_found','validation_error','rate_limited','internal_server_error','service_unavailable','permission_denied','access_denied'];
+  if (typeof v.code === 'string' && codes.includes(v.code)) return v.code;
+  if (v.error && typeof v.error === 'object') return notionErrorCode(v.error);
+  return undefined;
+}
+function rejectedWrite(result: unknown): NotionWriteError | undefined {
+  if (!result || typeof result !== 'object' || (result as {isError?:unknown}).isError !== true) return undefined;
+  let value: unknown = (result as {structuredContent?:unknown}).structuredContent;
+  if (!value) { try { value = JSON.parse(textContent(result)); } catch { /* not a structured rejection */ } }
+  const code = notionErrorCode(value);
+  const reason = code === 'unauthorized' ? 'authorization' : ['restricted_resource','object_not_found','permission_denied','access_denied'].includes(code || '') ? 'permission' : code === 'validation_error' ? 'validation' : 'upstream';
+  // An unstructured isError or a server failure is not proof that a write did
+  // not happen. Only documented, precondition rejections can be retried.
+  const definitive = ['unauthorized','restricted_resource','object_not_found','permission_denied','access_denied','validation_error','rate_limited'].includes(code || '');
+  return new NotionWriteError('send', definitive ? 'rejected' : 'unknown', reason, code);
+}
+
 export type NotionMcpServiceOptions = {
   fetch?: typeof fetch;
   createClient?: (accessToken: string) => Promise<McpClient>;
@@ -367,15 +397,17 @@ export class NotionMcpService {
 
   private async callReadOnly(connection: KnowledgeConnection, name: string, args: Record<string, unknown>) {
     if (!readOnlyTools.has(name)) throw new Error("Notion 工具未获准使用");
-    const client = await this.clientFor(connection);
-    try {
-      const listed = await withinDeadline(client.listTools(), "Notion MCP 工具查询超时");
-      if (!listed.tools.some(tool => tool.name === name)) throw new Error("Notion MCP 缺少所需的只读工具");
-      const result = await withinDeadline(client.callTool({ name, arguments: args }), "Notion MCP 读取超时");
-      this.assertToolResult(result);
-      return result;
-    } finally {
-      await closeClient(client);
+    for (let attempt=0;;attempt++) {
+      const client = await this.clientFor(connection);
+      try {
+        const listed = await withinDeadline(client.listTools(), "Notion MCP 工具查询超时");
+        if (!listed.tools.some(tool => tool.name === name)) throw new Error("Notion MCP 缺少所需的只读工具");
+        const result = await withinDeadline(client.callTool({ name, arguments: args }), "Notion MCP 读取超时");
+        this.assertToolResult(result);
+        return result;
+      } catch (error) {
+        if(attempt>=1 || this.isAuthorizationError(error) || !(transientConnectionFailure(error) || error instanceof Error && /^Notion MCP (?:工具查询|读取)超时$/.test(error.message)))throw error;
+      } finally { await closeClient(client); }
     }
   }
 
@@ -385,21 +417,47 @@ export class NotionMcpService {
 
   /** Internal reviewed writer only. Never exposed as an arbitrary browser tool proxy.
    * Refresh before sending; an uncertain mutation is NEVER replayed after 401/timeout. */
-  async callDocumentTool(workspaceId: string, connectionId: string, grantId: string, userId: string, name: string, args: Record<string, unknown>) {
+  async callDocumentTool(workspaceId: string, connectionId: string, grantId: string, userId: string, name: string, args: Record<string, unknown>, beforeSend?: () => Promise<void>) {
     if (!['notion-create-pages', 'notion-update-page', 'notion-get-async-task'].includes(name)) throw new Error('Notion 写入工具未授权');
-    const connection = await this.connected(workspaceId);
+    let connection: KnowledgeConnection;
+    try { connection = await this.connected(workspaceId); }
+    catch { throw new NotionWriteError('authorization', 'not_sent', 'authorization'); }
     if (connection.id !== connectionId || connection.status !== 'connected' || connection.notionWriting?.grantId !== grantId || connection.notionWriting.userId !== userId) throw new Error('Notion 写入授权已改变，请重新确认');
-    const client = await this.clientFor(connection);
+    let phase: NotionWritePhase = 'connect';
+    let client: McpClient;
+    try { client = await this.clientFor(connection); }
+    catch (error) { throw new NotionWriteError(phase, 'not_sent', transientConnectionFailure(error) ? 'connection' : this.isAuthorizationError(error) || error instanceof Error && /连接已改变/.test(error.message) ? 'authorization' : 'upstream'); }
     try {
-      const listed = await withinDeadline(client.listTools(), 'Notion 写入工具查询超时');
-      if (!listed.tools.some(tool => tool.name === name)) throw new Error('Notion 写入工具不可用');
+      phase = 'tools';
+      let listed: Awaited<ReturnType<McpClient['listTools']>>;
+      try { listed = await withinDeadline(client.listTools(), 'Notion 写入工具查询超时'); }
+      catch (error) {
+        // Discovery is read-only. Reconnect once here, before any mutation has
+        // been sent; never repeat callTool after a lost write acknowledgement.
+        if (!transientConnectionFailure(error) && !(error instanceof Error && error.message === 'Notion 写入工具查询超时')) throw error;
+        await closeClient(client);
+        client = await this.clientFor(connection);
+        listed = await withinDeadline(client.listTools(), 'Notion 写入工具查询超时');
+      }
+      if (!listed.tools.some(tool => tool.name === name)) throw new NotionWriteError(phase, 'not_sent', 'unavailable');
       // Connection establishment can wait/retry. Recheck the exact grant before
       // sending any write, rather than trusting the pre-connect snapshot.
       const current = await this.connected(workspaceId);
       if (current.id !== connectionId || current.status !== 'connected' || current.notionWriting?.grantId !== grantId || current.notionWriting.userId !== userId) throw new Error('Notion 写入授权已改变，请重新确认');
+      // The durable checkpoint belongs immediately before the actual mutation,
+      // not before connecting/listing tools. The caller rechecks the parent too.
+      await beforeSend?.();
+      phase = 'send';
       const result = await withinDeadline(client.callTool({ name, arguments: args }), 'Notion 写入结果未知，请在 Notion 核对；不会自动重跑');
+      const rejected = rejectedWrite(result);
+      if (rejected) throw rejected;
       this.assertToolResult(result);
       return result;
+    } catch (error) {
+      if (error instanceof NotionWriteError) throw error;
+      // Keep grant-change wording compatible while withholding provider text.
+      if (phase !== 'send' && error instanceof Error && /授权已改变/.test(error.message)) throw error;
+      throw new NotionWriteError(phase, phase === 'send' ? 'unknown' : 'not_sent', transientConnectionFailure(error) ? 'connection' : this.isAuthorizationError(error) ? 'authorization' : 'upstream');
     } finally { await closeClient(client); }
   }
 
