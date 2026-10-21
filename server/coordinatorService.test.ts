@@ -845,8 +845,8 @@ test('a new Notion draft cannot be completed by a model claim without a verified
 test('Notion dispatcher and queued continuation create once, revise the same document, keep original words and scoped receipts',async()=>{
   const f=fixture(),parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',pageId='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
   await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:'a',authorizedAt:'now',parentId}}));
-  let body='',release!:()=>void;const hold=new Promise<void>(resolve=>release=resolve);const mutations:string[]=[];
-  const mcp={readDocument:async(ws:string)=>{assert.equal(ws,'wa');return {text:body||'保存目录'};},callDocumentTool:async(ws:string,cid:string,grant:string,user:string,name:string,args:any)=>{
+  let body='',actualReads=0,failReadSummary=false,release!:()=>void;const hold=new Promise<void>(resolve=>release=resolve);const mutations:string[]=[];
+  const mcp={readDocument:async(ws:string)=>{assert.equal(ws,'wa');actualReads++;return {text:body||'保存目录'};},callDocumentTool:async(ws:string,cid:string,grant:string,user:string,name:string,args:any)=>{
     assert.deepEqual([ws,cid,grant,user],['wa','notion','grant','a']);mutations.push(name);
     if(name==='notion-create-pages'){await hold;body=args.pages[0].content;return {pages:[{id:pageId}]};}
     body=body.replace(args.content_updates[0].old_str,args.content_updates[0].new_str);return {id:pageId};
@@ -854,6 +854,11 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
   let freshReadRoutes=0,ignoreFreshRead=false;
   const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages,tools,_req,options)=>{
     if(messages.at(-1)?.role==='tool'){
+      const read=messages.at(-1)!.content!;
+      if(model.id!=='router'&&JSON.parse(read).status==='read'){
+        if(failReadSummary){failReadSummary=false;throw Error('read summary interrupted');}
+        return answer(JSON.stringify({outcome:'completed',content:JSON.parse(read).content,summary:'只读核对完成'}));
+      }
       if(JSON.parse(messages.at(-1)!.content!).code==='TOOL_INPUT_REPAIR')return {...answer(''),toolCalls:[{id:'corrected-save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({old_str:'第一段。',new_str:'修改后的第一段。'})}}]};
       return answer('已收到真实工具回执。');
     }
@@ -867,8 +872,8 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
     if(messages.at(-1)?.content?.includes('只读核对')){
       assert.match(JSON.stringify(messages),new RegExp(pageId));
       assert.ok(!tools.some(t=>t.function.name==='save_notion_draft'),'explicit read-only continuation must not expose a write tool');
-      const content='正文是修改后的第一段，没有再次写入。';
-      return answer(content+'\n\n'+JSON.stringify({outcome:'completed',content,summary:'只读核对完成'}));
+      assert.ok(tools.some(t=>t.function.name==='read_notion_document'));
+      return {...answer(''),toolCalls:[{id:'read-current',type:'function',function:{name:'read_notion_document',arguments:'{}'}}]};
     }
     assert.ok(tools.some(t=>t.function.name==='save_notion_draft'));
     return {...answer(''),toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify(body?{old_str:'第一段。',new_str:'修改后的第一段.'}:{title:'专栏',content:'第一段。'})}}]};
@@ -893,6 +898,17 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
   assert.equal(again.taskId,result.taskId,JSON.stringify({again,freshReadRoutes}));assert.equal(freshReadRoutes,1);
   await service.resume(a,key);await waitFor(async()=>{const t=await service.task(a,result.taskId!);return t.jobs.length===before+1&&t.jobs.at(-1)!.state==='completed';});
   assert.deepEqual(mutations,['notion-create-pages','notion-update-page'],'fresh read must not repeat any old writes');
+  const readCount=actualReads;
+  await service.direct(a,result.taskId!,{operationId:'operation_read_summary_failure',text:'只读核对本任务原文，不修改、不保存。'},key);
+  failReadSummary=true;await service.resume(a,key);
+  await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.at(-1)!.state==='failed');
+  const failedSummary=(await service.task(a,result.taskId!)).jobs.at(-1)!;
+  assert.equal(actualReads,readCount+1);assert.equal((await service.task(a,result.taskId!)).recovery.kind,'retry');
+  body+='\n新的结尾。';
+  await service.retryLatest(a,result.taskId!,failedSummary.id,undefined,key);await service.resume(a,key);
+  await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.at(-1)!.state==='completed');
+  assert.equal(actualReads,readCount+2,'explicit read recovery must fetch again instead of reusing the old body');
+  assert.match((await service.task(a,result.taskId!)).conversation.messages.at(-1)!.content,/新的结尾/);
   await service.direct(a,result.taskId!,{operationId:'operation_notion_read_key_failure',text:'只在这件任务做一次新的只读核对：读取本任务原文，不修改、不保存。'},key);
   let proofChecks=0;
   await service.resume(a,async()=>{if(++proofChecks>1)throw new OneKeyPresenceError('fixture disconnected');});
@@ -903,14 +919,14 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
   await assert.rejects(()=>service.retryLatest(b,result.taskId!,failedRead.id,undefined,key));
   await service.retryLatest(a,result.taskId!,failedRead.id,undefined,key);
   await service.retryLatest(a,result.taskId!,failedRead.id,undefined,key);
-  assert.equal((await service.task(a,result.taskId!)).jobs.length,before+3,'concurrent recovery must share one new attempt');
+  assert.equal((await service.task(a,result.taskId!)).jobs.length,before+5,'concurrent recovery must share one new attempt');
   await service.resume(a,key);
   await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.at(-1)!.state==='completed');
   assert.deepEqual(mutations,['notion-create-pages','notion-update-page'],'recovered read must not replay the old write');
   ignoreFreshRead=true;
   const ignored=await service.dispatch(a,{...input('operation_notion_fresh_ignored','只在这件任务做一次新的只读核对：读取本任务已保存文章，不修改、不保存。'),boundTaskId:result.taskId,outputDestination:'notion'},key);
   assert.equal(ignored.taskId,undefined);assert.match(ignored.message.content,/还没能重新读取/);assert.doesNotMatch(ignored.message.content,/读好了/);
-  assert.equal((await service.task(a,result.taskId!)).jobs.length,before+3);assert.equal(mutations.length,2);
+  assert.equal((await service.task(a,result.taskId!)).jobs.length,before+5);assert.equal(mutations.length,2);
   await assert.rejects(()=>service.task(b,result.taskId!));
 });
 test('long Notion article arguments use a document allowance, save once and retain owner and budget checks',async()=>{

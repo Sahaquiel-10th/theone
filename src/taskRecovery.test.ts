@@ -45,6 +45,13 @@ test('Notion Key admission failure can retry only with explicit empty effect his
  assert.equal(taskRecovery([{id:'older',state:'failed',notionReceipt:{state:'uncertain'}},job]).kind,'review_notion');
  assert.equal(taskRecovery([{...job,state:'running'}]).kind,'none');
 });
+test('a scoped document read can retry its summary but never hides a write or unknown effect',()=>{
+ const job={id:'read',state:'failed',notionTarget:{},steps:[{tool:'read_notion_document',effect:'read',state:'completed'}]};
+ assert.equal(taskRecovery([job]).kind,'retry');
+ assert.equal(taskRecovery([{...job,steps:[...job.steps,{tool:'save_notion_draft',effect:'external_write',state:'started'}]}]).kind,'none');
+ assert.equal(taskRecovery([{...job,notionReceipt:{state:'uncertain'}}]).kind,'review_notion');
+ assert.equal(taskRecovery([{id:'unknown',state:'failed',notionReceipt:{state:'uncertain'}},job]).kind,'review_notion');
+});
 test('welcome recovery explains which stage remains without exposing the plan',()=>{
  assert.equal(taskRecovery([{id:'w',state:'failed',kind:'image',welcomeManual:{}}]).welcomeStep,'manual');
  assert.equal(taskRecovery([{id:'w',state:'failed',kind:'image',welcomeManual:{document:{}}}]).welcomeStep,'image');

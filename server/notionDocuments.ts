@@ -129,10 +129,21 @@ export class NotionDocuments {
     const readOnly=readOnlyRequest(originalRequest);
     const refs = [];
     for (const id of readOnly?[]:target.referenceIds) refs.push({ id, content: notionBody(await this.mcp.readDocument(s.workspaceId, id)).slice(0, 12000) });
-    const current = target.pageId ? notionBody(await this.mcp.readDocument(s.workspaceId, target.pageId)) : undefined;
+    const current = target.pageId && !readOnly ? notionBody(await this.mcp.readDocument(s.workspaceId, target.pageId)) : undefined;
     return { references: refs, currentDocument: current, pageId: target.pageId, readOnly,
       location: `https://www.notion.so/${target.pageId || target.parentId}`,
       parentLocation: `https://www.notion.so/${target.parentId}` };
+  }
+  readTool(s: WorkScope, job: WorkRun, verify: () => Promise<void>): OrchestrationTool {
+    const target=job.notionTarget!;
+    const read=async()=>{
+      await verify();this.assertTarget(await this.store.read(),s,target);
+      if(!target.pageId)throw new NotionDocumentError('这件事还没有绑定可读取的文章');
+      const content=notionBody(await this.mcp.readDocument(s.workspaceId,target.pageId));
+      await verify();this.assertTarget(await this.store.read(),s,target);
+      return {status:'read',pageId:target.pageId,url:`https://www.notion.so/${target.pageId}`,content,complete:true};
+    };
+    return {name:'read_notion_document',label:'读取这篇 Notion 原文',effect:'read',description:'实际回读当前任务唯一绑定的 Notion 文章，返回完整正文与文章自身入口。无须提供页面编号，不读取其他页面，也不修改或保存。以本次工具真实返回的正文核对标题和结尾，不使用历史聊天冒充本次读取。',run:async()=>{throw new NotionDocumentError('读取参数无效');},structured:{schema:{type:'object',additionalProperties:false,properties:{}},validate:value=>{if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length)throw new NotionDocumentError('读取范围已绑定，不接受其他页面或参数');return {};},run:read}};
   }
   tool(s: WorkScope, opId: string, cid: string, job: WorkRun, verify: () => Promise<void>, current?: string, originalRequest = ''): OrchestrationTool {
     const target = job.notionTarget!;

@@ -24,12 +24,17 @@ export function isImageInstruction(title:string) {
 }
 export type TaskOutcome = {outcome:'completed'|'partial'|'needs_input'|'failed'|'returned'; content:string; summary:string};
 export const taskOutcomeGuidance='最终成果请用 JSON 返回（不要代码围栏）：{"outcome":"completed|partial|needs_input|failed","content":"面向用户的完整正文，Markdown 可放在字符串内","summary":"一两句话说明实际完成和未完成事项"}。无法执行、缺少工具或关键资料时不得返回 completed。仅讨论无需产物时直接给正文。外部写入必须以真实工具回执核定，不能凭自己的宣称完成。';
+function explicitUnreadOutcome(value:unknown,prose?:string):TaskOutcome|undefined {
+  const v=value as Record<string,unknown>;
+  if(!v||v.outcome!=='not_completed'||v.read_performed!==false||typeof v.reason!=='string'||!v.reason.trim()||Object.keys(v).some(k=>!['outcome','reason','read_performed'].includes(k)))return;
+  return {outcome:'failed',content:prose?.trim()||v.reason,summary:v.reason.slice(0,500)};
+}
 export function parseTaskOutcome(raw:string):TaskOutcome {
-  try{const v=JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g,''));if(v&&['completed','partial','needs_input','failed'].includes(v.outcome)&&typeof v.content==='string'&&v.content.trim()&&typeof v.summary==='string')return {outcome:v.outcome,content:v.content,summary:v.summary.slice(0,500)};}catch{}
+  try{const v=JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g,''));const unread=explicitUnreadOutcome(v);if(unread)return unread;if(v&&['completed','partial','needs_input','failed'].includes(v.outcome)&&typeof v.content==='string'&&v.content.trim()&&typeof v.summary==='string')return {outcome:v.outcome,content:v.content,summary:v.summary.slice(0,500)};}catch{}
   // Some providers emit the user prose and then the same prose in the result
   // envelope. Unwrap only an exact duplicate, never a JSON example embedded in
   // a user's article or an envelope with different content.
   const boundary=raw.lastIndexOf('\n{');
-  if(boundary>=0){try{const v=JSON.parse(raw.slice(boundary+1));if(v&&['completed','partial','needs_input','failed'].includes(v.outcome)&&typeof v.content==='string'&&v.content.trim()===raw.slice(0,boundary).trim()&&typeof v.summary==='string')return {outcome:v.outcome,content:v.content,summary:v.summary.slice(0,500)};}catch{}}
+  if(boundary>=0){try{const v=JSON.parse(raw.slice(boundary+1));const unread=explicitUnreadOutcome(v,raw.slice(0,boundary));if(unread)return unread;if(v&&['completed','partial','needs_input','failed'].includes(v.outcome)&&typeof v.content==='string'&&v.content.trim()===raw.slice(0,boundary).trim()&&typeof v.summary==='string')return {outcome:v.outcome,content:v.content,summary:v.summary.slice(0,500)};}catch{}}
   return {outcome:'returned',content:raw,summary:raw.split('\n').find(line=>line.trim())?.slice(0,500)||'本轮已返回内容，请查看成果。'};
 }

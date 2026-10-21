@@ -47,12 +47,25 @@ test('explicit read-only continuation reads only its own page and rejects even a
  const f=fixture(),job=f.job('readonly',pageId),request='只读核对本任务的原文，不修改、不保存。',reads:string[]=[];
  job.notionTarget!.referenceIds=['cccccccccccccccccccccccccccccccc'];
  const read=f.mcp.readDocument.bind(f.mcp);f.mcp.readDocument=async(ws,id)=>{reads.push(id);return read(ws,id);};
- const context=await f.docs.context(s,job,request);assert.equal(context.readOnly,true);assert.deepEqual(reads,[pageId]);assert.deepEqual(context.references,[]);
+ const context=await f.docs.context(s,job,request);assert.equal(context.readOnly,true);assert.deepEqual(reads,[]);assert.deepEqual(context.references,[]);
+ const reader=f.docs.readTool(s,job,async()=>{});
+ assert.throws(()=>reader.structured!.validate({pageId:parentId}),/不接受其他页面/);
+ const result=await reader.structured!.run(reader.structured!.validate({})) as any;
+ assert.equal(result.content,'原来的文章');assert.equal(result.pageId,pageId);assert.equal(result.complete,true);assert.match(result.url,new RegExp(pageId));assert.deepEqual(reads,[pageId]);
+ await assert.rejects(()=>f.docs.readTool({workspaceId:'wb',userId:'b'},job,async()=>{}).structured!.run({}));assert.deepEqual(reads,[pageId]);
+ const readCount=reads.length;
+ await assert.rejects(()=>f.docs.readTool(s,job,async()=>{throw Error('Key not present');}).structured!.run({}));assert.equal(reads.length,readCount);
  const tool=f.docs.tool(s,'readonly','task',job,async()=>{},context.currentDocument,request);
  assert.throws(()=>tool.structured!.validate({old_str:'原来的文章',new_str:'不该写入'}),/只读/);
  await assert.rejects(()=>tool.structured!.run({old_str:'原来的文章',new_str:'不该写入'}),/只读/);
  assert.equal(f.calls.length,0);assert.equal(f.getBody(),'原来的文章');
  await assert.rejects(()=>f.docs.context({workspaceId:'wb',userId:'b'},job,request));assert.deepEqual(reads,[pageId]);
+});
+test('read-only result is withheld when its grant changes during the actual read',async()=>{
+ const f=fixture(),job=f.job('readonly-revoke',pageId);
+ f.mcp.readDocument=async()=>{f.db.knowledgeConnections[0].notionWriting!.grantId='revoked';return {text:'private body'};};
+ await assert.rejects(()=>f.docs.readTool(s,job,async()=>{}).structured!.run({}),/授权或保存位置已改变/);
+ assert.equal(f.calls.length,0);
 });
 test('Notion destination config normalizes links before scoped reads and never changes settings on malformed links',async()=>{
   const f=fixture(),read=f.mcp.readDocument.bind(f.mcp),reads:string[]=[];

@@ -20,6 +20,14 @@ test('duplicate prose followed by its result envelope is unwrapped, not exposed 
  assert.equal(parseTaskOutcome('这里讲一个 JSON 示例：\n'+envelope).outcome,'returned');
  assert.equal(parseTaskOutcome(body+'\n'+JSON.stringify({outcome:'failed',content:'不同内容',summary:'示例'})).outcome,'returned');
 });
+test('an explicit unread failure envelope cannot become a completed legacy answer',()=>{
+ const envelope={outcome:'not_completed',reason:'这轮没能实际读取文章。',read_performed:false};
+ assert.equal(parseTaskOutcome(JSON.stringify(envelope)).outcome,'failed');
+ const result=parseTaskOutcome('本轮未完成，没有实际读取原文。\n'+JSON.stringify(envelope));
+ assert.equal(result.outcome,'failed');assert.equal(result.content,'本轮未完成，没有实际读取原文。');assert.doesNotMatch(result.content,/read_performed/);
+ assert.equal(parseTaskOutcome(JSON.stringify({...envelope,read_performed:true})).outcome,'returned');
+ assert.equal(parseTaskOutcome(JSON.stringify({...envelope,example:true})).outcome,'returned');
+});
 test('direct execution accepts only reviewed visual documents, not arbitrary tools, scripts or hidden scope',()=>{
   const scene={id:'first',title:'说明',situation:'使用场景',feature:'整理内容',advantage:'省去排版',benefit:'清楚说明',evidence:'查看结果',steps:['整理','查看'],prompt:'整理说明',capabilityIds:[]};
   const direct={tool:'oneHtml',document:{version:1,title:'说明',intro:'合成说明',scenes:[scene,{...scene,id:'second'}]}};
