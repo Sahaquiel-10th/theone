@@ -56,6 +56,60 @@ func installedMachineResidents(support: URL) throws -> [ResidentProcessIdentity]
     }
 }
 
+// A same-version portable reopen is a wake request, not an installation or
+// permission-identity migration. Match the complete process identity and the
+// machine lease before sending it anything; never read the Key in this opener.
+func canWakeMachineResident(_ identity: ResidentProcessIdentity, support: URL, version: String, credential: URL, owners: [Int32], uid: UInt32, excluding: Int32) -> Bool {
+    guard isInstalledMachineResident(identity, support: support, uid: uid, excluding: excluding),
+          owners == [identity.pid], identity.arguments[3] == credential.standardizedFileURL.path else { return false }
+    let executable = URL(fileURLWithPath: identity.executable).standardizedFileURL
+    let installed = executable.lastPathComponent == "ONE"
+        ? executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        : executable
+    let name = installed.pathExtension == "app" ? installed.deletingPathExtension().lastPathComponent : installed.lastPathComponent
+    return name == "ONEPresence-\(version)"
+}
+
+private final class MachineReopenReply {
+    private let lock = NSLock()
+    private var value: String?
+    func record(_ status: String) { lock.lock(); defer { lock.unlock() }; value = status }
+    func read() -> String? { lock.lock(); defer { lock.unlock() }; return value }
+}
+
+// Only the installed resident reads the reinserted credential and verifies its
+// device id. A missing/unreadable reply must not be interpreted as permission
+// to kill a live owner: it may still own a command or a pending terminal receipt.
+func wakeInstalledMachineResident(support: URL, version: String, credential: URL, timeout: TimeInterval = 15) throws -> Bool {
+    let residents = try installedMachineResidents(support: support)
+    let machineLock = support.appendingPathComponent("machine-presence-v1.lock")
+    let owners = residentLockOwners(machineLock).sorted()
+    guard let owner = residents.first(where: {
+        canWakeMachineResident($0, support: support, version: version, credential: credential, owners: owners, uid: getuid(), excluding: getpid())
+    }) else { return false }
+    let request = UUID().uuidString, reply = MachineReopenReply()
+    let center = DistributedNotificationCenter.default()
+    let observer = center.addObserver(forName: Notification.Name("one.machine.reopen.reply.\(request)"), object: nil, queue: nil) { notification in
+        guard notification.object as? String == version,
+              (notification.userInfo?["pid"] as? NSNumber)?.int32Value == owner.pid,
+              inspectResidentProcess(owner.pid) == owner,
+              residentLockOwners(machineLock).sorted() == [owner.pid],
+              let status = notification.userInfo?["status"] as? String,
+              ["accepted", "different_key"].contains(status) else { return }
+        reply.record(status)
+    }
+    defer { center.removeObserver(observer) }
+    center.postNotificationName(Notification.Name("one.machine.reopen.\(owner.pid)"), object: request,
+        userInfo: ["version": version, "credentialPath": credential.standardizedFileURL.path], deliverImmediately: true)
+    let deadline = ProcessInfo.processInfo.systemUptime + timeout
+    while ProcessInfo.processInfo.systemUptime < deadline {
+        if let status = reply.read() { return status == "accepted" }
+        guard inspectResidentProcess(owner.pid) == owner else { throw POSIXError(.EBUSY) }
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+    }
+    throw POSIXError(.EBUSY)
+}
+
 func stopInstalledMachineResidents(support: URL) throws {
     let owners = try installedMachineResidents(support: support)
     for owner in owners {

@@ -278,6 +278,9 @@ func launchResidentExecutable(source: URL, version: String, credential: URL, res
         throw LauncherError.message("ONE 正在切换或更新，请稍后再打开。无需反复点击。")
     }
     defer { withExtendedLifetime(transition) {} }
+    // Reopening the same Key must preserve the resident, its running children
+    // and its outbox. The installed owner does the fresh credential check.
+    if try wakeInstalledMachineResident(support: installDirectory, version: version, credential: credential) { return }
     let sourceApp = source.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     guard sourceApp.pathExtension == "app" else { throw LauncherError.message("ONE 启动器应用不完整") }
     let residentApp = installDirectory.appendingPathComponent("ONEPresence-\(version).app")
@@ -1705,6 +1708,25 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         return Notification.Name("one.key.reopen.\(digest)")
     }
 
+    @objc private func machineReopenRequested(_ notification: Notification) {
+        guard !stopping, !handingOff,
+              let request = notification.object as? String, UUID(uuidString: request) != nil,
+              notification.userInfo?["version"] as? String == launcherVersion,
+              let path = notification.userInfo?["credentialPath"] as? String,
+              let initialCredentialUrl, URL(fileURLWithPath: path).standardizedFileURL == initialCredentialUrl.standardizedFileURL,
+              let expectedDeviceId, let mounted = try? loadCredential(initialCredentialUrl) else { return }
+        let sameKey = mounted.deviceId == expectedDeviceId
+        DistributedNotificationCenter.default().postNotificationName(Notification.Name("one.machine.reopen.reply.\(request)"),
+            object: launcherVersion, userInfo: ["pid": Int(getpid()), "status": sameKey ? "accepted" : "different_key"], deliverImmediately: true)
+        guard sameKey else { return }
+        // Acknowledging this wake does not claim connectivity. Login and every
+        // subsequent tool/model call still require fresh server Key proof.
+        credentialUrl = initialCredentialUrl; credential = mounted
+        nextVolumeScan = .distantPast
+        requestLogin()
+        if !ready { restartSession() }
+    }
+
     @objc private func reopenRequested(_ notification: Notification) {
         guard let requestId = notification.object as? String, UUID(uuidString: requestId) != nil else { return }
         guard notification.userInfo?["version"] as? String == launcherVersion else { return }
@@ -1790,6 +1812,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
                 residentLock = lock
+                DistributedNotificationCenter.default().addObserver(self, selector: #selector(machineReopenRequested(_:)), name: Notification.Name("one.machine.reopen.\(getpid())"), object: nil)
                 DistributedNotificationCenter.default().addObserver(self, selector: #selector(reopenRequested(_:)), name: reopenNotification(resolvedDeviceId), object: nil)
             } catch {
                 showFailure(error)

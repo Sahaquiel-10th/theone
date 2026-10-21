@@ -107,7 +107,7 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   const input = { operationId: crypto.randomUUID(), content: "Summarize the attachment", modelId: "model", attachmentIds: [attachmentId], webSearch: false };
-  const first = await post("/api/chat", input, cookie); assert.equal(first.status, 200);
+  const first = await post("/api/chat", input, cookie); assert.equal(first.status, 200, await first.clone().text());
   const answer = await first.json() as any;
   assert.equal(answer.conversation.messages.length, 2);
   assert.equal(answer.message.finishReason, "length");
