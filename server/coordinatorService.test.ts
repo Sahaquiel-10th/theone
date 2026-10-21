@@ -893,11 +893,14 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
   const readback=(await service.task(a,result.taskId!)).conversation.messages.at(-1)!.content;
   assert.match(readback,new RegExp(`打开 Notion 原文.*${pageId}`));assert.doesNotMatch(readback,/尚未|已保存到 Notion|"outcome"/);
   const before=(await service.task(a,result.taskId!)).jobs.length;
-  await assert.rejects(()=>service.dispatch(b,{...input('operation_notion_fresh_foreign','请实际回读本任务原文。'),boundTaskId:result.taskId,outputDestination:'notion'},key));
-  const again=await service.dispatch(a,{...input('operation_notion_fresh_read','只在这件任务做一次新的只读核对：读取本任务已保存文章，不修改、不保存、不新建文档，不查知识库。'),boundTaskId:result.taskId,outputDestination:'notion'},key);
+  await assert.rejects(()=>service.dispatch(b,{...input('operation_notion_fresh_foreign','请实际回读本任务原文，不修改。'),boundTaskId:result.taskId,outputDestination:'chat'},key));
+  const again=await service.dispatch(a,{...input('operation_notion_fresh_read','只在这件任务做一次新的只读核对：读取本任务已保存文章，不修改、不保存、不新建文档，不查知识库。'),boundTaskId:result.taskId,outputDestination:'chat'},key);
   assert.equal(again.taskId,result.taskId,JSON.stringify({again,freshReadRoutes}));assert.equal(freshReadRoutes,1);
   await service.resume(a,key);await waitFor(async()=>{const t=await service.task(a,result.taskId!);return t.jobs.length===before+1&&t.jobs.at(-1)!.state==='completed';});
   assert.deepEqual(mutations,['notion-create-pages','notion-update-page'],'fresh read must not repeat any old writes');
+  const latestRead=(await f.store.read()).chatOperations!.filter(o=>o.conversationId===result.taskId&&o.workRun).at(-1)!.workRun!;
+  assert.equal(latestRead.notionTarget?.pageId,pageId,'chat output must retain the same server-bound article as a read input');
+  assert.deepEqual(latestRead.steps?.map(s=>[s.tool,s.effect,s.state]),[['read_notion_document','read','completed']]);
   const readCount=actualReads;
   await service.direct(a,result.taskId!,{operationId:'operation_read_summary_failure',text:'只读核对本任务原文，不修改、不保存。'},key);
   failReadSummary=true;await service.resume(a,key);

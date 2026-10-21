@@ -652,7 +652,9 @@ export class CoordinatorService {
         input.confirmedExternal === true,
       );
       const bound=input.boundTaskId?taskOf(current,s,input.boundTaskId):undefined;
-      const freshDocumentRead=Boolean(bound?.notionDocument?.pageId&&input.outputDestination==='notion'&&freshDocumentReadRequested(content));
+      // Where the answer is shown is not the scope of its read inputs. A fresh
+      // read of this task's bound article also works when replying in chat.
+      const freshDocumentRead=Boolean(bound?.notionDocument?.pageId&&freshDocumentReadRequested(content));
       const boundContext=bound?{id:bound.id,title:bound.title,paused:bound.workPaused===true,document:bound.notionDocument?.pageId?{pageId:bound.notionDocument.pageId,url:`https://www.notion.so/${bound.notionDocument.pageId}`}:undefined,latestResult:bound.messages.filter(m=>m.role==='assistant').at(-1)?.content.slice(0,6000),latestInput:bound.messages.filter(m=>m.role==='user').at(-1)?.content.slice(0,2000)}:null;
       const authorizedSources=current.knowledgeConnections.filter(c=>c.workspaceId===s.workspaceId&&['connected','error'].includes(c.status)&&canReadKnowledge(current,s,c.id)&&(!sources||sources.includes(c.id))).map(c=>({id:c.id,binding:sourceBinding(c)}));
       const assertRoutingState = (d: Database) => {
@@ -1439,7 +1441,8 @@ export class CoordinatorService {
     featureMember(db, s);
     const existing = input.taskId ? taskOf(db, s, input.taskId) : undefined;
     if (input.outputDestination !== undefined && !['chat', 'notion'].includes(input.outputDestination)) throw new CoordinatorError('保存位置无效', 400);
-    const notionTarget = input.outputDestination === 'chat' ? undefined : existing?.notionDocument ? { ...existing.notionDocument, referenceIds: writingTarget(db, s).referenceIds } : input.outputDestination === 'notion' ? writingTarget(db, s) : undefined;
+    const boundRead=Boolean(existing?.notionDocument?.pageId&&freshDocumentReadRequested(input.text)&&/只读|(?:不|不要)(?:修改|保存|写入)/.test(input.text));
+    const notionTarget = input.outputDestination === 'chat'&&!boundRead ? undefined : existing?.notionDocument ? { ...existing.notionDocument, referenceIds: writingTarget(db, s).referenceIds } : input.outputDestination === 'notion' ? writingTarget(db, s) : undefined;
     if (notionTarget) {
       if (input.localExecution || !this.deps.notionDocuments) throw new CoordinatorError('Notion 写入尚未连接', 428);
       this.deps.notionDocuments.assertTarget(db, s, notionTarget);
