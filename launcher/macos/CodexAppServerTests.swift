@@ -340,6 +340,70 @@ private func serverRequestsDenied() async throws {
     }
 }
 
+private func recoveredToolFailuresRequireFinalVerification() async throws {
+    for mode in ["verified", "plain_claim", "incomplete", "no_recovery", "latest_failure", "foreign_success", "declined", "write_after_readback"] {
+        let fixture = Fixture(), actor = try controller(fixture)
+        _ = try await bootstrap(actor, fixture: fixture)
+        try await item(actor, "item/started", command("probe"))
+        try await item(actor, "item/completed", command("probe", status: "failed", exit: .number(128)))
+        if mode != "no_recovery" {
+            let thread = mode == "foreign_success" ? "other_thread" : "thread_1"
+            try await item(actor, "item/started", command("readback"), thread: thread)
+            try await item(actor, "item/completed", command("readback", status: "completed", exit: .number(0)), thread: thread)
+        }
+        if mode == "latest_failure" {
+            try await item(actor, "item/started", command("write_failed"))
+            try await item(actor, "item/completed", command("write_failed", status: "failed", exit: .number(1)))
+        }
+        if mode == "declined" {
+            let refused: JSON = .object(["id": .string("denied_file"), "type": .string("fileChange"), "status": .string("declined")])
+            try await item(actor, "item/started", refused)
+            try await item(actor, "item/completed", refused)
+            try await item(actor, "item/started", command("later_read"))
+            try await item(actor, "item/completed", command("later_read", status: "completed", exit: .number(0)))
+        }
+        if mode == "write_after_readback" {
+            let change: JSON = .object(["id": .string("later_write"), "type": .string("fileChange"), "status": .string("completed")])
+            try await item(actor, "item/started", change)
+            try await item(actor, "item/completed", change)
+        }
+        let prefix = mode == "plain_claim" ? "" : mode == "incomplete" ? "ONE_LOCAL_RESULT_V1 INCOMPLETE\n" : "ONE_LOCAL_RESULT_V1 VERIFIED\n"
+        let answer: JSON = .object(["id": .string("final"), "type": .string("agentMessage"), "text": .string(prefix + "文件已回读核对。")])
+        try await item(actor, "item/completed", answer)
+        try await end(actor, status: "completed")
+        let snapshot = await actor.snapshot()
+        try check(snapshot.hasFailedTools, "failure history is never cleared")
+        try check(snapshot.canCompleteNormally(treeCleanupVerified: true, processExitCode: 0, requestSucceeded: true) == (mode == "verified"), "completion is bounded: \(mode)")
+        let events = await fixture.allEvents()
+        try check(events.contains { $0["item"]?["id"]?.string == "probe" && $0["item"]?["exit_code"]?.integer == 128 }, "failed command remains in diagnostics")
+        try check(events.last?["item"]?["text"]?.string == "文件已回读核对。", "private declaration not shown to user")
+        try check(!snapshot.canCompleteNormally(treeCleanupVerified: false, processExitCode: 0, requestSucceeded: true), "no tree cleanup bypass")
+        try check(!snapshot.canCompleteNormally(treeCleanupVerified: true, processExitCode: 1, requestSucceeded: true), "no process failure bypass")
+        try check(!snapshot.canCompleteNormally(treeCleanupVerified: true, processExitCode: 0, requestSucceeded: false), "no request failure bypass")
+    }
+    let empty = CodexLocalResultReport("ONE_LOCAL_RESULT_V1 VERIFIED")
+    try check(empty.verified == true && empty.response.isEmpty, "empty declaration is no result")
+    try check(CodexLocalResultReport("ONE_LOCAL_RESULT_V1 VERIFIED\r\n结果").response == "结果", "CRLF result declaration stays private")
+    try check(CodexLocalResultReport("ordinary\nONE_LOCAL_RESULT_V1 VERIFIED").verified == nil, "embedded data is no declaration")
+    let instruction = CodexLocalResultReport.instruction("保留原任务与授权边界")
+    try check(instruction.hasPrefix("保留原任务与授权边界") && instruction.contains("不能用无关命令") && instruction.contains("不改变以上权限"), "protocol does not expand authority")
+}
+
+private func incompleteOrUnexecutedReportCannotComplete() async throws {
+    for mode in ["no_tool", "incomplete"] {
+        let fixture = Fixture(), actor = try controller(fixture)
+        _ = try await bootstrap(actor, fixture: fixture)
+        if mode == "incomplete" {
+            try await item(actor, "item/started", command())
+            try await item(actor, "item/completed", command(status: "completed", exit: .number(0)))
+        }
+        try await item(actor, "item/completed", .object(["id": .string("final"), "type": .string("agentMessage"),
+            "text": .string("ONE_LOCAL_RESULT_V1 \(mode == "incomplete" ? "INCOMPLETE" : "VERIFIED")\n还需要处理。")]))
+        try await end(actor, status: "completed")
+        try check(!(await actor.snapshot()).canCompleteNormally(treeCleanupVerified: true, processExitCode: 0, requestSucceeded: true), "no false completion: \(mode)")
+    }
+}
+
 private func missingCommandTerminalFailsNormalCompletion() async throws {
     let fixture = Fixture(), actor = try controller(fixture)
     _ = try await bootstrap(actor, fixture: fixture)
@@ -348,6 +412,7 @@ private func missingCommandTerminalFailsNormalCompletion() async throws {
     try await end(actor, status: "completed", items: [command(status: "failed", exit: .number(-1))])
     let snapshot = await actor.snapshot()
     try check(snapshot.finalResponse == "still waiting" && snapshot.assessment(treeCleanupVerified: true).requiresCheck, "answer plus completed turn cannot hide unconfirmed command")
+    try check(!snapshot.canCompleteNormally(treeCleanupVerified: true, processExitCode: 0, requestSucceeded: true), "completion policy keeps unknown command blocked")
 }
 
 private func emptyInterrupted(_ actor: CodexAppServerController) async throws {
@@ -511,13 +576,15 @@ private func ownedStopFailureOrTimeoutCannotTurnGreen() async throws {
             try await stopDuringTurnStart()
             try await monotonicDeadlineAndStuckWriter()
             try await serverRequestsDenied()
+            try await recoveredToolFailuresRequireFinalVerification()
+            try await incompleteOrUnexecutedReportCannotComplete()
             try await missingCommandTerminalFailsNormalCompletion()
             try await realShapeDelayedCommandTerminals()
             try await lateCommandEvidenceMustBeExact()
             try await lateCommandUsesOriginalDeadline()
             try await acceptedInterruptStopsOwnedCommandsBeforeWaitingForTerminal()
             try await ownedStopFailureOrTimeoutCannotTurnGreen()
-            print("CodexAppServerTests: 17 groups passed (mocked stdio only)")
+            print("CodexAppServerTests: 19 groups passed (mocked stdio only)")
         } catch { fputs("CodexAppServerTests failed: \(error)\n", stderr); exit(1) }
     }
 }

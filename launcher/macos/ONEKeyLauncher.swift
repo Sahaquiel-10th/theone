@@ -1199,7 +1199,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
                 // Recheck after registration: pre-bootstrap Stop never sends
                 // the user's instruction, even if the process has just begun.
                 if synchronized({ cancelled.contains(identity.attemptId) }) { _ = await controller.requestInterrupt() }
-                _ = try await controller.start(instruction: instruction)
+                _ = try await controller.start(instruction: CodexLocalResultReport.instruction(instruction))
                 _ = try await controller.waitForTurnEnd()
             } catch { runFailure = error }
             let wasCancelled = synchronized { () -> Bool in
@@ -1224,7 +1224,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
             // be using it. Uncertain attempts retain their private scratch.
             if barriersPassed { try? FileManager.default.removeItem(at: scratch) }
             let assessment = snapshot.assessment(treeCleanupVerified: barriersPassed)
-            let response = snapshot.finalResponse ?? synchronized { lastResponses[taskId] }
+            let response = snapshot.finalResponse.map { CodexLocalResultReport($0).response } ?? synchronized { lastResponses[taskId] }
             if !snapshot.turnStartSent && barriersPassed {
                 await report(wasCancelled ? "status" : "error",
                     wasCancelled ? "已停止，本机任务尚未开始。" : "执行器没有接受本轮任务；尚未操作文件，原话保留，不会自动重跑。",
@@ -1234,13 +1234,14 @@ final class CodexExecutionRunner: @unchecked Sendable {
                 await report("error", terminal.response, status: terminal.outcome, error: terminal.error)
             } else if wasCancelled {
                 await report("status", "已停止；已产生的修改不会自动撤销。", status: "cancelled")
-            } else if runFailure == nil, snapshot.turnStatus == .completed, exitCode == 0,
-                      !snapshot.hasFailedTools, let response, !response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            } else if snapshot.canCompleteNormally(treeCleanupVerified: barriersPassed, processExitCode: exitCode,
+                                                  requestSucceeded: runFailure == nil), let response {
                 await report("status", response, status: "completed")
             } else {
-                let explanation = snapshot.hasFailedTools ? "本轮有工具未能完成，请查看工具反馈；不会自动重跑。"
+                let explanation = snapshot.resultReport.verified == false ? "这轮还有要求没完成或没核对，已有结果保留，不会自动重跑。" : snapshot.hasFailedTools ? "本轮有工具未能完成，请查看工具反馈；不会自动重跑。"
                     : (snapshot.turnStartSent ? "本轮没有确认完成，请检查已有文件和工具反馈；不会自动重跑。" : "执行器尚未开始本机任务；原话已保留，不会自动重跑。")
-                await report("error", response.map { "\($0)\n\n\(explanation)" } ?? explanation, status: "failed")
+                await report("error", response.map { "\($0)\n\n\(explanation)" } ?? explanation, status: "failed",
+                             error: snapshot.resultReport.verified == false ? "goal_unfinished" : nil)
             }
         } catch {
             input?.close()

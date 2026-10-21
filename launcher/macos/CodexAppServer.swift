@@ -72,6 +72,32 @@ struct CodexAppServerAssessment: Sendable {
     let commandsResolvedByInterrupt: Bool
 }
 
+// A private result declaration, not an authorization or a substitute for tool
+// terminals. Keep it out of user-visible answers and preserve all tool errors.
+struct CodexLocalResultReport: Sendable {
+    let verified: Bool?
+    let response: String
+    init(_ raw: String) {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Foundation separates LF inside CRLF; Character.split treats CRLF as
+        // one grapheme and would otherwise leave the private header visible.
+        let lines = text.components(separatedBy: "\n")
+        switch lines.first.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }) {
+        case "ONE_LOCAL_RESULT_V1 VERIFIED": verified = true
+        case "ONE_LOCAL_RESULT_V1 INCOMPLETE": verified = false
+        default: verified = nil
+        }
+        response = verified == nil ? text : lines.dropFirst().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    static func instruction(_ original: String) -> String {
+        original + """
+
+
+        ONE 本机结果协议（不改变以上权限和任务范围）：结束前实际核对用户要求的成果。最终回复的第一行只能是 ONE_LOCAL_RESULT_V1 VERIFIED（全部必需目标已实际完成并核对）或 ONE_LOCAL_RESULT_V1 INCOMPLETE（仍有目标未完成、未核对或受阻）；下一行起用自然语言说结果。标记只是结果声明，不授予权限。出现工具错误时，可以在原权限内换合法方法继续；只有后续实际工具核对成功且全部目标满足才能写 VERIFIED，不能用无关命令或仅凭口头声称代替核对。不要为修报错接受许可、扩大权限、重复未知写入或重新运行旧任务。不能核对就如实写 INCOMPLETE。不要向用户展示协议标记。
+        """
+    }
+}
+
 struct CodexAppServerSnapshot: Sendable {
     let attemptId: String
     let threadId: String?
@@ -80,6 +106,8 @@ struct CodexAppServerSnapshot: Sendable {
     let turnStartSent: Bool
     let finalResponse: String?
     let hasFailedTools: Bool
+    let hasSuccessfulTool: Bool
+    let hasSuccessfulToolAfterFailure: Bool
     let hasUnconfirmedCommands: Bool
     let unconfirmedCommandCount: Int
     let interruptibleCommandCount: Int
@@ -92,6 +120,19 @@ struct CodexAppServerSnapshot: Sendable {
     let transportEnded: Bool
 
     var isTurnTerminal: Bool { turnStatus?.terminal == true }
+    var resultReport: CodexLocalResultReport { CodexLocalResultReport(finalResponse ?? "") }
+
+    func canCompleteNormally(treeCleanupVerified: Bool, processExitCode: Int32?, requestSucceeded: Bool) -> Bool {
+        guard requestSucceeded, processExitCode == 0, turnStartSent, turnStatus == .completed,
+              !interruptRequested, failureReason == nil,
+              !assessment(treeCleanupVerified: treeCleanupVerified).requiresCheck,
+              treeCleanupVerified, !resultReport.response.isEmpty, resultReport.verified != false else { return false }
+        // Legacy clean turns retain their behavior. A past error may only be
+        // recovered by a later actual successful tool AND explicit final goal
+        // verification, never by merely saying something in a final message.
+        if hasFailedTools { return hasSuccessfulToolAfterFailure && resultReport.verified == true }
+        return resultReport.verified == nil || hasSuccessfulTool
+    }
 
     // A PID disappearing is never enough. Missing/-1 command exits can only
     // become "interrupted" (never successful) after the official same-turn
@@ -162,6 +203,8 @@ actor CodexAppServerController {
     private var status: CodexAppServerTurnStatus?
     private var finalResponse: String?
     private var failedTools = false
+    private var successfulTool = false
+    private var successfulToolAfterFailure = false
     private var protocolIssue: String?
     private var failureReason: String?
     private var cancelRequested = false
@@ -326,7 +369,8 @@ actor CodexAppServerController {
         let unknown = commands.values.filter { !$0.ended || $0.malformed }
         return CodexAppServerSnapshot(attemptId: attemptId, threadId: threadId, turnId: turnId,
             turnStatus: status, turnStartSent: turnStartSent, finalResponse: finalResponse,
-            hasFailedTools: failedTools, hasUnconfirmedCommands: !unknown.isEmpty,
+            hasFailedTools: failedTools, hasSuccessfulTool: successfulTool,
+            hasSuccessfulToolAfterFailure: successfulToolAfterFailure, hasUnconfirmedCommands: !unknown.isEmpty,
             unconfirmedCommandCount: unknown.count,
             interruptibleCommandCount: unknown.filter { $0.started && $0.interruptedCandidate && !$0.malformed }.count,
             hasPendingOtherTools: !pendingOtherTools.isEmpty, protocolIssue: protocolIssue,
@@ -451,7 +495,7 @@ actor CodexAppServerController {
     private func emit(_ value: CodexAppServerJSON) async { if let line = try? value.line() { await onExecEvent(line) } }
 
     private func rejectServerRequest(method: String, id: CodexAppServerJSON) async {
-        failedTools = true; failureReason = "unsupported_approval_or_tool"
+        recordToolOutcome(succeeded: false); failureReason = "unsupported_approval_or_tool"
         // No accept/acceptForSession, permission amendment or executable tool
         // implementation exists. Unknown requests get a JSON-RPC error.
         let result: CodexAppServerJSON
@@ -491,13 +535,13 @@ actor CodexAppServerController {
             for item in items { await handleItem(item, event: "item.completed", terminalBackfill: true) }
             status = end
             if end == .failed {
-                failedTools = true
+                recordToolOutcome(succeeded: false)
                 await emit(.object(["type": .string("turn.failed"), "error": .object(["message": turn["error"]?["message"] ?? .string("本轮执行未完成")])]))
             }
             resolveTurnWaiters(); return
         }
         if method == "error" {
-            failedTools = true
+            recordToolOutcome(succeeded: false)
             await emit(.object(["type": .string("error"), "message": params["error"]?["message"] ?? .string("本机执行器返回错误")]))
         } else if method == "item/started" || method == "item/completed" || method == "item/updated" {
             guard let item = params["item"] else { poison("missing_item"); return }
@@ -545,7 +589,8 @@ actor CodexAppServerController {
                 else { command.malformed = true }
             } else if event == "item.completed" {
                 if let exit = item["exitCode"]?.integer, exit >= 0, ["completed", "failed"].contains(rawStatus ?? ""), command.started {
-                    command.ended = true; if exit != 0 || rawStatus == "failed" { failedTools = true }
+                    command.ended = true
+                    recordToolOutcome(succeeded: exit == 0 && rawStatus == "completed", isCommand: true)
                 } else if rawStatus == "failed", command.started,
                           item["exitCode"] == .null || item["exitCode"]?.integer == -1 {
                     command.interruptedCandidate = true
@@ -560,7 +605,10 @@ actor CodexAppServerController {
                     poison("malformed_tool_terminal"); return
                 }
                 pendingOtherTools.remove(id)
-                if item["status"]?.string != "completed" { failedTools = true }
+                recordToolOutcome(succeeded: item["status"]?.string == "completed")
+                if ["declined", "interrupted"].contains(item["status"]?.string ?? "") {
+                    failureReason = failureReason ?? "tool_not_completed"
+                }
             }
         }
         let map = ["agentMessage": "agent_message", "commandExecution": "command_execution", "fileChange": "file_change",
@@ -571,6 +619,9 @@ actor CodexAppServerController {
         }
         var adapted = item.object ?? [:]
         adapted["type"] = .string(mappedType)
+        if type == "agentMessage", let text = item["text"]?.string {
+            adapted["text"] = .string(CodexLocalResultReport(text).response)
+        }
         if type == "commandExecution" {
             adapted["exit_code"] = item["exitCode"] ?? .null
             adapted["aggregated_output"] = item["aggregatedOutput"] ?? .string(commandOutputs[id] ?? "")
@@ -579,6 +630,18 @@ actor CodexAppServerController {
         // Backfill only unfinished items. Never replay already completed answers.
         if event == "item.completed" { completedItems.insert(id) }
         if emitEvent { await emit(.object(["type": .string(event), "item": .object(adapted)])) }
+    }
+    private func recordToolOutcome(succeeded: Bool, isCommand: Bool = false) {
+        if succeeded {
+            successfulTool = true
+            // A file-change callback alone does not prove a read-back. After
+            // an error or later file change, require a settled command before
+            // accepting the executor's explicit verification declaration.
+            if failedTools { successfulToolAfterFailure = isCommand }
+        } else {
+            failedTools = true
+            successfulToolAfterFailure = false
+        }
     }
     private static func validID(_ id: String) -> Bool {
         !id.isEmpty && id.utf8.count <= 200 && id.utf8.allSatisfy {
