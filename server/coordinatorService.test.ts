@@ -2351,14 +2351,15 @@ test('single local_special routes only through its configured logic handoff and 
 });
 
 test('explicit local button accepts local_special through both routing tools without relaxing task ownership',async()=>{
-  for(const name of ['delegate_task','execute_local_task']){
+  for(const name of ['delegate_task','execute_local_task'])for(const withCard of [false,true]){
     const f=fixture();
+    await f.store.mutate(d=>{d.models.find(m=>m.id==='worker')!.protocol='openai';});
     const profile=await f.store.mutate(d=>updateExecutor(d,'a',undefined,{revision:0,action:'draft',values:{...executorDefaults(),name:'本机交接',modelId:'worker',routingRole:'logic'}}));
     await f.store.mutate(d=>updateExecutor(d,'a',profile.id,{revision:1,action:'publish'}));
     let calls=0;
-    const localCall=(taskId:string|null)=>({...answer(''),toolCalls:[{id:'explicit-local-alias',type:'function' as const,function:{name,arguments:JSON.stringify({taskId,title:'独立文档',instruction:'在授权目录内新建并核验文档',executorId:'local_special'})}}]});
+    const localCall=(taskId:string|null)=>({...answer(''),toolCalls:[{id:'explicit-local-alias',type:'function' as const,function:{name,arguments:JSON.stringify({taskId,title:'独立文档',instruction:'在授权目录内新建并核验文档',executorId:withCard?profile.id:'local_special',...(withCard?{capabilityIds:['builtin:codex_execution']}: {})})}}]});
     f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('已经交给本机'):localCall(null));
-    const run=async()=>{calls++;return{id:'local-real',status:'queued'};};
+    const run=async(cid:string)=>{calls++;const saved=await f.store.read();const job=saved.chatOperations!.find(o=>o.conversationId===cid&&o.workRun)!.workRun!;assert.equal(job.executorId,profile.id);assert.equal(job.state,'prepared');return{id:'local-real',status:'queued'};};
     const accepted=await f.service.dispatch(a,{...input(`operation_explicit_alias_${name}`,'新建本地文档'),localExecution:true},key,undefined,run);
     assert.ok(accepted.taskId);assert.equal(calls,1);
     assert.equal(f.calls[0].requiredTool,'execute_local_task');

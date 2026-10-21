@@ -686,6 +686,11 @@ export class CoordinatorService {
         const raw=value as PlannedTask;
         const v=resolveDispatchCapabilities({...raw,outputKind:'text',dependsOn:[],featureIds:raw.featureIds??[]},routingCapabilities(fresh,s,{localAvailable:Boolean(executeLocal)&&(input.localExecution===true||config.values.tools.includes('execute_local_task')),imageStorageAvailable:Boolean(this.deps.artifactDirectory),webSearchAvailable:publicSearchAllowed&&!!this.deps.webSearch&&config.values.tools.includes('web_search')}));
         if(v.outputKind==='local_file'&&!localForThisCall)throw new OrchestrationInputError('本机任务请使用 execute_local_task；仍需本机连接和目录授权。');
+        // Capability resolution can introduce local_special after validation
+        // normalized the original model selection. It is an execution mode,
+        // not a persisted profile ID; use the same reviewed logic handoff as
+        // batch delegation, without broadening the local entry permission.
+        const executorId=localForThisCall&&v.executorId==='local_special'?resolveRoutingExecutorId(fresh,'logic'):v.executorId;
         const selectedFeatures=v.featureIds?.length?v.featureIds:features;
         if ((v.outputKind==='image'||isImageInstruction(v.title)) && !selectedFeatures.some(id => availableFeature(fresh, s, id).version.values.experience?.mode === 'image')) {
           const taskId = await queueImage(v.instruction, v.title);
@@ -694,7 +699,7 @@ export class CoordinatorService {
         if (localForThisCall) localRequested = true;
         const childOperation = `${input.operationId}_work${dispatchedTasks.length ? '_' + dispatchedTasks.length : ''}`;
         dispatched = await this.enqueue(s, { operationId: childOperation, text: content, instruction: v.instruction,
-          title: v.title, taskId: v.taskId ?? undefined, executorId: v.executorId, modelId: input.modelId,
+          title: v.title, taskId: v.taskId ?? undefined, executorId, modelId: input.modelId,
           features:selectedFeatures,requiredFeatureIds:v.featureIds??[], sources, budget: workerBudget, webSearch: webPermission,
           confirmedExternal: Boolean(v.featureIds?.length)||input.confirmedExternal === true, featureApprovals: input.featureApprovals,
           originConversationId: cid, originMessageId: mid, attachmentIds: attachments,
