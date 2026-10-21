@@ -36,6 +36,15 @@ test('a recorded first-turn truncation can retry Notion, but missing history and
  assert.equal(taskRecovery([{...job,notionReceipt:{state:'uncertain',delivery:'unknown'}}]).kind,'review_notion');
  assert.equal(taskRecovery([{id:'old',state:'failed',notionReceipt:{state:'uncertain',delivery:'unknown'}},job]).kind,'review_notion');
 });
+test('Notion Key admission failure can retry only with explicit empty effect history',()=>{
+ const job={id:'key-failed',state:'failed',notionTarget:{},failureCode:'task_key_required',steps:[]};
+ assert.equal(taskRecovery([job]).kind,'retry');
+ assert.equal(taskRecovery([{...job,steps:undefined}]).kind,'review_notion');
+ assert.equal(taskRecovery([{...job,steps:[{tool:'save_notion_draft',effect:'external_write',state:'started'}]}]).kind,'none');
+ assert.equal(taskRecovery([{...job,notionReceipt:{state:'uncertain',delivery:'unknown'}}]).kind,'review_notion');
+ assert.equal(taskRecovery([{id:'older',state:'failed',notionReceipt:{state:'uncertain'}},job]).kind,'review_notion');
+ assert.equal(taskRecovery([{...job,state:'running'}]).kind,'none');
+});
 test('welcome recovery explains which stage remains without exposing the plan',()=>{
  assert.equal(taskRecovery([{id:'w',state:'failed',kind:'image',welcomeManual:{}}]).welcomeStep,'manual');
  assert.equal(taskRecovery([{id:'w',state:'failed',kind:'image',welcomeManual:{document:{}}}]).welcomeStep,'image');

@@ -12,7 +12,11 @@ import { compareRuntimeVersions, validRuntimeVersion, type RuntimeArchitecture, 
 import { recoverRuntimeUpdate, disconnectedRuntimeUpdate, confirmedRuntimeUpdate, runtimeRecoveryReceipt, type UpdateOwner } from './runtimeUpdateRecovery.js';
 import { acceptTerminalReceipt, maxTerminalReceiptBytes, parseTerminalReceipt, recordExecutionAttempt, terminalReceiptCapability } from './executionTerminalReceipt.js';
 
-const proofTimeoutMs = 2000;
+// Signing can include removable-disk I/O and a WAN round trip. A two-second
+// deadline disconnected healthy Keys under ordinary device/network contention.
+// Each challenge still needs its exact single-use signature; timeout never
+// grants access or replays the protected operation.
+const proofTimeoutMs = 8000;
 const authTimeoutMs = 5000;
 const updateHeartbeatGraceMs = 30 * 60 * 1000;
 

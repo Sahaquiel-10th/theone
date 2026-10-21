@@ -35,7 +35,12 @@ export function taskRecovery(jobs: { id: string; state: string; kind?: string;fa
   // Only an explicitly recorded empty checkpoint list proves that no earlier
   // turn started an effect. Missing legacy records are not proof of no write.
   const truncatedBeforeTools=latest.state==='failed'&&latest.failureCode==='task_tool_instruction_incomplete'&&!latest.notionReceipt&&Array.isArray(latest.steps)&&latest.steps.length===0;
-  const knownNotWritten=latest.notionTarget&&(['not_sent','rejected'].includes(latest.notionReceipt?.delivery||'')||truncatedBeforeTools);
+  // The current worker records a checkpoint before every effect and a receipt
+  // before sending a Notion write. An explicit Key failure with both records
+  // absent is admission-only, not an uncertain save. Legacy missing step lists
+  // and any earlier unresolved receipt must still stay protected.
+  const keyFailedBeforeTools=latest.state==='failed'&&latest.failureCode==='task_key_required'&&!latest.notionReceipt&&Array.isArray(latest.steps)&&latest.steps.length===0;
+  const knownNotWritten=latest.notionTarget&&(['not_sent','rejected'].includes(latest.notionReceipt?.delivery||'')||truncatedBeforeTools||keyFailedBeforeTools);
   if(latest.steps?.some(s=>s.state==='started'&&['artifact','external_write'].includes(s.effect)&&!(knownNotWritten&&s.tool==='save_notion_draft')))return {kind:'none',message:'有份文件是否保存好还没确认。先看看已有成果；需要继续时补充要求，ONE 会先核对，不会盲目重复保存。'};
   if (latest.state === 'prepared') return { kind: 'review_local', message: '请先查看本机执行回执；确认已完成的修改后，再从本机执行入口继续。' };
   if (latest.state === 'completed') return { kind: 'none', message: '最新一轮已有结果，请查看结果或提出新的修改要求。' };

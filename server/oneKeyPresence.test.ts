@@ -48,7 +48,7 @@ function sign(privateKey: crypto.KeyObject, nonce: string) {
   return crypto.sign(null, Buffer.from(nonce, "base64url"), privateKey).toString("base64url");
 }
 
-test("requires a fresh ONE Key signature for a protected request", async () => {
+test("requires a fresh ONE Key signature while tolerating a delayed signing round trip", async () => {
   const pair = crypto.generateKeyPairSync("ed25519");
   const device = {
     id: "device-a", serialNumber: "ONE-A", workspaceId: "workspace-a", userId: "user-a", status: "active",
@@ -73,8 +73,14 @@ test("requires a fresh ONE Key signature for a protected request", async () => {
   const proof = presence.requireProof({ deviceId: device.id, installationId, userId: device.userId, workspaceId: device.workspaceId, method: "POST", path: "/api/chat" });
   const [proofRaw] = await once(socket, "message");
   const challenge = JSON.parse(proofRaw.toString());
+  let authorized=false;
+  void proof.then(()=>{authorized=true;},()=>{});
+  await new Promise(resolve=>setTimeout(resolve,2500));
+  assert.equal(authorized,false,'waiting longer must never authorize without a signature');
+  assert.equal(presence.isConnected(device.id,installationId),true,'a valid delayed signer should not be disconnected at two seconds');
   socket.send(JSON.stringify({ type: "proof_response", challengeId: challenge.challengeId, signature: sign(pair.privateKey, challenge.nonce) }));
   await proof;
+  assert.equal(authorized,true);
 
   await assert.rejects(
     () => presence.requireProof({ deviceId: device.id, installationId, userId: device.userId, workspaceId: "workspace-b", method: "POST", path: "/api/chat" }),
