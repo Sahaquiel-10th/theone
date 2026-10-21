@@ -18,6 +18,7 @@ function fixture() {
     modelUsageRecords: [], powerLedger: [], powerAccounts: [{ id: "pa", workspaceId: "wa", userId: "a", balanceMicros: 10_000_000 }, { id: "pb", workspaceId: "wb", userId: "b", balanceMicros: 10_000_000 }]
   } as unknown as Database;
   let calls = 0, proof = 0, clock = Date.now(), mode = "success", deny = false, persistenceFailure = false;
+  let keyAbsent = false, waits = 0, waitEffect: (() => void) | undefined;
   let proofEffect: (() => void | Promise<void>) | undefined, fetchEffect: (() => Promise<void>) | undefined;
   const store: Store = { read: async () => db, mutate: async fn => {
     if (persistenceFailure) { await fn(structuredClone(db)); throw Error("durable commit unavailable"); }
@@ -26,8 +27,10 @@ function fixture() {
   const gateway = new CodexGateway(store, async scope => {
     proof++; assert.equal(scope.workspaceId, "wa"); assert.equal(scope.userId, "a"); assert.equal(scope.installationId, task.installationId);
     if (deny) throw Error("Key absent");
+    if (keyAbsent) throw Object.assign(Error("Key temporarily absent"), { code: "ONE_KEY_REQUIRED" });
     await proofEffect?.();
   }, { enabled: true, baseUrl: "https://one.example/api/executor-gateway/v1", modelId: model.id, now: () => clock,
+    waitForKey: async () => { waits++; clock += 1000; waitEffect?.(); },
     fetch: async (url, init) => {
       calls++; assert.equal(url, "https://supplier.example/v1/responses");
       assert.equal(new Headers(init?.headers).get("authorization"), "Bearer upstream-secret");
@@ -46,7 +49,8 @@ function fixture() {
   });
   return { gateway, db, task, calls: () => calls, proof: () => proof, setMode: (value: string) => { mode = value; }, deny: () => { deny = true; },
     afterProof: (effect: () => void | Promise<void>) => { proofEffect = effect; }, beforeSupplierResponse: (effect: () => Promise<void>) => { fetchEffect = effect; },
-    failPersistence: () => { persistenceFailure = true; }, advance: () => { clock += 61 * 60_000; } };
+    failPersistence: () => { persistenceFailure = true; }, advance: () => { clock += 61 * 60_000; },
+    setKeyAbsent: (value: boolean) => { keyAbsent = value; }, onWait: (effect: () => void) => { waitEffect = effect; }, waits: () => waits };
 }
 const signal = () => new AbortController().signal;
 test('missing supplier usage keeps its hold without stopping the next local tool decision',async()=>{
@@ -174,6 +178,55 @@ test("an absent Key cannot recover a pending attempt or reserve another supplier
   await assert.rejects(f.gateway.responses(config.token, followup, signal(), () => {}));
   assert.equal(f.task.status, "failed"); assert.equal(f.calls(), 1); assert.equal(f.proof(), 2);
   assert.equal(f.db.modelUsageRecords.length, 1); assert.equal(f.db.powerLedger.length, 1); assert.equal(f.db.executionEvents.length, 0);
+});
+
+test("a frozen interrupted round waits for fresh Key proof without replaying work or charging while absent", async () => {
+  const f = fixture(), config = await f.gateway.prepare(f.task);
+  await f.gateway.responses(config.token, request, signal(), () => {});
+  disconnect(f, "socket_close"); const attempt = structuredClone(f.task.deliveryAttempt);
+  f.setKeyAbsent(true);
+  f.onWait(() => {
+    assert.equal(f.calls(), 1); assert.equal(f.db.modelUsageRecords.length, 1);
+    assert.equal(f.db.powerLedger.length, 1); assert.equal(f.task.status, "failed");
+    if (f.waits() === 3) f.setKeyAbsent(false);
+  });
+  await f.gateway.responses(config.token, followup, signal(), () => {});
+  assert.equal(f.waits(), 3); assert.equal(f.proof(), 5); assert.equal(f.calls(), 2);
+  assert.equal(f.task.status, "running"); assert.deepEqual(f.task.deliveryAttempt, attempt);
+  assert.equal(f.db.executionEvents.length, 1); assert.equal(f.db.powerLedger.length, 2);
+});
+
+test("Key reconnect waiting is bounded and grants no new request when the Key stays absent", async () => {
+  const f = fixture(), config = await f.gateway.prepare(f.task);
+  await f.gateway.responses(config.token, request, signal(), () => {}); disconnect(f); f.setKeyAbsent(true);
+  await assert.rejects(f.gateway.responses(config.token, followup, signal(), () => {}));
+  assert.equal(f.waits(), 45); assert.equal(f.calls(), 1); assert.equal(f.task.status, "failed");
+  assert.equal(f.db.modelUsageRecords.length, 1); assert.equal(f.db.executionEvents.length, 0);
+  const initial = fixture(), first = await initial.gateway.prepare(initial.task); initial.setKeyAbsent(true);
+  await assert.rejects(initial.gateway.responses(first.token, request, signal(), () => {}));
+  assert.equal(initial.waits(), 0); assert.equal(initial.calls(), 0);
+});
+
+test("Key reconnect waiting stops on cancellation, replacement, ownership changes and a newer disconnect", async () => {
+  for (const change of ["cancelled", "revoked", "workspace", "attempt", "new_disconnect", "receipt", "abort", "replacement", "expiry"] as const) {
+    const f = fixture(), config = await f.gateway.prepare(f.task), abort = new AbortController();
+    await f.gateway.responses(config.token, request, signal(), () => {}); disconnect(f); f.setKeyAbsent(true);
+    f.onWait(() => {
+      if (change === "cancelled") f.task.status = "cancelled";
+      if (change === "revoked") f.db.oneKeyDevices[0].status = "revoked";
+      if (change === "workspace") f.task.workspaceId = "wb";
+      if (change === "attempt") f.task.deliveryAttempt!.id = "attempt-other";
+      if (change === "new_disconnect") f.task.transportInterruption!.at = "newer";
+      if (change === "receipt") f.task.terminalReceipt = { id: "receipt", hash: "hash", round: 0, outcome: "failed", attemptId: "attempt-a", disposition: "accepted", receivedAt: "now" };
+      if (change === "abort") abort.abort();
+      if (change === "replacement") f.task.transportInterruption!.reason = "connection_replaced";
+      if (change === "expiry") f.advance();
+      f.setKeyAbsent(false);
+    });
+    await assert.rejects(f.gateway.responses(config.token, followup, abort.signal, () => {}), change);
+    assert.equal(f.waits(), 1, change); assert.equal(f.calls(), 1, change);
+    assert.equal(f.db.modelUsageRecords.length, 1, change); assert.equal(f.db.executionEvents.length, 0, change);
+  }
 });
 
 test("a legacy normal request without an issued attempt cannot later gain reconnect authority", async () => {

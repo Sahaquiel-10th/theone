@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import type { Express } from "express";
 import type { Store } from "./db.js";
 import type { ExecutionTask, ModelConfig } from "./types.js";
@@ -35,6 +36,7 @@ export class CodexGateway {
   private grants = new Map<string, Grant>();
   constructor(private store: Store, private proof: Proof, private options: {
     baseUrl: string; modelId: string; enabled: boolean; fetch?: typeof fetch; now?: () => number;
+    waitForKey?: (signal: AbortSignal) => Promise<void>;
   }) {}
   enabled() { return this.options.enabled; }
   private now() { return this.options.now?.() ?? Date.now(); }
@@ -67,6 +69,33 @@ export class CodexGateway {
     const task = this.owned(db, grant);
     if (executionTerminal(task.status)) throw unavailable();
     return task;
+  }
+  private async proveRound(token: string, grant: Grant, signal: AbortSignal,
+    checkpoint: ExecutionTask["transportInterruption"]) {
+    const deadline = this.now() + 45_000;
+    for (let waits = 0; ; waits++) {
+      if (signal.aborted || !this.enabled() || this.grants.get(digest(token)) !== grant) throw unavailable();
+      const task = this.authorizable(await this.store.read(), grant);
+      if (checkpoint && (task.transportInterruption?.at !== checkpoint.at
+        || task.transportInterruption.reason !== checkpoint.reason
+        || task.transportInterruption.closeCode !== checkpoint.closeCode)) throw unavailable();
+      try {
+        await this.proof({ ...grant, method: "POST", path: "/api/executor-gateway/v1/responses" });
+        return;
+      } catch (error) {
+        // Only wait before a NEW upstream request, on an already frozen,
+        // transport-interrupted attempt. Never replay a supplier request, a
+        // local command or an unknown write, and never waive fresh Key proof.
+        if (!checkpoint || !grant.attemptId || (error as { code?: string })?.code !== "ONE_KEY_REQUIRED"
+          || waits >= 45 || this.now() >= deadline) throw error;
+        const latest = this.authorizable(await this.store.read(), grant);
+        if (!this.recoverable(latest, grant) || latest.transportInterruption?.at !== checkpoint.at
+          || latest.transportInterruption.reason !== checkpoint.reason
+          || latest.transportInterruption.closeCode !== checkpoint.closeCode) throw unavailable();
+        if (this.options.waitForKey) await this.options.waitForKey(signal);
+        else await delay(1000, undefined, { signal });
+      }
+    }
   }
   async prepare(task: ExecutionTask): Promise<CodexGatewayConfiguration> {
     if (!this.enabled()) throw unavailable();
@@ -103,7 +132,7 @@ export class CodexGateway {
       inputPowerPerMillion: priced.inputPowerPerMillion, outputPowerPerMillion: priced.outputPowerPerMillion,
       cachePrices: priced.cachePrices, cacheCostPrices: priced.cacheCostPrices, longContextCostPrices: priced.longContextCostPrices,
       costInputPowerPerMillion: priced.costInputPowerPerMillion, costOutputPowerPerMillion: priced.costOutputPowerPerMillion };
-    await this.proof({ ...grant, method: "POST", path: "/api/executor-gateway/v1/responses" });
+    await this.proveRound(token, grant, signal, recoveryCheckpoint);
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw unavailable();
     const input = raw as Record<string, unknown>;
     const allowed = new Set(["model", "input", "instructions", "tools", "tool_choice", "parallel_tool_calls", "reasoning", "text", "stream", "store", "include", "max_output_tokens", "prompt_cache_key", "client_metadata"]);
