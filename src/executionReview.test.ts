@@ -14,3 +14,12 @@ test('tool warning with a real answer is review, never proof of completion', () 
   assert.equal(task.status,'failed');
   for (const other of [{...task,status:'cancelled'}, {...task,status:'completed'}, {...task,lastError:'连接中断'}, {...task,finalResponse:''}]) assert.equal(executionNeedsReview(other),false);
 });
+test('settled app-server tool warnings are review without clearing unknown execution protection',()=>{
+ const warning='\n\n本轮有工具未能完成，请查看工具反馈；不会自动重跑。';
+ const task={status:'failed',finalResponse:'标题已修改并回读'+warning,lastError:'execution_unconfirmed'};
+ assert.equal(executionNeedsReview(task),true);
+ assert.equal(task.status,'failed');
+ for(const other of [{...task,lastError:'command_unconfirmed'},{...task,lastError:'launcher_interrupted'},
+   {...task,finalResponse:warning},{...task,finalResponse:'没有结束回执'}, {...task,status:'cancelled'}])
+   assert.equal(executionNeedsReview(other),false);
+});
