@@ -9,6 +9,7 @@
     "dev:web": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
     "test": "tsx --test src/*.test.ts server/*.test.ts server/connectors/*.test.ts server/knowledge/*.test.ts",
+    "test:receipt-transport": "tsx scripts/test-execution-receipt-transport.ts",
     "build:one-key:mac": "node scripts/build-macos-one-key.mjs",
     "build:one-key:windows": "node scripts/build-windows-one-key.mjs",
     "release:one-runtime": "node scripts/publish-runtime-update.mjs",
