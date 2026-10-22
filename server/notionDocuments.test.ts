@@ -46,6 +46,50 @@ test('Notion readback extracts body, refuses truncated/unsupported pages',()=>{
   assert.throws(()=>notionBody({text:'正文',unknown_block_count:1}));
 });
 
+test('requested same-title check reads only the selected parent and reuses an exact existing result without writing',async()=>{
+ const f=fixture(),job=f.job(),reads:string[]=[];
+ f.mcp.readDocument=async(ws,id)=>{assert.equal(ws,s.workspaceId);reads.push(id);return {text:id===parentId?`<page><content><page url="https://app.notion.com/p/${pageId}">合成便笺</page></content></page>`:'<page><content>青色42。</content></page>'};};
+ const tool=f.docs.tool(s,'op','task',job,async()=>{},undefined,'同名先核对，不重复新建');
+ const r=await tool.structured!.run(tool.structured!.validate({title:'合成便笺',content:'青色42。'})) as any;
+ assert.equal(r.state,'verified');assert.equal(r.reused,true);assert.equal(r.pageId,pageId);assert.equal(r.duplicateCheck,'matched_existing');
+ assert.deepEqual(reads,[parentId,pageId]);assert.equal(f.calls.length,0);assert.equal(job.notionReceipt?.state,'verified');
+ await assert.rejects(()=>f.docs.tool({workspaceId:'wb',userId:'b'},'op','task',job,async()=>{},undefined,'不重复新建').structured!.run({title:'合成便笺',content:'青色42。'}));assert.equal(reads.length,2);
+});
+test('same-title precondition fails closed for conflicts, ambiguous names, incomplete directory or revoked grant',async()=>{
+ for(const mode of ['conflict','ambiguous','truncated','unknown','unwrapped','revoked','formatted']){
+  const f=fixture(),job=f.job();
+  f.mcp.readDocument=async(_ws,id)=>{
+   if(mode==='revoked')f.db.knowledgeConnections[0].notionWriting!.grantId='changed';
+   if(id!==parentId)return {text:'<page><content>其他正文</content></page>'};
+   const child=`<page url="https://www.notion.so/${pageId}">${mode==='formatted'?'无法&amp;确认':'合成便笺'}</page>`;
+   return {text:mode==='unwrapped'?'目录未完整读到':`<page><content>${child}${mode==='ambiguous'?child:''}</content></page>`,truncated:mode==='truncated',unknown_block_count:mode==='unknown'?1:0};
+  };
+  const tool=f.docs.tool(s,'op','task',job,async()=>{},undefined,'同名先核对，不重复新建');
+  await assert.rejects(()=>tool.structured!.run(tool.structured!.validate({title:'合成便笺',content:'青色42。'})));
+  assert.equal(f.calls.length,0,mode);assert.notEqual(job.notionReceipt?.delivery,'unknown',mode);
+ }
+});
+test('concurrent same-title requests cannot both pass the preflight and a stopped check cannot bind an existing page',async()=>{
+ const f=fixture(),one=f.job('one'),two=f.job('two');let release!:()=>void,entered!:()=>void;
+ const gate=new Promise<void>(r=>release=r),started=new Promise<void>(r=>entered=r),read=f.mcp.readDocument.bind(f.mcp);
+ f.mcp.readDocument=async(ws,id)=>{if(id!==parentId)return read(ws,id);entered();await gate;return {text:'<page><content></content></page>'};};
+ const tool=(id:string,job:WorkRun)=>f.docs.tool(s,id,'task',job,async()=>{},undefined,'同名先核对，不重复新建').structured!;
+ const pending=tool('one',one).run({title:'并行便笺',content:'青色42。'});await started;
+ await assert.rejects(()=>tool('two',two).run({title:'并行便笺',content:'青色42。'}),/正在核对/);assert.equal(two.notionReceipt?.delivery,'not_sent');
+ release();await pending;assert.equal(f.calls.length,1);
+ const g=fixture(),stopped=g.job();g.mcp.readDocument=async(_ws,id)=>{if(id===parentId)return {text:`<page><content><page url="https://www.notion.so/${pageId}">便笺</page></content></page>`};g.db.chatOperations![0].workRun!.state='cancelled';return {text:'<page><content>青色42。</content></page>'};};
+ await assert.rejects(()=>g.docs.tool(s,'op','task',stopped,async()=>{},undefined,'同名先核对').structured!.run({title:'便笺',content:'青色42。'}),/已经停下/);
+ assert.equal(g.calls.length,0);assert.equal(g.db.conversations[0].notionDocument!.pageId,undefined);
+});
+test('complete empty selected directory permits exactly one create and reports its preflight',async()=>{
+ const f=fixture(),job=f.job(),read=f.mcp.readDocument.bind(f.mcp);
+ f.mcp.readDocument=async(ws,id)=>id===parentId?{text:'<page><content>\n</content></page>'}:read(ws,id);
+ const tool=f.docs.tool(s,'op','task',job,async()=>{},undefined,'若已有同名便笺，先核对，不重复新建');
+ const r=await tool.structured!.run(tool.structured!.validate({title:'新的便笺',content:'青色42。'})) as any;
+ assert.equal(r.duplicateCheck,'no_same_title_in_parent');assert.equal(f.calls.length,1);assert.equal(r.state,'verified');
+ await assert.rejects(()=>tool.structured!.run({title:'新的便笺',content:'青色42。'}));assert.equal(f.calls.length,1);
+});
+
 test('plain Notion line-break serialization verifies once without rewriting; literal code and changed text do not',async()=>{
  for(const [expected,actual,valid] of [
   ['第一行\n第二行','第一行<br />第二行',true],

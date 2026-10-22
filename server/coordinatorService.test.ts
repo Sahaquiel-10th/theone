@@ -2017,6 +2017,20 @@ test('task deletion is scoped, preserves originals, cancels queue and restore ne
   await assert.rejects(()=>f.service.resume(a,key,r.taskId,true),/没有尚未开始的待办/);
 });
 
+test('restoring a genuinely completed task restores its terminal state without replay, but unresolved work stays paused',async()=>{
+ for(const mode of ['completed','failed','uncertain','queued','local']){
+  const f=fixture(),r=await f.service.dispatch(a,input(`operation_restore_${mode}`,'UI 恢复状态回归'),key);
+  await f.store.mutate(d=>{const op=d.chatOperations!.find(o=>o.conversationId===r.taskId&&o.workRun)!;op.workRun!.state=mode==='failed'?'failed':'completed';op.workRun!.resultOutcome=mode==='failed'?'partial':'completed';
+   if(mode==='uncertain')op.workRun!.notionReceipt={state:'uncertain',delivery:'unknown'};
+   if(mode==='queued')d.chatOperations!.push({...structuredClone(op),id:'other-queued',workRun:{...structuredClone(op.workRun!),state:'queued'}});
+   if(mode==='local')d.executionTasks=[{...a,id:'local-uncertain',conversationId:r.taskId,status:'failed',result:{error:'execution_unconfirmed'}} as any];
+  });
+  await f.service.removeTask(a,r.taskId!,key);await f.service.restoreTask(a,r.taskId!,key);
+  const detail=await f.service.task(a,r.taskId!);assert.equal(detail.conversation.workPaused,mode!=='completed',mode);
+  assert.equal(f.calls.filter(c=>c.modelId==='worker').length,0);
+ }
+});
+
 test('explicit latest-only resume retains older inputs without executing or billing them',async()=>{
  const f=fixture(),r=await f.service.dispatch(a,input('operation_latest_001','UI 第一条'),key);
  await f.service.direct(a,r.taskId!,{operationId:'operation_latest_002',text:'最新修改要求'},key);

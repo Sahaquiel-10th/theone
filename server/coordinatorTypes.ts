@@ -16,7 +16,7 @@ export type WorkRun = {
   reviewedAt?: string;
   resultOutcome?: 'completed' | 'failed' | 'partial' | 'needs_input' | 'returned';
   notionTarget?: NonNullable<import('./types.js').Conversation['notionDocument']> & { referenceIds: string[] };
-  notionReceipt?: { state: 'pending' | 'verified' | 'uncertain'; pageId?: string; url?: string; asyncTaskId?: string; expectedDigest?: string; digest?: string; error?: string; delivery?: 'not_sent' | 'rejected' | 'unknown'; diagnostic?: {phase: string; reason: string; upstreamCode?: string}; failureCode?: 'write_unconfirmed' | 'response_unrecognized' | 'async_unconfirmed' | 'readback_failed' | 'readback_mismatch' };
+  notionReceipt?: { state: 'pending' | 'verified' | 'uncertain'; pageId?: string; url?: string; asyncTaskId?: string; expectedDigest?: string; digest?: string; error?: string; delivery?: 'not_sent' | 'rejected' | 'unknown'; diagnostic?: {phase: string; reason: string; upstreamCode?: string}; failureCode?: 'preflight_failed' | 'write_unconfirmed' | 'response_unrecognized' | 'async_unconfirmed' | 'readback_failed' | 'readback_mismatch' };
   featurePricingVersion?: 1;
   featureApprovals?: import('./featurePricing.js').FeatureApproval[];
   kind?: "image";

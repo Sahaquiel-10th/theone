@@ -13,6 +13,25 @@ import {freshDocumentReadRequested} from './executionIntent.js';
 const readOnlyRequest=(text:string)=>freshDocumentReadRequested(text)&&/只读|(?:不|不要)(?:修改|保存|写入)/.test(text);
 
 export class NotionDocumentError extends CoordinatorError {}
+class NotionPreflightError extends NotionDocumentError {}
+const sameTitleCheckRequested=(request:string)=>/同名|不重复(?:新建|创建)|(?:已有|已存在)[^\n。；]{0,30}(?:核对|检查)/.test(request);
+/** Child-page entries in a complete fetch of the exact selected parent only.
+ * Workspace search is deliberately not evidence of absence in this folder. */
+function childPages(value:unknown):{id:string;title:string}[]{
+  const v=resultData(value),raw=typeof v?.text==='string'?v.text:'';
+  const sections=[...raw.matchAll(/<content>([\s\S]*?)<\/content>/g)];
+  if(v?.truncated||v?.unknown_block_count||v?.unknown_block_ids?.length||sections.length!==1||raw.length>60000||/<unknown\b/i.test(raw))
+    throw new NotionPreflightError('保存位置还没完整读到，先不新建，免得出现重复文档。');
+  const body=sections[0][1],entries=[...body.matchAll(/<page\s+url="([^"]+)"[^>]*>([\s\S]*?)<\/page>/g)];
+  if((body.match(/<page\b/g)||[]).length!==entries.length)
+    throw new NotionPreflightError('保存位置的页面列表还没核对清楚，先不重复新建。');
+  return entries.map(m=>{
+    const title=m[2].trim();
+    // Do not infer absence from a title whose rendering we cannot compare.
+    if(/[<&\\`\n]/.test(title))throw new NotionPreflightError('保存位置里有标题暂时无法准确核对，先不重复新建。');
+    return {id:notionPageId(m[1]),title};
+  });
+}
 export function notionPageId(value: unknown): string {
   const parsed=parseNotionPageLink(value);
   if(parsed.error)throw new NotionDocumentError(parsed.error,400);
@@ -70,6 +89,7 @@ export function writingTarget(db: Database, s: WorkScope) {
   return { connectionId: connection.id, grantId: grant.grantId, parentId: grant.parentId, referenceIds: [...(grant.referenceIds || [])] };
 }
 export class NotionDocuments {
+  private creationChecks=new Set<string>();
   constructor(private store: Store, private mcp: NotionMcpService) {}
   async settings(s: WorkScope) {
     const db = await this.store.read(); featureMember(db, s);
@@ -139,6 +159,7 @@ export class NotionDocuments {
     for (const id of readOnly?[]:target.referenceIds) refs.push({ id, content: notionBody(await this.mcp.readDocument(s.workspaceId, id)).slice(0, 12000) });
     const current = target.pageId && !readOnly ? notionBody(await this.mcp.readDocument(s.workspaceId, target.pageId)) : undefined;
     return { references: refs, currentDocument: current, pageId: target.pageId, readOnly,
+      ...(sameTitleCheckRequested(originalRequest)?{creationPolicy:'save_notion_draft 会先读取已选父页面的完整子页面列表核对同名；内容一致则回读并复用，不新建。目录不完整或同名内容不同会停止，不覆盖。以工具返回的 duplicateCheck 为准。'}:{}),
       location: `https://www.notion.so/${target.pageId || target.parentId}`,
       parentLocation: `https://www.notion.so/${target.parentId}` };
   }
@@ -192,9 +213,34 @@ export class NotionDocuments {
             job.notionReceipt = { ...o.workRun.notionReceipt };
           });
           let pageId = target.pageId;
+          const checkKey=!pageId&&sameTitleCheckRequested(originalRequest)?JSON.stringify([s.workspaceId,s.userId,target.parentId,v.title.trim()]):undefined;
+          let ownsCheck=false,duplicateCheck:string|undefined;
           let failureCode: NonNullable<WorkRun['notionReceipt']>['failureCode'] = 'write_unconfirmed';
           try {
             await verify();
+            if(checkKey){
+              if(this.creationChecks.has(checkKey))throw new NotionPreflightError('同名便笺正在核对或保存，先等这一份处理完，不重复新建。');
+              this.creationChecks.add(checkKey);ownsCheck=true;
+              let children:{id:string;title:string}[];
+              try{children=childPages(await this.mcp.readDocument(s.workspaceId,target.parentId));}
+              catch(error){throw error instanceof NotionPreflightError?error:new NotionPreflightError('保存位置暂时没读到，先不新建；稍后可以继续核对。');}
+              await verify();this.assertTarget(await this.store.read(),s,target);
+              const matches=children.filter(child=>child.title===v.title.trim());
+              if(matches.length>1)throw new NotionPreflightError('这里已有多篇同名便笺，先不新建或覆盖。请选定要继续的那一篇。');
+              if(matches.length){
+                let actual:string;
+                try{actual=notionBody(await this.mcp.readDocument(s.workspaceId,matches[0].id));}
+                catch{throw new NotionPreflightError('找到了同名便笺，但正文还没完整读到；先不新建或覆盖。');}
+                await verify();this.assertTarget(await this.store.read(),s,target);
+                if(normalized(actual)!==normalized(expected))throw new NotionPreflightError('这里已有同名便笺，但内容不同。原文没动，也没有重复新建；可以换个标题另存。');
+                pageId=matches[0].id;const url=`https://www.notion.so/${pageId}`;
+                const fresh=await this.store.read();this.assertTarget(fresh,s,target);
+                if(fresh.chatOperations?.find(o=>o.id===opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId)?.workRun?.state!=='running')throw new NotionPreflightError('这轮已经停下，没有新建或修改文档。');
+                await record({state:'verified',pageId,url,digest:hash(actual),delivery:undefined});
+                return {state:'verified',url,pageId,reused:true,duplicateCheck:'matched_existing',message:'已核对保存位置并回读同名便笺，内容一致，复用原页面，没有重复新建。'};
+              }
+              duplicateCheck='no_same_title_in_parent';
+            }
             let response = resultData(await this.mcp.callDocumentTool(s.workspaceId, target.connectionId, target.grantId, s.userId,
               pageId ? 'notion-update-page' : 'notion-create-pages', pageId ? { page_id: pageId, command: 'update_content', content_updates: [{ old_str: v.old_str, new_str: v.new_str }], allow_async: false } : { parent: { page_id: target.parentId }, pages: [{ properties: { title: v.title }, content: v.content }], allow_async: false }, async () => {
                 await verify(); this.assertTarget(await this.store.read(), s, target);
@@ -229,12 +275,19 @@ export class NotionDocuments {
             if (normalized(actual) !== normalized(expected)) throw new Error('readback mismatch');
             await record({ state: 'verified', pageId, url, digest: hash(actual), failureCode: undefined, delivery: undefined, diagnostic: undefined });
             await verify();
-            return { state: 'verified', url, pageId, message: '已保存并回读核对；可打开 Notion。后续修改继续这一篇。' };
+            return { state: 'verified', url, pageId, ...(duplicateCheck?{duplicateCheck}:{}), message: `${duplicateCheck?'已核对保存位置，没有同名便笺；':''}已保存并回读核对；可打开 Notion。后续修改继续这一篇。` };
           } catch (error) {
+            if(checkKey&&failureCode==='write_unconfirmed'&&(await this.store.read()).chatOperations?.find(o=>o.id===opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId)?.workRun?.notionReceipt?.delivery==='not_sent'){
+              const message=error instanceof NotionPreflightError?error.message:'本轮保存前的检查没能完成，还没有发送写入请求。';
+              await record({state:'uncertain',failureCode:'preflight_failed',delivery:'not_sent',error:message});
+              throw new NotionDocumentError(message);
+            }
             const failure = error instanceof NotionWriteError && failureCode === 'write_unconfirmed' ? error : undefined;
             const message = failure && failure.delivery !== 'unknown' ? failure.message : 'Notion 保存未确认，可能已写入；请核对原页面，不会自动重跑。';
             await record({ state: 'uncertain', pageId, url: pageId ? `https://www.notion.so/${pageId}` : undefined, failureCode, delivery: failure?.delivery ?? 'unknown', diagnostic: failure ? {phase: failure.phase, reason: failure.reason, upstreamCode: failure.upstreamCode} : undefined, error: message });
             throw new NotionDocumentError(message);
+          } finally {
+            if(ownsCheck)this.creationChecks.delete(checkKey!);
           }
         } }
     };

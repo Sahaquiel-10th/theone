@@ -298,6 +298,11 @@ export class CoordinatorService {
       if (!task) throw new CoordinatorError('任务不存在',404);
       task.archived = false; task.updatedAt = at();
       // Deleted queued work stays cancelled; restoring never replays it.
+      const jobs=(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===id&&o.workRun).sort((a,b)=>a.createdAt.localeCompare(b.createdAt));
+      const latest=jobs.at(-1)?.workRun;
+      if(latest?.state==='completed'&&latest.resultOutcome==='completed'&&
+        jobs.every(o=>o.workRun!.state==='completed'&&(!o.workRun!.notionReceipt||o.workRun!.notionReceipt.state==='verified')&&!o.workRun!.steps?.some(step=>step.state==='started'&&['artifact','external_write'].includes(step.effect)))&&
+        !(d.executionTasks??[]).some(t=>own(t,s)&&t.conversationId===id))task.workPaused=false;
     });
     return {ok:true};
   }
