@@ -37,7 +37,7 @@ export function notionBody(value: unknown): string {
   const wrapped = raw.match(/<content>([\s\S]*?)<\/content>/);
   // Drop at most the wrapper's framing newline, never code indentation.
   const body = wrapped ? wrapped[1].replace(/^\r?\n/,'').replace(/\r?\n$/,'') : raw;
-  if (!body || body.length > 60000) throw new NotionDocumentError('页面正文无法完整读取，请检查页面权限或缩小范围');
+  if (!body.trim() || body.length > 60000) throw new NotionDocumentError('页面正文无法完整读取，请检查页面权限或缩小范围');
   return body;
 }
 const hash = (body: string) => crypto.createHash('sha256').update(body).digest('hex');

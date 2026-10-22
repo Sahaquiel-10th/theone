@@ -41,6 +41,7 @@ test('Notion destination validates links and exact workspace/user grant; legacy 
 test('Notion readback extracts body, refuses truncated/unsupported pages',()=>{
   assert.equal(notionBody({content:[{type:'text',text:JSON.stringify({text:'<page><properties>not body</properties><content>正文</content></page>'})}]}),'正文');
   assert.equal(notionBody({text:'<page><content>\n    literal code<br />\n</content></page>'}),'    literal code<br />');
+  assert.throws(()=>notionBody({text:'<page><content>\n    \n</content></page>'}),/正文无法完整读取/);
   assert.throws(()=>notionBody({text:'正文',truncated:true}));
   assert.throws(()=>notionBody({text:'正文',unknown_block_count:1}));
 });
