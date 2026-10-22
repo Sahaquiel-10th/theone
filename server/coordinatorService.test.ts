@@ -868,7 +868,7 @@ test('a new explicit Notion task with default chat binds only its own scoped wri
   const mcp={readDocument:async()=>({text:body||'保存目录'}),callDocumentTool:async(ws:string,cid:string,grant:string,user:string,name:string,args:any)=>{
    assert.deepEqual([ws,cid,grant,user,name],['wa','notion','grant','a','notion-create-pages']);writes++;body=args.pages[0].content;return {pages:[{id:pageId}]};
   }} as unknown as NotionMcpService;
-  const write={taskId:null,title:'合成便笺',instruction:'在 Notion 新建合成便笺，正文只有青色42，保存后回读。不查知识库。',executorId:'general',featureIds:[]};
+  const write={taskId:null,title:'合成便笺',instruction:'只在当前已选的 Notion 草稿保存页面下面新建合成便笺，正文只有青色42，保存后回读。不查知识库。',executorId:'general',featureIds:[]};
   const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('no knowledge');}},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages,tools)=>{
    if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('任务已安排。'):{...answer(''),toolCalls:[{id:'route',type:'function',function:{name:batch?'delegate_tasks':'delegate_task',arguments:JSON.stringify(batch?{tasks:[{...write,outputKind:'text',dependsOn:[]},{...write,title:'独立短句',instruction:'只返回独立短句你好，不保存任何文档。',outputKind:'text',dependsOn:[]}]}:write)}}]};
    if(messages.at(-1)?.role==='tool')return answer(JSON.stringify({outcome:'completed',content:'合成便笺已保存并回读。',summary:'完成'}));
@@ -876,7 +876,7 @@ test('a new explicit Notion task with default chat binds only its own scoped wri
    assert.ok(tools.some(t=>t.function.name==='save_notion_draft'),'default chat must not erase the user-named Notion destination');
    return {...answer(''),toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({title:'合成便笺',content:'青色42'})}}]};
   }});
-  const r=await service.dispatch(a,{...input(`operation_notion_auto_${batch?'batch':'single'}`,'在 Notion 新建合成便笺，正文只有青色42，保存后回读。不查知识库。另写一句独立短句，只在对话中返回。'),outputDestination:'chat'},key);
+  const r=await service.dispatch(a,{...input(`operation_notion_auto_${batch?'batch':'single'}`,'只在当前已选的 Notion 草稿保存页面下面新建合成便笺，正文只有青色42，保存后回读。不查知识库。另写一句独立短句，只在对话中返回。'),outputDestination:'chat'},key);
   const jobs=(await f.store.read()).chatOperations!.filter(o=>o.workRun);assert.equal(jobs.length,batch?2:1);assert.equal(jobs[0].workRun!.notionTarget?.parentId,parentId);if(batch)assert.equal(jobs[1].workRun!.notionTarget,undefined);
   await service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.filter(o=>o.workRun).every(o=>o.workRun!.state==='completed'));
   assert.equal(writes,1);assert.equal(body,'青色42');assert.equal((await service.task(a,jobs[0].conversationId!)).jobs[0].notionReceipt?.state,'verified');

@@ -8,6 +8,7 @@ test('current explicit discussion restrictions do not inherit an old execution r
 
 test('a current unquoted Notion write request is distinct from discussion, payload and retrieval',()=>{
  for(const text of ['请在 Notion 新建一篇测试便笺。','帮我把这篇短文保存到 Notion，保存后回读。','请写入Notion草稿。','把合成内容写到 Notion。','Save this note to Notion.'])assert.equal(notionWriteRequested(text),true,text);
+ for(const text of ['只在当前已选的 Notion 草稿保存页面下面新建一篇普通测试便笺。','在已授权的 Notion 目录新建便笺。'])assert.equal(notionWriteRequested(text),true,text);
  for(const text of ['只回答，如何保存到 Notion？','如果要写入 Notion 应该怎么办？','不要保存到 Notion，只在这里给我。','别在 Notion 新建文档。','不必保存到Notion。','先写文案，暂时不要写入 Notion。','在Notion查找合成便笺，不修改。','介绍 Notion 的用法。','把“保存到 Notion”这句话排成网页。','翻译 "Save this note to Notion"。','正文如下：请保存到 Notion。','以下是原文：\n请在 Notion 新建文档。','示例：在 Notion 新建文档。','```text\n保存到 Notion\n```','> 请保存到 Notion\n只整理这段原话。'])assert.equal(notionWriteRequested(text),false,text);
  for(const text of ['请分析这条命令：在Notion新建便笺。','只讨论：保存到Notion。','Do not save this note to Notion.'])assert.equal(notionWriteRequested(text),false,text);
 });
