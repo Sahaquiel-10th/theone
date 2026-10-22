@@ -34,13 +34,21 @@ export function notionBody(value: unknown): string {
   const raw = typeof v?.text === 'string' ? v.text : typeof v?.content === 'string' ? v.content : '';
   // Official fetch wraps enhanced Markdown inside <content>; never confuse
   // properties/path/children metadata with the article body.
-  const wrapped = raw.match(/<content>\s*([\s\S]*?)\s*<\/content>/);
-  const body = wrapped ? wrapped[1] : raw;
+  const wrapped = raw.match(/<content>([\s\S]*?)<\/content>/);
+  // Drop at most the wrapper's framing newline, never code indentation.
+  const body = wrapped ? wrapped[1].replace(/^\r?\n/,'').replace(/\r?\n$/,'') : raw;
   if (!body || body.length > 60000) throw new NotionDocumentError('页面正文无法完整读取，请检查页面权限或缩小范围');
   return body;
 }
 const hash = (body: string) => crypto.createHash('sha256').update(body).digest('hex');
-const normalized = (body: string) => body.split('\n').map(line => line.trimEnd()).filter(line => line.trim()).join('\n').trim();
+const normalized = (body: string) => {
+  // Enhanced Markdown serializes ordinary soft breaks as HTML <br />.
+  // Compare that representation only; preserve original read/write text and
+  // stay conservative whenever code may contain a literal break tag.
+  const mayContainLiteralCode=/`|~~~|^(?: {4}|\t)|<(?:pre|code)\b/im.test(body);
+  const text=mayContainLiteralCode?body:body.replace(/<br\s*\/?>/gi,'\n');
+  return text.split('\n').map(line => line.trimEnd()).filter(line => line.trim()).join('\n').trim();
+};
 function quotedReplacement(request: string) {
   // Only an unambiguous, explicitly quoted replacement in the real user turn.
   // General rewrites and multi-edit requests remain model-led, not regex plans.

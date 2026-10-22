@@ -208,7 +208,11 @@ function fetchedChunk(result: unknown, fallback: { id?: string; title?: string; 
   const title = objectString(parsed, ["title", "name"]) || fallback.title || "Notion 页面";
   const sourceUrl = safeNotionSourceUrl(objectString(parsed, ["url", "href"]) || fallback.url);
   const body = objectString(parsed, ["text", "content", "markdown"]) || text || fallback.excerpt || "";
-  return { id: fallback.id, provider: "notion", title, sourceUrl, content: body.slice(0, maxChunkChars),createdAt:objectString(parsed,['created_time','created_at'])?.slice(0,40)??fallback.createdAt,updatedAt:objectString(parsed,['last_edited_time','updated_at'])?.slice(0,40)??fallback.updatedAt };
+  // Official fetch wraps the page body with retrieval-time and ancestry data.
+  // Neither the as-of wrapper nor a changing fetch timestamp is note content.
+  const wrapped=body.match(/<content>([\s\S]*?)<\/content>/);
+  const content=wrapped?wrapped[1].replace(/^\r?\n/,'').replace(/\r?\n$/,''):body;
+  return { id: fallback.id, provider: "notion", title, sourceUrl, content: content.slice(0, maxChunkChars),createdAt:objectString(parsed,['created_time','created_at'])?.slice(0,40)??fallback.createdAt,updatedAt:objectString(parsed,['last_edited_time','updated_at'])?.slice(0,40)??fallback.updatedAt };
 }
 
 export class NotionMcpService {

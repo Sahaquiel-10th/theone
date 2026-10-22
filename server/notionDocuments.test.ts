@@ -40,8 +40,40 @@ test('Notion destination validates links and exact workspace/user grant; legacy 
 });
 test('Notion readback extracts body, refuses truncated/unsupported pages',()=>{
   assert.equal(notionBody({content:[{type:'text',text:JSON.stringify({text:'<page><properties>not body</properties><content>正文</content></page>'})}]}),'正文');
+  assert.equal(notionBody({text:'<page><content>\n    literal code<br />\n</content></page>'}),'    literal code<br />');
   assert.throws(()=>notionBody({text:'正文',truncated:true}));
   assert.throws(()=>notionBody({text:'正文',unknown_block_count:1}));
+});
+
+test('plain Notion line-break serialization verifies once without rewriting; literal code and changed text do not',async()=>{
+ for(const [expected,actual,valid] of [
+  ['第一行\n第二行','第一行<br />第二行',true],
+  ['第一行\n第二行','第一行<br>第二行',true],
+  ['第一行\n第二行','第一行<br />改掉的第二行',false],
+  ['`第一行\n第二行`','`第一行<br />第二行`',false],
+  ['```html\n第一行\n第二行\n```','```html\n第一行<br />第二行\n```',false],
+  ['    第一行\n    第二行','    第一行<br />    第二行',false],
+ ] as const){
+  const f=fixture(),job=f.job();
+  f.mcp.readDocument=async()=>({text:`<page><content>${actual}</content></page>`});
+  const tool=f.docs.tool(s,'op','task',job,async()=>{}),args=tool.structured!.validate({title:'测试',content:expected});
+  if(valid){const result=await tool.structured!.run(args) as any;assert.equal(result.state,'verified');}
+  else{await assert.rejects(()=>tool.structured!.run(args),/保存未确认/);assert.equal(job.notionReceipt!.state,'uncertain');}
+  assert.equal(f.calls.length,1);assert.equal(f.calls[0].args.pages[0].content,expected,'never rewrite user text to make a check pass');
+ }
+});
+
+test('an old uncertain plain-text receipt can be reconciled read-only after serialized breaks',async()=>{
+ const f=fixture(),job=f.job(),actual='ONE-QA37<br />验收状态：等待整理。';
+ // Simulate a transient readback failure after the create already succeeded.
+ f.mcp.readDocument=async()=>{throw Error('temporarily offline');};
+ const tool=f.docs.tool(s,'op','task',job,async()=>{});
+ await assert.rejects(()=>tool.structured!.run(tool.structured!.validate({title:'QA37',content:'ONE-QA37\n验收状态：等待整理。'})));
+ job.state='failed';f.db.chatOperations![0].workRun!.state='failed';
+ f.mcp.readDocument=async()=>({text:`<page><content>${actual}</content></page>`});
+ const result=await f.docs.reconcile(s,'task',async()=>{});
+ assert.equal(result.state,'verified');assert.equal(f.calls.length,1);assert.equal(f.db.chatOperations![0].workRun!.state,'failed','save verification must not erase the failed task history');
+ await assert.rejects(()=>f.docs.reconcile({workspaceId:'wb',userId:'b'},'task',async()=>{}));assert.equal(f.calls.length,1);
 });
 test('explicit read-only continuation reads only its own page and rejects even a direct write-tool invocation',async()=>{
  const f=fixture(),job=f.job('readonly',pageId),request='只读核对本任务的原文，不修改、不保存。',reads:string[]=[];

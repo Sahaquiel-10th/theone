@@ -13,7 +13,7 @@ export type AttentionState=Scope&{
   enabled:boolean;revision:number;deviceId:string;installationId:string;sourceIds:string[];topics:string[];
   intervalHours:number;dailyLimit:number;quietStart:number;quietEnd:number;timeZone:string;
   nextCheckAt?:string;lastCheckedAt?:string;lastStatus?:'queued'|'baseline'|'checked'|'partial'|'failed'|'offline'|'quiet'|'daily_limit'|'paused';
-  day?:string;checksToday:number;seen:Record<string,string[]>;notices:AttentionNotice[];
+  day?:string;checksToday:number;seen:Record<string,string[]>;fingerprintVersion?:1;notices:AttentionNotice[];
   lease?:{id:string;until:string};
 };
 const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
@@ -48,7 +48,7 @@ export class AttentionService{
       if(![1,3,6,12,24].includes(Number(v.intervalHours))||!Number.isInteger(v.dailyLimit)||Number(v.dailyLimit)<1||Number(v.dailyLimit)>12)throw new Error('请检查频率和每天检查次数');
       if(!Number.isInteger(v.quietStart)||!Number.isInteger(v.quietEnd)||Number(v.quietStart)<0||Number(v.quietStart)>23||Number(v.quietEnd)<0||Number(v.quietEnd)>23||!validTimeZone(v.timeZone))throw new Error('请检查时区和免打扰时间');
       const same=previous&&JSON.stringify([previous.sourceIds,previous.topics])===JSON.stringify([ids,topics.map(q=>q.trim())]);
-      const c:AttentionState={...s,enabled:true,revision:(previous?.revision??0)+1,deviceId:device.deviceId,installationId:device.installationId,sourceIds:ids,topics:topics.map(q=>q.trim()),intervalHours:Number(v.intervalHours),dailyLimit:Number(v.dailyLimit),quietStart:Number(v.quietStart),quietEnd:Number(v.quietEnd),timeZone:v.timeZone,checksToday:previous?.checksToday??0,day:previous?.day,seen:same?previous.seen:{},notices:previous?.notices??[],lastStatus:'queued',nextCheckAt:new Date(this.now()).toISOString()};
+      const c:AttentionState={...s,enabled:true,revision:(previous?.revision??0)+1,deviceId:device.deviceId,installationId:device.installationId,sourceIds:ids,topics:topics.map(q=>q.trim()),intervalHours:Number(v.intervalHours),dailyLimit:Number(v.dailyLimit),quietStart:Number(v.quietStart),quietEnd:Number(v.quietEnd),timeZone:v.timeZone,checksToday:previous?.checksToday??0,day:previous?.day,seen:same&&previous.fingerprintVersion===1?previous.seen:{},fingerprintVersion:1,notices:previous?.notices??[],lastStatus:'queued',nextCheckAt:new Date(this.now()).toISOString()};
       const u=db.users.find(u=>u.id===s.userId)!;u.attentionStates=[...(u.attentionStates??[]).filter(p=>!own(p,s)),c];
       return publicState(db,s,this.now());
     });
@@ -87,7 +87,12 @@ export class AttentionService{
     let successes=0,failures=0,baseline=false;
     try{
       await live();
-      await this.store.mutate(db=>{const c=state(db,s);if(c?.lease?.id===leaseId)c.checksToday++;});
+      await this.store.mutate(db=>{const c=state(db,s);if(c?.lease?.id===leaseId){
+        c.checksToday++;
+        // Rebaseline legacy wrapper-based digests once, after fresh proof.
+        // Parser improvements are not updates to the user's notes.
+        if(c.fingerprintVersion!==1){c.seen={};c.fingerprintVersion=1;}
+      }});
       for(const topic of claimed.topics){
         for(const sourceId of claimed.sourceIds){
           try{

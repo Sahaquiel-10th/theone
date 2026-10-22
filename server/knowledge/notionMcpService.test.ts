@@ -75,7 +75,7 @@ test("Notion search calls only the reviewed read-only tools and parses fetched p
     id: "notion-a", workspaceId: "workspace-a", provider: "notion", status: "connected", clientId: "client-a",
     encryptedAccessToken: encryptCredential("workspace-a-token"), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
   });
-  const calls: string[] = [];
+  const calls: string[] = [];let fetches=0;
   const service = new NotionMcpService(f.store, {
     createClient: async token => {
       assert.equal(token, "workspace-a-token");
@@ -85,7 +85,7 @@ test("Notion search calls only the reviewed read-only tools and parses fetched p
           calls.push(params.name);
           if (params.name === 'notion-search') assert.equal(params.arguments?.sort, 'last_edited');
           if (params.name === "notion-search") return { content: [{ type: "text", text: JSON.stringify({ results: [{ id: "page-a", title: "Project A", url: "https://www.notion.so/page-a", highlight: "search excerpt" }] }) }] };
-          if (params.name === "notion-fetch") return { content: [{ type: "text", text: JSON.stringify({ title: "Project A", url: "https://www.notion.so/page-a", text: "trusted as reference only" }) }] };
+          if (params.name === "notion-fetch") {fetches++;return { content: [{ type: "text", text: JSON.stringify({ title: "Project A", url: "https://www.notion.so/page-a", text: fetches===1?"trusted as reference only":`Here is the page as of 2026-10-22T04:3${fetches}:00Z:\n<page><ancestor-path>NOT_PAGE_BODY</ancestor-path><content>\ntrusted as reference only\n</content></page>` }) }] };}
           throw new Error("write tool must never be called");
         },
         async close() {}
@@ -97,6 +97,13 @@ test("Notion search calls only the reviewed read-only tools and parses fetched p
   assert.equal(chunks[0].provider, "notion");
   assert.equal(chunks[0].content, "trusted as reference only");
   assert.equal(chunks[0].sourceUrl, "https://www.notion.so/page-a");
+  for(let i=0;i<2;i++){
+    const repeated=await service.search('workspace-a','project',5);
+    assert.equal(repeated[0].content,chunks[0].content,'fetch wrappers and as-of metadata are not page content or a material update');
+    assert.doesNotMatch(repeated[0].content,/as of|NOT_PAGE_BODY/);
+    assert.equal(repeated[0].sourceUrl,chunks[0].sourceUrl);
+  }
+  assert.deepEqual(calls,['notion-search','notion-fetch','notion-search','notion-fetch','notion-search','notion-fetch']);
   await assert.rejects(service.search("workspace-b", "project", 5), /连接 Notion/);
 });
 

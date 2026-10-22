@@ -51,6 +51,17 @@ test('parallel ticks claim one lease and snooze/read-all are private and durable
   const f=fixture();await f.service.configure(a,f.config,{deviceId:'da',installationId:'ia'});await Promise.all([f.service.check(a),f.service.check(a)]);assert.equal(f.calls,1);
   f.advance();f.setContent('new');await f.service.check(a);const n=(await f.service.view(a)).notices[0];await f.service.acknowledge(a,n.id,'snooze');assert.equal((await f.service.view(a)).notices.length,0);f.advance(86400000);assert.equal((await f.service.view(a)).notices.length,1);await f.service.acknowledge(a,'all','all');assert.equal((await f.service.view(a)).notices.length,0);
 });
+
+test('legacy wrapper fingerprints rebaseline silently once without losing real unread notices',async()=>{
+ const f=fixture();await f.service.configure(a,f.config,{deviceId:'da',installationId:'ia'});await f.service.check(a);
+ f.advance();f.setContent('real change');await f.service.check(a);
+ const notice=(await f.service.view(a)).notices[0];assert.ok(notice);
+ const old=f.db.users[0].attentionStates![0];delete old.fingerprintVersion;
+ f.advance();f.setContent('same note returned without retrieval wrapper');await f.service.check(a);
+ let view=await f.service.view(a);assert.equal(view.settings?.lastStatus,'baseline');assert.equal(view.notices.length,1);assert.equal(view.notices[0].createdAt,notice.createdAt);
+ f.advance();await f.service.check(a);view=await f.service.view(a);assert.equal(view.settings?.lastStatus,'checked');assert.equal(view.notices[0].createdAt,notice.createdAt);
+ assert.equal(old.fingerprintVersion,1);assert.equal('fingerprintVersion' in view.settings!,false);
+});
 test('a changed credential discards a late source response and a hanging connector has a bounded failed outcome',async()=>{
   const f=fixture();await f.service.configure(a,f.config,{deviceId:'da',installationId:'ia'});await f.service.check(a);f.advance();
   let release!:()=>void,entered!:()=>void;const ready=new Promise<void>(r=>entered=r),wait=new Promise<void>(r=>release=r);
