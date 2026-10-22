@@ -861,6 +861,56 @@ test('a new Notion draft cannot be completed by a model claim without a verified
   assert.doesNotMatch(task.conversation.messages.at(-1)!.content,/已保存到 Notion/);
   await assert.rejects(()=>service.task(b,r.taskId!));
 });
+test('a new explicit Notion task with default chat binds only its own scoped write and verifies the real page',async()=>{
+ for(const batch of [false,true]){
+  const f=fixture(),parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',pageId='cccccccccccccccccccccccccccccccc';let body='',writes=0;
+  await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:'a',authorizedAt:'now',parentId}}));
+  const mcp={readDocument:async()=>({text:body||'保存目录'}),callDocumentTool:async(ws:string,cid:string,grant:string,user:string,name:string,args:any)=>{
+   assert.deepEqual([ws,cid,grant,user,name],['wa','notion','grant','a','notion-create-pages']);writes++;body=args.pages[0].content;return {pages:[{id:pageId}]};
+  }} as unknown as NotionMcpService;
+  const write={taskId:null,title:'合成便笺',instruction:'在 Notion 新建合成便笺，正文只有青色42，保存后回读。不查知识库。',executorId:'general',featureIds:[]};
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('no knowledge');}},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages,tools)=>{
+   if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('任务已安排。'):{...answer(''),toolCalls:[{id:'route',type:'function',function:{name:batch?'delegate_tasks':'delegate_task',arguments:JSON.stringify(batch?{tasks:[{...write,outputKind:'text',dependsOn:[]},{...write,title:'独立短句',instruction:'只返回独立短句你好，不保存任何文档。',outputKind:'text',dependsOn:[]}]}:write)}}]};
+   if(messages.at(-1)?.role==='tool')return answer(JSON.stringify({outcome:'completed',content:'合成便笺已保存并回读。',summary:'完成'}));
+   if(messages.at(-1)?.content?.includes('独立短句')){assert.ok(!tools.some(t=>t.function.name==='save_notion_draft'));return answer(JSON.stringify({outcome:'completed',content:'你好',summary:'完成'}));}
+   assert.ok(tools.some(t=>t.function.name==='save_notion_draft'),'default chat must not erase the user-named Notion destination');
+   return {...answer(''),toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({title:'合成便笺',content:'青色42'})}}]};
+  }});
+  const r=await service.dispatch(a,{...input(`operation_notion_auto_${batch?'batch':'single'}`,'在 Notion 新建合成便笺，正文只有青色42，保存后回读。不查知识库。另写一句独立短句，只在对话中返回。'),outputDestination:'chat'},key);
+  const jobs=(await f.store.read()).chatOperations!.filter(o=>o.workRun);assert.equal(jobs.length,batch?2:1);assert.equal(jobs[0].workRun!.notionTarget?.parentId,parentId);if(batch)assert.equal(jobs[1].workRun!.notionTarget,undefined);
+  await service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.filter(o=>o.workRun).every(o=>o.workRun!.state==='completed'));
+  assert.equal(writes,1);assert.equal(body,'青色42');assert.equal((await service.task(a,jobs[0].conversationId!)).jobs[0].notionReceipt?.state,'verified');
+  await assert.rejects(()=>service.task(b,r.taskId!));assert.equal((await f.store.read()).powerAccounts[1].balanceMicros,100e6);
+ }
+});
+
+test('model-only Notion requests, quoted examples and read-only originals never acquire a writing target',async()=>{
+ for(const original of ['只在这里写一篇合成短文，不保存到 Notion。','把“在 Notion 新建便笺”这句话整理成说明。','在 Notion 查找合成便笺，不修改。','整理这段合成文字。']){
+  const f=fixture();let writes=0;
+  await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:'a',authorizedAt:'now',parentId:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}}));
+  const mcp={callDocumentTool:async()=>{writes++;throw Error('no write permission from a model');}} as unknown as NotionMcpService;
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({status:'no_match',chunks:[],failures:[]})},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages,tools)=>{
+   if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('已安排。'):{...answer(''),toolCalls:[{id:'wrong-write',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'合成文字',instruction:'在 Notion 新建合成便笺。',executorId:'general',featureIds:[]})}}]};
+   assert.ok(!tools.some(t=>t.function.name==='save_notion_draft'));return answer(JSON.stringify({outcome:'completed',content:'只返回合成文字。',summary:'完成'}));
+  }});
+  await service.dispatch(a,{...input('operation_no_notion_authority',original),outputDestination:'chat'},key);
+  assert.ok((await f.store.read()).chatOperations!.filter(o=>o.workRun).every(o=>!o.workRun!.notionTarget));
+  await service.resume(a,key);assert.equal(writes,0);
+ }
+});
+
+test('text-selected Notion destination still requires the exact owner grant and preflights a whole batch',async()=>{
+ for(const grant of ['foreign-workspace','other-user','read-only','no-parent','valid']){
+  const f=fixture();let writes=0;
+  await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:grant==='foreign-workspace'?'wb':'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',...(grant==='read-only'?{}:{notionWriting:{grantId:'grant',userId:grant==='other-user'?'b':'a',authorizedAt:'now',parentId:grant==='no-parent'?'':'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}})}));
+  const mcp={callDocumentTool:async()=>{writes++;throw Error('not run');}} as unknown as NotionMcpService;
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(_model,messages)=>messages.at(-1)?.role==='tool'?answer('按实际回执说明。'):{...answer(''),toolCalls:[{id:'whole-plan',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'独立短句',instruction:'返回你好',executorId:'general',featureIds:[],outputKind:'text',dependsOn:[]},{taskId:null,title:'Notion便笺',instruction:'在Notion新建合成便笺',executorId:'general',featureIds:[],outputKind:'text',dependsOn:[]}]})}}]}});
+  const dispatch=()=>service.dispatch(a,{...input('operation_notion_grant_check','写一句你好，另在Notion新建合成便笺。'),outputDestination:'chat'},key);
+  if(grant==='valid')await dispatch();else await assert.rejects(dispatch,/授权 Notion|选择草稿保存页面/);
+  const db=await f.store.read(),jobs=db.chatOperations!.filter(o=>o.workRun);assert.equal(jobs.length,grant==='valid'?2:0,grant);assert.equal(writes,0);assert.equal(db.powerAccounts[1].balanceMicros,100e6);
+ }
+});
+
 test('Notion dispatcher and queued continuation create once, revise the same document, keep original words and scoped receipts',async()=>{
   const f=fixture(),parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',pageId='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
   await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:'a',authorizedAt:'now',parentId}}));
