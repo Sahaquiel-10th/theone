@@ -23,7 +23,7 @@ export function runtimeContextText(context:RuntimeContext,now=new Date().toISOSt
 /** Only server-known facts, for independent questions in an otherwise failed search. */
 export function requestedRuntimeFacts(request:string,context:RuntimeContext){
   const facts:string[]=[];
-  if(/(?:今天|昨天|今日|昨日).{0,10}(?:日期|几号|哪一天)/.test(request))facts.push(`今天是 ${context.today}，昨天是 ${context.yesterday}`);
+  if(/(?:今天|昨天|今日|昨日).{0,10}(?:日期|几号|哪一天|几月几日)/.test(request))facts.push(`今天是 ${context.today}，昨天是 ${context.yesterday}`);
   if(/时区/.test(request))facts.push(`时区是 ${context.timeZone}`);
   if(/(?:设置|常驻).{0,6}城市/.test(request))facts.push(context.city?`设置的常驻城市是 ${context.city}`:'还没有设置常驻城市');
   return facts.length?facts.join('；')+'。':'';

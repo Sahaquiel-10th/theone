@@ -112,6 +112,25 @@ test('an unavailable public search has a plain next step, never a successful sea
   assert.match(result.message.content,/Asia\/Shanghai/);assert.match(result.message.content,/还没有设置常驻城市/);
 });
 import { executorDefaults, updateExecutor } from "./executorProfiles.js";
+
+test('missing or failed private retrieval preserves independently requested server date and own city facts',async()=>{
+ for(const connected of [false,true]){
+  const f=fixture();let reads=0,calls=0;
+  await f.store.mutate(d=>{
+   d.users.find(u=>u.id==='a')!.contextPreferences=[{...a,timeZone:'Asia/Shanghai',city:'杭州'}];
+   d.users.find(u=>u.id==='b')!.contextPreferences=[{...b,timeZone:'America/New_York',city:'FOREIGN_CITY'}];
+   if(connected)d.knowledgeConnections.push({id:'private-notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test'} as any);
+  });
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{reads++;return {status:'failed',chunks:[],failures:[],coverage:[{connectionId:'private-notion',provider:'notion',status:'failed',attempts:1}]};}},{modelCall:async()=>++calls===1?{...answer(''),toolCalls:[{id:'lookup',type:'function',function:{name:'knowledge_search',arguments:JSON.stringify({query:'ONE-QA36'})}}]}:answer('不能把这段未核对的回答当成果。')});
+  const operation=connected?'operation_knowledge_failed_facts':'operation_knowledge_missing_facts';
+  const result=await service.dispatch(a,input(operation,'直接回答：今天、昨天各是几月几日？我设置的常驻城市是什么？再只去 Notion 查找 ONE-QA36，不分派任务。'),key);
+  const db=await f.store.read(),context=db.chatOperations!.find(o=>o.operationId===operation)!.runtimeContext!;
+  assert.ok(result.message.content.includes(context.today)&&result.message.content.includes(context.yesterday));
+  assert.match(result.message.content,/杭州/);assert.doesNotMatch(result.message.content,/FOREIGN_CITY|全部没有|资料不存在|未核对的回答当成果/);
+  assert.match(result.message.content,connected?/还没查全/:/Notion还没有连好/);
+  assert.equal(reads,connected?1:0);assert.equal(db.chatOperations!.filter(o=>o.workRun).length,0);
+ }
+});
 import { beginChatOperation,reconcileInterruptedChatOperations } from "./chatOperations.js";
 import { MODEL_MAX_OUTPUT_TOKENS, ModelRequestError, type ModelToolMessage, type ModelToolDefinition, type ToolChatResult } from "./modelGateway.js";
 

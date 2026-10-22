@@ -1047,13 +1047,19 @@ export class CoordinatorService {
       // provider ignores it, never present cached prose as a fresh read.
       if(freshDocumentRead&&!dispatched)result.content='这次还没能重新读取文章，不能把旧结果当作刚核对过。你可以稍后在这件任务里说“重新回读”；这轮没有修改或重复写入文章。';
       if(localClarification)await verify();
+      // An unavailable source must not erase independent server-known facts.
+      // Never preserve unverified model prose through this degraded path.
+      const missingReadReply=result.requiredMissing.includes('web_search')
+        ?'公开搜索这次没查成，还不能替你核实最新消息。可以稍后说“继续查刚才的问题”；我会重新核对，不会把旧知识当成最新结果。'
+        :mainKnowledge.missing.length?`${mainKnowledge.missing.join('、')}还没有连好，这次没能查询。先连接好它，再继续查这件事就行。`
+        :'这次还没查全你要找的资料，不能当作没有找到。原问题还在，可以接着查。';
       return await this.finishDispatch(
         s,
         scope.operationId,
         cid,
         requestId,
         content,
-        localClarification ? `还没开始操作电脑。${localClarification}` : result.requiredMissing.length ? (result.requiredMissing.includes('web_search')?['公开搜索这次没查成，还不能替你核实最新消息。可以稍后说“继续查刚才的问题”；我会重新核对，不会把旧知识当成最新结果。',requestedRuntimeFacts(input.text,timeContext)].filter(Boolean).join('\n\n'):mainKnowledge.missing.length?`${mainKnowledge.missing.join('、')}还没有连好，这次没能查询。先连接好它，再继续查这件事就行。`:'这次还没查全你要找的资料，不能当作没有找到。原问题还在，可以接着查。') : result.content,
+        localClarification ? `还没开始操作电脑。${localClarification}` : result.requiredMissing.length ? [missingReadReply,requestedRuntimeFacts(input.text,timeContext)].filter(Boolean).join('\n\n') : result.content,
         config.model.id,
         trace,
         dispatched??imageTask,
