@@ -2223,6 +2223,15 @@ export class CoordinatorService {
         &&job.skills[0].values.integration==='question_answer'&&(job.skills[0].values.knowledgeMode??'none')==='none'&&job.skills[0].values.experience?.mode!=='image'
         &&!job.notionTarget&&!legacyAgent&&!job.sources.length&&!files.length&&!previous.length&&!job.dependsOnOperationIds?.length
         &&requiredWorkerTools.every(name=>job.skills[0].values.tools?.some(t=>t.id===name));
+      if(directSelectedFeature){
+        const selected=tools.find(t=>t.name==='feature_0')!;
+        // This is the full, already validated <=4,000-character handoff, not
+        // a model-written short query. Preserve it rather than clipping it to
+        // the ordinary read tool's 1,000-character limit.
+        selected.structured={schema:{type:'object',additionalProperties:false,properties:{query:{type:'string',minLength:1,maxLength:4000}},required:['query']},validate:raw=>{
+          const v=raw as {query?:unknown};if(!v||Object.keys(v).join()!=='query'||typeof v.query!=='string'||!v.query.trim()||v.query.length>4000)throw new OrchestrationInputError('固定功能需要本轮完整交接，最多4000字，不截断原要求。');return {query:v.query};
+        },run:raw=>selected.run((raw as {query:string}).query)};
+      }
       let selectedFeatureStarted=false;
       const result = await runTaskOrchestrator({
         entryPoint: "workspace",
