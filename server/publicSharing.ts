@@ -8,7 +8,7 @@ import { checkApiBudget } from './publicApi.js';
 import {publicationCommerceFields,publicationAccess,runCommerce,verifyRunCommerce} from './publicCommerce.js';
 import type {VisitorIdentity} from './visitorAccounts.js';
 import { avatarAuthorName, validatePublicAvatarService } from './publicAvatarConfig.js';
-import { validateBusinessConfig, assignPublicServiceEntitlement, checkPublicServiceBudget } from './publicAvatarBusiness.js';
+import { validateBusinessConfig, assignPublicServiceEntitlement, checkPublicServiceBudget, validateServiceCommitments } from './publicAvatarBusiness.js';
 
 export const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const timestamp = () => new Date().toISOString();
@@ -66,6 +66,8 @@ export function publish(db: Database, scope: { workspaceId: string; userId: stri
   if (perRunMicros > budgetMicros) throw new SharingError("单次限额不能大于总限额");
   const days = input.days;
   if (!Number.isInteger(days) || Number(days) < 1 || Number(days) > 90) throw new SharingError("有效期应为 1 至 90 天");
+  const expiresAt=new Date(Date.now() + Number(days) * 86400000).toISOString();
+  if(old)validateServiceCommitments(db,old,budgetMicros,expiresAt);
   if (!old && db.publications!.filter(p => p.workspaceId === scope.workspaceId && p.userId === scope.userId && p.status === "active").length >= 20) throw new SharingError("最多保留 20 个有效分享，请先关闭不需要的分享");
   const sources = [...new Set(input.sourceIds as string[])].map(id => {
     const c = db.knowledgeConnections.find(c => c.id === id && c.workspaceId === scope.workspaceId && c.status === "connected");
@@ -82,7 +84,7 @@ export function publish(db: Database, scope: { workspaceId: string; userId: stri
     version:old?(old.version??1)+1:1,userPrompt:text(input.prompt,12000,false),updatedAt:timestamp(),
     name: text(input.name, 60), description: text(input.description, 300, false),
     prompt: [config.model.systemPrompt, text(input.prompt, 12000, false)].filter(Boolean).join("\n\n"), modelId: config.model.id, taskVersion: config.version,
-    sources, attachments: input.attachments === true, status: "active", budgetMicros, perRunMicros, createdAt: timestamp(), expiresAt: new Date(Date.now() + Number(days) * 86400000).toISOString() };
+    sources, attachments: input.attachments === true, status: "active", budgetMicros, perRunMicros, createdAt: timestamp(), expiresAt };
   if(old){const {history,...snapshot}=structuredClone(old);if(snapshot.serviceBusiness)snapshot.serviceBusiness={...snapshot.serviceBusiness,codes:[],entitlements:[],leads:[]};p.id=old.id;p.slug=old.slug;p.createdAt=old.createdAt;p.history=[...(history??[]),snapshot].slice(-20);Object.assign(old,p);}
   else db.publications!.push(p);
   db.auditLogs.push({ id: uid("aud"), ...scope, actorUserId: scope.userId, action: old?"publication.updated":"publication.created", targetType: "publication", targetId: p.id, details: {version:p.version, sources: sources.map(s => s.id), budgetMicros, perRunMicros }, createdAt: timestamp() });

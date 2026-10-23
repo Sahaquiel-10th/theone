@@ -77,6 +77,10 @@ export function validateBusinessConfig(db: Database, scope: VisitorIdentity, inp
   if (input === undefined) return previous;
   if (!db.users.some(u => u.id === scope.userId && u.enabled) || !db.workspaces.some(w => w.id === scope.workspaceId && w.status === 'active') || !db.workspaceMembers.some(m => m.workspaceId === scope.workspaceId && m.userId === scope.userId && m.role === 'owner' && m.status !== 'disabled')) throw new SharingError('只有此空间的所有者可以配置服务', 403);
   if (!plain(input) || !['open', 'entitlement'].includes(String(input.access)) || !Array.isArray(input.plans) || input.plans.length > 6 || !Array.isArray(input.intakeFields) || input.intakeFields.length > 6) throw new SharingError('请检查服务方案和联系表单，最多各 6 项');
+  if (previous?.access === 'entitlement' && input.access === 'open') {
+    const owned = (record: OwnedRecord) => record.workspaceId === scope.workspaceId && record.userId === scope.userId;
+    if (previous.codes.some(c => owned(c) && c.status === 'active' && Date.parse(c.expiresAt) > Date.now()) || previous.entitlements.some(e => owned(e) && e.status === 'active' && Date.parse(e.expiresAt) > Date.now())) throw new SharingError('仍有已发出的服务资格；请先明确撤销相关兑换码和资格，再改为开放试聊', 409);
+  }
   const seen = new Set<string>();
   const plans: AvatarServicePlan[] = input.plans.map(value => {
     if (!plain(value) || !['monthly', 'credits'].includes(String(value.kind))) throw new SharingError('请选择按月含额度或额度包');
@@ -106,6 +110,23 @@ function entitlementUsage(db: Database, p: Publication, id: string) {
   const runs = new Set((db.publicRuns ?? []).filter(r => r.workspaceId === p.workspaceId && r.publicationId === p.id && (r as BusinessRun).serviceEntitlement?.id === id).map(r => r.id));
   const rows = db.modelUsageRecords.filter(r => r.workspaceId === p.workspaceId && r.userId === p.userId && runs.has(r.conversationId));
   return { spentMicros: rows.reduce((n, r) => n + (r.chargedMicros ?? 0), 0), heldMicros: rows.reduce((n, r) => n + (r.reservedMicros ?? 0), 0) };
+}
+
+/** Publishing new settings cannot silently retract already-issued promises.
+ * Revoke a code/grant explicitly first when its commitment must be withdrawn. */
+export function validateServiceCommitments(db: Database, supplied: Publication, nextBudgetMicros: number, nextExpiresAt: string): void {
+  const p = ownedPublication(db, supplied.workspaceId, supplied.userId, supplied.id), state = business(p);
+  if (!state) return;
+  const activeCodes = state.codes.filter(c => scoped(p, c) && c.status === 'active' && Date.parse(c.expiresAt) > Date.now());
+  const activeEntitlements = state.entitlements.filter(e => scoped(p, e) && e.status === 'active' && Date.parse(e.expiresAt) > Date.now());
+  if (!activeCodes.length && !activeEntitlements.length) return;
+  const runIds = new Set((db.publicRuns ?? []).filter(r => r.workspaceId === p.workspaceId && r.publicationId === p.id).map(r => r.id));
+  const spentAndHeld = db.modelUsageRecords.filter(r => r.workspaceId === p.workspaceId && r.userId === p.userId && runIds.has(r.conversationId)).reduce((n, r) => n + (r.chargedMicros ?? 0) + (r.reservedMicros ?? 0), 0);
+  const minimumBudget = spentAndHeld + activeCodes.reduce((n, c) => n + c.plan.quotaMicros, 0)
+    + activeEntitlements.reduce((n, e) => n + entitlementView(db, p, e).remainingMicros, 0);
+  if (!Number.isSafeInteger(nextBudgetMicros) || nextBudgetMicros < minimumBudget) throw new SharingError('总限额不足以保留已发出的服务资格；请保留相应额度，或先明确撤销不再提供的资格', 409);
+  const promisedUntil = Math.max(...activeCodes.map(c => Date.parse(c.expiresAt) + c.plan.validDays * day), ...activeEntitlements.map(e => Date.parse(e.expiresAt)));
+  if (!Number.isFinite(Date.parse(nextExpiresAt)) || Date.parse(nextExpiresAt) < promisedUntil) throw new SharingError('分身有效期不能短于已发出的服务期限；请保留完整期限，或先明确撤销相关资格', 409);
 }
 function entitlementView(db: Database, p: Publication, e: AvatarEntitlement) {
   const usage = entitlementUsage(db, p, e.id);

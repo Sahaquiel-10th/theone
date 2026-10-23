@@ -12,6 +12,7 @@ import {
   assignPublicServiceEntitlement, checkPublicServiceBudget, issueServiceCode, listAvatarLeads,
   redeemServiceCode, revokeServiceGrant, serviceManagement, servicePublicSnapshot,
   submitAvatarLead, validateBusinessConfig, type AvatarBusinessState,
+  validateServiceCommitments,
 } from './publicAvatarBusiness.js';
 
 function fixture() {
@@ -215,6 +216,56 @@ test('service validity is not silently shortened to the publication expiry', () 
   assert.ok(Date.parse(receipt.expiresAt) >= Date.now() + 30 * 86_400_000 - 1000);
   f.p.expiresAt = new Date(Date.now() + 29 * 86_400_000).toISOString();
   assert.throws(() => issue(f), /有效期不足/);
+});
+
+test('settings cannot underfund or shorten active unredeemed and redeemed service promises', () => {
+  const f = fixture(), issued = issue(f);
+  const code = f.p.serviceBusiness!.codes[0];
+  const completeTerm = new Date(Date.parse(code.expiresAt) + code.plan.validDays * 86_400_000).toISOString();
+  assert.doesNotThrow(() => validateServiceCommitments(f.db, f.p, 1_000_000, completeTerm));
+  assert.throws(() => validateServiceCommitments(f.db, f.p, 999_999, completeTerm), /总限额不足/);
+  assert.throws(() => validateServiceCommitments(f.db, f.p, 1_000_000, new Date(Date.parse(completeTerm) - 1).toISOString()), /服务期限/);
+  const entitlement = redeemServiceCode(f.db, f.p, f.s, issued.code);
+  const r = run(f, 'commitments-spent-and-held'); assignPublicServiceEntitlement(f.db, f.p, f.s, r); f.db.publicRuns!.push(r);
+  cost(f, r.id, 200_000, 100_000);
+  assert.doesNotThrow(() => validateServiceCommitments(f.db, f.p, 1_000_000, entitlement.expiresAt));
+  assert.throws(() => validateServiceCommitments(f.db, f.p, 999_999, entitlement.expiresAt), /总限额不足/);
+  assert.throws(() => validateServiceCommitments(f.db, f.p, 1_000_000, new Date(Date.parse(entitlement.expiresAt) - 1).toISOString()), /服务期限/);
+  revokeServiceGrant(f.db, f.scope, f.p, entitlement.id);
+  assert.doesNotThrow(() => validateServiceCommitments(f.db, f.p, 300_000, new Date(Date.now() + 86_400_000).toISOString()));
+  const legacy = { ...f.p, id: 'legacy-no-commitment', serviceBusiness: undefined };
+  f.db.publications!.push(legacy);
+  assert.doesNotThrow(() => validateServiceCommitments(f.db, legacy, 10_000, new Date(Date.now() + 86_400_000).toISOString()));
+});
+
+test('publish rejects reducing outstanding service commitments until they are explicitly revoked', () => {
+  const f = fixture(), issued = issue(f), version = f.p.version;
+  const change = { ...f.input, version, perRun: 0.1 };
+  assert.throws(() => publish(f.db, f.scope, { ...change, budget: 0.5 }, f.p.id), /总限额不足/);
+  assert.throws(() => publish(f.db, f.scope, { ...change, days: 7 }, f.p.id), /服务期限/);
+  assert.equal(f.p.version, version);
+  assert.equal(f.p.budgetMicros, 10_000_000);
+  const entitlement = redeemServiceCode(f.db, f.p, f.s, issued.code);
+  assert.throws(() => publish(f.db, f.scope, { ...change, days: 7 }, f.p.id), /服务期限/);
+  revokeServiceGrant(f.db, f.scope, f.p, entitlement.id);
+  const saved = publish(f.db, f.scope, { ...change, budget: 0.5, days: 7 }, f.p.id);
+  assert.equal(saved.budgetMicros, 500_000);
+  assert.equal(saved.version, (version ?? 1) + 1);
+  assert.equal(saved.serviceBusiness!.entitlements[0].status, 'revoked');
+});
+
+test('opening free access cannot consume budget promised to existing service rights', () => {
+  const f = fixture(), issued = issue(f);
+  const makeOpen = () => validateBusinessConfig(f.db, f.scope, { access: 'open', plans: [], intakeFields: [] }, f.p.serviceBusiness);
+  assert.throws(makeOpen, /先明确撤销/);
+  const entitlement = redeemServiceCode(f.db, f.p, f.s, issued.code);
+  assert.throws(makeOpen, /先明确撤销/);
+  revokeServiceGrant(f.db, f.scope, f.p, entitlement.id);
+  assert.equal(makeOpen()!.access, 'open');
+  const remainingCode = issue(f);
+  assert.throws(makeOpen, /先明确撤销/);
+  revokeServiceGrant(f.db, f.scope, f.p, remainingCode.grant.id);
+  assert.equal(makeOpen()!.access, 'open');
 });
 
 test('changing configuration cannot rewrite issued promises or copy another owner plan', () => {
