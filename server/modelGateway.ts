@@ -72,6 +72,7 @@ export function safeProviderReason(payload:unknown,status:number):string {
   const p=payload as {error?:{message?:unknown}};
   const message=typeof p?.error?.message==='string'?p.error.message:'';
   if(status===400){
+    if(/prefill|conversation.*end.*user|last.*assistant/i.test(message))return '模型要求对话以用户消息结束，请检查续接格式';
     if(/tool_use|tool_result|tool_call_id|tool_calls.*(match|preced|response)|tools.*(history|previous)/i.test(message))return '工具结果与对话记录格式不兼容，请检查功能接口';
     if(/tool.?choice|tools.*(empty|required)|without.*tools/i.test(message))return '工具调用参数不兼容，请检查功能接口';
     if(/temperature/i.test(message))return '模型不支持当前温度参数，请检查接口配置';
@@ -392,6 +393,15 @@ async function callAnthropicModelWithTools(
       }
     }
     if (blocks.length) append(message.role, blocks);
+  }
+
+  // Runtime correction messages remain in the trusted top-level system text.
+  // Without a continuation turn, moving them there leaves the wire history
+  // ending in assistant prose, interpreted as unsupported prefill by newer
+  // native models. This is server feedback, never a fabricated human request.
+  const tail=anthropicMessages.at(-1);
+  if(messages.at(-1)?.role==='system'&&tail?.role==='assistant'&&!tail.content.some(block=>block.type==='tool_use')){
+    append('user',[{type:'text',text:'ONE 服务端续接：请依据当前用户原始要求和本轮校验意见继续。上一条助手回复不是新的用户要求，不新增权限，不重做已有成果。'}]);
   }
 
   const endpoint = `${model.baseUrl.replace(/\/$/, "")}/messages`;

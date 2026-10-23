@@ -74,7 +74,7 @@ for(const [index,scenario] of cases.entries())for(const contextMode of index%2?[
   }
  }catch{error=true;}
  const db=await f.store.read();
- const row={scenario:scenario.id,mode:contextMode,passed,error,calls,searches,toolCalls,firstBytes,totalBytes,retailEquivalentMicros:usageMicros,isolatedLedgerMicros:db.modelUsageRecords.reduce((n,r)=>n+(r.chargedMicros??0),0),durationMs:Date.now()-started,profiles,syntheticReply:reply.slice(0,600),jobs:db.chatOperations!.filter(o=>o.workRun).map(o=>({state:o.workRun!.state,failureCode:o.workRun!.failureCode,instruction:o.workRun!.instruction.slice(0,800)})),artifacts:db.attachments.map(f=>({kind:f.kind,bytes:f.size})),accountCharged:false};
+ const row={scenario:scenario.id,mode:contextMode,passed,error,calls,searches,toolCalls,firstBytes,totalBytes,usageComplete:profiles.length===calls,knownUsageMicros:usageMicros,retailEquivalentMicros:profiles.length===calls?usageMicros:null,isolatedLedgerMicros:db.modelUsageRecords.reduce((n,r)=>n+(r.chargedMicros??0),0),durationMs:Date.now()-started,profiles,syntheticReply:reply.slice(0,600),jobs:db.chatOperations!.filter(o=>o.workRun).map(o=>({state:o.workRun!.state,failureCode:o.workRun!.failureCode,instruction:o.workRun!.instruction.slice(0,800)})),artifacts:db.attachments.map(f=>({kind:f.kind,bytes:f.size})),accountCharged:false};
  results.push(row);console.log(JSON.stringify({event:'public_adaptive_pair_result',...row}));
 }
 console.log(JSON.stringify({event:'public_adaptive_pair_summary',baselineCommit:'51ad5ee',singlePairPerCase:true,alternatingOrder:true,deterministicWeatherAdapter:true,results:results.map(({profiles,...row})=>row),accountCharged:false}));

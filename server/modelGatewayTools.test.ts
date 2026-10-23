@@ -6,6 +6,23 @@ import { callModel, callModelWithTools, fetchWithTimeout, parseProviderUsage, sa
 import type { ModelConfig } from "./types.js";
 import {runTaskOrchestrator} from './taskOrchestrator.js';
 
+test('native correction after assistant prose ends with server continuation, not unsupported assistant prefill',async t=>{
+ const requests:any[]=[];
+ const server=createServer((req,res)=>{let text='';req.on('data',chunk=>text+=chunk);req.on('end',()=>{
+  const data=JSON.parse(text);requests.push(data);res.setHeader('Content-Type','application/json');
+  if(data.messages.at(-1)?.role==='assistant'){res.writeHead(400);res.end(JSON.stringify({error:{message:'This model does not support assistant message prefill. The conversation must end with a user message.'}}));return;}
+  const content=requests.length===1?[{type:'text',text:'我已经查过了。'}]:requests.length===2?[{type:'tool_use',id:'real-search',name:'web_search',input:{query:'公开合成天气'}}]:[{type:'text',text:'已实际搜索，合成结果22度。'}];
+  res.end(JSON.stringify({content,stop_reason:requests.length===2?'tool_use':'end_turn',usage:{input_tokens:10,output_tokens:10}}));
+ });});server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});
+ const model={id:'native-test',kind:'chat',enabled:true,apiKey:'fixture-secret',model:'fixture',protocol:'anthropic',baseUrl:`http://127.0.0.1:${(server.address() as any).port}`} as ModelConfig;
+ let searches=0;
+ const result=await runTaskOrchestrator({entryPoint:'workspace',messages:[{role:'system',cacheScope:'stable',content:'固定范围'},{role:'user',content:'实际查合成天气'}],tools:[{name:'web_search',run:async()=>{searches++;return {status:'used',temperature:22};}}],maxSteps:4,maxCorrections:2,beforeStep:async()=>{},actionRequired:()=>searches?undefined:'尚未搜索，请实际调用工具。',call:(messages,tools,options)=>callModelWithTools(model,messages,tools,'continuation-fixture',options)});
+ assert.equal(searches,1);assert.equal(requests.length,3);assert.match(result.content,/22/);
+ assert.equal(requests[1].messages.at(-1).role,'user');assert.match(requests[1].messages.at(-1).content[0].text,/ONE 服务端续接/);
+ assert.match(JSON.stringify(requests[1].system),/尚未搜索/);assert.deepEqual(requests[0].system[0],requests[1].system[0]);
+ assert.match(safeProviderReason({error:{message:'This model does not support assistant message prefill.'}},400),/续接格式/);
+});
+
 for(const protocol of ['openai','anthropic'] as const)test(`${protocol}: final answer retains native tool history schemas, forbids another call and omits empty tool fields`,async()=>{
  const requests:any[]=[];
  const server=createServer((req,res)=>{let body='';req.on('data',c=>body+=c);req.on('end',()=>{
