@@ -167,3 +167,11 @@ test('answer-only weather permits the requested read without creating a task in 
   assert.equal(searches,1);assert.equal(calls,2);assert.equal(result.taskId,undefined);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
  }
 });
+test('reviewed orchestration failures leave an owned durable next step, never an empty pending reply',async()=>{
+ for(const contextMode of ['legacy','adaptive'] as const)for(const reason of ['已达到调度步骤上限，未完成任务；请缩小问题范围','模型工具指令未完整返回，已停止执行；本次已产生的用量可在账单中查看']){
+  const f=dispatchFixture();let calls=0;
+  const service=new CoordinatorService(f.store,knowledge,{contextMode,modelCall:async()=>{calls++;throw Error(reason);}});
+  const result=await service.dispatch(evalScope,{operationId:`reviewed_failure_${contextMode}_${reason.length}_20261023`,text:'做一份合成报告。'},key);
+  const db=await f.store.read();assert.equal(calls,1);assert.equal(result.taskId,undefined);assert.equal(db.chatOperations![0].status,'completed');assert.match(result.message.content,/原话|原要求/);assert.match(result.message.content,/核对|继续/);assert.ok(db.contextTraces.some(t=>t.userId===evalScope.userId&&t.workspaceId===evalScope.workspaceId));assert.equal(db.chatOperations!.filter(o=>o.workRun).length,0);
+ }
+});

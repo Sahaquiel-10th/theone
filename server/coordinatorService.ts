@@ -1167,12 +1167,13 @@ export class CoordinatorService {
       // A routing reply can finish while the requested work has not started.
       // Save that distinction as an ordinary ONE reply, not a stranded red error.
       // Re-check Key, membership, source grants and cancellation before writing.
-      const reason=error instanceof CoordinatorError||error instanceof FeatureConfigError||error instanceof ModelRequestError||error instanceof OrchestrationInputError?error.message:'';
-      if(verifyRouting&&(error instanceof OrchestrationInputError||error instanceof FeatureConfigError&&/功能未开放|发布版本/.test(reason)||error instanceof ModelRequestError||/图片生成尚未配置|执行器已停用或尚未发布|本轮设置的调度上限/.test(reason)||adaptive&&/未完成分派|本机执行尚未开始|执行能力不可用/.test(reason))){
+      const routingFailure=orchestrationFailureCode(error);
+      const reason=error instanceof CoordinatorError||error instanceof FeatureConfigError||error instanceof ModelRequestError||error instanceof OrchestrationInputError||routingFailure&&error instanceof Error?error.message:'';
+      if(verifyRouting&&(routingFailure||error instanceof OrchestrationInputError||error instanceof FeatureConfigError&&/功能未开放|发布版本/.test(reason)||error instanceof ModelRequestError||/图片生成尚未配置|执行器已停用或尚未发布|本轮设置的调度上限/.test(reason)||adaptive&&/未完成分派|本机执行尚未开始|执行能力不可用/.test(reason))){
         try {
         await verifyRouting();
         const feedback=coordinatorRecoveryCopy(error instanceof ModelRequestError?'模型回复中断':reason||'回复中断');
-        return await this.finishDispatch(s,scope.operationId,cid,requestId,content,feedback,config.model.id,trace,undefined,[...sections,{key:'current_input',title:'本轮未开始的原因',content:JSON.stringify({code:error instanceof OrchestrationInputError?'TOOL_INPUT_REPAIR':error instanceof ModelRequestError?'MODEL_UNAVAILABLE':'DISPATCH_NOT_STARTED'})}],capturedResults,assertRouting);
+        return await this.finishDispatch(s,scope.operationId,cid,requestId,content,feedback,config.model.id,trace,undefined,[...sections,{key:'current_input',title:'本轮未开始的原因',content:JSON.stringify({code:routingFailure??(error instanceof OrchestrationInputError?'TOOL_INPUT_REPAIR':error instanceof ModelRequestError?'MODEL_UNAVAILABLE':'DISPATCH_NOT_STARTED')})}],capturedResults,assertRouting);
         }catch(verificationError){await failChatOperation(this.store,scope);throw verificationError;}
       }
       // Failed routing is still a real, possibly billed attempt. Keep the same
