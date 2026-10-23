@@ -2146,8 +2146,12 @@ export class CoordinatorService {
               onTrace:t=>{featureTraces.set(index,t.map(step=>({...step,tool:`feature_${index}.${step.tool}`})));collectTrace();},
               call:(baseMessages,definitions,callOptions)=>{
                 const messages=[baseMessages[0],{role:'system' as const,content:runtimeContextText(workerTime)},...baseMessages.slice(1)];
-                const hasOfficeFile=completedSteps(steps).some(step=>step.namespace===`feature:${skill.id}:${skill.version}`&&['oneDocument','oneSlides','oneWorkbook'].includes(step.tool));
-                const maxOutputTokens=!hasOfficeFile&&definitions.some(t=>['oneDocument','oneSlides','oneWorkbook'].includes(t.function.name))?10000:undefined;
+                // HTML/diagram arguments can be longer than ordinary chat
+                // prose too. Cutting a structured call at the chat default
+                // wastes generation before any artifact can be saved.
+                const artifactTools=['oneDocument','oneSlides','oneWorkbook','oneHtml','oneFlowchart'];
+                const hasArtifact=completedSteps(steps).some(step=>step.namespace===`feature:${skill.id}:${skill.version}`&&artifactTools.includes(step.tool));
+                const maxOutputTokens=!hasArtifact&&definitions.some(t=>artifactTools.includes(t.function.name))?10000:undefined;
                 sections=inputTrace(messages);
                 return runBilledModel(this.store,{...s,conversationId:cid,model:selected,featurePrice:price,requestId:op!.requestId,activity:'task_feature',maxOutputTokens,input:{messages,tools:callOptions?.finalSummaryTools??definitions,taskVersion:skill.version},beforeReserve},model=>(this.deps.modelCall??callModelWithTools)(model,messages,definitions,op!.requestId,{...callOptions,maxOutputTokens}));}});
             await verify();

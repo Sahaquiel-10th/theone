@@ -354,6 +354,11 @@ async function callAnthropicModelWithTools(
   options: ToolModelOptions = {}
 ): Promise<ToolChatResult> {
   const definitions = options.finalSummaryTools ?? tools;
+  // Keep ONE's audited client-side search distinct from provider-native
+  // web_search implementations. Only the wire name changes: tool history,
+  // required choice and replies all round-trip to the original handler name.
+  const wireName=(name:string)=>name==='web_search'?'one_public_lookup':name;
+  if(definitions.some(t=>t.function.name==='one_public_lookup'))throw new Error('工具名称与网关内部别名冲突');
   const systemMessages = messages
     .filter((message) => message.role === "system" && typeof message.content === "string")
     .filter(message=>message.content?.trim());
@@ -389,7 +394,7 @@ async function callAnthropicModelWithTools(
       for (const call of message.tool_calls ?? []) {
         let input: unknown = {};
         try { input = JSON.parse(call.function.arguments || "{}"); } catch { input = {}; }
-        blocks.push({ type: "tool_use", id: call.id, name: call.function.name, input });
+        blocks.push({ type: "tool_use", id: call.id, name: wireName(call.function.name), input });
       }
     }
     if (blocks.length) append(message.role, blocks);
@@ -428,11 +433,11 @@ async function callAnthropicModelWithTools(
         system: system || undefined,
         messages: anthropicMessages,
         tools: definitions.length ? definitions.map((tool) => ({
-          name: tool.function.name,
+          name: wireName(tool.function.name),
           description: tool.function.description,
           input_schema: tool.function.parameters
         })) : undefined,
-        tool_choice: definitions.length ? (options.finalSummaryTools ? {type:'none'} : options.requiredTool ? { type: "tool", name: options.requiredTool, disable_parallel_tool_use: true } : { type: "auto" }) : undefined,
+        tool_choice: definitions.length ? (options.finalSummaryTools ? {type:'none'} : options.requiredTool ? { type: "tool", name: wireName(options.requiredTool), disable_parallel_tool_use: true } : { type: "auto" }) : undefined,
         max_tokens: outputTokenLimit(options.maxOutputTokens)
       })
     }, options.timeoutMs?Math.min(requestTimeoutMs,Math.max(1000,options.timeoutMs)):requestTimeoutMs);
@@ -450,7 +455,7 @@ async function callAnthropicModelWithTools(
       .map((item: { id: string; name: string; input?: unknown }) => ({
         id: item.id,
         type: "function" as const,
-        function: { name: item.name, arguments: JSON.stringify(item.input ?? {}) }
+        function: { name: item.name==='one_public_lookup'?'web_search':item.name, arguments: JSON.stringify(item.input ?? {}) }
       }));
     if (!content && !toolCalls.length) throw new Error("Local Agent 模型响应格式不正确");
     console.log(JSON.stringify({

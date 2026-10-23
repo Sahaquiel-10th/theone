@@ -11,7 +11,7 @@ test('native correction after assistant prose ends with server continuation, not
  const server=createServer((req,res)=>{let text='';req.on('data',chunk=>text+=chunk);req.on('end',()=>{
   const data=JSON.parse(text);requests.push(data);res.setHeader('Content-Type','application/json');
   if(data.messages.at(-1)?.role==='assistant'){res.writeHead(400);res.end(JSON.stringify({error:{message:'This model does not support assistant message prefill. The conversation must end with a user message.'}}));return;}
-  const content=requests.length===1?[{type:'text',text:'我已经查过了。'}]:requests.length===2?[{type:'tool_use',id:'real-search',name:'web_search',input:{query:'公开合成天气'}}]:[{type:'text',text:'已实际搜索，合成结果22度。'}];
+  const content=requests.length===1?[{type:'text',text:'我已经查过了。'}]:requests.length===2?[{type:'tool_use',id:'real-search',name:data.tools[0].name,input:{query:'公开合成天气'}}]:[{type:'text',text:'已实际搜索，合成结果22度。'}];
   res.end(JSON.stringify({content,stop_reason:requests.length===2?'tool_use':'end_turn',usage:{input_tokens:10,output_tokens:10}}));
  });});server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});
  const model={id:'native-test',kind:'chat',enabled:true,apiKey:'fixture-secret',model:'fixture',protocol:'anthropic',baseUrl:`http://127.0.0.1:${(server.address() as any).port}`} as ModelConfig;
@@ -29,7 +29,7 @@ for(const protocol of ['openai','anthropic'] as const)test(`${protocol}: final a
   const data=JSON.parse(body);requests.push(data);res.setHeader('Content-Type','application/json');
   const final=data.tool_choice==='none'||data.tool_choice?.type==='none';
   if(requests.length===2&&(!data.tools?.length||!final)){res.writeHead(400);res.end(JSON.stringify({error:{message:'tool_use history requires tools'}}));return;}
-  const response=protocol==='openai'?{choices:[{message:final||!data.tools?{content:'查好了',tool_calls:[]}:{content:null,tool_calls:[{id:'call-search',type:'function',function:{name:'web_search',arguments:'{"query":"MDN"}'}}]},finish_reason:final?'stop':'tool_calls'}]}:{content:final||!data.tools?[{type:'text',text:'查好了'}]:[{type:'tool_use',id:'call-search',name:'web_search',input:{query:'MDN'}}],stop_reason:final?'end_turn':'tool_use'};
+  const response=protocol==='openai'?{choices:[{message:final||!data.tools?{content:'查好了',tool_calls:[]}:{content:null,tool_calls:[{id:'call-search',type:'function',function:{name:'web_search',arguments:'{"query":"MDN"}'}}]},finish_reason:final?'stop':'tool_calls'}]}:{content:final||!data.tools?[{type:'text',text:'查好了'}]:[{type:'tool_use',id:'call-search',name:data.tools[0].name,input:{query:'MDN'}}],stop_reason:final?'end_turn':'tool_use'};
   res.end(JSON.stringify(response));
  });});server.listen(0,'127.0.0.1');await once(server,'listening');const addr=server.address();if(!addr||typeof addr==='string')throw Error('no address');
  const model={id:'test',kind:'chat',enabled:true,apiKey:'test',model:'fixture',baseUrl:`http://127.0.0.1:${addr.port}`,protocol} as ModelConfig;
@@ -42,6 +42,13 @@ for(const protocol of ['openai','anthropic'] as const)test(`${protocol}: final a
   await assert.rejects(()=>callModelWithTools(model,[],[],undefined,{maxOutputTokens:12001}),/输出上限/);
   await callModelWithTools(model,[{role:'user',content:'只回答'}],[]);
   assert.equal(requests[2].tools,undefined);assert.equal(requests[2].tool_choice,undefined);
+  if(protocol==='anthropic'){
+   assert.equal(requests[0].tools[0].name,'one_public_lookup');
+   assert.equal(requests[1].messages[1].content.find((b:any)=>b.type==='tool_use').name,'one_public_lookup');
+   const forced=await callModelWithTools(model,[{role:'user',content:'查公开资料'}],[{type:'function',function:{name:'web_search',description:'只查公开资料',parameters:{type:'object'}}}],'forced-search-alias',{requiredTool:'web_search'});
+   assert.equal(requests[3].tool_choice.name,'one_public_lookup');assert.equal(forced.toolCalls[0].function.name,'web_search');
+   await assert.rejects(()=>callModelWithTools(model,[{role:'user',content:'不执行'}],[{type:'function',function:{name:'one_public_lookup',description:'conflicting fixture',parameters:{type:'object'}}}]),/别名冲突/);
+  }
  }finally{server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}
 });
 
