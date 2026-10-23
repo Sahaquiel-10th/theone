@@ -227,9 +227,9 @@ async function persistGeneratedImage(params: { imageUrl?: string; workspaceId: s
 
 const keyAuth = [auth(jwtSecret), requireOneKeySession] as const;
 installVisitorRoutes(app,store,jwtSecret);
-installPublicSharingRoutes(app, keyAuth, store, knowledgeService, attachmentService,jwtSecret);
+installPublicSharingRoutes(app, keyAuth, store, knowledgeService, attachmentService,jwtSecret,{directory:uploadDir});
 installWelcomeGuideRoutes(app,keyAuth,store);
-installPublicApiRoutes(app, keyAuth, store, knowledgeService);
+installPublicApiRoutes(app, keyAuth, store, knowledgeService,undefined,{directory:uploadDir});
 installPaymentRoutes(app, keyAuth, store);
 installFeishuRoutes(app, keyAuth, store, feishuService, () => connectorRegistry.enabled("feishu"));
 

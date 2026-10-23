@@ -7,6 +7,8 @@ import { uid } from "./security.js";
 import { checkApiBudget } from './publicApi.js';
 import {publicationCommerceFields,publicationAccess,runCommerce,verifyRunCommerce} from './publicCommerce.js';
 import type {VisitorIdentity} from './visitorAccounts.js';
+import { avatarAuthorName, validatePublicAvatarService } from './publicAvatarConfig.js';
+import { validateBusinessConfig, assignPublicServiceEntitlement, checkPublicServiceBudget } from './publicAvatarBusiness.js';
 
 export const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const timestamp = () => new Date().toISOString();
@@ -70,13 +72,18 @@ export function publish(db: Database, scope: { workspaceId: string; userId: stri
     if (!c) throw new SharingError("知识来源不可用或不属于你");
     return { id, provider: c.provider, binding: sourceBinding(c), label: c.providerSpaceName || c.provider };
   });
+  const service=validatePublicAvatarService(db,scope,input.service===undefined?old?.service:input.service);
+  const serviceBusiness=validateBusinessConfig(db,scope,input.serviceBusiness,old?.serviceBusiness);
+  const commerce=publicationCommerceFields(db,input);
+  if(serviceBusiness?.access==='entitlement'&&(commerce.visitorMultiplier??0)>0)throw new SharingError('服务资格不能同时按访客电力收费，请选择一种收费方式');
   const p: Publication = { id: uid("pub"), ...scope, slug: randomBytes(18).toString("base64url"),
-    ...publicationCommerceFields(db,input),
+    ...commerce,authorName:avatarAuthorName(db,scope),service,serviceBusiness,
+    ...(serviceBusiness?.access==='entitlement'?{requireLogin:true}:{}),
     version:old?(old.version??1)+1:1,userPrompt:text(input.prompt,12000,false),updatedAt:timestamp(),
     name: text(input.name, 60), description: text(input.description, 300, false),
     prompt: [config.model.systemPrompt, text(input.prompt, 12000, false)].filter(Boolean).join("\n\n"), modelId: config.model.id, taskVersion: config.version,
     sources, attachments: input.attachments === true, status: "active", budgetMicros, perRunMicros, createdAt: timestamp(), expiresAt: new Date(Date.now() + Number(days) * 86400000).toISOString() };
-  if(old){const {history,...snapshot}=structuredClone(old);p.id=old.id;p.slug=old.slug;p.createdAt=old.createdAt;p.history=[...(history??[]),snapshot].slice(-20);Object.assign(old,p);}
+  if(old){const {history,...snapshot}=structuredClone(old);if(snapshot.serviceBusiness)snapshot.serviceBusiness={...snapshot.serviceBusiness,codes:[],entitlements:[],leads:[]};p.id=old.id;p.slug=old.slug;p.createdAt=old.createdAt;p.history=[...(history??[]),snapshot].slice(-20);Object.assign(old,p);}
   else db.publications!.push(p);
   db.auditLogs.push({ id: uid("aud"), ...scope, actorUserId: scope.userId, action: old?"publication.updated":"publication.created", targetType: "publication", targetId: p.id, details: {version:p.version, sources: sources.map(s => s.id), budgetMicros, perRunMicros }, createdAt: timestamp() });
   return p;
@@ -115,6 +122,7 @@ export function checkRunBudget(db: Database, runId: string, amount: number) {
   if((r.publicationVersion??1)!==(p.version??1))throw new SharingError('分身版本已变化，请重新开始',409);
   if(r.apiGrantId){const g=p.apiGrants?.find(g=>g.id===r.apiGrantId&&g.workspaceId===p.workspaceId&&g.userId===p.userId);if(!g)throw new SharingError('API 授权不可用',403);checkApiBudget(db,p,g,r.id,amount);}
   verifyRunCommerce(db,p,r,amount);
+  checkPublicServiceBudget(db,p,r,amount);
   if (all.spent + all.held + amount > p.budgetMicros || own.spent + own.held + amount > p.perRunMicros) throw new SharingError("本次问题预计用量超过分享额度，请缩小问题范围或联系发布者", 402);
 }
 export function beginPublicRun(db: Database, p: Publication, s: PublicSession, input: Record<string, unknown>) {
@@ -136,6 +144,7 @@ export function beginPublicRun(db: Database, p: Publication, s: PublicSession, i
   run.publicationVersion=p.version??1;
   run.apiGrantId=s.apiGrantId;run.entryPoint=s.apiGrantId?'published_api':'published_web';
   run.commerce=runCommerce(db,p,s);
+  assignPublicServiceEntitlement(db,p,s,run);
   if((run.commerce?.multiplier??0)>0&&(input.confirmedPriceVersion!==(p.version??1)||input.confirmedPayment!==true))throw new SharingError('请确认当前版本的访客费用',409);
   db.publicRuns!.push(run); checkRunBudget(db, run.id, 1); return { run, created: true };
 }
@@ -143,5 +152,5 @@ export function publicRun(run: PublicRun,db?:Database) {
   const rows=db?.modelUsageRecords.filter(r=>r.workspaceId===run.workspaceId&&r.conversationId===run.id)??[];
   const chargedMicros=rows.reduce((n,r)=>n+(r.commercial?.payerChargedMicros??0),0);
   const heldMicros=rows.reduce((n,r)=>n+(r.commercial?.payerReservedMicros??0),0);
-  return { id: run.id, operationId: run.operationId, content: run.content, response: run.response, status: run.status, finishReason: run.finishReason, error: run.error, warning: run.warning, createdAt: run.createdAt,version:run.publicationVersion??1,chargedMicros,heldMicros };
+  return { id: run.id, operationId: run.operationId, content: run.content, response: run.response, status: run.status, finishReason: run.finishReason, error: run.error, warning: run.warning, createdAt: run.createdAt,version:run.publicationVersion??1,chargedMicros,heldMicros,stage:run.stage,artifacts:run.artifacts??[] };
 }

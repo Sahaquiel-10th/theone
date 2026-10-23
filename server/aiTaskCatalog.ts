@@ -22,13 +22,14 @@ export function findAiTaskDefinition(id: string) {
 
 export type TaskEntryPoint = "workspace" | "published_web" | "published_api";
 
-/** Code-owned capability ceiling. Public assistants answer questions only;
- * enabling a new/global tool must never implicitly grant it to a publication.
- * knowledge_search handlers still require the publication's exact source grant.
+/** Code-owned capability ceiling. Public assistants may use only explicitly
+ * bound reviewed feature wrappers and a small set of namespaced, server-local
+ * helpers. This is not a grant: callers still intersect the exact publication
+ * configuration, and knowledge handlers require an exact source binding.
  */
 export function entryAllowsTool(entryPoint: TaskEntryPoint, name: string): boolean {
   if (entryPoint === "workspace") return true;
-  if (entryPoint === "published_web" || entryPoint === "published_api") return name === "knowledge_search";
+  if (entryPoint === "published_web" || entryPoint === "published_api") return name === "knowledge_search" || /^public_feature_[0-3]$/.test(name) || ["public_oneFinance", "public_oneTable", "public_oneHtml", "public_oneFlowchart", "public_oneWorkbook", "public_oneDocument"].includes(name);
   return false;
 }
 

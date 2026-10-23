@@ -1,0 +1,125 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import express from 'express';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import type { Database, ModelConfig } from './types.js';
+import type { Store } from './db.js';
+import { AttachmentService } from './attachmentService.js';
+import { installPublicSharingRoutes } from './publicSharingRoutes.js';
+import { registerVisitor } from './visitorAccounts.js';
+import { signToken } from './security.js';
+import { creditPower } from './powerBilling.js';
+
+test('installed sharing routes publish service terms, redeem account rights, run once and retain consented leads on update', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'one-avatar-business-http-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  let gatewayCalls = 0;
+  const gateway = createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    const input = JSON.parse(raw);
+    assert.equal(input.tools, undefined);
+    gatewayCalls++;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ message: { content: '这是本次方法建议，已完整返回。' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1000, completion_tokens: 10, total_tokens: 1010 } }));
+  });
+  gateway.listen(0, '127.0.0.1'); await once(gateway, 'listening');
+  t.after(() => { gateway.closeAllConnections(); gateway.close(); });
+  const model = { id: 'model', name: 'Synthetic model', apiKey: 'synthetic-not-real', enabled: true, kind: 'chat', systemPrompt: '', protocol: 'openai', model: 'fixture', baseUrl: `http://127.0.0.1:${(gateway.address() as { port: number }).port}`, inputPowerPerMillion: 1, outputPowerPerMillion: 1, costInputPowerPerMillion: 1, costOutputPowerPerMillion: 1 } as ModelConfig;
+  let db = { users: [], workspaces: [], workspaceMembers: [], powerAccounts: [], powerLedger: [], rechargeOrders: [], auditLogs: [], models: [model], settings: { safetyRules: 'safe', rechargeCnyPerPower: 7 }, publications: [], publicSessions: [], publicRuns: [], attachments: [], knowledgeConnections: [], messages: [], modelUsageRecords: [] } as unknown as Database;
+  const owner = registerVisitor(db, { username: 'teacher', password: 'synthetic-password' });
+  const visitor = registerVisitor(db, { username: 'learner', password: 'synthetic-password' });
+  const other = registerVisitor(db, { username: 'another', password: 'synthetic-password' });
+  creditPower(db, { userId: owner.id, workspaceId: owner.defaultWorkspaceId, amountMicros: 20e6, type: 'gift', title: 'Synthetic fixture' });
+  let queue = Promise.resolve<unknown>(undefined);
+  const store: Store = { read: async () => db, mutate: <T>(fn: (current: Database) => T) => { const next = queue.then(() => { const previous = structuredClone(db); try { return fn(db); } catch (error) { db = previous; throw error; } }); queue = next.catch(() => undefined); return next; } };
+  const secret = 'synthetic-avatar-business-secret';
+  const visitorCookie = (user: typeof visitor) => `one_visitor=${encodeURIComponent(signToken({ sub: user.id, scope: 'visitor', workspaceId: user.defaultWorkspaceId, version: 0 }, secret))}`;
+  const key: express.RequestHandler = (req, res, next) => {
+    if (req.headers['x-key'] !== 'present') { res.sendStatus(428); return; }
+    const identity = req.headers['x-owner'] === 'another' ? other : owner;
+    req.user = db.users.find(u => u.id === identity.id)!; req.workspaceId = identity.defaultWorkspaceId; next();
+  };
+  const recall = { recallWithDiagnostics: async () => ({ chunks: [], failures: [], results: [], queried: 0 }) };
+  const app = express(); app.use(express.json());
+  installPublicSharingRoutes(app, [key], store, recall as never, new AttachmentService(store, directory), secret, { directory });
+  const server = app.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/sharing`;
+  const ownerHeaders = { 'x-key': 'present', 'Content-Type': 'application/json' };
+  const body = {
+    name: '预算咨询老师', description: '了解目标，制作可用的服务建议', authorName: '伪造作者不可采用', prompt: '先了解用户目标，再依据方法回答。', modelId: 'model', sourceIds: [], attachments: false, budget: 10, perRun: 1, days: 90, confirmed: true,
+    service: { mode: 'consultation', welcome: '想先解决哪件事？', starterQuestions: ['我想了解适合的方案'], method: 'PRIVATE_METHOD_MATERIAL', features: [] },
+    serviceBusiness: { access: 'entitlement', plans: [{ name: '30 天咨询', kind: 'monthly', quota: 1, priceCny: 99 }], intakeFields: [{ id: 'name', label: '称呼', type: 'text', required: true }, { id: 'budget', label: '预算', type: 'number' }] },
+  };
+  const createResponse = await fetch(base + '/manage', { method: 'POST', headers: ownerHeaders, body: JSON.stringify(body) });
+  assert.equal(createResponse.status, 200, await createResponse.clone().text());
+  const publication = await createResponse.json() as { id: string; slug: string };
+  const manage = `${base}/manage/${publication.id}`;
+  const publicUrl = `${base}/${publication.slug}`;
+  const meta = await (await fetch(publicUrl)).json() as { authorName: string; requireLogin: boolean };
+  assert.equal(meta.authorName, 'teacher'); assert.equal(meta.requireLogin, true);
+  assert.doesNotMatch(JSON.stringify(meta), /伪造作者|PRIVATE_METHOD|workspaceId|userId|tokenHash/);
+  const config = await (await fetch(manage + '/config', { headers: ownerHeaders })).json() as { version: number; serviceBusiness: { plans: { id: string }[] } };
+  const planId = config.serviceBusiness.plans[0].id;
+  const issueResponse = await fetch(manage + '/service/codes', { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ planId, source: 'manual_fulfillment', confirmed: true }) });
+  assert.equal(issueResponse.status, 200, await issueResponse.clone().text());
+  const issued = await issueResponse.json() as { code: string; grant: { id: string } };
+  assert.match(issued.code, /^[A-Za-z0-9_-]{43}$/);
+  const ownerService = await (await fetch(manage + '/service', { headers: ownerHeaders })).text();
+  assert.doesNotMatch(ownerService, new RegExp(issued.code)); assert.doesNotMatch(ownerService, /tokenHash/);
+  assert.equal(db.rechargeOrders.length, 0);
+  assert.equal((await fetch(manage + '/service', { headers: { ...ownerHeaders, 'x-owner': 'another' } })).status, 404);
+  assert.equal((await fetch(publicUrl + '/sessions', { method: 'POST' })).status, 401);
+  const cookie = visitorCookie(visitor), otherCookie = visitorCookie(other);
+  const token = (await (await fetch(publicUrl + '/sessions', { method: 'POST', headers: { Cookie: cookie } })).json() as { token: string }).token;
+  const headers = { Cookie: cookie, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const question = { operationId: 'service-question-00001', content: 'PRIVATE_RAW_CHAT_NOT_A_LEAD，请给一个方法建议。', attachmentIds: [] };
+  const before = await fetch(publicUrl + '/questions', { method: 'POST', headers, body: JSON.stringify(question) });
+  assert.equal(before.status, 402); assert.equal(db.publicRuns!.length, 0); assert.equal(gatewayCalls, 0);
+  const redeem = async (h: typeof headers) => fetch(publicUrl + '/service/redeem', { method: 'POST', headers: h, body: JSON.stringify({ code: issued.code }) });
+  assert.equal((await redeem({ ...headers, Cookie: otherCookie })).status, 401);
+  const redeemedResponse = await redeem(headers); assert.equal(redeemedResponse.status, 200);
+  const redeemed = await redeemedResponse.json() as { id: string };
+  assert.equal((await (await redeem(headers)).json() as { id: string }).id, redeemed.id);
+  const otherToken = (await (await fetch(publicUrl + '/sessions', { method: 'POST', headers: { Cookie: otherCookie } })).json() as { token: string }).token;
+  const otherHeaders = { ...headers, Cookie: otherCookie, Authorization: `Bearer ${otherToken}` };
+  assert.equal((await redeem(otherHeaders)).status, 409);
+  const receipt = await (await fetch(publicUrl + '/questions', { method: 'POST', headers, body: JSON.stringify(question) })).json() as { run: { id: string } };
+  assert.ok(receipt.run.id);
+  let answer: { run: { id: string; status: string; response?: string } } | undefined;
+  for (let i = 0; i < 100; i++) {
+    answer = await (await fetch(publicUrl + `/questions/${receipt.run.id}`, { headers })).json() as typeof answer;
+    if (answer?.run.status !== 'running') break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(answer?.run.status, 'completed', JSON.stringify(answer));
+  assert.equal(gatewayCalls, 1);
+  assert.equal(db.publicRuns![0].serviceEntitlement?.id, redeemed.id);
+  const repeated = await (await fetch(publicUrl + '/questions', { method: 'POST', headers, body: JSON.stringify(question) })).json() as { run: { id: string } };
+  assert.equal(repeated.run.id, receipt.run.id); assert.equal(gatewayCalls, 1);
+  const leadBody = { operationId: 'service-consented-lead-0001', consent: true, fields: { name: '只发送这个称呼', budget: 5000 } };
+  assert.equal((await fetch(publicUrl + '/leads', { method: 'POST', headers, body: JSON.stringify({ ...leadBody, consent: false }) })).status, 400);
+  assert.equal((await fetch(publicUrl + '/leads', { method: 'POST', headers, body: JSON.stringify(leadBody) })).status, 200);
+  const leads = await (await fetch(manage + '/leads', { headers: ownerHeaders })).text();
+  assert.match(leads, /只发送这个称呼/); assert.doesNotMatch(leads, /PRIVATE_RAW_CHAT|sessionId|visitorUserId|tokenHash/);
+  assert.equal((await fetch(manage + '/leads', { headers: { ...ownerHeaders, 'x-owner': 'another' } })).status, 404);
+  const publicService = await (await fetch(publicUrl + '/service')).text();
+  assert.doesNotMatch(publicService, /只发送这个称呼|learner|another|tokenHash|visitorUserId|codes|entitlements/);
+  const update = await fetch(manage + '/update', { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ ...body, version: config.version, description: '更新服务介绍', serviceBusiness: { ...body.serviceBusiness, plans: [{ ...body.serviceBusiness.plans[0], id: planId }] } }) });
+  assert.equal(update.status, 200, await update.clone().text());
+  const saved = db.publications!.find(p => p.id === publication.id)!;
+  assert.equal(saved.serviceBusiness!.entitlements.length, 1);
+  assert.equal(saved.serviceBusiness!.leads.length, 1);
+  assert.deepEqual(saved.history!.at(-1)!.serviceBusiness!.codes, []);
+  assert.deepEqual(saved.history!.at(-1)!.serviceBusiness!.entitlements, []);
+  assert.deepEqual(saved.history!.at(-1)!.serviceBusiness!.leads, []);
+  assert.equal((await fetch(publicUrl + '/service', { headers })).status, 409, 'old session must not run against new configuration');
+  const freshToken = (await (await fetch(publicUrl + '/sessions', { method: 'POST', headers: { Cookie: cookie } })).json() as { token: string }).token;
+  const fresh = await (await fetch(publicUrl + '/service', { headers: { ...headers, Authorization: `Bearer ${freshToken}` } })).json() as { entitlement: { id: string } };
+  assert.equal(fresh.entitlement.id, redeemed.id, 'rights stay with the account rather than the old session');
+  assert.equal(db.rechargeOrders.length, 0);
+});

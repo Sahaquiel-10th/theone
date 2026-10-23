@@ -4,9 +4,9 @@ import type {KnowledgeService} from './knowledge/knowledgeService.js';
 import {asyncRoute} from './middleware.js';
 import {apiGrantView,authenticateApi,issueApiGrant} from './publicApi.js';
 import {beginPublicRun,ownedPublication,publicRun,SharingError,usageFor} from './publicSharing.js';
-import {executePublicQuestion} from './publicSharingRoutes.js';
+import {executePublicQuestion,type PublicAvatarDependencies} from './publicSharingRoutes.js';
 import {uid} from './security.js';
-export function installPublicApiRoutes(app:Express,keyAuth:readonly RequestHandler[],store:Store,knowledge:Pick<KnowledgeService,'recallWithDiagnostics'>,call?:Parameters<typeof executePublicQuestion>[3]){
+export function installPublicApiRoutes(app:Express,keyAuth:readonly RequestHandler[],store:Store,knowledge:Pick<KnowledgeService,'recallWithDiagnostics'>,call?:Parameters<typeof executePublicQuestion>[3],deps:PublicAvatarDependencies={}){
   const management=express.Router();management.use(...keyAuth);
   management.get('/:id/keys',asyncRoute(async(req,res)=>{
     const db=await store.read(),p=ownedPublication(db,req.workspaceId!,req.user!.id,String(req.params.id)),page=Math.max(1,Math.floor(Number(req.query.page)||1));
@@ -23,12 +23,20 @@ export function installPublicApiRoutes(app:Express,keyAuth:readonly RequestHandl
   router.post('/tasks',asyncRoute(async(req,res)=>{
     const result=await store.mutate(db=>{const {publication,session}=authenticateApi(db,token(req));return beginPublicRun(db,publication,session,{content:req.body?.question,operationId:req.body?.operationId,attachmentIds:[]});});
     res.status(result.created?202:200).json({task:publicRun(result.run)});
-    if(result.created)void executePublicQuestion(store,knowledge,result.run.id,call).catch(()=>{});
+    if(result.created)void executePublicQuestion(store,knowledge,result.run.id,call,deps).catch(()=>{});
   }));
   router.get('/tasks/:id',asyncRoute(async(req,res)=>{
     const db=await store.read(),{publication:p,session:s,grant:g}=authenticateApi(db,token(req));
     const r=db.publicRuns!.find(r=>r.id===req.params.id&&r.publicationId===p.id&&r.sessionId===s.id&&r.apiGrantId===g.id&&r.workspaceId===p.workspaceId);
     if(!r)throw new SharingError('任务不存在',404);res.json({task:{...publicRun(r),version:r.publicationVersion??1,...usageFor(db,p,r.id)}});
+  }));
+  router.get('/tasks/:id/artifacts/:artifactId',asyncRoute(async(req,res)=>{
+    const db=await store.read(),{publication:p,session:s,grant:g}=authenticateApi(db,token(req));
+    const r=db.publicRuns!.find(r=>r.id===req.params.id&&r.publicationId===p.id&&r.sessionId===s.id&&r.apiGrantId===g.id&&r.workspaceId===p.workspaceId);
+    const receipt=r?.artifacts?.find(f=>f.id===req.params.artifactId);
+    const file=receipt&&db.attachments.find(f=>f.id===receipt.id&&f.workspaceId===s.workspaceId&&f.userId===s.id&&f.conversationId===s.id&&f.status==='ready');
+    if(!file)throw new SharingError('成果不存在或不属于此授权',404);
+    res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Content-Security-Policy',"sandbox; default-src 'none'; base-uri 'none'; form-action 'none'");res.download(file.storagePath,file.originalName);
   }));
   router.post('/tasks/:id/cancel',asyncRoute(async(req,res)=>{
     await store.mutate(db=>{const {publication:p,session:s,grant:g}=authenticateApi(db,token(req));const r=db.publicRuns!.find(r=>r.id===req.params.id&&r.publicationId===p.id&&r.sessionId===s.id&&r.apiGrantId===g.id&&r.workspaceId===p.workspaceId);if(!r)throw new SharingError('任务不存在',404);if(r.status==='running'){r.status='failed';r.completedAt=new Date().toISOString();r.error='任务已取消；已经产生的用量仍记录，不会自动重跑';}});res.json({ok:true});

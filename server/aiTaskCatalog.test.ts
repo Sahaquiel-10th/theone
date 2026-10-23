@@ -34,3 +34,14 @@ test("public QA ceiling cannot be widened by grants, global configuration or loc
     assert.deepEqual(intersectTaskTools({ ...input, entryPoint: "unknown" as never }), []);
   }
 });
+
+test('public service ceiling allows only bounded reviewed feature namespaces, not underlying global tools', () => {
+  const names = ['knowledge_search', 'public_feature_0', 'public_feature_3', 'public_oneFinance', 'public_oneTable', 'public_oneHtml', 'public_oneFlowchart', 'public_oneWorkbook', 'public_oneDocument'];
+  for (const entryPoint of ['published_web', 'published_api'] as const) {
+    const input = { entryPoint, configured: names, granted: names, available: names.map(name => ({ name, localOnly: false })) };
+    assert.deepEqual(intersectTaskTools(input), names);
+    for (const name of ['public_feature_4', 'public_feature_00', 'public_feature_-1', 'public_feature_0_extra', 'public_oneSlides', 'public_oneImage', 'public_web_search', 'oneFinance', 'oneHtml', 'public_oneFinance__proto__']) {
+      assert.deepEqual(intersectTaskTools({ ...input, configured: [name], granted: [name], available: [{ name, localOnly: false }] }), []);
+    }
+  }
+});

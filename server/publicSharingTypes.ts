@@ -1,6 +1,9 @@
 import type { Message, KnowledgeProviderId } from "./types.js";
 export type SharedSource = { id: string; provider: KnowledgeProviderId; binding: string; label: string };
 export type Publication = {
+  authorName?: string;
+  service?: import('./publicAvatarConfig.js').PublicAvatarService;
+  serviceBusiness?: import('./publicAvatarBusiness.js').AvatarBusinessState;
   visitorMultiplier?:number; requireLogin?:boolean; allowedUserIds?:string[]; sponsorships?:VisitorSponsorship[];
   apiGrants?: PublicApiGrant[];
   version?: number; userPrompt?: string; updatedAt?: string;
@@ -16,6 +19,9 @@ export type PublicSession = {
   createdAt: string; expiresAt: string; uploadBytes: number; uploadCount: number;
 };
 export type PublicRun = {
+  stage?: 'preparing'|'retrieving'|'thinking'|'using_tools'|'finishing';
+  artifacts?: {id:string;name:string;mimeType:string;size:number}[];
+  serviceEntitlement?: {id:string;visitorUserId:string};
   commerce?: PublicCommerceSnapshot;
   apiGrantId?: string; entryPoint?: 'published_web'|'published_api';
   publicationVersion?: number;
