@@ -38,3 +38,8 @@ Pending at initial commit: GitHub deploy, live health, actual supplier prefix re
 - Live published coordinator v4 still contained the obsolete one-task-per-turn instruction. Through the normal reviewed admin draft/publish workflow, published concise prompt-only v5; v4 remains in history. Runtime model selection, enabled tool list and maxSteps=4 were unchanged. No pricing setting changed.
 - Fresh synthetic QA49: arithmetic 17+25=42, today 2026-10-23, yesterday 2026-10-22, Asia/Shanghai all correct. Exactly one new model call was shown, 0.023996 retail power, normal settlement; no new task/knowledge/web/local/write/share was requested. Provider call duration displayed 62.9 seconds; this is not a latency improvement claim.
 - Native cache cold/warm pair NOT run: Tencent terminal requires human WeChat identity verification. The live coordinator follows runtime model selection rather than a fixed model binding, so the guarded native probe also needs an explicitly qualified native-model selection before it can be run; do not change the global production model just to satisfy the probe. No savings percentage is claimed.
+
+## Native cache verification follow-up
+
+- Added an explicit `--model-id` selector to the guarded public-only probe, with parameterized lookup and strict arguments. It still accepts only an enabled native Anthropic chat model and never changes the published coordinator, prices, user records or ledger. No arbitrary fallback model is selected.
+- Local follow-up: 1,021 tests passed, zero failed, one existing opt-in stress test skipped; type-check, production build and diff checks passed. The client bundle is unchanged.
