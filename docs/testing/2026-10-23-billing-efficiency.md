@@ -43,3 +43,14 @@ Pending at initial commit: GitHub deploy, live health, actual supplier prefix re
 
 - Added an explicit `--model-id` selector to the guarded public-only probe, with parameterized lookup and strict arguments. It still accepts only an enabled native Anthropic chat model and never changes the published coordinator, prices, user records or ledger. No arbitrary fallback model is selected.
 - Local follow-up: 1,021 tests passed, zero failed, one existing opt-in stress test skipped; type-check, production build and diff checks passed. The client bundle is unchanged.
+- Read-only QA49 profile: 56,650 serialized input bytes, including 4,377 stable bytes, 51,256 tool-schema bytes and 3,978 non-system message bytes (system bytes include the stable subset, so do not add stable bytes again). These are byte diagnostics, not token counts or proof that the whole schema is waste; the record contains no prompt text. QA49 used GPT and reported no cache usage, so it cannot establish native Anthropic prefix reuse.
+- Follow-up release `dc52f2e709e8282a6d1dccc817bbdea593930840`, Actions run `39886588807`: all four jobs succeeded, server log confirmed the SHA, current release symlink matched, and public health returned `ok:true`.
+- Human MFA restored; explicit model `mdl_b5e7149489f8693142c3` was checked using metadata-only SQL. One initial typo in the model ID failed the preflight before any provider request; it did not trigger a fallback or account charge. After correcting the ID, exactly two public synthetic provider calls completed, with the same stable fixture and different dynamic reference days. Both returned the exact marker and normal stop reason.
+- Actual provider-reported result (token counts, not inferred from bytes):
+
+| Call | Uncached input | Output | Cache read | Cache write 5m | Cache write 1h | Retail-equivalent power |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 (cold) | 2 | 13 | 0 | 21,195 | 0 | 0.079683 |
+| 2 (warm, changed reference day) | 2 | 13 | 21,153 | 42 | 0 | 0.006705 |
+
+- The second synthetic call's retail-equivalent cost was approximately 91.6% lower than the cold call under existing configured prices. This proves stable-prefix reuse through this native provider path despite a changed dynamic day; it is not a supplier-invoice reconciliation, whole-task savings percentage, or proof of reuse for every live model/tool set. The fixture is intentionally large enough to exercise caching; production prompts are not padded. No account ledger was written, real user balance reset/gift submitted, private body read, or global model/price changed.
