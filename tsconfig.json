@@ -16,5 +16,5 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["src", "server", "vite.config.ts", "scripts/test-execution-receipt-transport.ts"]
+  "include": ["src", "server", "vite.config.ts", "scripts/test-execution-receipt-transport.ts", "scripts/evaluate-adaptive-dispatch.ts", "scripts/capture-dispatch-baseline.ts"]
 }

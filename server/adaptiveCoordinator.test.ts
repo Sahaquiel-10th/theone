@@ -1,0 +1,113 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {CoordinatorService} from './coordinatorService.js';
+import {dispatchFixture,evalScope,evalAnswer} from '../scripts/eval/dispatchFixture.js';
+import {readCoordinatorContext,recentCoordinatorMessages,validateContextRead,initialCoordinatorToolNames} from './adaptiveCoordinator.js';
+import {inputProfile} from './oneContext.js';
+const key=async()=>{};
+const call=(name:string,args:unknown)=>({...evalAnswer(''),toolCalls:[{id:`call-${name}`,type:'function' as const,function:{name,arguments:JSON.stringify(args)}}]});
+const knowledge={recallWithDiagnostics:async()=>{throw Error('knowledge must not be read');}};
+
+test('paired weather fixture removes irrelevant task bodies without an extra model round or card',async()=>{
+ const results=[];
+ for(const contextMode of ['legacy','adaptive'] as const){
+  const f=dispatchFixture();let calls=0,searches=0,bytes=0;let initialNames:string[]=[];
+  const service=new CoordinatorService(f.store,knowledge,{contextMode,webSearch:async()=>{searches++;return [{title:'合成天气来源',url:'https://example.com/weather',snippet:'杭州合成天气：晴，22度。'}];},modelCall:async(_m,messages,tools)=>{
+   calls++;bytes+=inputProfile({messages,tools},evalScope.workspaceId)!.totalBytes;
+   assert.doesNotMatch(JSON.stringify(messages),/FOREIGN_SECRET/);
+   if(calls===1){initialNames=tools.map(t=>t.function.name);if(contextMode==='adaptive')assert.doesNotMatch(JSON.stringify(messages),/UNRELATED_TASK_/);return call('web_search',{query:'杭州今天天气'});}
+   return evalAnswer('杭州合成天气：晴，22度。[来源](https://example.com/weather)');
+  }});
+  await service.dispatch(evalScope,{operationId:`weather_${contextMode}_20261023`,text:'杭州今天天气怎么样？只回答，不要创建任务。',webSearch:true},key);
+  assert.equal(searches,1);assert.equal(calls,2);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
+  if(contextMode==='adaptive'){assert.ok(initialNames.includes('web_search'));assert.ok(!initialNames.includes('generate_image'));assert.ok(!initialNames.includes('delegate_task'));}
+  results.push({contextMode,calls,bytes});
+ }
+ assert.ok(results[1].bytes<results[0].bytes*.45,JSON.stringify(results));
+});
+test('older exact instructions are fetched on demand and dispatched once with numbers and restrictions',async()=>{
+ const f=dispatchFixture();let calls=0;
+ const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',modelCall:async(_m,messages)=>{
+  calls++;
+  if(calls===1){assert.doesNotMatch(JSON.stringify(messages),/42人/);return call('read_context',{query:'蓝桥'});}
+  if(calls===2){assert.match(messages.at(-1)!.content!,/42人.*900元.*不要覆盖/);return call('delegate_task',{taskId:null,title:'蓝桥活动网页',instruction:'蓝桥活动，42人，总预算900元；不要覆盖已有文件，只生成一个新HTML。',executorId:'general',featureIds:[]});}
+  return evalAnswer('蓝桥活动网页已安排。');
+ }});
+ const result=await service.dispatch(evalScope,{operationId:'history_adaptive_20261023',text:'按刚才说的蓝桥活动，开始制作吧。'},key);
+ const db=await f.store.read(),job=db.chatOperations!.find(o=>o.workRun)!;
+ assert.ok(result.taskId);assert.equal(db.chatOperations!.filter(o=>o.workRun).length,1);assert.match(job.workRun!.instruction,/42人.*900元.*不要覆盖/);
+});
+test('a bound continuation must read its original task before dispatch; omitted original text is recoverable',async()=>{
+ const f=dispatchFixture();await f.store.mutate(d=>{const c=d.conversations.find(c=>c.id==='old-task-0')!;c.messages[0].content='42人，总预算900元，不覆盖原文件。'+'合成正文'.repeat(1000);});let calls=0;
+ const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',modelCall:async(_m,messages)=>{
+  calls++;
+  if(calls===1)return call('delegate_task',{taskId:'old-task-0',title:'继续',instruction:'继续',executorId:'general',featureIds:[]});
+  if(calls===2){assert.match(messages.at(-1)!.content!,/先用 read_task/);return call('read_task',{query:'old-task-0'});}
+  if(calls===3){assert.match(messages.at(-1)!.content!,/42人.*900元.*不覆盖/);return call('delegate_task',{taskId:'old-task-0',title:'继续活动',instruction:'42人，总预算900元，不覆盖原文件，补齐活动内容。',executorId:'general',featureIds:[]});}
+  return evalAnswer('已继续原任务。');
+ }});
+ const result=await service.dispatch(evalScope,{operationId:'bound_adaptive_20261023',boundTaskId:'old-task-0',text:'继续这个任务。'},key);
+ assert.equal(result.taskId,'old-task-0');assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,1);
+});
+test('unmatched-language intent can load an existing tool without granting a new one',async()=>{
+ const f=dispatchFixture();let calls=0;
+ const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',modelCall:async(_m,_messages,tools)=>{
+  calls++;
+  if(calls===1){assert.ok(!tools.some(t=>t.function.name==='delegate_task'));return call('load_tools',{names:['delegate_task']});}
+  if(calls===2){assert.ok(tools.some(t=>t.function.name==='delegate_task'));return call('delegate_task',{taskId:null,title:'Synthetic brochure',instruction:'Make a short synthetic brochure.',executorId:'general',featureIds:[]});}
+  return evalAnswer('已安排。');
+ }});
+ const result=await service.dispatch(evalScope,{operationId:'load_adaptive_20261023',text:'Make a short synthetic brochure.'},key);assert.ok(result.taskId);
+});
+test('history cannot read a foreign task or future messages and loading cannot invent run_command',async()=>{
+ const f=dispatchFixture();let calls=0;
+ const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',modelCall:async(_m,messages)=>{
+  calls++;assert.doesNotMatch(JSON.stringify(messages),/FOREIGN_SECRET_BODY/);assert.ok(!messages.some(m=>m.role==='user'&&m.content==='FUTURE_PRIVATE'));
+  if(calls===1){await f.store.mutate(d=>{d.conversations.find(c=>c.coordinatorMain)!.messages.push({id:'future',role:'user',content:'FUTURE_PRIVATE',createdAt:'later'});});return call('read_context',{query:'',taskId:'foreign-task'});}
+  if(calls===2){assert.equal(JSON.parse(messages.at(-1)!.content!).status,'not_found');return call('load_tools',{names:['run_command']});}
+  if(calls===3){assert.match(messages.at(-1)!.content!,/不能加载索引之外/);return call('read_context',{query:'FUTURE_PRIVATE'});}
+  assert.equal(JSON.parse(messages.at(-1)!.content!).status,'no_match');return evalAnswer('没有读取到这些资料，也没有执行命令。');
+ }});
+ await service.dispatch(evalScope,{operationId:'scope_adaptive_20261023',text:'请帮我回忆之前的安排。'},key);
+ assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
+});
+test('exact repeated context reads stop before buying another model round',async()=>{
+ const f=dispatchFixture();let calls=0;
+ const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',modelCall:async()=>{calls++;return call('read_context',{query:'不存在的合成词'});}});
+ const result=await service.dispatch(evalScope,{operationId:'repeat_adaptive_20261023',text:'查一下之前的安排。'},key);
+ assert.equal(result.taskId,undefined);assert.equal(calls,2);const db=await f.store.read();assert.equal(db.chatOperations![0].status,'completed');assert.ok(db.contextTraces.length);assert.equal(db.chatOperations!.filter(o=>o.workRun).length,0);
+});
+test('context paging is explicit and recent window never truncates the current full message',async()=>{
+ const f=dispatchFixture(),db=await f.store.read(),c=db.conversations.find(c=>c.coordinatorMain)!;
+ c.messages[0].content='原要求'.repeat(4000);const first=readCoordinatorContext(c,{query:'',messageId:c.messages[0].id}) as any;
+ const second=readCoordinatorContext(c,{query:'',messageId:c.messages[0].id,offset:first.items[0].nextOffset}) as any;
+ assert.equal(first.items[0].content+second.items[0].content,c.messages[0].content);
+ c.messages.push({id:'current',role:'user',content:'完整本轮'.repeat(3000),createdAt:'now'});
+ assert.equal(recentCoordinatorMessages(c.messages,'current').at(-1)!.content,c.messages.at(-1)!.content);
+ for(const value of [{query:'',offset:-1},{query:'',messageId:'x',beforeMessageId:'y'},{query:'',workspaceId:'foreign-workspace'}])assert.throws(()=>validateContextRead(value));
+ assert.ok(!initialCoordinatorToolNames({text:'天气',available:['web_search','generate_image']}).includes('generate_image'));
+});
+test('a clipped original task cannot be continued until its remaining original text is read',async()=>{
+ const f=dispatchFixture();await f.store.mutate(d=>{d.conversations.find(c=>c.id==='old-task-0')!.messages[0].content='合成原要求'.repeat(1700)+'最后限制：不得覆盖已有文件，人数42，预算900。';});let calls=0;
+ const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',modelCall:async(_m,messages)=>{
+  calls++;
+  if(calls===1)return call('read_task',{query:'old-task-0'});
+  if(calls===2){assert.equal(JSON.parse(messages.at(-1)!.content!).originalRequest.truncated,true);return call('delegate_task',{taskId:'old-task-0',title:'继续',instruction:'继续原任务',executorId:'general',featureIds:[]});}
+  if(calls===3){assert.match(messages.at(-1)!.content!,/先用 read_task/);return call('read_context',{query:'',taskId:'old-task-0',messageId:'old-input-0',offset:8000});}
+  if(calls===4){assert.match(messages.at(-1)!.content!,/不得覆盖.*42.*900/);return call('delegate_task',{taskId:'old-task-0',title:'继续',instruction:'人数42，预算900，不得覆盖已有文件，继续原任务。',executorId:'general',featureIds:[]});}
+  return evalAnswer('已继续。');
+ }});
+ const result=await service.dispatch(evalScope,{operationId:'long_bound_adaptive_20261023',boundTaskId:'old-task-0',text:'继续原任务。'},key);assert.equal(result.taskId,'old-task-0');assert.equal(calls,5);
+});
+test('empty history lookup starts before the initial window and revoked Key blocks the read',async()=>{
+ const f=dispatchFixture();let calls=0;
+ const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',modelCall:async(_m,messages)=>{
+  calls++;if(calls===1)return call('read_context',{query:''});
+  const result=JSON.parse(messages.at(-1)!.content!);assert.equal(result.items.at(-1).id,'history-18');return evalAnswer('已读取更早的对话。');
+ }});
+ await service.dispatch(evalScope,{operationId:'older_window_adaptive_20261023',text:'看看更早的对话，只回答。'},key);
+ const g=dispatchFixture();let revoked=false,modelCalls=0;
+ const blocked=new CoordinatorService(g.store,knowledge,{contextMode:'adaptive',modelCall:async()=>{modelCalls++;revoked=true;return call('read_context',{query:'蓝桥'});}});
+ await assert.rejects(()=>blocked.dispatch(evalScope,{operationId:'revoked_read_adaptive_20261023',text:'回忆蓝桥活动。'},async()=>{if(revoked)throw Error('synthetic key revoked');}));
+ assert.equal(modelCalls,1);assert.equal((await g.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
+});

@@ -32,7 +32,9 @@ export function installCoordinatorRoutes(
     executeLocal?: (req: express.Request, res: express.Response, cid: string, mid: string, operationId: string) => Promise<{ id: string; status: string }>;
   } = {},
 ) {
-  const service = new CoordinatorService(store, knowledge, deps),
+  // Trusted deployment flag only. Keep the verified legacy path available for
+  // paired acceptance and rollback; never read this choice from request bodies.
+  const service = new CoordinatorService(store, knowledge, {...deps,contextMode:process.env.ONE_COORDINATOR_CONTEXT_MODE==='adaptive'?'adaptive':'legacy'}),
     router = express.Router(),
     settings = express.Router();
   const page = (n: unknown) =>
