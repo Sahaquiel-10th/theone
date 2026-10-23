@@ -6,12 +6,14 @@ import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
 import JSZip from 'jszip';
+import XLSX from 'xlsx';
 import type { Store } from './db.js';
 import type { Database, ModelConfig, User } from './types.js';
 import type { PublicRun } from './publicSharingTypes.js';
 import { AttachmentService } from './attachmentService.js';
 import { installPublicSharingRoutes, type PublicAvatarDependencies } from './publicSharingRoutes.js';
 import { installPublicApiRoutes } from './publicApiRoutes.js';
+import { createWorkbook } from './officeWorkbook.js';
 
 const usage = { inputTokens: 40, outputTokens: 20, totalTokens: 60, source: 'provider' as const };
 const quote = { operation: 'quote', dataJson: JSON.stringify({ items: [{ name: '咨询', unit: '次', quantity: 2, unitPrice: 100 }], shipping: 0, taxRate: 0, pricesIncludeTax: true }) };
@@ -26,11 +28,11 @@ async function harness(t: TestContext, modelToolCall: NonNullable<PublicAvatarDe
   const user = (id: string, ws: string, name: string): User => ({ id, username: `${id}_account`, role: 'user', passwordHash: 'synthetic-unusable-hash', enabled: true, defaultWorkspaceId: ws, createdAt: at, profile: { workspaceId: ws, displayName: name, updatedAt: at, onboarding: { knowledgeChoice: 'skipped' } } });
   const model: ModelConfig = { id: 'model', name: 'Synthetic model', provider: 'synthetic', kind: 'chat', enabled: true, isDefault: true, apiKey: 'MODEL_SECRET_NOT_PUBLIC', protocol: 'openai', model: 'synthetic', baseUrl: 'https://invalid.example', systemPrompt: 'MODEL_INTERNAL_PROMPT', inputPowerPerMillion: 1, outputPowerPerMillion: 1, costInputPowerPerMillion: .2, costOutputPowerPerMillion: .2, createdAt: at };
   const feature = (id: string, toolId: string) => {
-    const values = { name: id === 'finance' ? '收益测算' : '交互网页', description: '处理本次明确输入并交付', author: 'ONE', instructions: '只处理当前授权输入。', limitations: '不读取其他资料', integration: 'question_answer' as const, modelId: model.id, knowledgeMode: 'none' as const, tools: [{ id: toolId, description: '使用当前输入，交付真实结果' }] };
+    const values = { name: id === 'finance' ? '收益测算' : id === 'workbook' ? '模板填表' : '交互网页', description: '处理本次明确输入并交付', author: 'ONE', instructions: '只处理当前授权输入。', limitations: '不读取其他资料', integration: 'question_answer' as const, modelId: model.id, knowledgeMode: 'none' as const, tools: [{ id: toolId, description: '使用当前输入，交付真实结果' }] };
     const snapshot = { version: 1, values, evidence: 'Synthetic verified release', approvedBy: 'admin', approvedAt: at };
     return { id, revision: 1, status: 'approved' as const, draft: values, current: snapshot, history: [snapshot], release: { id: `${id}-release`, version: 1, userIds: ['owner', 'other'], publishedAt: at, publishedBy: 'admin' } };
   };
-  let db = { users: [user('owner', 'owner-space', '林老师'), user('other', 'other-space', '其他老师')], workspaces: [{ id: 'owner-space', name: '老师工作区', slug: 'owner-space', status: 'active', createdAt: at, updatedAt: at }, { id: 'other-space', name: '其他工作区', slug: 'other-space', status: 'active', createdAt: at, updatedAt: at }], workspaceMembers: [{ id: 'owner-member', workspaceId: 'owner-space', userId: 'owner', role: 'owner', createdAt: at }, { id: 'other-member', workspaceId: 'other-space', userId: 'other', role: 'owner', createdAt: at }], models: [model], settings: { safetyRules: 'safe', rechargeCnyPerPower: 7, officialFeatures: [feature('finance', 'oneFinance'), feature('html', 'oneHtml')] }, agents: [], auditLogs: [], publications: [], publicSessions: [], publicRuns: [], attachments: [], conversations: [], messages: [{ content: 'OWNER_PRIVATE_CONVERSATION' }], contextTraces: [], knowledgeConnections: [], modelUsageRecords: [], powerLedger: [], powerAccounts: [{ id: 'owner-power', workspaceId: 'owner-space', userId: 'owner', balanceMicros: 100e6, paidBalanceMicros: 100e6, reservedMicros: 0, createdAt: at, updatedAt: at }, { id: 'other-power', workspaceId: 'other-space', userId: 'other', balanceMicros: 100e6, paidBalanceMicros: 100e6, reservedMicros: 0, createdAt: at, updatedAt: at }] } as unknown as Database;
+  let db = { users: [user('owner', 'owner-space', '林老师'), user('other', 'other-space', '其他老师')], workspaces: [{ id: 'owner-space', name: '老师工作区', slug: 'owner-space', status: 'active', createdAt: at, updatedAt: at }, { id: 'other-space', name: '其他工作区', slug: 'other-space', status: 'active', createdAt: at, updatedAt: at }], workspaceMembers: [{ id: 'owner-member', workspaceId: 'owner-space', userId: 'owner', role: 'owner', createdAt: at }, { id: 'other-member', workspaceId: 'other-space', userId: 'other', role: 'owner', createdAt: at }], models: [model], settings: { safetyRules: 'safe', rechargeCnyPerPower: 7, officialFeatures: [feature('finance', 'oneFinance'), feature('html', 'oneHtml'), feature('workbook', 'oneWorkbook')] }, agents: [], auditLogs: [], publications: [], publicSessions: [], publicRuns: [], attachments: [], conversations: [], messages: [{ content: 'OWNER_PRIVATE_CONVERSATION' }], contextTraces: [], knowledgeConnections: [], modelUsageRecords: [], powerLedger: [], powerAccounts: [{ id: 'owner-power', workspaceId: 'owner-space', userId: 'owner', balanceMicros: 100e6, paidBalanceMicros: 100e6, reservedMicros: 0, createdAt: at, updatedAt: at }, { id: 'other-power', workspaceId: 'other-space', userId: 'other', balanceMicros: 100e6, paidBalanceMicros: 100e6, reservedMicros: 0, createdAt: at, updatedAt: at }] } as unknown as Database;
   let queue: Promise<unknown> = Promise.resolve();
   const store: Store = { read: async () => db, mutate: fn => { const pending = queue.then(() => { const before = structuredClone(db); try { return fn(db); } catch (error) { db = before; throw error; } }); queue = pending.catch(() => undefined); return pending; } };
   const app = express(); app.use(express.json());
@@ -44,8 +46,8 @@ async function harness(t: TestContext, modelToolCall: NonNullable<PublicAvatarDe
   const server = app.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => { server.closeAllConnections(); server.close(); });
   const base = `http://127.0.0.1:${(server.address() as any).port}/api/sharing`;
-  const publish = async (other = false) => {
-    const response = await fetch(`${base}/manage`, { method: 'POST', headers: { ...ownerHeaders, ...(other ? { 'x-user': 'other' } : {}) }, body: JSON.stringify({ name: '可改名的咨询分身', description: '合成咨询与交付服务', prompt: 'PRIVATE_PUBLICATION_PROMPT', modelId: 'model', sourceIds: [], attachments: false, budget: 10, perRun: 1, days: 7, confirmed: true, workspaceId: 'forged-space', authorName: '伪造名人', service: { mode: 'consultation', welcome: '先说说你要解决的事。', starterQuestions: ['帮我准备一份咨询方案'], method: 'PRIVATE_METHOD_MATERIAL：先确认需求，再核对成本和交付。', features: [{ featureId: 'finance', releaseId: 'finance-release', when: '需要核对报价', workflow: '确认数量和价格，再导出报价' }, { featureId: 'html', releaseId: 'html-release', when: '需要可阅读方案', workflow: '按已有内容生成网页' }] } }) });
+  const publish = async (other = false, workbook = false) => {
+    const response = await fetch(`${base}/manage`, { method: 'POST', headers: { ...ownerHeaders, ...(other ? { 'x-user': 'other' } : {}) }, body: JSON.stringify({ name: '可改名的咨询分身', description: '合成咨询与交付服务', prompt: 'PRIVATE_PUBLICATION_PROMPT', modelId: 'model', sourceIds: [], attachments: workbook, budget: 10, perRun: 1, days: 7, confirmed: true, workspaceId: 'forged-space', authorName: '伪造名人', service: { mode: 'consultation', welcome: '先说说你要解决的事。', starterQuestions: ['帮我准备一份咨询方案'], method: 'PRIVATE_METHOD_MATERIAL：先确认需求，再核对成本和交付。', features: workbook ? [{ featureId: 'workbook', releaseId: 'workbook-release', when: '访客需要填写所选模板', workflow: '核对本次附件编号，填写指定单元格，再交付副本' }] : [{ featureId: 'finance', releaseId: 'finance-release', when: '需要核对报价', workflow: '确认数量和价格，再导出报价' }, { featureId: 'html', releaseId: 'html-release', when: '需要可阅读方案', workflow: '按已有内容生成网页' }] } }) });
     assert.equal(response.status, 200, await response.clone().text());
     return await response.json() as { id: string; slug: string };
   };
@@ -252,4 +254,30 @@ test('HTTP corrected schema succeeds after an earlier rejection when that same f
   const zip = await JSZip.loadAsync(await response.arrayBuffer()); assert.match(await zip.file('xl/worksheets/sheet1.xml')!.async('string'), /200/);
   assert.equal(f.db.powerLedger.length, 3); assert.equal(f.db.attachments.length, 1);
   const repeated = await fetch(`${f.base}/${publication.slug}/questions`, { method: 'POST', headers: guest, body: JSON.stringify(body) }); assert.equal(repeated.status, 200); assert.equal((await repeated.json()).run.id, receipt.id); assert.equal(calls, 3);
+});
+
+test('HTTP uploaded guest workbook is really filled through scoped readers and another guest cannot reuse its attachment ID', async t => {
+  let calls = 0, inputId = '';
+  const f = await harness(t, async (_model, messages, definitions) => {
+    calls++; assert.deepEqual(definitions.map(d => d.function.name), ['public_feature_0']); assert.match(JSON.stringify(messages), new RegExp(inputId)); assert.match(JSON.stringify(messages), /来访预算模板.xlsx/); assert.doesNotMatch(JSON.stringify(messages), /storagePath|OWNER_PRIVATE_CONVERSATION/);
+    return calls === 1 ? { content: '', toolCalls: [{ id: 'fill-uploaded-template', type: 'function', function: { name: 'public_feature_0', arguments: JSON.stringify({ request: '保持模板，填写登记表B2预算2400元', tool: 'oneWorkbook', input: { operation: 'fill', dataJson: JSON.stringify({ attachmentId: inputId, title: '来访预算已填', updates: [{ sheet: '登记', cell: 'B2', value: 2400 }] }) } }) } }], finishReason: 'tool_calls', usage } : { content: '已按模板填写预算2400元，副本已经做好。', toolCalls: [], finishReason: 'stop', usage };
+  });
+  const publication = await f.publish(false, true), guest = await f.session(publication.slug), stranger = await f.session(publication.slug), url = `${f.base}/${publication.slug}`;
+  const template = await createWorkbook({ title: '来访预算模板', sheets: [{ name: '登记', headers: ['客户', '预算'], rows: [['合成客户', 0]] }] });
+  const allocated = await fetch(`${url}/uploads`, { method: 'POST', headers: guest, body: JSON.stringify({ name: template.name, size: template.bytes.length, mimeType: template.mime }) }); assert.equal(allocated.status, 200, await allocated.clone().text()); inputId = (await allocated.json()).attachment.id;
+  const chunk = await fetch(`${url}/uploads/${inputId}/chunks?offset=0`, { method: 'PUT', headers: { ...guest, 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(template.bytes).buffer }); assert.equal(chunk.status, 200);
+  assert.equal((await fetch(`${url}/uploads/${inputId}/complete`, { method: 'POST', headers: guest })).status, 200);
+  let ready = false;
+  for (let i = 0; i < 200; i++) { const state = await (await fetch(`${url}/uploads/${inputId}`, { headers: guest })).json(); if (state.attachment.status === 'ready') { ready = true; break; } assert.notEqual(state.attachment.status, 'failed', state.attachment.parseError); await new Promise(resolve => setTimeout(resolve, 10)); }
+  assert.equal(ready, true, 'Uploaded XLSX must finish the actual attachment parser');
+  const original = f.db.attachments.find(file => file.id === inputId)!;
+  const payload = { content: '按所选模板，把登记表B2预算填为2400元并交付副本。', operationId: 'http_avatar_uploaded_fill_1234', attachmentIds: [inputId] };
+  const denied = await fetch(`${url}/questions`, { method: 'POST', headers: stranger, body: JSON.stringify(payload) }); assert.equal(denied.status, 400); assert.equal(calls, 0); assert.equal(f.db.publicRuns!.length, 0);
+  const submission = await fetch(`${url}/questions`, { method: 'POST', headers: guest, body: JSON.stringify(payload) }); assert.equal(submission.status, 202); const receipt = (await submission.json()).run;
+  const completed = await f.wait(publication.slug, guest, receipt.id); assert.equal(completed.status, 'completed', completed.error); assert.equal(completed.artifacts?.length, 1); assert.equal(calls, 2);
+  const file = completed.artifacts![0], response = await fetch(`${url}/questions/${receipt.id}/artifacts/${file.id}`, { headers: guest }); assert.equal(response.status, 200);
+  const actual = XLSX.read(await response.arrayBuffer(), { type: 'array' }); assert.equal(actual.Sheets['登记'].B2.v, 2400); assert.equal(actual.Sheets['登记'].A2.v, '合成客户');
+  assert.deepEqual(await fs.readFile(original.storagePath), template.bytes); assert.equal(original.userId, f.db.publicRuns![0].sessionId); assert.equal(f.db.conversations.length, 0);
+  assert.equal(f.db.modelUsageRecords.length, 2); assert.equal(f.db.powerLedger.length, 2); assert.ok(f.db.modelUsageRecords.every(row => row.conversationId === receipt.id));
+  assert.equal((await fetch(`${url}/questions/${receipt.id}/artifacts/${file.id}`, { headers: stranger })).status, 404);
 });

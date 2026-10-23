@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import JSZip from 'jszip';
+import XLSX from 'xlsx';
+import { createWorkbook } from './officeWorkbook.js';
 import type { Database } from './types.js';
 import type { Store } from './db.js';
 import { availablePublicAvatarFeatures, validateAvatarFeatureGrants, createPublicAvatarFeatureTools, type PublicAvatarFeatureDependencies } from './publicAvatarFeatures.js';
@@ -160,4 +162,64 @@ test('a provider failure after an artifact does not erase the already saved gues
   };
   await assert.rejects(invoke(f, { request: '制作网页' }), /synthetic model outage/);
   assert.equal(calls, 2); assert.equal(f.saved.length, 1); assert.match(f.saved[0].bytes.toString(), /服务说明/);
+});
+
+function addGuestInput(f: ReturnType<typeof fixture>, id: string, name: string, size: number) {
+  (f.db.attachments ??= []).push({ id, workspaceId: f.run.workspaceId, userId: f.run.userId, conversationId: f.run.sessionId, originalName: name, kind: 'spreadsheet', mimeType: name.endsWith('.csv') ? 'text/csv' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size, status: 'ready', extractedText: '', storagePath: '/synthetic-private/' + id, createdAt: new Date().toISOString() });
+  (f.deps.inputFiles ??= []).push({ id, name, kind: 'spreadsheet' });
+}
+
+test('selected guest XLSX template is really filled without modifying the original or adding a model call', async () => {
+  const f = fixture(['oneWorkbook']);
+  const template = await createWorkbook({ title: '预算模板', sheets: [{ name: '登记', headers: ['客户', '预算'], rows: [['原始客户', 0]] }] });
+  addGuestInput(f, 'guest-template', '预算模板.xlsx', template.bytes.length); let reads = 0;
+  f.deps.readOffice = async id => { assert.equal(id, 'guest-template'); reads++; return template.bytes; };
+  const result = await invoke(f, { request: '填写模板', tool: 'oneWorkbook', input: { operation: 'fill', dataJson: JSON.stringify({ attachmentId: 'guest-template', title: '已填预算', updates: [{ sheet: '登记', cell: 'A2', value: '客户甲' }, { sheet: '登记', cell: 'B2', value: 1200 }] }) } });
+  assert.equal(result.status, 'completed'); assert.equal(reads, 1); assert.equal(f.saved.length, 1); assert.equal(f.calls(), 0);
+  const actual = XLSX.read(f.saved[0].bytes, { type: 'buffer' }); assert.equal(actual.Sheets['登记'].A2.v, '客户甲'); assert.equal(actual.Sheets['登记'].B2.v, 1200);
+  assert.equal(XLSX.read(template.bytes, { type: 'buffer' }).Sheets['登记'].A2.v, '原始客户');
+  assert.doesNotMatch(JSON.stringify(result), /synthetic-private|storagePath|api\/attachments/);
+});
+
+test('guest attachment allowlist and canonical ownership reject unknown and other-guest IDs before any reader runs', async () => {
+  for (const mode of ['unknown', 'other-guest', 'other-workspace', 'not-ready'] as const) {
+    const f = fixture(['oneWorkbook']); addGuestInput(f, 'template', '模板.xlsx', 100);
+    if (mode === 'unknown') f.deps.inputFiles = [];
+    if (mode === 'other-guest') f.db.attachments[0].userId = 'other-guest';
+    if (mode === 'other-workspace') f.db.attachments[0].workspaceId = 'other-space';
+    if (mode === 'not-ready') f.db.attachments[0].status = 'uploading';
+    let reads = 0; f.deps.readOffice = async () => { reads++; throw Error('must not read'); };
+    await assert.rejects(invoke(f, { request: '查看模板', tool: 'oneWorkbook', input: { operation: 'inspect', dataJson: JSON.stringify({ attachmentId: 'template' }) } }), /未选择此附件|不属于当前访客/);
+    assert.equal(reads, 0); assert.equal(f.saved.length, 0); assert.equal(f.calls(), 0);
+  }
+});
+
+test('selected guest tables merge through the existing table implementation and deliver a real workbook', async () => {
+  const f = fixture(['oneTable']), csvs = new Map([['left', '姓名,金额\n甲,10'], ['right', '姓名,金额\n乙,20']]);
+  for (const [id, csv] of csvs) addGuestInput(f, id, `${id}.csv`, Buffer.byteLength(csv));
+  const reads: string[] = []; f.deps.readTable = async id => { reads.push(id); return csvs.get(id)!; };
+  const result = await invoke(f, { request: '合并这两份表', tool: 'oneTable', input: { operation: 'merge', dataJson: JSON.stringify({ attachmentIds: ['left', 'right'] }) } });
+  assert.equal(result.status, 'completed'); assert.deepEqual(reads, ['left', 'right']); assert.equal(f.saved.length, 1);
+  const actual = XLSX.read(f.saved[0].bytes, { type: 'buffer' }); assert.deepEqual(XLSX.utils.sheet_to_json(actual.Sheets[actual.SheetNames[0]], { header: 1 }), [['姓名', '金额'], ['甲', '10'], ['乙', '20']]);
+});
+
+test('nested feature model receives only the guest-selected bounded attachment index and can fill the actual template', async () => {
+  const f = fixture(['oneWorkbook']); const template = await createWorkbook({ title: '模板', sheets: [{ name: '登记', headers: ['客户'], rows: [['原始']] }] });
+  addGuestInput(f, 'selected-guest-template', '来访者登记.xlsx', template.bytes.length); f.deps.readOffice = async () => template.bytes; let calls = 0;
+  f.deps.bill = async input => {
+    calls++; const prompt = String(input.messages[0].content); assert.match(prompt, /selected-guest-template/); assert.match(prompt, /来访者登记.xlsx/); assert.doesNotMatch(prompt, /synthetic-private|storagePath/);
+    return calls === 1 ? { content: '', toolCalls: [{ id: 'fill-template', type: 'function', function: { name: 'public_oneWorkbook', arguments: JSON.stringify({ operation: 'fill', dataJson: JSON.stringify({ attachmentId: 'selected-guest-template', title: '已填登记', updates: [{ sheet: '登记', cell: 'A2', value: '来访者甲' }] }) }) } }], finishReason: 'tool_calls' } : { content: '登记表已填好。', toolCalls: [], finishReason: 'stop' };
+  };
+  const result = await invoke(f, { request: '使用已选登记模板填写来访者甲' });
+  assert.equal(result.status, 'completed'); assert.equal(calls, 2); assert.equal(f.saved.length, 1); assert.equal(XLSX.read(f.saved[0].bytes, { type: 'buffer' }).Sheets['登记'].A2.v, '来访者甲');
+});
+
+test('revocation during a guest input read and oversized reader output stop before any artifact save', async () => {
+  const f = fixture(['oneWorkbook']); addGuestInput(f, 'template', '模板.xlsx', 100);
+  f.deps.readOffice = async () => { f.db.attachments[0].userId = 'different-guest'; return Buffer.from('synthetic'); };
+  await assert.rejects(invoke(f, { request: '查看模板', tool: 'oneWorkbook', input: { operation: 'inspect', dataJson: '{"attachmentId":"template"}' } }), /不属于当前访客/);
+  assert.equal(f.saved.length, 0);
+  const g = fixture(['oneTable']); addGuestInput(g, 'large', '大表.csv', 1); g.deps.readTable = async () => 'x'.repeat(120001);
+  await assert.rejects(invoke(g, { request: '整理表格', tool: 'oneTable', input: { operation: 'clean', dataJson: '{"attachmentId":"large"}' } }), /超过 120000 字/);
+  assert.equal(g.saved.length, 0);
 });
