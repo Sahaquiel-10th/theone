@@ -1,6 +1,7 @@
 import type { Database, ModelUsageRecord } from "./types.js";
 import { powerAccount } from "./powerBilling.js";
 import { publicUsageRecord, safeAdminAuditLog } from "./serializers.js";
+import {billingDiagnostics} from './billingDiagnostics.js';
 
 const dayMs = 24 * 60 * 60 * 1000;
 const reportingOffsetMs = 8 * 60 * 60 * 1000;
@@ -90,5 +91,6 @@ export function adminUserUsageDetail(db: Database, userId: string, options: Admi
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
   const activity = matchingActivity.slice(0, 100).map(safeAdminAuditLog);
   return { user: { id: user.id, username: user.username, enabled: user.enabled, workspaceId }, usage, activity,
+    diagnostics:billingDiagnostics(db,{workspaceId,userId:user.id},matchingUsage),
     period, pagination: { offset, limit, total: matchingUsage.length, hasMore: offset + usage.length < matchingUsage.length }, activityTotal: matchingActivity.length };
 }

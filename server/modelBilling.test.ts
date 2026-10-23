@@ -52,6 +52,14 @@ function fixture() {
 }
 const usage = { inputTokens: 10, outputTokens: 5, totalTokens: 15, source: "provider" };
 const scope = (id: string) => ({ usageId: id, workspaceId: "wa", userId: "a" });
+test('tool-call reservations do not count the model prompt twice and keep actual settlement unchanged',async()=>{
+ const f=fixture(),input={messages:[{role:'system',cacheScope:'stable',content:f.model.systemPrompt},{role:'user',content:'公开合成任务'}],tools:[]};
+ const withoutDoublePrompt=modelReservationMicros(f.model,input);
+ assert.equal(withoutDoublePrompt,modelReservationMicros({...f.model,systemPrompt:''},input));
+ await runBilledModel(f.store,{...f.params,input},async()=>({usage}));
+ assert.equal(f.db().modelUsageRecords[0].chargedMicros,40);assert.equal(f.db().modelUsageRecords[0].inputProfile?.version,1);assert.equal(f.db().powerLedger.length,1);
+ assert.doesNotMatch(JSON.stringify(f.db().modelUsageRecords[0].inputProfile),/公开|rule/);
+});
 test('trusted larger output limits reserve the same ceiling before calling and preserve tenant/budget isolation',async()=>{
  const f=fixture();
  const ordinary=modelReservationMicros(f.model,f.params.input);

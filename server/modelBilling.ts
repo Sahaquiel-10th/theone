@@ -9,6 +9,7 @@ import type {PublicCommerceSnapshot} from './publicSharingTypes.js';
 import { activeMember, billingAccountUserId, companyWorkspace } from './enterprisePolicy.js';
 import { featurePricedModel, type FeaturePrice } from './featurePricing.js';
 import { reserveExecutionBatchBudget, type ExecutionBatchBudget } from './executionBatchBudget.js';
+import {inputProfile} from './oneContext.js';
 
 export type ModelUsage = { inputTokens: number; outputTokens: number; totalTokens: number; cacheUsage?: CacheUsage; source: string };
 type BillingParams = { maxOutputTokens?: number; sponsorship?:{kind:'welcome_gift';operationId:string;stage?:'manual'|'image'}; batchBudget?: ExecutionBatchBudget; featurePrice?: FeaturePrice; workspaceId: string; userId: string; conversationId?: string; model: ModelConfig; input: unknown; activity: string; requestId: string; beforeReserve?: (db: Database, amountMicros: number) => void;commerce?:PublicCommerceSnapshot };
@@ -57,7 +58,9 @@ export function modelReservationMicros(model: ModelConfig, input: unknown, maxOu
   }
   const high = model.pricing?.longContext ? contextPricedModel(model, model.pricing.longContext.thresholdInputTokens + 1) : model;
   const maximumInput = Math.max(model.inputPowerPerMillion, ...Object.values(model.cachePrices || {}), high.inputPowerPerMillion, ...Object.values(high.cachePrices || {}));
-  const amount = calculateModelPower({ ...model, pricing: undefined, inputPowerPerMillion: maximumInput, outputPowerPerMillion: Math.max(model.outputPowerPerMillion, high.outputPowerPerMillion) }, estimateInputCeiling({ input, modelPrompt: model.systemPrompt }), outputLimit).chargedMicros;
+  const messages=(input as {messages?:{role?:string;content?:unknown}[]}|null)?.messages;
+  const promptIncluded=!model.systemPrompt?.trim()||Array.isArray(messages)&&messages.some(m=>m.role==='system'&&typeof m.content==='string'&&m.content.includes(model.systemPrompt.trim()));
+  const amount = calculateModelPower({ ...model, pricing: undefined, inputPowerPerMillion: maximumInput, outputPowerPerMillion: Math.max(model.outputPowerPerMillion, high.outputPowerPerMillion) }, estimateInputCeiling(promptIncluded?input:{input,modelPrompt:model.systemPrompt}), outputLimit).chargedMicros;
   if (!Number.isSafeInteger(amount) || amount < 0) throw new Error("本次请求超过电力计费范围，请缩短输入");
   return amount;
 }
@@ -130,6 +133,7 @@ export async function runBilledModel<T extends { usage?: ModelUsage; finishReaso
   const amountMicros = modelReservationMicros(model, params.input, params.maxOutputTokens);
   const timestamp = new Date().toISOString();
   const row: ModelUsageRecord = {
+    inputProfile:inputProfile(params.input,params.workspaceId),
     sponsorship:params.sponsorship?structuredClone(params.sponsorship):undefined,
     featurePriceSnapshot: params.featurePrice ? structuredClone(params.featurePrice) : undefined,
     aiTaskVersion: params.input && typeof params.input === "object" && "taskVersion" in params.input && Number.isSafeInteger(params.input.taskVersion) ? Number(params.input.taskVersion) : undefined,

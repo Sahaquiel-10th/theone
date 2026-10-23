@@ -29,8 +29,8 @@ test('validation repair gets one bounded execution opportunity even at the last 
  }});
  assert.equal(turns,3);assert.equal(runs,1);assert.equal(result.trace[0].status,'rejected');
  let rejectedTurns=0;
- await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:2,maxCorrections:1,beforeStep:async()=>{},tools:[{name:'oneFlowchart',run:async()=>{},structured:{schema:{type:'object'},validate:()=>{throw new OrchestrationInputError('仍无效');},run:async()=>{throw Error('must not run');}}}],call:async()=>{rejectedTurns++;return {content:'',toolCalls:[{id:`invalid-${rejectedTurns}`,type:'function',function:{name:'oneFlowchart',arguments:'{}'}}]};}}),/步骤上限/);
- assert.equal(rejectedTurns,3);
+ await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:2,maxCorrections:1,beforeStep:async()=>{},tools:[{name:'oneFlowchart',run:async()=>{},structured:{schema:{type:'object'},validate:()=>{throw new OrchestrationInputError('仍无效');},run:async()=>{throw Error('must not run');}}}],call:async()=>{rejectedTurns++;return {content:'',toolCalls:[{id:`invalid-${rejectedTurns}`,type:'function',function:{name:'oneFlowchart',arguments:'{}'}}]};}}),/功能还没能正确接上/);
+ assert.equal(rejectedTurns,2,'identical rejected arguments must not consume a third model call');
 });
 test('progress reports actual tool boundaries, not fabricated completion',async()=>{
  const stages:string[]=[];let calls=0;
@@ -69,7 +69,7 @@ test("public executor rejects forbidden tools before any model charge and forged
       beforeStep: async () => {}, call: async (messages, tools) => {
         requests++;
         if (requests === 1) { assert.deepEqual(tools.map(t => t.function.name), ["knowledge_search"]); return { content: "", toolCalls: [call("a", "x", "web_search"), call("b")] }; }
-        assert.match(JSON.stringify(messages), /工具未授权/);
+        assert.match(JSON.stringify(messages), /TOOL_NOT_OFFERED/);
         return { content: "answer", toolCalls: [] };
       }
     });

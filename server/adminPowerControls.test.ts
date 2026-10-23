@@ -1,0 +1,40 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import express from 'express';
+import {once} from 'node:events';
+import type {Database} from './types.js';
+import {applyPowerControl,powerControlPreview,installAdminPowerControls} from './adminPowerControls.js';
+import {chargePower,availablePowerMicros} from './powerBilling.js';
+const fixture=()=>({users:[{id:'admin',role:'admin',enabled:true,defaultWorkspaceId:'wa',username:'admin'},{id:'b',role:'user',enabled:true,defaultWorkspaceId:'wb',username:'B'}],workspaces:[{id:'wa',status:'active'},{id:'wb',status:'active'}],workspaceMembers:[{workspaceId:'wa',userId:'admin'},{workspaceId:'wb',userId:'b'}],powerAccounts:[{id:'a',userId:'admin',workspaceId:'wa',balanceMicros:14e6,paidBalanceMicros:7e6,reservedMicros:1e6,powerHolds:[{id:'inflight',walletMicros:0,periods:[{id:'current',amountMicros:1e6}]}],membershipPeriods:[{id:'current',grantedMicros:20e6,remainingMicros:8e6,startsAt:new Date(Date.now()-60000).toISOString(),endsAt:new Date(Date.now()+86400000).toISOString()},{id:'future',grantedMicros:20e6,remainingMicros:20e6,startsAt:new Date(Date.now()+86400000).toISOString(),endsAt:new Date(Date.now()+2*86400000).toISOString()}]},{id:'b',userId:'b',workspaceId:'wb',balanceMicros:3e6}],settings:{},auditLogs:[],powerLedger:[],chatOperations:[{workspaceId:'wa',userId:'admin',workRun:{state:'failed',unconfirmedProtection:true}}]} as unknown as Database);
+test('gift requires admin, exact owned workspace and reason; retries cannot duplicate or retarget credits',()=>{
+ const db=fixture(),before=structuredClone(db.powerAccounts[0]);
+ const input={kind:'gift' as const,operationId:'gift-test-operation-001',power:2.5,title:'故障补偿'};
+ assert.throws(()=>applyPowerControl(db,'b','admin',input),/管理员/);
+ const result=applyPowerControl(db,'admin','b',input);assert.equal(db.powerAccounts[1].balanceMicros,5.5e6);assert.deepEqual(db.powerAccounts[0],before);
+ assert.deepEqual(applyPowerControl(db,'admin','b',input),result);assert.equal(db.powerLedger.length,1);assert.equal(db.auditLogs.length,1);
+ const restarted=JSON.parse(JSON.stringify(db)) as Database;assert.deepEqual(applyPowerControl(restarted,'admin','b',input),result);assert.equal(restarted.powerAccounts[1].balanceMicros,5.5e6);assert.equal(restarted.powerLedger.length,1);
+ assert.throws(()=>applyPowerControl(db,'admin','admin',input),/不一致/);
+ assert.throws(()=>applyPowerControl(db,'admin','b',{...input,power:3}),/不一致/);
+ assert.throws(()=>applyPowerControl(db,'admin','b',{...input,operationId:'new-gift-operation-01',title:''}),/备注/);
+ db.workspaceMembers=db.workspaceMembers.filter(m=>m.userId!=='b');assert.throws(()=>powerControlPreview(db,'admin','b'),/账号或空间/);
+});
+test('reset restores current allowance only, preserves holds and settles the original in-flight request once',()=>{
+ const db=fixture(),a=db.powerAccounts[0],before=structuredClone(db),input={kind:'reset' as const,operationId:'reset-test-operation-01',periodId:'current',expectedRemainingMicros:8e6,expectedGrantedMicros:20e6};
+ const result=applyPowerControl(db,'admin','admin',input);assert.equal(result.amountMicros,12e6);assert.equal(a.membershipPeriods![0].remainingMicros,20e6);assert.equal(availablePowerMicros(db,'wa','admin'),33e6);
+ assert.deepEqual(a.powerHolds,before.powerAccounts[0].powerHolds);assert.equal(a.reservedMicros,1e6);assert.equal(a.balanceMicros,14e6);assert.equal(a.paidBalanceMicros,7e6);
+ assert.deepEqual(a.membershipPeriods![1],before.powerAccounts[0].membershipPeriods![1]);assert.equal(a.membershipPeriods![0].endsAt,before.powerAccounts[0].membershipPeriods![0].endsAt);assert.deepEqual(db.chatOperations,before.chatOperations);assert.deepEqual(db.powerAccounts[1],before.powerAccounts[1]);
+ assert.deepEqual(applyPowerControl(db,'admin','admin',input),result);assert.equal(db.powerLedger.length,1);
+ chargePower(db,{workspaceId:'wa',userId:'admin',amountMicros:500000,modelId:'m',usageRecordId:'test',title:'settle',holdId:'inflight'});assert.equal(a.membershipPeriods![0].remainingMicros,19.5e6);assert.equal(a.reservedMicros,0);
+ assert.throws(()=>applyPowerControl(db,'admin','admin',{...input,operationId:'stale-reset-operation-1'}),/已变化/);
+});
+test('admin routes reject ordinary users and forged browser workspace; reset previews are exact and stale-safe',async t=>{
+ const db=fixture(),app=express();app.use(express.json());
+ const admin:express.RequestHandler=(req,res,next)=>{if(req.headers.authorization!=='admin'){res.sendStatus(403);return;}req.user={id:'admin'} as any;next();};
+ installAdminPowerControls(app,[admin],{read:async()=>db,mutate:async fn=>fn(db)});
+ const server=app.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});const base=`http://127.0.0.1:${(server.address() as any).port}`;
+ assert.equal((await fetch(base+'/api/admin/users/admin/power-controls')).status,403);
+ const preview=await(await fetch(base+'/api/admin/users/admin/power-controls?workspaceId=wb',{headers:{authorization:'admin'}})).json() as any;assert.equal(preview.workspaceId,'wa');assert.equal(preview.current.reservedMicros,1e6);
+ const body={operationId:'http-reset-operation-1',periodId:'current',expectedRemainingMicros:8e6,expectedGrantedMicros:20e6,workspaceId:'wb',userId:'b'};
+ const send=()=>fetch(base+'/api/admin/users/admin/reset-membership',{method:'POST',headers:{authorization:'admin','content-type':'application/json'},body:JSON.stringify(body)});
+ assert.equal((await send()).status,200);assert.equal((await send()).status,200);assert.equal(db.powerAccounts[1].balanceMicros,3e6);assert.equal(db.powerLedger.length,1);
+});

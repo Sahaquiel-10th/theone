@@ -4,6 +4,7 @@ import type { ExecutionTraceStep } from "./types.js";
 import { taskToolDescriptions } from "./aiTaskPresets.js";
 import { entryAllowsTool, type TaskEntryPoint } from "./aiTaskCatalog.js";
 import {taskStepKey,toolSucceeded,type TaskStepStore,type TaskStep} from './taskSteps.js';
+import {compileOneContext} from './oneContext.js';
 
 /** Only these reviewed codes may enter a trace; provider exceptions can contain secrets. */
 export class OrchestrationToolError extends Error {
@@ -51,7 +52,7 @@ export async function runTaskOrchestrator(input: {
   // Reject miswiring before a model call can incur any charge. Descriptions and
   // global configuration cannot lift the public question-answering ceiling.
   if (input.tools.some(tool => !entryAllowsTool(input.entryPoint, tool.name))) throw new Error("分享分身仅允许读取授权知识并回答问题");
-  const messages = structuredClone(input.messages);
+  const messages = compileOneContext(structuredClone(input.messages));
   const tools: ModelToolDefinition[] = input.tools.map(tool => ({ type: "function", function: {
     name: tool.name, description: tool.description ?? taskToolDescriptions[tool.name],
     parameters: tool.structured?.schema ?? { type: "object", additionalProperties: false, properties: { query: { type: "string", minLength: 1, maxLength: 1000 } }, required: ["query"] }
@@ -67,6 +68,7 @@ export async function runTaskOrchestrator(input: {
   let steps=baseSteps,corrections=Math.min(2,Math.max(0,Math.floor(input.maxCorrections??0)));
   const repair=(step:number)=>{if(!corrections||step>=baseSteps+2)return false;corrections--;steps=Math.min(baseSteps+2,Math.max(steps,step+2));return true;};
   const cache = new Map<string, unknown>();
+  const invalidCalls=new Set<string>();
   for (let step = 1; step <= steps; step++) {
     await input.beforeStep();
     input.onStage?.('model');
@@ -104,8 +106,19 @@ export async function runTaskOrchestrator(input: {
       }
       let output: unknown; let status = "rejected"; const started = Date.now();
       if (!tool || !query) {
-        if(inputRepair)repair(step);
-        output = inputRepair ? {status:'rejected',code:'TOOL_INPUT_REPAIR',message:inputRepair} : { status: "rejected", error: "工具未授权或参数无效" };
+        const code=tool?'TOOL_INPUT_REPAIR':'TOOL_NOT_OFFERED';
+        // Record a safe requested name before stopping, never arbitrary args
+        // or validator/provider exception text. A repeated invalid call must
+        // not spend another round trying the identical non-action.
+        const requestedTool=/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(call.function.name)?call.function.name:'invalid_name';
+        const signature=JSON.stringify([call.function.name,call.function.arguments]);
+        if(invalidCalls.has(signature)){
+          trace.push({step,tool:tool?.name??'unavailable',requestedTool,failureCode:code,status:'rejected',resultPreview:JSON.stringify({status:'rejected',code}),durationMs:0});input.onTrace?.(structuredClone(trace));
+          throw new OrchestrationInputError('这一步的功能还没能正确接上，要求已保留；可以稍后继续，不会重复执行已有成果。');
+        }
+        invalidCalls.add(signature);
+        if(inputRepair||input.maxCorrections)repair(step);
+        output = {status:'rejected',code,message:inputRepair??(tool?'参数不符合此工具的 schema，请核对必填字段、类型和长度。':'此工具不在本轮可用名单，不能执行。只使用当前提供的工具名；需要其他能力先查询目录。'),...(!tool?{availableTools:input.tools.map(t=>t.name)}:{})};
       }
       else {
         status='returned';
@@ -150,7 +163,7 @@ export async function runTaskOrchestrator(input: {
       }
       if(tool&&status!=='rejected'&&toolSucceeded(output))satisfied.add(tool.name);
       const serialized = JSON.stringify(output??null);
-      trace.push({ step, tool: tool?.name ?? "unavailable", status: status as ExecutionTraceStep["status"], query, resultPreview: serialized.length > 12000 ? `${serialized.slice(0, 12000)}…` : serialized, durationMs: Date.now() - started });
+      trace.push({ step, tool: tool?.name ?? "unavailable",...(status==='rejected'?{requestedTool:/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(call.function.name)?call.function.name:'invalid_name',failureCode:tool?'TOOL_INPUT_REPAIR' as const:'TOOL_NOT_OFFERED' as const}:{}), status: status as ExecutionTraceStep["status"], query, resultPreview: serialized.length > 12000 ? `${serialized.slice(0, 12000)}…` : serialized, durationMs: Date.now() - started });
       input.onTrace?.(structuredClone(trace));
       messages.push({ role: "tool", tool_call_id: call.id, content: serialized.length > 28000 ? JSON.stringify({ status: "truncated", excerpt: serialized.slice(0, 27000) }) : serialized });
     }

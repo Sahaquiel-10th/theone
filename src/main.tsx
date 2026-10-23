@@ -1,4 +1,5 @@
 import { CompanyPanel } from "./CompanyPanel";
+import {AdminPowerControls} from './AdminPowerControls';
 import {StaticPreviewPanel} from './StaticPreviewPanel';
 import type { identityAccess } from "../server/enterprisePolicy";
 import React, { FormEvent, createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -329,7 +330,7 @@ type UserUsageSummary = {
   knowledgeRecallCount: number; executionCount: number; activeKeyCount: number; activeDays7d?: number; lastUsedAt?: string;
 };
 type UsageActivity = { id: string; action: string; targetType: string; requestId?: string; createdAt: string };
-type UserUsageDetail = { user: { id: string; username: string; enabled: boolean }; usage: UsageRecord[]; activity: UsageActivity[]; pagination: { offset: number; limit: number; total: number; hasMore: boolean }; activityTotal: number; period: string };
+type UserUsageDetail = { diagnostics?:ReturnType<typeof import('../server/billingDiagnostics').billingDiagnostics>; user: { id: string; username: string; enabled: boolean }; usage: UsageRecord[]; activity: UsageActivity[]; pagination: { offset: number; limit: number; total: number; hasMore: boolean }; activityTotal: number; period: string };
 type AuditItem = { id: string; actorName?: string; action: string; targetType: string; requestId?: string; createdAt: string };
 type OneKeyDevice = { id: string; serialNumber: string; workspaceId: string; userId: string; username: string; status: "active" | "revoked"; createdAt: string; lastUsedAt?: string; revokedAt?: string };
 type ContextTraceSummary = { id: string; workspaceId: string; userId: string; username: string; conversationId: string; conversationTitle: string; modelName: string; requestId?: string; query: string; responsePreview: string; executionStepCount?: number; createdAt: string };
@@ -2889,13 +2890,11 @@ function AdminBilling({ actorId, users, operations, reload }: { actorId: string;
   const api = useContext(PrivateApiContext);
   const batchPending = useRef<{ operationId: string; power: number; title: string } | null>(null);
   const batchBusy = useRef(false);
-  const [userId, setUserId] = useState(users[0]?.id || ""); const [gift, setGift] = useState("10"); const [batchGift, setBatchGift] = useState("10"); const [batchTitle, setBatchTitle] = useState("内测统一赠送"); const [rate, setRate] = useState(String(operations?.settings.rechargeCnyPerPower || 7)); const [notice, setNotice] = useState("");
+  const [batchGift, setBatchGift] = useState("10"); const [batchTitle, setBatchTitle] = useState("内测统一赠送"); const [rate, setRate] = useState(String(operations?.settings.rechargeCnyPerPower || 7)); const [notice, setNotice] = useState("");
   const [section, setSection] = useState("orders");
   const [orderQuery, setOrderQuery] = useState("");
   const orders = (operations?.pendingOrders || []).filter(o => `${o.username} ${o.id}`.toLowerCase().includes(orderQuery.trim().toLowerCase()));
   const [ordersOpen, setOrdersOpen] = useState(true); const [orderPage, setOrderPage] = useState(1); const orderPageSize = 10;
-  useEffect(() => { if (!userId && users[0]) setUserId(users[0].id); }, [users]);
-  async function give(event: FormEvent) { event.preventDefault(); try { await api(`/api/admin/users/${userId}/power`, { method: "POST", body: JSON.stringify({ power: Number(gift) }) }); setNotice("电力已到账"); await reload(); } catch (error) { setNotice(error instanceof Error ? error.message : "赠送失败"); } }
   async function giveBatch(event: FormEvent) {
     event.preventDefault(); if (batchBusy.current) return;
     const storageKey = `one-gift-pending:${actorId}`;
@@ -2927,10 +2926,14 @@ function AdminBilling({ actorId, users, operations, reload }: { actorId: string;
     finally { setApproving(""); }
   }
   return <div className="admin-billing-sections">
-    <nav className="settings-tabs">{[["orders", "充值核对"], ["gift", "单人赠送"], ["batch", "批量赠送"], ["history", "赠送记录"], ["rate", "充值汇率"]].map(([id, title]) => <button type="button" key={id} aria-pressed={section === id} onClick={() => { setSection(id); setNotice(""); }}>{title}</button>)}</nav>
+    <nav className="settings-tabs">{[["orders", "充值核对"], ["gift", "账户额度"], ["batch", "批量赠送"], ["history", "赠送记录"], ["rate", "充值汇率"]].map(([id, title]) => <button type="button" key={id} aria-pressed={section === id} onClick={() => { setSection(id); setNotice(""); }}>{title}</button>)}</nav>
     {notice ? <p className="notice" role="status">{notice}</p> : null}
     {section === "history" ? <GiftBatchHistory api={api} revision={notice} /> : null}
-    <div className="admin-form-stack"><form hidden={section !== "gift"} className="admin-form" onSubmit={give}><h3><Wallet size={17} />赠送电力</h3><SearchPicker label="赠送用户" value={userId} onChange={setUserId} options={users.map(user => ({ value: user.id, label: user.profile?.displayName || user.username, hint: user.username + " · " + power(user.balanceMicros) + " 电力" }))} /><input type="number" min="0.000001" step="0.000001" value={gift} onChange={(event) => setGift(event.target.value)} /><button className="primary">确认赠送</button></form><form hidden={section !== "batch"} className="admin-form" onSubmit={giveBatch}><h3>批量赠送</h3><label>每位启用成员赠送<input type="number" min="0.000001" step="0.000001" value={batchGift} onChange={(event) => setBatchGift(event.target.value)} /></label><label>批次说明<input value={batchTitle} onChange={(event) => setBatchTitle(event.target.value)} maxLength={80} /></label><button className="secondary">给全部启用成员赠送</button><small className="hint">管理员也包含在启用成员内；每位成员都会留下独立电力账本记录。</small></form><form hidden={section !== "rate"} className="admin-form" onSubmit={saveRate}><h3>人民币充值汇率</h3><p className="hint">1 电力对应 1 美元计价单位。这里仅决定人民币充值到账多少电力，不改变模型美元价格或已有余额。</p><label>1 电力 = 人民币<input type="number" min="0.01" step="0.01" value={rate} onChange={(event) => setRate(event.target.value)} /></label><button className="secondary">保存汇率</button></form></div>
+    <div className="admin-form-stack">
+      <div hidden={section!=="gift"}><AdminPowerControls key={actorId} actorId={actorId} users={users} api={api} reload={reload}/></div>
+      <form hidden={section !== "batch"} className="admin-form" onSubmit={giveBatch}><h3>批量赠送</h3><label>每位启用成员赠送<input type="number" min="0.000001" step="0.000001" value={batchGift} onChange={(event) => setBatchGift(event.target.value)} /></label><label>批次说明<input value={batchTitle} onChange={(event) => setBatchTitle(event.target.value)} maxLength={80} /></label><button className="secondary">给全部启用成员赠送</button><small className="hint">管理员也包含在启用成员内；每位成员都会留下独立电力账本记录。</small></form>
+      <form hidden={section !== "rate"} className="admin-form" onSubmit={saveRate}><h3>人民币充值汇率</h3><p className="hint">1 电力对应 1 美元计价单位。这里仅决定人民币充值到账多少电力，不改变模型美元价格或已有余额。</p><label>1 电力 = 人民币<input type="number" min="0.01" step="0.01" value={rate} onChange={(event) => setRate(event.target.value)} /></label><button className="secondary">保存汇率</button></form>
+    </div>
     <div className="table" hidden={section !== "orders"}><input type="search" aria-label="搜索充值订单" placeholder="搜索用户或订单号" value={orderQuery} onChange={e => { setOrderQuery(e.target.value); setOrderPage(1); }} /><button type="button" className="section-toggle" onClick={() => setOrdersOpen(open => !open)} aria-expanded={ordersOpen}><h3>待入账充值</h3><span>{orders.length || 0} 笔 · {ordersOpen ? "收起" : "展开"}</span></button>{ordersOpen ? orders.length ? <>{orders.slice((orderPage - 1) * orderPageSize, orderPage * orderPageSize).map((order) => <div className="table-row" key={order.id}><span>{order.username}<small>{dateTime(order.createdAt)}</small></span><span>{power(order.requestedMicros)} 电力 · ¥{order.amountCny.toFixed(2)}</span><button type="button" className="primary" disabled={!!approving} onClick={() => void approve(order)}>{approving === order.id ? "核对中…" : order.payment ? "核对微信支付" : "确认入账"}</button></div>)}<Pagination page={orderPage} total={orders.length} size={orderPageSize} onChange={setOrderPage} /></> : <div className="empty-state compact">暂无待处理充值</div> : null}</div>
   </div>;
 }
@@ -3036,6 +3039,7 @@ function AdminUsage({ summaries, reload }: { summaries: UserUsageSummary[]; relo
           </div>
           <div className="ops-list-toolbar"><label>明细时间范围<select value={period} onChange={(event) => { setDetail(null); setPeriod(event.target.value); setOffset(0); }}><option value="7d">近 7 天</option><option value="30d">近 30 天</option><option value="all">全部时间</option></select></label><span>日志时间按本机时区显示</span></div>
           {error ? <div className="error">{error}<button type="button" className="secondary" onClick={() => setRetry((value) => value + 1)}>重试</button></div> : !currentDetail ? <div className="empty-state compact" role="status">正在读取 {item.username} 的用量…</div> : <>
+            {currentDetail.diagnostics?<section className="usage-detail-section" aria-label="消耗重点"><h4>消耗重点 · 当前时间范围</h4><p>实际消耗 {power(currentDetail.diagnostics.chargedMicros,6)} 电力，其中缓存写入约 {power(currentDetail.diagnostics.cacheWriteMicros,6)}，缓存读取约 {power(currentDetail.diagnostics.cacheReadMicros,6)}。</p><p className="hint">缓存费用已包含在总消耗中，按售价快照归因，不是额外扣费或供应商账单。高消耗不等于全部浪费；未采集上下文大小的历史记录显示“—”。</p><div className="mini-ledger">{currentDetail.diagnostics.topRequests.slice(0,5).map(r=><div key={r.requestId}><span>{r.requestId}<small>{r.calls} 次调用 · {r.state==='failed'?'未完成':r.state==='completed'?'本轮已返回':r.state==='pending'?'进行中':'需结合任务核对'} · 输入合计 {r.profiledCalls?`${Math.round(r.inputBytes/1024)} KB（${r.profiledCalls}/${r.calls} 次有记录）`:'—'}</small></span><b>{power(r.chargedMicros,6)} 电力</b></div>)}</div></section>:null}
             <details className="usage-detail-section" open>
               <summary>逐次模型调用（共 {currentDetail.pagination.total} 次）</summary>
               {currentDetail.usage.length ? <div className="ops-table"><div className="ops-table-head"><span>用途 / 模型 / 状态</span><span>消耗明细（电力）</span><span>消耗 / 上游成本（电力）</span><span>时间 / 耗时 / 请求</span></div>{currentDetail.usage.map((usage) => {

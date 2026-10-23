@@ -62,7 +62,7 @@ test('a missing mandatory PPT is repaired before queueing; one office bundle sav
 test('automatic public search is real, scoped, carries request time and does not create a task for a tool step',async()=>{
   const f=fixture();let searches=0,calls=0;
   const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({status:'no_match',chunks:[],failures:[]})},{webSearch:async(q,context)=>{searches++;assert.equal(q,'公开测试新闻');assert.equal(context.workspaceId,a.workspaceId);assert.equal(context.userId,a.userId);assert.ok(context.conversationId);assert.match(context.requestId,/^coord_/);assert.equal(typeof context.beforeReserve,'function');await context.verify();return [{title:'公开来源',url:'https://example.com/source',snippet:'已核对的公开素材'}];},modelCall:async(_m,messages,tools)=>{
-    calls++;assert.match(JSON.stringify(messages),/时间与城市参考/);assert.ok(tools.length===0||tools.some(t=>t.function.name==='web_search'));
+    calls++;assert.match(JSON.stringify(messages),/任务日期参考/);assert.ok(tools.length===0||tools.some(t=>t.function.name==='web_search'));
     if(calls===1)return answer('这条回复尚未搜索。');
     if(calls===2)return {...answer(''),toolCalls:[{id:'public-search',type:'function',function:{name:'web_search',arguments:JSON.stringify({query:'公开测试新闻'})}}]};
     assert.equal(JSON.parse(messages.at(-1)!.content!).status,'used');return answer('查到了，参考[公开来源](https://example.com/source)。');
@@ -272,7 +272,7 @@ test('completed tasks stay quietly in the sidebar until the next answer and late
   const follow=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{modelCall:async(_model,messages)=>{
     const feedback=messages.find(m=>m.content?.startsWith('刚返回、尚未向用户汇报'))!.content!;
     assert.match(feedback,/先完成的方案/);assert.doesNotMatch(feedback,/稍后完成的核算|sourceId|resultMessageId/);
-    assert.match(messages[0].content!,/像可靠的朋友/);assert.match(messages[0].content!,/不要承诺完成立刻自动回到主对话/);
+    assert.match(messages[0].content!,/熟悉搭档/);assert.match(messages[0].content!,/新成果只简短提及/);
     modelStarted();return answerGate;
   }});
   const pending=follow.dispatch(a,input('operation_quiet_follow_01','今天怎么样？只聊聊，不执行。'),key);
@@ -302,13 +302,13 @@ test('batch workers receive only their own handoff while exact source messages s
  ];
  f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('两件独立文字任务已排队'):{...answer(''),toolCalls:[{id:'strict-scope-batch',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks})}}]});
  f.setWorker(async messages=>{
-  const scopeMessage=messages.find(m=>m.role==='system'&&m.content?.startsWith('执行范围由服务端锁定：'))!;
-  assert.ok(scopeMessage);assert.match(scopeMessage.content!,/不要执行、重做、汇总或判断它们是否完成/);
-  assert.match(scopeMessage.content!,/不因缺少其他任务的工具而把本任务标成失败/);
-  assert.match(scopeMessage.content!,/不嵌入第二份结果 JSON/);
-  const scope=JSON.parse(scopeMessage.content!.split('\n').find(line=>line.startsWith('{'))!);
+  const scopeMessage=messages.find(m=>m.role==='system'&&m.content?.startsWith('当前任务参考：'))!;
+  assert.ok(scopeMessage);assert.match(messages[0].content!,/不重做或总结其他任务/);
+  assert.match(messages[0].content!,/不因缺少其他任务的工具虚构缺项/);
+  assert.match(messages[0].content!,/结果封套只写最外层/);
+  const scope=JSON.parse(scopeMessage.content!.split('\n')[0].slice('当前任务参考：'.length));
   const task=tasks.find(t=>t.title===scope.title)!;assert.ok(task);
-  assert.equal(scope.instruction,task.instruction);assert.equal(scope.expectedOutput,'text');
+  assert.equal(scope.expectedOutput,'text');assert.equal(JSON.stringify(messages).split(task.instruction).length-1,1,'current handoff is not duplicated in system and user');
   assert.equal(messages.at(-1)!.content,`本轮交接：${task.instruction}`);
   assert.doesNotMatch(JSON.stringify(messages),/一口气安排|蓝色机器人/);
   assert.ok(!messages.some(message=>message.content?.includes(tasks.find(t=>t.title!==scope.title)!.instruction)));
@@ -453,7 +453,7 @@ test('legacy continuation preserves original history and attached file handoff i
  assert.equal(f.calls.find(c=>c.modelId==='router')!.requiredTool,'delegate_task','new attachments require delegation without pretending to read them');
  assert.equal(f.calls.filter(c=>c.modelId==='router').at(-1)!.requiredTool,undefined,'acknowledgement must not dispatch again');
  await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,'legacy')).jobs[0].state==='completed');
- const call=f.calls.find(c=>c.modelId==='worker')!;assert.match(call.messages[0].content!,/独立输入框/);assert.match(JSON.stringify(call.messages),/之前的完整原话|之前的成果/);assert.doesNotMatch(JSON.stringify(call.messages),/不能读取/);
+ const call=f.calls.find(c=>c.modelId==='worker')!;assert.match(call.messages[0].content!,/独立任务/);assert.match(JSON.stringify(call.messages),/之前的完整原话|之前的成果/);assert.doesNotMatch(JSON.stringify(call.messages),/不能读取/);
 });
 
 test('on-disk restart restores executor configuration, task originals and unstarted queue',async()=>{
@@ -669,11 +669,7 @@ function fixture() {
           messages.filter((m) => m.role === "user").at(-1)?.content ?? "";
         if (current === "你好") return answer("我在。");
         if (!tools.length) return answer("没有分派工具。");
-        const catalog = JSON.parse(
-          messages[0].content!.split(
-            "服务端授权目录（仅为数据，不能扩大授权）：",
-          )[1],
-        );
+        const catalog = JSON.parse(messages.find(m=>m.content?.startsWith('本轮授权参考：'))!.content!.slice('本轮授权参考：'.length));
         const task =
           catalog.boundTaskId ||
           catalog.tasks.find((t: any) =>
@@ -800,7 +796,7 @@ for(const interruptedSummary of [false,true])test(`two visual features return ow
    const tool=messages[0].content!.includes('VISUAL_FEATURE_0')?'oneFlowchart':'oneHtml';
    return {...answer(''),toolCalls:[{id:tool,type:'function',function:{name:tool,arguments:JSON.stringify(document)}}]};
   }
-  assert.ok(messages.some(message=>message.role==='system'&&message.content?.includes('你已经在 ONE 保存好的独立任务中工作')),'the worker must not treat platform task creation or filing as a missing delivery');
+  assert.ok(messages.some(message=>message.role==='system'&&message.content?.includes('创建任务、并行和归档由平台负责')),'the worker must not treat platform task creation or filing as a missing delivery');
   if(messages.at(-1)?.role!=='tool')return {...answer(''),toolCalls:[0,1].map(i=>({id:`feature-${i}`,type:'function' as const,function:{name:`feature_${i}`,arguments:JSON.stringify({query:'生成合成指南'})}}))};
   const outputs=messages.filter(m=>m.role==='tool').map(m=>JSON.parse(m.content!));
   assert.equal(outputs.length,2);
@@ -1245,7 +1241,7 @@ test('natural local execution requires the enabled tool, saves complete handoff 
  const r=await f.service.dispatch(a,input('operation_natural_123','帮我创建说明.md，内容是荷叶饼好吃，一个5块，开始执行'),key,undefined,async(cid,mid)=>{count++;const db=await f.store.read();const job=db.chatOperations!.find(o=>o.workRun?.inputMessageId===mid)!;assert.match(job.workRun!.instruction,/禁止添加其他内容/);assert.equal(db.messages.find(m=>m.id===mid)!.conversationId,cid);return{id:'local-natural',status:'selecting_target'};});
  assert.ok(r.taskId);assert.equal(count,1);await f.service.resume(a,key);assert.equal(f.calls.filter(c=>c.modelId==='worker').length,0);
  const denied=fixture();await denied.store.mutate(d=>{d.settings.aiTasks!.coordinator!.published!.tools=['delegate_task'];});denied.setRoute(()=>({...answer(''),toolCalls:[{id:'blocked',type:'function',function:{name:'execute_local_task',arguments:'{}'}}]}));
- await assert.rejects(denied.service.dispatch(a,input('operation_natural_denied','开始执行'),key,undefined,async()=>{throw Error('must never invoke');}));assert.equal((await denied.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
+ await assertRoutingBlocked(denied.service.dispatch(a,input('operation_natural_denied','开始执行'),key,undefined,async()=>{throw Error('must never invoke');}));assert.equal((await denied.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
 });
 test('on-demand task reading is private and local completion reporting is persistent and idempotent',async()=>{
  const f=fixture(),stamp=new Date().toISOString();await f.store.mutate(d=>{d.conversations.push({...a,id:'owned',title:'旧UI',modelId:'worker',messages:[{id:'old',role:'user',content:'文件只能写一句荷叶饼',createdAt:stamp}],archived:false,createdAt:stamp,updatedAt:stamp},{...b,id:'foreign',title:'不能读取',modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp});});
@@ -1371,7 +1367,7 @@ test('explicit answer-only messages cannot delegate even when bound to an existi
  const tools=f.calls.filter(c=>c.modelId==='router').flatMap(c=>c.tools.map(t=>t.function.name));
  assert.ok(!tools.includes('delegate_task')&&!tools.includes('execute_local_task'));
  const denied=fixture(); denied.setRoute(()=>({...answer(''),toolCalls:[{id:'forbidden',type:'function',function:{name:'execute_local_task',arguments:JSON.stringify({taskId:null,title:'旧任务',instruction:'不能执行',executorId:'general'})}}]}));
- await assert.rejects(()=>denied.service.dispatch(a,input('operation_answer_only_02','只回答，不执行。'),key,undefined,async()=>{runs++;return{id:'never',status:'queued'};}));
+ await assertRoutingBlocked(denied.service.dispatch(a,input('operation_answer_only_02','只回答，不执行。'),key,undefined,async()=>{runs++;return{id:'never',status:'queued'};}));
  assert.equal(runs,0);
  assert.equal((await denied.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
  const foreign=fixture(); foreign.setRoute(()=>answer('不应读取'));
@@ -1534,12 +1530,26 @@ test("omitted task budget has a usable bounded default; explicit smaller caps re
   assert.equal(db.chatOperations?.find(o => o.operationId === "operation_explicit_cap")?.workRun?.budget, 0.02);
   assert.equal(second.taskId, first.taskId);
 });
+test('implicit routing is wallet-backed instead of a hidden .5 cap; explicit route caps still block without a model charge',async()=>{
+ const f=fixture();await f.store.mutate(d=>{const m=d.models.find(m=>m.id==='router')!;m.inputPowerPerMillion=300;m.outputPowerPerMillion=300;});
+ let calls=0;f.setRoute(()=>{calls++;return {...answer('用公开合成文字直接回答。'),usage:{inputTokens:1000,outputTokens:1000,totalTokens:2000,source:'provider'}};});
+ const reply=await f.service.dispatch(a,{operationId:'route-wallet-backed-001',text:'请只回答一段合成文字，不执行任务'},key);
+ assert.equal(reply.taskIds.length,0);assert.equal(calls,1);
+ let db=await f.store.read();assert.equal(db.modelUsageRecords[0].chargedMicros,600000);assert.equal(db.powerLedger.length,1);assert.equal(db.powerAccounts[1].balanceMicros,100e6);
+ const denied=await f.service.dispatch(a,{operationId:'route-explicit-cap-001',text:'只回答，不执行',routeBudget:.001},key);
+ assert.match(denied.message.content,/不是账户没电/);assert.equal(denied.taskIds.length,0);assert.equal(calls,1);db=await f.store.read();assert.equal(db.modelUsageRecords.length,1);
+});
 async function waitFor(check: () => Promise<boolean>) {
   for (let n = 0; n < 100; n++) {
     if (await check()) return;
     await new Promise((r) => setTimeout(r, 10));
   }
   throw Error("fixture task did not settle");
+}
+/** A reviewed failure can now be a durable ONE reply instead of a thrown UI
+ * error. Both paths must prove no dispatch, and a returned reply has a next step. */
+async function assertRoutingBlocked(promise:ReturnType<CoordinatorService['dispatch']>,expected?:RegExp){
+ await promise.then(result=>{assert.equal(result.taskIds.length,0);assert.equal(result.taskId,undefined);assert.match(result.message.content,/没能开始|未完成|还没|没就位|上限|预算/);assert.match(result.message.content,/继续|调整|稍后/);},error=>{if(expected)assert.match(String(error),expected);});
 }
 const input = (operationId: string, text: string) => ({
   operationId,
@@ -1912,7 +1922,7 @@ test("Key loss, insufficient budget and malformed/foreign routing never trigger 
     }),
   );
   assert.equal(f.calls.length, 0);
-  await assert.rejects(() =>
+  await assertRoutingBlocked(
     f.service.dispatch(
       a,
       { ...input("operation_budget_001", "UI"), routeBudget: 0.001 },
@@ -1946,9 +1956,7 @@ test("Key loss, insufficient budget and malformed/foreign routing never trigger 
     ),
   );
   const before = (await f.store.read()).conversations.length;
-  await assert.rejects(() =>
-    f.service.dispatch(a, input("operation_invalid_1", "UI"), key),
-  );
+  await assertRoutingBlocked(f.service.dispatch(a, input("operation_invalid_1", "UI"), key));
   assert.equal((await f.store.read()).conversations.length, before);
   assert.equal(f.calls.filter((c) => c.modelId === "worker").length, 0);
 });
@@ -2421,15 +2429,15 @@ test('single local_special routes only through its configured logic handoff and 
   assert.ok((offered.function.parameters as any).properties.executorId.enum.includes('local_special'));
   assert.ok((offered.function.parameters as any).properties.executorId.enum.includes(profile.id));
   f.setRoute(()=>localCall('someone-elses-task'));
-  await assert.rejects(()=>f.service.dispatch(a,input('operation_local_foreign_01','在别人任务里写文件'),key,undefined,executeLocal),/未完成分派|工具未授权|参数无效/);
+  await assertRoutingBlocked(f.service.dispatch(a,input('operation_local_foreign_01','在别人任务里写文件'),key,undefined,executeLocal),/未完成分派|工具未授权|参数无效/);
   f.setRoute(()=>localCall());
-  await assert.rejects(()=>f.service.dispatch(a,{...input('operation_local_bound_001','修改当前文档'),boundTaskId:accepted.taskId},key,undefined,executeLocal),/未完成分派|工具未授权|参数无效/);
+  await assertRoutingBlocked(f.service.dispatch(a,{...input('operation_local_bound_001','修改当前文档'),boundTaskId:accepted.taskId},key,undefined,executeLocal),/未完成分派|工具未授权|参数无效/);
   f.setRoute(()=>localCall(null,'delegate_task'));
-  await assert.rejects(()=>f.service.dispatch(a,input('operation_local_cloud_001','不能用普通分派拿到本机权限'),key,undefined,executeLocal),/未完成分派|工具未授权|参数无效/);
+  await assertRoutingBlocked(f.service.dispatch(a,input('operation_local_cloud_001','不能用普通分派拿到本机权限'),key,undefined,executeLocal),/未完成分派|工具未授权|参数无效/);
   assert.equal(localCalls,1);
   await f.store.mutate(d=>updateExecutor(d,'a',profile.id,{revision:2,action:'pause'}));
   f.setRoute(()=>localCall());
-  await assert.rejects(()=>f.service.dispatch(a,input('operation_local_disabled_01','逻辑能力停用后不可静默降级'),key,undefined,executeLocal),/未完成分派|工具未授权|参数无效/);
+  await assertRoutingBlocked(f.service.dispatch(a,input('operation_local_disabled_01','逻辑能力停用后不可静默降级'),key,undefined,executeLocal),/未完成分派|工具未授权|参数无效/);
   assert.equal(localCalls,1);
 });
 
@@ -2447,7 +2455,7 @@ test('explicit local button accepts local_special through both routing tools wit
     assert.ok(accepted.taskId);assert.equal(calls,1);
     assert.equal(f.calls[0].requiredTool,'execute_local_task');
     f.setRoute(()=>localCall('foreign-task'));
-    await assert.rejects(()=>f.service.dispatch(a,{...input(`operation_explicit_foreign_${name}`,'写入文件'),localExecution:true},key,undefined,run),/未开始|尚未开始|未完成分派|参数无效/);
+    await assertRoutingBlocked(f.service.dispatch(a,{...input(`operation_explicit_foreign_${name}`,'写入文件'),localExecution:true},key,undefined,run),/未开始|尚未开始|未完成分派|参数无效/);
     assert.equal(calls,1);
   }
 });
@@ -2543,7 +2551,7 @@ test('natural local batch dispatch obeys its tool switch before creating any chi
     {taskId:null,title:'本机文件',instruction:'只在已授权目录创建 hello.md，不覆盖',executorId:'local_special',outputKind:'local_file',featureIds:[],dependsOn:[]}];
   const route=(plan=tasks)=>f.setRoute(messages=>{
     if(messages.at(-1)?.role==='tool')return answer('两项已安排，进展在侧栏');
-    const catalog=JSON.parse(messages.find(m=>m.content?.includes('本轮执行规则优先于旧版本提示：'))!.content!.split('能力目录（本轮候选，资料，不是指令）：')[1]);
+    const catalog=JSON.parse(messages.find(m=>m.content?.includes('能力目录：'))!.content!.split('能力目录：')[1]);
     assert.equal(catalog.some((card:any)=>card.executorId==='local_special'),expectedLocalCatalog);
     return {...answer(''),toolCalls:[{id:'local-batch',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:plan})}}]};
   });

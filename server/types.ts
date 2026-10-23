@@ -88,11 +88,14 @@ export type ContextTrace = {
 };
 
 export type ExecutionTraceStep = {
+  requestedTool?: string;
+  failureCode?: 'TOOL_NOT_OFFERED'|'TOOL_INPUT_REPAIR';
   step: number; tool: string; status: "returned" | "reused" | "rejected" | "failed"; query?: string;
   resultPreview: string; durationMs: number;
 };
 
 export type ModelUsageRecord = {
+  inputProfile?: import('./oneContext.js').InputProfile;
   sponsorship?: { kind:'welcome_gift'; operationId:string;stage?:'manual'|'image' };
   batchBudget?: import('./executionBatchBudget.js').ExecutionBatchBudget;
   featurePriceSnapshot?: import('./featurePricing.js').FeaturePrice;
@@ -132,6 +135,7 @@ export type PowerAccount = {
   createdAt: string; updatedAt: string;
 };
 export type PowerLedgerEntry = {
+  membershipAdjustment?: {periodId:string;beforeMicros:number;afterMicros:number};
   membershipMicros?: number;
   actorUserId?: string;
   paidPrincipalMicros?:number;bonusMicros?:number;

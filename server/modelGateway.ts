@@ -30,6 +30,8 @@ export type ModelToolCall = {
 };
 
 export type ModelToolMessage = {
+  /** Trusted server annotation, never parsed from model/tool arguments. */
+  cacheScope?: 'stable';
   role: "system" | "user" | "assistant" | "tool";
   content: string | null;
   tool_call_id?: string;
@@ -298,7 +300,7 @@ export async function callModelWithTools(
       },
       body: JSON.stringify({
         model: model.model,
-        messages: messages.map(({inputImageDataUrls,...message})=>({...message,content:inputImageDataUrls?.length?[{type:'text',text:message.content||''},...inputImageDataUrls.map(url=>({type:'image_url',image_url:{url}}))]:message.content})),
+        messages: messages.map(({inputImageDataUrls,cacheScope,...message})=>({...message,content:inputImageDataUrls?.length?[{type:'text',text:message.content||''},...inputImageDataUrls.map(url=>({type:'image_url',image_url:{url}}))]:message.content})),
         ...(definitions.length ? {tools: definitions, tool_choice: options.finalSummaryTools ? 'none' : options.requiredTool ? { type: "function", function: { name: options.requiredTool } } : "auto"} : {}),
         temperature: 0.2,
         max_tokens: outputTokenLimit(options.maxOutputTokens)
@@ -351,11 +353,17 @@ async function callAnthropicModelWithTools(
   options: ToolModelOptions = {}
 ): Promise<ToolChatResult> {
   const definitions = options.finalSummaryTools ?? tools;
-  const system = messages
+  const systemMessages = messages
     .filter((message) => message.role === "system" && typeof message.content === "string")
-    .map((message) => message.content?.trim())
-    .filter(Boolean)
-    .join("\n\n");
+    .filter(message=>message.content?.trim());
+  // Only a leading code-owned prefix is reusable. Dynamic dates, grants,
+  // task state and personal material must follow the breakpoint. Never pad
+  // short prompts just to reach a provider's caching minimum.
+  const prefixEnd=systemMessages.findIndex(message=>message.cacheScope!=='stable');
+  const stableCount=prefixEnd<0?systemMessages.length:prefixEnd;
+  const stableText=systemMessages.slice(0,stableCount).map(m=>m.content!.trim()).join('\n\n');
+  const dynamicText=systemMessages.slice(stableCount).map(m=>m.content!.trim()).join('\n\n');
+  const system=stableText?[{type:'text',text:stableText,cache_control:{type:'ephemeral',ttl:'5m'}},...(dynamicText?[{type:'text',text:dynamicText}]:[])]:dynamicText;
   const anthropicMessages: Array<{ role: "user" | "assistant"; content: Array<Record<string, unknown>> }> = [];
   const append = (role: "user" | "assistant", blocks: Array<Record<string, unknown>>) => {
     const previous = anthropicMessages.at(-1);

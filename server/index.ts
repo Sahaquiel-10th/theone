@@ -59,6 +59,7 @@ import { ownBetaFeedback, saveBetaFeedback, adminBetaFeedback } from "./betaFeed
 import { betaEngagementSummary } from "./betaEngagement.js";
 import { OneKeyService } from "./oneKeyService.js";
 import { availablePowerMicros, creditPower, MICROS_PER_POWER, powerAccount } from "./powerBilling.js";
+import {installAdminPowerControls} from './adminPowerControls.js';
 import { runBilledModel, resolveBillingReview } from "./modelBilling.js";
 import { connectorRegistry, connectorService, notionMcpService, yinxiangService, flowusMcpService, flomoMcpService, feishuService, oneKeyPresence, runtimeUpdateCatalog } from "./runtime.js";
 import { installFeishuRoutes } from "./feishuRoutes.js";
@@ -1200,11 +1201,7 @@ app.get("/api/admin/context-traces/:id", ...admin, asyncRoute(async (req, res) =
   if (!trace) return res.status(404).json({ error: "上下文记录不存在", code: "NOT_FOUND" });
   res.json({ trace: { ...trace, username: db.users.find((user) => user.id === trace.userId)?.username || "未知用户", modelName: db.models.find((model) => model.id === trace.modelId)?.name || "已删除模型" } });
 }));
-app.post("/api/admin/users/:id/power", ...admin, asyncRoute(async (req, res) => {
-  const power = Number(req.body.power); if (!Number.isFinite(power) || power <= 0 || power > 1_000_000) throw new Error("赠送电力必须大于 0");
-  const entry = await store.mutate((db) => { const user = db.users.find((item) => item.id === req.params.id); if (!user) throw new Error("用户不存在"); const created = creditPower(db, { workspaceId: user.defaultWorkspaceId, userId: user.id, amountMicros: Math.round(power * MICROS_PER_POWER), type: "gift", title: typeof req.body.title === "string" && req.body.title.trim() ? req.body.title.trim().slice(0, 80) : "管理员赠送", createdByUserId: req.user!.id }); db.auditLogs.push({ id: uid("aud"), workspaceId: user.defaultWorkspaceId, actorUserId: req.user!.id, action: "admin.power.gifted", targetType: "user", targetId: user.id, details: { amountMicros: created.amountMicros }, requestId: res.locals.requestId, createdAt: now() }); return created; });
-  res.json({ entry });
-}));
+installAdminPowerControls(app,admin,store);
 app.post("/api/admin/power/batch-gift", ...admin, asyncRoute(async (req, res) => {
   const power = Number(req.body.power);
   if (!Number.isFinite(power) || power <= 0 || power > 1_000_000 || Math.round(power * MICROS_PER_POWER) !== power * MICROS_PER_POWER) {
