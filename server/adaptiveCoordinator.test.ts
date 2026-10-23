@@ -111,3 +111,47 @@ test('empty history lookup starts before the initial window and revoked Key bloc
  await assert.rejects(()=>blocked.dispatch(evalScope,{operationId:'revoked_read_adaptive_20261023',text:'回忆蓝桥活动。'},async()=>{if(revoked)throw Error('synthetic key revoked');}));
  assert.equal(modelCalls,1);assert.equal((await g.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
 });
+test('funded adaptive chat can settle above the former implicit 0.5 route cap; explicit caps still stop before a paid call',async()=>{
+ for(const explicit of [false,true]){
+  const f=dispatchFixture();await f.store.mutate(d=>{d.models[0].inputPowerPerMillion=100;d.models[0].outputPowerPerMillion=100;});let calls=0;
+  const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',modelCall:async()=>{calls++;return {...evalAnswer('你好。'),usage:{inputTokens:6000,outputTokens:10,totalTokens:6010,source:'provider'}};}});
+  const result=await service.dispatch(evalScope,{operationId:`funded_adaptive_${explicit}_20261023`,text:'你好。',...(explicit?{routeBudget:.001}:{})},key);
+  const db=await f.store.read(),charged=db.modelUsageRecords.reduce((sum,row)=>sum+(row.chargedMicros??0),0);
+  if(explicit){assert.equal(calls,0);assert.equal(charged,0);assert.equal(result.taskId,undefined);assert.equal(db.powerAccounts[0].balanceMicros,100e6);}
+  else{assert.equal(calls,1);assert.ok(charged>500000);assert.ok(db.powerAccounts[0].balanceMicros>90e6);}
+ }
+});
+test('disabled executor cannot dispatch and identical invalid attempts do not buy a third adaptive model call',async()=>{
+ const f=dispatchFixture();let calls=0;
+ const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',modelCall:async()=>{calls++;return call('delegate_task',{taskId:null,title:'合成任务',instruction:'制作合成内容',executorId:'not-published',featureIds:[]});}});
+ const result=await service.dispatch(evalScope,{operationId:'disabled_adaptive_20261023',text:'帮我制作一份合成方案。'},key);
+ assert.equal(calls,2);assert.equal(result.taskId,undefined);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
+});
+test('explicit deliverable prose without a real dispatch is corrected, while one useful clarification stays one call',async()=>{
+ for(const clarify of [false,true]){
+  const f=dispatchFixture();let calls=0;
+  const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',modelCall:async(_m,messages)=>{
+   calls++;if(clarify)return evalAnswer('请问网页主要介绍什么主题？');
+   if(calls===1)return evalAnswer('报告内容：这是一个合成出行方案。');
+   if(calls===2){assert.match(messages.at(-1)!.content!,/实际交付/);return call('delegate_task',{taskId:null,title:'合成报告',instruction:'制作一份合成报告。',executorId:'general',featureIds:[]});}
+   return evalAnswer('已安排，成果会留在任务里。');
+  }});
+  const result=await service.dispatch(evalScope,{operationId:`delivery_gate_${clarify}_20261023`,text:'请制作一个报告。'},key);
+  if(clarify){assert.equal(calls,1);assert.equal(result.taskId,undefined);}else{assert.equal(calls,3);assert.ok(result.taskId);}
+ }
+});
+test('an explicit HTML delivery cannot silently become an untooled generic task',async()=>{
+ const f=dispatchFixture();let calls=0;
+ const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',modelCall:async()=>{calls++;return call('delegate_task',{taskId:null,title:'合成网页',instruction:'制作HTML网页',executorId:'general',featureIds:[]});}});
+ const result=await service.dispatch(evalScope,{operationId:'html_contract_adaptive_20261023',text:'请生成一个可打开的HTML网页。'},key);
+ assert.equal(result.taskId,undefined);assert.equal(calls,2);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
+});
+test('weather explicitly naming its city cannot fabricate a fresh search when profile city is absent',async()=>{
+ const f=dispatchFixture();let calls=0,searches=0;
+ const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',webSearch:async()=>{searches++;return [{title:'合成来源',url:'https://example.com/weather',snippet:'合成天气：22度。'}];},modelCall:async(_m,messages)=>{
+  calls++;if(calls===1)return evalAnswer('杭州今天晴，22度，我联网查过了。');
+  if(calls===2){assert.match(messages.at(-1)!.content!,/尚未实际搜索/);return call('web_search',{query:'杭州今天天气'});}
+  return evalAnswer('合成结果：22度，来源 https://example.com/weather');
+ }});
+ await service.dispatch(evalScope,{operationId:'named_city_adaptive_20261023',text:'请联网查杭州今天天气。',webSearch:true},key);assert.equal(searches,1);assert.equal(calls,3);
+});

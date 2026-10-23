@@ -36,6 +36,7 @@ for(const [index,scenario] of cases.entries())for(const contextMode of index%2?[
  const f=dispatchFixture(),directory=await mkdtemp(path.join(tmpdir(),'one-adaptive-public-'));
  await f.store.mutate(db=>{
   db.models=[{...native,id:'eval-model',isDefault:true}];
+  db.users[0].contextPreferences=[{...evalScope,timeZone:'Asia/Shanghai',city:'杭州'}];
   const target=db.conversations.find(c=>c.id==='old-task-0')!;
   target.messages[0].content='蓝桥活动：42人，总预算900元。整理一份活动安排文字，不覆盖已有文件；不联网、不写外部平台。';
   target.title='蓝桥活动安排';
@@ -49,7 +50,7 @@ for(const [index,scenario] of cases.entries())for(const contextMode of index%2?[
   modelCall:async(model,messages,tools,requestId,options)=>{
    calls++;if(calls>10)throw Error('synthetic case model-call ceiling reached');
    const profile=inputProfile({messages,tools},evalScope.workspaceId)!;if(!firstBytes)firstBytes=profile.totalBytes;totalBytes+=profile.totalBytes;
-   const result=await callModelWithTools(model,messages,tools,requestId,{...options,maxOutputTokens:3000,timeoutMs:60000});
+   const result=await callModelWithTools(model,messages,tools,requestId,{...options,timeoutMs:60000});
    if(!result.usage)throw Error('missing provider usage');
    usageMicros+=calculateModelPower(model,result.usage.inputTokens,result.usage.outputTokens,result.usage.cacheUsage).chargedMicros;
    toolCalls.push(...result.toolCalls.map(t=>t.function.name));profiles.push({inputTokens:result.usage.inputTokens,outputTokens:result.usage.outputTokens,cache:result.usage.cacheUsage,finishReason:result.finishReason});
@@ -58,7 +59,7 @@ for(const [index,scenario] of cases.entries())for(const contextMode of index%2?[
  });
  let passed=false,error=false,reply='',taskId:string|undefined;
  try{
-  const response=await service.dispatch(evalScope,{operationId:`public_pair_${scenario.id}_${contextMode}`,text:scenario.text,webSearch:['weather','combined'].includes(scenario.id),...(scenario.id==='continuation'?{boundTaskId:'old-task-0'}:{})},async()=>{});
+  const response=await service.dispatch(evalScope,{operationId:`public_pair_${scenario.id}_${contextMode}`,text:scenario.text,budget:10,webSearch:['weather','combined'].includes(scenario.id),...(scenario.id==='continuation'?{boundTaskId:'old-task-0'}:{})},async()=>{});
   reply=response.message.content;taskId=response.taskId;
   if(taskId){await service.resume(evalScope,async()=>{});const deadline=Date.now()+180000;
    while(Date.now()<deadline){const db=await f.store.read(),job=db.chatOperations!.find(o=>o.workRun&&o.conversationId===taskId)?.workRun;if(job&&['completed','failed','needs_input','cancelled'].includes(job.state))break;await new Promise(resolve=>setTimeout(resolve,100));}

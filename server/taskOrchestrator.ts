@@ -113,17 +113,18 @@ export async function runTaskOrchestrator(input: {
         if (tool && error instanceof OrchestrationInputError) inputRepair = error.message.slice(0,1000);
       }
       let output: unknown; let status = "rejected"; const started = Date.now();
+      const signature=JSON.stringify([call.function.name,call.function.arguments]);
+      if(invalidCalls.has(signature)){
+        const requestedTool=/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(call.function.name)?call.function.name:'invalid_name';
+        trace.push({step,tool:tool?.name??'unavailable',requestedTool,failureCode:tool?'TOOL_INPUT_REPAIR':'TOOL_NOT_OFFERED',status:'rejected',resultPreview:JSON.stringify({status:'rejected',code:tool?'TOOL_INPUT_REPAIR':'TOOL_NOT_OFFERED'}),durationMs:0});input.onTrace?.(structuredClone(trace));
+        throw new OrchestrationInputError('这一步的功能还没能正确接上，要求已保留；可以稍后继续，不会重复执行已有成果。');
+      }
       if (!tool || !query) {
         const code=tool?'TOOL_INPUT_REPAIR':'TOOL_NOT_OFFERED';
         // Record a safe requested name before stopping, never arbitrary args
         // or validator/provider exception text. A repeated invalid call must
         // not spend another round trying the identical non-action.
         const requestedTool=/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(call.function.name)?call.function.name:'invalid_name';
-        const signature=JSON.stringify([call.function.name,call.function.arguments]);
-        if(invalidCalls.has(signature)){
-          trace.push({step,tool:tool?.name??'unavailable',requestedTool,failureCode:code,status:'rejected',resultPreview:JSON.stringify({status:'rejected',code}),durationMs:0});input.onTrace?.(structuredClone(trace));
-          throw new OrchestrationInputError('这一步的功能还没能正确接上，要求已保留；可以稍后继续，不会重复执行已有成果。');
-        }
         invalidCalls.add(signature);
         if(inputRepair||input.maxCorrections)repair(step);
         output = {status:'rejected',code,message:inputRepair??(tool?'参数不符合此工具的 schema，请核对必填字段、类型和长度。':'此工具不在本轮可用名单，不能执行。只使用当前提供的工具名；需要其他能力先查询目录。'),...(!tool?{availableTools:input.tools.map(t=>t.name)}:{})};
@@ -159,7 +160,7 @@ export async function runTaskOrchestrator(input: {
             await input.beforeStep();
             if(checkpoints&&!['artifact','external_write'].includes(checkpoint.effect))await checkpoints.save({...checkpoint,state:'failed',updatedAt:new Date().toISOString()});
             if(error instanceof OrchestrationInputError&&input.maxCorrections){
-              repair(step);output={status:'rejected',code:error.code,message:error.message};status='rejected';
+              invalidCalls.add(signature);repair(step);output={status:'rejected',code:error.code,message:error.message};status='rejected';
             }else{
             trace.push({ step, tool: tool.name, status: "failed", query,
               resultPreview: JSON.stringify({ status: "failed", code: error instanceof OrchestrationToolError ? error.code : orchestrationFailureCode(error)??"TOOL_EXECUTION_FAILED" }),
@@ -172,7 +173,7 @@ export async function runTaskOrchestrator(input: {
           if(tool.cacheable!==false&&status!=='rejected')cache.set(key, output); if(status!=='rejected')status = "returned";
         }
       }
-      if(tool&&status!=='rejected'&&toolSucceeded(output))satisfied.add(tool.name);
+      if(tool&&status!=='rejected'&&toolSucceeded(output)){satisfied.add(tool.name);if(status!=='reused')invalidCalls.clear();}
       const serialized = JSON.stringify(output??null);
       trace.push({ step, tool: tool?.name ?? "unavailable",...(status==='rejected'?{requestedTool:/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(call.function.name)?call.function.name:'invalid_name',failureCode:tool?'TOOL_INPUT_REPAIR' as const:'TOOL_NOT_OFFERED' as const}:{}), status: status as ExecutionTraceStep["status"], query, resultPreview: serialized.length > 12000 ? `${serialized.slice(0, 12000)}…` : serialized, durationMs: Date.now() - started });
       input.onTrace?.(structuredClone(trace));

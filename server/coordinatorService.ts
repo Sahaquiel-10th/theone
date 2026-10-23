@@ -79,7 +79,7 @@ import {taskExecutionGuidance,completedSteps,stepProgress,type TaskStepStore} fr
 import {dependencyState,resolveWorkDependency} from './workDependencies.js';
 import {validateVisualDocument} from './visualDocument.js';
 import {taskReportPrompt,taskReportFallback,validateTaskReport,type TaskReportFacts} from './taskNarration.js';
-import {adaptiveGuidance,recentCoordinatorMessages,compactTaskCandidates,compactCapabilities,initialCoordinatorToolNames,contextReadSchema,validateContextRead,readCoordinatorContext,type CoordinatorContextMode,type ContextRead} from './adaptiveCoordinator.js';
+import {adaptiveGuidance,recentCoordinatorMessages,compactTaskCandidates,compactCapabilities,initialCoordinatorToolNames,contextReadSchema,validateContextRead,readCoordinatorContext,requiresCoordinatorDelivery,coordinatorNeedsInput,requiresHtmlArtifact,type CoordinatorContextMode,type ContextRead} from './adaptiveCoordinator.js';
 
 export type WorkScope = { workspaceId: string; userId: string };
 export type DispatchInput = {
@@ -706,6 +706,7 @@ export class CoordinatorService {
         // batch delegation, without broadening the local entry permission.
         const executorId=localForThisCall&&v.executorId==='local_special'?resolveRoutingExecutorId(fresh,'logic'):v.executorId;
         const selectedFeatures=v.featureIds?.length?v.featureIds:features;
+        if(adaptive&&requiresHtmlArtifact(input.text)&&!selectedFeatures.some(id=>availableFeature(fresh,s,id).version.values.tools?.some(t=>t.id==='oneHtml')))throw new OrchestrationInputError('用户要的是可打开的HTML成果，不是Word文件或主对话正文。先 discover_capabilities 查找网页能力，将提供 oneHtml 的真实功能编号填入 featureIds/capabilityIds；不可用时说明尚未开始。');
         if ((v.outputKind==='image'||isImageInstruction(v.title)) && !selectedFeatures.some(id => availableFeature(fresh, s, id).version.values.experience?.mode === 'image')) {
           const taskId = await queueImage(v.instruction, v.title);
           return { taskId, status: 'queued', message: '已交给实际图片生成能力，拿到图片后才算完成。' };
@@ -862,6 +863,7 @@ export class CoordinatorService {
           return feature.version.values.tools?.some(tool=>tool.id===t.direct!.tool)?record.id:undefined;
         }:undefined))};
         if(adaptive&&plan.tasks.some(t=>t.taskId&&!inspectedTasks.has(t.taskId)))throw new OrchestrationInputError('继续已有任务前，请先 read_task 核对原目标、限制与结果。本批尚未创建任务。');
+        if(adaptive&&requiresHtmlArtifact(input.text)&&!plan.tasks.some(t=>t.outputKind==='text'&&t.featureIds.some(id=>availableFeature(fresh,s,id).version.values.tools?.some(tool=>tool.id==='oneHtml'))))throw new OrchestrationInputError('本批遗漏必需的可打开HTML成果。请查找提供 oneHtml 的网页功能并加入对应任务；不能改成交付Word或只回正文。本批尚未创建任务。');
         if(localClarification)throw new CoordinatorError('正在等待你补充确认，本轮不会继续分派或操作电脑',409);
         if(answerOnly)throw new CoordinatorError('本轮只允许回答');
         const officeRequirements=mandatoryOfficeTools(input.text);
@@ -950,6 +952,7 @@ export class CoordinatorService {
       };
       const mainKnowledge=knowledgePolicy(current,s,input.text,sources);
       const privateSearchTexts:string[]=[];
+      let publicSearchAttempted=false;
       if(!mainKnowledge.declined&&(authorizedSources.length||mainKnowledge.required))referenceTools.push({name:'knowledge_search',description:config.values.toolDescriptions?.knowledge_search,label:'查找你的资料',effect:'read',run:async query=>{await verify();if(mainKnowledge.missing.length)return {status:'not_connected',message:`${mainKnowledge.missing.join('、')}还没连好，这次没有查询到它。`};const selected=mainKnowledge.required?mainKnowledge.sourceIds:authorizedSources.map(source=>source.id);const result=await this.knowledge.recallWithDiagnostics(s.workspaceId,datedKnowledgeQuery(query,input.text,timeContext),5,selected,s.userId,{retry:true});await verify();privateSearchTexts.push(...result.chunks.map(c=>c.content));return temporalKnowledgeResult(knowledgeResultComplete(result,selected)?result:{...result,status:'partial'},input.text,timeContext);}});
       const publicSearchAllowed=webPermission&&(!mainKnowledge.required||explicitlyNeedsPublicSearch(input.text));
       if(input.webSearch&&this.deps.webSearch&&publicSearchAllowed)referenceTools.push({name:'web_search',description:config.values.toolDescriptions?.web_search,run:async query=>{await verify();try{reviewedPublicQuery(query,privateSearchTexts);}catch{return {status:'rejected',message:'搜索词夹带了个人资料，请只用必要的公开关键词，不得发送私人内容。'};}const result=await publicSearchOutcome(q=>this.deps.webSearch!(q,{...s,conversationId:cid,requestId,modelId:config.model.id,verify,beforeReserve:(fresh,amount)=>{
@@ -957,7 +960,7 @@ export class CoordinatorService {
         if(!fresh.chatOperations?.some(o=>own(o,s)&&o.operationId===input.operationId&&o.status==='pending'))throw new CoordinatorError('本轮已停止，未开始新的联网查询',409);
         if(fresh.settings.aiTasks?.coordinator?.published?.enabled!==true)throw new CoordinatorError('调度已停用');
         if(routeBudget!==undefined&&spent(fresh,s,requestId)+amount>Math.floor(routeBudget*1e6))throw new CoordinatorError('本轮设置的调度上限不足，尚未开始下一次调用；账户余额不受此提示影响。',402);
-      }}),query);await verify();return result;}});
+      }}),query);publicSearchAttempted=true;await verify();return result;}});
       const capabilities=routingCapabilities(current,s,{localAvailable:Boolean(executeLocal) && (input.localExecution === true || config.values.tools.includes('execute_local_task')),imageStorageAvailable:Boolean(this.deps.artifactDirectory),webSearchAvailable:input.webSearch===true&&!!this.deps.webSearch&&publicSearchAllowed&&config.values.tools.includes('web_search')});
       const discoveryEnabled=capabilityDiscoveryEnabled(config.values);
       const allowedCapabilities=capabilities.filter(card=>card.kind!=='knowledge'||authorizedSources.some(source=>source.id===card.sourceId));
@@ -1023,7 +1026,7 @@ export class CoordinatorService {
         ...(adaptive?{activeTools:()=>allTools.filter(t=>loadedTools.has(t.name)),planningSteps:2,noProgressTools:['read_context','load_tools']}:{}),
         maxSteps: config.values.maxSteps,
         maxCorrections:2,
-        actionRequired:content=>!answerOnly&&!localClarification&&!dispatched&&!imageTask&&dispatchCommitment(content)?'你承诺了行动，但这一轮还没有成功分派的回执。用户要求和补充已经足够时，现在调用分派工具开工，不要再只说“我会做”。用户允许虚构或自由发挥，不等于还必须提供照片。确实缺少必要信息就只问一个关键问题；能力不可用则说清尚未开始及一个下一步，不得假装已安排。':undefined,
+        actionRequired:reply=>adaptive&&input.webSearch&&publicSearchAllowed&&explicitlyNeedsPublicSearch(input.text)&&!publicSearchAttempted&&allTools.some(t=>t.name==='web_search')&&!coordinatorNeedsInput(reply)?'用户要求查最新公开事实，但尚未实际搜索。不要猜天气或声称联网查过；信息足够时现在调用 web_search，缺少城市等必要信息则只问一个问题。':!answerOnly&&!localClarification&&!dispatched&&!imageTask&&(dispatchCommitment(reply)||adaptive&&requiresCoordinatorDelivery(input.text,input.boundTaskId)&&!coordinatorNeedsInput(reply))?(adaptive?'用户明确要求实际交付或继续原任务，但这一轮还没有成功分派或真实产物。主对话里写正文、说已做好、承诺会做都不算完成。资料足够时调用本轮分派工具；继续原任务先 read_task。缺少工具格式先 load_tools。确实缺少关键资料或能力不可用时只说明卡点和下一步，不得伪造已开工或已交付。':'你承诺了行动，但这一轮还没有成功分派的回执。用户要求和补充已经足够时，现在调用分派工具开工，不要再只说“我会做”。用户允许虚构或自由发挥，不等于还必须提供照片。确实缺少必要信息就只问一个关键问题；能力不可用则说清尚未开始及一个下一步，不得假装已安排。'):undefined,
         beforeStep: verify,
         onTrace: (t) => (trace = t),
         onStage: (stage,name)=>{
@@ -1101,6 +1104,7 @@ export class CoordinatorService {
         ?'公开搜索这次没查成，还不能替你核实最新消息。可以稍后说“继续查刚才的问题”；我会重新核对，不会把旧知识当成最新结果。'
         :mainKnowledge.missing.length?`${mainKnowledge.missing.join('、')}还没有连好，这次没能查询。先连接好它，再继续查这件事就行。`
         :'这次还没查全你要找的资料，不能当作没有找到。原问题还在，可以接着查。';
+      if(adaptive&&input.webSearch&&publicSearchAllowed&&explicitlyNeedsPublicSearch(input.text)&&!publicSearchAttempted&&!coordinatorNeedsInput(result.content))result.content='这次还没有实际查到最新公开资料，不能把天气或新闻当成刚核实的结果。原问题已保留，可以继续查询；若仍查不到，我会说明卡在哪里。';
       return await this.finishDispatch(
         s,
         scope.operationId,

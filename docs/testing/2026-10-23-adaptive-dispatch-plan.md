@@ -42,3 +42,21 @@ Baseline: application behavior at commit `51ad5ee` (including the already-deploy
 - Local implementation verification: 1,030 tests passed, zero failed, one existing opt-in stress test skipped; type-check, production build and diff checks passed. Adaptive-only tests cover the paired weather path, on-demand historical constraints, bound task inspection, explicit long-original pagination before continuation, late-message isolation, foreign task denial, revoked Key, controlled tool loading and repeated-read stopping.
 - Adaptive initial capture on the same baseline fixture: system 6,826 bytes, messages 548, tool schemas 1,723, total 9,097; zero unrelated task snippets. This is an 84.5% initial-byte reduction, not a cost reduction claim. The scripted full weather pair still uses exactly two model rounds and one search in each arm.
 - Production selection is server-only `ONE_COORDINATOR_CONTEXT_MODE=adaptive`; absent/other values retain legacy. The real-model script uses isolated fixture stores and deterministic public synthetic weather data; freezes the selected model/prices, alternates arm order, records all model/tool calls and real artifact read-back, and never alters customer balances. One pair per case is a small-sample acceptance check, not statistical proof or a real-weather-provider reliability test.
+
+## First real-model exploratory pair — gate NOT passed
+
+Release `8b7f65a`, log `/tmp/one-adaptive-public-8b7f65a.log` on the server. All eight arms ran with the same selected native model and synthetic fixture stores. Customer ledger writes: zero. This exploratory run did not justify enabling adaptive mode.
+
+| Case | Legacy calls / equivalent power / pass | Adaptive calls / equivalent power / pass |
+| --- | --- | --- |
+| Weather | 1 / 0.077939 / no | 1 / 0.015516 / no |
+| Earlier requirements | 1 / 0.076773 / yes | 2 / 0.026346 / yes |
+| Bound continuation | 2 / 0.181565 / no | 2 / 0.041501 / no |
+| Search plus HTML | 9 / 0.884454 / no | 5 / 0.232392 / no |
+
+Findings: weather prose appeared without a real search when profile city was absent, despite the latest request naming Hangzhou. Bound continuation returned prose without actually queueing continuation. The combined legacy arm completed a DOCX rather than HTML; the adaptive arm stopped on incomplete tool parameters. The first evaluation wrapper also imposed 3,000 output tokens on every call, which did not match production feature/worker output settings; this limitation is removed for the formal follow-up, and both arms will receive the same explicit Hangzhou fixture preference. These condition changes must be disclosed; do not compare follow-up costs directly to this first run as a release savings figure.
+
+Follow-up implementation adds an adaptive real-delivery gate (with useful clarification exempted), preserves the bound-task read requirement, requires an actual HTML-capable feature for explicit HTML output, and prevents unsearched latest-fact prose from being presented as verified. Legacy behavior remains the comparison path. Fresh full-suite/build and a new paired run are required before activation.
+
+- Follow-up local gate: 1,035 tests passed, zero failed, one existing opt-in stress test skipped; type-check/build/diff checks passed. Added funded-above-0.5 / explicit-cap regressions, disabled executor repeated-attempt stopping, prose-versus-actual-delivery and HTML-format guards, and an explicit-city weather case without profile city. The repeated-error guard now includes handler-level repair errors, not only JSON/schema errors; successful new information allows a repaired attempt, while identical no-progress attempts stop.
+- Formal follow-up fixture changes apply equally to both arms: a known Hangzhou city preference, the production caller's output limits (no blanket 3,000-token test cap), and an explicit 10-power isolated worker allowance to avoid confusing the pre-existing worker budget with routing quality. This is not a customer budget or pricing change.
