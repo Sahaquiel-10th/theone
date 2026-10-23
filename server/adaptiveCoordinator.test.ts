@@ -155,3 +155,15 @@ test('weather explicitly naming its city cannot fabricate a fresh search when pr
  }});
  await service.dispatch(evalScope,{operationId:'named_city_adaptive_20261023',text:'请联网查杭州今天天气。',webSearch:true},key);assert.equal(searches,1);assert.equal(calls,3);
 });
+test('answer-only weather permits the requested read without creating a task in either context mode',async()=>{
+ for(const contextMode of ['legacy','adaptive'] as const){
+  const f=dispatchFixture();let calls=0,searches=0;
+  await f.store.mutate(d=>{d.users[0].contextPreferences=[{...evalScope,timeZone:'Asia/Shanghai',city:'杭州'}];});
+  const service=new CoordinatorService(f.store,knowledge,{contextMode,webSearch:async()=>{searches++;return [{title:'合成来源',url:'https://example.com/weather',snippet:'合成天气：22度。'}];},modelCall:async(_m,messages,tools,_request,options)=>{
+   calls++;if(calls===1){const text=messages.filter(m=>m.role==='system').map(m=>m.content).join('\n');assert.match(text,/不创建任务.*不等于禁止搜索/);assert.ok(tools.some(t=>t.function.name==='web_search'));assert.ok(!tools.some(t=>t.function.name==='delegate_task'));assert.equal(options?.requiredTool,'web_search');return call('web_search',{query:'杭州今天天气'});}
+   return evalAnswer('合成结果：22度，来源 https://example.com/weather');
+  }});
+  const result=await service.dispatch(evalScope,{operationId:`answer_only_weather_${contextMode}_20261023`,text:'请联网查杭州今天天气，用一句话回答并附来源，不要创建任务。',webSearch:true},key);
+  assert.equal(searches,1);assert.equal(calls,2);assert.equal(result.taskId,undefined);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
+ }
+});

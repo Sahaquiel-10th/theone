@@ -15,7 +15,7 @@ import {dispatchFixture,evalScope} from './eval/dispatchFixture.js';
 
 /** Public synthetic paired experiment only. No production Store import, no
  * customer history/knowledge/ledger writes, no automatic task/provider retry. */
-const {values}=parseArgs({strict:true,allowPositionals:false,options:{'run-public-pairs':{type:'boolean'},'model-id':{type:'string'}}});
+const {values}=parseArgs({strict:true,allowPositionals:false,options:{'run-public-pairs':{type:'boolean'},'model-id':{type:'string'},cases:{type:'string'}}});
 if(!values['run-public-pairs']||!values['model-id']||!/^[A-Za-z0-9_-]{1,100}$/.test(values['model-id'])||process.env.DB_PROVIDER!=='mysql')throw Error('explicit model and paired probe required');
 const connection=await mysql.createConnection({host:process.env.MYSQL_HOST,port:Number(process.env.MYSQL_PORT??3306),user:process.env.MYSQL_USER,password:process.env.MYSQL_PASSWORD,database:process.env.MYSQL_DATABASE});
 let native:ModelConfig;
@@ -31,8 +31,10 @@ const cases=[
  {id:'continuation',text:'继续这个任务：补一句雨天备选，不要改原有要求。'},
  {id:'combined',text:'请联网查杭州今天天气，然后做一份能打开的出行建议网页，分晴天安排和雨天备选两个场景；不要生图，不要操作本机。这是独立合成验收，不要重跑旧任务。'},
 ];
+const selected=values.cases?.split(',');
+if(selected&&(!selected.length||selected.some(id=>!cases.some(c=>c.id===id))))throw Error('unknown paired case');
 const results=[];
-for(const [index,scenario] of cases.entries())for(const contextMode of index%2?['adaptive','legacy'] as const:['legacy','adaptive'] as const){
+for(const [index,scenario] of cases.entries())if(!selected||selected.includes(scenario.id))for(const contextMode of index%2?['adaptive','legacy'] as const:['legacy','adaptive'] as const){
  const f=dispatchFixture(),directory=await mkdtemp(path.join(tmpdir(),'one-adaptive-public-'));
  await f.store.mutate(db=>{
   db.models=[{...native,id:'eval-model',isDefault:true}];
@@ -53,7 +55,7 @@ for(const [index,scenario] of cases.entries())for(const contextMode of index%2?[
    const result=await callModelWithTools(model,messages,tools,requestId,{...options,timeoutMs:60000});
    if(!result.usage)throw Error('missing provider usage');
    usageMicros+=calculateModelPower(model,result.usage.inputTokens,result.usage.outputTokens,result.usage.cacheUsage).chargedMicros;
-   toolCalls.push(...result.toolCalls.map(t=>t.function.name));profiles.push({inputTokens:result.usage.inputTokens,outputTokens:result.usage.outputTokens,cache:result.usage.cacheUsage,finishReason:result.finishReason});
+   toolCalls.push(...result.toolCalls.map(t=>t.function.name));profiles.push({inputTokens:result.usage.inputTokens,outputTokens:result.usage.outputTokens,cache:result.usage.cacheUsage,finishReason:result.finishReason,offered:tools.map(t=>t.function.name),called:result.toolCalls.map(t=>t.function.name),syntheticReply:result.content.slice(0,700)});
    return result;
   }
  });
@@ -74,7 +76,7 @@ for(const [index,scenario] of cases.entries())for(const contextMode of index%2?[
   }
  }catch{error=true;}
  const db=await f.store.read();
- const row={scenario:scenario.id,mode:contextMode,passed,error,calls,searches,toolCalls,firstBytes,totalBytes,usageComplete:profiles.length===calls,knownUsageMicros:usageMicros,retailEquivalentMicros:profiles.length===calls?usageMicros:null,isolatedLedgerMicros:db.modelUsageRecords.reduce((n,r)=>n+(r.chargedMicros??0),0),durationMs:Date.now()-started,profiles,syntheticReply:reply.slice(0,600),jobs:db.chatOperations!.filter(o=>o.workRun).map(o=>({state:o.workRun!.state,failureCode:o.workRun!.failureCode,instruction:o.workRun!.instruction.slice(0,800)})),artifacts:db.attachments.map(f=>({kind:f.kind,bytes:f.size})),accountCharged:false};
+ const row={scenario:scenario.id,mode:contextMode,passed,error,calls,searches,toolCalls,firstBytes,totalBytes,usageComplete:profiles.length===calls,knownUsageMicros:usageMicros,retailEquivalentMicros:profiles.length===calls?usageMicros:null,isolatedLedgerMicros:db.modelUsageRecords.reduce((n,r)=>n+(r.chargedMicros??0),0),durationMs:Date.now()-started,profiles,syntheticReply:reply.slice(0,600),steps:db.contextTraces.flatMap(t=>t.executionSteps??[]).map(t=>({tool:t.tool,status:t.status,result:t.status==='rejected'?t.resultPreview:undefined})),jobs:db.chatOperations!.filter(o=>o.workRun).map(o=>({state:o.workRun!.state,failureCode:o.workRun!.failureCode,instruction:o.workRun!.instruction.slice(0,800)})),artifacts:db.attachments.map(f=>({kind:f.kind,bytes:f.size})),accountCharged:false};
  results.push(row);console.log(JSON.stringify({event:'public_adaptive_pair_result',...row}));
 }
 console.log(JSON.stringify({event:'public_adaptive_pair_summary',baselineCommit:'51ad5ee',singlePairPerCase:true,alternatingOrder:true,deterministicWeatherAdapter:true,results:results.map(({profiles,...row})=>row),accountCharged:false}));

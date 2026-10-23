@@ -70,3 +70,20 @@ Wire-path inspection found that ONE's trailing service `system` correction was m
 Some failed calls returned no usage. Their earlier `retailEquivalentMicros` represented only known successful-call usage, NOT the whole attempt cost and NOT proof of zero-charge rejection. The evaluator now emits `usageComplete`, `knownUsageMicros`, and null total equivalent cost when usage is incomplete. These failed pairs are excluded from savings conclusions. Production default remains legacy pending the next complete paired gate.
 
 - Protocol follow-up local verification: 1,036 tests passed, zero failed, one pre-existing opt-in stress test skipped; type-check, build and diff checks passed.
+
+## Third real-model pair — useful gains, but not a blanket cost win
+
+Release `e79d503`, server log `/tmp/one-adaptive-public-e79d503.log`. All eight arms finished with complete reported usage. No native correction HTTP 400 recurred in this sample. Customer ledger writes: zero.
+
+| Case | Legacy calls / equivalent power / pass | Adaptive calls / equivalent power / pass |
+| --- | --- | --- |
+| Weather | 4 / 0.321235 / no | 3 / 0.051559 / no |
+| Earlier requirements | 1 / 0.077294 / yes | 3 / 0.032248 / yes |
+| Bound continuation | 4 / 0.129315 / yes | 4 / 0.070088 / yes |
+| Search plus HTML | 4 / 0.273163 / yes | 10 / 0.583225 / yes |
+
+Earlier-requirement and bound-continuation totals were respectively 58.3% and 45.8% lower in this one pair. Conversely the adaptive HTML combination cost 113.5% MORE and used six more model calls. Initial context savings therefore do not establish a whole-task saving; keep the production gate off. Both HTML arms generated actual files. These are small, alternating-order, nondeterministic samples, not guaranteed customer savings.
+
+Weather returned durable no-search feedback rather than fabricated verification, but neither arm actually performed the requested read. Follow-up makes explicit self-contained public searches required at the native tool-choice layer (when a weather location is known), preserving query construction, privacy review, source permissions and missing-location clarification. Also clarify that a request not to create a task does not prohibit a requested read-only search. The public fixture now records offered/called tool names and safe synthetic rejection feedback, and can run selected named cases without silently dropping the paired arm. Targeted weather and HTML follow-up must pass before revisiting activation.
+
+- Public-read follow-up local verification: 1,037 tests passed, zero failed, one pre-existing opt-in stress test skipped; type-check/build passed. A regression verifies both context modes actually offer and require the requested search, do not offer delegation, and produce no task card for answer-only weather.
