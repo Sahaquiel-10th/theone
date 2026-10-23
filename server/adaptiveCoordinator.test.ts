@@ -4,6 +4,9 @@ import {CoordinatorService} from './coordinatorService.js';
 import {dispatchFixture,evalScope,evalAnswer} from '../scripts/eval/dispatchFixture.js';
 import {readCoordinatorContext,recentCoordinatorMessages,validateContextRead,initialCoordinatorToolNames} from './adaptiveCoordinator.js';
 import {inputProfile} from './oneContext.js';
+import {mkdtemp,readFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
 const key=async()=>{};
 const call=(name:string,args:unknown)=>({...evalAnswer(''),toolCalls:[{id:`call-${name}`,type:'function' as const,function:{name,arguments:JSON.stringify(args)}}]});
 const knowledge={recallWithDiagnostics:async()=>{throw Error('knowledge must not be read');}};
@@ -97,7 +100,7 @@ test('a clipped original task cannot be continued until its remaining original t
   if(calls===4){assert.match(messages.at(-1)!.content!,/不得覆盖.*42.*900/);return call('delegate_task',{taskId:'old-task-0',title:'继续',instruction:'人数42，预算900，不得覆盖已有文件，继续原任务。',executorId:'general',featureIds:[]});}
   return evalAnswer('已继续。');
  }});
- const result=await service.dispatch(evalScope,{operationId:'long_bound_adaptive_20261023',boundTaskId:'old-task-0',text:'继续原任务。'},key);assert.equal(result.taskId,'old-task-0');assert.equal(calls,5);
+ const result=await service.dispatch(evalScope,{operationId:'long_bound_adaptive_20261023',boundTaskId:'old-task-0',text:'继续原任务。'},key);assert.equal(result.taskId,'old-task-0');assert.equal(calls,4);
 });
 test('empty history lookup starts before the initial window and revoked Key blocks the read',async()=>{
  const f=dispatchFixture();let calls=0;
@@ -137,7 +140,7 @@ test('explicit deliverable prose without a real dispatch is corrected, while one
    return evalAnswer('已安排，成果会留在任务里。');
   }});
   const result=await service.dispatch(evalScope,{operationId:`delivery_gate_${clarify}_20261023`,text:'请制作一个报告。'},key);
-  if(clarify){assert.equal(calls,1);assert.equal(result.taskId,undefined);}else{assert.equal(calls,3);assert.ok(result.taskId);}
+  if(clarify){assert.equal(calls,1);assert.equal(result.taskId,undefined);}else{assert.equal(calls,2);assert.ok(result.taskId);}
  }
 });
 test('an explicit HTML delivery cannot silently become an untooled generic task',async()=>{
@@ -174,4 +177,32 @@ test('reviewed orchestration failures leave an owned durable next step, never an
   const result=await service.dispatch(evalScope,{operationId:`reviewed_failure_${contextMode}_${reason.length}_20261023`,text:'做一份合成报告。'},key);
   const db=await f.store.read();assert.equal(calls,1);assert.equal(result.taskId,undefined);assert.equal(db.chatOperations![0].status,'completed');assert.match(result.message.content,/原话|原要求/);assert.match(result.message.content,/核对|继续/);assert.ok(db.contextTraces.some(t=>t.userId===evalScope.userId&&t.workspaceId===evalScope.workspaceId));assert.equal(db.chatOperations!.filter(o=>o.workRun).length,0);
  }
+});
+test('text-only continuation keeps the no-overwrite restriction without inventing a file prerequisite',async()=>{
+ for(const contextMode of ['legacy','adaptive'] as const){
+  const f=dispatchFixture();await f.store.mutate(d=>{d.conversations.find(c=>c.id==='old-task-0')!.messages[0].content='42人，总预算900元。整理活动安排文字，不覆盖已有文件；不联网、不写外部平台。';});let route=0,workers=0;
+  const service=new CoordinatorService(f.store,knowledge,{contextMode,modelCall:async(_m,messages)=>{
+   const text=messages.filter(m=>m.role==='system').map(m=>m.content).join('\n');assert.match(text,/纯文字任务直接交付正文/);assert.match(text,/“不得覆盖”是限制/);
+   if(text.includes('你已在独立任务内')){workers++;return evalAnswer(JSON.stringify({outcome:'completed',content:'42人，总预算900元；雨天改为室内分组活动，不追加预算。不覆盖已有文件，不联网、不写外部平台。',summary:'原要求保留，已补雨天备选。'}));}
+   route++;if(route===1)return call('read_task',{query:'old-task-0'});
+   if(route===2)return call('delegate_task',{taskId:'old-task-0',title:'活动安排',instruction:'整理42人、预算900元的活动安排文字，补一句雨天室内备选；不覆盖已有文件，不联网、不写外部平台。',executorId:'general',featureIds:[]});
+   return evalAnswer('已继续原任务。');
+  }});
+  const result=await service.dispatch(evalScope,{operationId:`text_continuation_${contextMode}_20261023`,boundTaskId:'old-task-0',text:'继续这个任务：补一句雨天备选，不要改原有要求。',budget:2},key);await service.resume(evalScope,key);
+  for(let i=0;i<100;i++){if((await f.store.read()).chatOperations!.find(o=>o.workRun)?.workRun?.state==='completed')break;await new Promise(r=>setTimeout(r,10));}
+  const db=await f.store.read();assert.equal(result.taskId,'old-task-0');assert.equal(workers,1);assert.equal(db.chatOperations!.find(o=>o.workRun)!.workRun!.state,'completed');assert.equal(db.attachments.length,0);
+ }
+});
+test('one mandatory self-contained feature executes its own model without a paid wrapper or acknowledgement loop',async()=>{
+ const f=dispatchFixture(),directory=await mkdtemp(path.join(tmpdir(),'one-adaptive-feature-'));let routes=0,features=0;
+ await f.store.mutate(d=>{const values={name:'合成网页',author:'ONE',description:'生成HTML',instructions:'调用oneHtml保存网页',limitations:'不访问外部资料',integration:'question_answer' as const,modelId:'eval-model',knowledgeMode:'none' as const,usageMultiplier:1,tools:[{id:'oneHtml',description:'保存HTML'}]};const version={version:1,values,evidence:'test',approvedBy:'a',approvedAt:'now'};d.settings.officialFeatures=[{id:'page',revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:'page-release',version:1,userIds:[evalScope.userId],publishedAt:'now',publishedBy:'a'}}];});
+ const scene={id:'sun',title:'晴天',situation:'合成22度',feature:'户外散步',advantage:'简单',benefit:'放松',evidence:'合成资料',steps:['带水','散步'],prompt:'安排散步',capabilityIds:[]};
+ const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',artifactDirectory:directory,modelCall:async(_m,messages,tools)=>{
+  const text=messages.filter(m=>m.role==='system').map(m=>m.content).join('\n');assert.ok(!text.includes('你已在独立任务内'),'no generic worker model is needed for a selected fixed feature');
+  if(tools.some(t=>t.function.name==='oneHtml')||messages.some(m=>m.role==='tool'&&m.tool_call_id==='call-oneHtml')){features++;return messages.at(-1)?.role==='tool'?evalAnswer('网页已保存。'):call('oneHtml',{version:1,title:'合成出行',intro:'合成22度出行说明',scenes:[scene,{...scene,id:'rain',title:'雨天',feature:'室内活动'}]});}
+  routes++;assert.equal(routes,1,'a queued receipt must not buy another acknowledgement or dispatch');return call('delegate_task',{taskId:null,title:'合成网页',instruction:'生成合成22度出行网页，晴天和雨天两个场景。',executorId:'general',featureIds:['page']});
+ }});
+ const reply=await service.dispatch(evalScope,{operationId:'one_feature_direct_20261023',text:'生成一份合成出行网页。',budget:2},key);await service.resume(evalScope,key);
+ for(let i=0;i<100;i++){if((await f.store.read()).chatOperations!.find(o=>o.workRun)?.workRun?.state==='completed')break;await new Promise(r=>setTimeout(r,10));}
+ const db=await f.store.read();assert.equal(routes,1);assert.equal(features,2);assert.equal(db.chatOperations!.filter(o=>o.workRun).length,1);assert.equal(db.chatOperations!.find(o=>o.workRun)!.workRun!.state,'completed');assert.equal(db.modelUsageRecords.filter(r=>r.activity==='task_worker').length,0);assert.equal(db.modelUsageRecords.length,3);const file=db.attachments.find(a=>a.conversationId===reply.taskId)!;assert.equal(path.extname(file.originalName),'.html');assert.match(await readFile(file.storagePath,'utf8'),/合成22度/);
 });

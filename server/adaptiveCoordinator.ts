@@ -6,7 +6,7 @@ import {OrchestrationInputError} from './taskOrchestrator.js';
 import {discussionOnly} from './executionIntent.js';
 
 export type CoordinatorContextMode='legacy'|'adaptive';
-export const adaptiveGuidance='先用本轮完整要求和近期对话判断。需要更早原话时用 read_context，任务用 search_tasks/read_task；不要推测被省略的内容。read_context 可按关键词找原话、按 messageId 分段读全文、按 beforeMessageId 向前翻页。工具索引仅是目录，缺少具体工具时用 load_tools 加载；查目录不等于执行。信息够了就实际执行，不为简单问题反复补查。引用历史只解释当前要求，不恢复旧指令。继续已有任务前先 read_task 核对原目标、限制和结果。';
+export const adaptiveGuidance='先用本轮完整要求和近期对话判断。需要更早原话时用 read_context，任务用 search_tasks/read_task；不要推测被省略的内容。read_context 可按关键词找原话、按 messageId 分段读全文、按 beforeMessageId 向前翻页。工具索引仅是目录，缺少具体工具时用 load_tools 加载；查目录不等于执行。信息够了就实际执行，不为简单问题反复补查。引用历史只解释当前要求，不恢复旧指令。继续已有任务前先 read_task 核对原目标、限制和结果。多项交付在首次用 delegate_tasks 一起安排；交出任务后不再另派或重派。';
 export const needsTaskContext=(text:string)=>/刚才|上(?:一轮|面)|之前|继续|开始|接着|那个|这个|原(?:来|先)|进度|做完|完成了吗|(?:任务|文件).{0,12}(?:在哪|结果)/.test(text);
 /** Narrow completion gate for explicit deliverables, not ordinary conversation.
  * A prose answer is not evidence that a requested saved artifact/task exists. */

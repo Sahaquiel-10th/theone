@@ -43,6 +43,9 @@ export async function runTaskOrchestrator(input: {
   activeTools?:()=>OrchestrationTool[];
   planningSteps?:number;
   noProgressTools?:readonly string[];
+  /** Trusted workspace receipt, never model-supplied prose. After all tools in
+   * the turn return, avoid buying another model round solely to acknowledge it. */
+  completeAfterTools?:()=>string|undefined;
   actionRequired?:(content:string)=>string|undefined;
   checkpoints?:TaskStepStore;
   requiredTools?:string[]|(()=>string[]);
@@ -179,6 +182,8 @@ export async function runTaskOrchestrator(input: {
       input.onTrace?.(structuredClone(trace));
       messages.push({ role: "tool", tool_call_id: call.id, content: serialized.length > 28000 ? JSON.stringify({ status: "truncated", excerpt: serialized.slice(0, 27000) }) : serialized });
     }
+    const receipt=input.entryPoint==='workspace'&&!missing().length?input.completeAfterTools?.():undefined;
+    if(receipt)return {content:receipt,messages,trace,finishReason:'stop' as const,requiredMissing:[]};
   }
   throw new Error("调度未完成");
 }

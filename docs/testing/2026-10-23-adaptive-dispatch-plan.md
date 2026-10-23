@@ -94,3 +94,25 @@ Weather returned durable no-search feedback rather than fabricated verification,
 - Detailed third-run profiles show adaptive combined round 6 hit exactly 3,000 output tokens with `finishReason=length`, then re-entered the feature. The feature path raised the output ceiling for Word/PPT/Excel structured arguments but omitted HTML/flowchart. These visual tools now receive the same 10,000-token argument ceiling before a file exists, and return to the short acknowledgement ceiling after a verified artifact. This changes a ceiling/reservation, not actual-token pricing; wallet and explicit task limits still apply. Local real-artifact tests check the long first call and short post-save acknowledgement.
 - Known orchestration stops (including a clipped tool instruction and exhausted step count) now also leave an owner-scoped durable conversational next step in both modes. Unknown exceptions and permission revocation are not disguised as successful operations. Already-committed child tasks retain their original receipt instead of being submitted twice. Local verification after this guard: 1,038 passed, zero failed, one pre-existing opt-in stress test skipped; type-check/build passed.
 - Latest zero-provider input capture on the current answer-only fixture: legacy 54,707 bytes (system 52,562 / messages 729 / tools 1,416), adaptive 8,620 (system 6,349 / messages 548 / tools 1,723), 84.2% smaller overall with 30 versus zero unrelated task snippets. Tool-schema bytes alone are NOT smaller in this answer-only case. This is the current same-code pair; do not silently substitute it for the original pre-change 58,686-byte capture or claim byte savings are real billing savings.
+
+## Fourth complete pair — search fixed, workflow gate still failed
+
+Release `a7bf258`, server log `/tmp/one-adaptive-public-a7bf258.log`. Weather now actually invoked ONE's search handler exactly once in each arm after the native-wire name isolation; both finished in two model calls. The previous weather prose was not a substitute for this callback. This before/after supports the adapter change, but does not prove that every historical supplier failure had the same cause.
+
+| Case | Legacy calls / equivalent power / pass | Adaptive calls / equivalent power / pass |
+| --- | --- | --- |
+| Weather | 2 / 0.081948 / yes | 2 / 0.020747 / yes |
+| Earlier requirements | 1 / 0.077309 / yes | 2 / 0.024904 / yes |
+| Bound continuation | 4 / 0.171287 / no | 4 / 0.072168 / no |
+| Search plus HTML | 10 / unknown / no | 8 / unknown / no |
+
+Both continuation arms unnecessarily added a file-save/read-back prerequisite to an original text-only arrangement whose no-overwrite rule was only a restriction. Both workers then stopped because no file tool was offered. This is not evidence that short history lost the requirements: both handoffs retained 42 people, 900 budget and the restriction, but expanded it into unnecessary work. The shared execution framework now explicitly distinguishes text delivery from a file-save request; requested real files still require the actual artifact/read-back.
+
+The adaptive combined arm queued twice during paid acknowledgement/planning turns, and a generic worker again attempted an overlong feature handoff before the feature's own model could run. Both combined totals are unknown (not zero) because some calls lacked usage. No successful-task cost comparison is made for these arms.
+
+Follow-up adaptive-only fast paths:
+
+- Once a real dispatch receipt exists and required reads have completed, finish with the trusted receipt, without a paid acknowledgement round. Additional delegation in that request is rejected; multiple deliverables must be committed in the initial batch. Tool discovery/history reads before commitment remain progressive.
+- For a fresh, self-contained job with exactly one mandatory reviewed chat feature, its own model and SOP execute directly through the same feature checkpoint, authorization and billing handler. No generic model rewrites its handoff or paraphrases its result. Historical tasks, files, dependencies, knowledge, Notion and custom agents retain normal worker planning. No synthetic provider usage is created for this deterministic routing.
+- The follow-up evaluator now uses production caller/model deadlines instead of a test-only 60-second limit, and waits up to 360 seconds for a worker instead of 180. Both paired arms receive the same deadlines. This timing change is disclosed; do not silently pool the runs as one frozen experiment.
+- Local gate after these changes: 1,040 passed, zero failed, one pre-existing opt-in stress test skipped; type-check/build passed. Tests include a completed text-only continuation with no artifact and a real saved HTML using one coordinator call plus two feature calls, zero generic-worker model calls, one task and three actual usage records.

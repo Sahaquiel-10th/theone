@@ -52,7 +52,7 @@ for(const [index,scenario] of cases.entries())if(!selected||selected.includes(sc
   modelCall:async(model,messages,tools,requestId,options)=>{
    calls++;if(calls>10)throw Error('synthetic case model-call ceiling reached');
    const profile=inputProfile({messages,tools},evalScope.workspaceId)!;if(!firstBytes)firstBytes=profile.totalBytes;totalBytes+=profile.totalBytes;
-   const result=await callModelWithTools(model,messages,tools,requestId,{...options,timeoutMs:60000});
+   const result=await callModelWithTools(model,messages,tools,requestId,options);
    if(!result.usage)throw Error('missing provider usage');
    usageMicros+=calculateModelPower(model,result.usage.inputTokens,result.usage.outputTokens,result.usage.cacheUsage).chargedMicros;
    toolCalls.push(...result.toolCalls.map(t=>t.function.name));profiles.push({inputTokens:result.usage.inputTokens,outputTokens:result.usage.outputTokens,cache:result.usage.cacheUsage,finishReason:result.finishReason,offered:tools.map(t=>t.function.name),called:result.toolCalls.map(t=>t.function.name),syntheticReply:result.content.slice(0,700)});
@@ -63,7 +63,7 @@ for(const [index,scenario] of cases.entries())if(!selected||selected.includes(sc
  try{
   const response=await service.dispatch(evalScope,{operationId:`public_pair_${scenario.id}_${contextMode}`,text:scenario.text,budget:10,webSearch:['weather','combined'].includes(scenario.id),...(scenario.id==='continuation'?{boundTaskId:'old-task-0'}:{})},async()=>{});
   reply=response.message.content;taskId=response.taskId;
-  if(taskId){await service.resume(evalScope,async()=>{});const deadline=Date.now()+180000;
+  if(taskId){await service.resume(evalScope,async()=>{});const deadline=Date.now()+360000;
    while(Date.now()<deadline){const db=await f.store.read(),job=db.chatOperations!.find(o=>o.workRun&&o.conversationId===taskId)?.workRun;if(job&&['completed','failed','needs_input','cancelled'].includes(job.state))break;await new Promise(resolve=>setTimeout(resolve,100));}
   }
   const db=await f.store.read(),jobs=db.chatOperations!.filter(o=>o.workRun),files=db.attachments.filter(f=>f.conversationId===taskId);
