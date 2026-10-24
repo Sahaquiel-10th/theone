@@ -6,7 +6,7 @@ export function Pagination({ page, total, size = 10, onChange }: { page: number;
   if(pages===1)return null;
   return <div className="settings-pagination"><button type="button" disabled={page <= 1} onClick={() => onChange(page - 1)}>上一页</button><span>{Math.min(page, pages)} / {pages} · {total} 项</span><button type="button" disabled={page >= pages} onClick={() => onChange(page + 1)}>下一页</button></div>;
 }
-export function SettingsDialog({ title, children, onClose, className='', headerActions, eyebrow, open=true }: { title: string; children: ReactNode; onClose: () => void; className?:string; headerActions?:ReactNode; eyebrow?:string; open?:boolean }) {
+export function SettingsDialog({ title, children, onClose, className='', headerActions, eyebrow, open=true, closeLabel }: { title: string; children: ReactNode; onClose: () => void; className?:string; headerActions?:ReactNode; eyebrow?:string; open?:boolean; closeLabel?:string }) {
   const ref = useRef<HTMLDialogElement>(null), titleId = useId();
   useEffect(() => {
     const dialog = ref.current;
@@ -16,8 +16,9 @@ export function SettingsDialog({ title, children, onClose, className='', headerA
     dialog.querySelector<HTMLElement>('[data-dialog-focus],input[type="search"]')?.focus();
     return () => { dialog.close(); if (opener instanceof HTMLElement && opener.isConnected) opener.focus(); };
   }, [open]);
+  const closeButton = <button type="button" aria-label="关闭" title={closeLabel ? `${closeLabel}（Esc）` : undefined} className={`settings-icon-button${closeLabel ? ' settings-close-button' : ''}`} onClick={onClose}><X size={20} />{closeLabel ? <><span>{closeLabel}</span><kbd aria-hidden="true">Esc</kbd></> : null}</button>;
   return <dialog ref={ref} className={`one-settings-dialog ${className}`} aria-labelledby={titleId} onCancel={e => { e.preventDefault(); e.stopPropagation(); onClose(); }} onClick={e => { if (e.target === e.currentTarget) { const r = e.currentTarget.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) onClose(); } }}>
-    <header>{eyebrow?<div className="settings-dialog-heading"><p className="settings-dialog-eyebrow">{eyebrow}</p><h2 id={titleId}>{title}</h2></div>:<h2 id={titleId}>{title}</h2>}{headerActions?<div className="settings-dialog-header-actions">{headerActions}<button type="button" aria-label="关闭" className="settings-icon-button" onClick={onClose}><X size={20} /></button></div>:<button type="button" aria-label="关闭" className="settings-icon-button" onClick={onClose}><X size={20} /></button>}</header><div className="settings-dialog-body">{children}</div>
+    <header>{eyebrow?<div className="settings-dialog-heading"><p className="settings-dialog-eyebrow">{eyebrow}</p><h2 id={titleId}>{title}</h2></div>:<h2 id={titleId}>{title}</h2>}{headerActions?<div className="settings-dialog-header-actions">{headerActions}{closeButton}</div>:closeButton}</header><div className="settings-dialog-body">{children}</div>
   </dialog>;
 }
 export function SearchPicker({ label, value, options, onChange }: { label: string; value: string; options: { value: string; label: string; hint?: string }[]; onChange: (value: string) => void }) {

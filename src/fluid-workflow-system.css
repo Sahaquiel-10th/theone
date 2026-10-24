@@ -129,9 +129,9 @@ main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-ta
    scroll; nested surfaces inherit the remaining height instead of deducting
    viewport chrome at every level. */
 main.one-fluid-workspace.one-shell.one-studio .one-settings-dialog.fluid-work-layer.fluid-work-layer-things {
-  width:min(1440px,calc(100vw - 32px));
-  height:calc(100dvh - 32px);
-  max-height:calc(100dvh - 32px);
+  width:min(1180px,calc(100vw - 96px));
+  height:min(800px,calc(100dvh - 96px));
+  max-height:calc(100dvh - 96px);
 }
 main.one-fluid-workspace.one-shell.one-studio .one-settings-dialog.fluid-work-layer.fluid-work-layer-things.is-maximized {
   width:calc(100vw - 16px);
@@ -407,7 +407,12 @@ main.one-fluid-workspace.one-shell.one-studio .fluid-work-layer-features:has(.ha
 main.one-fluid-workspace.one-shell.one-studio .fluid-work-layer-features:has(.has-selection-session) :is(.features-page,.settings-account-body) {
   display:flex;
   flex-direction:column;
+  align-items:stretch;
+  align-self:stretch;
   flex:1;
+  min-width:0;
+  width:100%;
+  max-width:none;
   min-height:0;
   height:100%;
   padding:0;
@@ -416,7 +421,12 @@ main.one-fluid-workspace.one-shell.one-studio .fluid-work-layer-features:has(.ha
 main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf.has-selection-session {
   display:flex;
   flex-direction:column;
+  align-items:stretch;
+  align-self:stretch;
   flex:1;
+  min-width:0;
+  width:100%;
+  max-width:none;
   min-height:0;
   height:100%;
 }

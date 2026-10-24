@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="icon" href="/one-mark.svg">
+  <title>ONE 宽桌面本地验收</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; }
+    body { display: flex; flex-direction: column; color: #dce5eb; background: #10161b; font: 13px/1.5 system-ui, sans-serif; }
+    .controls { display: flex; flex: none; align-items: center; flex-wrap: wrap; gap: 8px 18px; min-height: 64px; padding: 10px 16px; border-bottom: 1px solid #ffffff20; background: #202a32; }
+    .controls h1 { margin: 0; font-size: 15px; font-weight: 650; }
+    .viewport-options { display: flex; align-items: center; gap: 6px; padding: 0; margin: 0; border: 0; }
+    .viewport-options legend { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    .viewport-options button { min-height: 34px; padding: 6px 12px; border: 1px solid #ffffff35; border-radius: 8px; color: inherit; background: transparent; font: inherit; cursor: pointer; }
+    .viewport-options button[aria-pressed="true"] { border-color: #efd254; color: #1f2528; background: #efd254; }
+    .viewport-options button:focus-visible { outline: 2px solid #ffffff; outline-offset: 3px; }
+    .read-layout-button { min-height: 34px; padding: 6px 12px; border: 1px solid #ffffff35; border-radius: 8px; color: inherit; background: transparent; font: inherit; cursor: pointer; }
+    .read-layout-button:focus-visible { outline: 2px solid #ffffff; outline-offset: 3px; }
+    .layout-diagnostics { position: fixed; z-index: 2; right: 12px; bottom: 12px; width: min(620px, calc(100vw - 24px)); max-height: 260px; border: 1px solid #ffffff35; border-radius: 10px; background: #172129f5; color: #dce5eb; box-shadow: 0 6px 24px #0006; overflow: auto; }
+    .layout-diagnostics:not([open]) { display: none; }
+    .layout-diagnostics summary { padding: 8px 12px; cursor: pointer; font-size: 12px; }
+    #wide-layout-metrics { display: block; padding: 0 12px 12px; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.5 ui-monospace, monospace; }
+    .metrics { margin-left: auto; color: #c4d0d9; font-variant-numeric: tabular-nums; }
+    .note { flex-basis: 100%; margin: 0; color: #9eafb9; font-size: 11px; }
+    .stage { display: flex; flex: 1 1 0; align-items: center; justify-content: center; min-width: 0; min-height: 0; padding: 12px; overflow: auto; }
+    .frame-holder { position: relative; flex: none; }
+    .workspace-frame { position: absolute; inset: 0 auto auto 0; display: block; width: 1920px; height: 960px; border: 0; background: #1a242c; transform-origin: 0 0; }
+  </style>
+</head>
+<body>
+  <header class="controls">
+    <h1>ONE · 宽桌面验收</h1>
+    <fieldset class="viewport-options">
+      <legend>真实 iframe 视口尺寸</legend>
+      <button type="button" data-viewport="1920x960" aria-pressed="true">1920 × 960</button>
+      <button type="button" data-viewport="1440x900" aria-pressed="false">1440 × 900</button>
+    </fieldset>
+    <button type="button" id="read-layout-dimensions" class="read-layout-button">读取布局尺寸</button>
+    <output id="viewport-metrics" class="metrics" aria-live="polite">真实视口 1920 × 960</output>
+    <p class="note">仅缩放外层画布，内部保留真实 CSS 视口；全部为合成数据，不调用模型或真实接口。切换尺寸保留当前页面操作。</p>
+  </header>
+  <main class="stage" aria-label="缩放后的宽桌面预览">
+    <div class="frame-holder">
+      <iframe class="workspace-frame" id="wide-workspace-frame" title="ONE 合成宽桌面工作区" width="1920" height="960" src="/output/playwright/focus-preview.html?densityQA=1&amp;scene=graphite" referrerpolicy="no-referrer"></iframe>
+    </div>
+  </main>
+  <details class="layout-diagnostics" id="wide-layout-diagnostics">
+    <summary>布局尺寸快照（只读，可收起）</summary>
+    <output id="wide-layout-metrics" aria-live="polite">尚未读取。打开功能页面后，点击“读取布局尺寸”。</output>
+  </details>
+  <script>
+    // This harness owns only the iframe's CSS viewport and its outer transform.
+    // A visible diagnostic action reads layout; it never writes the child DOM,
+    // injects styles, or clicks app controls.
+    const sizes = { '1920x960': [1920, 960], '1440x900': [1440, 900] };
+    const stage = document.querySelector('.stage');
+    const holder = document.querySelector('.frame-holder');
+    const frame = document.getElementById('wide-workspace-frame');
+    const metrics = document.getElementById('viewport-metrics');
+    const requested = new URLSearchParams(location.search).get('viewport');
+    let active = Object.hasOwn(sizes, requested) ? requested : '1920x960';
+    function fitViewport() {
+      const [width, height] = sizes[active];
+      const availableWidth = Math.max(1, stage.clientWidth - 24);
+      const availableHeight = Math.max(1, stage.clientHeight - 24);
+      const scale = Math.min(1, availableWidth / width, availableHeight / height);
+      frame.width = width;
+      frame.height = height;
+      frame.style.width = `${width}px`;
+      frame.style.height = `${height}px`;
+      frame.style.transform = `scale(${scale})`;
+      holder.style.width = `${width * scale}px`;
+      holder.style.height = `${height * scale}px`;
+      metrics.textContent = `真实视口 ${width} × ${height} · 外层缩放 ${(scale * 100).toFixed(1)}%`;
+      document.documentElement.dataset.viewport = active;
+      document.documentElement.dataset.scale = scale.toFixed(5);
+      for (const button of document.querySelectorAll('[data-viewport]')) {
+        button.setAttribute('aria-pressed', String(button.dataset.viewport === active));
+      }
+    }
+    for (const button of document.querySelectorAll('[data-viewport]')) {
+      button.addEventListener('click', () => {
+        active = button.dataset.viewport;
+        fitViewport();
+      });
+    }
+    document.getElementById('read-layout-dimensions').addEventListener('click', () => {
+      const output = document.getElementById('wide-layout-metrics');
+      const diagnostics = document.getElementById('wide-layout-diagnostics');
+      try {
+        const childDocument = frame.contentDocument;
+        const childWindow = frame.contentWindow;
+        if (!childDocument || !childWindow) throw new Error('同源工作区尚未加载，请稍后再读取。');
+        const dialog = childDocument.querySelector('dialog.fluid-formal-work-layer[open]');
+        const root = dialog || childDocument;
+        const shelf = root.querySelector('.feature-shelf');
+        const split = root.querySelector('.feature-workflow-split');
+        const round = number => Math.round(number * 100) / 100;
+        const measure = element => {
+          if (!element) return null;
+          const rect = element.getBoundingClientRect();
+          const css = childWindow.getComputedStyle(element);
+          return {
+            tag: element.tagName.toLowerCase(), className: element.className,
+            rect: { x: round(rect.x), y: round(rect.y), width: round(rect.width), height: round(rect.height), right: round(rect.right), bottom: round(rect.bottom) },
+            clientWidth: element.clientWidth, clientHeight: element.clientHeight,
+            scrollWidth: element.scrollWidth, scrollHeight: element.scrollHeight,
+            display: css.display, alignItems: css.alignItems, alignSelf: css.alignSelf,
+            justifyContent: css.justifyContent, flexDirection: css.flexDirection, flex: css.flex,
+            width: css.width, height: css.height, minWidth: css.minWidth, maxWidth: css.maxWidth,
+            minHeight: css.minHeight, maxHeight: css.maxHeight,
+            overflowX: css.overflowX, overflowY: css.overflowY,
+            splitHeight: css.getPropertyValue('--fluid-split-height').trim()
+          };
+        };
+        const snapshot = {
+          viewport: { innerWidth: childWindow.innerWidth, innerHeight: childWindow.innerHeight, selected: active, outerScale: Number(document.documentElement.dataset.scale) },
+          dialog: measure(dialog),
+          header: measure(dialog?.querySelector(':scope > header')),
+          body: measure(dialog?.querySelector(':scope > .settings-dialog-body')),
+          account: measure(root.querySelector('.account-page')),
+          accountBody: measure(root.querySelector('.account-body')),
+          shelf: measure(shelf), split: measure(split),
+          primary: measure(split?.querySelector(':scope > .fluid-split-primary')),
+          secondary: measure(split?.querySelector(':scope > .fluid-split-secondary')),
+          listAnchor: measure(shelf?.querySelector('.feature-shelf-list-anchor')),
+          grid: measure(shelf?.querySelector('.feature-shelf-grid')),
+          footer: measure(shelf?.querySelector('.feature-shelf-selection-footer')),
+          pagination: measure(shelf?.querySelector('.feature-pagination'))
+        };
+        output.textContent = JSON.stringify(snapshot, null, 2);
+      } catch (error) {
+        output.textContent = JSON.stringify({ error: error instanceof Error ? error.message : String(error) }, null, 2);
+      }
+      diagnostics.open = true;
+    });
+    new ResizeObserver(fitViewport).observe(stage);
+    window.addEventListener('resize', fitViewport);
+    fitViewport();
+  </script>
+</body>
+</html>

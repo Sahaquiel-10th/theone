@@ -16,9 +16,9 @@ export function FluidWorkLayer({ title, onClose, children, className = "", initi
 }) {
   const [maximized, setMaximized] = useState(initialMaximized);
   const SizeIcon = maximized ? Minimize2 : Maximize2;
-  return <SettingsDialog title={title} eyebrow={eyebrow} open={open} onClose={onClose}
+  return <SettingsDialog title={title} eyebrow={eyebrow} open={open} onClose={onClose} closeLabel="返回对话"
     className={`fluid-work-layer fluid-formal-work-layer${maximized ? " is-maximized" : ""}${className ? ` ${className}` : ""}`}
-    headerActions={<button type="button" className="settings-icon-button fluid-layer-size-button" aria-label={maximized ? "还原工作面板" : "放大工作面板"} title={maximized ? "还原工作面板" : "放大工作面板"} aria-pressed={maximized} onClick={() => setMaximized(value => !value)}><SizeIcon size={17}/></button>}>
+    headerActions={<button type="button" className="settings-icon-button fluid-layer-size-button" aria-label={maximized ? "还原工作面板" : "放大工作面板"} title={maximized ? "还原工作面板" : "放大工作面板"} aria-pressed={maximized} onClick={() => setMaximized(value => !value)}><SizeIcon size={16} aria-hidden="true"/><span>{maximized ? "还原" : "放大"}</span></button>}>
     <FluidWorkLayerArrival open={open}/>{children}
   </SettingsDialog>;
 }
