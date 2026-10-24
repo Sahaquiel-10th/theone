@@ -31,3 +31,19 @@ main.one-fluid-workspace .knowledge-connections .knowledge-catalog-body{padding:
 main.one-fluid-workspace .knowledge-connections .knowledge-source-card{background:var(--fluid-input);color:var(--fluid-ink);border-color:var(--fluid-line);box-shadow:none;}
 main.one-fluid-workspace .knowledge-connections .knowledge-source-card.is-selected{border-color:var(--fluid-focus);background:var(--fluid-selection);}
 main.one-fluid-workspace .knowledge-connections .knowledge-source-card:focus-visible{outline:2px solid var(--fluid-focus);outline-offset:3px;}
+
+/* Keep connection filters and actions subordinate to the searchable catalog.
+   Detail text stays readable while repeated section margins give space back. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-catalog-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-catalog-toolbar .settings-search{flex:1 1 220px;min-width:0;max-width:420px;margin:0;padding:0 10px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-catalog-toolbar .settings-search input[aria-label="搜索知识来源"]{min-height:34px;padding:7px 0;border:0;border-radius:0;background:transparent;box-shadow:none;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-catalog-toolbar .settings-tabs{gap:4px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-catalog-toolbar .settings-tabs>button{flex:none;width:auto;min-height:32px;padding:6px 10px;border-radius:10px;font-size:12px;line-height:1.5;white-space:nowrap;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-catalog{gap:8px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-source-card{min-height:66px;padding:10px 12px;border-radius:14px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-detail-title{margin-bottom:12px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-connection-purpose{margin-bottom:12px;line-height:1.65;max-width:55ch;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-provider-head{margin-bottom:12px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections :is(.knowledge-connection-detail,.knowledge-enterprise-host) :is(p,li){line-height:1.65;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-enterprise-host details{margin-top:12px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-connection-detail button{width:auto;min-height:32px;padding:6px 10px;font-size:12px;line-height:1.5;}

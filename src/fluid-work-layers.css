@@ -3,15 +3,15 @@
 main.one-fluid-workspace.one-shell.one-studio .one-settings-dialog.fluid-work-layer.fluid-formal-work-layer{display:none;width:min(1040px,calc(100vw - 72px));max-width:none;height:auto;max-height:calc(100dvh - 72px);margin:auto;padding:0;overflow:hidden;border:1px solid var(--fluid-menu-edge,var(--fluid-line));border-radius:28px;background:var(--fluid-menu-fill,var(--studio-surface));color:var(--fluid-ink);box-shadow:inset 0 1px 0 var(--fluid-menu-glint,#ffffff70),0 24px 80px var(--fluid-menu-shadow,#14243335);backdrop-filter:blur(20px) saturate(1.03)}
 main.one-fluid-workspace.one-shell.one-studio .one-settings-dialog.fluid-work-layer.fluid-formal-work-layer[open]{display:flex;flex-direction:column}
 main.one-fluid-workspace.one-shell.one-studio .one-settings-dialog.fluid-work-layer.fluid-formal-work-layer.is-maximized{width:calc(100vw - 32px);height:calc(100dvh - 32px);max-height:calc(100dvh - 32px);border-radius:24px}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer>header{flex:none;display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:72px;padding:18px 24px;border-bottom:1px solid var(--fluid-line)}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer>header{flex:none;display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:48px;padding:6px 16px;border-bottom:1px solid var(--fluid-line)}
 .fluid-formal-work-layer .settings-dialog-heading{min-width:0}
 .fluid-formal-work-layer .settings-dialog-eyebrow{margin:0 0 3px;color:var(--fluid-muted,#61717d);font-size:11px;font-weight:500;line-height:1.5;letter-spacing:.02em}
 .fluid-formal-work-layer .settings-dialog-header-actions{display:flex;align-items:center;flex:none;gap:4px}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer>header h2{margin:0;color:var(--fluid-ink);font-size:21px;font-weight:600;line-height:1.4;letter-spacing:-.025em;overflow-wrap:anywhere}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer>header h2{margin:0;color:var(--fluid-ink);font-size:18px;font-weight:650;line-height:1.4;letter-spacing:-.025em;overflow-wrap:anywhere}
 main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer>header .settings-icon-button{display:grid;place-items:center;flex:none;width:38px;height:38px;padding:8px;border:0;border-radius:50%;background:transparent;color:var(--fluid-muted)}
 main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer>header .settings-icon-button:hover{background:var(--fluid-hover);color:var(--fluid-ink)}
 main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer>header .settings-icon-button:focus-visible{outline:2px solid var(--fluid-focus);outline-offset:2px}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer>.settings-dialog-body{flex:1 1 auto;min-width:0;min-height:0;padding:24px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--fluid-line) transparent}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer>.settings-dialog-body{flex:1 1 auto;min-width:0;min-height:0;padding:16px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--fluid-line) transparent}
 main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer::backdrop{background:#172c3926;backdrop-filter:blur(3px)}
 main.one-fluid-workspace.one-shell.one-studio.execution-shell .fluid-formal-work-layer::backdrop{background:#040c1266}
 @media(prefers-reduced-motion:reduce){main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer[open]{animation:none}}

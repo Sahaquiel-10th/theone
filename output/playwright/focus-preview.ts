@@ -5,11 +5,13 @@ const profileStorageKey='one-focus-preview-profile:v1:preview:preview';
 try{const saved=JSON.parse(localStorage.getItem(profileStorageKey)||'null');if(saved?.appearance?.scene==='silver'||saved?.appearance?.scene==='graphite')profile.appearance={scene:saved.appearance.scene};if(typeof saved?.displayName==='string'&&saved.displayName.trim())profile.displayName=saved.displayName.trim().slice(0,40);}catch{/* Private browser storage is optional. */}
 const user={id:'preview',username:'preview',role:'user',enabled:true,defaultWorkspaceId:'preview',createdAt:stamp,profile};
 const conversations:any[]=[],operations=new Map<string,any>();
-const workflowPreview = new URLSearchParams(location.search).has('workflowPreview');
+// Opt-in density regression dataset; never allow this mode to reach a real API.
+const densityQA = new URLSearchParams(location.search).get('densityQA') === '1';
+const workflowPreview = densityQA || new URLSearchParams(location.search).has('workflowPreview');
 const transferPreview = new URLSearchParams(location.search).has('transferPreview')||workflowPreview;
-const designStudy = new URLSearchParams(location.search).has('designStudy');
-const richPreview = new URLSearchParams(location.search).has('richPreview');
-const realService = new URLSearchParams(location.search).get('realService')==='1';
+const designStudy = densityQA || new URLSearchParams(location.search).has('designStudy');
+const richPreview = densityQA || new URLSearchParams(location.search).has('richPreview');
+const realService = !densityQA && new URLSearchParams(location.search).get('realService')==='1';
 const transferDelay = Math.min(60000, Math.max(4500, Number(new URLSearchParams(location.search).get('taskDelay')) || 4500));
 const localRuns:any[]=[], transferNotices:any[]=[], coordinatorMessages:any[]=[];
 if(new URLSearchParams(location.search).has('historyPreview'))coordinatorMessages.push({id:'prior-user',role:'user',content:'之前的核心对话',createdAt:stamp},{id:'prior-reply',role:'assistant',content:'之前的核心回答',createdAt:stamp});
@@ -55,6 +57,19 @@ const fixtureCredentials:{endpoint:string;auth:string}[]=[];
 let fixtureBudgetThreshold=2;
 let fixtureFailShareRefresh=false;
 const fixtureSources=[{id:'fixture-notion',provider:'notion',name:'ONE 项目资料（合成）'}];
+// Owner-list density only: both private drafts and explicitly active synthetic
+// rows use the same owner/config contract as the interactive fixture below.
+if(densityQA){
+ const names=['项目资料助手','每周工作复盘','知识库问答','会议纪要整理','超长名称验收：这是一个覆盖团队资料检索、项目规划与交付核对的知识分身，用来检查名称省略、卡片边界和滚动时的排版稳定性','邮件与提案助手','产品使用说明','个人阅读伙伴'];
+ for(let index=0;index<names.length;index++){
+  const id=`fixture-publication-density-${index+1}`,slug=`fixture-one-density-${index+1}`,status=index%3===0?'draft':'active',days=14;
+  const service={mode:index%2===0?'knowledge':'consultation',welcome:'你好，这是本地合成分身，用于检查界面布局。',starterQuestions:['你能帮我做什么？','如何开始整理资料？'],method:'先明确目标，再给出结构清楚的回答。',features:[]};
+  const description=index===4?'这是较长的合成介绍，用来检查介绍文字换行后是否挤压操作按钮、用量状态以及其他分身的可视范围。这里没有真实资料、用户信息或正在运行的服务。':`${['整理项目资料并回答具体问题。','按目标梳理工作成果与下一步。','只在已授权的演示资料范围里回答。','把会议讨论整理成可行动的清单。'][index%4]}仅用于本地密度验收。`;
+  const config={name:names[index],description,prompt:'只用于本地合成验收；不调用模型或真实知识服务。',modelId:'preview-model',sourceIds:['fixture-notion'],attachments:index%2===0,budget:10+index,perRun:1,days,visitorPercent:0,requireLogin:false,allowedUsernames:[],service,serviceBusiness:{access:'open',plans:[],intakeFields:[]},status,version:1,legacyPrompt:false};
+  const row={id,slug,version:1,name:names[index],description,status,...(status==='draft'?{draftDays:days}:{}),expiresAt:new Date(Date.parse(stamp)+days*86400000).toISOString(),budgetMicros:(10+index)*1e6,perRunMicros:1e6,spent:status==='draft'?0:index*125000,held:0,attachments:config.attachments,sources:['ONE 项目资料（合成）'],authorName:'本地合成作者',service:{mode:service.mode,featureCount:0},createdAt:stamp,updatedAt:stamp};
+  fixturePublications.push(row);fixturePublicationConfigs.set(id,config);fixturePublicationHistory.set(id,[]);
+ }
+}
 let fixtureGuideBeginFailed=false;
 const fixtureWelcome=()=>({profile,welcomeContext:{platforms:[],features:features.map(({id,name,description})=>({id,name,description}))},handbookOffer:{available:false},handbookNotice:'本地引导演示，不会生成说明或使用电力。'});
 /** Mirror the forward-only journey contract, without authorization, model or device side effects. */
@@ -113,6 +128,46 @@ if(workflowPreview){
   workflowJobs.set(id,[{id:jobId,operationId:`${id}-operation`,state,inputMessageId:inputId,resultMessageId:response?resultId:undefined,instruction:request,kind:'chat',features:[],charges:[],progress:state==='running'?{completed:['已保存原话'],pending:['整理接入重点']}:undefined}]);
   if(state!=='running')transferNotices.push({id:`${id}-receipt`,sourceId:jobId,taskId:id,title,state:state==='completed'?'completed':'cancelled',outcome:state==='completed'?'completed':'cancelled',reported:state==='cancelled',read:state==='cancelled',updatedAt:stamp,resultMessageId:resultId});
  }
+}
+// A denser but entirely invented dataset: 16 active, 12 reviewable, 4 ended,
+// and 4 ordinary history conversations, in addition to the legacy fixture. The
+// first active task has earlier results while a new round is running, matching
+// the real task-and-result pane without copying any customer content.
+if (densityQA) {
+ const titles = ['ONE 使用说明与入门流程', '项目资料整理', '本周工作复盘', '会议纪要与待办核对', '连接资料与权限边界', '知识问答结果检查', '前端页面可读性检查', '账户设置操作说明'];
+ const updated = (index:number) => new Date(Date.parse(stamp) + 1000 - index * 60000).toISOString();
+ for (let index=0; index<36; index++) {
+  const group=index<16?'active':index<28?'review':index<32?'ended':'history';
+  const number=String(index+1).padStart(2,'0'),id=`density-${group}-${number}`,when=updated(index);
+  const title=index===17?'图文成果：紧凑阅读验收':index%7===3?`${titles[index%titles.length]}：检查长标题在任务列表和详情工具栏同时出现时，能否保留清楚的层级和足够阅读空间`:`${titles[index%titles.length]} · ${number}`;
+  const messages:any[]=[];
+  const rounds=index===0?8:index===17?1:4;
+  for (let round=0;round<rounds;round++) {
+   const messageTime=new Date(Date.parse(when)-(rounds-round)*120000).toISOString();
+   messages.push({id:`${id}-user-${round}`,role:'user',content:round===0?'请把这项任务整理成可以直接使用的清单。':'接着检查上一轮结果，保留已经确认的内容，补充遗漏的步骤。',createdAt:messageTime});
+   const guide={id:`${id}-guide-${round}`,originalName:`${title} · 图文成果.html`,kind:'document',mimeType:'text/html',size:8420,status:'ready',visualDocument:true};
+   const file={id:`${id}-file-${round}`,originalName:`第 ${round+1} 轮核对清单.md`,kind:'text',mimeType:'text/markdown',size:1280,status:'ready'};
+   fixtureFiles.set(guide.id,{...guide,content:`<!doctype html><meta charset="utf-8"><title>本地合成成果</title><h1>${title}</h1><p>这是用于检查阅读空间的本地合成成果，不含用户数据。</p>`});
+   fixtureFiles.set(file.id,{...file,content:'# 核对清单\n\n- 保留原话\n- 检查步骤\n- 核对成果\n'});
+   messages.push({id:`${id}-answer-${round}`,role:'assistant',content:index===17?'':round===rounds-1?'## 本轮已经整理好\n\n- **已完成**：保留前面确认的内容，更新核对清单。\n- **需要你看**：检查图文成果的步骤是否清楚。\n- **下一步**：你可以直接在此任务里补充要求。\n\n这是本地合成内容，没有调用模型、访问资料或产生费用。':'### 第 '+(round+1)+' 轮结果\n\n已经整理这项任务的目标和处理步骤。请先核对核心内容，再决定是否展开附件。\n\n1. 明确这次工作的输入。\n2. 把已确认的步骤保留在任务里。\n3. 在同一对话中继续补充。',attachments:round===rounds-1?[guide,file]:round%2===0?[file]:undefined,createdAt:messageTime});
+  }
+  const jobs:any[]=[];
+  for(let round=0;round<rounds;round++)jobs.push({id:`${id}-job-${round}`,operationId:`${id}-operation-${round}`,state:'completed',inputMessageId:`${id}-user-${round}`,resultMessageId:`${id}-answer-${round}`,instruction:messages[round*2].content,kind:'chat',features:[],charges:[]});
+  const conversation:any={id,workspaceId:'preview',userId:user.id,modelId:'preview-model',title,archived:false,createdAt:when,updatedAt:when,messages};
+  if(group!=='history')conversation.executorProfileId='fixture-worker';
+  if(group==='active'){
+   const inputId=`${id}-pending-input`;
+   messages.push({id:inputId,role:'user',content:'前面的结果很好，请继续检查可读性和遗漏的步骤。',createdAt:when});
+   jobs.push({id:`${id}-running-job`,operationId:`${id}-running-operation`,state:'running',inputMessageId:inputId,instruction:'继续检查可读性和遗漏的步骤。',kind:'chat',features:[],charges:[],progress:{completed:['已保存这次补充','前面成果仍然可查看'],pending:['整理本轮核对结果']}});
+  }
+  if(group==='review'||group==='ended') {
+   const job=jobs.at(-1);
+   if(group==='review'&&index%3===0)conversation.workPaused=true;
+   transferNotices.push({id:`${id}-receipt`,sourceId:job.id,taskId:id,title,state:'completed',outcome:'completed',reported:group==='ended',read:group==='ended',updatedAt:when,resultMessageId:job.resultMessageId});
+  }
+  conversations.push(conversation);workflowJobs.set(id,jobs);
+ }
+ conversations.sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
 }
 function workflowMeta(conversation:any){const jobs=workflowJobs.get(conversation.id)||[],running=jobs.some(job=>job.state==='running'),queued=jobs.filter(job=>job.state==='queued').length;return{id:conversation.id,title:conversation.title,updatedAt:conversation.updatedAt,executorId:conversation.executorProfileId,running,queued,paused:Boolean(conversation.workPaused),state:running?'running':conversation.workPaused?'paused':queued?'queued':'idle',phase:running?'合成任务处理中；没有调用模型或本机设备。':undefined};}
 function workflowNotice(conversation:any,job:any,state='completed'){
@@ -246,7 +301,7 @@ window.fetch=async(input,options={})=>{
   const file=fixtureFiles.get(decodeURIComponent(path.split('/')[3]));if(!file)return reply({error:'没有这份演示附件'},404);
   if(path.endsWith('/content')){if(file.status!=='ready')return reply({error:'演示附件尚未就绪'},409);return new Response(file.content||'本地演示文件',{headers:{'Content-Type':file.mimeType||'text/plain','X-ONE-Preview':'synthetic','Content-Security-Policy':"default-src 'none'; sandbox"}});}const {content,...attachment}=file;result={attachment};
  }
- else if(transferPreview && path==='/api/coordinator'){const items=workflowPreview?conversations.filter(c=>!c.archived):conversations;result={enabled:true,conversation:{id:'main',messages:coordinatorMessages},tasks:items.map(c=>workflowPreview?workflowMeta(c):({id:c.id,title:c.title,updatedAt:c.updatedAt,running:false,queued:0})),total:items.length,notices:workflowPreview?transferNotices.filter(n=>items.some(c=>c.id===n.taskId)):transferNotices,links:coordinatorMessages.filter(m=>m.taskId).map(m=>({messageId:m.id,taskId:m.taskId}))};}
+ else if(transferPreview && path==='/api/coordinator'){const items=workflowPreview?conversations.filter(c=>!c.archived&&(!densityQA||!c.id.startsWith('density-history-'))):conversations;result={enabled:true,conversation:{id:'main',messages:coordinatorMessages},tasks:items.map(c=>workflowPreview?workflowMeta(c):({id:c.id,title:c.title,updatedAt:c.updatedAt,running:false,queued:0})),total:items.length,notices:workflowPreview?transferNotices.filter(n=>items.some(c=>c.id===n.taskId)):transferNotices,links:coordinatorMessages.filter(m=>m.taskId).map(m=>({messageId:m.id,taskId:m.taskId}))};}
  else if(workflowPreview&&(path==='/api/coordinator/notices/read'||path==='/api/coordinator/read'||path==='/api/coordinator/notices/read-all')){
   const ids=path.endsWith('/read-all')?transferNotices.filter(notice=>!notice.read).map(notice=>notice.id):Array.isArray(body.ids)?body.ids:[];for(const notice of transferNotices)if(ids.includes(notice.id))notice.read=true;result={ids,count:ids.length};
  }
@@ -311,6 +366,7 @@ window.fetch=async(input,options={})=>{
  else if(path==='/api/models')result={models:[{id:'preview-model',name:'演示模型（不计费）',kind:'chat',enabled:true,isDefault:true}],defaultModelId:'preview-model'};
  else if(path==='/api/conversations'){
   if(method==='POST'){const conversation={id:'fixture-'+crypto.randomUUID(),userId:user.id,modelId:'preview-model',title:body.title||'新的事情',archived:false,createdAt:stamp,updatedAt:stamp,messages:[]};conversations.unshift(conversation);result={conversation};}
+  else if(densityQA){const page=Math.max(1,Number(url.searchParams.get('page'))||1),pageSize=Math.max(1,Math.min(100,Number(url.searchParams.get('pageSize'))||30)),items=conversations.filter(c=>c.archived===(url.searchParams.get('archived')==='true'));result={conversations:items.slice((page-1)*pageSize,page*pageSize),pagination:{page,hasMore:page*pageSize<items.length}};}
   else result={conversations,pagination:{page:1,hasMore:false}};
  }
  else if(path==='/api/folders')result={folders:[]};else if(path==='/api/agents')result={agents:[]};else if(path==='/api/executions')result={tasks:[]};
@@ -334,6 +390,16 @@ window.fetch=async(input,options={})=>{
 // Native links do not go through window.fetch. Keep synthetic file/public-link
 // clicks inside this fixture too, so a download cannot reach the Vite API proxy.
 if(!realService){
+ // Density QA includes visual result cards for layout only. Catch their opener
+ // before React creates its authenticated URL iframe; synthetic QA must never
+ // fall through to the development server's API proxy.
+ if(densityQA)document.addEventListener('click',event=>{
+  const button=event.target instanceof Element?event.target.closest('button'):null;
+  if(!button?.closest('.welcome-guide-card'))return;
+  event.preventDefault();event.stopImmediatePropagation();
+  logRequest('OPEN','/fixture/density-result-card');
+  const note=document.getElementById('fixture-density-result-notice')||document.createElement('output');note.id='fixture-density-result-notice';note.textContent='这是本地合成成果卡，仅用于检查阅读空间；没有打开真实成果或访问服务器。';note.setAttribute('role','status');note.style.cssText='position:fixed;z-index:10001;bottom:20px;left:50%;transform:translateX(-50%);max-width:80vw;padding:12px 20px;border-radius:18px;background:#263743;color:#fff;font:13px system-ui';document.body.append(note);setTimeout(()=>note.remove(),4000);
+ },true);
  const fixtureLink=(event:MouseEvent)=>{
   const link=event.target instanceof Element?event.target.closest<HTMLAnchorElement>('a[href]'):null;if(!link)return;
   const target=new URL(link.href,location.href);if(target.origin!==location.origin||(!target.pathname.startsWith('/api/')&&!target.pathname.startsWith('/s/fixture-one-')))return;
@@ -386,6 +452,7 @@ for(const [value,label] of [['solar','日光黄'],['iris','鸢尾紫'],['jade','
 const initialAccent=new URLSearchParams(location.search).get('accent');accentSelect.value=initialAccent==='iris'||initialAccent==='jade'?initialAccent:'solar';
 accentSelect.addEventListener('change',()=>{const next=new URL(location.href);next.searchParams.set('accent',accentSelect.value);history.replaceState(null,'',next);window.dispatchEvent(new Event('one-fluid-accent-preview'));});
 materialTools.append(accentSelect);
+if(densityQA){document.body.classList.add('one-density-qa');badge.hidden=false;}
 if(designStudy){
  materialTools.classList.add('design-study-tools');
  // A comparison bar lives outside the product's reading surface. Changing the
@@ -431,6 +498,11 @@ const reviewStyle=document.createElement('style');reviewStyle.textContent=`
 .one-design-study-bar button:not([aria-pressed="true"]):hover{background:#ffffff60}
 .one-design-study-bar button:focus-visible{outline:2px solid #6d570e;outline-offset:1px}
 .one-design-study-bar small{margin-left:auto;font-size:10px;color:#536574;white-space:nowrap}
+/* Match production's real viewport budget; comparison tooling must not create
+   a fake 46px loss when measuring the density regression. */
+.one-density-qa .one-design-study-bar,.one-density-qa #fixture-onboarding-preview{display:none}
+.one-density-qa #root > main.one-fluid-workspace{height:100dvh;margin-top:0}
+.one-density-qa #root main.one-fluid-workspace[data-fluid-desktop="true"] .studio-layout.fluid-canvas{height:calc(100dvh - 24px)}
 @media(max-width:1099px){.material-preview-tools{top:auto;bottom:8px;right:12px}}
 `;document.head.append(reviewStyle);
 

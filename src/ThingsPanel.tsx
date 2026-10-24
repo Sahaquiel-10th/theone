@@ -5,7 +5,7 @@ import { TaskReadAllButton } from './TaskReadAllButton';
 import { remainingResultAttachments } from './taskMessagePresentation';
 import "./things-panel.css";
 import { transferStateLabel } from "./noviceUx";
-import { ArrowLeft, Search, Zap } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Search, Zap } from "lucide-react";
 import { ActionMenu } from './ActionMenu';
 import { privateImageUrl } from './coordinatorMessage';
 import {MessageSources,type MessageSourceDetails} from './MessageSources';
@@ -118,10 +118,11 @@ export function ThingsPanel({
             <button
               key={item.id}
               type="button"
+              title={item.title}
               aria-current={selectedId === item.id ? "true" : undefined}
               onClick={() => onSelect(item.id)}
             >
-              <strong>{item.title}{item.unread?<span className="task-review-dot" aria-label="结果尚未查看"/>:null}</strong>
+              <strong><span className="things-task-label">{item.title}</span>{item.unread?<span className="task-review-dot" aria-label="结果尚未查看"/>:null}</strong>
               <small>
                 {item.taskState==='active'?'正在处理 · ':item.taskState==='review'||item.taskState==='ended'?`${item.outcome?transferStateLabel(item.outcome):'已结束 · 查看回执'} · `:'历史对话 · '}{new Date(item.updatedAt).toLocaleDateString("zh-CN")}
               </small>
@@ -129,47 +130,52 @@ export function ThingsPanel({
           ))}
           {!found.length ? <p>{query?'已加载的当前列表中没有匹配记录。':category==='active'?'目前没有进行中的任务。新结果在“待确认”，看过的工作在“已结束”。':category==='review'?'没有待确认的结果。新成果和需要你处理的任务会显示在这里。':'这里暂时没有记录。'}</p> : null}
         </div>
-        {pages > 1 ? (
-          <footer>
+        {pages > 1 || hasMore ? (
+          <footer className="things-list-footer">
+            <span className="things-loaded-count">已载入 {found.length} 项</span>
+            {pages > 1 ? <nav className="things-pagination" aria-label="任务列表分页">
             <button
               type="button"
+              aria-label="上一页任务"
+              title="上一页"
               disabled={current === 1}
               onClick={() => setPage(current - 1)}
             >
-              上一页
+              <ChevronLeft size={14} aria-hidden="true"/>
             </button>
             <span>
               {current} / {pages}
             </span>
             <button
               type="button"
+              aria-label="下一页任务"
+              title="下一页"
               disabled={current === pages}
               onClick={() => setPage(current + 1)}
             >
-              下一页
+              <ChevronRight size={14} aria-hidden="true"/>
             </button>
+            </nav> : null}
+            {hasMore ? <button className="things-load-more" type="button" disabled={loadingMore} onClick={onMore}>
+              {loadingMore ? "正在加载" : "加载更早"}
+            </button> : null}
           </footer>
-        ) : null}
-        {hasMore ? (
-          <button type="button" disabled={loadingMore} onClick={onMore}>
-            {loadingMore ? "正在加载" : "加载更早记录"}
-          </button>
         ) : null}
       </aside>;
   const thread = <section className="things-thread" aria-label="任务完整对话">
         {selected ? (
           <>
-            <header>
-              <div className="things-thread-title">{fluid?<span className="things-thread-eyebrow">任务对话</span>:null}<h2>{selected.title}</h2></div>
+            <header className="things-thread-header">
+              <div className="things-thread-title"><h2 title={selected.title}>{selected.title}</h2></div>
               <div className="things-thread-actions">
-              {fluid&&onCloseDetail?<button type="button" className="things-detail-return" onClick={onCloseDetail}><ArrowLeft size={14} aria-hidden="true"/><span>收起任务详情</span></button>:null}
+              {fluid&&onCloseDetail?<button type="button" className="things-detail-return" aria-label="收起任务详情" title="收起任务详情" onClick={onCloseDetail}><ArrowLeft size={14} aria-hidden="true"/></button>:null}
               <button type="button" className="task-continue-button" onClick={() => onWorkbench(selected.id)}>
                 {workbenchLabel}
               </button>
               {onRemove?<ActionMenu label="更多任务操作"><button type="button" onClick={()=>{if(confirm('删除任务并停止待办？历史保留，可恢复；已发生的操作不会撤销。'))void onRemove(selected.id).catch(e=>setErrors(old=>({...old,[selected.id]:e.message})));}}>删除任务</button></ActionMenu>:null}
               </div>
             </header>
-            {taskNotice}
+            {taskNotice ? <div className="things-task-notice">{taskNotice}</div> : null}
             <div className="things-thread-messages" ref={messagesRef} onScroll={onScroll}>
               {selected.messagesLoaded === false ? (
                 <p>正在打开…</p>
@@ -193,10 +199,10 @@ export function ThingsPanel({
               )}
             </div>
             {executionContent}
-            {destinationPicker}
             {errors[selectedId] ? <p className="things-send-error" role="alert">{errors[selectedId]}</p> : null}
             {(
               <form
+                className="things-compose"
                 onSubmit={async (event) => {
                   event.preventDefault();
                   if (!draft.trim() || inFlight.current.has(selected.id) || selected.messagesLoaded === false) return;
@@ -217,6 +223,7 @@ export function ThingsPanel({
                 }}
               >
                 <textarea
+                  rows={2}
                   aria-label="直接继续此任务"
                   placeholder="继续此任务…"
                   value={draft}
@@ -235,6 +242,9 @@ export function ThingsPanel({
                     }
                   }}
                 />
+                <div className="things-compose-toolbar">
+                <div className="things-compose-destination">{destinationPicker}</div>
+                <div className="things-compose-actions">
                 <button
                   id="one-things-send"
                   type="submit"
@@ -243,6 +253,8 @@ export function ThingsPanel({
                   {sending.includes(selected.id) ? "接收中" : sendLabel}
                 </button>
                 {onExecuteDraft ? <button className="things-compose-execute" type="button" disabled={!draft.trim()||executionDisabled||executionPreparing||sending.includes(selected.id)||selected.messagesLoaded===false} onClick={event=>{setErrors(old=>({...old,[selected.id]:''}));void onExecuteDraft(selected.id,draft,event.currentTarget).catch(e=>setErrors(old=>({...old,[selected.id]:e instanceof Error?e.message:'执行未确认，草稿已保留'})));}}><Zap size={14} aria-hidden="true"/><span>本机执行</span></button> : null}
+                </div>
+                </div>
               </form>
             )}
           </>
@@ -250,7 +262,7 @@ export function ThingsPanel({
           <div className="things-thread-empty">选择一个任务，查看结果或继续聊。</div>
         )}
       </section>;
-  return <section className={`things-browser${fluid?' is-fluid':''}${selected?' has-selection':''}`} aria-label="任务列表与对话">
+  return <section className={`things-browser things-density${fluid?' is-fluid':''}${selected?' has-selection':''}`} aria-label="任务列表与对话">
     {fluid?<FluidSplitWorkspace open={Boolean(selected)} detailKey={selectedId} primary={list} secondary={selected?thread:null} ratio={.34} primaryLabel="任务列表" secondaryLabel="任务详情" className="things-task-split"/>:<>{list}{thread}</>}
   </section>;
 }

@@ -52,46 +52,91 @@
 .task-category-tabs{display:flex;flex-wrap:wrap;gap:5px;margin:10px 0}.things-list .task-category-tabs button{font:inherit;font-size:12px;border:0;border-radius:8px;padding:7px 9px;background:transparent;color:inherit;cursor:pointer}.things-list .task-category-tabs button[aria-pressed=true]{background:var(--studio-line,#e7ebdf)}
 .task-review-dot{display:inline-block;width:6px;height:6px;margin-left:6px;border-radius:50%;background:#ae4d3c;vertical-align:middle;flex-shrink:0}
 
-/* A selected task is a child of this list, with its own reading and draft space. */
-.things-browser.is-fluid{display:block;height:auto;min-height:0;overflow:visible;color:var(--fluid-ink,var(--studio-ink));}
-.things-browser.is-fluid>.things-task-split{--fluid-split-height:clamp(440px,calc(100dvh - 218px),700px);}
-.things-browser.is-fluid .things-task-split>.fluid-split-primary,.things-browser.is-fluid .things-task-split>.fluid-split-secondary{overflow:hidden;}
-.things-browser.is-fluid .things-list{height:100%;box-sizing:border-box;min-height:0;padding:0;border:0;gap:12px;}
-.things-browser.is-fluid .things-list-heading{min-height:32px;align-items:center;}
-.things-browser.is-fluid .things-list-heading h2{font-size:19px;line-height:1.4;letter-spacing:-.02em;}
-.things-browser.is-fluid .things-list input{min-height:39px;padding:9px 12px;border-radius:13px;background:var(--fluid-input,var(--studio-surface));}
-.things-browser.is-fluid .task-category-tabs{gap:4px;margin:0;flex:none;}
-.things-browser.is-fluid .things-list .task-category-tabs button{padding:7px 9px;border-radius:10px;font-size:12px;line-height:1.35;min-height:32px;white-space:nowrap;}
-.things-browser.is-fluid .things-list .task-category-tabs button[aria-pressed=true]{background:var(--fluid-selection,var(--fluid-hover));}
-.things-browser.is-fluid .things-list-items{min-height:0;gap:7px;padding:1px 3px 2px 0;scrollbar-width:thin;scrollbar-color:var(--fluid-line) transparent;}
-.things-browser.is-fluid .things-list-items>button{min-width:0;flex:none;padding:12px 13px;border-radius:15px;gap:7px;}
-.things-browser.is-fluid .things-list-items>button[aria-current=true]{background:var(--fluid-selection,var(--fluid-hover));border-color:var(--fluid-line);}
-.things-browser.is-fluid .things-list-items strong{font-size:13px;line-height:1.55;font-weight:550;}
-.things-browser.is-fluid .things-list-items small{font-size:11px;line-height:1.5;}
-.things-browser.is-fluid .things-list-items>p{font-size:13px;line-height:1.85;color:var(--fluid-muted);margin:12px 0;}
-.things-browser.is-fluid .things-list>footer{flex:none;padding-top:7px;}
-.things-browser.is-fluid .things-list>.task-read-all{flex:none;font-size:12px;}
-.things-browser.is-fluid .things-thread{height:100%;min-height:0;gap:0;}
-.things-browser.is-fluid .things-thread>header{align-items:flex-start;gap:14px;padding:0 0 15px;flex-wrap:wrap;border-bottom:1px solid var(--fluid-line);}
-.things-browser.is-fluid .things-thread-title{min-width:0;flex:1 1 210px;}
-.things-browser.is-fluid .things-thread-title h2{font-size:19px;line-height:1.45;letter-spacing:-.02em;overflow-wrap:anywhere;}
-.things-browser.is-fluid .things-thread-eyebrow{display:block;margin-bottom:5px;color:var(--fluid-muted);font-size:11px;line-height:1.4;}
-.things-browser.is-fluid .things-thread-actions{align-items:center;justify-content:flex-end;gap:7px;flex:0 1 auto;max-width:100%;}
-.things-browser.is-fluid .things-thread-actions>button{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:32px;padding:6px 9px;border-color:var(--fluid-line);border-radius:11px;background:transparent;font-size:12px;line-height:1.4;white-space:nowrap;}
-.things-browser.is-fluid .things-thread-actions>button:hover{background:var(--fluid-hover);}
-.things-browser.is-fluid .things-thread-actions .things-detail-return{color:var(--fluid-muted);border-color:transparent;}
-.things-browser.is-fluid .things-thread-messages{padding:18px 2px 10px;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--fluid-line) transparent;}
-.things-browser.is-fluid .things-thread-messages article{margin-bottom:16px;}
-.things-browser.is-fluid .things-thread-messages article.user{max-width:90%;padding:11px 15px;}
-.things-browser.is-fluid .things-thread>.execution-disclosure{flex:none;margin:8px 0;max-height:28%;overflow:auto;}
-.things-browser.is-fluid .things-thread>form{padding:13px 0 0;gap:8px;flex-wrap:wrap;align-items:flex-end;border-color:var(--fluid-line);}
-.things-browser.is-fluid .things-thread>form>textarea{flex:1 1 230px;min-height:52px;max-height:108px;padding:11px 12px;border-radius:15px;background:var(--fluid-input,var(--studio-surface));}
-.things-browser.is-fluid .things-thread>form>button{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:36px;padding:8px 11px;border-radius:12px;font-size:12px;line-height:1.4;white-space:nowrap;background:transparent;}
-.things-browser.is-fluid .things-thread>form>button[type=submit]{background:var(--fluid-accent,#efd24b);border-color:transparent;color:var(--fluid-on-accent,#25250e);}
-.things-browser.is-fluid .things-compose-execute svg{align-self:center;}
-.things-browser.is-fluid .things-send-error{padding:8px 0 0;line-height:1.7;}
-.things-browser.is-fluid button:focus-visible,.things-browser.is-fluid input:focus-visible,.things-browser.is-fluid textarea:focus-visible{outline:2px solid var(--fluid-focus);outline-offset:3px;}
+/* Reading owns the remaining height. Tools share compact rows above and below it. */
+.things-browser.things-density .things-list-items {min-height:0;}
+.things-browser.things-density .things-list-items strong {display:flex;align-items:center;gap:5px;min-width:0;max-width:100%;}
+.things-browser.things-density .things-task-label {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.things-browser.things-density .things-list-items .task-review-dot {margin-left:0;}
+.things-browser.things-density .things-list-footer {flex:none;justify-content:flex-start;gap:8px;}
+.things-browser.things-density .things-pagination {display:flex;align-items:center;gap:4px;margin-left:auto;white-space:nowrap;}
+.things-browser.things-density .things-pagination>button {display:inline-flex;align-items:center;justify-content:center;padding:5px;min-height:28px;min-width:28px;}
+.things-browser.things-density .things-loaded-count {color:var(--studio-muted);white-space:nowrap;}
+.things-browser.things-density .things-load-more {white-space:nowrap;}
+.things-browser.things-density .things-thread>.things-compose {display:flex;flex-direction:column;align-items:stretch;gap:6px;}
+.things-browser.things-density .things-compose>textarea {box-sizing:border-box;width:100%;flex:none;}
+.things-browser.things-density .things-compose-toolbar {display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;}
+.things-browser.things-density .things-compose-destination {display:flex;flex:1;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;}
+.things-browser.things-density .things-compose-actions {display:flex;flex:none;align-items:center;gap:6px;}
+.things-browser.things-density.is-fluid {display:block;height:100%;min-height:0;overflow:hidden;}
 
-.things-search{display:flex;align-items:center;gap:8px;min-width:0;}
-.things-search>svg{flex:none;}
-.things-search>input{flex:1;min-width:0;}
+/* Keep this component as the density owner, ahead of shared work-layer chrome.
+   A list row is 58px; its full title remains in the DOM and native title hint. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid {color:var(--fluid-ink,var(--studio-ink));}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-task-split>.fluid-split-primary,
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-task-split>.fluid-split-secondary {overflow:hidden;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-list {height:100%;box-sizing:border-box;padding:0;border:0;gap:8px;overflow:hidden;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-list-heading {display:flex;flex:none;align-items:center;justify-content:space-between;flex-wrap:nowrap;min-height:28px;gap:8px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-list-heading h2 {flex:1;min-width:0;font-size:17px;line-height:1.4;letter-spacing:-.02em;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-list-heading>.task-read-all {flex:none;width:auto;margin:0;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .task-read-all-button {display:inline-flex;align-items:center;flex-wrap:nowrap;gap:5px;width:auto;min-height:28px;padding:4px 7px;border-radius:8px;font-size:10px;line-height:1.4;white-space:nowrap;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .task-read-all-count {padding:1px 4px;font-size:10px;line-height:1.5;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-list-toolbar {display:flex;flex:none;flex-direction:column;gap:6px;min-width:0;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-search {display:flex;flex:none;align-items:center;gap:7px;width:100%;min-width:0;max-width:none;box-sizing:border-box;margin:0;padding:0 9px;border:1px solid var(--fluid-line);border-radius:9px;background:var(--fluid-input);color:var(--fluid-muted);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-search>svg {flex:none;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-search>input {box-sizing:border-box;flex:1;width:100%;min-width:0;min-height:32px;height:32px;padding:5px 0;border:0;border-radius:0;background:transparent;box-shadow:none;color:var(--fluid-ink);font-size:12px;line-height:1.5;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-search:focus-within {outline:2px solid var(--fluid-focus);outline-offset:1px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-search>input:focus-visible {outline:0;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .task-category-tabs {display:flex;flex-wrap:nowrap;gap:3px;margin:0;flex:none;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .task-category-tabs>button {flex:1;min-width:0;width:auto;min-height:28px;padding:4px 6px;border:1px solid transparent;border-radius:8px;background:transparent;font-size:11px;line-height:1.4;white-space:nowrap;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .task-category-tabs>button[aria-pressed=true] {background:var(--fluid-selection,var(--fluid-hover));border-color:var(--fluid-line);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-list-items {display:flex;flex-direction:column;flex:1 1 0;min-height:0;gap:4px;padding:1px 2px 1px 0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--fluid-line) transparent;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid:not(.has-selection) .things-list-items {display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr));align-content:start;gap:7px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-list-items>button {display:flex;flex:0 0 58px;flex-direction:column;align-items:stretch;justify-content:center;box-sizing:border-box;min-width:0;min-height:58px;height:58px;padding:7px 10px;border:1px solid var(--fluid-line);border-radius:10px;background:transparent;gap:3px;text-align:left;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-list-items>button:is(:hover,[aria-current=true]) {background:var(--fluid-selection,var(--fluid-hover));border-color:var(--fluid-menu-edge,var(--fluid-line));}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-list-items strong {font-size:13px;line-height:18px;font-weight:600;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-list-items small {display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fluid-muted);font-size:11px;line-height:16px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-list-items>p {max-width:50ch;margin:8px 2px;font-size:12px;line-height:1.7;color:var(--fluid-muted);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-list-footer {flex:none;min-height:28px;margin:0;padding:4px 0 0;border-top:1px solid var(--fluid-line);font-size:10px;gap:6px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-list-footer button {width:auto;min-height:27px;padding:4px 7px;border-radius:8px;font-size:11px;line-height:1.4;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-pagination>button {width:27px;min-width:27px;padding:4px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-thread {height:100%;min-height:0;overflow:hidden;gap:0;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-thread>.things-thread-header {display:flex;flex:none;align-items:center;flex-wrap:nowrap;min-height:34px;padding:0 0 8px;gap:10px;border-bottom:1px solid var(--fluid-line);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-thread-title {flex:1 1 0;min-width:0;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-thread-title>h2 {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:17px;font-weight:650;line-height:1.45;letter-spacing:-.02em;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-thread-actions {display:flex;flex:0 0 auto;align-items:center;flex-wrap:nowrap;gap:5px;max-width:100%;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-thread-actions>button,
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-thread-actions .one-action-more>summary {display:inline-flex;align-items:center;justify-content:center;gap:4px;box-sizing:border-box;width:auto;min-height:32px;padding:5px 8px;border:1px solid var(--fluid-line);border-radius:8px;background:transparent;font-size:11px;line-height:1.4;white-space:nowrap;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-thread-actions>.things-detail-return {width:32px;min-width:32px;padding:6px;color:var(--fluid-muted);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-task-notice {flex:none;min-height:0;max-height:28%;margin:5px 0;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-thread-messages {flex:1 1 0;min-height:0;padding:12px 2px 8px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--fluid-line) transparent;font-size:14px;line-height:1.75;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-thread-messages article {padding:2px 0 8px;margin:0 0 12px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-thread-messages article.user {max-width:90%;margin-left:auto;padding:9px 12px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-thread-messages article.user .task-original-message {color:inherit;border-color:color-mix(in srgb,var(--fluid-user-ink,var(--fluid-ink)) 30%,transparent);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-thread-messages article.user .task-original-message :is(small,summary) {color:inherit;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-thread-messages article>small {margin-bottom:5px;font-size:10px;line-height:1.4;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-assistant-markdown {font-size:14px;line-height:1.75;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-assistant-markdown p {margin-bottom:10px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-thread>.execution-disclosure {flex:none;margin:6px 0;max-height:25%;overflow:auto;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-thread>.things-compose {box-sizing:border-box;display:flex;flex:none;flex-direction:column;align-items:stretch;flex-wrap:nowrap;gap:5px;padding:8px 0 0;border-top:1px solid var(--fluid-line);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-compose>textarea {box-sizing:border-box;flex:none;width:100%;min-height:44px;height:44px;max-height:108px;padding:9px 11px;border-radius:11px;background:var(--fluid-input,var(--studio-surface));font-size:13px;line-height:1.6;resize:vertical;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-compose-toolbar {display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:5px 7px;min-height:28px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-compose-destination {display:contents;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-compose-actions {grid-column:2;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-compose-destination .document-destination {margin:0;padding:0;font-size:11px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-compose-actions>button,
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-compose-destination .destination-trigger {display:inline-flex;align-items:center;justify-content:center;gap:5px;box-sizing:border-box;width:auto;min-height:28px;padding:4px 8px;border:1px solid var(--fluid-line);border-radius:8px;background:transparent;font-size:11px;line-height:1.4;white-space:nowrap;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-compose-actions>button[type=submit] {background:var(--fluid-accent,#efd24b);border-color:transparent;color:var(--fluid-on-accent,#25250e);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-compose-execute svg {align-self:center;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-compose-destination .notion-writing-settings {grid-column:1/-1;max-height:20vh;overflow:auto;margin:0;padding:5px 0;border:0;font-size:11px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid .things-send-error {padding:5px 0;font-size:12px;line-height:1.5;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser.things-density.is-fluid :is(button,input,textarea):focus-visible {outline:2px solid var(--fluid-focus);outline-offset:2px;}
+
+/* Attachments are usable result rows inside a reading pane, not hero cards. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-density .things-thread-messages .coordinator-attachments {margin-top:8px;gap:8px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-density .things-thread-messages .coordinator-attachment {flex:0 1 320px;min-height:54px;padding:8px 10px;gap:8px;border-radius:12px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-density .things-thread-messages .coordinator-attachment-icon {width:28px;height:28px;flex-basis:28px;border-radius:8px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-density .things-thread-messages .welcome-guide-card {gap:10px;max-width:none;margin:8px 0;padding:10px 12px;border-radius:13px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-density .things-thread-messages .welcome-guide-card-icon {width:32px;height:32px;border-radius:9px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-density .things-thread-messages .welcome-guide-card strong {font-size:14px;line-height:1.5;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-density .things-thread-messages .welcome-guide-card small {font-size:11px;line-height:1.5;margin-top:2px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-density .things-thread-messages .welcome-guide-card button {min-height:32px;padding:5px 9px;font-size:12px;}
