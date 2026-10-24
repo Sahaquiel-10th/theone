@@ -8,7 +8,7 @@ import {GuideHistoryList} from './SavedWelcomeGuides';
 
 test('settings navigation keeps four independent sections and selected state',()=>{
   const html=renderToStaticMarkup(createElement(AccountPreferencesLayout,{section:'device',onChange:()=>{},children:'content'}));
-  for(const label of ['个人设置','本机执行','知识连接','会员与额度'])assert.ok(html.includes(label));
+  for(const label of ['外观与偏好','本机执行','连接与授权','会员与额度'])assert.ok(html.includes(label));
   assert.equal((html.match(/aria-current="page"/g)||[]).length,1);
   assert.ok(html.includes('account-preferences-content'));
 });

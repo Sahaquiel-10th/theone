@@ -15,3 +15,25 @@
 .one-studio .composer-add-feature{display:inline-flex;align-items:center;gap:5px;border:0;background:transparent;font:inherit;font-size:12px;color:var(--studio-muted,#65705c);cursor:pointer;padding:5px}
 .studio-compose-context.is-bound{border:1px solid var(--studio-line,#dce0d6);border-radius:10px;padding:9px 12px;background:var(--studio-paper,#edf2e5);margin-bottom:10px}
 .studio-compose-context.is-bound>span{font-size:12px;font-weight:600;color:var(--studio-ink,#292d25);overflow-wrap:anywhere}
+
+/* One selection session remains open; only its option list scrolls, so the
+   count and explicit finish action stay reachable through a batch of choices. */
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker{display:flex;flex-direction:column;gap:9px;overflow:hidden;padding:13px;border-radius:18px;background:var(--fluid-menu-fill,var(--studio-surface));border-color:var(--fluid-menu-edge,var(--studio-line));color:var(--fluid-ink);}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker>header{flex:none;min-height:26px;}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker>p{flex:none;margin:0;font-size:11px;line-height:1.6;color:var(--fluid-muted);}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker>.composer-feature-search{flex:none;margin:0;padding:0 9px;border:1px solid var(--fluid-line);border-radius:11px;}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker .composer-feature-search>input{min-height:33px;padding:7px 0;border:0;border-radius:0;background:transparent;color:var(--fluid-ink);font-size:12px;}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker>[role=listbox]{flex:1 1 auto;min-height:0;max-height:260px;overflow:auto;overscroll-behavior:contain;padding:2px;scrollbar-width:thin;scrollbar-color:var(--fluid-line) transparent;}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker [role=option]{gap:9px;min-height:46px;padding:8px 10px;border:1px solid transparent;border-radius:12px;background:transparent;color:var(--fluid-ink);}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker [role=option]>span{flex:1;min-width:0;}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker [role=option]>svg{flex:none;color:var(--fluid-focus);}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker [role=option] strong{font-size:12px;font-weight:550;}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker [role=option] small{font-size:10px;color:var(--fluid-muted);}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker [role=option][aria-selected=true]{border-color:color-mix(in srgb,var(--fluid-accent) 52%,var(--fluid-line));background:color-mix(in srgb,var(--fluid-accent) 12%,transparent);}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker [role=option]:is(:hover,:focus-visible,.is-highlighted){background:var(--fluid-selection);}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker>.composer-feature-pages{display:flex;align-items:center;justify-content:space-between;gap:9px;flex:none;font-size:10px;color:var(--fluid-muted);}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker>.composer-feature-pages>button{min-height:28px;padding:4px 8px;font-size:11px;}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker>.composer-feature-finish{display:flex;align-items:center;justify-content:space-between;gap:10px;flex:none;padding-top:10px;border-top:1px solid var(--fluid-line);}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker>.composer-feature-finish>span{font-size:10px;line-height:1.7;color:var(--fluid-muted);}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker>.composer-feature-finish>span>strong{color:var(--fluid-ink);}
+main.one-fluid-workspace.one-shell.one-studio .studio-composer .composer-feature-picker>.composer-feature-finish>button{display:inline-flex;align-items:center;gap:6px;flex:none;min-height:32px;padding:6px 10px;border:1px solid color-mix(in srgb,var(--fluid-accent) 65%,var(--fluid-line));border-radius:11px;background:color-mix(in srgb,var(--fluid-accent) 20%,transparent);color:var(--fluid-ink);font-size:11px;}

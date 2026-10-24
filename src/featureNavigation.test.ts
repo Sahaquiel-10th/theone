@@ -24,7 +24,7 @@ test("features is a top-level destination; knowledge and OAuth returns live in s
   assert.match(nav, /user.role === "admin"/);
   assert.match(main, /next === "knowledge" \? "account" : next/);
   assert.match(main, /AccountPreferencesLayout section=\{section\}/);
-  assert.match(fs.readFileSync(new URL('./AccountPreferencesLayout.tsx',import.meta.url),'utf8'), /id:'knowledge',label:'知识连接'/);
+  assert.match(fs.readFileSync(new URL('./AccountPreferencesLayout.tsx',import.meta.url),'utf8'), /id:'knowledge',label:'连接与授权'/);
   assert.doesNotMatch(main, /\["sharing", "分享分身"\]/);
 });
 test("cost disclosure is compact but explicit fee consent remains required", () => {

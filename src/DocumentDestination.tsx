@@ -15,8 +15,8 @@ export function NotionReceiptNotice({ api, taskId, receipt, onRefresh }: { api: 
 type WritingSettings = { connected: boolean; writeAuthorized: boolean; ready: boolean; parentId: string; referenceIds: string[] };
 const url = (id: string) => id ? `https://www.notion.so/${id}` : '';
 
-export function DocumentDestinationPicker({ api, value, onChange, localDisabled, onSettings }: {
-  api: typeof Api; value: DocumentDestination; onChange: (value: DocumentDestination) => void; localDisabled: boolean; onSettings: () => void;
+export function DocumentDestinationPicker({ api, value, onChange, localDisabled, localDisabledHint, onSettings, onLocalSettings }: {
+  api: typeof Api; value: DocumentDestination; onChange: (value: DocumentDestination) => void; localDisabled: boolean; localDisabledHint?:string; onSettings: () => void; onLocalSettings?:()=>void;
 }) {
   const [writing, setWriting] = useState<WritingSettings>(), [localReady, setLocalReady] = useState(false), [checking, setChecking] = useState(true);
   const [open, setOpen] = useState(false);
@@ -44,7 +44,7 @@ export function DocumentDestinationPicker({ api, value, onChange, localDisabled,
   const invalid = value === 'notion' ? !writing?.ready : value === 'local' ? !localReady || localDisabled : false;
   const options = [
     { id: 'chat' as const, label: '对话中', description: '在这里回复，不保存为文档', Icon: MessageCircle, disabled: false },
-    { id: 'local' as const, label: '本地文件', description: !localReady ? '本机执行尚未就绪' : localDisabled ? '本机执行暂不可用' : '保存到已授权的文件夹', Icon: Folder, disabled: !localReady || localDisabled },
+    { id: 'local' as const, label: '本地文件', description: localDisabled&&localDisabledHint ? localDisabledHint : !localReady ? '先到本机设置准备执行工具' : localDisabled ? '本机执行暂不可用' : '保存到已授权的文件夹', Icon: Folder, disabled: !localReady || localDisabled },
     ...(writing?.connected ? [{ id: 'notion' as const, label: 'Notion', description: !writing.writeAuthorized ? '需开启草稿写入' : !writing.ready ? '先选一次保存位置' : '新建草稿，续改同一篇', Icon: FileText, disabled: !writing.ready }] : []),
   ];
   const selected = options.find(option => option.id === value);
@@ -59,7 +59,8 @@ export function DocumentDestinationPicker({ api, value, onChange, localDisabled,
       {options.map(({ id, label, description, Icon, disabled }) => <button type="button" className="destination-option" key={id} disabled={disabled} aria-pressed={value === id} onClick={() => { onChange(id); setOpen(false); trigger.current?.focus(); }}>
         <Icon size={17} aria-hidden="true" /><span><strong>{label}</strong><small>{description}</small></span>{value === id ? <Check size={15} aria-hidden="true" /> : null}
       </button>)}
-      <button type="button" className="destination-settings" onClick={() => { setOpen(false); onSettings(); }}><Settings2 size={14} aria-hidden="true" /><span>{writing?.connected && !writing.ready ? '设置 Notion 保存位置' : '管理连接与保存位置'}</span><ChevronRight size={13} aria-hidden="true" /></button>
+      {(!localReady||localDisabled)&&onLocalSettings?<button type="button" className="destination-settings" onClick={()=>{setOpen(false);trigger.current?.focus();onLocalSettings();}}><Folder size={14} aria-hidden="true"/><span>检查本机设置</span><ChevronRight size={13} aria-hidden="true"/></button>:null}
+      <button type="button" className="destination-settings" onClick={() => { setOpen(false); trigger.current?.focus(); onSettings(); }}><Settings2 size={14} aria-hidden="true" /><span>{writing?.connected && !writing.ready ? '设置 Notion 保存位置' : '管理连接与保存位置'}</span><ChevronRight size={13} aria-hidden="true" /></button>
     </div> : null}
   </div>;
 }

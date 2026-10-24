@@ -6,6 +6,7 @@ import type { BetaFeedbackInput, OwnBetaFeedback } from "../server/betaFeedback"
 import type { OnboardingHandbookOffer } from "../server/onboardingHandbook";
 
 export type { AccountProfile, ProfilePatch, OwnBetaFeedback };
+export type { AppearanceScene, AccountAppearance } from "../server/betaProfile";
 
 const failureText = (error: unknown) => error instanceof Error ? error.message : "没有保存成功，请稍后再试";
 

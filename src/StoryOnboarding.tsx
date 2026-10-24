@@ -1,4 +1,4 @@
-import {useEffect,useRef,useState} from 'react';
+import {lazy,Suspense,useEffect,useRef,useState} from 'react';
 import {ArrowLeft,ArrowUpRight,BookOpen,Check,Monitor,Sparkles,X} from 'lucide-react';
 import type {AccountProfile} from '../server/betaProfile';
 import type {JourneyInput,WelcomeContext} from '../server/onboardingJourney';
@@ -12,11 +12,19 @@ export const welcomeBenefits=[
   {title:'把工作交出去',description:'任务区能看进度，做好再来看看。'},
   {title:'在电脑上交付',description:'本机就绪并选好工作区后，可以创建文件。'}
 ];
-export function StoryOnboarding({profile,context,offer,onBegin,onAction,onKnowledge,onDevice,onDismiss}:{
+const StoryOnboardingPreview=lazy(()=>import('./StoryOnboardingPreview'));
+type StoryOnboardingProps={
   profile:AccountProfile;context?:WelcomeContext;offer?:OnboardingHandbookOffer;
   onBegin:()=>Promise<unknown>;onAction:(input:JourneyInput)=>Promise<unknown>;
   onKnowledge:()=>void;onDevice:()=>void;onDismiss:()=>void;
-}) {
+  /** Only the explicitly synthetic localhost fixture may enable this. */
+  effectPreview?:boolean;
+};
+export function StoryOnboarding(props:StoryOnboardingProps) {
+  if(props.effectPreview)return <Suspense fallback={<section className="guide-preview-loading" role="status">正在打开引导…</section>}><StoryOnboardingPreview initialName={props.profile.displayName} onDismiss={props.onDismiss}/></Suspense>;
+  return <RealStoryOnboarding {...props}/>;
+}
+function RealStoryOnboarding({profile,context,offer,onBegin,onAction,onKnowledge,onDevice,onDismiss}:StoryOnboardingProps) {
   const j=profile.onboarding.journey,stage=j?.stage??'name';
   const [name,setName]=useState(profile.displayName),[chosen,setChosen]=useState<OnboardingPurpose[]>(j?.purposeIds??[]),[busy,setBusy]=useState(false),[error,setError]=useState('');
   const started=useRef(false),finishing=useRef(''),card=useRef<HTMLElement>(null);
@@ -32,6 +40,7 @@ export function StoryOnboarding({profile,context,offer,onBegin,onAction,onKnowle
     return {createGuide:true,budgetPower:offer?.firstGift?undefined:price};
   }
   async function act(input:JourneyInput){if(busy)return;setBusy(true);setError('');try{await onAction({...input,journeyId:j?.id});}catch(e){setError(e instanceof Error?e.message:'这一步没保存好，再试一次？');}finally{setBusy(false);}}
+  async function retryBegin(){if(busy)return;setBusy(true);setError('');try{await onBegin();}catch(e){setError(e instanceof Error?e.message:'引导暂时没打开，再试一次？');}finally{setBusy(false);}}
   async function finishWithChoice(input:JourneyInput){if(busy||generationAbort.current)return;const controller=new AbortController();generationAbort.current=controller;try{const generation=await generationChoice(controller.signal);if(!controller.signal.aborted)await act({...generation,...input});}finally{if(generationAbort.current===controller)generationAbort.current=undefined;}}
   async function finishLegacy(){await finishWithChoice({action:'finish'});}
   useEffect(()=>{if(stage!=='ready'||!j||finishing.current===j.id)return;finishing.current=j.id;void finishLegacy();},[stage,j?.id]);
@@ -57,7 +66,7 @@ export function StoryOnboarding({profile,context,offer,onBegin,onAction,onKnowle
       <div className="one-onboarding-actions"><button type="button" disabled={busy||!j} onClick={()=>void finishWithChoice({action:'step',step:'features',choice:'purposes',purposeIds:chosen,experience:4})}>{busy?'正在保存设置…':'开始使用 ONE'}<ArrowUpRight size={16}/></button></div>
     </>}
     {busy?<p className="story-saving" role="status">{stage==='device'?'正在核对本机状态。':'在保存这一步，稍等一下。'}</p>:null}
-    {error?<div className="one-onboarding-error" role="alert"><p>{error}</p></div>:null}
+    {error?<div className="one-onboarding-error" role="alert"><p>{error}</p>{!j?<button type="button" disabled={busy} onClick={()=>void retryBegin()}>重新打开引导</button>:null}</div>:null}
     {stage!=='name'?<button type="button" className="story-later" onClick={onDismiss}><ArrowLeft size={13}/>稍后继续，设置里能找回来</button>:null}
   </section>;
 }

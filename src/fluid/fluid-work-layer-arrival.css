@@ -1,0 +1,13 @@
+/* Native dialog retains focus containment and real controls throughout. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer:has([data-fluid-arrival-anchor]){isolation:isolate;animation:none!important;}
+.fluid-work-layer-arrival{position:absolute;inset:0;z-index:0;width:100%;height:100%;overflow:visible;pointer-events:none;}
+.fluid-arrival-stage{fill:var(--fluid-workflow-stage,var(--fluid-frame,#26343e));}
+.fluid-arrival-fill{fill:var(--fluid-menu-fill,var(--studio-surface,#e8eff3));}
+.fluid-arrival-rim{stroke-width:1.35;vector-effect:non-scaling-stroke;stroke-linejoin:round;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer[data-fluid-arrival-active=true]{background:transparent!important;border-color:transparent!important;box-shadow:none!important;backdrop-filter:none!important;overflow:visible;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer[data-fluid-arrival-active=true]>header,
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer[data-fluid-arrival-active=true]>.settings-dialog-body{position:relative;z-index:1;background:transparent!important;border-color:transparent!important;box-shadow:none!important;backdrop-filter:none!important;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer[data-fluid-arrival-active=true] .fluid-task-scope{background:transparent!important;border-color:transparent!important;box-shadow:none!important;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer[data-fluid-arrival-active=true] .fluid-split-material{visibility:hidden;}
+@media(prefers-reduced-motion:reduce){.fluid-work-layer-arrival{display:none!important;}}
+@media(prefers-contrast:more){.fluid-arrival-rim{stroke:var(--fluid-ink);stroke-width:1;}}

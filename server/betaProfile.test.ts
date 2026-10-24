@@ -84,3 +84,58 @@ test("profile rejects invisible and overlong names, returns a defensive copy, an
   assert.throws(() => updateAccountProfile(db, a, { displayName: "B", onboardingAction: "forged" }), BetaInputError);
   assert.equal(accountProfile(db, a).displayName, "A");
 });
+
+test("appearance persists with the authorized profile across reloads and onboarding changes", () => {
+  const db = database();
+  assert.equal(accountProfile(db, a).appearance, undefined);
+  const saved = updateAccountProfile(db, a, { appearance: { scene: "silver" } }, "2026-10-23T10:00:00Z");
+  assert.deepEqual(saved.appearance, { scene: "silver" });
+  assert.equal(saved.displayName, "");
+  assert.equal(onboardingStep(saved), "name");
+  assert.equal(saved.updatedAt, "2026-10-23T10:00:00Z");
+  saved.appearance!.scene = "graphite";
+  const reopened = JSON.parse(JSON.stringify(db)) as Database;
+  assert.deepEqual(accountProfile(reopened, a).appearance, { scene: "silver" });
+  updateAccountProfile(reopened, a, { displayName: "小马" });
+  completeOnboardingOnChat(reopened, a);
+  assert.deepEqual(accountProfile(reopened, a).appearance, { scene: "silver" });
+  updateAccountProfile(reopened, a, { appearance: { scene: "graphite" } });
+  assert.deepEqual(accountProfile(reopened, a).appearance, { scene: "graphite" });
+  assert.equal(accountProfile(reopened, { userId: "b", workspaceId: "wb" }).appearance, undefined);
+});
+
+test("appearance accepts only known scenes and rejects mixed invalid edits atomically", () => {
+  const db = database();
+  updateAccountProfile(db, a, { displayName: "A", appearance: { scene: "silver" } }, "before");
+  for (const appearance of [null, "graphite", ["silver"], {}, { scene: "smoke" }, { scene: null }, { scene: 1 }, { scene: "graphite", executionActive: true }, { scene: { toString: "graphite" } }]) {
+    assert.throws(() => updateAccountProfile(db, a, { displayName: "B", appearance }, "after"), BetaInputError);
+    assert.equal(accountProfile(db, a).displayName, "A");
+    assert.deepEqual(accountProfile(db, a).appearance, { scene: "silver" });
+    assert.equal(accountProfile(db, a).updatedAt, "before");
+  }
+  assert.throws(() => updateAccountProfile(db, a, { appearance: { scene: "graphite" }, onboardingAction: "forged" }), BetaInputError);
+  assert.deepEqual(accountProfile(db, a).appearance, { scene: "silver" });
+});
+
+test("appearance cannot cross workspace boundaries or bypass disabled membership", () => {
+  const db = database();
+  updateAccountProfile(db, a, { appearance: { scene: "silver" } });
+  assert.throws(() => updateAccountProfile(db, { userId: "a", workspaceId: "wb" }, { appearance: { scene: "graphite" } }), BetaInputError);
+  assert.throws(() => updateAccountProfile(db, { userId: "b", workspaceId: "wa" }, { appearance: { scene: "graphite" } }), BetaInputError);
+  db.workspaceMembers[0].status = "disabled";
+  assert.throws(() => updateAccountProfile(db, a, { appearance: { scene: "graphite" } }), BetaInputError);
+  assert.deepEqual(db.users[0].profile?.appearance, { scene: "silver" });
+  assert.equal(db.users[1].profile, undefined);
+});
+
+test("appearance stays personal even for two authorized users in one workspace", () => {
+  const db = database(), b = { userId: "b", workspaceId: "wa" };
+  db.users[1].defaultWorkspaceId = "wa";
+  db.workspaceMembers.push({ workspaceId: "wa", userId: "b" } as Database["workspaceMembers"][number]);
+  updateAccountProfile(db, a, { appearance: { scene: "silver" } });
+  updateAccountProfile(db, b, { appearance: { scene: "graphite" } });
+  assert.deepEqual(accountProfile(db, a).appearance, { scene: "silver" });
+  assert.deepEqual(accountProfile(db, b).appearance, { scene: "graphite" });
+  db.users[0].profile!.workspaceId = "wb";
+  assert.equal(accountProfile(db, a).appearance, undefined, "a stale profile cannot leak a previous workspace preference");
+});

@@ -12,7 +12,7 @@ import { runBilledModel } from "./modelBilling.js";
 import { runTaskOrchestrator } from "./taskOrchestrator.js";
 import { resolveAiTask } from "./aiTaskConfig.js";
 import type { Message } from "./types.js";
-import { activePublication, beginPublicRun, checkRunBudget, createGuest, guest, ownedPublication, publicRun, publish, requireSharing, SharingError, sharingReady, usageFor } from "./publicSharing.js";
+import { activateSavedPublication, activePublication, beginPublicRun, checkRunBudget, createGuest, guest, ownedPublication, publicRun, publish, requireSharing, SharingError, sharingReady, usageFor } from "./publicSharing.js";
 import { uid } from "./security.js";
 import {visitorIdentity} from './visitorRoutes.js';
 import {commercePolicy} from './publicCommerce.js';
@@ -38,24 +38,30 @@ export function installPublicSharingRoutes(app: Express, keyAuth: readonly Reque
     if (!sharingReady(db)) return res.json({ ready: false, items: [], total: 0, sources: [] });
     const page = pageOf(req.query.page), q = String(req.query.q || "").slice(0,100).toLowerCase();
     const mine = db.publications!.filter(p => p.workspaceId === req.workspaceId && p.userId === req.user!.id && `${p.name} ${p.description}`.toLowerCase().includes(q)).slice().reverse();
-    res.json({ ready: true, visitorPaymentsEnabled:commercePolicy(db).visitorPaymentsEnabled,availableFeatures:availablePublicAvatarFeatures(db,{workspaceId:req.workspaceId!,userId:req.user!.id}),authorName:avatarAuthorName(db,{workspaceId:req.workspaceId!,userId:req.user!.id}),items: mine.slice((page-1)*10,page*10).map(p => ({ id:p.id,authorName:avatarAuthorName(db,p),service:p.service?{mode:p.service.mode,featureCount:p.service.features.length}:undefined,version:p.version??1,visitorPercent:(p.visitorMultiplier??0)*100, name:p.name, description:p.description, status:p.status, expiresAt:p.expiresAt, slug:p.slug, budgetMicros:p.budgetMicros, perRunMicros:p.perRunMicros, attachments:p.attachments, sources:p.sources.map(s=>s.label), ...usageFor(db,p) })), total:mine.length,
+    res.json({ ready: true, visitorPaymentsEnabled:commercePolicy(db).visitorPaymentsEnabled,availableFeatures:availablePublicAvatarFeatures(db,{workspaceId:req.workspaceId!,userId:req.user!.id}),authorName:avatarAuthorName(db,{workspaceId:req.workspaceId!,userId:req.user!.id}),items: mine.slice((page-1)*10,page*10).map(p => ({ id:p.id,authorName:avatarAuthorName(db,p),service:p.service?{mode:p.service.mode,featureCount:p.service.features.length}:undefined,version:p.version??1,visitorPercent:(p.visitorMultiplier??0)*100, name:p.name, description:p.description, status:p.status, expiresAt:p.expiresAt, ...(p.status==='draft'?{}:{slug:p.slug}), budgetMicros:p.budgetMicros, perRunMicros:p.perRunMicros, attachments:p.attachments, sources:p.sources.map(s=>s.label), ...usageFor(db,p) })), total:mine.length,
       sources: db.knowledgeConnections.filter(c => c.workspaceId === req.workspaceId && c.status === "connected").map(c => ({id:c.id, provider:c.provider, name:c.providerSpaceName || c.provider})) });
   }));
   router.post("/manage", ...keyAuth, asyncRoute(async (req, res) => {
+    if(req.body.intent!==undefined&&req.body.intent!=='draft')throw new SharingError('创建分身的保存方式无效');
     const p = await store.mutate(db => publish(db, {workspaceId:req.workspaceId!,userId:req.user!.id}, req.body));
-    res.json({ id:p.id, slug:p.slug });
+    res.json(p.status==='draft'?{id:p.id,status:p.status,version:p.version??1}:{id:p.id,slug:p.slug});
   }));
   router.get('/manage/:id/config',...keyAuth,asyncRoute(async(req,res)=>{
     res.setHeader('Cache-Control','no-store');
     const p=ownedPublication(await store.read(),req.workspaceId!,req.user!.id,String(req.params.id));
     const db=await store.read();
-    const visible=(v:typeof p)=>({version:v.version??1,visitorPercent:(v.visitorMultiplier??0)*100,requireLogin:v.requireLogin??false,allowedUsernames:(v.allowedUserIds??[]).map(id=>db.users.find(u=>u.id===id)?.username??'不可用账号'),name:v.name,description:v.description,prompt:v.userPrompt??'',legacyPrompt:v.userPrompt===undefined,modelId:v.modelId,sourceIds:v.sources.map(s=>s.id),attachments:v.attachments,budget:v.budgetMicros/1e6,perRun:v.perRunMicros/1e6,days:Math.max(1,Math.min(90,Math.ceil((Date.parse(v.expiresAt)-Date.now())/86400000))),updatedAt:v.updatedAt??v.createdAt});
+    const visible=(v:typeof p)=>({status:v.status,version:v.version??1,visitorPercent:(v.visitorMultiplier??0)*100,requireLogin:v.requireLogin??false,allowedUsernames:(v.allowedUserIds??[]).map(id=>db.users.find(u=>u.id===id)?.username??'不可用账号'),name:v.name,description:v.description,prompt:v.userPrompt??'',legacyPrompt:v.userPrompt===undefined,modelId:v.modelId,sourceIds:v.sources.map(s=>s.id),attachments:v.attachments,budget:v.budgetMicros/1e6,perRun:v.perRunMicros/1e6,days:v.status==='draft'?(v.draftDays??7):Math.max(1,Math.min(90,Math.ceil((Date.parse(v.expiresAt)-Date.now())/86400000))),updatedAt:v.updatedAt??v.createdAt});
     const page=pageOf(req.query.page),history=(p.history??[]).slice().reverse();
     res.json({...visible(p),authorName:avatarAuthorName(db,p),service:p.service,serviceBusiness:p.serviceBusiness?{access:p.serviceBusiness.access,plans:p.serviceBusiness.plans,intakeFields:p.serviceBusiness.intakeFields}:undefined,history:history.slice((page-1)*5,page*5).map(visible),total:history.length});
   }));
   router.post('/manage/:id/update',...keyAuth,asyncRoute(async(req,res)=>{
+    if(req.body.intent!==undefined&&req.body.intent!=='draft')throw new SharingError('请从开放分享入口发布分身');
     const p=await store.mutate(db=>publish(db,{workspaceId:req.workspaceId!,userId:req.user!.id},req.body,String(req.params.id)));
-    res.json({id:p.id,slug:p.slug,version:p.version});
+    res.json(p.status==='draft'?{id:p.id,status:p.status,version:p.version??1}:{id:p.id,slug:p.slug,version:p.version});
+  }));
+  router.post('/manage/:id/publish',...keyAuth,asyncRoute(async(req,res)=>{
+    const p=await store.mutate(db=>activateSavedPublication(db,{workspaceId:req.workspaceId!,userId:req.user!.id},String(req.params.id),req.body));
+    res.json({id:p.id,status:p.status,slug:p.slug,version:p.version??1,expiresAt:p.expiresAt});
   }));
   router.post("/manage/:id/close", ...keyAuth, asyncRoute(async (req,res) => {
     await store.mutate(db => { const p = ownedPublication(db,req.workspaceId!,req.user!.id,String(req.params.id)); p.status="closed";

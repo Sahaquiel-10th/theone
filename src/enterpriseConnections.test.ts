@@ -3,6 +3,7 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { EnterpriseConnectionNotice, EnterpriseKnowledgeCard, FlomoConnectionNotice, matchesKnowledgeCard } from "./EnterpriseConnectionNotice";
+import {FeishuConnection} from './FeishuConnection';
 
 test("enterprise entry explains administrator enablement and uses the supplied contact QR", () => {
   const html = renderToStaticMarkup(createElement(EnterpriseConnectionNotice));
@@ -20,4 +21,15 @@ test("enterprise entries respect search and connection filtering without hiding 
   assert.equal(matchesKnowledgeCard("微信", "wechat", false, "", "connected"), false);
   assert.equal(matchesKnowledgeCard("飞书", "feishu", true, "", "connected"), true);
   assert.equal(matchesKnowledgeCard("飞书", "feishu", true, "flomo", "all"), false);
+});
+test('controlled enterprise connection details use their shared pane without adding a dialog',()=>{
+ for(const id of ['dingtalk','wechat'] as const){
+  const html=renderToStaticMarkup(createElement(EnterpriseKnowledgeCard,{id,label:id==='dingtalk'?'钉钉':'微信',query:'',filter:'all',open:true,onOpenChange:()=>{},detailTarget:null}));
+  assert.match(html,/aria-expanded="true"/);assert.match(html,/is-selected/);assert.doesNotMatch(html,/<dialog|enterprise-contact-qr/);
+ }
+});
+test('Feishu supports a controlled shared pane and does not authorize or save from render',()=>{
+ let calls=0;const api=async<T>()=>{calls++;return{} as T;};
+ const html=renderToStaticMarkup(createElement(FeishuConnection,{api,open:true,onOpenChange:()=>{},detailTarget:null}));
+ assert.match(html,/飞书/);assert.match(html,/aria-expanded="true"/);assert.doesNotMatch(html,/<dialog|保存到飞书|authorizationUrl/);assert.equal(calls,0);
 });

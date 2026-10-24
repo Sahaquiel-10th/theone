@@ -1,0 +1,43 @@
+/* Workflows inherit the optical shell; forms and reading surfaces stay still. */
+main.one-fluid-workspace .fluid-formal-work-layer .fluid-history-content{position:static;inset:auto;width:100%;max-width:none;max-height:none;margin:0;padding:0;border:0;border-radius:0;box-shadow:none;background:transparent;transform:none;animation:none;color:inherit}
+main.one-fluid-workspace .fluid-formal-work-layer .one-popover-list{max-height:none;min-height:120px;overflow:visible}
+main.one-fluid-workspace .fluid-formal-work-layer .one-popover-heading{padding:0 0 20px}
+main.one-fluid-workspace .fluid-formal-work-layer .one-history-row{border-color:var(--fluid-line)}
+main.one-fluid-workspace .fluid-formal-work-layer .one-history-row button{color:var(--fluid-ink);background:transparent}
+main.one-fluid-workspace .fluid-formal-work-layer .one-history-row small{color:var(--fluid-muted)}
+main.one-fluid-workspace .fluid-work-layer-things>.settings-dialog-body{padding:0;overflow:hidden;flex:1 1 auto}
+main.one-fluid-workspace .fluid-things-shell{display:flex;flex-direction:column;height:100%;min-height:0}
+main.one-fluid-workspace .fluid-task-scope{display:flex;gap:6px;flex:none;padding:12px 24px;border-bottom:1px solid var(--fluid-line)}
+main.one-fluid-workspace .fluid-task-scope button{padding:8px 13px;border:1px solid transparent;border-radius:12px;background:transparent;color:var(--fluid-muted);font:inherit;font-size:12px;cursor:pointer}
+main.one-fluid-workspace .fluid-task-scope button[aria-pressed="true"]{background:var(--fluid-selection);color:var(--fluid-ink);border-color:var(--fluid-line)}
+main.one-fluid-workspace .fluid-task-feature-history{overflow:auto;padding:24px}
+main.one-fluid-workspace .fluid-work-layer-things{height:min(720px,calc(100dvh - 72px))}
+main.one-fluid-workspace .fluid-work-layer-things .things-browser{height:100%;color:var(--fluid-ink);--studio-ink:var(--fluid-ink);--studio-line:var(--fluid-line);--studio-muted:var(--fluid-muted);--studio-surface:var(--fluid-input)}
+main.one-fluid-workspace .fluid-work-layer-things .things-thread>header h2{font-size:18px;line-height:1.5}
+main.one-fluid-workspace .fluid-work-layer-things .things-thread>header{align-items:flex-start;padding:20px 24px}
+main.one-fluid-workspace .fluid-work-layer-things .things-thread form{padding:16px 24px}
+main.one-fluid-workspace .fluid-work-layer-things .things-thread textarea{min-height:52px;max-height:120px;resize:none}
+main.one-fluid-workspace .fluid-work-layer-things .things-thread-messages{padding:20px 26px}
+main.one-fluid-workspace .fluid-work-layer-things .document-destination-picker{margin:0 24px 10px}
+main.one-fluid-workspace .fluid-formal-work-layer .account-advanced-settings{align-self:start}
+main.one-fluid-workspace .fluid-formal-work-layer .account-advanced-settings summary{cursor:pointer;font-size:13px;font-weight:550}
+main.one-fluid-workspace .fluid-formal-work-layer .account-advanced-settings[open] summary{margin-bottom:20px}
+main.one-fluid-workspace .knowledge-inline-detail{min-height:260px}
+main.one-fluid-workspace .knowledge-inline-detail .knowledge-connection-detail{padding:20px 0 0}
+main.one-fluid-workspace .fluid-runtime-notices:empty{display:none}
+main.one-fluid-workspace .fluid-runtime-notices{flex:none;max-height:142px;overflow:auto;overscroll-behavior:contain}
+main.one-fluid-workspace .fluid-activity-panel{overflow-y:auto;overscroll-behavior:contain}
+main.one-fluid-workspace .fluid-runtime-notices .one-runtime-update{display:flex;flex-wrap:wrap;align-items:flex-start;width:auto;min-height:0;margin:0;padding:12px;font-size:11px;border:1px solid var(--fluid-line);border-radius:14px;background:var(--fluid-hover);box-shadow:none;color:var(--fluid-ink)}
+main.one-fluid-workspace .fluid-feature-runs{display:flex;flex-direction:column;gap:7px;min-height:0;overflow:auto;flex-shrink:0;max-height:160px}
+main.one-fluid-workspace .fluid-feature-runs article{display:flex;align-items:flex-start;gap:6px;border-bottom:1px solid var(--fluid-line);padding:8px 0}
+main.one-fluid-workspace .fluid-feature-runs article>button{display:flex;flex-direction:column;gap:4px;flex:1;min-width:0;border:0;padding:0;background:transparent;text-align:left;color:var(--fluid-ink);cursor:pointer;font:inherit}
+main.one-fluid-workspace .fluid-feature-runs article>button:last-child:not(:first-child){flex:none;padding:4px;color:var(--fluid-muted)}
+main.one-fluid-workspace .fluid-feature-runs strong{font-size:12px;font-weight:550;overflow-wrap:anywhere}
+main.one-fluid-workspace .fluid-feature-runs small{font-size:11px;color:var(--fluid-muted)}
+main.one-fluid-workspace .fluid-activity-panel .attention-trigger{width:100%;font-size:11px;border-color:var(--fluid-line);background:var(--fluid-hover);color:var(--fluid-ink)}
+main.one-fluid-workspace .fluid-activity-panel .welcome-delivery{margin:0;padding:10px;border-color:var(--fluid-line);background:var(--fluid-hover);color:var(--fluid-ink);font-size:11px}
+main.one-fluid-workspace .fluid-formal-work-layer .feature-shelf-card{transition:background 180ms ease,border-color 180ms ease}
+main.one-fluid-workspace .fluid-formal-work-layer .feature-shelf-card.is-selected{background:var(--fluid-selection)}
+main.one-fluid-workspace .fluid-feature-runs article[data-status="completed"] strong::before{content:'✓';display:inline-block;margin-right:7px;color:var(--fluid-focus);animation:fluid-result-arrived 400ms ease-out both}
+@keyframes fluid-result-arrived{from{opacity:0;transform:translateY(3px) scale(.8)}to{opacity:1;transform:translateY(0) scale(1)}}
+@media(prefers-reduced-motion:reduce){main.one-fluid-workspace .fluid-feature-runs article[data-status="completed"] strong::before{animation:none}main.one-fluid-workspace .fluid-formal-work-layer .feature-shelf-card{transition:none}}

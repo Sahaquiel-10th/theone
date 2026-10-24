@@ -10,7 +10,8 @@ export type Publication = {
   history?: Omit<Publication, 'history'>[];
   id: string; workspaceId: string; userId: string; slug: string; name: string; description: string;
   prompt: string; modelId: string; taskVersion: number; sources: SharedSource[]; attachments: boolean;
-  status: "active" | "closed"; budgetMicros: number; perRunMicros: number; expiresAt: string; createdAt: string;
+  draftDays?: number;
+  status: "draft" | "active" | "closed"; budgetMicros: number; perRunMicros: number; expiresAt: string; createdAt: string;
 };
 export type PublicSession = {
   apiGrantId?: string; accountUserId?: string; accountWorkspaceId?: string;

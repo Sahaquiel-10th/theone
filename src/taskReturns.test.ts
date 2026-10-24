@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {newAutomaticReceiptIds,visibleTransfers,presentationTransfers,transferFeedbackLabel,type Transfer} from './TaskTransferRail';
-import {taskCategory,taskUiOutcome} from './taskAttention';
+import {taskCategory,taskUiOutcome,taskEntrySelection} from './taskAttention';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {TaskTransferRail,dismissibleReceiptIds} from './TaskTransferRail';
@@ -62,4 +62,20 @@ test('waiting, permission and unsuccessful results never imply success',()=>{
  assert.equal(transferFeedbackLabel({...base,state:'completed',outcome:'failed'}),'未完成，查看原因');
  assert.equal(transferFeedbackLabel({...base,state:'returned'}),'结果已返回，查看内容');
  assert.deepEqual(newAutomaticReceiptIds([{...base,state:'returned'},{...base,id:'b',state:'needs_input'},{...base,id:'c',state:'partial'}]),['a','b','c']);
+});
+
+test('task overview arrives at one useful detail without losing a remembered selection or mutating receipts',()=>{
+ const items=[
+  {id:'old',taskState:'history' as const,updatedAt:'2026-10-24',unread:false},
+  {id:'result',taskState:'review' as const,updatedAt:'2026-10-24',unread:true},
+  {id:'active',taskState:'active' as const,updatedAt:'2026-10-23',unread:false},
+  {id:'archived',taskState:'active' as const,archived:true,updatedAt:'2026-10-25',unread:true},
+ ];
+ const before=structuredClone(items);
+ assert.equal(taskEntrySelection(items),'active');
+ assert.equal(taskEntrySelection(items,'result'),'result');
+ assert.equal(taskEntrySelection(items,'archived'),'active');
+ assert.equal(taskEntrySelection(items.filter(item=>item.id!=='active')),'result');
+ assert.equal(taskEntrySelection([]),'');
+ assert.deepEqual(items,before);
 });

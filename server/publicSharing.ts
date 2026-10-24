@@ -51,8 +51,12 @@ function power(value: unknown) { if (typeof value !== "number" || !Number.isFini
 export function publish(db: Database, scope: { workspaceId: string; userId: string }, input: Record<string, unknown>, updateId?: string) {
   requireSharing(db); ownerActive(db, scope);
   const old=updateId?ownedPublication(db,scope.workspaceId,scope.userId,updateId):undefined;
+  const activate=input.intent==='activate';
+  if(activate&&old?.status!=='draft')throw new SharingError('请从未分享分身的开放入口操作',409);
+  if(old?.status==='active'&&input.intent==='draft')throw new SharingError('已开放的分享不能通过保存变成私有，请先关闭分享',409);
+  const draft=input.intent==='draft'||old?.status==='draft'&&!activate;
   if(old){
-    if(old.status!=='active')throw new SharingError('已关闭的分享不能重新开启，请创建新分身',409);
+    if(old.status==='closed')throw new SharingError('已关闭的分享不能重新开启，请创建新分身',409);
     if(input.version!==(old.version??1))throw new SharingError('分身已被更新，请重新打开配置',409);
     if(db.publicRuns!.some(r=>r.publicationId===old.id&&r.status==='running'))throw new SharingError('还有问题正在回答，请稍后再发布更新',409);
   }
@@ -68,7 +72,8 @@ export function publish(db: Database, scope: { workspaceId: string; userId: stri
   if (!Number.isInteger(days) || Number(days) < 1 || Number(days) > 90) throw new SharingError("有效期应为 1 至 90 天");
   const expiresAt=new Date(Date.now() + Number(days) * 86400000).toISOString();
   if(old)validateServiceCommitments(db,old,budgetMicros,expiresAt);
-  if (!old && db.publications!.filter(p => p.workspaceId === scope.workspaceId && p.userId === scope.userId && p.status === "active").length >= 20) throw new SharingError("最多保留 20 个有效分享，请先关闭不需要的分享");
+  if (!draft && (!old||old.status==='draft') && db.publications!.filter(p => p.workspaceId === scope.workspaceId && p.userId === scope.userId && p.status === "active").length >= 20) throw new SharingError("最多保留 20 个有效分享，请先关闭不需要的分享");
+  if(draft&&!old&&db.publications!.filter(p=>p.workspaceId===scope.workspaceId&&p.userId===scope.userId&&p.status==='draft').length>=50)throw new SharingError('最多保留 50 个未分享分身，请先整理现有分身');
   const sources = [...new Set(input.sourceIds as string[])].map(id => {
     const c = db.knowledgeConnections.find(c => c.id === id && c.workspaceId === scope.workspaceId && c.status === "connected");
     if (!c) throw new SharingError("知识来源不可用或不属于你");
@@ -84,11 +89,26 @@ export function publish(db: Database, scope: { workspaceId: string; userId: stri
     version:old?(old.version??1)+1:1,userPrompt:text(input.prompt,12000,false),updatedAt:timestamp(),
     name: text(input.name, 60), description: text(input.description, 300, false),
     prompt: [config.model.systemPrompt, text(input.prompt, 12000, false)].filter(Boolean).join("\n\n"), modelId: config.model.id, taskVersion: config.version,
-    sources, attachments: input.attachments === true, status: "active", budgetMicros, perRunMicros, createdAt: timestamp(), expiresAt };
+    sources, attachments: input.attachments === true, status: draft?"draft":"active", ...(draft?{draftDays:Number(days)}:{}), budgetMicros, perRunMicros, createdAt: timestamp(), expiresAt };
   if(old){const {history,...snapshot}=structuredClone(old);if(snapshot.serviceBusiness)snapshot.serviceBusiness={...snapshot.serviceBusiness,codes:[],entitlements:[],leads:[]};p.id=old.id;p.slug=old.slug;p.createdAt=old.createdAt;p.history=[...(history??[]),snapshot].slice(-20);Object.assign(old,p);}
   else db.publications!.push(p);
-  db.auditLogs.push({ id: uid("aud"), ...scope, actorUserId: scope.userId, action: old?"publication.updated":"publication.created", targetType: "publication", targetId: p.id, details: {version:p.version, sources: sources.map(s => s.id), budgetMicros, perRunMicros }, createdAt: timestamp() });
+  db.auditLogs.push({ id: uid("aud"), ...scope, actorUserId: scope.userId, action: draft?(old?"publication.draft.updated":"publication.draft.created"):activate?"publication.activated":old?"publication.updated":"publication.created", targetType: "publication", targetId: p.id, details: {version:p.version, sources: sources.map(s => s.id), budgetMicros, perRunMicros }, createdAt: timestamp() });
   return p;
+}
+/** Explicit activation is separate from a private configuration save. */
+export function activateSavedPublication(db:Database,scope:{workspaceId:string;userId:string},id:string,input:Record<string,unknown>) {
+  const p=ownedPublication(db,scope.workspaceId,scope.userId,id);
+  if(input.confirmed!==true)throw new SharingError('请确认开放的知识范围与费用规则');
+  const previous=p.history?.at(-1),activationReceipt=p.status==='active'&&previous?.status==='draft'&&input.version===(previous.version??1)&&(p.version??1)===(previous.version??1)+1;
+  if(p.status==='active'&&(input.version===(p.version??1)||activationReceipt))return activePublication(db,p.id); // A lost activation receipt is safe to query again.
+  if(input.version!==(p.version??1))throw new SharingError('分身配置已变化，请重新核对后开放分享',409);
+  if(p.status!=='draft')throw new SharingError('已关闭的分享不能重新开启，请创建新分身',409);
+  for(const source of p.sources){
+    const current=db.knowledgeConnections.find(item=>item.id===source.id&&item.workspaceId===scope.workspaceId&&item.status==='connected');
+    if(!current||sourceBinding(current)!==source.binding)throw new SharingError('知识连接已变化，请重新打开分身配置核对后再分享',409);
+  }
+  const allowedUsernames=(p.allowedUserIds??[]).map(userId=>{const user=db.users.find(item=>item.id===userId&&item.enabled);if(!user)throw new SharingError('允许访问的账号已变化，请重新核对配置',409);return user.username;});
+  return publish(db,scope,{intent:'activate',version:p.version??1,name:p.name,description:p.description,prompt:p.userPrompt??'',modelId:p.modelId,sourceIds:p.sources.map(source=>source.id),attachments:p.attachments,budget:p.budgetMicros/1e6,perRun:p.perRunMicros/1e6,days:p.draftDays??7,visitorPercent:(p.visitorMultiplier??0)*100,requireLogin:p.requireLogin??false,allowedUsernames,confirmed:true},p.id);
 }
 export function createGuest(db: Database, publicationId: string,identity?:VisitorIdentity,internalApi=false) {
   const p = activePublication(db, publicationId);

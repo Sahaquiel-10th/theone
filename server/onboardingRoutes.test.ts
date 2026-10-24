@@ -134,6 +134,40 @@ test("HTTP profile uses middleware scope, ignores foreign body IDs, and returns 
   assert.equal(f.stats().queued, 0);
 });
 
+test("HTTP appearance PATCH persists only the authenticated account choice and GET reads it back", async t => {
+  const f = fixture(), http = await server(t, f);
+  const changed = await http.patch({ appearance: { scene: "silver" }, userId: "b", workspaceId: "wb" });
+  assert.equal(changed.status, 200);
+  assert.equal(changed.headers.get("cache-control"), "no-store");
+  const result = await changed.json();
+  assert.equal(result.profile.workspaceId, "wa");
+  assert.deepEqual(result.profile.appearance, { scene: "silver" });
+  assert.deepEqual((await (await fetch(http.url)).json()).profile.appearance, { scene: "silver" });
+  assert.equal(f.db.users[1].profile, undefined);
+  assert.deepEqual(f.stats(), { queued: 0, resumed: 0, verified: 0 });
+  const next = await http.patch({ appearance: { scene: "graphite" } });
+  assert.equal(next.status, 200);
+  assert.deepEqual((await next.json()).profile.appearance, { scene: "graphite" });
+});
+
+test("HTTP invalid or unauthorized appearance changes cannot partially save a profile", async t => {
+  const f = fixture(), http = await server(t, f);
+  await http.patch({ displayName: "A", appearance: { scene: "silver" } });
+  for (const appearance of [{ scene: "night" }, {}, { scene: "graphite", executionActive: true }, null]) {
+    assert.equal((await http.patch({ displayName: "B", appearance })).status, 400);
+    const persisted = (await (await fetch(http.url)).json()).profile;
+    assert.equal(persisted.displayName, "A");
+    assert.deepEqual(persisted.appearance, { scene: "silver" });
+  }
+  assert.equal((await http.patch({ appearance: { scene: "graphite" } }, { "x-fixture-deny": "yes" })).status, 428);
+  assert.deepEqual(f.db.users[0].profile?.appearance, { scene: "silver" });
+  f.db.workspaceMembers[0].status = "disabled";
+  assert.equal((await http.patch({ appearance: { scene: "graphite" } })).status, 403);
+  assert.deepEqual(f.db.users[0].profile?.appearance, { scene: "silver" });
+  assert.equal(f.db.users[1].profile, undefined);
+  assert.equal(f.stats().queued, 0);
+});
+
 test("HTTP concurrent explicit completion plus refresh accepts only one image task", async t => {
   const f = fixture(); f.ready(); const http = await server(t, f);
   const responses = await Promise.all([http.patch(completion), http.patch({ ...completion, workspaceId: "wb" })]);

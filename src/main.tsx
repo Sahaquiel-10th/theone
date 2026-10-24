@@ -1,8 +1,13 @@
+import {OneEye,type OneEyeMood} from './OneEye';
+import {OneFluidSurface,getFluidLayout,type FluidFrame as FluidProgress} from "./fluid/OneFluidSurface";
+import {useFluidActivityHeight} from './fluid/useFluidActivityHeight';
+import {useFluidContentFlow} from './fluid/contentFlow';
+import {useFluidPanels} from "./fluid/useFluidPanels";
 import { CompanyPanel } from "./CompanyPanel";
 import {AdminPowerControls} from './AdminPowerControls';
 import {StaticPreviewPanel} from './StaticPreviewPanel';
 import type { identityAccess } from "../server/enterprisePolicy";
-import React, { FormEvent, createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { FormEvent, createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useCallback } from "react";
 import { UnifiedCapabilityPanel } from "./UnifiedCapabilityPanel";
 import { OfficialFeaturePanel } from "./OfficialFeaturePanel";
 import { FeatureBudgetSettings, approveFeaturePrices } from './FeatureBudgetSettings';
@@ -14,10 +19,16 @@ import {FeatureNav} from './FeatureNav';
 import {ThingsPanel} from './ThingsPanel';
 import {TaskReadAllButton} from './TaskReadAllButton';
 import {StoryOnboarding} from './StoryOnboarding';
+import {onboardingEffectPreview} from './onboardingPreviewBoundary';
 import {WelcomeGuideCard} from './WelcomeGuideCard';
 import {AttachmentActions} from './AttachmentActions';
 import {SavedWelcomeGuides} from './SavedWelcomeGuides';
 import {AccountPreferencesLayout} from './AccountPreferencesLayout';
+import {AppearanceSettings} from './AppearanceSettings';
+import {resolvedAppearanceScene} from './appearancePreferences';
+import {FluidWorkLayer} from './FluidWorkLayer';
+import {MessageSources} from './MessageSources';
+import {FeatureRunMonitor,FeatureRunHistory,type FeatureRunSummary} from './FeatureCatalog';
 import './welcome-guide.css';
 import type {JourneyInput,WelcomeContext} from '../server/onboardingJourney';
 import {ActionMenu} from './ActionMenu';
@@ -27,14 +38,17 @@ import {CoordinatorConversation} from './preview/CoordinatorConversation';
 import {useFollowLatest} from './useFollowLatest';
 import {runtimeNoticeSeen, rememberRuntimeNotice} from './runtimeNoticeMemory';
 import {executionNeedsReview} from './executionReview';
-import {TaskTransferRail, dismissibleReceiptIds, type Transfer} from './TaskTransferRail';
-import {taskCategory,taskUiOutcome} from './taskAttention';
+import {TaskTransferRail, dismissibleReceiptIds, visibleTransfers, transferSettled, type Transfer} from './TaskTransferRail';
+import {taskCategory,taskUiOutcome,taskEntrySelection} from './taskAttention';
 import {taskRetryScope} from './taskRetryScope';
 import {notionReceiptForReview,unstartedLocalInput} from './taskRecovery';
 import {taskConversationView} from './taskConversationView';
 import {friendlyExecutionProgress,readCapturedNotices} from './friendlyTaskStatus';
 import {internalTaskId} from './taskLink';
 import {FeatureShelf,type FeatureChoice} from './preview/FeatureShelf';
+import {KnowledgeConnections} from './KnowledgeConnections';
+import {captureFeatureHandoff,FeatureHandoff,FeatureArmedRim,pulseFeatureComposer,type FeatureHandoffTransfer} from './FeatureHandoff';
+import {featureSelectionTransition} from './featureHandoffMotion';
 import {ResultSignal} from './preview/ResultSignal';
 import {useWorkspacePreview} from './preview/useWorkspacePreview';
 import {useCoordinator} from './useCoordinator';
@@ -42,7 +56,6 @@ import {executionHandoffOutcome} from './executionHandoff';
 import { useComposerFeatures } from "./ComposerFeatures";
 import { LocalDeviceSettings } from './LocalDeviceSettings';
 import { DocumentDestinationPicker, NotionWritingSettings, NotionReceiptNotice, type DocumentDestination } from './DocumentDestination';
-import { waitingForOfficialApproval, officialApprovalLabel, officialApprovalHint } from "./knowledgeAvailability";
 import './preview/workspace-preview.css';
 import './task-transfer.css';
 import {canPeekAtFeatures,waitingForCurrentReply} from './oneFocusState';
@@ -118,6 +131,15 @@ import './one-product.css';
 import './account-preferences.css';
 import './one-playful.css';
 import './task-message-ux.css';
+import "./fluid-workspace.css";
+import './fluid-scenes.css';
+import './fluid-conversation.css';
+import './appearance-settings.css';
+import './fluid-work-layers.css';
+import './fluid-flow-integration.css';
+import './fluid-workflow-system.css';
+import './fluid-control-rhythm.css';
+import './fluid/fluid-work-layer-arrival.css';
 import { Pagination, SearchPicker, SettingsDialog } from "./SettingsControls";
 import { BetaUserInsights } from "./BetaUserInsights";
 import { mergeTaskSnapshots, recoverTaskDraft } from "./oneStudioState";
@@ -128,10 +150,7 @@ import { chatSubmission, forgetChatSubmission, pendingChatSubmissions } from "./
 import { ProfileNameEditor, BetaFeedbackControls, type AccountProfile, type ProfilePatch } from "./Onboarding";
 import type { OnboardingHandbookOffer,WelcomeDelivery as Delivery } from '../server/onboardingHandbook';
 import {WelcomeDelivery,followWelcomeDelivery} from './WelcomeDelivery';
-import { getNotePollFailureAction, prepareGetNoteAuthorizationWindow } from "./getNoteAuthorization";
 import { PaymentPanel } from "./PaymentPanel";
-import { EnterpriseKnowledgeCard, FlomoConnectionNotice } from "./EnterpriseConnectionNotice";
-import { FeishuConnection } from "./FeishuConnection";
 import { CacheUsageDetails } from "./CacheUsageDetails";
 import { PricingCatalog } from "./PricingPanel";
 import { MembershipAdminPanel } from "./MembershipPanel";
@@ -264,14 +283,6 @@ type ViewTransitionDocument = Document & {
   startViewTransition?: (update: () => void) => OneViewTransition;
 };
 
-type GetNoteDeviceFlow = {
-  flowId: string;
-  verificationUri: string;
-  userCode: string;
-  expiresIn: number;
-  interval: number;
-};
-
 type Conversation = {
   id: string;
   userId: string;
@@ -381,32 +392,6 @@ function readableFileSize(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-type OneEyeMood = "idle" | "attentive" | "thinking" | "pleased" | "cozy" | "angry" | "surprised" | "curious";
-
-function OneEye({
-  mood = "idle",
-  size = "md",
-  decorative = false,
-  className = ""
-}: {
-  mood?: OneEyeMood;
-  size?: "xs" | "sm" | "md" | "lg" | "hero";
-  decorative?: boolean;
-  className?: string;
-}) {
-  return (
-    <span
-      className={`one-eye one-eye-${size} mood-${mood} ${className}`.trim()}
-      role={decorative ? undefined : "img"}
-      aria-label={decorative ? undefined : "ONE 猫眼标志"}
-      aria-hidden={decorative || undefined}
-    >
-      <span className="one-eye-white"><span className="one-eye-pupil" /></span>
-      <span className="one-eye-lid one-eye-lid-top" />
-      <span className="one-eye-lid one-eye-lid-bottom" />
-    </span>
-  );
-}
 
 function OnePupilMark({ className = "" }: { className?: string }) {
   return (
@@ -476,19 +461,6 @@ function AttachmentList({ attachments, removable, onRemove, onRetry }: {
   );
 }
 
-function MessageSources({ message }: { message: Message }) {
-  const { sources, knowledgeDiagnostics: knowledge } = message;
-  if (!sources?.length && !knowledge && !message.attachmentWarning) return null;
-  return (
-    <details className="one-answer-sources">
-      <summary>{knowledge ? ({ used: "已参考你的知识", no_match: "没有找到相关知识", not_connected: "未连接知识来源", partial: "已参考部分知识", failed: "知识读取失败 · 本次仅由模型回答" })[knowledge.status] : "查看参考资料"}{sources?.length ? ` · ${sources.length} 条来源` : ""}</summary>
-      {knowledge?.failures.map((failure, index) => <p className="one-source-warning" key={index}>{failure.message}</p>)}
-      {message.attachmentWarning ? <p className="one-source-warning">{message.attachmentWarning}</p> : null}
-      {sources?.map((source, index) => <section key={`${source.url}-${index}`}><a href={/^https?:\/\//i.test(source.url) ? source.url : undefined} target="_blank" rel="noreferrer">{index + 1}. {source.title}</a><p>{source.snippet}</p></section>)}
-    </details>
-  );
-}
-
 function Login({ onDone }: { onDone: (user: User) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -549,7 +521,8 @@ function Login({ onDone }: { onDone: (user: User) => void }) {
   );
 }
 
-function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onStop }: {
+function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onStop, idPrefix = "one" }: {
+  idPrefix?: string;
   task: ExecutionTask | null; events: ExecutionEvent[]; preparing: boolean; expanded: boolean;
   onToggle: () => void; onStop: (source: HTMLElement) => void;
 }) {
@@ -559,21 +532,21 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
   const api = useContext(PrivateApiContext);
   const status = preparing ? "preparing" : executionNeedsReview(task) ? "needs_input" : task?.status || "preparing";
   const busy = preparing || isExecutionRunning(task);
-  return <section id="one-current-execution" className={`execution-disclosure ${status} ${expanded ? "is-expanded" : ""}`} aria-label="本机执行">
+  return <section id={`${idPrefix}-current-execution`} className={`execution-disclosure ${status} ${expanded ? "is-expanded" : ""}`} aria-label="本机执行">
     <div className="execution-disclosure-header">
-      <button className="execution-disclosure-toggle" type="button" aria-expanded={expanded} aria-controls="one-execution-content" onClick={onToggle}>
+      <button className="execution-disclosure-toggle" type="button" aria-expanded={expanded} aria-controls={`${idPrefix}-execution-content`} onClick={onToggle}>
         <span className={`task-indicator ${busy ? "running" : status}`} aria-hidden="true">{status === "completed" ? <Check size={12} /> : null}</span>
         <span><strong>{executionNeedsReview(task) ? '这轮有个问题，结果需要核对' : executionStatusLabel(task, preparing)}</strong><small>{preparing ? "正在连接这台电脑…" : executionNeedsReview(task) ? '展开看看哪些做成了、哪些还没有' : task?.status === "completed" ? "看看做了什么" : task?.status === "failed" ? "看看卡在哪一步" : latestStep || "看看正在做什么"}</small></span>
         <span className="execution-expand-label">{expanded ? "收起" : "展开"}</span><ChevronDown size={15} />
       </button>
-      {busy || task?.resultDeliveryPending && task.status !== 'cancelled' && !task.requiresExecutionCheck ? <button className="execution-stop" type="button" onClick={event => onStop(event.currentTarget)}><Square size={10} />停止</button> : null}
+      {busy || task?.resultDeliveryPending && task.status !== 'cancelled' && !task.requiresExecutionCheck ? <button className="execution-stop" type="button" onClick={event => onStop(event.currentTarget)}><Square size={10} />停止本机执行</button> : null}
     </div>
     <div className="execution-disclosure-grid" data-open={expanded}>
       <div className="execution-disclosure-clip" inert={!expanded} aria-hidden={!expanded}>
-        <div id="one-execution-content" className="execution-disclosure-body">
+        <div id={`${idPrefix}-execution-content`} className="execution-disclosure-body">
           {task?.targetName ? <p className="execution-current-step">工作文件夹：{task.targetName}（可在设置 → 本机执行中更换）</p> : null}
           {task && !busy && task.targetName ? <StaticPreviewPanel key={task.id} taskId={task.id} request={(action, path) => api(`/api/executions/${encodeURIComponent(task.id)}/preview`, {method: 'POST', body: JSON.stringify({action, path})})}/> : null}
-          {!busy && executionNeedsReview(task) ? <><p className="execution-problem">这轮操作中有一步报错了。下面保留了实际返回的结果，我们先看看目标有没有做成；不会自动再跑一遍。</p><MessageMarkdown>{task!.finalResponse!}</MessageMarkdown></> : !busy && task?.status === "failed" ? <p className="execution-problem">{task.lastError || "这一步还没做完。"}</p> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><MessageMarkdown>{task.finalResponse}</MessageMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接这台电脑…" : task?.status === "cancelled" ? "停下来了。" : latestStep || "正在等这台电脑的反馈…"}</p>}
+          {!busy && executionNeedsReview(task) ? <><p className="execution-problem">这轮操作中有一步报错了。下面保留了实际返回的结果，我们先看看目标有没有做成；不会自动再跑一遍。</p><MessageMarkdown>{task!.finalResponse!}</MessageMarkdown></> : !busy && task?.status === "failed" ? <p className="execution-problem">{task.lastError || "这一步还没做完。"}</p> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><MessageMarkdown>{task.finalResponse}</MessageMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接这台电脑…" : task?.status === "cancelled" ? "停下来了。" : task?.status === "completed" ? task.resultDeliveryPending ? "这轮操作已结束，正在接收结果…" : "这轮操作已结束，结果保留在对应任务里。" : latestStep || "正在等这台电脑的反馈…"}</p>}
           {steps.length > 0 ? <details className="execution-step-history"><summary>过程记录 · {steps.length} 条</summary><ol>{steps.slice(-30).map(event => <li key={event.id} className={event.kind}>{event.text}</li>)}</ol>{steps.length > 30 ? <small>最近 30 条</small> : null}</details> : null}
           {task ? <details className="execution-step-history" onToggle={async event => {
             if (!event.currentTarget.open || trace) return;
@@ -592,6 +565,10 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
 type TaskNotice = { id: string; conversationId: string; title: string; outcome: "reply" | "completed" | "failed" | "cancelled"; taskId?: string; read?: boolean };
 
 function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
+  const guideEffectPreview=onboardingEffectPreview(window.location,document.documentElement.dataset.onePreviewMode);
+  const [storyLaunchError,setStoryLaunchError]=useState(''),[storyLaunching,setStoryLaunching]=useState(false);
+  const storyLaunchPending=useRef(false);
+  const storyRequested=useRef(false),storyStarter=useRef<()=>Promise<void>>(async()=>{});
   const demo = useWorkspacePreview();
   const api = useContext(PrivateApiContext);
   const coordinator = useCoordinator(api,user.id,!demo.enabled);
@@ -634,7 +611,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const result=await api<WelcomeResponse>('/api/me/profile/onboarding',{method:'POST',body:JSON.stringify(input)});
     acceptWelcome(result);
     if(result.profile.onboarding.journey?.stage==='complete'&&(input.action==='finish'||input.step==='features')) {
-      setStoryOpen(false);setStoryHidden(true);setComposeNew(true);openSurface('chat');
+      const returnToChat=storyRequested.current;storyRequested.current=false;
+      setStoryOpen(false);setStoryHidden(true);if(returnToChat){setComposeNew(true);openSurface('chat');}
       const guide=result.profile.onboarding.handbook;
       setHandbookNotice(result.welcomeDelivery?'':result.handbookNotice||'');setDismissedDelivery('');
       setStoryTaskId(guide?.status==='queued'?guide.taskId||'':'');
@@ -643,8 +621,23 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     return result.profile;
   }
   async function startStory() {
-    await saveStory({action:'begin',launchId:crypto.randomUUID(),experience:4});setStoryOpen(true);setStoryHidden(false);setComposeNew(true);openSurface('chat');
+    storyRequested.current=true;
+    setStoryLaunchError('');setStoryOpen(true);setStoryHidden(false);
+    if(preview.enabled){setWorkLayer('guide');setView('chat');}
+    if(guideEffectPreview)return;
+    if(storyLaunchPending.current)return;
+    storyLaunchPending.current=true;setStoryLaunching(true);
+    try{await saveStory({action:'begin',launchId:crypto.randomUUID(),experience:4});if(storyRequested.current){setComposeNew(true);if(!preview.enabled)openSurface('chat');}}
+    catch(error){if(storyRequested.current)setStoryLaunchError(error instanceof Error?error.message:'引导暂时没打开，可以重新试一次。');}
+    finally{storyLaunchPending.current=false;setStoryLaunching(false);}
   }
+  storyStarter.current=startStory;
+  function dismissStory(){storyRequested.current=false;setStoryHidden(true);setStoryOpen(false);closeWorkLayer();}
+  useEffect(()=>{
+    if(!guideEffectPreview)return;
+    const open=()=>{void storyStarter.current();};window.addEventListener('one-onboarding-preview',open);
+    return()=>window.removeEventListener('one-onboarding-preview',open);
+  },[guideEffectPreview]);
   async function recoverAnswer(operationId: string) {
     try {
       const result = await api<{ conversation: Conversation }>(`/api/chat/operations/${encodeURIComponent(operationId)}`);
@@ -678,22 +671,41 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [activeId, setActiveId] = useState<string>("");
   const [thingId,setThingId] = useState('');
+  const [taskScope,setTaskScope] = useState<'tasks'|'features'>('tasks');
   const [thingDrafts,setThingDrafts] = useState<Record<string,string>>({});
+  const [thingDestinations,setThingDestinations] = useState<Record<string,DocumentDestination>>({});
   const [taskRetryBudgets,setTaskRetryBudgets]=useState<Record<string,string>>({});
   const [resultLampOpen,setResultLampOpen] = useState(false);
   const [dismissedResults,setDismissedResults] = useState<string[]>([]);
   const [previewHome,setPreviewHome] = useState(true);
   const [featureForNext,setFeatureForNext]=useState<FeatureChoice[]>([]);
+  const selectedFeaturesRef=useRef(featureForNext);selectedFeaturesRef.current=featureForNext;
+  const [featureTransfer,setFeatureTransfer]=useState<FeatureHandoffTransfer|null>(null);
+  const [featureSelectionNotice,setFeatureSelectionNotice]=useState('');
+  useEffect(()=>{setFeatureTransfer(current=>current&&!featureForNext.some(feature=>feature.id===current.featureId)?null:current);},[featureForNext]);
   const [draftModelId, setDraftModelId] = useState("");
   const [draftAgentId, setDraftAgentId] = useState("");
   const [defaultModelId, setDefaultModelId] = useState("");
   const [draftWorkspaceId, setDraftWorkspaceId] = useState("");
   const [content, setContent] = useState("");
-  const featurePicker = useComposerFeatures({api,text:content,setText:setContent,selected:featureForNext.map(f=>f.id),onChoose:feature=>setFeatureForNext(previous=>previous.some(f=>f.id===feature.id)?previous.filter(f=>f.id!==feature.id):previous.length<8?[...previous,feature]:previous)});
+  const featurePicker = useComposerFeatures({api,text:content,setText:setContent,selected:featureForNext.map(f=>f.id),onChoose:chooseFeature});
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [view, setView] = useState<"chat" | "things" | "admin" | "company" | "account" | "features" | "agents" | "agentEditor">(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "account" : user.access?.role === "company_admin" ? "company" : user.role === "admin" ? "admin" : "chat"; });
+  type WorkLayer = 'features'|'account'|'things'|'history'|'admin'|'company'|'guide';
+  const [workLayer,setWorkLayer] = useState<WorkLayer|null>(null);
+  const [visitedLayers,setVisitedLayers] = useState<WorkLayer[]>([]);
+  const [featureOperationId,setFeatureOperationId] = useState('');
+  const [viewedFeatureOperation,setViewedFeatureOperation] = useState<string|undefined>();
+  const [featureRuns,setFeatureRuns] = useState<FeatureRunSummary[]>([]);
+  const [featureRunIssue,setFeatureRunIssue] = useState('');
+  const [attentionCount,setAttentionCount] = useState(0);
+  useEffect(()=>{if(workLayer)setVisitedLayers(old=>old.includes(workLayer)?old:[...old,workLayer]);},[workLayer]);
+  const knowledgeReturnRef=useRef({notion:new URLSearchParams(window.location.search).get('notion'),provider:new URLSearchParams(window.location.search).get('knowledge'),status:new URLSearchParams(window.location.search).get('status')});
+  // A connector callback may arrive before the coordinator finishes loading.
+  // Adopt its settings destination without moving or remounting the main chat.
+  useEffect(()=>{if(preview.enabled&&['account','things','features','admin','company'].includes(view)){setWorkLayer(view as WorkLayer);setView('chat');}},[preview.enabled,view]);
   const [accountSection, setAccountSection] = useState(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "knowledge" : "profile"; });
   const eyeMotion = useRef<ReturnType<typeof createEyeMotion> | null>(null);
   if (!eyeMotion.current) eyeMotion.current = createEyeMotion();
@@ -775,7 +787,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const draftsRef = useRef<Record<string, { content: string; attachments: AttachmentSummary[] }>>({});
   const draftAliasesRef = useRef<Record<string, string>>({});
   const composeKeyRef = useRef("new");
-  composeKeyRef.current = composeNew || !activeId ? "new" : activeId;
+  composeKeyRef.current = preview.enabled || composeNew || !activeId ? "new" : activeId;
   const currentDraftRef = useRef({ content, attachments: pendingAttachments });
   const coordinatorFailedDraft = useRef<{text:string;files:AttachmentSummary[];features:FeatureChoice[]}|null>(null);
   currentDraftRef.current = { content, attachments: pendingAttachments };
@@ -783,7 +795,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   viewedConversationRef.current = view === "chat" ? activeId : "";
 
   const active = useMemo(() => conversations.find((item) => item.id === activeId), [activeId, conversations]);
-  const targetConversation = composeNew ? undefined : active;
+  const targetConversation = preview.enabled || composeNew ? undefined : active;
   const activeModelId = targetConversation?.modelId || draftModelId;
   const activeLoadingKey = active?.id || "draft";
   const activeLoading = Boolean(loadingByConversation[activeLoadingKey]) || (preview.enabled && preview.state.tasks.some(task => task.id === activeId && task.status === 'running'));
@@ -824,10 +836,100 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     coordinator.snapshot?.notices.find(n=>n.id===task.id)?.updatedAt
     || executionTasks.find(t=>t.id===task.id)?.updatedAt
     || coordinatorMetas.find(t=>t.id===task.taskId)?.updatedAt}));
-  useEffect(()=>{
+  // Material-only animation: the coordinator and composer remain mounted in place.
+  const fluidEnabled = view === 'chat' && preview.enabled;
+  const fluidHasDialogue = preview.state.dialogue.length > 0 || Boolean(preview.state.pending);
+  const fluidCanvasRef = useRef<HTMLDivElement>(null);
+  const fluidEyeOwnerRef = useRef<'main'|'activity'|'local'>('main');
+  const [fluidSize,setFluidSize] = useState({width:0,height:0,viewportWidth:0,viewportHeight:0});
+  const [fluidAttention,setFluidAttention] = useState<{target:'main'|'activity'|'local';version:number}>({target:'main',version:0});
+  function focusFluid(owner:'main'|'activity'|'local'){
+    setFluidAttention(old=>({target:owner,version:old.version+1}));
+  }
+  const fluidFeedback = visibleTransfers(uniqueTransfers);
+  const fluidReminderCount=unviewedResultCount+attentionCount+featureRuns.filter(run=>run.status!=='pending').length;
+  const fluidLocalTask = runningExecutions.find(task=>task.id===takeoverTaskId) || runningExecutions[0] || executionTasks.find(task=>task.id===takeoverTaskId) || executionTask;
+  const fluidActivitySignal = [...fluidFeedback.map(task=>`${task.id}:${task.state}:${task.outcome||''}`),...featureRuns.map(run=>`feature:${run.operationId}:${run.status}`),...(attentionCount?[`attention:${attentionCount}`]:[]),...(delivery&&delivery.operationId!==dismissedDelivery?[`guide:${delivery.operationId}:${delivery.state}`]:[])].sort().join('|');
+  const runtimeNotice=Boolean(runtimeUpdate?.available||runtimeUpdate&&runtimeUpdateConfirmed(runtimeUpdate)&&runtimeUpdate.confirmation?.requestId!==dismissedRuntimeReceipt);
+  const localTaskSignal = preparingExecution || awaitingExecutionOperationId ? `preparing:${awaitingExecutionOperationId||preparingConversationId}` : fluidLocalTask && (isExecutionRunning(fluidLocalTask)||fluidLocalTask.id===takeoverTaskId) ? `${fluidLocalTask.id}:${fluidLocalTask.status}` : '';
+  const fluidLocalSignal=[localTaskSignal,runtimeNotice?`runtime:${runtimeUpdate?.latestVersion||runtimeUpdate?.current?.version}:${runtimeUpdate?.progress?.status||'ready'}`:''].filter(Boolean).join('|');
+  const fluidPanels = useFluidPanels({enabled:fluidEnabled,activitySignal:fluidActivitySignal,localSignal:fluidLocalSignal,
+    activityProtected:featureRuns.some(run=>run.status==='pending') || fluidFeedback.some(task=>!transferSettled(task.state)) || fluidFeedback.some(task=>['needs_input','partial','failed','interrupted'].includes(task.outcome||task.state)),
+    localProtected:preparingExecution || Boolean(awaitingExecutionOperationId) || isExecutionRunning(fluidLocalTask),
+    onAttention:kind=>setFluidAttention(old=>({target:kind,version:old.version+1})),
+    onAutoCollapse:kind=>restoreFluidFocus(kind)
+  });
+  useLayoutEffect(()=>{
+    const canvas=fluidCanvasRef.current;if(!canvas||!fluidEnabled)return;
+    const measure=()=>{const rect=canvas.getBoundingClientRect();setFluidSize(old=>old.width===rect.width&&old.height===rect.height&&old.viewportWidth===window.innerWidth&&old.viewportHeight===window.innerHeight?old:{width:rect.width,height:rect.height,viewportWidth:window.innerWidth,viewportHeight:window.innerHeight});};
+    measure();const observer=new ResizeObserver(measure);observer.observe(canvas);return()=>observer.disconnect();
+  },[fluidEnabled]);
+  useEffect(()=>{if(fluidEnabled&&activeId)fluidPanels.open('activity');},[fluidEnabled,activeId]);
+  const [fluidAccent,setFluidAccent]=useState<'solar'|'iris'|'jade'>(()=>{const value=new URLSearchParams(window.location.search).get('accent');return value==='iris'||value==='jade'?value:'solar';});
+  useEffect(()=>{const update=()=>{const value=new URLSearchParams(window.location.search).get('accent');setFluidAccent(value==='iris'||value==='jade'?value:'solar');};window.addEventListener('one-fluid-accent-preview',update);return()=>window.removeEventListener('one-fluid-accent-preview',update);},[]);
+  const [scenePreview,setScenePreview]=useState<'silver'|'graphite'|null>(()=>{const value=import.meta.env.DEV?new URLSearchParams(window.location.search).get('scene'):null;return value==='silver'||value==='graphite'?value:null;});
+  const fluidScene=scenePreview||resolvedAppearanceScene(profile);
+  useEffect(()=>{if(!import.meta.env.DEV)return;const update=()=>{const value=new URLSearchParams(window.location.search).get('scene');setScenePreview(value==='silver'||value==='graphite'?value:null);};window.addEventListener('one-fluid-scene-preview',update);return()=>window.removeEventListener('one-fluid-scene-preview',update);},[]);
+  const fluidMaterialQuery = new URLSearchParams(window.location.search).get('material');
+  const fluidMaterial = fluidMaterialQuery==='titanium'||fluidMaterialQuery==='mist'||fluidMaterialQuery==='smoke'||fluidMaterialQuery==='glass'?fluidMaterialQuery:'optical';
+  const fluidDesktop = fluidSize.viewportWidth>=1100 && fluidSize.viewportHeight>=584;
+  const activityContentHeight=useFluidActivityHeight(fluidCanvasRef,{enabled:fluidEnabled&&fluidDesktop,canvasHeight:Math.max(560,fluidSize.height)});
+  const fluidSizing = {activityHeight:activityContentHeight,localHeight:runtimeNotice?320:fluidLocalTask?264:224,paired:fluidPanels.activityOpen&&fluidPanels.localOpen};
+  const fluidLayout = getFluidLayout(Math.max(1000,fluidSize.width),Math.max(560,fluidSize.height),fluidSizing);
+  const flowFluidContent=useFluidContentFlow(fluidCanvasRef,fluidEnabled&&fluidDesktop,fluidLayout);
+  const fluidStyle = {'--fluid-child-left':`${fluidLayout.activityBounds.left}px`,'--fluid-child-width':`${fluidLayout.activityBounds.width}px`,'--fluid-up-top':`${fluidLayout.activityBounds.top}px`,'--fluid-up-height':`${fluidLayout.activityBounds.height}px`,'--fluid-low-top':`${fluidLayout.localBounds.top}px`,'--fluid-low-height':`${fluidLayout.localBounds.height}px`,'--fluid-safe-right':`${fluidLayout.safeRight}px`,'--fluid-reading-width':`${fluidLayout.mainContentBounds.width}px`,'--fluid-sidebar-travel':`${fluidLayout.sidebarTravel}px`} as React.CSSProperties;
+  const paintFluidContent = useCallback((frame:FluidProgress)=>{
+    const canvas=fluidCanvasRef.current;if(!canvas)return;
+    fluidEyeOwnerRef.current=frame.eyeOwner;
+    const shift=Number.parseFloat(canvas.style.getPropertyValue('--fluid-sidebar-travel'))||120;
+    canvas.style.setProperty('--fluid-sidebar-shift',`${shift*frame.sidebar}px`);
+    canvas.closest('main')?.style.setProperty('--fluid-rail-growth',`${shift*frame.sidebar}px`);
+    canvas.style.setProperty('--fluid-up-height',`${frame.activityHeight}px`);
+    canvas.style.setProperty('--fluid-low-height',`${frame.localHeight}px`);
+    canvas.style.setProperty('--fluid-low-top',`${frame.localTop}px`);
+    flowFluidContent(frame);
+    for(const kind of ['activity','local'] as const){
+      const progress=frame[kind],visible=progress>.94;
+      canvas.style.setProperty(`--fluid-${kind}-reveal`,String(Math.max(0,Math.min(1,(progress-.94)/.057))));
+      canvas.style.setProperty(`--fluid-${kind}-x`,`${frame[kind==='activity'?'activityRecoil':'localRecoil']}px`);
+      const panel=canvas.querySelector<HTMLElement>(`.fluid-${kind}-panel`);
+      if(panel){panel.inert=!visible;panel.setAttribute('aria-hidden',String(!visible));}
+    }
+  },[flowFluidContent]);
+  useLayoutEffect(()=>{
+    if(!fluidEnabled||fluidDesktop)return;
+    for(const kind of ['activity','local'] as const){
+      const panel=fluidCanvasRef.current?.querySelector<HTMLElement>(`.fluid-${kind}-panel`);
+      const open=kind==='activity'?fluidPanels.activityOpen:fluidPanels.localOpen;
+      if(panel){panel.inert=!open;panel.setAttribute('aria-hidden',String(!open));}
+    }
+  },[fluidEnabled,fluidDesktop,fluidPanels.activityOpen,fluidPanels.localOpen]);
+  function restoreFluidFocus(kind:'activity'|'local'){
+    const canvas=fluidCanvasRef.current,panel=canvas?.querySelector<HTMLElement>(`.fluid-${kind}-panel`);
+    if(panel?.contains(document.activeElement))canvas?.querySelector<HTMLButtonElement>(`[data-fluid-trigger="${kind}"]`)?.focus();
+  }
+  function toggleFluidPanel(kind:'activity'|'local'){
+    if(kind==='activity'?fluidPanels.activityOpen:fluidPanels.localOpen)restoreFluidFocus(kind);
+    fluidPanels.toggle(kind);
+  }
+  function touchFluidPanel(kind:'activity'|'local',deliberate=false){
+    fluidPanels.interact(kind);
+    if(deliberate||fluidEyeOwnerRef.current===kind)focusFluid(kind);
+  }
+  const fluidInteraction=(kind:'activity'|'local')=>({
+    onPointerDownCapture:()=>touchFluidPanel(kind,true),onKeyDownCapture:(event:React.KeyboardEvent<HTMLElement>)=>{if(event.key!=='Tab')touchFluidPanel(kind,true);},onScrollCapture:()=>touchFluidPanel(kind),
+    onFocusCapture:(event:React.FocusEvent<HTMLElement>)=>{touchFluidPanel(kind,true);if(event.target.matches('input,textarea,[contenteditable="true"]'))fluidPanels.protectEditing(kind,true);},
+    onBlurCapture:(event:React.FocusEvent<HTMLElement>)=>{if(!(event.relatedTarget instanceof Element&&event.currentTarget.contains(event.relatedTarget)&&event.relatedTarget.matches('input,textarea,[contenteditable="true"]')))fluidPanels.protectEditing(kind,false);}
+  });
+
+  useLayoutEffect(()=>{
     const input=document.getElementById('one-studio-input');
-    if(input instanceof HTMLTextAreaElement){input.style.height='auto';input.style.height=`${Math.min(180,input.scrollHeight)}px`;}
-  },[content,view]);
+    if(input instanceof HTMLTextAreaElement){
+      // Measure from the compact minimum, rather than the legacy 90px height.
+      input.style.height=fluidEnabled?'0px':'auto';
+      input.style.height=`${Math.max(fluidEnabled?36:0,Math.min(fluidEnabled?156:180,input.scrollHeight))}px`;
+    }
+  },[content,view,fluidEnabled]);
   useEffect(() => {
     const previous = motionTasksRef.current; motionTasksRef.current = new Set(executionTasks.map(t=>t.id));
     const eligible=executionTasks.filter(t=>isExecutionRunning(t)&&!stoppedExecutionIdsRef.current.has(t.id)&&!stoppedPreparationIdsRef.current.has(t.dispatchOperationId||'')&&!stoppedPreparationIdsRef.current.has(t.preparationOperationId||''));
@@ -848,9 +950,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     if(id)void openLinkedTask(id);
   },[models.length,coordinator.enabled]);
   function closeResultLamp() { setResultLampOpen(false); if(coordinator.enabled)void coordinator.acknowledge().catch(e=>setError(e.message)); setDismissedResults(previous=>[...previous,...lampTasks.map(task=>`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`)]); }
-  async function selectThing(id:string) {
+  async function selectThing(id:string,markRead=true) {
     setThingId(id);
-    if(coordinator.enabled){try{await coordinator.load(id);await coordinator.acknowledge(id);}catch(e){setError(e instanceof Error?e.message:'暂时无法打开结果');}return;}
+    void loadLatestExecution(id);
+    if(coordinator.enabled){try{await coordinator.load(id);if(markRead)await coordinator.acknowledge(id);}catch(e){setError(e instanceof Error?e.message:'暂时无法打开结果');}return;}
     await loadThingMessages(id);
   }
   async function removeCoordinatorTask(id:string) {
@@ -859,6 +962,16 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     if(activeId===id)setActiveId('');
     if(thingId===id)setThingId('');
     await refresh();
+  }
+  function prepareTaskReview(id:string){
+    const text='请先核对上一轮实际结果，只继续未完成的部分，不要重复已有修改。补充本轮要求：若本任务是新建文档，同名文件（即使为空）请保留，另存为原名-2、-3等编号版本；允许回读本轮目标文件验证，不读取无关文件。若原任务是修改已有文件，则先核对原目标，不擅自另存或扩大授权。';
+    if(preview.enabled){
+      setThingDrafts(old=>({...old,[id]:old[id]?.trim()?old[id]:text}));
+      void selectThing(id);setTaskScope('tasks');setWorkLayer('things');
+      requestAnimationFrame(()=>document.querySelector<HTMLTextAreaElement>('.things-thread textarea')?.focus());return;
+    }
+    if(currentDraftRef.current.content.trim()){setError('输入框里还有一段没发出的内容，先保留或发完它，再继续这件事。');return;}
+    coordinator.dispatch({type:'bind',taskId:id});openSurface('chat');setContent(text);
   }
   function taskPauseNotice(id:string) {
     const task=coordinator.snapshot?.tasks.find(t=>t.id===id);
@@ -894,7 +1007,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         if(confirm(`${actionLabel} · ${title}\n本轮范围：${latest.slice(0,480)}\n${recovery.welcomeStep?`只补未完成的步骤，最多使用 ${price!.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力，按实际用量结算；已保存的说明和图片会复用。`:recovery.kind==='review_image'?`这次新生成一张图片，使用 ${price!.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力；已有结果和历史都会保留。`:canAdjustBudget?`本次继续最多使用 ${retryBudget} 电力，不含以前已用的电力，按实际用量结算。将沿用原附件和功能，只补未完成部分。`:'沿用原上限开始处理最新要求，不重复已有成果。'}`))void coordinator.retryTask(id,canAdjustBudget?retryBudget:undefined,lastJob?.id).then(()=>refresh()).catch(e=>setError(e.message));
       }}>{retrying?'正在恢复…':actionLabel}</button>:null}
       {recovery?.kind==='review_notion'?<NotionReceiptNotice api={api} taskId={id} receipt={notionReceiptForReview(detail?.jobs||[])?.notionReceipt} onRefresh={()=>coordinator.load(id)} />:null}
-{localNeedsAction?<><p>{local.status==='cancelled'?'这轮已经停下，不会自己再启动。':'这轮本机操作还没完成。'}先看看操作记录；想接着做，可以回到这件事补一句要求，ONE 会先核对已有结果。</p><button type="button" onClick={()=>{setSelectedExecutionId(local.id);setExpandedExecutionId(local.id);setRevealExecutionId(local.id);void loadLatestExecution(id,local.id);}}>查看本轮操作</button><button type="button" onClick={()=>{if(currentDraftRef.current.content.trim()){setError('输入框里还有一段没发出的内容，先保留或发完它，再继续这件事。');return;}coordinator.dispatch({type:'bind',taskId:id});openSurface('chat');setContent('请先核对上一轮实际结果，只继续未完成的部分，不要重复已有修改。补充本轮要求：若本任务是新建文档，同名文件（即使为空）请保留，另存为原名-2、-3等编号版本；允许回读本轮目标文件验证，不读取无关文件。若原任务是修改已有文件，则先核对原目标，不擅自另存或扩大授权。');}}>核对后继续这件事</button></>:null}
+{localNeedsAction?<><p>{local.status==='cancelled'?'这轮已经停下，不会自己再启动。':'这轮本机操作还没完成。'}先看看操作记录；想接着做，可以回到这件事补一句要求，ONE 会先核对已有结果。</p><button type="button" onClick={()=>{setSelectedExecutionId(local.id);setExpandedExecutionId(local.id);setRevealExecutionId(local.id);void loadLatestExecution(id,local.id);}}>查看本轮操作</button><button type="button" onClick={()=>prepareTaskReview(id)}>核对后继续这件事</button></>:null}
       {!detail?<button type="button" onClick={()=>void coordinator.load(id).catch(e=>setError(e.message))}>查看恢复方式</button>:null}
     </section>;
   }
@@ -908,12 +1021,13 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     if (demo.enabled) { demo.dispatch({type:'task-send',taskId:id,text,id:crypto.randomUUID(),now:Date.now()}); return; }
     const task = conversations.find(conversation => conversation.id === id);
     if (!task) throw new Error('这件事已不可用，请重新打开');
-    if (outputDestination === 'local') { await executeDraft(text, document.getElementById('one-things-send')!, id); return; }
+    const destination=thingDestinations[id]||'chat';
+    if (destination === 'local') { await executeDraft(text, document.getElementById('one-things-send')!, id); return; }
     if (coordinator.enabled && models.find(model => model.id === task.modelId)?.kind !== 'image') {
-      await coordinator.direct(id, text, [], outputDestination === 'notion' ? 'notion' : 'chat');
+      await coordinator.direct(id, text, [], destination === 'notion' ? 'notion' : 'chat');
       return;
     }
-    if (outputDestination === 'notion') throw new Error('Notion 写入需要启用 ONE 持续对话');
+    if (destination === 'notion') throw new Error('Notion 写入需要启用 ONE 持续对话');
     const conversation = await sendThingMessage<Conversation>(api, user.id, {conversationId:id,modelId:task.modelId,agentId:task.agentId,content:text.trim()});
     setConversations(old => old.map(item => item.id === id ? {...conversation,messagesLoaded:true} : item));
     setPendingRequests(pendingChatSubmissions(user.id));
@@ -1210,6 +1324,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   function transitionInterface(update: () => void, route: EyeRoute = 'direct', conversationShelfMove=false) {
+    if(fluidEnabled){update();return Promise.resolve();}
     delete document.documentElement.dataset.oneExecutionTransition;
     delete document.documentElement.dataset.oneTransition;
     delete document.documentElement.dataset.oneRoute;
@@ -1240,8 +1355,46 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     requestAnimationFrame(() => document.getElementById("one-studio-input")?.focus());
   }
 
-  function openSurface(next: "chat" | "things" | "admin" | "company" | "knowledge" | "account" | "features") {
+  function closeWorkLayer(){
+    setWorkLayer(null);
+    knowledgeReturnRef.current={notion:null,provider:null,status:null};
+  }
+  function chooseFeature(feature:FeatureChoice,source?:HTMLElement){
+    const next=featureSelectionTransition(selectedFeaturesRef.current,feature);
+    if(next.action==='limit'){setFeatureSelectionNotice('每条消息最多使用 8 个功能。先取消一个，再加入新的。');return;}
+    const transfer=next.action==='added'&&preview.enabled?captureFeatureHandoff(feature,source):null;
+    selectedFeaturesRef.current=next.features;setFeatureForNext(next.features);setFeatureSelectionNotice('');
+    if(next.action==='removed'){setFeatureTransfer(current=>current?.featureId===feature.id?null:current);return;}
+    if(transfer)setFeatureTransfer(transfer);
+    else if(preview.enabled){
+      setFeatureTransfer(null);
+      pulseFeatureComposer(document.querySelector<HTMLElement>('.studio-composer .composer-row'));
+    }
+  }
+  function openHistory(){
+    if(preview.enabled){setWorkLayer('history');setView('chat');setHistoryOpen(false);}
+    else setHistoryOpen(value=>!value);
+  }
+  function updateFeatureRun(run:FeatureRunSummary){setFeatureRuns(old=>[run,...old.filter(item=>item.operationId!==run.operationId)].slice(0,8));setFeatureRunIssue('');}
+  function openFeatureRun(operationId:string){setFeatureOperationId(operationId);openSurface('features');}
+  function openSurface(next: "chat" | "things" | "admin" | "company" | "knowledge" | "account" | "features",taskId?:string) {
     featurePicker.close();
+    if(preview.enabled&&next!=='chat'){
+      if(next==='admin'&&user.role!=='admin'||next==='company'&&user.access?.role!=='company_admin')return;
+      if(next==='knowledge')setAccountSection('knowledge');
+      if(next==='things'){
+        setTaskScope('tasks');
+        const selected=taskEntrySelection(thingItems(),taskId||thingId);
+        // Select before mounting the work layer so it has one split destination.
+        // Merely opening the task overview never consumes unread receipts.
+        if(selected)void selectThing(selected,Boolean(taskId&&selected===taskId));else setThingId('');
+      }
+      setWorkLayer(next==='knowledge'?'account':next);
+      setHistoryOpen(false);
+      if(view!=='chat')setView('chat');
+      return;
+    }
+    closeWorkLayer();
     transitionInterface(() => {
       if(next==='chat'&&preview.enabled){setPreviewHome(false);setActiveId('');setFocusedTask(false);preview.dispatch({type:'select',taskId:null});preview.dispatch({type:'bind',taskId:null});}
       if (next === "knowledge") setAccountSection("knowledge");
@@ -1277,7 +1430,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   async function openConversation(conversation: Conversation, selectedTaskId = "") {
-    if (preview.enabled) { transitionInterface(()=>{preview.dispatch({type:'select',taskId:conversation.id});preview.dispatch({type:'bind',taskId:conversation.id});setPreviewHome(false);setActiveId(conversation.id);setView('chat');setActivityExpanded(false);setHistoryOpen(false);}); return; }
+    if (preview.enabled) { setTaskScope('tasks');setSelectedExecutionId(selectedTaskId);void selectThing(conversation.id);setWorkLayer('things');setView('chat');setActivityExpanded(false);setHistoryOpen(false);return; }
     switchDraft(conversation.id);
     acknowledgeConversation(conversation.id);
     setActivityExpanded(false);
@@ -1330,6 +1483,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   function startNewChat() {
+    closeWorkLayer();
     if (preview.enabled) { preview.dispatch({type:'select',taskId:null}); preview.dispatch({type:'bind',taskId:null}); }
     switchDraft("new");
     transitionInterface(() => {
@@ -1347,6 +1501,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   function startAgentChat(agent: Agent) {
+    closeWorkLayer();
     switchDraft("new");
     transitionInterface(() => {
       setActiveId("");
@@ -1893,9 +2048,118 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     </div>;
   }
 
+  function renderAttentionInbox(){return <>
+        {!demo.enabled?<AttentionInbox key={user.id+user.defaultWorkspaceId} api={api} onCountChange={setAttentionCount} onDraft={text=>{if(currentDraftRef.current.content.trim())return false;setContent(text);if(fluidPanels.activityOpen)fluidPanels.toggle('activity');focusFluid('main');requestAnimationFrame(()=>document.getElementById('one-studio-input')?.focus());return true;}}/>:null}
+    </>;}
+
+  function renderGuideDelivery(){return <>
+        {delivery&&delivery.operationId!==dismissedDelivery&&view==='chat'&&(storyHidden||profile.onboarding.journey?.stage==='complete')?<WelcomeDelivery delivery={delivery} busy={deliveryBusy} error={deliveryError} onOpen={id=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(id)}`).then(result=>openConversation(result.conversation)).catch(e=>setDeliveryError(e.message))} onCheck={()=>void checkWelcome()} onRetry={()=>void retryWelcome()} onDismiss={dismissWelcome}/>:null}
+        {!delivery&&handbookNotice && view==='chat' ? <p className="one-onboarding-handbook-notice" role="status">{handbookNotice}{storyTaskId?<button type="button" onClick={()=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(storyTaskId)}`).then(result=>openConversation(result.conversation)).catch(e=>setError(e.message))}>查看任务 ↗</button>:null}<button type="button" onClick={()=>setHandbookNotice('')} aria-label="收起说明">知道了</button></p> : null}
+    </>;}
+
+  function renderStory(){
+    if(storyLaunching)return <section className="story-launch-status" role="status"><h3>正在打开引导</h3><p>你的对话和草稿会留在这里。</p></section>;
+    if(storyLaunchError)return <section className="story-launch-status" role="alert"><h3>引导暂时没打开</h3><p>{storyLaunchError}</p><button type="button" className="primary" onClick={()=>void startStory()}>重新打开引导</button></section>;
+    return <StoryOnboarding effectPreview={guideEffectPreview} profile={profile} context={welcomeContext} offer={handbookOffer} onBegin={startStory} onAction={saveStory} onKnowledge={()=>{storyRequested.current=false;openSurface('knowledge');}} onDevice={()=>{storyRequested.current=false;setAccountSection('device');openSurface('account');}} onDismiss={dismissStory}/>;
+  }
+
+  function renderRuntimeNotices(){return <>
+      {runtimeUpdate && runtimeUpdateConfirmed(runtimeUpdate) && runtimeUpdate.confirmation?.requestId !== dismissedRuntimeReceipt ? <section className="one-runtime-update completed" aria-live="polite">
+        <span className="one-runtime-update-icon"><Check size={16} /></span>
+        <span><strong>ONE 已升级至 {runtimeUpdate.current?.version}</strong><small>新版已启动并连接，更新成功。可以继续使用 ONE。</small></span>
+        <button type="button" onClick={() => {
+          const receipt = runtimeUpdate.confirmation!.requestId;
+          setDismissedRuntimeReceipt(receipt);
+          try { if (runtimeUpdate.current?.version) rememberRuntimeNotice(localStorage, user.id, runtimeUpdate.current.version); } catch { /* storage optional */ }
+          window.location.reload();
+        }}>刷新页面</button>
+      </section> : null}
+      {runtimeUpdate?.available ? <section className={`one-runtime-update ${runtimeUpdate.progress?.status || "available"}`} aria-live="polite">
+        <span className="one-runtime-update-icon"><Download size={16} /></span>
+        <span><strong>{runtimeUpdating ? "正在更新 ONE" : runtimeUpdateIssue ? "正在确认更新结果" : runtimeUpdateFailed ? "更新没有完成" : "ONE 可以更新"}</strong><small>{runtimeUpdateIssue || (runtimeUpdating ? ({ requested: "准备下载…", downloading: "正在下载…", verifying: "正在验证…", installing: "正在安装…", completed: "安装已完成，正在连接新版…", failed: runtimeUpdate.progress?.message || "更新失败" }[runtimeUpdate.progress?.status || "requested"]) : runtimeUpdateFailed ? runtimeUpdate.progress?.message || "请保持 ONE Key 插入并重试" : `${runtimeUpdate.current?.version || "当前版本"} → ${runtimeUpdate.latestVersion}`)}</small></span>
+        {!runtimeUpdateIssue ? <button type="button" disabled={runtimeUpdating || runtimeChecking} onClick={() => void installRuntimeUpdate()}>{runtimeUpdating ? "请稍候" : runtimeUpdateFailed ? "重试" : "更新"}</button> : null}
+        {runtimeUpdateIssue ? <details className="one-runtime-update-detail"><summary>连接详情</summary>
+          <div className="one-runtime-update-detail-body"><span>当前账号：{user.username} · 运行 {runtimeUpdate.current?.version || "未知"} · 目标 {runtimeUpdate.latestVersion || "未知"}</span>
+          {runtimeCheckFeedback ? <span role="status">{runtimeCheckFeedback}</span> : null}
+          <div className="one-runtime-update-actions"><button type="button" disabled={runtimeChecking} onClick={() => void refreshRuntimeUpdate(true)}>{runtimeChecking ? "查询中…" : "重新检测连接"}</button>
+          <button type="button" onClick={() => window.location.reload()}>刷新页面</button></div></div>
+        </details> : null}
+      </section> : null}
+
+    </>;
+  }
+
+  function renderHistory() { return (
+          <section className="one-history-popover fluid-history-content">
+            <div className="one-popover-heading">
+              <div><small>YOUR FLOW</small><h3>{showArchived ? "已归档对话" : "历史对话"}</h3></div>
+              <button type="button" onClick={startNewChat}><Plus size={16} />新对话</button>
+            </div>
+            <input className="one-history-search" type="search" aria-label="搜索已加载的历史对话" placeholder="搜索已加载的对话" value={historyQuery} onChange={e=>setHistoryQuery(e.target.value)}/>
+            <div className="one-popover-list">
+              {visibleConversations.length ? visibleConversations.map((conversation) => (
+                <div className={`one-history-row ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}>
+                  <button type="button" onClick={() => openConversation(conversation)}>
+                    <span>{conversation.title}</span>
+                    <small>{dateTime(conversation.updatedAt)}</small>
+                  </button>
+                  <button type="button" title={conversation.archived ? "取消归档" : "归档"} disabled={conversation.id.startsWith("tmp_") || Boolean(loadingByConversation[conversation.id]) || runningExecutions.some(task => task.conversationId === conversation.id)} onClick={() => archiveConversation(conversation)}><Archive size={14} /></button>
+                </div>
+              )) : <div className="one-popover-empty">{historyQuery?"已加载的对话中没有匹配结果，可继续加载更早记录。":"还没有对话，从一句话开始吧。"}</div>}
+            </div>
+            {hasMoreConversations ? <button className="one-load-more" type="button" disabled={loadingMoreConversations} onClick={loadMoreConversations}>{loadingMoreConversations ? "加载中…" : "加载更多"}</button> : null}
+            <footer className="one-popover-footer">
+              <button type="button" onClick={() => setShowArchived(!showArchived)}>{showArchived ? "返回历史对话" : "查看归档"}</button>
+              <button type="button" onClick={onLogout}><LogOut size={14} />退出账号</button>
+            </footer>
+          </section>
+  ); }
+
+  function thingItems() {
+    return conversations.filter(c=>!coordinator.snapshot?.conversation||c.id!==coordinator.snapshot.conversation.id).map(c=>{const task=coordinatorMetas.find(t=>t.id===c.id)||coordinator.snapshot?.tasks.find(t=>t.id===c.id);const local=executionTasks.find(t=>t.conversationId===c.id);const notices=coordinator.snapshot?.notices.filter(n=>n.taskId===c.id)||[];const notice=notices.at(-1);const paused=task?.paused||c.workPaused;const unread=notices.some(n=>!n.read);const outcome=taskUiOutcome({paused,localStatus:local?.status,receiptOutcome:notice?.outcome,receiptState:notice?.state});return {...c,messages:taskConversationView(c.messages,coordinator.details[c.id]?.jobs),outcome,unread,taskState:taskCategory({paused,active:Boolean(task?.running||task?.queued||task?.localPrepared||local&&isExecutionRunning(local)),unread,outcome,isTask:Boolean(task||local||c.executorProfileId)})};});
+  }
+
+  function renderThings() {
+    const thingDestination=thingDestinations[thingId]||'chat';
+    const panel=<ThingsPanel
+        one={undefined}
+        fluid={preview.enabled}
+        onCloseDetail={()=>setThingId('')}
+        workbenchLabel={preview.enabled?'回到主对话':'在工作台继续 ↗'}
+        items={thingItems()} selectedId={thingId} drafts={thingDrafts}
+        onReadAll={readAllTaskMessages} unreadCount={unviewedResultCount || unreadNotices.length}
+        onDraftChange={(id,text)=>setThingDrafts(previous=>({...previous,[id]:text}))}
+        onExecuteDraft={thingDestination === 'notion' ? undefined : (id,text,source)=>executeDraft(text,source,id)}
+        sendLabel={thingDestination === 'notion' ? '写到 Notion' : thingDestination === 'local' ? '本机执行' : '发送'}
+        destinationPicker={!demo.enabled ? <><NotionReceiptNotice key={thingId} api={api} taskId={thingId} receipt={notionReceiptForReview(coordinator.details[thingId]?.jobs||[])?.notionReceipt} onRefresh={()=>coordinator.load(thingId)} /><DocumentDestinationPicker api={api} value={thingDestination} onChange={destination=>setThingDestinations(old=>({...old,[thingId]:destination}))} localDisabled={taskStatusUnavailable || executionBusy || preparingExecution} localDisabledHint={preparingExecution?'正在准备本机执行，请稍候':executionBusy?'本机任务结束后可保存':taskStatusUnavailable?'暂未确认本机连接，可到设置检查':undefined} onLocalSettings={()=>{setAccountSection('device');openSurface('account');}} onSettings={() => openSurface('knowledge')} /></> : undefined}
+        onSelect={id=>void selectThing(id)} onSend={continueThing}
+        onWorkbench={id=>{if(preview.enabled)closeWorkLayer();else void openConversation(conversations.find(item=>item.id===id)!);setResultLampOpen(false);}}
+        onRemove={coordinator.enabled?removeCoordinatorTask:undefined}
+        taskNotice={taskPauseNotice(thingId)}
+        executionDisabled={taskStatusUnavailable || preparingExecution || executionBusy || Boolean(loadingByConversation[thingId])}
+        executionPreparing={preparingExecution && preparingConversationId===thingId}
+        executionContent={preparingExecution && preparingConversationId===thingId || thingExecutionTask ? <ExecutionDisclosure
+          key={thingExecutionTask?.id || "thing-preparing"} task={thingExecutionTask}
+          events={thingExecutionTask ? eventsByTask[thingExecutionTask.id] || [] : []}
+          preparing={preparingExecution && preparingConversationId===thingId}
+          expanded={Boolean(thingExecutionTask && expandedExecutionId===thingExecutionTask.id)}
+          onToggle={()=>setExpandedExecutionId(expandedExecutionId===thingExecutionTask?.id ? "" : thingExecutionTask?.id || "")}
+          onStop={source=>cancelExecution(source,thingExecutionTask)} /> : null}
+        hasMore={hasMoreConversations||(coordinator.enabled&&(coordinator.snapshot?.total??0)>coordinator.state.tasks.length)}
+        onMore={()=>void loadMoreConversations()} loadingMore={loadingMoreConversations}/>;
+    return preview.enabled?<div className="fluid-things-shell"><nav className="fluid-task-scope" aria-label="任务范围"><button type="button" aria-pressed={taskScope==='tasks'} onClick={()=>setTaskScope('tasks')}>任务与对话</button><button type="button" aria-pressed={taskScope==='features'} onClick={()=>setTaskScope('features')}>功能运行记录</button></nav>{taskScope==='features'?<div className="fluid-task-feature-history"><FeatureRunHistory api={api} active={workLayer==='things'} onOpen={run=>openFeatureRun(run.operationId)}/></div>:panel}</div>:panel;
+  }
+
+  function renderFeatures() {
+    return (<section className="account-page features-page"><header className="admin-header"><div><h2>功能</h2></div></header><div className="account-body settings-account-body">{featureSelectionNotice?<p className="feature-selection-notice" role="status">{featureSelectionNotice}</p>:null}{preview.enabled?<FeatureShelf api={api} models={models} active={workLayer==='features'} onDone={()=>{closeWorkLayer();requestAnimationFrame(()=>featurePicker.input.current?.focus());}} onOperationChange={setViewedFeatureOperation} initialOperationId={featureOperationId||undefined} onRunStarted={run=>{setFeatureOperationId(run.operationId);updateFeatureRun(run);closeWorkLayer();fluidPanels.open('activity');focusFluid('activity');}} onRunStatus={updateFeatureRun} selected={featureForNext.map(item=>item.id)} onChoose={chooseFeature}/>:<FeatureMarketplace api={api} models={models} onAsk={()=>openSurface('chat')}/>}</div></section>);
+  }
+  function renderAccount() {
+    return (<AccountPage user={user} profile={profile} onSaveProfile={async patch=>{const result=await saveProfile(patch);if(patch.appearance)setScenePreview(null);return result;}} onOpenGuide={startStory} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={openHistory} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgeConnections api={api} inline={preview.enabled} returnOutcome={knowledgeReturnRef.current} onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : next.provider === "flomo" ? setFlomoConnection(next) : setKnowledgeConnection(next)} />} />);
+  }
+
   return (
-    <main onClickCapture={event=>{if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;const anchor=event.target instanceof Element?event.target.closest('a[href]'):null;if(!anchor||anchor.hasAttribute('download')||anchor.getAttribute('target')==='_blank')return;const id=internalTaskId(anchor.getAttribute('href')||'',window.location.href);if(id){event.preventDefault();void openLinkedTask(id);}}} onPointerDownCapture={event=>{if(event.target instanceof HTMLElement)executionPointerRef.current={element:event.target,point:{x:event.clientX,y:event.clientY}};else if(event.target instanceof SVGElement)executionPointerRef.current={element:event.target.closest('button')!,point:{x:event.clientX,y:event.clientY}};}} onKeyDownCapture={()=>{executionPointerRef.current=null;}} className={`app-shell one-shell one-studio attention-workspace ${preview.enabled&&(view==='chat'||view==='features'||view==='account')?`coordinator-preview ${view==='features'?'coordinator-tools-open':view==='account'?'coordinator-settings-open coordinator-task-open':active?'coordinator-task-open':''}`:''} ${view==='things'?'studio-things':''} ${view==='features'?'studio-discover':''} ${studioIdle ? "studio-idle" : "studio-open"} ${focusedTask && view === "chat" && !studioIdle ? "studio-focused" : ""} ${activeExecutionMode ? "execution-shell" : ""}`}>
-      <header className="one-chrome">
+    <main onClickCapture={event=>{if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;const anchor=event.target instanceof Element?event.target.closest('a[href]'):null;if(!anchor||anchor.hasAttribute('download')||anchor.getAttribute('target')==='_blank')return;const id=internalTaskId(anchor.getAttribute('href')||'',window.location.href);if(id){event.preventDefault();void openLinkedTask(id);}}} onPointerDownCapture={event=>{if(event.target instanceof HTMLElement)executionPointerRef.current={element:event.target,point:{x:event.clientX,y:event.clientY}};else if(event.target instanceof SVGElement)executionPointerRef.current={element:event.target.closest('button')!,point:{x:event.clientX,y:event.clientY}};}} onKeyDownCapture={()=>{executionPointerRef.current=null;}} data-fluid-desktop={fluidDesktop} data-fluid-material={fluidMaterial} data-fluid-accent={fluidAccent} data-fluid-scene={fluidScene} data-fluid-dialogue={fluidHasDialogue?'active':'empty'} data-sidebar-open={sidebarOpen} className={`app-shell one-shell one-studio attention-workspace ${fluidEnabled?"one-fluid-workspace":""} ${preview.enabled&&(view==='chat'||view==='features'||view==='account')?`coordinator-preview ${view==='features'?'coordinator-tools-open':view==='account'?'coordinator-settings-open coordinator-task-open':active?'coordinator-task-open':''}`:''} ${view==='things'?'studio-things':''} ${view==='features'?'studio-discover':''} ${studioIdle ? "studio-idle" : "studio-open"} ${focusedTask && view === "chat" && !studioIdle ? "studio-focused" : ""} ${activeExecutionMode ? "execution-shell" : ""}`}>
+      <header className="one-chrome" hidden={fluidEnabled}>
         <button className="one-brand-button" type="button" onClick={startNewChat} title="回到 ONE">
           <OneWordmark inverse />
         </button>
@@ -1922,91 +2186,47 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </div>
       </header>
 
-      {runtimeUpdate && runtimeUpdateConfirmed(runtimeUpdate) && runtimeUpdate.confirmation?.requestId !== dismissedRuntimeReceipt ? <section className="one-runtime-update completed" aria-live="polite">
-        <span className="one-runtime-update-icon"><Check size={16} /></span>
-        <span><strong>ONE 已升级至 {runtimeUpdate.current?.version}</strong><small>新版已启动并连接，更新成功。可以继续使用 ONE。</small></span>
-        <button type="button" onClick={() => {
-          const receipt = runtimeUpdate.confirmation!.requestId;
-          setDismissedRuntimeReceipt(receipt);
-          try { if (runtimeUpdate.current?.version) rememberRuntimeNotice(localStorage, user.id, runtimeUpdate.current.version); } catch { /* storage optional */ }
-          window.location.reload();
-        }}>刷新页面</button>
-      </section> : null}
-      {runtimeUpdate?.available ? <section className={`one-runtime-update ${runtimeUpdate.progress?.status || "available"}`} aria-live="polite">
-        <span className="one-runtime-update-icon"><Download size={16} /></span>
-        <span><strong>{runtimeUpdating ? "正在更新 ONE" : runtimeUpdateIssue ? "正在确认更新结果" : runtimeUpdateFailed ? "更新没有完成" : "ONE 可以更新"}</strong><small>{runtimeUpdateIssue || (runtimeUpdating ? ({ requested: "准备下载…", downloading: "正在下载…", verifying: "正在验证…", installing: "正在安装…", completed: "安装已完成，正在连接新版…", failed: runtimeUpdate.progress?.message || "更新失败" }[runtimeUpdate.progress?.status || "requested"]) : runtimeUpdateFailed ? runtimeUpdate.progress?.message || "请保持 ONE Key 插入并重试" : `${runtimeUpdate.current?.version || "当前版本"} → ${runtimeUpdate.latestVersion}`)}</small></span>
-        {!runtimeUpdateIssue ? <button type="button" disabled={runtimeUpdating || runtimeChecking} onClick={() => void installRuntimeUpdate()}>{runtimeUpdating ? "请稍候" : runtimeUpdateFailed ? "重试" : "更新"}</button> : null}
-        {runtimeUpdateIssue ? <details className="one-runtime-update-detail"><summary>连接详情</summary>
-          <div className="one-runtime-update-detail-body"><span>当前账号：{user.username} · 运行 {runtimeUpdate.current?.version || "未知"} · 目标 {runtimeUpdate.latestVersion || "未知"}</span>
-          {runtimeCheckFeedback ? <span role="status">{runtimeCheckFeedback}</span> : null}
-          <div className="one-runtime-update-actions"><button type="button" disabled={runtimeChecking} onClick={() => void refreshRuntimeUpdate(true)}>{runtimeChecking ? "查询中…" : "重新检测连接"}</button>
-          <button type="button" onClick={() => window.location.reload()}>刷新页面</button></div></div>
-        </details> : null}
-      </section> : null}
+      {!fluidEnabled?renderRuntimeNotices():null}
 
-      {historyOpen ? (
+      {historyOpen && !fluidEnabled ? (
         <>
           <button className="one-popover-scrim" aria-label="关闭历史对话" onClick={() => setHistoryOpen(false)} />
-          <section className="one-history-popover">
-            <div className="one-popover-heading">
-              <div><small>YOUR FLOW</small><h3>{showArchived ? "已归档对话" : "历史对话"}</h3></div>
-              <button type="button" onClick={startNewChat}><Plus size={16} />新对话</button>
-            </div>
-            <input className="one-history-search" type="search" aria-label="搜索已加载的历史对话" placeholder="搜索已加载的对话" value={historyQuery} onChange={e=>setHistoryQuery(e.target.value)}/>
-            <div className="one-popover-list">
-              {visibleConversations.length ? visibleConversations.map((conversation) => (
-                <div className={`one-history-row ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}>
-                  <button type="button" onClick={() => openConversation(conversation)}>
-                    <span>{conversation.title}</span>
-                    <small>{dateTime(conversation.updatedAt)}</small>
-                  </button>
-                  <button type="button" title={conversation.archived ? "取消归档" : "归档"} disabled={conversation.id.startsWith("tmp_") || Boolean(loadingByConversation[conversation.id]) || runningExecutions.some(task => task.conversationId === conversation.id)} onClick={() => archiveConversation(conversation)}><Archive size={14} /></button>
-                </div>
-              )) : <div className="one-popover-empty">{historyQuery?"已加载的对话中没有匹配结果，可继续加载更早记录。":"还没有对话，从一句话开始吧。"}</div>}
-            </div>
-            {hasMoreConversations ? <button className="one-load-more" type="button" disabled={loadingMoreConversations} onClick={loadMoreConversations}>{loadingMoreConversations ? "加载中…" : "加载更多"}</button> : null}
-            <footer className="one-popover-footer">
-              <button type="button" onClick={() => setShowArchived(!showArchived)}>{showArchived ? "返回历史对话" : "查看归档"}</button>
-              <button type="button" onClick={onLogout}><LogOut size={14} />退出账号</button>
-            </footer>
-          </section>
+          {renderHistory()}
         </>
       ) : null}
 
-      <div className="studio-layout">
-      <section className="studio-surface" ref={taskScroll.scroll} onScroll={taskScroll.onScroll} aria-label={view === "chat" ? "当前任务" : "工作区内容"} hidden={studioIdle||(preview.enabled&&view==='chat'&&!active)}>
-      {view === "things" ? <ThingsPanel
-        one={<div className="studio-presence things-one"><OneHeroEye mood="idle" label="回到 ONE 工作台" onActivate={()=>openSurface('chat')}/></div>}
-        items={conversations.filter(c=>!coordinator.snapshot?.conversation||c.id!==coordinator.snapshot.conversation.id).map(c=>{const task=coordinatorMetas.find(t=>t.id===c.id)||coordinator.snapshot?.tasks.find(t=>t.id===c.id);const local=executionTasks.find(t=>t.conversationId===c.id);const notices=coordinator.snapshot?.notices.filter(n=>n.taskId===c.id)||[];const notice=notices.at(-1);const paused=task?.paused||c.workPaused;const unread=notices.some(n=>!n.read);const outcome=taskUiOutcome({paused,localStatus:local?.status,receiptOutcome:notice?.outcome,receiptState:notice?.state});return {...c,messages:taskConversationView(c.messages,coordinator.details[c.id]?.jobs),outcome,unread,taskState:taskCategory({paused,active:Boolean(task?.running||task?.queued||task?.localPrepared||local&&isExecutionRunning(local)),unread,outcome,isTask:Boolean(task||local||c.executorProfileId)})};})} selectedId={thingId} drafts={thingDrafts}
-        onReadAll={readAllTaskMessages} unreadCount={unviewedResultCount || unreadNotices.length}
-        onDraftChange={(id,text)=>setThingDrafts(previous=>({...previous,[id]:text}))}
-        onExecuteDraft={outputDestination === 'notion' ? undefined : (id,text,source)=>executeDraft(text,source,id)}
-        sendLabel={outputDestination === 'notion' ? '写到 Notion' : outputDestination === 'local' ? '本机执行' : '发送'}
-        destinationPicker={!demo.enabled ? <><NotionReceiptNotice key={thingId} api={api} taskId={thingId} receipt={notionReceiptForReview(coordinator.details[thingId]?.jobs||[])?.notionReceipt} onRefresh={()=>coordinator.load(thingId)} /><DocumentDestinationPicker api={api} value={outputDestination} onChange={setOutputDestination} localDisabled={taskStatusUnavailable || executionBusy || preparingExecution} onSettings={() => openSurface('knowledge')} /></> : undefined}
-        onSelect={id=>void selectThing(id)} onSend={continueThing}
-        onWorkbench={id=>{void openConversation(conversations.find(item=>item.id===id)!);setResultLampOpen(false);}}
-        onRemove={coordinator.enabled?removeCoordinatorTask:undefined}
-        taskNotice={taskPauseNotice(thingId)}
-        executionDisabled={taskStatusUnavailable || preparingExecution || executionBusy || Boolean(loadingByConversation[thingId])}
-        executionPreparing={preparingExecution && preparingConversationId===thingId}
-        executionContent={preparingExecution && preparingConversationId===thingId || thingExecutionTask ? <ExecutionDisclosure
-          key={thingExecutionTask?.id || "thing-preparing"} task={thingExecutionTask}
-          events={thingExecutionTask ? eventsByTask[thingExecutionTask.id] || [] : []}
-          preparing={preparingExecution && preparingConversationId===thingId}
-          expanded={Boolean(thingExecutionTask && expandedExecutionId===thingExecutionTask.id)}
-          onToggle={()=>setExpandedExecutionId(expandedExecutionId===thingExecutionTask?.id ? "" : thingExecutionTask?.id || "")}
-          onStop={source=>cancelExecution(source,thingExecutionTask)} /> : null}
-        hasMore={hasMoreConversations||(coordinator.enabled&&(coordinator.snapshot?.total??0)>coordinator.state.tasks.length)}
-        onMore={()=>void loadMoreConversations()} loadingMore={loadingMoreConversations}/>
+
+      {fluidEnabled?<aside className="fluid-rail" aria-label="工作区导航" onPointerDownCapture={()=>focusFluid('main')} onFocusCapture={()=>focusFluid('main')}>
+        <div className="fluid-rail-top">
+          <button type="button" title="回到主对话" aria-label="回到主对话" onClick={()=>openSurface('chat')}><MessageSquare size={19}/><span>主页</span></button>
+          <button type="button" title="任务" aria-label="任务" onClick={()=>openSurface('things')}><Folder size={19}/><span>所有任务</span>{fluidReminderCount?<i className="fluid-task-dot" aria-label={`${fluidReminderCount} 条待查看动态`}/>:null}</button>
+          <button type="button" title="功能与分身" aria-label="功能与分身" onClick={()=>openSurface('features')}><Sparkles size={19}/><span>功能与分身</span></button>
+        </div>
+        <div className="fluid-rail-tasks" aria-label="待处理任务"><small className="fluid-rail-section-label">正在进行与待查看</small>{fluidFeedback.slice(0,4).map(task=><button type="button" key={task.id} title={task.title} onClick={()=>{const item=conversations.find(c=>c.id===task.taskId);if(item)void openConversation(item);}}><span aria-hidden="true">{transferSettled(task.state)?'•':'·'}</span><strong>{task.title}</strong><small>{transferSettled(task.state)?'待查看':'处理中'}</small></button>)}{featureRuns.slice(0,2).map(run=><button type="button" key={`feature:${run.operationId}`} title={run.name} onClick={()=>openFeatureRun(run.operationId)}><span aria-hidden="true">•</span><strong>{run.name}</strong><small>{run.status==='pending'?'处理中':'待查看'}</small></button>)}</div>
+        <div className="fluid-rail-bottom">
+          <button type="button" title="历史对话" aria-label="历史对话" onClick={openHistory}><Archive size={18}/><span>历史记录</span></button>
+          <button type="button" title="设置" aria-label="设置" onClick={()=>openSurface('account')}><Settings size={18}/><span>设置</span></button>
+          {user.role==='admin'?<button type="button" title="管理" aria-label="管理" onClick={()=>openSurface('admin')}><ShieldCheck size={18}/><span>管理</span></button>:null}
+          {user.access?.role==='company_admin'?<button type="button" title="公司管理" aria-label="公司管理" onClick={()=>openSurface('company')}><Users size={18}/><span>公司管理</span></button>:null}
+          <button type="button" title="个人账号" aria-label="个人账号" onClick={()=>openSurface('account')}><UserRound size={18}/><span>{profile.displayName||user.username}</span></button>
+        </div>
+      </aside>:null}
+      <div className={`studio-layout ${fluidEnabled?'fluid-canvas':''}`} ref={fluidCanvasRef} style={fluidEnabled?fluidStyle:undefined}>
+      {fluidEnabled&&fluidDesktop?<div className="fluid-skin"><OneFluidSurface scene={fluidScene} accent={fluidAccent} executionActive={activeExecutionMode} width={fluidSize.width} height={fluidSize.height} sizing={fluidSizing} activityOpen={fluidPanels.activityOpen} localOpen={fluidPanels.localOpen} sidebarOpen={sidebarOpen} onActivityToggle={()=>toggleFluidPanel('activity')} onLocalToggle={()=>toggleFluidPanel('local')} onSidebarToggle={()=>{focusFluid('main');setSidebarOpen(value=>!value);}} attentionTarget={fluidAttention.target} attentionVersion={fluidAttention.version} onEyeReturn={()=>setFluidAttention(old=>({...old,target:'main'}))} onProgress={paintFluidContent}/></div>:null}
+      {fluidEnabled&&!fluidDesktop?<div className="fluid-compact-toggle"><button type="button" data-fluid-trigger="activity" aria-expanded={fluidPanels.activityOpen} onClick={()=>toggleFluidPanel('activity')}>任务动态{unviewedResultCount?` · ${unviewedResultCount}`:''}</button><button type="button" data-fluid-trigger="local" aria-expanded={fluidPanels.localOpen} onClick={()=>toggleFluidPanel('local')}>接管任务{executionBusy?' · 执行中':''}</button></div>:null}
+
+      <section className="studio-surface" ref={taskScroll.scroll} onScroll={taskScroll.onScroll} data-fluid-task-detail={fluidEnabled} data-open={Boolean(active)} aria-label={view === "chat" ? "当前任务" : "工作区内容"} hidden={studioIdle||(preview.enabled&&view==='chat'&&!active)}>
+      {fluidEnabled&&active?<div className="fluid-detail-toolbar"><span>任务详情</span><button type="button" aria-label="收起任务详情" onClick={()=>openSurface('chat')}><X size={16}/></button></div>:null}
+      {view === "things" ? renderThings()
         : view === "company" && user.access?.role === "company_admin" ? (
         <CompanyPanel api={api}/>
       )
         : view === "admin" && user.role === "admin" ? (
         <AdminPanel actorId={user.id} refreshModels={refresh} onOpenSidebar={() => setHistoryOpen(true)} />
       ) : view === "features" ? (
-        <section className="account-page features-page"><header className="admin-header"><div><h2>功能</h2></div>{preview.enabled?<button type="button" className="feature-shelf-close" onClick={()=>openSurface('chat')} aria-label="收起功能"><X size={16}/></button>:null}</header><div className="account-body settings-account-body">{preview.enabled?<FeatureShelf api={api} models={models} selected={featureForNext.map(item=>item.id)} onChoose={feature=>{setFeatureForNext(previous=>previous.some(item=>item.id===feature.id)?previous.filter(item=>item.id!==feature.id):previous.length<8?[...previous,feature]:previous);}}/>:<FeatureMarketplace api={api} models={models} onAsk={()=>openSurface('chat')}/>}</div></section>
+        renderFeatures()
       ) : view === "account" ? (
-        <AccountPage user={user} profile={profile} onSaveProfile={saveProfile} onOpenGuide={startStory} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={() => setHistoryOpen(true)} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgePage onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : next.provider === "flomo" ? setFlomoConnection(next) : setKnowledgeConnection(next)} />} />
+        renderAccount()
       ) : (
       preview.enabled && !active ? <section className="workspace-task-overview"><h1>手头的事情</h1><div>{preview.state.tasks.filter(task=>task.messages.length).map(task=><button type="button" key={task.id} onClick={()=>void openConversation(conversations.find(item=>item.id===task.id)!)}><strong>{task.title}</strong><small>{task.status==='running'?'正在处理':task.status==='completed'?'结果好了':task.status==='failed'?'需要看一下':'接着聊'} ↗</small></button>)}</div></section> :
       <section className="studio-task" key={activeId}>
@@ -2014,7 +2234,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <div><div className={`task-current-state ${currentBusy ? "is-active" : ""}`}><span className={`task-indicator ${currentBusy ? "running" : executionTask?.status || "recent"}`} aria-hidden="true" />{currentStatus}</div><h1>{active?.title || "从一个念头开始"}</h1></div>
           <div className="studio-task-controls">
             {preview.enabled&&active?<button type="button" onClick={()=>openSurface('chat')}>回到 ONE <X size={14}/></button>:null}
-            {preview.enabled && active ? <button type="button" className="studio-mode-switch task-continue-button" onClick={()=>{void selectThing(active.id);openSurface('things');}}>继续任务</button> : null}
+            {preview.enabled && active ? <button type="button" className="studio-mode-switch task-continue-button" onClick={()=>openSurface('things',active.id)}>继续任务</button> : null}
             {coordinator.enabled&&active?<ActionMenu label="更多任务操作"><button type="button" onClick={()=>{if(confirm('删除此任务并停止尚未完成的云端处理？历史和用量会保留，可恢复；已发生的外部操作不会撤销。'))void removeCoordinatorTask(active.id).then(()=>openSurface('chat')).catch(e=>setError(e.message));}}>删除任务</button></ActionMenu>:null}
             {executionShortcut ? <button type="button" onClick={() => { setSelectedExecutionId(executionShortcut.id); setExpandedExecutionId(executionShortcut.id); setRevealExecutionId(executionShortcut.id); void loadLatestExecution(activeId, executionShortcut.id); }} aria-label="查看本机执行"><Zap size={14} /><span>{currentRunningExecution ? "查看执行进展" : "查看执行结果"}</span></button> : null}
             <button type="button" aria-label={focusedTask ? "还原布局" : "放大当前任务"} aria-pressed={focusedTask} onClick={() => transitionInterface(() => setFocusedTask(value => !value))}>{focusedTask ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
@@ -2063,19 +2283,18 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       )}
       </section>
 
-      <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 指挥台">
-        {!demo.enabled&&view==='chat'?<AttentionInbox key={user.id+user.defaultWorkspaceId} api={api} onDraft={text=>{if(currentDraftRef.current.content.trim())return false;setContent(text);return true;}}/>:null}
-        {view==='chat'&&profileLoaded&&!storyHidden&&(storyOpen||profile.onboarding.journey?.stage&&profile.onboarding.journey.stage!=='complete'||!hasSubmittedChat&&!conversations.length&&!profile.onboarding.completedAt&&user.access?.kind!=='company')?<StoryOnboarding profile={profile} context={welcomeContext} offer={handbookOffer} onBegin={startStory} onAction={saveStory} onKnowledge={()=>openSurface('knowledge')} onDevice={()=>{setAccountSection('device');openSurface('account');}} onDismiss={()=>{setStoryHidden(true);setStoryOpen(false);}}/>:null}
-        {delivery&&delivery.operationId!==dismissedDelivery&&view==='chat'&&(storyHidden||profile.onboarding.journey?.stage==='complete')?<WelcomeDelivery delivery={delivery} busy={deliveryBusy} error={deliveryError} onOpen={id=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(id)}`).then(result=>openConversation(result.conversation)).catch(e=>setDeliveryError(e.message))} onCheck={()=>void checkWelcome()} onRetry={()=>void retryWelcome()} onDismiss={dismissWelcome}/>:null}
-        {!delivery&&handbookNotice && view==='chat' ? <p className="one-onboarding-handbook-notice" role="status">{handbookNotice}{storyTaskId?<button type="button" onClick={()=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(storyTaskId)}`).then(result=>openConversation(result.conversation)).catch(e=>setError(e.message))}>查看任务 ↗</button>:null}<button type="button" onClick={()=>setHandbookNotice('')} aria-label="收起说明">知道了</button></p> : null}
-        <div className="studio-presence">
-          <OneHeroEye mood={heroMood} label={view==='features'?'收起功能，回到 ONE':'打开功能'} onActivate={()=>openSurface(view==='features'?'chat':'features')}/>
+      <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 指挥台" onPointerDownCapture={()=>{if(fluidEnabled)focusFluid('main');}} onFocusCapture={()=>{if(fluidEnabled)focusFluid('main');}}>
+        {!fluidEnabled?renderAttentionInbox():null}
+        {view==='chat'&&workLayer!=='guide'&&!guideEffectPreview&&(!fluidEnabled||!fluidHasDialogue)&&profileLoaded&&!storyHidden&&(storyOpen||profile.onboarding.journey?.stage&&profile.onboarding.journey.stage!=='complete'||!hasSubmittedChat&&!conversations.length&&!profile.onboarding.completedAt&&user.access?.kind!=='company')?<StoryOnboarding profile={profile} context={welcomeContext} offer={handbookOffer} onBegin={startStory} onAction={saveStory} onKnowledge={()=>{storyRequested.current=false;openSurface('knowledge');}} onDevice={()=>{storyRequested.current=false;setAccountSection('device');openSurface('account');}} onDismiss={()=>{storyRequested.current=false;setStoryHidden(true);setStoryOpen(false);}}/>:null}
+        {!fluidEnabled?renderGuideDelivery():null}
+        {!fluidEnabled||!fluidHasDialogue?<div className="studio-presence">
+          {!fluidEnabled||!fluidDesktop?<OneHeroEye mood={heroMood} label={view==='features'?'收起功能，回到 ONE':'打开功能'} onActivate={()=>openSurface(view==='features'?'chat':'features')}/>:null}
           <div className="studio-presence-copy"><span className="studio-eyebrow">ONE IS WITH YOU</span>
           <h2>{activeAgent?.name || (studioIdle ? `${profile.displayName ? `${profile.displayName}，` : ""}${greeting}` : "我在。")}</h2></div>
           {demo.enabled?<ResultSignal tasks={lampTasks} busy={Boolean(content.trim()||preview.state.pending||view==='things')} ambient={view==='chat'&&!active} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)} onDismiss={closeResultLamp}/>:null}
-        </div>
+        </div>:null}
 
-{preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation hasEarlierHistory={coordinator.hasEarlierHistory} loadingHistory={coordinator.loadingHistory} onLoadHistory={coordinator.enabled?coordinator.loadHistory:undefined} visible={view==='chat'||view==='features'||view==='account'} messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} completed={coordinator.settlement?.status==='completed'&&!coordinator.error} progress={coordinator.enabled?coordinator.progress:null} onStop={coordinator.enabled?coordinator.stop:undefined} onRestore={text=>{
+{preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation renderAssistantActions={message=><BetaFeedbackControls messageId={message.id} requestId={message.requestId} leading={<button type="button" title="复制回答" onClick={()=>void copyMarkdown(message.text)}><Copy size={14}/>复制</button>} onSave={async input=>(await api<{feedback:import('./Onboarding').OwnBetaFeedback}>('/api/me/feedback',{method:'POST',body:JSON.stringify(input)})).feedback}/>} onContinue={()=>{if(currentDraftRef.current.content.trim()){setError('输入框还有草稿，请先保留或发送它，再继续生成。');return;}if(confirm('继续生成会产生新的额度消耗，是否继续？'))void sendMessage('请接着上一条未完成的回答继续，从中断处接上，不要重复前文。');}} hasEarlierHistory={coordinator.hasEarlierHistory} loadingHistory={coordinator.loadingHistory} onLoadHistory={coordinator.enabled?coordinator.loadHistory:undefined} visible={view==='chat'||view==='features'||view==='account'} messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} completed={coordinator.settlement?.status==='completed'&&!coordinator.error} progress={coordinator.enabled?coordinator.progress:null} onStop={coordinator.enabled?coordinator.stop:undefined} onRestore={text=>{
           if(currentDraftRef.current.content.trim()){setError('输入框已有新草稿，先保留或发送它，再恢复原话。');return;}
           setContent(text);const failed=coordinatorFailedDraft.current;
           if(failed?.text===text){
@@ -2084,7 +2303,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           }
         }} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)}/>:null}
         {coordinator.removedTask?<p role="status">任务已删除，历史保留。<button type="button" onClick={()=>void coordinator.restoreTask().then(()=>refresh()).catch(e=>setError(e.message))}>恢复任务（不会自动重跑）</button></p>:null}
-{coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} departureAnchor={()=>document.querySelector<HTMLElement>('[data-task-dispatch-anchor]') || document.querySelector<HTMLElement>('.studio-presence')} returnAnchor={()=>document.querySelector<HTMLElement>('[data-task-return-anchor]') || document.querySelector<HTMLElement>('.coordinator-message.assistant:last-of-type')} recentReportedReceiptIds={coordinator.snapshot?.recentReportedReceiptIds} onReadAll={readAllTaskMessages} onOpenAll={()=>openSurface('things')} onDismiss={task=>coordinator.acknowledge(task.taskId,dismissibleReceiptIds(uniqueTransfers,task.taskId))} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null}
+{!fluidEnabled ? coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} departureAnchor={()=>document.querySelector<HTMLElement>('[data-task-dispatch-anchor]') || document.querySelector<HTMLElement>('.studio-presence')} returnAnchor={()=>document.querySelector<HTMLElement>('[data-task-return-anchor]') || document.querySelector<HTMLElement>('.coordinator-message.assistant:last-of-type')} recentReportedReceiptIds={coordinator.snapshot?.recentReportedReceiptIds} onReadAll={readAllTaskMessages} onOpenAll={()=>openSurface('things')} onDismiss={task=>coordinator.acknowledge(task.taskId,dismissibleReceiptIds(uniqueTransfers,task.taskId))} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null : null}
 
         {!preview.enabled && (otherRows.length > 0 || unreadNotices.length > 0 || taskStatusUnavailable) ? <section className="studio-activity attention-activity" aria-label="任务动态">
           {otherRows.length > 0 || unreadNotices.length > 0 ? <button className="attention-activity-toggle" type="button" aria-expanded={activityExpanded} aria-controls="attention-task-list" onClick={() => setActivityExpanded(value => !value)}>
@@ -2108,9 +2327,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           </div> : null}
         </div>
 
-        <form className="composer studio-composer" onSubmit={send}>
+        <form className="composer studio-composer" data-feature-armed={preview.enabled&&featureForNext.length>0} onSubmit={send}>
           {coordinator.enabled&&coordinator.state.boundTask&&coordinator.state.boundTask!==activeId?taskPauseNotice(coordinator.state.boundTask):null}
-          {preview.enabled&&featureForNext.length>0?<div className="selected-feature-list" aria-label="下一条使用的功能">{featureForNext.map(feature=><button key={feature.id} type="button" className="selected-feature-chip" aria-label={`取消功能：${feature.name}`} onClick={()=>setFeatureForNext(previous=>previous.filter(item=>item.id!==feature.id))}><Sparkles size={13}/><span>{feature.name}</span><X size={12}/></button>)}<small>下一条使用</small></div>:null}
+          {preview.enabled&&featureForNext.length>0?<div className="selected-feature-list" aria-label="这条消息将使用的功能"><small>这条消息将使用</small>{featureForNext.map(feature=><button key={feature.id} type="button" className="selected-feature-chip" aria-label={`取消功能：${feature.name}`} onClick={()=>chooseFeature(feature)}><Sparkles size={13}/><span>{feature.name}</span><X size={12}/></button>)}</div>:null}
           {!models.length ? <div className="chat-error"><span>模型未就绪，请联系管理员。</span><button type="button" onClick={() => void refresh()}>重试</button></div> : null}
           {pendingRequests.length ? <details className="one-pending-answers"><summary>有 {pendingRequests.length} 条消息待确认 · 查看原结果，不重复扣费</summary>{pendingRequests.map(item => <button type="button" key={item.operationId} onClick={() => void recoverAnswer(item.operationId)}>查看 {dateTime(item.createdAt)} 的结果</button>)}</details> : null}
           {preview.enabled ? <div className={`studio-compose-context ${preview.state.boundTask?'is-bound':''}`}><span>{preview.state.boundTask ? `发送到任务：${preview.state.tasks.find(task=>task.id===preview.state.boundTask)?.title || '当前任务'}` : '与 ONE 对话'}</span>{preview.state.boundTask ? <button type="button" onClick={()=>preview.dispatch({type:'bind',taskId:null})}>回到主对话 <X size={12}/></button> : null}</div> : !studioIdle ? <div className="studio-compose-context">
@@ -2136,6 +2355,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           ) : null}
           {preview.enabled && composeMode==="chat" ? featurePicker.panel : null}
           <div className="composer-row">
+            {preview.enabled?<FeatureArmedRim/>:null}
             <textarea
               id="one-studio-input"
               ref={featurePicker.input}
@@ -2160,11 +2380,11 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <div className="studio-compose-tools">
             <div className="studio-compose-tools-left">{preview.enabled && composeMode==="chat"?<button type="button" className="composer-add-feature" aria-label="添加下一条使用的功能" aria-expanded={featurePicker.isOpen} onClick={featurePicker.open}><Plus size={16}/><span>功能</span></button>:null}
             {canAttach && capabilities.attachments.enabled && composeMode === "chat" ? <label className="studio-attach" title="添加文件或图片"><Paperclip size={15} /><span>{uploadingAttachments ? "上传中" : "附件"}</span><input aria-label="添加附件" type="file" multiple accept={attachmentAccept} disabled={uploadingAttachments} onChange={event => { void uploadAttachments(event.target.files); event.target.value = ""; }} /></label> : <span />}</div>
-            {!demo.enabled && composeMode === 'chat' && currentModel?.kind === 'chat' ? <DocumentDestinationPicker api={api} value={outputDestination} onChange={setOutputDestination} localDisabled={taskStatusUnavailable || executionBusy || preparingExecution} onSettings={() => openSurface('knowledge')} /> : null}
+            {!demo.enabled && composeMode === 'chat' && currentModel?.kind === 'chat' ? <DocumentDestinationPicker api={api} value={outputDestination} onChange={setOutputDestination} localDisabled={taskStatusUnavailable || executionBusy || preparingExecution} localDisabledHint={preparingExecution?'正在准备本机执行，请稍候':executionBusy?'本机任务结束后可保存':taskStatusUnavailable?'暂未确认本机连接，可到设置检查':undefined} onLocalSettings={()=>{setAccountSection('device');openSurface('account');}} onSettings={() => openSurface('knowledge')} /> : null}
             <span className="studio-keyboard-hint">Enter 发送 · ⇧ Enter 换行</span>
           </div>
           <div className="studio-composer-status">
-            {active && !composeNew && executionTask && !isExecutionRunning(executionTask) ? <button type="button" className="studio-mode-switch" onClick={() => setComposeMode(mode => mode === "chat" ? "execution" : "chat")}>{composeMode === "execution" ? "切回对话" : "切换到执行"}</button> : executionBusy && composeMode === "chat" ? <p className="studio-context-hint">本机任务仍在执行。</p> : null}
+            {!fluidEnabled && active && !composeNew && executionTask && !isExecutionRunning(executionTask) ? <button type="button" className="studio-mode-switch" onClick={() => setComposeMode(mode => mode === "chat" ? "execution" : "chat")}>{composeMode === "execution" ? "切回对话" : "切换到执行"}</button> : executionBusy && composeMode === "chat" ? <p className="studio-context-hint">本机任务仍在执行。</p> : null}
           </div>
         </form>
           {studioIdle ? (
@@ -2177,8 +2397,40 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           ) : null}
         <footer className="studio-assistant-footer"><span className={`connection-dot ${[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "connected" : "disconnected"}`} /><button type="button" onClick={() => openSurface("knowledge")}>{[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "知识已连接" : "连接知识"}</button></footer>
       </aside>
+
+      {fluidEnabled?<>
+        <section className="fluid-activity-panel" data-open={fluidPanels.activityOpen} aria-label="任务动态" aria-hidden={!fluidPanels.activityOpen} inert={!fluidPanels.activityOpen} {...fluidInteraction('activity')}>
+          <header className="fluid-panel-heading"><h2>任务动态</h2><button type="button" aria-label="收起任务动态" onClick={()=>toggleFluidPanel('activity')}><X size={15}/></button></header>
+          <div className="fluid-panel-content" data-fluid-panel-content="activity">
+          {renderAttentionInbox()}{renderGuideDelivery()}
+          {featureRuns.length?<div className="fluid-feature-runs" aria-label="功能运行进展">{featureRuns.map(run=><article key={run.operationId} data-status={run.status}><button type="button" onClick={()=>openFeatureRun(run.operationId)}><strong>{run.name}</strong><small>{({pending:'正在处理',completed:'成果已返回',failed:'需要查看',interrupted:'已中断'} as Record<string,string>)[run.status]||'查看进展'} ↗</small></button>{run.status!=='pending'?<button type="button" aria-label={`收起${run.name}的动态`} onClick={()=>setFeatureRuns(old=>old.filter(item=>item.operationId!==run.operationId))}><X size={13}/></button>:null}</article>)}</div>:null}
+          {featureRunIssue?<p className="fluid-queue-note" role="status">{featureRunIssue}</p>:null}
+          {coordinator.enabled ? <TaskTransferRail animateNotes={false} tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} departureAnchor={()=>document.querySelector<HTMLElement>('[data-task-dispatch-anchor]') || document.querySelector<HTMLElement>('.studio-presence')} returnAnchor={()=>document.querySelector<HTMLElement>('[data-task-return-anchor]') || document.querySelector<HTMLElement>('.coordinator-message.assistant:last-of-type')} recentReportedReceiptIds={coordinator.snapshot?.recentReportedReceiptIds} onReadAll={readAllTaskMessages} onOpenAll={()=>openSurface('things')} onDismiss={task=>coordinator.acknowledge(task.taskId,dismissibleReceiptIds(uniqueTransfers,task.taskId))} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null}
+          {!fluidFeedback.length&&!featureRuns.length&&!attentionCount&&(!delivery||delivery.operationId===dismissedDelivery)?<div className="fluid-panel-empty"><p>这里会接住交出去的任务。</p><small>你可以留在主对话继续聊。</small><button type="button" onClick={()=>openSurface('things')}>查看所有任务 <ArrowUpRight size={12}/></button></div>:null}
+                  </div>
+        </section>
+        <section className="fluid-local-panel" data-open={fluidPanels.localOpen} aria-label="接管任务" aria-hidden={!fluidPanels.localOpen} inert={!fluidPanels.localOpen} {...fluidInteraction('local')}>
+          <header className="fluid-panel-heading"><h2>接管任务</h2><button type="button" aria-label="收起本机执行" onClick={()=>toggleFluidPanel('local')}><X size={15}/></button></header>
+          <div className="fluid-panel-content" data-fluid-panel-content="local">
+          <div className="fluid-runtime-notices">{renderRuntimeNotices()}</div>
+          {fluidLocalTask||preparingExecution||awaitingExecutionOperationId?<ExecutionDisclosure idPrefix="fluid-local" task={fluidLocalTask} events={fluidLocalTask?eventsByTask[fluidLocalTask.id]||[]:[]} preparing={preparingExecution||Boolean(awaitingExecutionOperationId)} expanded={true} onToggle={()=>toggleFluidPanel('local')} onStop={source=>void cancelExecution(source,fluidLocalTask)}/>:<div className="fluid-panel-empty"><p>电脑现在空闲。</p><small>需要整理文件、处理表格时，直接告诉 ONE。</small><button type="button" onClick={()=>{setAccountSection('device');openSurface('account');}}>本机设置 <ArrowUpRight size={12}/></button></div>}
+          {runningExecutions.length>1?<p className="fluid-queue-note">另有 {runningExecutions.length-1} 个任务等待这台电脑处理</p>:null}
+                  </div>
+        </section>
+      </>:null}
       {demo.enabled ? <details className="workspace-preview-debug"><summary>本地调试</summary><p>规则分流 / 合成结果，不调用 AI。自动分流示例：UI、露营；其他内容可手动指定。</p><label>任务等待（秒）<input type="number" min="1" max="120" value={preview.state.workerMs/1000} onChange={event=>preview.dispatch({type:'settings',workerMs:Math.max(1,Math.min(120,Number(event.target.value)||1))*1000})}/></label><label><input type="checkbox" checked={preview.state.manual} onChange={event=>preview.dispatch({type:'settings',manual:event.target.checked})}/>手动结束任务</label>{preview.state.tasks.map(task=><div key={task.id}><button type="button" onClick={()=>void openConversation(conversations.find(item=>item.id===task.id)!)}>{task.title}</button><span>{task.status} · 排队 {task.queue.length}</span><button type="button" disabled={task.status!=='running'} onClick={()=>preview.dispatch({type:'finish',taskId:task.id,round:task.round,now:Date.now()})}>模拟完成</button></div>)}</details> : null}
       </div>
+      {preview.enabled?<>
+        {visitedLayers.includes('features')||workLayer==='features'?<FluidWorkLayer title="功能与分身" open={workLayer==='features'} className="fluid-work-layer-features" onClose={closeWorkLayer}>{renderFeatures()}</FluidWorkLayer>:null}
+        {visitedLayers.includes('account')||workLayer==='account'?<FluidWorkLayer title="设置" open={workLayer==='account'} className="fluid-work-layer-account" onClose={closeWorkLayer}>{renderAccount()}</FluidWorkLayer>:null}
+        {workLayer==='things'?<FluidWorkLayer title="任务与成果" className="fluid-work-layer-things" onClose={closeWorkLayer}>{renderThings()}</FluidWorkLayer>:null}
+        {workLayer==='history'?<FluidWorkLayer title={showArchived?'已归档记录':'历史记录'} className="fluid-work-layer-history" onClose={closeWorkLayer}>{renderHistory()}</FluidWorkLayer>:null}
+        {workLayer==='admin'&&user.role==='admin'?<FluidWorkLayer title="管理" initialMaximized onClose={closeWorkLayer}><AdminPanel actorId={user.id} refreshModels={refresh} onOpenSidebar={openHistory}/></FluidWorkLayer>:null}
+        {workLayer==='company'&&user.access?.role==='company_admin'?<FluidWorkLayer title="公司管理" initialMaximized onClose={closeWorkLayer}><CompanyPanel api={api}/></FluidWorkLayer>:null}
+        {workLayer==='guide'?<FluidWorkLayer title="重新认识 ONE" className="fluid-work-layer-guide" onClose={dismissStory}>{renderStory()}</FluidWorkLayer>:null}
+        {featureRuns.filter(run=>run.status==='pending').map(run=><FeatureRunMonitor key={run.operationId} api={api} operationId={run.operationId} enabled={viewedFeatureOperation!==run.operationId} onStatus={updateFeatureRun} onUnavailable={setFeatureRunIssue}/>) }
+      </>:null}
+      {preview.enabled?<FeatureHandoff transfer={featureTransfer} target={()=>document.querySelector<HTMLElement>('.studio-composer .composer-row')}  onComplete={()=>setFeatureTransfer(current=>current?.id===featureTransfer?.id?null:current)}/>:null}
     </main>
   );
 }
@@ -2539,18 +2791,18 @@ function AccountPage({ user, profile, onSaveProfile, onOpenGuide, models, defaul
       </header>
       <AccountPreferencesLayout section={section} onChange={setSection}>
         {guidePending&&section!=='profile'?<div className="story-settings-return"><span>新手引导还在，接好后回来继续。</span>{guideButton}</div>:null}
-        {section === "device" ? <LocalDeviceSettings key={user.id} api={api}/> : section === "knowledge" ? knowledge : section === "power" ? user.access?.kind === "company" ? <div className="settings-empty"><p>费用由公司按协议对公打款承担，无需个人充值。</p><p>公司可用电力：{((billing?.availableMicros??0)/1e6).toFixed(3)}；个人额度由公司管理员配置。</p></div> : billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载会员与额度…</p> : <>
+        {section === "device" ? <LocalDeviceSettings key={user.id} api={api}/> : section === "knowledge" ? <>{knowledge}<FeatureBudgetSettings key={user.id} api={api}/></> : section === "power" ? user.access?.kind === "company" ? <div className="settings-empty"><p>费用由公司按协议对公打款承担，无需个人充值。</p><p>公司可用电力：{((billing?.availableMicros??0)/1e6).toFixed(3)}；个人额度由公司管理员配置。</p></div> : billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载会员与额度…</p> : <>
         <div className="account-profile-grid">
+        <AppearanceSettings profile={profile} onSave={onSaveProfile}/>
         <section className="account-panel"><h3>个人资料</h3><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
-        <FeatureBudgetSettings key={user.id} api={api}/>
         <ContextSettings key={'context-'+user.id} api={api}/>
         <AttentionSettings key={'attention-'+user.id} api={api}/>
         <SavedWelcomeGuides api={api}/>
         <section className="account-panel story-settings-entry"><h3>新手引导</h3><p className="settings-muted">重新填写偏好，现有资料和任务都保留。</p>{guideButton}</section>
-        <section className="account-panel">
-          <div className="account-panel-title"><Bot size={18} /><h3>默认模型</h3></div>
+        <details className="account-panel account-advanced-settings">
+          <summary>高级设置 · 默认模型</summary>
           <SearchPicker label="默认模型" value={selectedModelId} onChange={chooseModel} options={models.filter(model => model.kind === "chat").map(model => ({ value: model.id, label: model.name }))} />
-        </section>
+        </details>
         {user.role === "admin" ? <section className="account-panel account-span-full settings-security-entry"><div><div className="account-panel-title"><LockKeyhole size={18} /><h3>账号安全</h3></div><p className="settings-muted">需要时再更新登录密码。</p></div><button type="button" onClick={()=>{setNotice('');setPasswordOpen(true);}}>修改密码</button></section> : null}
         </div>
         {passwordOpen?<SettingsDialog title="修改密码" onClose={()=>{setPasswordOpen(false);setCurrentPassword('');setNewPassword('');setConfirmPassword('');}}><form className="settings-password-form" onSubmit={changePassword}>
@@ -2563,241 +2815,6 @@ function AccountPage({ user, profile, onSaveProfile, onOpenGuide, models, defaul
         </>}
         {notice ? <div className="notice account-wide-notice">{notice}</div> : null}
       </AccountPreferencesLayout>
-    </section>
-  );
-}
-
-function KnowledgePage({
-  onOpenSidebar,
-  onConnectionChange
-}: {
-  onOpenSidebar: () => void;
-  onConnectionChange?: (connection: KnowledgeConnection) => void;
-}) {
-  const api = useContext(PrivateApiContext);
-  const [selectedProvider, setSelectedProvider] = useState("");
-  const [providerQuery, setProviderQuery] = useState("");
-  const [providerFilter, setProviderFilter] = useState("all");
-  const [connection, setConnection] = useState<KnowledgeConnection>({ provider: "getnote", status: "disconnected" });
-  const [remoteConnections, setRemoteConnections] = useState<Record<"notion" | "yinxiang" | "flowus" | "flomo", KnowledgeConnection>>({
-    notion: { provider: "notion", status: "disconnected" }, yinxiang: { provider: "yinxiang", status: "disconnected" }, flowus: { provider: "flowus", status: "disconnected" }, flomo: { provider: "flomo", status: "disconnected" }
-  });
-  const [configured, setConfigured] = useState(false);
-  const [remoteConfigured, setRemoteConfigured] = useState<Record<"notion" | "yinxiang" | "flowus" | "flomo", boolean>>({ notion: false, yinxiang: false, flowus: false, flomo: false });
-  const [remoteBusy, setRemoteBusy] = useState<"notion" | "yinxiang" | "flowus" | "flomo" | "">("");
-  const [testConnectAvailable, setTestConnectAvailable] = useState(false);
-  const [flow, setFlow] = useState<GetNoteDeviceFlow | null>(null);
-  const [polling, setPolling] = useState(false);
-  const [notice, setNotice] = useState("");
-
-  async function load() {
-    const providers = ["notion", "yinxiang", "flowus", "flomo"] as const;
-    const [getNoteResult, ...remoteResults] = await Promise.allSettled([
-      api<{ connection: KnowledgeConnection; configured: boolean; testConnectAvailable?: boolean }>("/api/knowledge/connections/getnote"),
-      ...providers.map(provider => api<{ connection: KnowledgeConnection; configured: boolean }>(`/api/knowledge/connections/${provider}`))
-    ]);
-    if (getNoteResult.status === "fulfilled") {
-      setConnection(getNoteResult.value.connection);
-      setConfigured(getNoteResult.value.configured);
-      setTestConnectAvailable(Boolean(getNoteResult.value.testConnectAvailable));
-      onConnectionChange?.(getNoteResult.value.connection);
-    } else {
-      setConfigured(false);
-    }
-    const nextConnections = { ...remoteConnections };
-    const nextConfigured = { ...remoteConfigured };
-    providers.forEach((provider, index) => {
-      const result = remoteResults[index];
-      if (result.status === "fulfilled") { nextConnections[provider] = result.value.connection; nextConfigured[provider] = result.value.configured; onConnectionChange?.(result.value.connection); }
-      else nextConfigured[provider] = false;
-    });
-    setRemoteConnections(nextConnections);
-    setRemoteConfigured(nextConfigured);
-    if (getNoteResult.status === "rejected") throw getNoteResult.reason;
-  }
-
-  useEffect(() => {
-    const outcome = new URLSearchParams(window.location.search).get("notion");
-    if (outcome) {
-      setNotice(outcome === "connected" ? "Notion 已连接" : outcome === "cancelled" ? "Notion 授权已取消" : "Notion 授权未完成，请重试。");
-      const url = new URL(window.location.href);
-      url.searchParams.delete("notion");
-      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
-    }
-    const params = new URLSearchParams(window.location.search);
-    const provider = params.get("knowledge");
-    const status = params.get("status");
-    if ((provider === "yinxiang" || provider === "flowus" || provider === "flomo" || provider === "feishu") && status) {
-      const label = provider === "yinxiang" ? "印象笔记" : provider === "feishu" ? "飞书" : provider === "flomo" ? "flomo" : "息流 FlowUs";
-      setNotice(status === "connected" ? `${label} 已连接` : status === "cancelled" ? `${label} 授权已取消` : provider === "flomo" ? "flomo 授权未完成，请确认 MAX 会员并重试。" : `${label} 授权未完成，请重试。`);
-      const url = new URL(window.location.href); url.searchParams.delete("knowledge"); url.searchParams.delete("status"); window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
-    }
-    load().catch((err) => setNotice(err.message));
-  }, []);
-
-  useEffect(() => {
-    if (!flow || !polling) return;
-    let cancelled = false;
-    const delay = Math.max(5, flow.interval || 5) * 1000;
-    const expiresAt = Date.now() + flow.expiresIn * 1000;
-    let retries = 0;
-    let timer: number;
-    async function poll() {
-      if (cancelled) return;
-      if (Date.now() >= expiresAt) { setFlow(null); setPolling(false); setNotice("授权已过期，请重新连接。"); return; }
-      try {
-        const result = await api<{ status?: "pending"; phase?: "provider_retry" | "verifying"; retryAfterSeconds?: number; connection?: KnowledgeConnection }>(`/api/knowledge/connections/getnote/device-flow/${encodeURIComponent(flow!.flowId)}/poll`, { method: "POST" });
-        if (cancelled) return;
-        if (result.connection) {
-          setConnection(result.connection);
-          onConnectionChange?.(result.connection);
-          setFlow(null);
-          setPolling(false);
-          setNotice("得到大脑已连接");
-        } else {
-          retries = 0;
-          if (result.phase === "verifying") setNotice("正在确认知识权限…");
-          else if (result.phase === "provider_retry") setNotice("连接不稳定，正在重试…");
-          timer = window.setTimeout(poll, Math.max(delay, (result.retryAfterSeconds || 0) * 1000));
-        }
-      } catch (err) {
-        if (cancelled) return;
-        const action = getNotePollFailureAction(err);
-        if (action === "retry_key") {
-          setNotice("请插入 ONE Key。插入后会继续。");
-          timer = window.setTimeout(poll, delay);
-        } else if (action === "retry_provider") {
-          setNotice("连接不稳定，正在重试…");
-          timer = window.setTimeout(poll, Math.min(30000, delay * 2 ** ++retries));
-        } else if (err instanceof ApiError && [400, 401, 403, 404, 410, 502, 503].includes(err.status || 0)) {
-          setFlow(null); setPolling(false); setNotice(err.message);
-        } else {
-          setNotice("连接不稳定，正在重试…");
-          timer = window.setTimeout(poll, Math.min(30000, delay * 2 ** ++retries));
-        }
-      }
-    }
-    timer = window.setTimeout(poll, delay);
-    return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [flow, polling]);
-
-  async function connect() {
-    setNotice("");
-    let authorizationWindow = null as ReturnType<typeof prepareGetNoteAuthorizationWindow>;
-    if (!testConnectAvailable) {
-      authorizationWindow = prepareGetNoteAuthorizationWindow((url, target) => window.open(url, target) as ReturnType<typeof prepareGetNoteAuthorizationWindow>);
-    }
-    try {
-      if (testConnectAvailable) {
-        const result = await api<{ connection: KnowledgeConnection }>("/api/knowledge/connections/getnote/test-connect", { method: "POST" });
-        setConnection(result.connection);
-        onConnectionChange?.(result.connection);
-        setNotice("测试知识已连接");
-        return;
-      }
-      const result = await api<GetNoteDeviceFlow>("/api/knowledge/connections/getnote/device-flow", { method: "POST" });
-      setFlow(result);
-      setPolling(true);
-      if (authorizationWindow && !authorizationWindow.closed) authorizationWindow.location.replace(result.verificationUri);
-      else setNotice("点击“打开得到大脑”完成授权。");
-    } catch (err) {
-      authorizationWindow?.close();
-      setNotice(err instanceof Error ? err.message : "无法发起授权");
-    }
-  }
-
-  async function disconnect() {
-    if (!confirm("断开得到大脑？")) return;
-    await api("/api/knowledge/connections/getnote", { method: "DELETE" });
-    setFlow(null);
-    setPolling(false);
-    await load();
-  }
-
-  async function cancelGetNoteFlow() {
-    const current = flow;
-    setFlow(null);
-    setPolling(false);
-    setNotice("");
-    if (!current) return;
-    try {
-      await api(`/api/knowledge/connections/getnote/device-flow/${encodeURIComponent(current.flowId)}`, { method: "DELETE" });
-      await load();
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "无法取消授权");
-    }
-  }
-
-  async function connectRemote(provider: "notion" | "yinxiang" | "flowus" | "flomo") {
-    setNotice("");
-    setRemoteBusy(provider);
-    try {
-      const result = await api<{ authorizationUrl: string }>(`/api/knowledge/connections/${provider}/oauth/start`, { method: "POST" });
-      window.location.assign(result.authorizationUrl);
-    } catch (err) {
-      setRemoteBusy("");
-      setNotice(err instanceof Error ? err.message : "无法发起授权");
-    }
-  }
-
-  async function disconnectRemote(provider: "notion" | "yinxiang" | "flowus" | "flomo", label: string) {
-    if (!confirm(`断开 ${label}？`)) return;
-    await api(`/api/knowledge/connections/${provider}`, { method: "DELETE" });
-    await load();
-    setNotice(`${label} 已断开`);
-  }
-
-  return (
-    <section className="account-page knowledge-page">
-      <header className="admin-header">
-        <button className="mobile-menu" title="打开导航" onClick={onOpenSidebar}><Menu size={20} /></button>
-        <div><h2>知识来源</h2></div>
-      </header>
-      <div className="account-body knowledge-catalog-body">
-        {notice ? <div className={`${/失败|无法|过期|不稳定|尚未配置|未完成|还没有会员|请联系/.test(notice) ? "error" : "notice"} account-wide-notice`} role="status">{notice}</div> : null}
-        <div className="knowledge-catalog-toolbar"><div className="settings-search"><Search size={17} /><input type="search" aria-label="搜索知识来源" placeholder="搜索知识来源" value={providerQuery} onChange={e => setProviderQuery(e.target.value)} /></div><div className="settings-tabs" aria-label="连接状态">{[["all", "全部"], ["connected", "已连接"], ["disconnected", "未连接"]].map(([id, label]) => <button type="button" key={id} aria-pressed={providerFilter === id} onClick={() => setProviderFilter(id)}>{label}</button>)}</div></div>
-        <div className="knowledge-catalog">{([{ id: "getnote", label: "得到大脑", note: "笔记与语义搜索", item: connection }, { id: "notion", label: "Notion", note: "页面与工作区", item: remoteConnections.notion }, { id: "yinxiang", label: "印象笔记", note: "笔记与笔记本", item: remoteConnections.yinxiang }, { id: "flowus", label: "息流 FlowUs", note: "页面与知识空间", item: remoteConnections.flowus }, { id: "flomo", label: "flomo", note: "笔记搜索 · 需 MAX 会员", item: remoteConnections.flomo }]).filter(p => `${p.label} ${p.id}`.toLowerCase().includes(providerQuery.trim().toLowerCase()) && (providerFilter === "all" || (providerFilter === "connected" ? p.item.status === "connected" : p.item.status !== "connected"))).map(p => <button type="button" className="knowledge-source-card" key={p.id} onClick={() => setSelectedProvider(p.id)}><span className={`knowledge-source-mark ${p.id}`}>{p.label.slice(0, 1)}</span><span><strong>{p.label}</strong><small>{p.note}</small></span><span className={`knowledge-source-status ${p.item.status}`}>{waitingForOfficialApproval(p.id, remoteConfigured.yinxiang, p.item.status) ? officialApprovalLabel : p.item.status === "connected" ? "已连接" : p.item.status === "pending" ? "授权中" : p.item.status === "error" ? "需重连" : "连接"}<ChevronRight size={14} /></span></button>)}<FeishuConnection api={api} query={providerQuery} filter={providerFilter} /><EnterpriseKnowledgeCard id="dingtalk" label="钉钉" query={providerQuery} filter={providerFilter} /><EnterpriseKnowledgeCard id="wechat" label="微信" query={providerQuery} filter={providerFilter} /></div>
-        {selectedProvider === "getnote" ? <SettingsDialog title="得到大脑" onClose={() => setSelectedProvider("")}><section className="knowledge-connection-detail">
-          <div className="knowledge-provider-head">
-            <div className="provider-icon"><Database size={19} /></div>
-            <div><h3>得到大脑</h3></div>
-            <span className={`provider-status ${connection.status}`}>{connection.status === "connected" ? "已连接" : connection.status === "pending" ? "授权中" : connection.status === "error" ? "需重连" : "未连接"}</span>
-          </div>
-          {connection.status === "connected" ? (
-            <>
-              <button className="danger" type="button" onClick={disconnect}>断开连接</button>
-            </>
-          ) : (
-            <>
-              {connection.status === "error" && connection.lastError ? <p className="error" role="alert">{connection.lastError}</p> : null}
-              <p className="hint">请先开通得到大脑会员，再完成官方授权。</p>
-              <button className="primary" type="button" disabled={!configured || Boolean(flow)} onClick={connect}>{testConnectAvailable ? "一键连接测试知识" : "连接得到大脑"}</button>
-              {testConnectAvailable ? <div className="notice">测试连接 · 使用管理员预置账号</div> : null}
-              {!configured ? <p className="hint">此知识连接暂未开通，请联系管理员。</p> : null}
-              {flow ? (
-                <div className="notice">
-                  授权码：<strong>{flow.userCode}</strong>
-                  <span>{Math.max(1, Math.ceil(flow.expiresIn / 60))} 分钟内完成</span>
-                  <a href={flow.verificationUri} target="_blank" rel="noreferrer">打开得到大脑</a>
-                  <button type="button" onClick={() => void cancelGetNoteFlow()}>取消</button>
-                </div>
-              ) : null}
-            </>
-          )}
-        </section>{notice ? <p role="status">{notice}</p> : null}</SettingsDialog> : null}
-        {([
-          { id: "notion", label: "Notion" }, { id: "yinxiang", label: "印象笔记" }, { id: "flowus", label: "息流 FlowUs" }, { id: "flomo", label: "flomo" }
-        ] as const).filter(provider => provider.id === selectedProvider).map(provider => {
-          const item = remoteConnections[provider.id];
-          const awaitingApproval = waitingForOfficialApproval(provider.id, remoteConfigured[provider.id], item.status);
-          return <SettingsDialog key={provider.id} title={provider.label} onClose={() => setSelectedProvider("")}><section className="knowledge-connection-detail">
-            <div className="knowledge-provider-head"><div className="provider-icon"><FileText size={19} /></div><div><h3>{provider.label}</h3></div><span className={`provider-status ${item.status}`}>{awaitingApproval ? officialApprovalLabel : item.status === "connected" ? "已连接" : item.status === "pending" ? "授权中" : item.status === "error" ? "需重连" : "未连接"}</span></div>
-            {provider.id === "flomo" ? <FlomoConnectionNotice /> : null}
-            {item.status === "connected" ? <><div className="notice">工作区：{item.providerSpaceName || provider.label}</div><p className="hint">{provider.id === 'notion' ? '知识检索按需读取、不调用 Notion AI；写入需要下方单独授权与设置。' : '只读：ONE 会按需搜索相关内容，不会修改或删除内容。'}</p>{provider.id === 'notion' ? <NotionWritingSettings api={api} /> : null}<button className="danger" type="button" onClick={() => void disconnectRemote(provider.id, provider.label)}>断开连接</button></>
-              : <><button className="primary" type="button" disabled={!remoteConfigured[provider.id] || Boolean(remoteBusy)} onClick={() => void connectRemote(provider.id)}>{awaitingApproval ? officialApprovalLabel : remoteBusy === provider.id ? `正在打开 ${provider.label}…` : `连接 ${provider.label}`}</button>{!remoteConfigured[provider.id] ? <p className="hint">{awaitingApproval ? officialApprovalHint : `${provider.label} 连接暂未开通，请联系管理员。`}</p> : null}</>}
-          </section>{notice ? <p role="status">{notice}</p> : null}</SettingsDialog>;
-        })}
-      </div>
     </section>
   );
 }

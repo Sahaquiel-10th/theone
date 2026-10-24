@@ -1,0 +1,18 @@
+/* Shape/translation belong exclusively to OneFluidSurface; character stays inside. */
+.one-fluid-surface .one-fluid-character {
+  display:block;
+  overflow:hidden;
+  pointer-events:none;
+  animation:none;
+  transition:none;
+  transform:none;
+}
+.one-fluid-character .fluid-character-white {fill:var(--fluid-eye-white,#edd14b);}
+.one-fluid-character .fluid-character-shell {fill:#111110;}
+.one-fluid-character .fluid-character-pupil {
+  fill:none;
+  stroke:#111110;
+  stroke-width:6;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}

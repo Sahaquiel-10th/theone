@@ -1,5 +1,10 @@
-/** Local synthetic interaction model. Never used by production chat routes. */
-export type Message = { id: string; role: 'user' | 'assistant'; text: string; imageUrl?:string; files?:{id:string;originalName:string;welcomeGuide?:boolean;visualDocument?:boolean}[]; featureName?:string; instruction?: string; kind?: 'result'; status?: 'running' | 'queued' | 'held' | 'done' | 'cancelled' | 'failed'; taskId?: string; taskIds?: string[] };
+import type {AttachmentSummary} from '../../server/types';
+import type {MessageSourceDetails} from '../MessageSources';
+
+/** The optional fields also support old message records and local fixtures. */
+export type MessageAttachment = Pick<AttachmentSummary, 'id' | 'originalName'> & Partial<Pick<AttachmentSummary, 'mimeType' | 'kind' | 'size' | 'status' | 'uploadedBytes' | 'parseError' | 'officeArtifact' | 'welcomeGuide' | 'visualDocument'>>;
+/** Shared presentation data; the reducer below only supplies local synthetic interactions. */
+export type Message = MessageSourceDetails & { id: string; role: 'user' | 'assistant'; text: string; imageUrl?:string; files?:MessageAttachment[]; requestId?:string; finishReason?:'stop'|'length'|'filtered'|'tool_calls'|'unknown'; featureName?:string; instruction?: string; kind?: 'result'; status?: 'running' | 'queued' | 'held' | 'done' | 'cancelled' | 'failed'; taskId?: string; taskIds?: string[] };
 export type Task = { id: string; title: string; messages: Message[]; active: string[]; queue: string[]; dueAt: number | null; round: number; status: 'idle' | 'running' | 'completed' | 'failed' | 'stopped'; result: string; unread: boolean };
 export type Notice = { id: string; taskId: string; summary: string };
 export type PreviewState = { tasks: Task[]; dialogue: Message[]; pending: null | { id: string; text: string; target: string | null; dueAt: number; notices: string[] }; notices: Notice[]; selected: string | null; boundTask: string | null; lastTarget: string | null; draft: string; schedulerMs: number; workerMs: number; manual: boolean };

@@ -5,18 +5,20 @@ import { TaskReadAllButton } from './TaskReadAllButton';
 import { remainingResultAttachments } from './taskMessagePresentation';
 import "./things-panel.css";
 import { transferStateLabel } from "./noviceUx";
-import { Zap } from "lucide-react";
+import { ArrowLeft, Search, Zap } from "lucide-react";
 import { ActionMenu } from './ActionMenu';
 import { privateImageUrl } from './coordinatorMessage';
-import {WelcomeGuideCard} from './WelcomeGuideCard';
-import {AttachmentActions,type ActionAttachment} from './AttachmentActions';
+import {MessageSources,type MessageSourceDetails} from './MessageSources';
+import {MessageAttachments} from './MessageAttachments';
+import type {MessageAttachment} from './preview/dispatchPreviewState';
+import {FluidSplitWorkspace} from './fluid/FluidSplitWorkspace';
 
 type Thing = {
   id: string;
   title: string;
   updatedAt: string;
   archived?: boolean;
-  messages: { id?: string; role: string; content: string; originalContent?: string; imageUrl?: string; attachments?: (ActionAttachment&{welcomeGuide?:boolean;visualDocument?:boolean})[] }[];
+  messages: (MessageSourceDetails & { id?: string; role: string; content: string; originalContent?: string; imageUrl?: string; attachments?: MessageAttachment[] })[];
   messagesLoaded?: boolean;
   taskState?: 'active' | 'review' | 'ended' | 'history';
   outcome?: string;
@@ -31,6 +33,7 @@ export function ThingsPanel({
   onSelect,
   onSend,
   onWorkbench,
+  workbenchLabel = '在工作台继续 ↗',
   hasMore,
   onMore,
   loadingMore,
@@ -44,6 +47,8 @@ export function ThingsPanel({
   taskNotice,
   onReadAll,
   unreadCount = 0,
+  fluid = false,
+  onCloseDetail,
 }: {
   one?: ReactNode;
   items: Thing[];
@@ -53,10 +58,14 @@ export function ThingsPanel({
   onSelect: (id: string) => void;
   onSend: (id: string, text: string) => void | Promise<void>;
   onWorkbench: (id: string) => void;
+  workbenchLabel?: string;
   onRemove?: (id:string)=>Promise<void>;
   taskNotice?: ReactNode;
   onReadAll?: () => Promise<void>;
   unreadCount?: number;
+  fluid?: boolean;
+  /** Closing this view rejoins its surface; it never stops or deletes a task. */
+  onCloseDetail?: () => void;
   hasMore: boolean;
   onMore: () => void;
   loadingMore: boolean;
@@ -75,7 +84,7 @@ export function ThingsPanel({
   const [page, setPage] = useState(1);
   const selected = items.find((item) => item.id === selectedId && !item.archived);
   // Opening a task from chat should reveal its category, not an unrelated empty tab.
-  useEffect(() => { if(selected){setCategory(selected.taskState || 'history');setPage(1);setQuery('');} }, [selected?.id]);
+  useEffect(() => { if(selected){setCategory(selected.taskState || 'history');setPage(1);setQuery('');} }, [selected?.id,selected?.taskState]);
   const reviewUnread=items.filter(item=>!item.archived&&item.taskState==='review'&&item.unread).length;
   const found = items.filter((item) =>
     !item.archived && item.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) && (item.taskState||'history')===category,
@@ -84,15 +93,16 @@ export function ThingsPanel({
     current = Math.min(page, pages);
   const draft = drafts[selectedId] || "";
   const {scroll: messagesRef, onScroll} = useFollowLatest(selectedId, Boolean(selected));
-  return (
-    <section className="things-browser" aria-label="任务列表与对话">
-      <aside className="things-list">
+  const list = <aside className="things-list">
         <header className="things-list-heading">
           <h2>任务</h2>
           {one}
+          {onReadAll ? <TaskReadAllButton count={unreadCount} onReadAll={onReadAll}/> : null}
         </header>
-        {onReadAll ? <TaskReadAllButton count={unreadCount} onReadAll={onReadAll}/> : null}
+        <div className="things-list-toolbar">
+        <label className="things-search"><Search size={16} aria-hidden="true"/>
         <input
+          type="search"
           aria-label="搜索任务和历史对话"
           placeholder="搜索当前列表"
           value={query}
@@ -100,8 +110,9 @@ export function ThingsPanel({
             setQuery(event.target.value);
             setPage(1);
           }}
-        />
+        /></label>
         <nav className="task-category-tabs" aria-label="任务状态">{([['active','进行中'],['review','待确认'],['ended','已结束'],['history','历史对话']] as const).map(([id,label])=><button type="button" key={id} aria-pressed={category===id} onClick={()=>{setCategory(id);setPage(1);setQuery('');}}>{label}{id==='review'&&reviewUnread?<span className="task-review-dot" aria-label={`${reviewUnread} 个结果尚未查看`}/>:null}</button>)}</nav>
+        </div>
         <div className="things-list-items">
           {found.slice((current - 1) * 10, current * 10).map((item) => (
             <button
@@ -144,15 +155,16 @@ export function ThingsPanel({
             {loadingMore ? "正在加载" : "加载更早记录"}
           </button>
         ) : null}
-      </aside>
-      <section className="things-thread" aria-label="任务完整对话">
+      </aside>;
+  const thread = <section className="things-thread" aria-label="任务完整对话">
         {selected ? (
           <>
             <header>
-              <h2>{selected.title}</h2>
+              <div className="things-thread-title">{fluid?<span className="things-thread-eyebrow">任务对话</span>:null}<h2>{selected.title}</h2></div>
               <div className="things-thread-actions">
+              {fluid&&onCloseDetail?<button type="button" className="things-detail-return" onClick={onCloseDetail}><ArrowLeft size={14} aria-hidden="true"/><span>收起任务详情</span></button>:null}
               <button type="button" className="task-continue-button" onClick={() => onWorkbench(selected.id)}>
-                在工作台继续 ↗
+                {workbenchLabel}
               </button>
               {onRemove?<ActionMenu label="更多任务操作"><button type="button" onClick={()=>{if(confirm('删除任务并停止待办？历史保留，可恢复；已发生的操作不会撤销。'))void onRemove(selected.id).catch(e=>setErrors(old=>({...old,[selected.id]:e.message})));}}>删除任务</button></ActionMenu>:null}
               </div>
@@ -166,13 +178,14 @@ export function ThingsPanel({
                   <article key={message.id || index} className={message.role}>
                     <small>{message.originalContent ? 'ONE 交给这个任务的要求' : message.role === "user" ? "你" : "ONE"}</small>
                     {message.role === "assistant" ? (
-                      <MessageMarkdown>{message.content}</MessageMarkdown>
+                      <div className="markdown-body things-assistant-markdown"><MessageMarkdown privateImagesOnly codeTools>{message.content}</MessageMarkdown></div>
                     ) : (
                       <p>{message.content}</p>
                     )}
                     {message.originalContent ? <details className="task-original-message"><summary>看看我当时的原话</summary><p>{message.originalContent}</p></details> : null}
                     {privateImageUrl(message.imageUrl) ? <>{!hasInlineImage(message.content,message.imageUrl!) ? <ImagePreview src={message.imageUrl!} alt="这件任务生成的图片"/> : null}<a className="one-task-result-link" href={message.imageUrl} download>保存图片 ↗</a></> : null}
-                    {remainingResultAttachments(message.attachments,privateImageUrl(message.imageUrl) || undefined).map(file=>file.welcomeGuide||file.visualDocument?<WelcomeGuideCard key={file.id} id={file.id} title={file.originalName}/>:<AttachmentActions key={file.id} file={file} showName/>)}
+                    <MessageAttachments files={remainingResultAttachments(message.attachments,privateImageUrl(message.imageUrl))}/>
+                    {message.role === "assistant" ? <MessageSources message={message}/> : null}
                   </article>
                 ))
               ) : (
@@ -236,7 +249,8 @@ export function ThingsPanel({
         ) : (
           <div className="things-thread-empty">选择一个任务，查看结果或继续聊。</div>
         )}
-      </section>
-    </section>
-  );
+      </section>;
+  return <section className={`things-browser${fluid?' is-fluid':''}${selected?' has-selection':''}`} aria-label="任务列表与对话">
+    {fluid?<FluidSplitWorkspace open={Boolean(selected)} detailKey={selectedId} primary={list} secondary={selected?thread:null} ratio={.34} primaryLabel="任务列表" secondaryLabel="任务详情" className="things-task-split"/>:<>{list}{thread}</>}
+  </section>;
 }

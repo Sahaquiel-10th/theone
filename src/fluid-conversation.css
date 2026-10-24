@@ -1,0 +1,350 @@
+/* Conversation lives inside the optical shell. Its text has a quieter, more
+   solid hierarchy, so another layer of glass is not needed around every reply. */
+main.one-fluid-workspace.one-shell.one-studio .coordinator-messages {
+  padding-bottom: 14px;
+}
+/* The material can fill the screen while a conversation keeps one readable
+   center. No wrapper is added around Markdown: each direct block still follows
+   the local contour when a child separates from the mother surface. */
+main.one-fluid-workspace.one-shell.one-studio[data-fluid-desktop="true"] .coordinator-messages .coordinator-message.assistant {
+  box-sizing: border-box;
+  width: min(100%, var(--fluid-reading-measure, calc((100% + 800px) / 2)));
+  max-width: min(100%, var(--fluid-reading-measure, calc((100% + 800px) / 2)));
+  margin-left: var(--fluid-reading-offset, max(0px, calc((100% - 800px) / 4)));
+  margin-right: 0;
+}
+main.one-fluid-workspace.one-shell.one-studio[data-fluid-desktop="true"] .coordinator-messages .coordinator-message.user {
+  box-sizing: border-box;
+  max-width: min(100%, calc(var(--fluid-reading-measure, calc((100% + 800px) / 2)) * .82), var(--fluid-block-width, 100%));
+  margin-left: auto;
+  margin-right: var(--fluid-user-inset, var(--fluid-reading-right-inset, max(0px, calc((100% - 800px) / 4))));
+}
+main.one-fluid-workspace.one-shell.one-studio[data-fluid-desktop="true"] .fluid-canvas > .studio-assistant > :is(.studio-presence,.studio-composer,.studio-suggestions,.attention-receipt-slot) {
+  width: min(100%, var(--fluid-block-width, var(--fluid-reading-measure, calc((100% + 800px) / 2))));
+  max-width: min(100%, var(--fluid-block-width, var(--fluid-reading-measure, calc((100% + 800px) / 2))));
+  margin-left: var(--fluid-reading-offset, max(0px, calc((100% - 800px) / 4)));
+  margin-right: 0;
+}
+main.one-fluid-workspace.one-shell.one-studio[data-fluid-desktop="true"] .coordinator-messages > :is(.coordinator-history-button,[data-task-dispatch-anchor]) {
+  max-width: min(100%, var(--fluid-block-width, var(--fluid-reading-measure, calc((100% + 800px) / 2))));
+  margin-left: var(--fluid-reading-offset, max(0px, calc((100% - 800px) / 4)));
+  margin-right: 0;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-messages .coordinator-message {
+  min-width: 0;
+  margin-bottom: 25px;
+  color: var(--fluid-ink);
+  font-size: 15px;
+  line-height: 1.78;
+  overflow-wrap: anywhere;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-messages .coordinator-message::before {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--fluid-muted);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.2;
+  letter-spacing: .06em;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-messages .coordinator-message.assistant::before {
+  content: 'ONE';
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-messages .coordinator-message.user {
+  width: fit-content;
+  max-width: min(76%, var(--fluid-block-width, 76%));
+  margin-left: auto;
+  margin-right: var(--fluid-user-inset, 0px);
+  padding: 12px 17px 13px;
+  border: 1px solid color-mix(in srgb, var(--fluid-user-ink, var(--fluid-ink)) 7%, transparent);
+  border-radius: 21px 21px 7px 21px;
+  background: var(--fluid-user-fill);
+  color: var(--fluid-user-ink, var(--fluid-ink));
+  box-shadow: none;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-messages .coordinator-message.user::before {
+  content: '你';
+  margin-bottom: 5px;
+  color: color-mix(in srgb, var(--fluid-user-ink, var(--fluid-ink)) 60%, transparent);
+  letter-spacing: 0;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.user > .coordinator-user-text {
+  margin: 0;
+  color: var(--fluid-user-ink, var(--fluid-ink));
+  font: inherit;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant :is(p, li, .markdown-body) {
+  color: var(--fluid-ink);
+  font-size: 15px;
+  line-height: 1.78;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant p {
+  margin: 0 0 12px;
+  white-space: normal;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant :is(h1,h2,h3,h4,h5,h6) {
+  margin: 22px 0 10px;
+  color: var(--fluid-ink);
+  font-weight: 650;
+  line-height: 1.45;
+  letter-spacing: -.02em;
+  text-wrap: pretty;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant h1 { font-size: 22px; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant h2 { font-size: 19px; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant :is(h3,h4,h5,h6) { font-size: 16px; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant > :first-child { margin-top: 0; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant :is(ul,ol) {
+  box-sizing: border-box;
+  margin: 10px 0 16px;
+  padding-left: 23px;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant li { margin: 5px 0; padding-left: 2px; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant li > p { margin-bottom: 6px; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant li::marker { color: var(--fluid-muted); }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant :is(strong,b) { font-weight: 650; color: var(--fluid-ink); }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant blockquote {
+  margin: 16px 0;
+  padding: 3px 0 3px 15px;
+  border: 0;
+  border-left: 2px solid var(--fluid-line);
+  color: var(--fluid-muted);
+  background: transparent;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant blockquote p { color: var(--fluid-muted); }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant :not(pre) > code {
+  padding: .13em .35em;
+  border: 1px solid var(--fluid-line);
+  border-radius: 5px;
+  background: var(--fluid-code-fill, var(--fluid-input));
+  color: var(--fluid-code-ink, var(--fluid-ink));
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  font-size: .86em;
+  white-space: break-spaces;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant .one-markdown-code-block {
+  box-sizing: border-box;
+  min-width: 0;
+  margin: 16px 0;
+  border: 1px solid var(--fluid-code-edge, var(--fluid-line));
+  border-radius: 13px;
+  overflow: hidden;
+  background: var(--fluid-code-fill, var(--fluid-input));
+  color: var(--fluid-code-ink, var(--fluid-ink));
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant .one-markdown-code-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 3px 13px;
+  border-bottom: 1px solid var(--fluid-code-edge, var(--fluid-line));
+  color: var(--fluid-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+main.one-fluid-workspace.one-shell.one-studio .one-markdown-code-toolbar button {
+  min-height: 28px;
+  padding: 3px 5px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+main.one-fluid-workspace.one-shell.one-studio .one-markdown-code-toolbar button:hover { color: var(--fluid-ink); background: var(--fluid-selection); }
+main.one-fluid-workspace.one-shell.one-studio .one-markdown-code-toolbar button:focus-visible { outline: 2px solid var(--fluid-accent); outline-offset: 1px; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant pre {
+  box-sizing: border-box;
+  max-width: 100%;
+  margin: 14px 0;
+  padding: 15px 17px;
+  overflow-x: auto;
+  border: 0;
+  border-radius: 10px;
+  background: var(--fluid-code-fill, var(--fluid-input));
+  color: var(--fluid-code-ink, var(--fluid-ink));
+  font: 12.5px/1.75 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  white-space: pre;
+  overflow-wrap: normal;
+  tab-size: 2;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant .one-markdown-code-block > pre { margin: 0; border-radius: 0; background: transparent; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant pre code { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; white-space: inherit; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant table {
+  display: block;
+  box-sizing: border-box;
+  margin: 16px 0;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.65;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant :is(th,td) {
+  padding: 9px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--fluid-line);
+  background: transparent;
+  color: var(--fluid-ink);
+  text-align: left;
+  vertical-align: top;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant th { font-size: 12px; font-weight: 650; background: var(--fluid-input); }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant hr { margin: 21px 0; border: 0; border-top: 1px solid var(--fluid-line); }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant a.one-conversation-link { color: var(--fluid-ink); text-decoration-color: var(--fluid-muted); text-underline-offset: 3px; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant .katex-display { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message .coordinator-feature-label { display: block; margin-bottom: 7px; font-size: 11px; }
+
+/* Source disclosure and file delivery share the reading surface. They use
+   quiet, solid content treatments instead of a second glass layer. */
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message .one-answer-sources {
+  box-sizing: border-box;
+  max-width: min(100%, var(--fluid-block-width, 100%));
+  margin: 15px 0 5px;
+  padding: 10px 0 0;
+  border: 0;
+  border-top: 1px solid var(--fluid-line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--fluid-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message .one-answer-sources > summary {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--fluid-line);
+  border-radius: 9px;
+  background: var(--fluid-input);
+  box-shadow: none;
+  color: var(--fluid-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.65;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message .one-answer-sources.has-warning > summary { color: var(--fluid-ink); }
+main.one-fluid-workspace.one-shell.one-studio .one-answer-sources > summary:focus-visible,
+main.one-fluid-workspace.one-shell.one-studio .coordinator-attachment-error > summary:focus-visible {
+  outline: 2px solid var(--fluid-focus, var(--fluid-accent));
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message .one-answer-source-details > section {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--fluid-line);
+  border-radius: 10px;
+  background: var(--fluid-input);
+}
+main.one-fluid-workspace.one-shell.one-studio .one-answer-source-details :is(a,strong) {
+  color: var(--fluid-ink);
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+main.one-fluid-workspace.one-shell.one-studio .one-answer-source-details a { text-underline-offset: 3px; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message .one-answer-source-details p {
+  margin: 5px 0 0;
+  color: var(--fluid-muted);
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message .one-answer-source-details > .one-source-warning {
+  margin: 9px 0;
+  padding-left: 10px;
+  border-left: 2px solid color-mix(in srgb, var(--fluid-accent) 65%, var(--fluid-muted));
+  color: var(--fluid-ink);
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-attachments {
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: min(100%, var(--fluid-block-width, 100%));
+  margin: 12px 0 5px;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-attachment {
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  width: min(310px, 100%);
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--fluid-line);
+  border-radius: 13px;
+  background: var(--fluid-input);
+  color: var(--fluid-ink);
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-attachment-icon {
+  display: grid;
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--fluid-ink) 5%, transparent);
+  color: var(--fluid-muted);
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-attachment-thumbnail { flex: 0 0 42px; width: 42px; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-attachment-thumbnail .one-image-preview {
+  display: block;
+  width: 42px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: transparent;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-attachment-thumbnail .one-image-preview img { display: block; width: 42px; height: 42px; object-fit: cover; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-attachment-thumbnail .one-image-preview > span { display: none; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-attachment-meta { display: grid; gap: 3px; min-width: 0; flex: 1; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-attachment-meta > strong { overflow-wrap: anywhere; color: var(--fluid-ink); font-size: 12px; font-weight: 600; line-height: 1.5; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-attachment-meta > small { color: var(--fluid-muted); font-size: 11px; line-height: 1.5; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-attachment .attachment-actions { margin-top: 3px; gap: 5px 11px; font-size: 11px; line-height: 1.5; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-attachment .attachment-actions a { color: var(--fluid-ink); }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-attachment .attachment-actions a:is(:hover,:focus-visible) { background: transparent; color: var(--fluid-focus, var(--fluid-ink)); }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-attachment-error { margin-top: 5px; color: var(--fluid-muted); font-size: 11px; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-attachment-error > summary { cursor: pointer; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message .coordinator-attachment-error p { margin: 5px 0 0; color: var(--fluid-muted); font-size: 11px; line-height: 1.6; white-space: pre-wrap; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message .coordinator-completion-notice {
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  max-width: min(100%, var(--fluid-block-width, 100%));
+  margin: 12px 0 0;
+  padding: 9px 11px;
+  border-left: 2px solid var(--fluid-muted);
+  border-radius: 0 8px 8px 0;
+  background: var(--fluid-input);
+  color: var(--fluid-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-completion-notice button {
+  padding: 3px 7px;
+  border: 1px solid var(--fluid-line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fluid-ink);
+  font: inherit;
+  cursor: pointer;
+}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-completion-notice button:disabled { opacity: .5; cursor: default; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-answer-actions { max-width: min(100%, var(--fluid-block-width, 100%)); margin-top: 11px; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-answer-actions .message-result-toolbar { margin-top: 0; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-answer-actions .one-beta-feedback-actions button:hover,
+main.one-fluid-workspace.one-shell.one-studio .coordinator-answer-actions .one-beta-feedback-actions button[aria-pressed="true"] { border-color: var(--fluid-line); background: var(--fluid-hover); color: var(--fluid-ink); }

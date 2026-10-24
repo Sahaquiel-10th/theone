@@ -20,13 +20,23 @@
 .things-thread > .execution-disclosure{margin:8px 24px;flex-shrink:0;overflow:hidden}
 .attention-workspace .things-thread .execution-disclosure-body{max-height:28vh;overflow:auto;overscroll-behavior:contain}
 .things-thread-messages{flex:1;min-height:0;padding:24px 32px;overflow:auto;font-size:14px;line-height:1.8}
-.things-thread-messages article{width:fit-content;max-width:85%;padding:12px 18px;margin:0 0 18px;border:1px solid var(--studio-line,#edf0e8);border-radius:16px 16px 16px 4px;background:var(--studio-paper,#fffefa);overflow-wrap:anywhere}
-.things-thread-messages article.user{margin-left:auto;background:color-mix(in srgb,var(--studio-muted) 10%,var(--studio-surface));border-radius:16px 16px 4px 16px}
+.things-thread-messages article{width:100%;min-width:0;max-width:100%;padding:6px 0 18px;margin:0 0 20px;border:0;border-radius:0;background:transparent;overflow-wrap:anywhere}
+.things-thread-messages article.user{width:fit-content;max-width:85%;margin-left:auto;padding:12px 18px;border:1px solid var(--studio-line,#edf0e8);background:var(--fluid-user-fill,color-mix(in srgb,var(--studio-muted) 10%,var(--studio-surface)));border-radius:18px 18px 5px 18px}
 .things-thread-messages article p{margin:6px 0}
 .things-compose-execute{display:inline-flex;align-items:flex-end;gap:5px;line-height:1}
 .things-compose-execute svg{flex-shrink:0;align-self:flex-end}
-.things-thread-messages article small{font-size:10px;color:var(--studio-muted)}
-.things-thread-messages article p{white-space:pre-wrap;overflow-wrap:anywhere}
+.things-thread-messages article>small{display:block;margin-bottom:8px;font-size:11px;font-weight:500;color:var(--studio-muted)}
+.things-thread-messages article.user>p,.things-thread-messages .task-original-message p{white-space:pre-wrap;overflow-wrap:anywhere}
+.things-thread-messages .things-assistant-markdown{min-width:0;max-width:100%;font-size:14px;line-height:1.85;color:var(--studio-ink)}
+.things-thread-messages .things-assistant-markdown> :first-child{margin-top:0}
+.things-thread-messages .things-assistant-markdown> :last-child{margin-bottom:0}
+.things-thread-messages .things-assistant-markdown p{white-space:normal;margin:0 0 14px}
+.things-thread-messages .things-assistant-markdown pre{max-width:100%;overflow-x:auto;white-space:pre}
+.things-thread-messages .things-assistant-markdown :is(table,.katex-display){max-width:100%;overflow-x:auto}
+.things-thread-messages .things-assistant-markdown h2{font-size:20px}
+.things-thread-messages .things-assistant-markdown h3{font-size:17px}
+.things-thread-messages .coordinator-attachments{margin-top:12px;max-width:100%}
+.things-thread-messages .one-answer-sources{margin-top:14px;font-size:12px;color:var(--studio-muted)}
 .things-thread-messages .generated-image{display:block;width:min(100%,640px);max-height:70vh;object-fit:contain;border-radius:12px;margin:12px 0}
 .task-original-message{margin-top:12px;border-top:1px solid var(--studio-line,#e5e7dc);padding-top:8px;font-size:12px;color:var(--studio-muted,#73786c)}
 .task-original-message summary{cursor:pointer;list-style:none}.task-original-message summary::before{content:'＋ ';font-size:12px}.task-original-message[open] summary::before{content:'− '}
@@ -41,3 +51,47 @@
 @media(max-width:650px){.things-browser{grid-template-columns:115px minmax(0,1fr)}.things-list{padding:12px;gap:12px}.things-list-items button{padding:8px}.things-thread header{padding:14px;flex-wrap:wrap}.things-thread header h2{font-size:16px}.things-thread-messages{padding:12px}.things-thread form{padding:10px;gap:5px}.things-list footer{flex-wrap:wrap}.things-thread-messages{max-height:55vh}}
 .task-category-tabs{display:flex;flex-wrap:wrap;gap:5px;margin:10px 0}.things-list .task-category-tabs button{font:inherit;font-size:12px;border:0;border-radius:8px;padding:7px 9px;background:transparent;color:inherit;cursor:pointer}.things-list .task-category-tabs button[aria-pressed=true]{background:var(--studio-line,#e7ebdf)}
 .task-review-dot{display:inline-block;width:6px;height:6px;margin-left:6px;border-radius:50%;background:#ae4d3c;vertical-align:middle;flex-shrink:0}
+
+/* A selected task is a child of this list, with its own reading and draft space. */
+.things-browser.is-fluid{display:block;height:auto;min-height:0;overflow:visible;color:var(--fluid-ink,var(--studio-ink));}
+.things-browser.is-fluid>.things-task-split{--fluid-split-height:clamp(440px,calc(100dvh - 218px),700px);}
+.things-browser.is-fluid .things-task-split>.fluid-split-primary,.things-browser.is-fluid .things-task-split>.fluid-split-secondary{overflow:hidden;}
+.things-browser.is-fluid .things-list{height:100%;box-sizing:border-box;min-height:0;padding:0;border:0;gap:12px;}
+.things-browser.is-fluid .things-list-heading{min-height:32px;align-items:center;}
+.things-browser.is-fluid .things-list-heading h2{font-size:19px;line-height:1.4;letter-spacing:-.02em;}
+.things-browser.is-fluid .things-list input{min-height:39px;padding:9px 12px;border-radius:13px;background:var(--fluid-input,var(--studio-surface));}
+.things-browser.is-fluid .task-category-tabs{gap:4px;margin:0;flex:none;}
+.things-browser.is-fluid .things-list .task-category-tabs button{padding:7px 9px;border-radius:10px;font-size:12px;line-height:1.35;min-height:32px;white-space:nowrap;}
+.things-browser.is-fluid .things-list .task-category-tabs button[aria-pressed=true]{background:var(--fluid-selection,var(--fluid-hover));}
+.things-browser.is-fluid .things-list-items{min-height:0;gap:7px;padding:1px 3px 2px 0;scrollbar-width:thin;scrollbar-color:var(--fluid-line) transparent;}
+.things-browser.is-fluid .things-list-items>button{min-width:0;flex:none;padding:12px 13px;border-radius:15px;gap:7px;}
+.things-browser.is-fluid .things-list-items>button[aria-current=true]{background:var(--fluid-selection,var(--fluid-hover));border-color:var(--fluid-line);}
+.things-browser.is-fluid .things-list-items strong{font-size:13px;line-height:1.55;font-weight:550;}
+.things-browser.is-fluid .things-list-items small{font-size:11px;line-height:1.5;}
+.things-browser.is-fluid .things-list-items>p{font-size:13px;line-height:1.85;color:var(--fluid-muted);margin:12px 0;}
+.things-browser.is-fluid .things-list>footer{flex:none;padding-top:7px;}
+.things-browser.is-fluid .things-list>.task-read-all{flex:none;font-size:12px;}
+.things-browser.is-fluid .things-thread{height:100%;min-height:0;gap:0;}
+.things-browser.is-fluid .things-thread>header{align-items:flex-start;gap:14px;padding:0 0 15px;flex-wrap:wrap;border-bottom:1px solid var(--fluid-line);}
+.things-browser.is-fluid .things-thread-title{min-width:0;flex:1 1 210px;}
+.things-browser.is-fluid .things-thread-title h2{font-size:19px;line-height:1.45;letter-spacing:-.02em;overflow-wrap:anywhere;}
+.things-browser.is-fluid .things-thread-eyebrow{display:block;margin-bottom:5px;color:var(--fluid-muted);font-size:11px;line-height:1.4;}
+.things-browser.is-fluid .things-thread-actions{align-items:center;justify-content:flex-end;gap:7px;flex:0 1 auto;max-width:100%;}
+.things-browser.is-fluid .things-thread-actions>button{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:32px;padding:6px 9px;border-color:var(--fluid-line);border-radius:11px;background:transparent;font-size:12px;line-height:1.4;white-space:nowrap;}
+.things-browser.is-fluid .things-thread-actions>button:hover{background:var(--fluid-hover);}
+.things-browser.is-fluid .things-thread-actions .things-detail-return{color:var(--fluid-muted);border-color:transparent;}
+.things-browser.is-fluid .things-thread-messages{padding:18px 2px 10px;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--fluid-line) transparent;}
+.things-browser.is-fluid .things-thread-messages article{margin-bottom:16px;}
+.things-browser.is-fluid .things-thread-messages article.user{max-width:90%;padding:11px 15px;}
+.things-browser.is-fluid .things-thread>.execution-disclosure{flex:none;margin:8px 0;max-height:28%;overflow:auto;}
+.things-browser.is-fluid .things-thread>form{padding:13px 0 0;gap:8px;flex-wrap:wrap;align-items:flex-end;border-color:var(--fluid-line);}
+.things-browser.is-fluid .things-thread>form>textarea{flex:1 1 230px;min-height:52px;max-height:108px;padding:11px 12px;border-radius:15px;background:var(--fluid-input,var(--studio-surface));}
+.things-browser.is-fluid .things-thread>form>button{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:36px;padding:8px 11px;border-radius:12px;font-size:12px;line-height:1.4;white-space:nowrap;background:transparent;}
+.things-browser.is-fluid .things-thread>form>button[type=submit]{background:var(--fluid-accent,#efd24b);border-color:transparent;color:var(--fluid-on-accent,#25250e);}
+.things-browser.is-fluid .things-compose-execute svg{align-self:center;}
+.things-browser.is-fluid .things-send-error{padding:8px 0 0;line-height:1.7;}
+.things-browser.is-fluid button:focus-visible,.things-browser.is-fluid input:focus-visible,.things-browser.is-fluid textarea:focus-visible{outline:2px solid var(--fluid-focus);outline-offset:3px;}
+
+.things-search{display:flex;align-items:center;gap:8px;min-width:0;}
+.things-search>svg{flex:none;}
+.things-search>input{flex:1;min-width:0;}

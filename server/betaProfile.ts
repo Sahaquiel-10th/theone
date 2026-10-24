@@ -15,9 +15,14 @@ export type OnboardingHandbook = {
   reason?: "not_configured" | "budget_required" | "insufficient_power" | "billing_review" | "unavailable";
 };
 
+export type AppearanceScene = "graphite" | "silver";
+export type AccountAppearance = { scene: AppearanceScene };
+
 export type AccountProfile = {
   workspaceId: string;
   displayName: string;
+  /** Account-bound appearance, independent of the temporary execution state. */
+  appearance?: AccountAppearance;
   onboarding: {
     nameSetAt?: string;
     knowledgeChoice: "pending" | "connected" | "skipped";
@@ -36,6 +41,7 @@ export type AccountProfile = {
 export type AccountScope = { userId: string; workspaceId: string };
 export type ProfilePatch = {
   displayName?: unknown;
+  appearance?: unknown;
   onboardingAction?: unknown;
   handbookChoice?: unknown;
   handbookBudgetPower?: unknown;
@@ -90,6 +96,13 @@ export function updateAccountProfile(db: Database, scope: AccountScope, patch: P
     profile.displayName = name;
     profile.onboarding.nameSetAt ||= currentTime;
   }
+  if (patch.appearance !== undefined) {
+    const value = patch.appearance;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => key !== "scene") || !("scene" in value) || (value.scene !== "graphite" && value.scene !== "silver")) {
+      throw new BetaInputError("请选择石墨框景或浅银光场");
+    }
+    profile.appearance = { scene: value.scene };
+  }
   if (patch.onboardingAction !== undefined) {
     if(patch.onboardingAction==='complete'&&profile.onboarding.journey&&profile.onboarding.journey.stage!=='complete')throw new BetaInputError('请从当前新手引导的最后一步完成。',409);
     if (typeof patch.onboardingAction !== "string" || !["knowledge_connected", "knowledge_skipped", "complete"].includes(patch.onboardingAction)) {
@@ -120,7 +133,7 @@ export function updateAccountProfile(db: Database, scope: AccountScope, patch: P
   }
   if (patch.handbookChoice !== undefined && patch.onboardingAction !== "complete") throw new BetaInputError("图片指南只会在首次引导完成时安排");
   if (patch.handbookBudgetPower !== undefined && (patch.onboardingAction !== "complete" || patch.handbookChoice !== "create")) throw new BetaInputError("图片指南的额度上限只用于这次首次引导");
-  if (patch.displayName === undefined && patch.onboardingAction === undefined) throw new BetaInputError("没有要更新的资料");
+  if (patch.displayName === undefined && patch.onboardingAction === undefined && patch.appearance === undefined) throw new BetaInputError("没有要更新的资料");
   profile.updatedAt = currentTime;
   user.profile = profile;
   return structuredClone(profile);

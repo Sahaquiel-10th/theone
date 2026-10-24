@@ -55,3 +55,18 @@ test("untrusted HTML and TeX cannot execute scripts or create javascript links",
   const html = render('<script>alert(1)</script>\n\n$\\href{javascript:alert(1)}{bad}$\n\n$\\htmlClass{injected}{x}$');
   assert.doesNotMatch(html, /<script>|href="javascript:|class="injected"/);
 });
+
+test("conversation code tools keep semantic markdown and literal code in safe direct-child blocks", () => {
+  const html = renderToStaticMarkup(createElement(MessageMarkdown, { codeTools: true, children: '## 建议\n\n先看 **重点** 和 `inline()`。\n\n- 第一项\n- 第二项\n\n| 名称 | 状态 |\n| --- | --- |\n| 测试 | 完成 |\n\n```js\nconst html = "<script>literal</script>";\nconst value = "$x$";\n```' }));
+  assert.match(html, /^<h2>建议<\/h2>/);
+  assert.match(html, /<strong>重点<\/strong>/);
+  assert.match(html, /<ul>\s*<li>第一项<\/li>/);
+  assert.match(html, /<table>/);
+  assert.match(html, /<div class="one-markdown-code-block"><div class="one-markdown-code-toolbar"><span>js<\/span>/);
+  assert.match(html, /aria-label="复制代码"/);
+  assert.match(html, /<pre><code class="language-js">/);
+  assert.match(html, /&lt;script&gt;literal&lt;\/script&gt;/);
+  assert.match(html, /\$x\$/);
+  assert.doesNotMatch(html, /<script>|class="katex"/);
+  assert.doesNotMatch(render('```js\nconst x = 1;\n```'), /one-markdown-code-toolbar/);
+});

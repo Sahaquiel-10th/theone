@@ -37,11 +37,11 @@ export function transferFeedbackLabel(task:Transfer) {
   if(task.state==='returned')return '结果已返回，查看内容';
   return transferStateLabel(task.state);
 }
-type RailProps={tasks:Transfer[];busy:boolean;onOpen:(id:string)=>void;onOpenAll?:()=>void;onStop?:(task:Transfer,source:HTMLElement)=>Promise<void>;onReport?:(ids:string[])=>Promise<boolean|void>;onReadAll?:()=>Promise<void>;onDismiss?:(task:Transfer)=>Promise<void>;recentReportedReceiptIds?:string[];departureAnchor?:()=>HTMLElement|null;returnAnchor?:()=>HTMLElement|null};
+type RailProps={tasks:Transfer[];busy:boolean;onOpen:(id:string)=>void;onOpenAll?:()=>void;onStop?:(task:Transfer,source:HTMLElement)=>Promise<void>;onReport?:(ids:string[])=>Promise<boolean|void>;onReadAll?:()=>Promise<void>;onDismiss?:(task:Transfer)=>Promise<void>;recentReportedReceiptIds?:string[];departureAnchor?:()=>HTMLElement|null;returnAnchor?:()=>HTMLElement|null;animateNotes?:boolean};
 type CardGeometry={node:HTMLElement;rect:NoteRect};
 
 /** Completed notes wait for the next dispatcher answer. Motion never sends a chat or marks work read. */
-export function TaskTransferRail({tasks,busy,onOpen,onOpenAll,onStop,onReadAll,onDismiss,recentReportedReceiptIds=[],departureAnchor,returnAnchor}:RailProps) {
+export function TaskTransferRail({tasks,busy,onOpen,onOpenAll,onStop,onReadAll,onDismiss,recentReportedReceiptIds=[],departureAnchor,returnAnchor,animateNotes=true}:RailProps) {
   const [returning,setReturning]=useState<Transfer[]>([]),[departing,setDeparting]=useState<string[]>([]),[expanded,setExpanded]=useState(true);
   const [stopping,setStopping]=useState<string[]>([]),[stopError,setStopError]=useState(''),[readError,setReadError]=useState('');
   const previous=useRef<Map<string,Transfer>|null>(null),returned=useRef(new Set<string>()),rail=useRef<HTMLElement>(null);
@@ -75,12 +75,12 @@ export function TaskTransferRail({tasks,busy,onOpen,onOpenAll,onStop,onReadAll,o
         if(direction==='return')setReturning(old=>old.filter(item=>item.id!==task.id));
         else setDeparting(old=>old.filter(id=>id!==task.id));
       };
-      if(!node||!target||!rect){queueMicrotask(finish);return;}
+      if(!animateNotes||!node||!target||!rect){queueMicrotask(finish);return;}
       animations.current.set(key,flyTaskNote(node,direction==='depart'?target.getBoundingClientRect():rect,direction==='depart'?rect:target.getBoundingClientRect(),direction,finish,index*70));
     };
     departures.forEach((task,index)=>start(task,'depart',index));
     returns.forEach((task,index)=>start(task,'return',index));
-  },[tasks,recentReportedReceiptIds]);
+  },[tasks,recentReportedReceiptIds,animateNotes]);
   if(!visible.length)return null;
   const feedbackCount=new Set(visible.filter(task=>transferSettled(task.state)).map(task=>task.taskId)).size;
   const unreadCount=visible.filter(task=>transferSettled(task.state)&&task.read!==true).length;
@@ -98,7 +98,7 @@ export function TaskTransferRail({tasks,busy,onOpen,onOpenAll,onStop,onReadAll,o
       {transferNeedsRecovery(task)?<button type="button" className="task-transfer-more task-retry-action" title="先核对本轮结果，再确认继续；不会立即重复执行" onClick={()=>onOpen(task.taskId)}>重试</button>:null}
       {transferSettled(task.state)&&onDismiss?<button type="button" className="task-transfer-more task-dismiss-action" aria-label={`收起${task.title}的提醒`} title="只收起提醒，不删除任务或文件" onClick={()=>{void onDismiss(task).catch(error=>setReadError(error instanceof Error?error.message:'暂时没能收起，请再试一次'));}}>{transferNeedsRecovery(task)?'忽略':<X size={12}/>}</button>:null}
       {task.state==='paused'||task.state==='prepared_local'?<button type="button" className="task-transfer-more" onClick={()=>onOpen(task.taskId)}>{task.state==='prepared_local'?'打开任务':'查看恢复方式'}</button>:null}
-      {!transferSettled(task.state)&&onStop?<button type="button" className="task-transfer-more" disabled={stopping.includes(task.id)} onClick={event=>{const source=event.currentTarget;setStopping(old=>[...old,task.id]);void onStop(task,source).catch(error=>setStopError(error instanceof Error?error.message:'停止未确认')).finally(()=>setStopping(old=>old.filter(id=>id!==task.id)));}}>{stopping.includes(task.id)?'停止中':'停止'}</button>:null}
+      {!transferSettled(task.state)&&onStop?<button type="button" className="task-transfer-more" aria-label={`停止任务：${task.title}`} disabled={stopping.includes(task.id)} onClick={event=>{const source=event.currentTarget;setStopping(old=>[...old,task.id]);void onStop(task,source).catch(error=>setStopError(error instanceof Error?error.message:'停止未确认')).finally(()=>setStopping(old=>old.filter(id=>id!==task.id)));}}>{stopping.includes(task.id)?'停止中':'停止任务'}</button>:null}
     </div>):null}
     {stopError?<small role="alert">{stopError}</small>:null}
     {expanded&&visible.length>5&&onOpenAll?<button type="button" className="task-transfer-more" onClick={onOpenAll}>另有 {visible.length-5} 件 · 查看全部任务</button>:null}

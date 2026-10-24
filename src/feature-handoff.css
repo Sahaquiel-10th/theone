@@ -1,0 +1,22 @@
+.feature-handoff[popover],.feature-handoff{position:fixed;inset:0;z-index:2147483000;width:100vw;height:100dvh;max-width:none;max-height:none;margin:0;padding:0;border:0;overflow:visible;pointer-events:none!important;background:transparent;color:var(--handoff-ink);outline:0;}
+.feature-handoff::backdrop{background:transparent;pointer-events:none;}
+.feature-handoff-canvas{display:block;overflow:visible;pointer-events:none;}
+.feature-handoff-drop{fill:var(--handoff-accent);stroke:var(--handoff-edge);stroke-width:.65;}
+.feature-handoff-neck{fill:var(--handoff-accent);stroke:none;}
+.feature-handoff-halo{fill:none;stroke:var(--handoff-accent);stroke-width:1.2;}
+main.one-fluid-workspace .studio-composer .composer-row{position:relative;isolation:isolate;}
+main.one-fluid-workspace .feature-armed-rim{position:absolute;inset:-2px;z-index:3;box-sizing:border-box;display:none;overflow:hidden;border:0;border-radius:inherit;pointer-events:none;opacity:1;box-shadow:0 0 0 1px color-mix(in srgb,var(--fluid-accent,#f0d45b) 20%,transparent),0 0 10px color-mix(in srgb,var(--fluid-accent,#f0d45b) 15%,transparent);}
+main.one-fluid-workspace .studio-composer[data-feature-armed="true"] .feature-armed-rim{display:block;}
+.feature-armed-rim>svg{display:block;overflow:visible;pointer-events:none;}
+.feature-armed-rim rect{fill:none;vector-effect:non-scaling-stroke;}
+.feature-armed-rim .feature-rim-track{stroke:var(--fluid-accent,#f0d45b);stroke-width:1.6;opacity:.76;}
+.feature-armed-rim .feature-rim-flow{stroke-width:2.4;stroke-linecap:round;stroke-dasharray:17 83;animation:feature-rim-circuit 6s linear infinite;}
+@keyframes feature-rim-circuit{to{stroke-dashoffset:-100;}}
+main.one-fluid-workspace .studio-composer[data-feature-armed="true"] .selected-feature-list{align-items:center;gap:7px;margin:0 0 9px;}
+main.one-fluid-workspace.one-studio .selected-feature-list .selected-feature-chip{display:inline-flex;align-items:center;gap:7px;min-height:30px;padding:5px 10px;border:1px solid color-mix(in srgb,var(--fluid-accent) 35%,var(--fluid-line));background:color-mix(in srgb,var(--fluid-accent) 11%,var(--fluid-input));color:var(--fluid-ink);border-radius:16px;font-size:11px;line-height:1.5;}
+main.one-fluid-workspace .selected-feature-list>small{color:var(--fluid-muted);font-size:11px;}
+@media(prefers-reduced-motion:reduce){.feature-handoff{display:none!important;}.feature-armed-rim .feature-rim-flow{display:none;animation:none;}.feature-armed-rim .feature-rim-track{opacity:.9;}}
+/* Unarmed and hidden workspaces do not keep even a compositor loop running. */
+main.one-fluid-workspace .studio-composer:not([data-feature-armed="true"]) .feature-rim-flow,
+main.one-fluid-workspace .feature-armed-rim[data-page-visible="false"] .feature-rim-flow{animation-play-state:paused;}
+@media(update:slow){.feature-armed-rim .feature-rim-flow{animation:none;stroke-dasharray:none;opacity:.45;}}

@@ -68,7 +68,7 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
   }));
   router.patch("/", asyncRoute(async (req, res) => {
     const s = scope(req), body = req.body ?? {};
-    const savedProfile = await store.mutate(db => updateAccountProfile(db, s, { displayName: body.displayName, onboardingAction: body.onboardingAction, handbookChoice: body.handbookChoice, handbookBudgetPower: body.handbookBudgetPower }));
+    const savedProfile = await store.mutate(db => updateAccountProfile(db, s, { displayName: body.displayName, appearance: body.appearance, onboardingAction: body.onboardingAction, handbookChoice: body.handbookChoice, handbookBudgetPower: body.handbookBudgetPower }));
     let handbookNotice: string | undefined;
     if (body.onboardingAction === "complete" && body.handbookChoice === "create") {
       try {

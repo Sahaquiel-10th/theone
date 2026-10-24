@@ -1,0 +1,345 @@
+/* Split workflows share the scene's frame. The frame is visible through the
+   analytical contour: an opaque parent sheet must never paint over its cleft. */
+main.one-fluid-workspace.one-shell.one-studio {
+  --fluid-workflow-stage:var(--fluid-frame,#27323b);
+  --fluid-workflow-stage-edge:color-mix(in srgb,var(--fluid-frame-ink,#dce8ef) 17%,transparent);
+}
+main.one-fluid-workspace.one-shell.one-studio .one-settings-dialog.fluid-work-layer.fluid-formal-work-layer:has(.fluid-split-workspace) {
+  gap:10px;
+  padding:0;
+  border:0;
+  border-radius:0;
+  background:transparent;
+  box-shadow:none;
+  backdrop-filter:none;
+  overflow:visible;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer:has(.fluid-split-workspace)>header {
+  box-sizing:border-box;
+  min-height:70px;
+  padding:15px 23px;
+  border:1px solid var(--fluid-menu-edge,var(--fluid-line));
+  border-radius:24px;
+  background:var(--fluid-menu-fill,var(--studio-surface));
+  box-shadow:inset 0 1px 0 var(--fluid-menu-glint,#ffffff75),0 8px 28px var(--fluid-menu-shadow,#172b3b20);
+  backdrop-filter:blur(18px);
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer:has(.fluid-split-workspace)>.settings-dialog-body {
+  box-sizing:border-box;
+  padding:10px;
+  border:1px solid var(--fluid-workflow-stage-edge);
+  border-radius:32px;
+  background:var(--fluid-workflow-stage);
+  box-shadow:inset 0 1px 0 var(--fluid-workflow-stage-edge),0 24px 64px var(--fluid-menu-shadow,#172b3b2c);
+  overflow:auto;
+  min-height:0;
+  scrollbar-gutter:stable;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer:has(.fluid-split-workspace)::backdrop {
+  background:color-mix(in srgb,var(--fluid-frame,#1b2b37) 24%,transparent);
+  backdrop-filter:blur(5px);
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-split-workspace {
+  --fluid-split-fill:var(--fluid-menu-fill,var(--studio-surface));
+  --fluid-split-padding:22px;
+  color:var(--fluid-ink);
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer :is(.feature-workflow-split,.things-task-split,.knowledge-connections-split,.sharing-workspace-split) {
+  --fluid-split-height:min(680px,calc(100dvh - 210px));
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer.is-maximized :is(.feature-workflow-split,.things-task-split,.knowledge-connections-split,.sharing-workspace-split) {
+  --fluid-split-height:calc(100dvh - 162px);
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-split-material {
+  filter:drop-shadow(0 5px 10px #000c1615);
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-split-rim {
+  stroke-width:1.35;
+}
+
+/* A workspace nested under the Twins tab is the active material owner. Flatten
+   its dormant outer wrapper, otherwise its white fill hides every inner seam. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-workflow-split:has(.sharing-workspace-split) {
+  height:auto;
+  min-height:0;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-workflow-split:has(.sharing-workspace-split)>.fluid-split-material {
+  display:none;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-workflow-split:has(.sharing-workspace-split)>.fluid-split-primary {
+  position:relative;
+  inset:auto;
+  width:100%;
+  padding:0;
+  overflow:visible;
+  border-radius:0;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-workflow-split:has(.sharing-workspace-split) .feature-workflow-navigation,
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-task-scope {
+  box-sizing:border-box;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  flex-wrap:wrap;
+  margin:0 0 10px;
+  padding:11px 15px;
+  border:1px solid var(--fluid-menu-edge,var(--fluid-line));
+  border-radius:22px;
+  color:var(--fluid-ink);
+  background:var(--fluid-menu-fill,var(--studio-surface));
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-workflow-split:has(.sharing-workspace-split) .feature-workflow-utilities {
+  margin:0;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-workflow-split:has(.sharing-workspace-split) .sharing-workspace-split {
+  --fluid-split-height:min(620px,calc(100dvh - 296px));
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer.is-maximized .feature-workflow-split:has(.sharing-workspace-split) .sharing-workspace-split {
+  --fluid-split-height:calc(100dvh - 244px);
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-task-scope {
+  justify-content:flex-start;
+  gap:6px;
+  padding:8px 12px;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-task-scope>button {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:34px;
+  width:auto;
+  padding:7px 12px;
+  border:1px solid transparent;
+  border-radius:14px;
+  background:transparent;
+  color:var(--fluid-muted);
+  font:inherit;
+  font-size:12px;
+  font-weight:500;
+  line-height:1.5;
+  white-space:nowrap;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-task-scope>button[aria-pressed=true] {
+  background:var(--fluid-selection);
+  border-color:var(--fluid-line);
+  color:var(--fluid-ink);
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-things-shell .things-task-split {
+  --fluid-split-height:min(650px,calc(100dvh - 276px));
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer.is-maximized .fluid-things-shell .things-task-split {
+  --fluid-split-height:calc(100dvh - 226px);
+}
+
+/* Compact link bubbles belong to their owner row. Their slit reveals the same
+   frame as the main split, while a closed row keeps its uninterrupted surface. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-owner-split {
+  --fluid-split-padding:16px;
+  border-radius:22px;
+  background:var(--fluid-workflow-stage);
+  box-shadow:0 1px 0 var(--fluid-line);
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-owner-split .fluid-split-material {
+  filter:none;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer :is(.sharing-owner-main,.sharing-subview,.feature-workflow-detail,.knowledge-inline-detail) {
+  min-width:0;
+  color:var(--fluid-ink);
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer :is(.sharing-owner-list-header,.feature-workflow-heading) {
+  align-items:flex-start;
+  gap:12px;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-owner-list-header>.primary {
+  min-height:36px;
+  white-space:nowrap;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-owner-main>footer {
+  align-items:center;
+  justify-content:flex-start;
+  gap:7px;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-owner-main>footer>button,
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-owner-main>footer>.sharing-owner-more {
+  flex:0 0 auto;
+  margin-inline:0;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-thread-messages article.user,
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-thread-messages article.user>p {
+  color:var(--fluid-user-ink,var(--fluid-ink));
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-thread-messages article.user>small {
+  color:color-mix(in srgb,var(--fluid-user-ink,var(--fluid-ink)) 76%,transparent);
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser button:not(.primary) {
+  color:var(--fluid-ink);
+  background:var(--fluid-input);
+  border-color:var(--fluid-line);
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-list-items button {
+  background:transparent;
+  border-color:transparent;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-list-items button:is(:hover,[aria-current=true]),
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .task-category-tabs button[aria-pressed=true] {
+  background:var(--fluid-selection);
+  border-color:var(--fluid-menu-edge);
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-list-items strong {
+  color:var(--fluid-ink);
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-list-items small {
+  color:var(--fluid-muted);
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .things-browser #one-things-send {
+  background:var(--fluid-accent);
+  color:var(--fluid-on-accent,#302c18);
+  border-color:transparent;
+}
+main.one-fluid-workspace.one-shell.one-studio .feature-selection-notice {
+  margin:0 0 10px;
+  padding:10px 14px;
+  border-radius:14px;
+  background:var(--fluid-menu-fill);
+  color:var(--fluid-ink);
+  font-size:12px;
+  line-height:1.7;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer :is(.sharing-subview-back,.feature-workflow-back,.things-detail-return) {
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  width:auto;
+  min-height:30px;
+  padding:4px 0;
+  border:0;
+  color:var(--fluid-muted);
+  background:transparent;
+  font-size:12px;
+  line-height:1.5;
+}
+
+/* Form weight follows the action: one accented submit, neutral secondary
+   controls, quiet labels, and bounded inputs rather than full-width buttons. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-split-workspace :is(.sharing-form label,.sharing-model-field,.sharing-budget,.sharing-publish-review,.knowledge-connection-detail) {
+  color:var(--fluid-ink);
+  font-size:13px;
+  line-height:1.75;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-split-workspace :is(.sharing-form,.sharing-editor-fields) {
+  min-width:0;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-split-workspace :is(input:not([type=checkbox]):not([type=radio]),textarea,select,.settings-picker-trigger) {
+  box-sizing:border-box;
+  min-width:0;
+  max-width:100%;
+  min-height:39px;
+  padding:9px 11px;
+  border:1px solid var(--fluid-line);
+  border-radius:12px;
+  color:var(--fluid-ink);
+  background:var(--fluid-input);
+  box-shadow:none;
+  font:inherit;
+  font-size:13px;
+  line-height:1.6;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-split-workspace .settings-picker-trigger {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  width:100%;
+  text-align:left;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-split-workspace .primary {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:7px;
+  align-self:flex-start;
+  justify-self:start;
+  width:auto;
+  min-height:38px;
+  max-width:100%;
+  padding:9px 14px;
+  border:1px solid transparent;
+  border-radius:12px;
+  color:var(--fluid-on-accent,#302c18);
+  background:var(--fluid-accent,#efd254);
+  box-shadow:none;
+  font-size:12px;
+  line-height:1.5;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-split-workspace :is(.sharing-form fieldset,.sharing-form details) {
+  min-width:0;
+  border-color:var(--fluid-line);
+  color:var(--fluid-ink);
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-split-workspace :is(.hint,.settings-caption,fieldset small,.sharing-owner-usage,.sharing-owner-description) {
+  color:var(--fluid-muted);
+  line-height:1.8;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-split-workspace :is([role=alert],.sharing-uncertain,.knowledge-owner-notice) {
+  max-width:100%;
+  overflow-wrap:anywhere;
+  scroll-margin-block:18px;
+}
+
+/* Settings navigation is another stable anchor, never dark text on the newly
+   exposed frame. Detail panes retain their internal scroll and their own draft. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer:has(.fluid-split-workspace) .account-preferences-layout {
+  gap:12px;
+  align-items:start;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer:has(.fluid-split-workspace) .account-preferences-nav {
+  box-sizing:border-box;
+  padding:8px;
+  border:1px solid var(--fluid-menu-edge,var(--fluid-line));
+  border-radius:22px;
+  background:var(--fluid-menu-fill,var(--studio-surface));
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections-split {
+  --fluid-split-padding:20px;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf-grid,
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-catalog {
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));
+  gap:14px;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-source-card {
+  align-items:center;
+  min-width:0;
+  padding:13px;
+  border-radius:17px;
+  font-size:12px;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-provider-head {
+  align-items:center;
+  gap:10px;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-detail-title {
+  font-size:21px;
+  line-height:1.45;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer:has(.fluid-split-workspace) :focus-visible {
+  outline:2px solid var(--fluid-focus);
+  outline-offset:3px;
+}
+@media(prefers-reduced-transparency:reduce) {
+  main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer:has(.fluid-split-workspace)>header {
+    background:var(--studio-surface);
+    backdrop-filter:none;
+  }
+  main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer:has(.fluid-split-workspace)::backdrop {
+    backdrop-filter:none;
+  }
+}
+@media(prefers-contrast:more) {
+  main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .fluid-split-rim {
+    stroke:var(--fluid-ink);
+    stroke-width:1;
+  }
+}

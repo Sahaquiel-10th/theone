@@ -1,0 +1,109 @@
+/* Whole-page studies share the approved silhouette and attention behaviour.
+   Only illumination and material roles change. The canvas draws the same scene
+   through every real background clearance, including the sidebar intrusion. */
+main.one-fluid-workspace.one-shell.one-studio[data-fluid-material="optical"][data-fluid-scene="silver"] {
+  --fluid-frame:#9faab4;
+  --fluid-frame-ink:#263943;
+  --fluid-frame-muted:#405862;
+  --fluid-rail-fill:#b0bcc3;
+  --fluid-material:#e4eaed;
+  --fluid-surface-top:#edf2f3;
+  --fluid-surface-bottom:#dde6eb;
+  --fluid-ink:#1b2d38;
+  --fluid-muted:#526671;
+  --fluid-line:#4964732e;
+  --fluid-input:#ffffff60;
+  --fluid-user-fill:#c5d5e2d9;
+  --fluid-user-ink:#213c4c;
+  --fluid-user-border:#7b929c45;
+  --fluid-user-shadow:#4c657208;
+  --fluid-code-fill:#d6e0e5c9;
+  --fluid-code-ink:#203a4a;
+  --fluid-hover:#3b596c0d;
+  --fluid-rail-hover:#edf6fb39;
+  --fluid-menu-fill:#eef3f5f5;
+  --fluid-menu-edge:#6c83923b;
+  --fluid-menu-glint:#ffffffa3;
+  --fluid-menu-shadow:#233c4d19;
+  --fluid-menu-shadow-far:#233c4d14;
+  --studio-surface:#e8eef1;
+  background:radial-gradient(ellipse at 94% 0%,#b8bfd2b3,transparent 58%),radial-gradient(ellipse at -12% 82%,#c0b69f80,transparent 58%),linear-gradient(120deg,#9daab7,#a6b0b7 58%,#a5afb7);
+}
+
+/* Graphite is a daytime composition: charcoal frame and rail surround a light
+   reading lens. It deliberately does not switch the entire app to dark mode. */
+main.one-fluid-workspace.one-shell.one-studio[data-fluid-material="optical"][data-fluid-scene="graphite"] {
+  --fluid-frame:#1a222c;
+  --fluid-frame-ink:#e6eef2;
+  --fluid-frame-muted:#aebfc9;
+  --fluid-rail-fill:#26333c;
+  --fluid-material:#d7e0e5;
+  --fluid-surface-top:#e7edf0;
+  --fluid-surface-bottom:#d0dce2;
+  --fluid-ink:#172c39;
+  --fluid-muted:#4b6270;
+  --fluid-line:#3b586a35;
+  --fluid-input:#ffffff51;
+  --fluid-user-fill:#3b5364;
+  --fluid-user-ink:#f7fafb;
+  --fluid-user-border:#243c4b1a;
+  --fluid-user-shadow:#132e3b10;
+  --fluid-code-fill:#bfcfd9a8;
+  --fluid-code-ink:#1e3848;
+  --fluid-hover:#2b465c10;
+  --fluid-rail-hover:#deefff14;
+  --fluid-menu-fill:#e6eef2f7;
+  --fluid-menu-edge:#718b9b42;
+  --fluid-menu-glint:#ffffff94;
+  --fluid-menu-shadow:#07182724;
+  --fluid-menu-shadow-far:#0718271c;
+  --studio-surface:#dfe8ed;
+  background:radial-gradient(ellipse at 94% 0%,#3b495d59,transparent 59%),radial-gradient(ellipse at -12% 82%,#45433129,transparent 58%),#19212b;
+}
+
+/* Both execution scenes become smoke glass. Warm colour belongs to the local
+   operation area, while the reading surface stays neutral and legible. */
+main.one-fluid-workspace.one-shell.one-studio.execution-shell[data-fluid-material="optical"][data-fluid-scene] {
+  --fluid-frame:#0b1219;
+  --fluid-frame-ink:#e2edf3;
+  --fluid-frame-muted:#a3b6c3;
+  --fluid-rail-fill:#1b2530;
+  --fluid-material:#25313c;
+  --fluid-surface-top:#34424c;
+  --fluid-surface-bottom:#202b35;
+  --fluid-ink:#e9f1f6;
+  --fluid-muted:#b1c2ce;
+  --fluid-line:#bdd4e334;
+  --fluid-input:#d9edff08;
+  --fluid-user-fill:#3a4d5f;
+  --fluid-user-ink:#f4f8fc;
+  --fluid-user-border:#b1c9dc26;
+  --fluid-user-shadow:#00081018;
+  --fluid-code-fill:#14222eda;
+  --fluid-code-ink:#dceaf2;
+  --fluid-hover:#d6e7f511;
+  --fluid-rail-hover:#deefff15;
+  --fluid-menu-fill:#1e2c38f7;
+  --fluid-menu-edge:#bdd4e334;
+  --fluid-menu-glint:#e1f3ff18;
+  --fluid-menu-shadow:#00070d45;
+  --fluid-menu-shadow-far:#00070d30;
+  --studio-surface:#25313c;
+  background:radial-gradient(ellipse at 92% 85%,color-mix(in srgb,var(--fluid-accent) 12%,transparent),transparent 47%),radial-gradient(ellipse at 94% 0%,#2c456359,transparent 60%),#0b1219;
+}
+
+main.one-fluid-workspace.one-shell.one-studio[data-fluid-material="optical"][data-fluid-scene] .fluid-rail :is(button,a):hover {
+  background:var(--fluid-rail-hover);
+}
+main.one-fluid-workspace.one-shell.one-studio[data-fluid-material="optical"][data-fluid-scene] .fluid-rail :is(button,a):is([aria-current="page"],[aria-current="true"]):hover {
+  background:var(--fluid-accent);
+}
+main.one-fluid-workspace.one-shell.one-studio[data-fluid-material="optical"][data-fluid-scene="graphite"] .fluid-rail :focus-visible {
+  outline-color:var(--fluid-accent);
+}
+main.one-fluid-workspace.one-shell.one-studio[data-fluid-material="optical"][data-fluid-scene] .composer-row {
+  box-shadow:inset 0 1px 0 #ffffff50,0 5px 18px #243d4c05;
+}
+main.one-fluid-workspace.one-shell.one-studio.execution-shell[data-fluid-material="optical"][data-fluid-scene] .composer-row {
+  box-shadow:inset 0 1px 0 #bed8e711,0 5px 18px #00070d08;
+}

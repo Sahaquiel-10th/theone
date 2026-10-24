@@ -1,0 +1,85 @@
+.feature-workflow-navigation {display:flex;align-items:flex-start;justify-content:space-between;gap:8px;flex-wrap:wrap;}
+.feature-workflow-utilities {display:flex;gap:6px;flex-wrap:wrap;margin-bottom:0;}
+.feature-workflow-utilities button,.feature-workflow-back,.feature-workflow-heading>button {display:inline-flex;gap:7px;align-items:center;justify-content:center;border:1px solid var(--fluid-line,#dce1db);border-radius:20px;background:transparent;color:var(--fluid-muted,#65736c);padding:8px 12px;font:inherit;font-size:12px;cursor:pointer;}
+.feature-workflow-utilities button[aria-pressed=true],.feature-workflow-heading>button[aria-pressed=true] {background:var(--fluid-selection,#edf0e8);color:var(--fluid-ink,#26352c);}
+.feature-workflow-back {margin:0 0 24px;padding-inline:0;border:0;}
+.feature-workflow-heading {display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px;}
+.feature-workflow-heading h3,.feature-workflow-detail>h3 {font-size:20px;font-weight:600;letter-spacing:-.025em;margin:0 0 8px;}
+.feature-workflow-heading p {font-size:13px;line-height:1.7;color:var(--fluid-muted,#65736c);margin:0;}
+.feature-workflow-detail>h3 {margin-bottom:24px;}
+.feature-workflow-detail>.sharing-form,.feature-workflow-connections {max-width:780px;margin-inline:auto;}
+.feature-workflow-detail .sharing-form>button.primary {justify-self:start;}
+.feature-workflow-detail .sharing-form h3 {font-size:17px;font-weight:550;}
+.feature-workflow-detail .sharing-form textarea {resize:vertical;}
+.feature-run-history .settings-choice-list>button {text-align:left;}
+.feature-run-history .settings-choice-list small {display:block;margin-top:7px;line-height:1.7;color:var(--fluid-muted,#65736c);}
+.feature-workflow-detail :is(h3,button):focus-visible,.feature-workflow-navigation button:focus-visible {outline:2px solid var(--fluid-focus,#8b741f);outline-offset:4px;}
+.one-fluid-workspace .fluid-work-layer .feature-workflow-detail .sharing-form :is(input:not([type=checkbox]),textarea),.one-fluid-workspace .fluid-work-layer .feature-workflow-connections input {background:var(--fluid-input);color:var(--fluid-ink);border-color:var(--fluid-line);}
+.one-fluid-workspace .fluid-work-layer .feature-workflow-detail .sharing-form :is(fieldset,details),.one-fluid-workspace .fluid-work-layer .feature-workflow-connections details {border-color:var(--fluid-line);color:var(--fluid-ink);}
+.one-fluid-workspace .fluid-work-layer :is(.feature-workflow-back,.feature-workflow-utilities button,.feature-workflow-heading>button) {color:var(--fluid-muted);border-color:var(--fluid-line);background:transparent;box-shadow:none;}
+.one-fluid-workspace .fluid-work-layer :is(.feature-workflow-back,.feature-workflow-utilities button,.feature-workflow-heading>button):hover {color:var(--fluid-ink);background:var(--fluid-hover);}
+.one-fluid-workspace .fluid-work-layer .feature-workflow-utilities button[aria-pressed=true] {color:var(--fluid-ink);background:var(--fluid-selection);}
+.one-fluid-workspace.one-studio .fluid-work-layer .feature-workflow-navigation :is(.feature-shelf-tabs,.feature-workflow-utilities) button {display:inline-flex;align-items:center;gap:7px;width:auto;border:1px solid var(--fluid-line);border-radius:20px;background:transparent;color:var(--fluid-muted);padding:8px 12px;box-shadow:none;}
+.one-fluid-workspace.one-studio .fluid-work-layer .feature-workflow-navigation :is(.feature-shelf-tabs,.feature-workflow-utilities) button[aria-pressed=true] {background:var(--fluid-selection);color:var(--fluid-ink);}
+
+/* Align choices to a shared baseline; inspection stays beside its owning list. */
+.feature-shelf-list-anchor{min-width:0;container:feature-list / inline-size;}
+.feature-workflow-split .feature-workflow-detail{min-width:0;padding:2px 0 12px;}
+.feature-workflow-split .feature-workflow-detail>.sharing-form{max-width:none;}
+.feature-workflow-split .feature-workflow-heading{gap:14px;flex-wrap:wrap;}
+.feature-workflow-split .feature-workflow-back{margin-bottom:12px;}
+.feature-workflow-eyebrow{display:block;margin:0 0 7px;color:var(--fluid-muted,#65736c);font-size:10px;line-height:1.5;letter-spacing:.04em;}
+.feature-selection-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 0 10px;flex-wrap:wrap;}
+.feature-selection-heading .feature-selection-hint{margin:0;}
+.feature-selection-count{display:inline-flex;align-items:center;white-space:nowrap;color:var(--fluid-ink,#26352c);font-size:11px;line-height:1.5;padding:5px 9px;border-radius:15px;background:var(--fluid-selection,#edf0e8);}
+/* Function names lead; metadata and two bounded actions share a compact row.
+   Scope outranks the generic split-workflow grid without changing other lists. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf{--feature-control-edge:color-mix(in srgb,var(--fluid-ink,#20343e) 28%,transparent);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-workflow-navigation{align-items:center;margin:0 0 8px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-workflow-navigation :is(.feature-shelf-tabs,.feature-workflow-utilities){gap:5px;margin:0;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-workflow-navigation :is(.feature-shelf-tabs,.feature-workflow-utilities)>button{width:auto;min-height:32px;padding:6px 10px;border:1px solid var(--feature-control-edge);border-radius:12px;font-size:12px;line-height:1.5;white-space:nowrap;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-workflow-navigation :is(.feature-shelf-tabs,.feature-workflow-utilities)>button[aria-pressed=true]{border-color:var(--fluid-focus);background:var(--fluid-selection);color:var(--fluid-ink);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-selection-hint{font-size:11px;line-height:1.6;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 10px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-search{display:flex;align-items:center;gap:8px;flex:1 1 320px;box-sizing:border-box;width:auto;max-width:480px;margin:0;padding:0 10px;border:1px solid var(--feature-control-edge);border-radius:12px;background:var(--fluid-input);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf label.feature-shelf-search>input[aria-label="搜索功能"]{width:100%;min-width:0;min-height:34px;padding:7px 0;border:0;border-radius:0;background:transparent;box-shadow:none;font-size:12px;line-height:1.6;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-search:focus-within{outline:2px solid var(--fluid-focus);outline-offset:2px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-search>input:focus-visible{outline:0;}
+.feature-shelf-total{flex:none;color:var(--fluid-muted,#65736c);font-size:10px;white-space:nowrap;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-categories{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 10px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-categories>button{width:auto;min-height:28px;padding:4px 8px;border:1px solid var(--fluid-line);border-radius:10px;background:transparent;color:var(--fluid-muted);font-size:11px;line-height:1.5;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-categories>button[aria-pressed=true]{border-color:var(--fluid-focus);background:var(--fluid-selection);color:var(--fluid-ink);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-grid{display:grid;grid-template-columns:minmax(0,1fr);align-items:stretch;gap:8px;}
+@container feature-list (min-width:700px){main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf:not(.has-detail) .feature-shelf-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-card{display:flex;flex-direction:column;gap:6px;min-width:0;min-height:0;padding:12px;border:1px solid var(--fluid-line);border-radius:16px;background:var(--fluid-input);box-shadow:none;transition:border-color 160ms ease,background-color 160ms ease;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-card>header{display:flex;align-items:center;gap:7px;flex-wrap:nowrap;min-height:24px;margin:0;color:var(--fluid-ink);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-symbol{display:grid;place-items:center;flex:0 0 24px;width:24px;height:24px;border-radius:8px;background:var(--fluid-selection);color:var(--fluid-muted);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-card h3{flex:1;min-width:0;margin:0;font-size:14px;line-height:1.5;font-weight:600;letter-spacing:0;overflow-wrap:anywhere;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-access{flex:none;font-size:10px;line-height:1.5;color:var(--fluid-muted);white-space:nowrap;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-card>.feature-shelf-description{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;flex:none;min-height:0;margin:0;font-size:12px;line-height:1.55;color:var(--fluid-muted);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-card>.feature-cost{display:flex;flex-direction:row;align-items:baseline;justify-content:flex-start;flex-wrap:wrap;gap:3px 8px;margin:0;font-size:10px;line-height:1.6;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-cost>small{font-size:10px;line-height:1.6;color:var(--fluid-muted);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-card>footer{display:flex;align-items:center;justify-content:space-between;gap:7px;flex-wrap:wrap;margin:2px 0 0;padding:7px 0 0;border-top:1px solid var(--fluid-line);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-card>footer>button{display:inline-flex;align-items:center;justify-content:center;gap:5px;flex:0 0 auto;min-width:0;width:auto;min-height:32px;padding:6px 10px;border:1px solid var(--feature-control-edge);border-radius:10px;background:transparent;color:var(--fluid-ink);box-shadow:none;font:inherit;font-size:11px;line-height:1.5;text-align:center;white-space:nowrap;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-card>footer>button.feature-shelf-item{border-color:color-mix(in srgb,var(--fluid-accent,#efd254) 65%,var(--fluid-ink));background:color-mix(in srgb,var(--fluid-accent,#efd254) 15%,transparent);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-card[data-feature-access=locked]>footer>button.feature-shelf-item{border-color:var(--feature-control-edge);background:transparent;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-card:is(.is-selected,.is-inspecting){border-color:var(--fluid-focus);background:var(--fluid-selection);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-card>footer>button[aria-pressed=true]{background:color-mix(in srgb,var(--fluid-accent,#efd254) 27%,transparent);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-pagination{justify-content:flex-end;gap:10px;margin:12px 0 0;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf :is(.feature-pagination,.feature-empty)>button{width:auto;min-height:32px;padding:6px 10px;border:1px solid var(--feature-control-edge);border-radius:10px;background:transparent;color:var(--fluid-ink);font-size:11px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-run-history .settings-choice-list{display:grid;gap:6px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-run-history .settings-choice-list>button{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-height:60px;padding:10px 12px;border:1px solid var(--fluid-line);border-radius:13px;background:transparent;color:var(--fluid-ink);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-run-history .settings-choice-list strong{font-size:13px;font-weight:550;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-run-history .settings-choice-list small{margin-top:3px;font-size:10px;line-height:1.6;}
+@media(hover:hover) and (pointer:fine){main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .feature-shelf-card>footer>button:hover:not(:disabled){border-color:var(--fluid-focus);background:var(--fluid-hover);}}
+.feature-shelf-card button:active,.feature-workflow-choose:active{transform:scale(.97);}
+@media(prefers-reduced-motion:reduce){.feature-shelf-card{transition:none!important;}.feature-shelf-card button:active,.feature-workflow-choose:active{transform:none;}}
+
+/* Reserve a steady selection footer from the first choice: selecting another
+   function never closes or resizes the list beneath the pointer. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf.has-selection-session .feature-workflow-split{--fluid-split-height:min(630px,calc(100dvh - 260px));}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer.is-maximized .feature-shelf.has-selection-session .feature-workflow-split{--fluid-split-height:calc(100dvh - 212px);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf-selection-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0;padding:11px 5px 1px;color:var(--fluid-frame-ink);font-size:11px;line-height:1.6;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf-selection-footer>span{min-width:0;color:var(--fluid-frame-muted);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf-selection-footer>span>strong{color:var(--fluid-frame-ink);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf-selection-footer>button{display:inline-flex;align-items:center;justify-content:center;gap:7px;flex:none;width:auto;min-height:34px;padding:7px 12px;border:1px solid transparent;border-radius:12px;background:var(--fluid-accent);color:var(--fluid-on-accent);font:inherit;font-size:11px;cursor:pointer;}
