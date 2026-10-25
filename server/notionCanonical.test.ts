@@ -14,11 +14,30 @@ test('literal code, links, list order, cells and unknown markup are never stripp
   ['    <b>x</b>','    **x**'],['[a](https://a.example)','[a](https://b.example)'],
   ['1. 甲\n2. 乙','1. 乙\n2. 甲'],['|甲 |乙|','|甲|乙|'],
   ['<span>x</span>','x'],['\\<b>x</b>','**x**'],['<quote>\n> x\n</quote>','> x'],
-  ['|---|---|','| --- | --- |'],['|a|b|\n|:---|---|\n|x|y|','|a|b|\n|---:|---|\n|x|y|'],
+  ['|---|---|','| --- | --- |'],
   ['|a|b|\n|---|---|\n|x|y|','|a|b|\n| --- | --- | --- |\n|x|y|'],
   ['> |a|b|\n> |---|---|\n> |x|y|','> |a|b|\n> | --- | --- |\n> |x|y|'],
   ['```\nx \n\n```','```\nx\n```'],
  ])assert.notEqual(canonicalNotionDigest(a),canonicalNotionDigest(b),a);
+});
+test('v4 treats only typed delimiter alignment as presentation and retains older versions',()=>{
+ const table=(delimiter:string)=>`|项目|费用|备注|\n${delimiter}\n|场地：A|-100|+200:结余|`;
+ const plain=table('| --- | --- | --- |');
+ for(const delimiter of ['|:---|---:|:---:|','|---:|:----|:------:|','|---|---|---:|']){
+  const expected=table(delimiter);
+  assert.equal(canonicalNotionDigest(expected,4),canonicalNotionDigest(plain,4));
+  assert.notEqual(canonicalNotionDigest(expected,2),canonicalNotionDigest(plain,2));
+  assert.notEqual(canonicalNotionDigest(expected,3),canonicalNotionDigest(plain,3));
+ }
+ for(const changed of [
+  plain.replace('场地：A','场地A'),plain.replace('-100','100'),plain.replace('+200:结余','+200结余'),
+  plain.replace('|项目|费用|备注|','|费用|项目|备注|'),plain.replace('| --- | --- | --- |','| --- | --- |'),
+  plain.replace('| --- | --- | --- |','| --: | --- | --- |'),
+  plain+'\n|---:|:----|:-----:|',
+ ])assert.notEqual(canonicalNotionDigest(plain,4),canonicalNotionDigest(changed,4));
+ assert.notEqual(canonicalNotionDigest('|---:|:---|',4),canonicalNotionDigest('|---|---|',4));
+ assert.notEqual(canonicalNotionDigest('```\n'+table('|---:|:---|:---:|')+'\n```',4),canonicalNotionDigest('```\n'+plain+'\n```',4));
+ assert.notEqual(canonicalNotionDigest(table('|---|---|---|')+'\n|---:|:---|:---:|',4),canonicalNotionDigest(table('|---|---|---|')+'\n|---|---|---|',4));
 });
 test('v3 canonicalizes only typed table delimiter hyphen lengths while preserving v2 digests',()=>{
  const table=(delimiter:string)=>`|项目|费用|备注|\n${delimiter}\n|场地|100|不变|`;

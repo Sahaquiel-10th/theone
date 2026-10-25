@@ -13,7 +13,7 @@ import {defaultTaskValues,updateTaskConfig} from '../server/aiTaskConfig.js';
 
 if(process.env.ONE_SYNTHETIC_QA!=='1')throw Error('Set ONE_SYNTHETIC_QA=1; this fixture is not a production server.');
 const verifyScenario=process.env.ONE_QA_NOTION_VERIFY==='1';
-const verifyBody='## 保存核对隔离验收\n\n**方案已写完**，不用重写。\n\n> 等待核对，不等待再次确认。\n\n| 阶段 | 结果 |\n|---|----|\n| 写入 | 一次 |\n\n最后一行：青色42。';
+const verifyBody='## 保存核对隔离验收\n\n**方案已写完**，不用重写。\n\n> 等待核对，不等待再次确认。\n\n| 阶段 | 结果 |\n|---|---:|\n| 写入 | 一次 |\n\n最后一行：青色42。';
 const scope={workspaceId:'qa-continuation-workspace',userId:'qa-continuation-user'};
 const parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',pageId='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const title=verifyScenario?'保存核对 · 隔离验收':'启动器说明 · 隔离验收',first='第一行：小小启动器，插上就能找到 ONE。',second='第二行：初稿',revised='第二行：修订稿';
@@ -42,7 +42,7 @@ const mcp={
   if(verifyScenario&&id===pageId){
    readbackAttempts++;
    if(readbackAttempts<=2)throw Error('Synthetic readback temporarily unavailable after one successful write.');
-   return {text:body.replace('**方案已写完**','<b>方案已写完</b>').replace('> 等待核对，不等待再次确认。','<quote>\n等待核对，不等待再次确认。\n</quote>').replace('|---|----|','| --- | --- |')};
+   return {text:body.replace('**方案已写完**','<b>方案已写完</b>').replace('> 等待核对，不等待再次确认。','<quote>\n等待核对，不等待再次确认。\n</quote>').replace('|---|---:|','| --- | --- |')};
   }
   return {text:id===parentId?'合成草稿保存目录':body};
  },
