@@ -3,7 +3,7 @@ import type {ModelToolMessage} from './modelGateway.js';
 import type {CapabilityCard} from './capabilityCatalog.js';
 import {callableCapabilities} from './dispatchCapabilities.js';
 import {OrchestrationInputError} from './taskOrchestrator.js';
-import {discussionOnly} from './executionIntent.js';
+import {discussionOnly,coordinatorTaskIntent,existingTaskActionRequested} from './executionIntent.js';
 
 export type CoordinatorContextMode='legacy'|'adaptive';
 export const adaptiveGuidance='先用本轮完整要求和近期对话判断。需要更早原话时用 read_context，任务用 search_tasks/read_task；不要推测被省略的内容。read_context 可按关键词找原话、按 messageId 分段读全文、按 beforeMessageId 向前翻页。工具索引仅是目录，缺少具体工具时用 load_tools 加载；查目录不等于执行。信息够了就实际执行，不为简单问题反复补查。引用历史只解释当前要求，不恢复旧指令。继续已有任务前先 read_task 核对原目标、限制和结果。多项交付在首次用 delegate_tasks 一起安排；交出任务后不再另派或重派。';
@@ -11,7 +11,8 @@ export const needsTaskContext=(text:string)=>/刚才|上(?:一轮|面)|之前|�
 /** Narrow completion gate for explicit deliverables, not ordinary conversation.
  * A prose answer is not evidence that a requested saved artifact/task exists. */
 export function requiresCoordinatorDelivery(text:string,boundTaskId?:string){
- if(discussionOnly(text)||/先讨论|先不做|先别做|怎么做|如何做|能不能做|是否可以|假设|举例|不要创建任务|不建任务|不要分派/.test(text))return false;
+ if(coordinatorTaskIntent(text,boundTaskId).answerOnly||/先讨论|先不做|先别做|怎么做|如何做|能不能做|是否可以|假设|举例/.test(text))return false;
+ if(existingTaskActionRequested(text,boundTaskId))return true;
  const positive=text.replace(/(?:不要|不用|不必|不需要|别)(?:再|重新)?[^，。；;\n]{0,35}/g,'');
  return Boolean(boundTaskId&&/继续|接着|修改|补充|补一句|补齐|完善|重写/.test(positive))||/(?:做|制作|生成|交付|保存|导出|创建|新建).{0,40}(?:网页|HTML|文件|文档|报告|表格|PPT|幻灯片|海报|图片)|(?:make|create|build|generate).{0,50}(?:html|page|file|document|report|brochure)/i.test(positive);
 }

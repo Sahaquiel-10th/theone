@@ -7,6 +7,28 @@ export function discussionOnly(text: string): boolean {
     || /(?:^|[.;:\n])\s*(?:do not execute|do not run|answer only|discussion only)(?=$|[.;:,\s])/i.test(text);
 }
 
+function currentRequest(text:string){
+  return text.split(/(?:正文|原文|引用|示例|材料|附件内容)(?:如下|内容)?\s*[:：]/u)[0]
+    .replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g,'')
+    .replace(/^\s*>.*$/gm,'')
+    .replace(/“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|'[^'\n]*'|`[^`]*`/g,'');
+}
+/** A restriction on creating another task is not a ban on updating the
+ * existing one. This classifies intent only; handlers still verify its ID. */
+export function existingTaskActionRequested(text:string,boundTaskId?:string){
+  const request=currentRequest(text);
+  if(discussionOnly(request)||/先讨论|先不做|先别做|怎么做|如何做|能不能做|是否可以|假设|举例/.test(request))return false;
+  const positive=request.replace(/(?:不要|不用|不必|不需要|别)[^，,。；;\n]{0,60}/g,'');
+  return Boolean(boundTaskId&&/继续|接着|修改|更新|补充|补一句|补齐|完善|重写|删去|删除/.test(positive))
+    ||/(?:继续|接着)(?:处理|完成|修改|写|做)?(?:同一(?:件|个)|这(?:件|个)|原(?:来|先)?(?:的)?(?:任务|事情)|已有(?:的)?(?:任务|事情))|(?:修改|更新|修订|编辑|删去|删除|完善|补充)(?:当前|已有|原来|原|这(?:篇|件|个))[^，,。；;\n]{0,12}(?:任务|事情|正文|原文|页面|草稿|文章)/.test(positive);
+}
+export function coordinatorTaskIntent(text:string,boundTaskId?:string){
+  const request=currentRequest(text),onlyAnswer=discussionOnly(request);
+  const creationBan=/(?:不要|不用|无需|不必|不需要|禁止|别|不)(?:再|重新)?(?:创建|新建|另建|新开|分派|建)(?:一个|新的|独立)?(?:任务|事情)|(?:don't|do not)\s+create\s+(?:a\s+)?task/i.test(request);
+  const existingTaskOnly=!onlyAnswer&&creationBan&&existingTaskActionRequested(request,boundTaskId);
+  return {answerOnly:onlyAnswer||creationBan&&!existingTaskOnly,existingTaskOnly};
+}
+
 /** Only a fresh read of the already bound document, not a status question or
  * an instruction to rerun a previous write. The caller still checks scope. */
 export function freshDocumentReadRequested(text:string):boolean {

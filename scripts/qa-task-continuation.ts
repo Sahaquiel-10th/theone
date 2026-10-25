@@ -16,8 +16,8 @@ const scope={workspaceId:'qa-continuation-workspace',userId:'qa-continuation-use
 const parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',pageId='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const title='启动器说明 · 隔离验收',first='第一行：小小启动器，插上就能找到 ONE。',second='第二行：初稿',revised='第二行：修订稿';
 const initial='请在 Notion 草稿目录写一篇启动器说明。只用我随后补充的素材，不查知识库。缺素材就先问我，不能编。';
-const supplement=`素材补充：小小启动器，插上就能找到 ONE。按这个写，正文只写两行：\n${first}\n${second}`;
-const revision=`只把“${second}”改成“${revised}”，其余不动。`;
+const supplement=`素材补充：小小启动器，插上就能找到 ONE。不要新建任务，只继续同一件，按原要求实际写入 Notion。正文只写两行：\n${first}\n${second}`;
+const revision=`不要新建任务，只继续同一件。只把“${second}”改成“${revised}”，实际更新原来的 Notion 草稿，其余不动。`;
 const models=['router','worker'].map(id=>({id,name:id,enabled:true,kind:'chat',apiKey:'fixture-only',systemPrompt:'',isDefault:id==='worker',inputPowerPerMillion:1,outputPowerPerMillion:1,costInputPowerPerMillion:1,costOutputPowerPerMillion:1}) as ModelConfig);
 let db={users:[{id:scope.userId,enabled:true,role:'admin'}],workspaces:[{id:scope.workspaceId,status:'active'}],workspaceMembers:[scope],models,settings:{safetyRules:'仅使用本轮合成资料',rechargeCnyPerPower:7},conversations:[],messages:[],chatOperations:[],knowledgeConnections:[{id:'qa-notion',workspaceId:scope.workspaceId,provider:'notion',status:'connected',clientId:'synthetic',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'qa-grant',userId:scope.userId,authorizedAt:'now',parentId}}],auditLogs:[],contextTraces:[],modelUsageRecords:[],powerAccounts:[{...scope,id:scope.userId,balanceMicros:100e6,reservedMicros:0}],powerLedger:[],attachments:[],executionTasks:[]} as unknown as Database;
 for(const kind of ['coordinator','task_worker'] as const){
@@ -55,12 +55,17 @@ const notionDocuments=new NotionDocuments(store,mcp);
 const deps={notionDocuments,modelCall:async(model:ModelConfig,messages:ModelToolMessage[],tools:any[],requestId='synthetic-missing-request')=>{
  modelCalls.push({model:model.id,requestId,tools:tools.map(t=>t.function.name)});
  if(model.id==='router'){
-  if(messages.at(-1)?.role==='tool')return answer('我先处理这篇专栏；缺什么或完成了，直接在这里告诉你。');
+  const last=messages.at(-1),readReturned=last?.role==='tool'&&last.tool_call_id==='synthetic-read_task';
+  if(last?.role==='tool'&&!readReturned)return answer('我先处理这篇专栏；缺什么或完成了，直接在这里告诉你。');
   if(!tools.some(t=>t.function.name==='delegate_task'))return answer('按实际结果说明，未完成的部分请直接补充素材。');
   const reference=messages.find(m=>m.content?.startsWith('本轮授权参考：'))?.content;
   assert.ok(reference,'Use the real coordinator capability context.');const catalog=JSON.parse(reference.slice('本轮授权参考：'.length));
   const current=messages.filter(m=>m.role==='user').at(-1)?.content||'';
-  return tool('delegate_task',{taskId:catalog.boundTaskId||catalog.tasks[0]?.id||null,title,instruction:current,executorId:'general',featureIds:[]});
+  const taskId=catalog.boundTaskId||catalog.tasks[0]?.id||null;
+  // The deterministic model obeys the real existing-task read gate; its
+  // successful handler, not this fixture, establishes inspected task state.
+  if(taskId&&!readReturned)return tool('read_task',{query:taskId});
+  return tool('delegate_task',{taskId,title,instruction:current,executorId:'general',featureIds:[]});
  }
  assert.equal(model.id,'worker');
  let attempt=workerRequests.get(requestId);if(!attempt){attempt=workerRequests.size+1;workerRequests.set(requestId,attempt);}

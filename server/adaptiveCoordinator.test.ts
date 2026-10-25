@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {CoordinatorService} from './coordinatorService.js';
 import {dispatchFixture,evalScope,evalAnswer} from '../scripts/eval/dispatchFixture.js';
-import {readCoordinatorContext,recentCoordinatorMessages,validateContextRead,initialCoordinatorToolNames} from './adaptiveCoordinator.js';
+import {readCoordinatorContext,recentCoordinatorMessages,validateContextRead,initialCoordinatorToolNames,requiresCoordinatorDelivery} from './adaptiveCoordinator.js';
 import {inputProfile} from './oneContext.js';
 import {mkdtemp,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -51,6 +51,53 @@ test('a bound continuation must read its original task before dispatch; omitted 
  }});
  const result=await service.dispatch(evalScope,{operationId:'bound_adaptive_20261023',boundTaskId:'old-task-0',text:'继续这个任务。'},key);
  assert.equal(result.taskId,'old-task-0');assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,1);
+});
+
+test('an unbound explicit same-task update keeps delegate tools even when duplicate creation is forbidden, and requires a scoped read first',async()=>{
+ for(const contextMode of ['adaptive','legacy'] as const){
+  const f=dispatchFixture();let calls=0;
+  const request='继续同一件「基于昨天思考写小报童专栏」，不要新建任务或另一篇页面；只删重复标题，原页URL保持不变，不要搜索，实际更新并回主对话，不要让我再点开始。';
+  assert.equal(requiresCoordinatorDelivery(request),true);
+  const service=new CoordinatorService(f.store,knowledge,{contextMode,modelCall:async(_model,messages,tools)=>{
+   calls++;assert.doesNotMatch(JSON.stringify(messages),/FOREIGN_SECRET_BODY/);
+   assert.ok(tools.some(tool=>tool.function.name==='delegate_task'),'do not create a duplicate must not turn a real update into read-only mode');
+   if(calls===1)return call('delegate_task',{taskId:'old-task-0',title:'继续原任务',instruction:'只删重复标题，修改已有页面，不搜索、不新建。',executorId:'general',featureIds:[]});
+   if(calls===2){assert.match(messages.at(-1)!.content!,/先 read_task/);return call('read_task',{query:'old-task-0'});}
+   if(calls===3)return call('delegate_task',{taskId:'old-task-0',title:'继续原任务',instruction:'只删重复标题，修改已有页面，不搜索、不新建。',executorId:'general',featureIds:[]});
+   return evalAnswer('要求已记好，有结果会在这里告诉你。');
+  }});
+  const result=await service.dispatch(evalScope,{operationId:`existing_only_${contextMode}_20261025`,text:request},key);
+  const db=await f.store.read(),jobs=db.chatOperations!.filter(op=>op.workRun);
+  assert.equal(result.taskId,'old-task-0');assert.equal(jobs.length,1);assert.equal(jobs[0].conversationId,'old-task-0');assert.equal(db.conversations.filter(c=>!c.coordinatorMain).length,31);
+ }
+});
+
+test('existing-task-only rejects every new-task shortcut and foreign task even after another owned task has been read',async()=>{
+ for(const mode of ['single-new','batch-new','image-shortcut','batch-image','foreign','bound-single','bound-batch'] as const){
+  const f=dispatchFixture();let calls=0;
+  const inspectedId=mode.startsWith('bound-')?'old-task-1':'old-task-0';
+  const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',modelCall:async(_model,messages,tools)=>{
+   calls++;assert.doesNotMatch(JSON.stringify(messages),/FOREIGN_SECRET_BODY/);assert.ok(!tools.some(tool=>tool.function.name==='generate_image'));
+   if(calls===1)return call('read_task',{query:inspectedId});
+   if(calls===2){
+    if(mode==='bound-batch')return call('delegate_tasks',{tasks:[{taskId:inspectedId,title:'换投其他任务',instruction:'继续',executorId:'general',featureIds:[],outputKind:'text',dependsOn:[]}]});
+    if(mode==='batch-new'||mode==='batch-image')return call('delegate_tasks',{tasks:[{taskId:'old-task-0',title:'已有任务',instruction:'继续原任务',executorId:'general',featureIds:[],outputKind:'text',dependsOn:[]},{taskId:mode==='batch-new'?null:'old-task-0',title:'新图片',instruction:'画一幅图',executorId:mode==='batch-image'?'image_generation':'general',featureIds:[],outputKind:mode==='batch-image'?'image':'text',dependsOn:[]}]});
+    return call('delegate_task',{taskId:mode==='single-new'?null:mode==='foreign'?'foreign-task':inspectedId,title:mode==='image-shortcut'?'生成图片':'不应执行',instruction:'继续当前要求',executorId:'general',featureIds:[]});
+   }
+   return evalAnswer('还没开始，需要先确认原任务。');
+  }});
+  const result=await service.dispatch(evalScope,{operationId:`existing_only_guard_${mode}_20261025`,text:'不要新建任务，只继续同一件，实际修改原文，不要搜索。',...(mode.startsWith('bound-')?{boundTaskId:'old-task-0'}:{})},key);
+  assert.equal(result.taskId,undefined,mode);assert.equal((await f.store.read()).chatOperations!.filter(op=>op.workRun).length,0,mode);
+ }
+});
+
+test('a bare no-new-task restriction, progress question or explicit no-execution keeps all delegate tools removed',async()=>{
+ for(const request of ['不要新建任务。','只回答进度，不执行；不要新建任务，继续原任务。','现在怎么了？']){
+  const f=dispatchFixture();const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',modelCall:async(_model,_messages,tools)=>{
+   assert.ok(!tools.some(tool=>['delegate_task','delegate_tasks','execute_local_task','generate_image'].includes(tool.function.name)));return evalAnswer('原任务没有重新执行。');
+  }});
+  const result=await service.dispatch(evalScope,{operationId:`answer_only_guard_${request.length}_20261025`,text:request},key);assert.equal(result.taskId,undefined);assert.equal((await f.store.read()).chatOperations!.filter(op=>op.workRun).length,0);
+ }
 });
 test('unmatched-language intent can load an existing tool without granting a new one',async()=>{
  const f=dispatchFixture();let calls=0;
