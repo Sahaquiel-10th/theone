@@ -1368,7 +1368,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     if(transfer)setFeatureTransfer(transfer);
     else if(preview.enabled){
       setFeatureTransfer(null);
-      pulseFeatureComposer(document.querySelector<HTMLElement>('.studio-composer .composer-row'));
+      pulseFeatureComposer(document.querySelector<HTMLElement>('.studio-composer .composer-energy-shell'));
     }
   }
   function openHistory(){
@@ -2329,7 +2329,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
         <form className="composer studio-composer" data-feature-armed={preview.enabled&&featureForNext.length>0} onSubmit={send}>
           {coordinator.enabled&&coordinator.state.boundTask&&coordinator.state.boundTask!==activeId?taskPauseNotice(coordinator.state.boundTask):null}
-          {preview.enabled&&featureForNext.length>0?<div className="selected-feature-list" aria-label="这条消息将使用的功能"><small>这条消息将使用</small>{featureForNext.map(feature=><button key={feature.id} type="button" className="selected-feature-chip" aria-label={`取消功能：${feature.name}`} onClick={()=>chooseFeature(feature)}><Sparkles size={13}/><span>{feature.name}</span><X size={12}/></button>)}</div>:null}
           {!models.length ? <div className="chat-error"><span>模型未就绪，请联系管理员。</span><button type="button" onClick={() => void refresh()}>重试</button></div> : null}
           {pendingRequests.length ? <details className="one-pending-answers"><summary>有 {pendingRequests.length} 条消息待确认 · 查看原结果，不重复扣费</summary>{pendingRequests.map(item => <button type="button" key={item.operationId} onClick={() => void recoverAnswer(item.operationId)}>查看 {dateTime(item.createdAt)} 的结果</button>)}</details> : null}
           {preview.enabled ? <div className={`studio-compose-context ${preview.state.boundTask?'is-bound':''}`}><span>{preview.state.boundTask ? `发送到任务：${preview.state.tasks.find(task=>task.id===preview.state.boundTask)?.title || '当前任务'}` : '与 ONE 对话'}</span>{preview.state.boundTask ? <button type="button" onClick={()=>preview.dispatch({type:'bind',taskId:null})}>回到主对话 <X size={12}/></button> : null}</div> : !studioIdle ? <div className="studio-compose-context">
@@ -2354,8 +2353,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             </div>
           ) : null}
           {preview.enabled && composeMode==="chat" ? featurePicker.panel : null}
+          <div className="composer-energy-shell" data-armed={preview.enabled&&featureForNext.length>0}>
+            {preview.enabled?<FeatureArmedRim armed={featureForNext.length>0}/>:null}
+            {preview.enabled&&featureForNext.length>0?<div className="selected-feature-list" aria-label="下次回复将使用的超能力"><small>下次回复将使用超能力：</small>{featureForNext.map(feature=><button key={feature.id} type="button" className="selected-feature-chip" aria-label={`取消功能：${feature.name}`} onClick={()=>chooseFeature(feature)}><Sparkles size={13}/><span>{feature.name}</span><X size={12}/></button>)}</div>:null}
           <div className="composer-row">
-            {preview.enabled?<FeatureArmedRim/>:null}
             <textarea
               id="one-studio-input"
               ref={featurePicker.input}
@@ -2376,6 +2377,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               {composeMode === "execution" ? <Zap size={18} /> : <ArrowUp size={19} />}
             </button>
             {composeMode==='chat' && !demo.enabled && outputDestination !== 'notion' && currentModel?.kind==='chat' ? <button type="button" className="composer-execute" aria-label="发送并执行本机任务" title="把当前要求和相关上下文交给本机执行" disabled={!content.trim()||targetLoading||uploadingAttachments||pendingAttachments.length>0||preparingExecution||executionBusy||taskStatusUnavailable} onClick={event=>void executeDraft(content,event.currentTarget,coordinator.enabled?undefined:targetConversation?.id)}><Zap size={16}/><span>本机执行</span></button> : null}
+          </div>
           </div>
           <div className="studio-compose-tools">
             <div className="studio-compose-tools-left">{preview.enabled && composeMode==="chat"?<button type="button" className="composer-add-feature" aria-label="添加下一条使用的功能" aria-expanded={featurePicker.isOpen} onClick={featurePicker.open}><Plus size={16}/><span>功能</span></button>:null}
@@ -2430,7 +2432,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         {workLayer==='guide'?<FluidWorkLayer title="重新认识 ONE" className="fluid-work-layer-guide" onClose={dismissStory}>{renderStory()}</FluidWorkLayer>:null}
         {featureRuns.filter(run=>run.status==='pending').map(run=><FeatureRunMonitor key={run.operationId} api={api} operationId={run.operationId} enabled={viewedFeatureOperation!==run.operationId} onStatus={updateFeatureRun} onUnavailable={setFeatureRunIssue}/>) }
       </>:null}
-      {preview.enabled?<FeatureHandoff transfer={featureTransfer} target={()=>document.querySelector<HTMLElement>('.studio-composer .composer-row')}  onComplete={()=>setFeatureTransfer(current=>current?.id===featureTransfer?.id?null:current)}/>:null}
+      {preview.enabled?<FeatureHandoff transfer={featureTransfer} target={()=>document.querySelector<HTMLElement>('.studio-composer .composer-energy-shell')}  onComplete={()=>setFeatureTransfer(current=>current?.id===featureTransfer?.id?null:current)}/>:null}
     </main>
   );
 }

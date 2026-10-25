@@ -33,3 +33,13 @@ test('eight rapid selections and replacement decoration cannot lose chosen inten
  const cancelled=featureSelectionTransition(selected,{id:'3'});assert.equal(cancelled.action,'removed');assert.equal(cancelled.features.length,7);
  const replacement=featureSelectionTransition(cancelled.features,{id:'9'});assert.equal(replacement.features.length,8);assert.equal(replacement.features.some(item=>item.id==='3'),false);
 });
+test('local +1 is legible briefly, stays by its button and leaves no lingering receipt',()=>{
+ const start=featureHandoffFrame(source,target,0),middle=featureHandoffFrame(source,target,.4),end=featureHandoffFrame(source,target,1);
+ assert.equal(start.receiptOpacity,0);assert.equal(middle.receiptOpacity,1);assert.equal(end.receiptOpacity,0);
+ for(const p of [-1,0,.1,.3,.7,.95,1,2,NaN]){
+  const frame=featureHandoffFrame(source,target,p);
+  assert.ok(frame.receiptLift>=5&&frame.receiptLift<=17);
+  assert.ok(frame.receiptScale>=.84&&frame.receiptScale<=1);
+  assert.ok(frame.receiptOpacity>=0&&frame.receiptOpacity<=1);
+ }
+});

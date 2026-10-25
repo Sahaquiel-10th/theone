@@ -1,8 +1,8 @@
-export const FEATURE_HANDOFF_MS=540;
+export const FEATURE_HANDOFF_MS=720;
 export const FEATURE_DEPART_PROGRESS=.20;
 export type HandoffRect={left:number;top:number;width:number;height:number};
 export type HandoffPoint={x:number;y:number};
-export type FeatureHandoffFrame={phase:'gathering'|'absorbing'|'complete';bubble:HandoffRect;origin:HandoffPoint;haloRadius:number;haloOpacity:number;bubbleOpacity:number;sourceNeck:string;departed:boolean;arrived:boolean};
+export type FeatureHandoffFrame={phase:'gathering'|'absorbing'|'complete';bubble:HandoffRect;origin:HandoffPoint;haloRadius:number;haloOpacity:number;bubbleOpacity:number;sourceNeck:string;receiptOpacity:number;receiptLift:number;receiptScale:number;departed:boolean;arrived:boolean};
 const clamp=(n:number,min=0,max=1)=>Math.max(min,Math.min(max,n));
 const smooth=(n:number,start=0,end=1)=>{const t=clamp((n-start)/(end-start));return t*t*(3-2*t);};
 const lerp=(a:number,b:number,t:number)=>a+(b-a)*t;
@@ -43,5 +43,5 @@ export function featureHandoffFrame(source:HandoffRect,_target:HandoffRect,progr
  const center={x:origin.x+lerp(3,14,gather)*(1-absorb),y:origin.y-5*Math.sin(Math.PI*smooth(p,0,.88))};
  const radius=lerp(3.2,5.5,gather)*lerp(1,.18,absorb),bubble=around(center,radius*2,radius*2*(1+.18*Math.sin(Math.PI*absorb)));
  const anchor=around(origin,7,7),neck=p>.03&&p<.78?handoffMaterialNeck(anchor,bubble,0):'';
- return{phase:p>=1?'complete':p<.20?'gathering':'absorbing',bubble,origin,haloRadius:7+12*smooth(p,0,.6),haloOpacity:.42*(1-smooth(p,.05,.65)),bubbleOpacity:fade,sourceNeck:neck,departed:p>=FEATURE_DEPART_PROGRESS,arrived:p>=.72};
+ return{phase:p>=1?'complete':p<.20?'gathering':'absorbing',bubble,origin,haloRadius:7+12*smooth(p,0,.6),haloOpacity:.42*(1-smooth(p,.05,.65)),bubbleOpacity:fade*(1-smooth(p,.10,.30)),sourceNeck:neck,receiptOpacity:smooth(p,0,.18)*(1-smooth(p,.66,1)),receiptLift:5+12*smooth(p,0,1),receiptScale:.84+.16*smooth(p,0,.2),departed:p>=FEATURE_DEPART_PROGRESS,arrived:p>=.72};
 }

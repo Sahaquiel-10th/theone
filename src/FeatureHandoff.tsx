@@ -1,16 +1,17 @@
-import {useEffect,useId,useRef,useState,type CSSProperties} from 'react';
+import {useEffect,useId,useLayoutEffect,useRef,useState,type CSSProperties} from 'react';
 import {createPortal} from 'react-dom';
 import {FEATURE_HANDOFF_MS,featureHandoffFrame,type FeatureHandoffFrame,type HandoffRect} from './featureHandoffMotion';
+import {composerEnergyContour} from './composerEnergyContour';
 import './feature-handoff.css';
 
-export type FeatureHandoffTransfer={id:string;featureId:string;name:string;caption:string;source:HandoffRect;material:{fill:string;input:string;ink:string;edge:string;accent:string}};
+export type FeatureHandoffTransfer={id:string;featureId:string;name:string;caption:string;source:HandoffRect;sourceElement?:HTMLElement;material:{fill:string;input:string;ink:string;edge:string;accent:string;onAccent:string}};
 const rect=(value:DOMRect):HandoffRect=>({left:value.left,top:value.top,width:value.width,height:value.height});
 /** Capture the local control; selecting keeps the feature surface open. */
 export function captureFeatureHandoff(feature:{id:string;name:string},source?:HTMLElement):FeatureHandoffTransfer|null{
  if(!source)return null;const bounds=source.getBoundingClientRect();if(bounds.width<1||bounds.height<1)return null;
  const style=getComputedStyle(source),token=(name:string,fallback:string)=>style.getPropertyValue(name).trim()||fallback;
  const label=source.getAttribute('role')==='option'?feature.name:source.textContent?.trim()||'下一条使用';
- return{id:crypto.randomUUID(),featureId:feature.id,name:feature.name,caption:label.length>24?label.slice(0,23)+'…':label,source:rect(bounds),material:{fill:token('--fluid-menu-fill','#edf1f2'),input:token('--fluid-input','#e7edf0'),ink:token('--fluid-ink','#233540'),edge:token('--fluid-menu-edge','#ffffffa0'),accent:token('--fluid-accent','#f0d45b')}};
+ return{id:crypto.randomUUID(),featureId:feature.id,name:feature.name,caption:label.length>24?label.slice(0,23)+'…':label,source:rect(bounds),sourceElement:source,material:{fill:token('--fluid-menu-fill','#edf1f2'),input:token('--fluid-input','#e7edf0'),ink:token('--fluid-ink','#233540'),edge:token('--fluid-menu-edge','#ffffffa0'),accent:token('--fluid-accent','#f0d45b'),onAccent:token('--fluid-on-accent','#233540')}};
 }
 
 /** A brief arrival cue. The composer itself and its text never scale or move. */
@@ -42,11 +43,18 @@ export function FeatureHandoff({transfer,target,onDepart,onArrive,onComplete}:Ha
   const resize=()=>{destination=handlers.current.target();if(destination)bounds=rect(destination.getBoundingClientRect());};
   if(preference.matches||document.visibilityState==='hidden'||!bounds){finish();return;}
   try{if(!element.matches(':popover-open'))element.showPopover();}catch{/* The app remains usable without top-layer support. */}
-  setPainting({id:transfer.id,frame:featureHandoffFrame(transfer.source,bounds,0)});
+  const sourceBounds=()=>{
+   if(!transfer.sourceElement)return transfer.source;
+   if(!transfer.sourceElement.isConnected)return null;
+   const value=transfer.sourceElement.getBoundingClientRect();return value.width>0&&value.height>0?rect(value):null;
+  };
+  const initialSource=sourceBounds();if(!initialSource){finish();return;}
+  setPainting({id:transfer.id,frame:featureHandoffFrame(initialSource,bounds,0)});
   const tick=(time:number)=>{
    if(completed||!bounds)return;start??=time;
    if(refreshTarget){resize();refreshTarget=false;}
-   const progress=Math.min(1,(time-start)/FEATURE_HANDOFF_MS),frame=featureHandoffFrame(transfer.source,bounds,progress);
+   const source=sourceBounds();if(!source){finish();return;}
+   const progress=Math.min(1,(time-start)/FEATURE_HANDOFF_MS),frame=featureHandoffFrame(source,bounds,progress);
    setPainting({id:transfer.id,frame});if(frame.departed)depart();if(frame.arrived)arrive();
    if(progress<1)raf=requestAnimationFrame(tick);else finish();
   };
@@ -55,21 +63,39 @@ export function FeatureHandoff({transfer,target,onDepart,onArrive,onComplete}:Ha
  },[transfer?.id]);
  if(!transfer||typeof document==='undefined')return null;
  const frame=painting?.id===transfer.id?painting.frame:null,material=transfer.material;
- const style={'--handoff-fill':material.fill,'--handoff-input':material.input,'--handoff-ink':material.ink,'--handoff-edge':material.edge,'--handoff-accent':material.accent} as CSSProperties;
+ const style={'--handoff-fill':material.fill,'--handoff-input':material.input,'--handoff-ink':material.ink,'--handoff-edge':material.edge,'--handoff-accent':material.accent,'--handoff-on-accent':material.onAccent} as CSSProperties;
  return createPortal(<div ref={host} popover="manual" className="feature-handoff" style={style} aria-hidden="true" data-feature-transfer={transfer.featureId} data-feature-transfer-phase={frame?.phase||'starting'}>
   {frame?<svg className="feature-handoff-canvas" width="100%" height="100%">
    <circle className="feature-handoff-halo" cx={frame.origin.x} cy={frame.origin.y} r={frame.haloRadius} opacity={frame.haloOpacity}/>
    {frame.sourceNeck?<path className="feature-handoff-neck" d={frame.sourceNeck}/>:null}
    <ellipse className="feature-handoff-drop" cx={frame.bubble.left+frame.bubble.width/2} cy={frame.bubble.top+frame.bubble.height/2} rx={frame.bubble.width/2} ry={frame.bubble.height/2} opacity={frame.bubbleOpacity}/>
+   <g className="feature-handoff-receipt" opacity={frame.receiptOpacity} transform={`translate(${frame.origin.x} ${frame.origin.y-frame.receiptLift}) scale(${frame.receiptScale})`}>
+    <circle r="11"/><text textAnchor="middle" dominantBaseline="central">+1</text>
+   </g>
   </svg>:null}
  </div>,document.body);
 }
 
 /** A persistent complete rim means “armed for the next message”.
  * Its tiny CSS stroke animation pauses in hidden/reduced-motion workspaces. */
-export function FeatureArmedRim(){
+export function FeatureArmedRim({armed}:{armed:boolean}){
+ const host=useRef<HTMLSpanElement>(null);
+ const [shape,setShape]=useState({width:0,height:0,path:''});
  const [visible,setVisible]=useState(()=>typeof document==='undefined'||document.visibilityState!=='hidden');
  const gradient=`feature-rim-${useId().replace(/:/g,'')}`;
  useEffect(()=>{const update=()=>setVisible(document.visibilityState!=='hidden');document.addEventListener('visibilitychange',update);return()=>document.removeEventListener('visibilitychange',update);},[]);
- return <span className="feature-armed-rim" aria-hidden="true" data-page-visible={visible}><svg width="100%" height="100%"><defs><linearGradient id={gradient} x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="var(--fluid-accent,#f0d45b)"/><stop offset=".5" stopColor="var(--fluid-rim-light,#fff)"/><stop offset="1" stopColor="var(--fluid-accent,#f0d45b)"/></linearGradient></defs><rect className="feature-rim-track" x="1" y="1" width="calc(100% - 2px)" height="calc(100% - 2px)" rx="22" pathLength="100"/><rect className="feature-rim-flow" x="1" y="1" width="calc(100% - 2px)" height="calc(100% - 2px)" rx="22" pathLength="100" stroke={`url(#${gradient})`}/></svg></span>;
+ useLayoutEffect(()=>{
+  if(!armed)return;const owner=host.current?.parentElement;if(!owner)return;
+  const measure=()=>{
+   const box=owner.getBoundingClientRect(),header=owner.querySelector<HTMLElement>('.selected-feature-list')?.getBoundingClientRect();
+   const width=Math.round(box.width*2)/2,height=Math.round(box.height*2)/2;
+   const path=composerEnergyContour({width,height,headerWidth:header?.width||0,headerHeight:header?header.bottom-box.top:0});
+   setShape(old=>old.width===width&&old.height===height&&old.path===path?old:{width,height,path});
+  };
+  const observer=new ResizeObserver(measure);observer.observe(owner);
+  for(const child of owner.children)if(child!==host.current)observer.observe(child);
+  measure();window.addEventListener('resize',measure);
+  return()=>{observer.disconnect();window.removeEventListener('resize',measure);};
+ },[armed]);
+ return <span ref={host} className="feature-armed-rim" aria-hidden="true" data-page-visible={visible}><svg width="100%" height="100%" viewBox={shape.width&&shape.height?`0 0 ${shape.width} ${shape.height}`:undefined}><defs><linearGradient id={gradient} x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="var(--fluid-accent,#f0d45b)"/><stop offset=".5" stopColor="var(--fluid-rim-light,#fff)"/><stop offset="1" stopColor="var(--fluid-accent,#f0d45b)"/></linearGradient></defs><path className="feature-rim-fill" d={shape.path}/><path className="feature-rim-track" d={shape.path} pathLength="100"/><path className="feature-rim-flow" d={shape.path} pathLength="100" stroke={`url(#${gradient})`}/></svg></span>;
 }
