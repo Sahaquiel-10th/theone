@@ -74,6 +74,7 @@ type Job = {
   dependenciesReady?:boolean;
   waitingFor?:{taskId:string;title:string}[];
   progress?:{completed:string[];pending:string[]};
+  workflow?:import('./taskWorkflowView').TaskWorkflowView;
 };
 type Detail = { conversation: Conversation; jobs: Job[]; recovery?: import('./taskRecovery').TaskRecovery };
 export type CoordinatorSubmission = {

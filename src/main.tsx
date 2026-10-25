@@ -46,6 +46,7 @@ import {taskConversationView} from './taskConversationView';
 import {friendlyExecutionProgress,readCapturedNotices} from './friendlyTaskStatus';
 import {internalTaskId} from './taskLink';
 import {claimInitialTaskLink,settleInitialTaskLink,coordinatorTaskConversation} from './coordinatorTaskView';
+import {TaskWorkflowProgress} from './TaskWorkflowProgress';
 import {FeatureShelf,type FeatureChoice} from './preview/FeatureShelf';
 import {KnowledgeConnections} from './KnowledgeConnections';
 import {captureFeatureHandoff,FeatureHandoff,FeatureArmedRim,pulseFeatureComposer,type FeatureHandoffTransfer} from './FeatureHandoff';
@@ -2132,6 +2133,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   function renderThings() {
     const thingDestination=thingDestinations[thingId]||'chat';
+    const workflow=coordinator.details[thingId]?.jobs.at(-1)?.workflow;
+    const pauseNotice=taskPauseNotice(thingId);
     const panel=<ThingsPanel
         one={undefined}
         fluid={preview.enabled}
@@ -2146,7 +2149,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         onSelect={id=>void selectThing(id)} onSend={continueThing}
         onWorkbench={id=>{if(preview.enabled)closeWorkLayer();else void openConversation(conversations.find(item=>item.id===id)!);setResultLampOpen(false);}}
         onRemove={coordinator.enabled?removeCoordinatorTask:undefined}
-        taskNotice={taskPauseNotice(thingId)}
+        taskNotice={workflow?<><TaskWorkflowProgress key={thingId} workflow={workflow}/>{pauseNotice}</>:pauseNotice}
         executionDisabled={taskStatusUnavailable || preparingExecution || executionBusy || Boolean(loadingByConversation[thingId])}
         executionPreparing={preparingExecution && preparingConversationId===thingId}
         executionContent={preparingExecution && preparingConversationId===thingId || thingExecutionTask ? <ExecutionDisclosure
@@ -2252,6 +2255,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           </div>
         </header>
         <div className="messages">
+          <TaskWorkflowProgress key={activeId} workflow={coordinator.details[activeId]?.jobs.at(-1)?.workflow}/>
           {taskPauseNotice(activeId)}
           {(active?.messages ?? []).length ? (
             taskConversationView(active!.messages,coordinator.details[activeId]?.jobs).map((message, index) => (

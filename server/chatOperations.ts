@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Store } from "./db.js";
 import type { Conversation, Database, Message } from "./types.js";
+import {canResumeWorkflowAfterRestart} from './workflowRecovery.js';
 
 /** Durable submission records. Ordinary chat keeps compact tombstones;
  * private queued work additionally stores its immutable execution configuration. */
@@ -189,6 +190,13 @@ export function reconcileInterruptedChatOperations(db: ChatOperationDatabase) {
       const task=db.conversations.find(c=>c.id===operation.conversationId&&c.workspaceId===operation.workspaceId&&c.userId===operation.userId);
       if(task){task.workPaused=true;task.workPauseReason='failed';}
       continue;
+    }
+    const workflowTask=db.conversations.find(c=>c.id===operation.conversationId&&c.workspaceId===operation.workspaceId&&c.userId===operation.userId);
+    if(workflowTask&&!db.executionTasks?.some(t=>t.workspaceId===operation.workspaceId&&t.userId===operation.userId&&t.conversationId===operation.conversationId&&t.executionSafetyHold)&&canResumeWorkflowAfterRestart(operation,workflowTask)){
+      // Only a proven checkpoint gap is resumable. A fresh connected Key must
+      // still authorize the normal runner; no provider is called at startup.
+      operation.workRun!.state='queued';operation.workRun!.error=undefined;operation.workRun!.unread=false;
+      workflowTask.workPaused=false;workflowTask.workPauseReason=undefined;operation.updatedAt=timestamp;continue;
     }
     if (operation.workRun) { operation.workRun.state='interrupted'; operation.workRun.unread=true; operation.workRun.error='服务重启，本轮结果未确认；不会自动重跑。'; const c=db.conversations.find(c=>c.id===operation.conversationId&&c.workspaceId===operation.workspaceId&&c.userId===operation.userId);if(c)c.workPaused=true; }
     operation.status = "interrupted";

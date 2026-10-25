@@ -95,6 +95,11 @@ test('the verbatim live final-edit request never renews knowledge search and upd
  }} as unknown as NotionMcpService;
  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{knowledgeCalls++;throw Error('the complete live instruction explicitly forbids renewed knowledge search');}},{contextMode:'adaptive',notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(_model,messages,tools)=>{
   assert.ok(!tools.some(tool=>tool.function.name==='knowledge_search'),'both main dispatcher and resumed worker must honour 不要重新搜索');
+  if(!tools.length&&messages.some(message=>message.role==='user'&&message.content?.includes('"currentStep"'))){
+   workerCalls++;assert.equal(workerCalls,1,'the selected workflow stage should generate the full final revision only once');assert.match(JSON.stringify(messages),/不要重新搜索知识库或旧资料/);
+   assert.match(JSON.stringify(messages),/这是保留不变的自然结尾/,'the existing complete manuscript must be present, not reconstructed from old chat');
+   return evalAnswer(JSON.stringify({outcome:'completed',content:expected,summary:'仅删除重复二级标题，保留全文和自然结尾。'}));
+  }
   if(tools.some(tool=>tool.function.name==='save_notion_draft')){
    workerCalls++;assert.equal(workerCalls,1,'final verified write should complete without another worker generation');assert.match(JSON.stringify(messages),/不要重新搜索知识库或旧资料/);
    return call('save_notion_draft',{old_str:duplicate,new_str:'这是保留不变的合成正文。',final:true});
@@ -107,7 +112,7 @@ test('the verbatim live final-edit request never renews knowledge search and upd
  await service.resume(evalScope,key);
  for(let i=0;i<100;i++){const run=(await f.store.read()).chatOperations!.find(op=>op.operationId==='verbatim_live_final_edit_20261025_work')?.workRun;if(run&&['completed','failed'].includes(run.state))break;await new Promise(resolve=>setTimeout(resolve,10));}
  const db=await f.store.read(),jobs=db.chatOperations!.filter(op=>op.workRun),current=jobs.find(op=>op.operationId==='verbatim_live_final_edit_20261025_work')!;
- assert.equal(current.workRun!.state,'completed',current.workRun!.error);assert.deepEqual(current.workRun!.contract!.requiredTools,['save_notion_draft']);assert.equal(current.workRun!.notionReceipt!.pageId,pageId);assert.equal(current.workRun!.notionReceipt!.state,'verified');assert.equal(body,expected);
+ assert.equal(current.workRun!.state,'completed',current.workRun!.error??'the same-page revision must finish');assert.deepEqual(current.workRun!.contract!.requiredTools,['save_notion_draft']);assert.equal(current.workRun!.notionReceipt!.pageId,pageId);assert.equal(current.workRun!.notionReceipt!.state,'verified');assert.equal(body,expected);
  assert.equal(knowledgeCalls,0);assert.equal(updates,1);assert.equal(workerCalls,1);assert.equal(jobs.length,2);assert.ok(jobs.every(op=>op.conversationId===taskId));assert.equal(db.conversations.filter(c=>!c.coordinatorMain).length,31);assert.ok(reads>=2);
  const state=await service.state(evalScope);assert.match(state.conversation!.messages.at(-1)!.content,new RegExp(pageId));
 });

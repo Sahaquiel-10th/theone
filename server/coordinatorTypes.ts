@@ -2,6 +2,9 @@ import type { ExecutorValues } from "./executorProfiles.js";
 import type { OfficialFeatureValues } from "./officialFeatures.js";
 import type { CredentialBinding } from "./featureCredentials.js";
 export type WorkRun = {
+  workflow?:import('./taskWorkflow.js').WorkflowRun;
+  /** Server-resolved published execution choices, never function arguments. */
+  workflowModels?:Record<string,{modelId:string;systemPrompt:string;executorId:string;executorVersion:number}>;
   runtimeContext?:import('./runtimeContext.js').RuntimeContext;
   fixedWorkflow?:import('./fixedWorkflows.js').FixedWorkflowInvocation;
   steps?:import('./taskSteps.js').TaskStep[];

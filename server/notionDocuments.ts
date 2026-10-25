@@ -228,12 +228,12 @@ export class NotionDocuments {
       return {operationId:opId,conversationId:claimed.conversationId,state:exhausted?'exhausted' as const:'scheduled' as const};
     });
   }
-  async context(s: WorkScope, job: WorkRun, originalRequest=job.instruction||'') {
+  async context(s: WorkScope, job: WorkRun, originalRequest=job.instruction||'',options:{fullReferences?:boolean}={}) {
     const target = job.notionTarget!;
     this.assertTarget(await this.store.read(), s, target);
     const readOnly=readOnlyRequest(originalRequest);
     const refs = [];
-    for (const id of readOnly?[]:target.referenceIds) refs.push({ id, content: notionBody(await this.mcp.readDocument(s.workspaceId, id)).slice(0, 12000) });
+    for (const id of readOnly?[]:target.referenceIds) {const body=notionBody(await this.mcp.readDocument(s.workspaceId, id));refs.push({ id, content: options.fullReferences?body:body.slice(0,12000) });}
     const current = target.pageId && !readOnly ? notionBody(await this.mcp.readDocument(s.workspaceId, target.pageId)) : undefined;
     return { references: refs, currentDocument: current, pageId: target.pageId, readOnly,
       ...(!readOnly?{writingPolicy:'完整文章先组织好整稿再保存，不把一段中间稿当交付。修订整篇时 old_str 可使用本轮完整原文、new_str 写完整修订稿；局部修改仅用于用户明确指定的局部要求。每次保存已回读核对后可继续修改同页；只有已完成本轮全部写作要求的最后一次保存才传 final:true，中间稿不传。'}:{}),

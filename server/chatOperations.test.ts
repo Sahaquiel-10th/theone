@@ -4,6 +4,24 @@ import type { Store } from "./db.js";
 import type { Conversation, Database, Message } from "./types.js";
 import { beginChatOperation, bindChatOperationConversation, ChatOperationError, completeChatOperation, failChatOperation, failChatOperationInMutation, getChatOperationResult, reconcileInterruptedChatOperations } from "./chatOperations.js";
 import type { ChatOperation } from "./chatOperations.js";
+import {createWorkflowRun} from './taskWorkflow.js';
+import {taskStepKey} from './taskSteps.js';
+
+test('startup requeues only a proven workflow result gap; unknown attempts, local holds and human stops remain protected',()=>{
+ for(const mode of ['proven','unknown','local_hold','user_stop'] as const){
+  const f=fixture(),task=conversation();f.db().conversations.push(task);
+  const binding={workspaceId:task.workspaceId,userId:task.userId,operationId:'workflow-op'},run=createWorkflowRun({version:1,steps:[{id:'draft',title:'整理正文',kind:'model',instruction:'整理指定材料',inputs:[]}]},binding);
+  run.steps[0].state='running';run.phase='running';
+  const namespace=`workflow:${run.id}`,tool=`workflow:${run.id}:draft`,key=taskStepKey(namespace,tool,JSON.stringify({revision:1,instruction:run.spec.steps[0].instruction,inputs:[]}));
+  const op={...binding,id:binding.operationId,operationId:'workflow_operation_startup',conversationId:task.id,status:'pending',createdAt:'2026-10-25T00:00:00Z',updatedAt:'2026-10-25T00:00:00Z',workRun:{state:'running',workflow:run,steps:[{key,namespace,tool,label:'整理正文',scopeId:binding.operationId,effect:'model',state:mode==='unknown'?'started':'completed',updatedAt:'2026-10-25T00:00:00Z',output:{workflow:{version:1,runId:run.id,revision:1,stepId:'draft'},outcome:mode==='unknown'?'waiting':'completed',result:{content:'已核对的合成正文'}}}]}} as unknown as ChatOperation;
+  f.db().chatOperations.push(op);
+  if(mode==='user_stop'){task.workPaused=true;task.workPauseReason='user_stopped';}
+  if(mode==='local_hold')f.db().executionTasks=[{workspaceId:task.workspaceId,userId:task.userId,conversationId:task.id,executionSafetyHold:true} as unknown as NonNullable<Database['executionTasks']>[number]];
+  reconcileInterruptedChatOperations(f.db());
+  assert.equal(op.workRun!.state,mode==='proven'?'queued':'interrupted',mode);assert.equal(op.status,mode==='proven'?'pending':'interrupted',mode);
+  assert.equal(f.db().chatOperations.length,1,'no new operation is made on restart');
+ }
+});
 
 type TestDatabase = Database & { chatOperations: ChatOperation[] };
 const scope = { workspaceId: "wa", userId: "a", operationId: "client-operation-0001" };
