@@ -38,6 +38,17 @@ test('reporting a result does not make it read; unviewed completed work remains 
  assert.equal(taskCategory({outcome:'partial',isTask:true}),'review');
  assert.equal(taskCategory({}),'history');
 });
+
+test('automatic save verification stays an active note instead of surfacing its older failure and retry action',()=>{
+ const checking:Transfer={id:'work:one',taskId:'one',title:'保存核对',state:'reconciling',phase:'正在只读核对 Notion 保存结果，不会重复写入',reportable:false};
+ const stale:Transfer={id:'old-failure',taskId:'one',title:'保存核对',state:'failed',outcome:'failed',reported:false};
+ assert.deepEqual(visibleTransfers([checking,stale]),[checking]);
+ assert.equal(taskCategory({active:true,outcome:'reconciling',isTask:true}),'active');
+ const html=renderToStaticMarkup(createElement(TaskTransferRail,{tasks:[checking,stale],busy:false,onOpen:()=>{}}));
+ assert.match(html,/正在只读核对 Notion 保存结果/);assert.doesNotMatch(html,/重试|未完成，查看原因|查看恢复方式/);
+ const returned:Transfer={id:'verified-result',taskId:'one',title:'保存核对',state:'returned',reported:true};
+ assert.deepEqual(visibleTransfers([returned]),[],'only server-confirmed final reporting withdraws the active check note');
+});
 test('local process completion cannot override an unknown or needs-confirmation receipt',()=>{
  assert.equal(taskUiOutcome({localStatus:'completed',receiptOutcome:'needs_input'}),'needs_input');
  assert.equal(taskUiOutcome({localStatus:'completed',receiptOutcome:'returned'}),'returned');

@@ -2220,7 +2220,7 @@ test('uncertain Notion saves block replay while verified saves allow explicit la
  });
  let detail=await f.service.task(a,r.taskId!);const latest=detail.jobs.at(-1)!;
  assert.equal(detail.recovery.kind,'review_notion');
- await assert.rejects(()=>f.service.retryLatest(a,r.taskId!,latest.id,undefined,key),/核对 Notion/);
+ await assert.rejects(()=>f.service.retryLatest(a,r.taskId!,latest.id,undefined,key),/Notion 保存结果还没确认.*只读核对.*不会重写/);
  await f.store.mutate(d=>{d.chatOperations!.find(o=>o.workRun?.notionReceipt)!.workRun!.notionReceipt!.state='verified';});
  detail=await f.service.task(a,r.taskId!);assert.equal(detail.recovery.kind,'resume');
  await f.service.retryLatest(a,r.taskId!,latest.id,undefined,key);
@@ -2843,4 +2843,143 @@ test('generic missing material in a Notion task returns needs-input once without
  assert.equal((await service.task(a,accepted.taskId!)).conversation.workPaused,false);
  await service.resume(a,key);await waitFor(async()=>(await service.task(a,accepted.taskId!)).jobs.at(-1)!.state==='completed');
  detail=await service.task(a,accepted.taskId!);assert.equal(writes,1);assert.equal(calls,2);assert.equal(detail.jobs.at(-1)!.notionReceipt!.state,'verified');
+});
+
+async function pendingNotionVerificationFixture(options:{final?:boolean;required?:string[]}={}){
+ const f=fixture(),pageId='e'.repeat(32),parentId='a'.repeat(32),body='最终合成方案\n自然结尾。',digest=createHash('sha256').update(body).digest('hex'),clock={now:Date.now()};
+ const accepted=await f.service.dispatch(a,input('operation_delayed_receipt_seed','UI 合成任务'),key);
+ clock.now=Date.now()+1000;
+ let operationId='';
+ await f.store.mutate(d=>{
+  d.knowledgeConnections.push({id:'delayed-notion',workspaceId:a.workspaceId,provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'delayed-grant',userId:a.userId,authorizedAt:'now',parentId}});
+  const op=d.chatOperations!.find(o=>o.workRun&&o.conversationId===accepted.taskId)!,task=d.conversations.find(c=>c.id===accepted.taskId)!;operationId=op.id;
+  op.status='pending';op.workRun!.state='failed';op.workRun!.failureCode='notion_verification_pending';op.workRun!.unread=false;
+  op.workRun!.contract={version:1,execution:'model',requiredFeatureIds:[],requiredTools:['save_notion_draft',...(options.required??[])]};
+  op.workRun!.notionTarget={connectionId:'delayed-notion',grantId:'delayed-grant',parentId,referenceIds:[]};
+  op.workRun!.notionReceipt={state:'uncertain',pageId,url:`https://www.notion.so/${pageId}`,expectedDigest:digest,checkpointKey:'exact-delayed-save',final:options.final!==false,verification:{state:'scheduled',version:1,attempt:0,nextCheckAt:new Date(clock.now).toISOString(),deadlineAt:new Date(clock.now+60000).toISOString()}};
+  op.workRun!.steps=[{key:'exact-delayed-save',namespace:'worker',scopeId:op.id,tool:'save_notion_draft',label:'保存到 Notion',state:'started',effect:'external_write',updatedAt:op.createdAt}];
+  task.workPaused=true;task.workPauseReason='failed';
+ });
+ return {...f,taskId:accepted.taskId!,operationId,pageId,body,clock};
+}
+function verificationService(f:Awaited<ReturnType<typeof pendingNotionVerificationFixture>>,read:()=>Promise<unknown>,worker?:()=>Promise<ToolChatResult>){
+ return new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('verification never retrieves other knowledge')},{notionDocuments:new NotionDocuments(f.store,{readDocument:async(ws:string,id:string)=>{assert.equal(ws,a.workspaceId);assert.equal(id,f.pageId);return read();},callDocumentTool:async()=>assert.fail('verification never creates or updates')} as unknown as NotionMcpService,{now:()=>f.clock.now,delays:[1,2]}),modelCall:async()=>worker?worker():assert.fail('verification never buys another model call'),reportCall:async()=>assert.fail('verification never buys a progress report')});
+}
+
+test('connected-Key Notion verification is active until exact readback, then briefs once without model calls or billing',async()=>{
+ const f=await pendingNotionVerificationFixture();let reads=0,proofs=0;
+ const service=verificationService(f,async()=>{reads++;return {text:f.body};}),before=await f.store.read();
+ const pending=await service.state(a),transfer=pending.transfers.find(t=>t.id===f.taskId)!;
+ assert.equal(transfer.state,'reconciling');assert.equal(transfer.running,false);assert.equal(transfer.reconciling,true);assert.equal(pending.notices.length,0);
+ assert.equal(reads,0,'viewing session state without a fresh Key callback cannot read Notion');
+ await service.state(a,1,async()=>{proofs++;throw Error('Key is offline');});await new Promise(resolve=>setTimeout(resolve,15));assert.equal(reads,0);
+ await service.reconcileNotionResults(b,key);assert.equal(reads,0,'another exact owner has no candidate');
+ await Promise.all([service.reconcileNotionResults(a,async()=>{proofs++;}),service.reconcileNotionResults(a,async()=>{proofs++;})]);
+ const db=await f.store.read(),op=db.chatOperations!.find(o=>o.id===f.operationId)!;
+ assert.equal(reads,1);assert.ok(proofs>=3);assert.equal(op.status,'completed');assert.equal(op.workRun!.state,'completed');assert.equal(op.workRun!.resultOutcome,'completed');
+ assert.equal(op.workRun!.steps![0].state,'completed');assert.equal(op.workRun!.notionReceipt!.verification,undefined);
+ assert.equal(db.powerLedger.length,before.powerLedger.length);assert.equal(db.modelUsageRecords.length,before.modelUsageRecords.length);
+ const done=await service.state(a),report=done.conversation!.messages.find(m=>m.id===op.workRun!.reportMessageId)!;
+ assert.match(report.content,new RegExp(f.pageId));assert.match(report.content,/保存|核对/);assert.equal(done.transfers.some(t=>t.id===f.taskId),false);
+ await service.reconcileNotionResults(a,key);await service.state(a);assert.equal(reads,1);assert.equal((await service.task(a,f.taskId)).conversation.messages.filter(m=>m.role==='assistant').length,1);
+ assert.equal((await service.state(b)).conversation,null);
+});
+
+test('a saved proof waiting for deterministic finalization stays visibly active without a failed main briefing',async()=>{
+ const f=await pendingNotionVerificationFixture();
+ await f.store.mutate(d=>{const run=d.chatOperations!.find(o=>o.id===f.operationId)!.workRun!;run.notionReceipt!.state='verified';run.notionReceipt!.digest=run.notionReceipt!.expectedDigest;run.notionReceipt!.verification=undefined;run.steps![0].state='completed';run.steps![0].output={...run.notionReceipt};});
+ const service=verificationService(f,async()=>assert.fail('a complete stored readback does not need another read'));
+ const state=await service.state(a),transfer=state.transfers.find(t=>t.id===f.taskId)!;
+ assert.equal(transfer.state,'reconciling');assert.equal(transfer.running,false);assert.match(transfer.phase!,/保存已经核对，正在整理结果/);assert.equal(state.notices.length,0);
+ const detail=await service.task(a,f.taskId);assert.equal(detail.jobs[0].verificationPending,true);assert.equal(detail.recovery.kind,'reconciling');
+ await service.reconcileNotionResults(a,key);assert.equal((await service.task(a,f.taskId)).jobs[0].state,'completed');
+});
+
+test('a real worker write with delayed readback exits to a durable verification phase before any paid progress report',async()=>{
+ const f=fixture(),parentId='a'.repeat(32),pageId='f'.repeat(32),clock={now:Date.now()+1000};let writes=0,reads=0,workerCalls=0,body='';
+ await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion-real-delayed',workspaceId:a.workspaceId,provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:a.userId,authorizedAt:'now',parentId}}));
+ const documents=new NotionDocuments(f.store,{readDocument:async()=>{reads++;if(reads===1)throw Error('eventual-read-timeout');return {text:body};},callDocumentTool:async(_w:string,_c:string,_g:string,_u:string,name:string,args:any,beforeSend?:()=>Promise<void>)=>{assert.equal(name,'notion-create-pages');await beforeSend?.();writes++;body=args.pages[0].content;return {pages:[{id:pageId}]};}} as unknown as NotionMcpService,{now:()=>clock.now,delays:[5,10]});
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('not requested')},{notionDocuments:documents,reportCall:async()=>assert.fail('pending verification must not purchase a report'),modelCall:async(model,messages)=>{
+  if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('我来处理。'):{...answer(''),toolCalls:[{id:'delegate',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'延后核对方案',instruction:'用合成内容写完整项目方案并保存Notion，不查知识库',executorId:'general'})}}]};
+  workerCalls++;assert.equal(workerCalls,1,'a saved write is never regenerated');return {...answer(''),toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({title:'项目方案',content:'完整合成项目方案。\n自然结尾。',final:true})}}]};
+ }});
+ const accepted=await service.dispatch(a,{...input('operation_real_delayed_write','请用合成内容写完整项目方案并保存Notion，不查知识库'),outputDestination:'notion'},key);
+ await service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.some(o=>o.conversationId===accepted.taskId&&o.workRun?.failureCode==='notion_verification_pending'));
+ const pending=await f.store.read(),op=pending.chatOperations!.find(o=>o.conversationId===accepted.taskId&&o.workRun)!;
+ assert.equal(op.status,'pending');assert.equal(writes,1);assert.equal(reads,1);assert.equal(workerCalls,1);
+ assert.equal((await service.state(a)).notices.length,0);assert.equal((await service.task(a,accepted.taskId!)).conversation.messages.filter(m=>m.role==='assistant').length,0);
+ assert.ok(pending.contextTraces.some(t=>t.requestId===op.requestId&&t.executionSteps?.some(step=>step.tool==='save_notion_draft')),'the original exact write trace remains available for support without generating another report');
+ clock.now+=20;await service.reconcileNotionResults(a,key);
+ const done=await f.store.read();assert.equal(done.chatOperations!.find(o=>o.id===op.id)!.workRun!.resultOutcome,'completed');assert.equal(done.powerLedger.length,pending.powerLedger.length);assert.equal(done.modelUsageRecords.length,pending.modelUsageRecords.length);assert.equal(writes,1);assert.equal(reads,2);assert.equal(workerCalls,1);
+});
+
+for(const kind of ['intermediate','required-source'] as const)test(`delayed ${kind} saving confirms the page but never invents whole-task completion`,async()=>{
+ const f=await pendingNotionVerificationFixture(kind==='intermediate'?{final:false}:{required:['knowledge_search']});
+ const service=verificationService(f,async()=>({text:f.body}));await service.reconcileNotionResults(a,key);
+ const detail=await service.task(a,f.taskId),op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!;
+ assert.equal(detail.jobs[0].notionReceipt!.state,'verified');assert.equal(op.workRun!.resultOutcome,'partial');assert.equal(op.workRun!.state,'failed');assert.equal(detail.conversation.workPaused,true);
+ const report=(await service.state(a)).conversation!.messages.at(-1)!.content;
+ assert.match(report,/其余步骤还没有全部完成/);assert.doesNotMatch(report,/任务已完成|全部完成了/);assert.match(report,new RegExp(f.pageId));
+});
+
+test('bounded mismatching readback remains active between checks and ends once with a real original-page next step',async()=>{
+ const f=await pendingNotionVerificationFixture();let reads=0;
+ const service=verificationService(f,async()=>{reads++;return {text:'另一份未匹配的正文'};});
+ await service.reconcileNotionResults(a,key);assert.equal((await service.state(a)).transfers[0].state,'reconciling');assert.equal((await service.state(a)).notices.length,0);
+ f.clock.now+=10;await service.reconcileNotionResults(a,key);
+ const op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!;
+ assert.equal(reads,2);assert.equal(op.workRun!.notionReceipt!.verification!.state,'exhausted');assert.equal(op.workRun!.failureCode,'notion_verification_exhausted');
+ const main=(await service.state(a)).conversation!,report=main.messages.find(m=>m.id===op.workRun!.reportMessageId)!;
+ assert.match(report.content,/未完整核对/);assert.match(report.content,/打开|核对|确认/);assert.match(report.content,new RegExp(f.pageId));assert.doesNotMatch(report.content,/已完成|已保存到 Notion · 已回读核对/);
+ await service.reconcileNotionResults(a,key);await service.state(a);assert.equal(reads,2);assert.equal((await service.task(a,f.taskId)).conversation.messages.filter(m=>m.role==='assistant').length,1);
+});
+
+test('stopping during delayed Notion readback preserves user stop and cannot finalize from a late response',async()=>{
+ const f=await pendingNotionVerificationFixture();let release!:(value:unknown)=>void;
+ const service=verificationService(f,async()=>new Promise(resolve=>{release=resolve;}));
+ const checking=service.reconcileNotionResults(a,key);await waitFor(async()=>Boolean(release));
+ await assert.rejects(()=>service.cancelTask(b,f.taskId,key),/不存在/);await service.cancelTask(a,f.taskId,key);
+ release({text:f.body});await checking;
+ const detail=await service.task(a,f.taskId);assert.equal(detail.jobs[0].state,'cancelled');assert.equal(detail.conversation.workPauseReason,'user_stopped');assert.equal(detail.conversation.workPaused,true);assert.equal(detail.conversation.messages.filter(m=>m.role==='assistant').length,0);
+});
+
+test('a verified delayed save waits for a busy main reply and is delivered once when that reply is no longer pending',async()=>{
+ const f=await pendingNotionVerificationFixture();
+ await f.store.mutate(d=>d.chatOperations!.push({...a,id:'busy-while-notion-checks',operationId:'busy_notion_check_operation',requestId:'coord_busy_notion_check',payloadHash:'fixed',status:'pending',createdAt:new Date(f.clock.now).toISOString(),updatedAt:new Date(f.clock.now).toISOString()}));
+ const service=verificationService(f,async()=>({text:f.body})),before=(await service.state(a)).conversation!.messages.length;
+ await service.reconcileNotionResults(a,key);
+ let op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!;
+ assert.equal(op.workRun!.resultOutcome,'completed');assert.equal(op.workRun!.reportedToCoordinatorAt,undefined);assert.equal((await service.state(a)).conversation!.messages.length,before);
+ await f.store.mutate(d=>{d.chatOperations!.find(o=>o.id==='busy-while-notion-checks')!.status='completed';});
+ await Promise.all([service.state(a),service.state(a)]);op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!;
+ assert.ok(op.workRun!.reportedToCoordinatorAt);assert.equal((await service.state(a)).conversation!.messages.length,before+1);
+});
+
+for(const localHold of [false,true])test(`verification releases only its own pause for an admitted newer requirement (local hold=${localHold})`,async()=>{
+ const f=await pendingNotionVerificationFixture();let workerCalls=0;
+ // This supplement was admitted while the first worker was still running,
+ // before that worker transferred its unresolved write to verification.
+ await f.store.mutate(d=>{const op=d.chatOperations!.find(o=>o.id===f.operationId)!;op.workRun!.state='running';const task=d.conversations.find(c=>c.id===f.taskId)!;task.workPaused=false;task.workPauseReason=undefined;});
+ await f.service.direct(a,f.taskId,input('operation_delayed_new_html','只在对话里提供新的 HTML 代码，不保存到Notion，不查知识库。'),key);
+ await f.store.mutate(d=>{const op=d.chatOperations!.find(o=>o.id===f.operationId)!;op.workRun!.state='failed';const task=d.conversations.find(c=>c.id===f.taskId)!;task.workPaused=true;task.workPauseReason='failed';if(localHold)(d.executionTasks??=[]).push({...a,id:'unrelated-local-hold',conversationId:f.taskId,status:'failed',executionSafetyHold:true,createdAt:'2020-01-01T00:00:00Z',updatedAt:'2020-01-01T00:00:00Z'} as unknown as NonNullable<Database['executionTasks']>[number]);});
+ const service=verificationService(f,async()=>({text:f.body}),async()=>{workerCalls++;return answer('<main>新的合成 HTML 方案</main>');});
+ await service.reconcileNotionResults(a,key);
+ let detail=await service.task(a,f.taskId);assert.equal(detail.jobs[0].state,'completed');assert.equal(detail.jobs[1].state,'queued');assert.equal(workerCalls,0,'the read-only checker itself never starts a model');assert.equal(detail.conversation.workPaused,localHold);
+ await service.resume(a,key);
+ if(localHold){assert.equal(workerCalls,0);assert.equal((await service.task(a,f.taskId)).jobs[1].state,'queued');}
+ else{await waitFor(async()=>(await service.task(a,f.taskId)).jobs[1].state==='completed');detail=await service.task(a,f.taskId);assert.equal(workerCalls,1);assert.match(detail.conversation.messages.at(-1)!.content,/新的合成 HTML 方案/);assert.equal(detail.jobs[0].state,'completed');}
+});
+
+test('an explicit legacy receipt check finalizes only its selected verified final draft and leaves a newer queued requirement intact',async()=>{
+ const f=await pendingNotionVerificationFixture();
+ await f.store.mutate(d=>{
+  const op=d.chatOperations!.find(o=>o.id===f.operationId)!;op.status='failed';op.workRun!.failureCode='task_execution_failed';op.workRun!.notionReceipt!.verification=undefined;
+  const newer=structuredClone(op);newer.id='newer-html-op';newer.operationId='newer_html_operation_0001';newer.createdAt=new Date(Date.parse(op.createdAt)+1000).toISOString();newer.status='pending';newer.workRun!.state='queued';newer.workRun!.failureCode=undefined;newer.workRun!.notionReceipt=undefined;newer.workRun!.notionTarget=undefined;newer.workRun!.steps=[];newer.workRun!.contract={version:1,execution:'direct',requiredFeatureIds:[],requiredTools:['oneHtml']};d.chatOperations!.push(newer);
+ });
+ const service=verificationService(f,async()=>({text:f.body}));
+ await service.reconcileNotionResults(a,key);assert.equal((await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!.status,'failed','legacy history is never automatically enrolled');
+ await service.verifyNotionResult(a,f.taskId,key);
+ const db=await f.store.read(),old=db.chatOperations!.find(o=>o.id===f.operationId)!,newer=db.chatOperations!.find(o=>o.id==='newer-html-op')!,detail=await service.task(a,f.taskId);
+ assert.equal(old.workRun!.state,'completed');assert.equal(old.status,'completed');assert.equal(newer.workRun!.state,'queued');assert.equal(newer.status,'pending');assert.equal(detail.conversation.workPaused,true);
+ await service.verifyNotionResult(a,f.taskId,key);assert.equal((await service.task(a,f.taskId)).conversation.messages.filter(m=>m.role==='assistant').length,1);
 });

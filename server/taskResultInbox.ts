@@ -171,7 +171,7 @@ export function taskResultIsLatestAttempt(db:Database,scope:TaskResultScope,resu
 }
 function cloudResult(db: Database, scope: TaskResultScope, operation: ChatOperation, max: number): TaskResultReceipt | undefined {
   const run = operation.workRun, task = ownedTask(db, scope, operation.conversationId);
-  if (!run || !task || !terminal.has(run.state)) return;
+  if (!run || !task || !terminal.has(run.state)||operation.status==='pending'&&run.failureCode==='notion_verification_pending'||run.notionReceipt?.state!=='verified'&&['scheduled','checking'].includes(run.notionReceipt?.verification?.state??'')) return;
   const result = task.messages.find(message => message.id === run.resultMessageId && message.role === 'assistant');
   const attachments = ownedFiles(db, scope, task, result);
   const imageFile = db.attachments.find(file => own(file, scope) && file.kind === 'image'
@@ -196,7 +196,7 @@ function cloudResult(db: Database, scope: TaskResultScope, operation: ChatOperat
   const receiptId=run.reportRevision?`${operation.id}_r${run.reportRevision}`:operation.id;
   return { id: receiptId, sourceId: operation.id, source: 'cloud', taskId: task.id, title: clip(task.title, 120),
     outcome, state: outcome, summary, brief: resultBrief(run.reportRevision?'returned':outcome, run.userReport, result?.content ?? summary, run.error), attemptAt:operation.createdAt, createdAt: run.reportRevisionAt??operation.updatedAt, resultMessageId: run.resultMessageId,
-    imageUrl, attachments, notionUrl: run.notionReceipt?.state === 'verified' ? run.notionReceipt.url : undefined,
+    imageUrl, attachments, notionUrl: run.notionReceipt?.state === 'verified' ? run.notionReceipt.url : run.notionReceipt?.verification?.state==='exhausted'&&/^[a-f0-9]{32}$/i.test(run.notionReceipt.pageId?.replaceAll('-','')??'')?`https://www.notion.so/${run.notionReceipt.pageId!.replaceAll('-','')}`:undefined,
     reported: Boolean(run.reportedToCoordinatorAt || marker(db, scope, receiptId)), reviewed: run.unread !== true };
 }
 function localResult(db: Database, scope: TaskResultScope, execution: ExecutionTask, max: number): TaskResultReceipt | undefined {

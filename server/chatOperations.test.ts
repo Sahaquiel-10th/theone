@@ -160,6 +160,24 @@ test("restart changes unfinished requests to uncertain without ever re-executing
   assert.equal(f.db().chatOperations[0].retryable, false);
 });
 
+for(const state of ['scheduled','checking'] as const)test(`restart retains ${state} Notion verification without replaying the model or write`,async()=>{
+ const f=fixture();await beginChatOperation(f.store,start);
+ f.db().conversations.push(conversation());bindChatOperationConversation(f.db(),scope,'conversation-a');
+ const op=f.db().chatOperations[0];
+ op.workRun={state:'running',notionReceipt:{state:'uncertain',pageId:'a'.repeat(32),expectedDigest:'b'.repeat(64),verification:{state,version:23,attempt:1,nextCheckAt:'2026-10-25T00:00:00Z',deadlineAt:'2026-10-25T00:05:00Z',...(state==='checking'?{leaseId:'persisted-lease',leaseUntil:'2026-10-25T00:00:01Z'}:{})}}} as NonNullable<ChatOperation['workRun']>;
+ reconcileInterruptedChatOperations(f.db());reconcileInterruptedChatOperations(f.db());
+ assert.equal(op.status,'pending');assert.equal(op.workRun.state,'failed');assert.equal(op.workRun.failureCode,'notion_verification_pending');assert.equal(op.workRun.notionReceipt!.verification!.version,23);assert.equal(op.workRun.notionReceipt!.verification!.state,state);assert.equal(op.workRun.unread,false);
+ assert.equal(f.db().conversations[0].workPaused,true);assert.equal(f.db().conversations[0].messages.length,0);
+ await assert.rejects(beginChatOperation(f.store,start),code('CHAT_OPERATION_PENDING'));
+});
+
+test('restart between readback proof and deterministic finalization retains only the pending finalization, never model execution',async()=>{
+ const f=fixture();await beginChatOperation(f.store,start);
+ const op=f.db().chatOperations[0];op.workRun={state:'failed',failureCode:'notion_verification_pending',notionReceipt:{state:'verified',pageId:'a'.repeat(32),expectedDigest:'b'.repeat(64),digest:'c'.repeat(64)}} as NonNullable<ChatOperation['workRun']>;
+ reconcileInterruptedChatOperations(f.db());assert.equal(op.status,'pending');assert.equal(op.workRun.state,'failed');assert.equal(op.workRun.failureCode,'notion_verification_pending');assert.equal(op.workRun.notionReceipt!.state,'verified');
+ await assert.rejects(beginChatOperation(f.store,start),code('CHAT_OPERATION_PENDING'));
+});
+
 test("failed attempts stay failed for the same operation id; known safe failures permit an explicit new operation", async () => {
   const f = fixture(); await beginChatOperation(f.store, start);
   await failChatOperation(f.store, scope, { retryable: true });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {taskRecovery,notionReceiptForReview,unstartedLocalInput} from './taskRecovery';
+import {taskRecovery,notionReceiptForReview,unstartedLocalInput,notionVerificationActive,notionVerificationPresentation,type NotionReceiptView} from './taskRecovery';
 
 test('a saved local handoff has a first-start entry, never a blind replay of an existing execution',()=>{
  const messages=[{id:'input',role:'user'},{id:'result',role:'assistant'}];
@@ -91,4 +91,61 @@ test('a verified receipt never hides an unresolved write from the task or compos
  }
  assert.equal(notionReceiptForReview([verified]),verified);
  assert.equal(notionReceiptForReview([]),undefined);
+});
+
+test('scheduled and checking receipts offer only automatic readback, never write retry or manual continue',()=>{
+ for(const state of ['scheduled','checking'] as const){
+  const receipt:NotionReceiptView={state:'uncertain',delivery:'unknown',url:'https://www.notion.so/original',verification:{state,version:1,attempt:1}};
+  assert.equal(notionVerificationActive(receipt),true);
+  const view=notionVerificationPresentation(receipt);assert.equal(view.active,true);assert.equal(view.canVerify,false);
+  assert.match(view.message,/核对|读取/);assert.match(view.message,/不会.*写/);assert.doesNotMatch(view.message,/确认继续|重新处理|重新新建|点击/);
+  if(state==='scheduled')assert.match(view.message,/ONE Key 保持连接/);
+  const recovery=taskRecovery([{id:'save',state:'failed',notionTarget:{},notionReceipt:receipt}]);
+  assert.equal(recovery.kind,'reconciling');assert.equal(recovery.sourceJobId,undefined);
+  const running=taskRecovery([{id:'save',state:'failed',notionReceipt:receipt},{id:'new-html',state:'running'}]);
+  assert.equal(running.kind,'none');assert.match(running.message,/本轮仍在处理/,'an old save check must not replace a new HTML run');
+ }
+});
+
+test('verified save awaiting coordinator finalization stays reconciling without a restart action',()=>{
+ const pending={id:'save',state:'failed',failureCode:'notion_verification_pending',verificationPending:true,notionReceipt:{state:'verified'}};
+ const recovery=taskRecovery([pending]);
+ assert.equal(recovery.kind,'reconciling');assert.equal(recovery.sourceJobId,undefined);
+ assert.equal(recovery.message,'保存已经核对，正在整理结果；不用再次开始。');
+ assert.equal(taskRecovery([pending,{id:'new-html',state:'running'}]).kind,'none','actual running work still takes precedence');
+ assert.equal(taskRecovery([{...pending,failureCode:undefined,verificationPending:false,state:'completed'}]).kind,'none','settled save no longer waits for finalization');
+ assert.notEqual(taskRecovery([{...pending,verificationPending:false,state:'cancelled'}]).kind,'reconciling','a retained failure code cannot resurrect a cancelled check');
+});
+
+test('exhausted readback remains a read-only review with a concrete next step',()=>{
+ for(const lastReason of ['read_failed','mismatch','incomplete','authorization','stale','no_page'] as const){
+  const receipt:NotionReceiptView={state:'uncertain',url:'https://www.notion.so/original',verification:{state:'exhausted',version:3,attempt:3,lastReason}};
+  assert.equal(notionVerificationActive(receipt),false);
+  const view=notionVerificationPresentation(receipt);
+  assert.equal(view.active,false);assert.match(view.message,/核对.*停下|自动核对已/);
+  assert.equal(view.canVerify,!['authorization','stale','no_page'].includes(lastReason));
+  assert.equal(taskRecovery([{id:'save',state:'failed',notionTarget:{},notionReceipt:receipt}]).kind,'review_notion');
+ }
+});
+
+test('verified receipt ignores stale verification metadata and legacy unknown writes remain protected',()=>{
+ const verified:NotionReceiptView={state:'verified',verification:{state:'checking',version:3,attempt:2}};
+ assert.equal(notionVerificationActive(verified),false);assert.equal(notionVerificationPresentation(verified).canVerify,false);
+ assert.equal(taskRecovery([{id:'done',state:'completed',notionReceipt:verified}]).kind,'none');
+ assert.equal(taskRecovery([{id:'legacy',state:'failed',notionTarget:{},notionReceipt:{state:'uncertain',delivery:'unknown'}}]).kind,'review_notion');
+ assert.equal(notionVerificationPresentation({state:'uncertain'}).canVerify,false);
+});
+
+test('proven unsent and rejected saves do not wait for readback or hide an older unknown write',()=>{
+ const unknown={id:'unknown',state:'failed',notionReceipt:{state:'uncertain',delivery:'unknown',url:'https://www.notion.so/old'}};
+ for(const delivery of ['not_sent','rejected']){
+  const receipt:NotionReceiptView={state:'uncertain',delivery,url:'https://www.notion.so/new',verification:{state:'scheduled',version:2,attempt:0}};
+  assert.equal(notionVerificationActive(receipt),false);const view=notionVerificationPresentation(receipt);
+  assert.equal(view.canVerify,false);assert.equal(view.active,false);assert.match(view.message,delivery==='not_sent'?/还没有发出/:/没有接受/);
+  assert.doesNotMatch(view.message,/正在.*核对|保存结果还.*核对/);
+  const latest={id:'latest',state:'failed',notionTarget:{},notionReceipt:receipt};
+  assert.equal(taskRecovery([latest]).kind,'retry');
+  assert.equal(notionReceiptForReview([unknown,latest]),unknown);
+  assert.equal(taskRecovery([unknown,latest]).kind,'review_notion');
+ }
 });

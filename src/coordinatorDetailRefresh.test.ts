@@ -42,3 +42,13 @@ test('an older in-flight read cannot overwrite a completed force read after the 
  assert.equal(coordinatorDetailReadIsCurrent(revisions,'task',1),false);
  assert.equal(coordinatorDetailReadIsCurrent(revisions,'other',1),false);
 });
+
+test('readback verification versions refresh details without reviving stable terminal fan-out',()=>{
+ const notice={...receipt,notionReceipt:{state:'uncertain',verification:{state:'scheduled' as const,version:1,attempt:0}}};
+ const version=coordinatorDetailVersion('task',[task],[notice]);
+ const input={selected:null,tasks:[task],notices:[notice],details:{task:detail},loadedVersions:new Map([['task',version]])};
+ assert.deepEqual(coordinatorDetailRefreshPlan(input),[]);
+ assert.deepEqual(ids(coordinatorDetailRefreshPlan({...input,notices:[{...notice,notionReceipt:{...notice.notionReceipt,verification:{state:'checking',version:2,attempt:1}}}]})),['task']);
+ assert.deepEqual(ids(coordinatorDetailRefreshPlan({...input,tasks:[{...task,reconciling:true}]})),['task'],'readback work stays fresh without pretending the original model is running');
+ assert.deepEqual(ids(coordinatorDetailRefreshPlan({...input,notices:[{...notice,notionReceipt:{state:'verified'}}]})),['task']);
+});

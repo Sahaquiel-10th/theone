@@ -26,6 +26,7 @@ export function taskContinuation(db:Database,scope:Scope,task:Conversation){
   const incomplete=prior?.workRun!.state==='failed'&&['needs_input','partial'].includes(prior.workRun!.resultOutcome??'');
   const safe=!localHeld&&!unknownEffect&&!stopped&&!protectedFailure;
   return {jobs,prior,queued:jobs.filter(op=>op.status==='pending'&&op.workRun!.state==='queued'),
+    canResumeQueued:safe&&jobs.some(op=>op.status==='pending'&&op.workRun!.state==='queued'),
     canResume:safe&&Boolean(incomplete)&&task.workPauseReason!=='user_stopped',
     canAcceptSupplement:safe&&Boolean(incomplete||prior?.workRun!.state==='running'),
   };

@@ -16,6 +16,23 @@ test('a completed result uses its brief once instead of echoing the longer saved
  assert.doesNotMatch(db.conversations.find(c=>c.id==='main-a')!.messages.at(-1)!.content,/正文也回读核对过了/);
 });
 
+test('scheduled and checking Notion saves are not terminal results in any automatic or manual inbox path',()=>{
+ for(const state of ['scheduled','checking'] as const){
+  const db=fixture(),{operation}=cloud(db,`notion-${state}`,a,{state:'failed',text:'保存可能已写入'});
+  operation.workRun!.notionReceipt={state:'uncertain',pageId:'a'.repeat(32),verification:{state,version:1,attempt:1,nextCheckAt:timestamp,deadlineAt:timestamp}};
+  assert.deepEqual(pendingTaskResults(db,a),[]);assert.deepEqual(pendingConversationTaskResults(db,a),[]);assert.deepEqual(captureTaskResults(db,a,[operation.id]),[]);
+  const appended=appendTaskResultReport(db,a,{ids:[operation.id]});assert.equal(appended.results.length,0);assert.equal(db.conversations.find(c=>c.id==='main-a')!.messages.length,0);
+ }
+});
+
+test('readback proof committed before deterministic finalization cannot announce a false failed result or consume its success report',()=>{
+ const db=fixture(),{operation}=cloud(db,'notion-proof-before-finalize',a,{state:'failed',text:'之前保存未确认'});
+ operation.status='pending';operation.workRun!.failureCode='notion_verification_pending';operation.workRun!.notionReceipt={state:'verified',pageId:'a'.repeat(32)};
+ assert.deepEqual(pendingConversationTaskResults(db,a),[]);assert.equal(appendTaskResultReport(db,a).results.length,0);assert.equal(operation.workRun!.reportedToCoordinatorAt,undefined);
+ operation.status='completed';operation.workRun!.state='completed';operation.workRun!.resultOutcome='completed';operation.workRun!.failureCode=undefined;
+ assert.equal(appendTaskResultReport(db,a).results.length,1);assert.equal(appendTaskResultReport(db,a).results.length,0);
+});
+
 test('automatic conversation reporting includes every latest outcome even after viewing the detail, never stale successes behind failure',()=>{
  const db=fixture(),good=local(db,'good'),old=local(db,'old'),bad=local(db,'bad');
  bad.conversationId=old.conversationId;bad.updatedAt='2026-10-16T12:00:00Z';bad.status='failed';bad.finalResponse='尚未创建文件';

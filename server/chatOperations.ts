@@ -178,6 +178,18 @@ export function reconcileInterruptedChatOperations(db: ChatOperationDatabase) {
     // Unstarted queue entries have made no external/model call. Keep them for
     // an explicit Key-verified resume, never auto-replay an in-flight call.
     if (operation.workRun?.state === 'queued') continue;
+    const receipt=operation.workRun?.notionReceipt;
+    if(operation.workRun?.state==='failed'&&operation.workRun.failureCode==='notion_verification_pending'&&(receipt?.state==='verified'||receipt?.verification?.state==='exhausted'))continue;
+    if(receipt?.state!=='verified'&&['scheduled','checking'].includes(receipt?.verification?.state??'')){
+      // An admitted external write is not replayable work. Its durable
+      // read-only verification continues when a fresh Key reconnects.
+      operation.workRun!.state='failed';operation.workRun!.failureCode='notion_verification_pending';
+      operation.workRun!.error=undefined;operation.workRun!.unread=false;operation.workRun!.resultOutcome=undefined;
+      operation.workRun!.userReport='内容已经交给 Notion，连接 ONE Key 后会继续核对保存结果；不会重复写入。';
+      const task=db.conversations.find(c=>c.id===operation.conversationId&&c.workspaceId===operation.workspaceId&&c.userId===operation.userId);
+      if(task){task.workPaused=true;task.workPauseReason='failed';}
+      continue;
+    }
     if (operation.workRun) { operation.workRun.state='interrupted'; operation.workRun.unread=true; operation.workRun.error='服务重启，本轮结果未确认；不会自动重跑。'; const c=db.conversations.find(c=>c.id===operation.conversationId&&c.workspaceId===operation.workspaceId&&c.userId===operation.userId);if(c)c.workPaused=true; }
     operation.status = "interrupted";
     operation.retryable = false;

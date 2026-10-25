@@ -15,3 +15,26 @@ test('recovery is actionable and does not echo diagnostics, credentials or claim
  assert.match(coordinatorRecoveryCopy('ONE Key 连接已失效'),/双击盘里的 ONE.*不重复安排/);
  assert.doesNotMatch(coordinatorRecoveryCopy('ONE Key 连接已失效'),/本机执行|工作区/,'cloud-task authentication loss must not be described as a folder permission issue');
 });
+
+test('cloud model and capability catalogs are not mistaken for a disconnected local computer',()=>{
+ for(const reason of [
+  'executorId 不在当前授权目录。请从执行模型目录复制真实 executorId；功能编号应填 featureIds 或 capabilityIds，不能当作执行模型。',
+  '这批任务漏掉了用户明确要的文件能力：oneHtml。请从当前授权目录补齐对应功能，重新提交完整计划；本批尚未创建任何任务。',
+  'Notion 草稿目录的页面列表还没核对完整，请先核对原页面。',
+  '知识库目录暂未完整读到',
+  '模型返回了无效的目录参数'
+ ]){
+  const copy=coordinatorRecoveryCopy(reason);assert.doesNotMatch(copy,/没接上你的电脑|本机执行|检查工作区/,reason);
+ }
+ assert.match(coordinatorRecoveryCopy('本机执行未连接'),/没接上你的电脑.*本机执行/);
+ assert.match(coordinatorRecoveryCopy('本机连接已断开'),/没接上你的电脑/);
+});
+
+test('Notion and knowledge failures keep their own next steps, not a local-folder prescription',()=>{
+ assert.match(coordinatorRecoveryCopy('Notion 授权资料不完整，请重新连接'),/知识连接.*Notion/);
+ assert.doesNotMatch(coordinatorRecoveryCopy('Notion API Key 授权失败'),/ONE Key|双击|本机执行/);
+ const uncertain=coordinatorRecoveryCopy('前一轮 Notion 保存未确认，请先核对原页面；不会重复创建或修改');
+ assert.match(uncertain,/Notion.*核对原页面.*不会重新写入/);assert.doesNotMatch(uncertain,/没接上你的电脑|本机执行/);
+ assert.match(coordinatorRecoveryCopy('得到大脑知识读取失败'),/知识连接/);
+ assert.doesNotMatch(coordinatorRecoveryCopy('模型回复中断'),/本机执行|检查工作区/);
+});

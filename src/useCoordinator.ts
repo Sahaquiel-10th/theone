@@ -29,6 +29,7 @@ type Meta = {
   state?: string;
   localPrepared?: boolean;
   phase?: string;
+  reconciling?:boolean;
 };
 type Notice = {
   id: string;
@@ -40,7 +41,7 @@ type Notice = {
   reported?: boolean;
   read?: boolean;
   outcome?: string;
-  notionReceipt?:{state:string;url?:string;error?:string;delivery?:string};
+  notionReceipt?:import('./taskRecovery').NotionReceiptView;
 };
 type Snapshot = {
   clientScope?: string;
@@ -59,7 +60,7 @@ type Job = {
   budget?:number;
   kind?:string;
   retryPower?:number;
-  notionReceipt?: { state: 'pending' | 'verified' | 'uncertain'; url?: string; error?: string };
+  notionReceipt?:import('./taskRecovery').NotionReceiptView;
   id: string;
   operationId: string;
   state: string;
@@ -68,6 +69,7 @@ type Job = {
   error?: string;
   userReport?:string;
   dependencyBlocked?:boolean;
+  verificationPending?:boolean;
   dependenciesReady?:boolean;
   waitingFor?:{taskId:string;title:string}[];
   progress?:{completed:string[];pending:string[]};

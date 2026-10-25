@@ -1,10 +1,10 @@
-type Meta={id:string;updatedAt:string;running:boolean;queued:number};
-type Notice={id:string;taskId:string;updatedAt?:string;state:string;outcome?:string;resultMessageId?:string;reported?:boolean;read?:boolean;notionReceipt?:{state:string;url?:string;error?:string;delivery?:string}};
+type Meta={id:string;updatedAt:string;running:boolean;queued:number;reconciling?:boolean};
+type Notice={id:string;taskId:string;updatedAt?:string;state:string;outcome?:string;resultMessageId?:string;reported?:boolean;read?:boolean;notionReceipt?:import('./taskRecovery').NotionReceiptView};
 type Detail={conversation:{updatedAt:string}};
 export type CoordinatorDetailVersion={updatedAt?:string;receipts:string};
 
 export function coordinatorDetailVersion(id:string,tasks:readonly Meta[],notices:readonly Notice[]):CoordinatorDetailVersion{
-  const receipts=notices.filter(notice=>notice.taskId===id).map(notice=>[notice.id,notice.updatedAt,notice.state,notice.outcome,notice.resultMessageId,notice.notionReceipt?.state,notice.notionReceipt?.url,notice.notionReceipt?.error,notice.notionReceipt?.delivery]).sort((a,b)=>String(a[0]).localeCompare(String(b[0])));
+  const receipts=notices.filter(notice=>notice.taskId===id).map(notice=>[notice.id,notice.updatedAt,notice.state,notice.outcome,notice.resultMessageId,notice.notionReceipt?.state,notice.notionReceipt?.url,notice.notionReceipt?.error,notice.notionReceipt?.delivery,notice.notionReceipt?.verification?.state,notice.notionReceipt?.verification?.version]).sort((a,b)=>String(a[0]).localeCompare(String(b[0])));
   return{updatedAt:tasks.find(task=>task.id===id)?.updatedAt,receipts:JSON.stringify(receipts)};
 }
 
@@ -19,7 +19,7 @@ export function coordinatorDetailRefreshPlan(input:{selected:string|null;tasks:r
     const missingDetail=hasReceipt&&!detail;
     const changedMeta=Boolean(detail&&task&&(previous?previous.updatedAt!==task.updatedAt:detail.conversation.updatedAt!==task.updatedAt));
     const changedReceipt=hasReceipt&&previous?.receipts!==version.receipts;
-    return input.selected===id||task?.running||Boolean(task?.queued)||missingDetail||changedMeta||changedReceipt?[{id,version}]:[];
+    return input.selected===id||task?.running||task?.reconciling||Boolean(task?.queued)||missingDetail||changedMeta||changedReceipt?[{id,version}]:[];
   });
 }
 

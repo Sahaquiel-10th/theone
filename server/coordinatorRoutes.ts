@@ -53,7 +53,7 @@ export function installCoordinatorRoutes(
   router.get(
     "/",
     asyncRoute(async (req, res) =>
-      res.json(await service.state(scope(req), page(req.query.page))),
+      res.json(await service.state(scope(req), page(req.query.page),()=>verifyKey(req))),
     ),
   );
   router.get(
@@ -140,7 +140,7 @@ export function installCoordinatorRoutes(
   }));
   router.post('/tasks/:id/notion/verify', asyncRoute(async(req,res)=>{
     if (!deps.notionDocuments) throw new CoordinatorError('Notion 保存尚未连接', 428);
-    res.json(await deps.notionDocuments.reconcile(scope(req), String(req.params.id), () => verifyKey(req)));
+    res.json(await service.verifyNotionResult(scope(req), String(req.params.id), () => verifyKey(req)));
   }));
   router.post(
     "/tasks/:id/messages",

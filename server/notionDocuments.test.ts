@@ -128,6 +128,11 @@ test('requested same-title check reads only the selected parent and reuses an ex
  assert.deepEqual(reads,[parentId,pageId]);assert.equal(f.calls.length,0);assert.equal(job.notionReceipt?.state,'verified');
  await assert.rejects(()=>f.docs.tool({workspaceId:'wb',userId:'b'},'op','task',job,async()=>{},undefined,'不重复新建').structured!.run({title:'合成便笺',content:'青色42。'}));assert.equal(reads.length,2);
 });
+test('same-title reuse cannot bypass v2 literal-code whitespace comparison through the legacy normalizer',async()=>{
+ const f=fixture(),job=f.job();
+ f.mcp.readDocument=async(_ws,id)=>({text:id===parentId?`<page><content><page url="https://www.notion.so/${pageId}">代码</page></content></page>`:'<page><content>```\nx\n```</content></page>'});
+ await assert.rejects(()=>f.docs.tool(s,'op','task',job,async()=>{},undefined,'同名先核对').structured!.run({title:'代码',content:'```\nx \n\n```'}),/内容不同/);assert.equal(f.calls.length,0);assert.notEqual(job.notionReceipt!.state,'verified');
+});
 test('same-title precondition fails closed for conflicts, ambiguous names, incomplete directory or revoked grant',async()=>{
  for(const mode of ['conflict','ambiguous','truncated','unknown','unwrapped','revoked','formatted']){
   const f=fixture(),job=f.job();
@@ -348,6 +353,7 @@ test('a newly verified reconciliation returns once after an earlier failure brie
   const read=f.mcp.readDocument.bind(f.mcp);f.mcp.readDocument=async(...args)=>{if(++reads===1)throw Error('lost readback');return read(...args);};
   await assert.rejects(()=>f.docs.tool(s,'op','task',job,async()=>{}).structured!.run({title:'测试',content:'真实内容'}));
   job.state='failed';job.error='保存结果尚未确认';job.unread=true;job.resultOutcome='partial';
+  job.notionReceipt!.verification=undefined; // Historical failure was already reported before automatic verification existed.
   const stamp='2026-10-24T01:00:00Z';
   f.db.messages=[];f.db.executionTasks=[];f.db.attachments=[];
   Object.assign(f.db.conversations[0],{title:'原任务',messages:[],archived:false,createdAt:stamp,updatedAt:stamp});
