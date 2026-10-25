@@ -170,12 +170,25 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
   return ['completed','partial'].includes(value.outcome)&&answer?.content.trim()&&answer.outcome!=='needs_input'&&answer.outcome!=='failed'?[answer.content]:[];
  });
  const requests=run.spec.steps.flatMap(step=>{const cp=stored(step);if(!cp)return [];const value=output(cp),answer=parsed(value.result),v=object(value.result);return value.outcome==='needs_input'?[safeQuestion(answer?.content??v?.message,run.steps.find(state=>state.id===step.id)?.summary??'还缺完成这一步需要的资料，请补充后接着处理。')]:[];});
- let content=candidates.at(-1)??'';const question=requests.at(-1);
+ let content=candidates.at(-1)??'',wholeTaskSummary:string|undefined;
+ const completedFeatures=run.spec.steps.filter((step,index)=>step.kind==='feature'&&run.steps[index].state==='completed');
+ if(run.phase==='completed'&&completedFeatures.length>1){
+  // A feature speaks only for its own stage (e.g. "I only made the diagram").
+  // Never present the last child's scope disclaimer as the whole task result.
+  // Compose the overview from durable step facts without buying another model
+  // call; real files are attached by the owning task, not invented here.
+  const primary=run.spec.steps.filter((step,index)=>step.kind==='model'&&run.steps[index].state==='completed').flatMap(step=>{const cp=stored(step);const answer=cp?parsed(output(cp).result):undefined;return answer?.content.trim()?[answer.content]:[];}).at(-1);
+  const prose=completedFeatures.flatMap(step=>{const cp=stored(step),value=cp?output(cp).result:undefined,v=object(value),hasFile=v&&(v.file||v.attachmentId||v.imageUrl||Array.isArray(v.files)&&v.files.length||Array.isArray(v.artifacts)&&v.artifacts.length);const answer=parsed(value);return !hasFile&&answer?.content.trim()?[answer.content]:[];}).at(-1);
+  wholeTaskSummary=`已完成：${workflowProgress(run).steps.filter((_,index)=>run.spec.steps[index].required!==false).map(step=>step.title).join('、')}。`;
+  content=wholeTaskSummary;
+  if(primary??prose)content+='\n\n'+(primary??prose);
+ }
+ const question=requests.at(-1);
  if(question)content=content&&content!==question?`${content}\n\n还需要你补充：\n${question}`:question;
  const receipt=await input.receipt();await input.verify();
  const verifiedNotion=run.spec.steps.some((step,index)=>{if(step.kind!=='notion'||run.steps[index].state!=='completed')return false;const value=output(proof(key(step)));return notionProof(receipt,value.notionCheckpointKey,value.expectedBodyDigest);});
  if(verifiedNotion&&receipt?.pageId&&/^[a-f0-9]{32}$/i.test(receipt.pageId.replaceAll('-','')))content+=(content?'\n\n':'')+`[已保存到 Notion · 已回读核对](https://www.notion.so/${receipt.pageId.replaceAll('-','')})`;
  const progress=workflowProgress(run),waiting=run.steps.some(step=>step.state==='running'||step.state==='waiting'&&step.waitingFor==='result');
  const outcome=run.phase==='completed'?'completed':run.phase==='needs_input'?'needs_input':run.phase==='failed'&&!content?'failed':'partial';
- return {run,content:content||progress.summary,summary:run.phase==='needs_input'?run.steps.filter(step=>step.state==='needs_input').at(-1)?.summary??progress.summary:progress.summary,outcome,waiting};
+ return {run,content:content||progress.summary,summary:run.phase==='needs_input'?run.steps.filter(step=>step.state==='needs_input').at(-1)?.summary??progress.summary:wholeTaskSummary??progress.summary,outcome,waiting};
 }

@@ -60,6 +60,15 @@ test('read_notion_document uses its bound structured empty arguments, never a qu
  assert.equal(validated,1);assert.equal(reads,1);assert.equal(result.content,'原文全文\n原文结尾');assert.equal(result.outcome,'completed');
 });
 
+test('whole-task result summarizes both completed file stages instead of copying the last child scope disclaimer',async()=>{
+ const f=fixture(plan(step('draft'),step('page',['draft'],{kind:'feature',featureId:'html_feature',title:'制作交互网页'}),step('chart',['draft'],{kind:'feature',featureId:'chart_feature',title:'制作完整流程图'})));
+ const result=await f.execute({featureTools:{html_feature:'feature_0',chart_feature:'feature_1'},tools:[
+  {name:'feature_0',run:async()=>({content:'网页已经完成。',artifacts:[{name:'网页.html',openUrl:'/api/welcome-pages/file_a/view'}]})},
+  {name:'feature_1',run:async()=>({content:'本步骤只交付了流程图；交互网页不属于当前步骤的交付范围。',artifacts:[{name:'图.svg',openUrl:'/api/welcome-pages/file_b/view'}]})},
+ ]});
+ assert.equal(result.outcome,'completed');assert.match(result.content,/已完成：处理draft、制作交互网页、制作完整流程图/);assert.match(result.summary,/制作交互网页、制作完整流程图/);assert.match(result.content,/完整正文draft/);assert.doesNotMatch(result.content,/本步骤只交付|不属于当前步骤/);assert.equal(f.modelCalls,1,'summary needs no extra model call');
+});
+
 for(const empty of [{status:'no_match',chunks:[]},{status:'used',chunks:[]},{status:'used',chunks:[{content:'   '}]}])test(`empty search result ${JSON.stringify(empty)} never becomes a completed source`,async()=>{
  const f=fixture(plan(step('find',[],{kind:'tool',tool:'knowledge_search'}),step('write',['find']),step('independent')));const models:string[]=[];
  const result=await f.execute({tools:[{name:'knowledge_search',run:async()=>empty}],callModel:async s=>{models.push(s.id);return answer('独立部分完成。');}});
