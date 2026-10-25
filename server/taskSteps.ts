@@ -1,7 +1,9 @@
 import {createHash} from 'node:crypto';
 
 /** Private, task-scoped checkpoints. Never included in the public task payload. */
-export type TaskStep = {key:string;namespace:string;tool:string;label:string;effect:'read'|'artifact'|'model'|'external_write';state:'started'|'completed'|'failed';output?:unknown;updatedAt:string};
+export type TaskStep = {key:string;namespace:string;tool:string;label:string;effect:'read'|'artifact'|'model'|'external_write';state:'started'|'completed'|'failed';output?:unknown;updatedAt:string;
+  /** Server-owned attempt scope. A prior save is context, not a new revision. */
+  scopeId?:string};
 export type TaskStepStore = {namespace:string;steps:TaskStep[];save:(step:TaskStep)=>Promise<void>;onReuse?:(output:unknown)=>void};
 export const taskStepKey=(namespace:string,tool:string,args:string)=>createHash('sha256').update(JSON.stringify([namespace,tool,args])).digest('hex');
 export function toolSucceeded(value:unknown){
@@ -16,7 +18,7 @@ export function stepProgress(steps:TaskStep[]){
   // rephrased arguments. Keep historical failures, but don't report them as
   // still pending after that SAME scoped delivery succeeds. Distinct reads
   // and uncertain writes must not disappear from progress.
-  const pending=steps.filter(step=>!done.includes(step)&&!(step.state==='failed'&&done.some(saved=>saved.namespace===step.namespace&&saved.tool===step.tool&&(
+  const pending=steps.filter(step=>!done.includes(step)&&!(step.state==='failed'&&done.some(saved=>saved.namespace===step.namespace&&saved.tool===step.tool&&saved.scopeId===step.scopeId&&(
     step.namespace==='worker'&&/^feature_\d+$/.test(step.tool)||['artifact','external_write'].includes(step.effect)&&saved.effect===step.effect
   ))));
   return {completed:[...new Set(done.map(s=>s.label))],pending:[...new Set(pending.map(s=>s.label))]};

@@ -6,6 +6,9 @@ import type { WorkRun } from './coordinatorTypes.js';
 import { NotionDocuments, notionPageId, notionBody, writingTarget } from './notionDocuments.js';
 import { NotionWriteError, type NotionMcpService } from './knowledge/notionMcpService.js';
 import {appendTaskResultReport,pendingConversationTaskResults,pendingTaskResults} from './taskResultInbox.js';
+import {runTaskOrchestrator} from './taskOrchestrator.js';
+import {notionRetryCheckpointPlan,verifiedNotionCompletion} from './notionCompletion.js';
+import type {TaskStep,TaskStepStore} from './taskSteps.js';
 const s = { workspaceId: 'wa', userId: 'a' };
 const parentId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', pageId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 function fixture() {
@@ -29,6 +32,75 @@ function fixture() {
   }
   return {db,store,docs,mcp,calls,job,setBody:(v:string)=>body=v,getBody:()=>body};
 }
+function checkpointStore(steps:TaskStep[]=[]):TaskStepStore{return {namespace:'worker',steps,save:async step=>{const i=steps.findIndex(s=>s.key===step.key);if(i<0)steps.push(step);else steps[i]=step;}};}
+test('same attempt identical Notion save arguments run once; a new revision really updates the same page',async()=>{
+ const f=fixture(),first=f.job('first'),store=checkpointStore();let turn=0;
+ const args={title:'合成文章',content:'等待补料的旧正文'};
+ const write=(id:string,value:unknown)=>({id,type:'function' as const,function:{name:'save_notion_draft',arguments:JSON.stringify(value)}});
+ const initial=await runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:3,checkpoints:store,requiredTools:['save_notion_draft'],beforeStep:async()=>{},tools:[f.docs.tool(s,'first','task',first,async()=>{})],call:async()=>++turn<3?{content:'',toolCalls:[write(`first-${turn}`,args)]}:{content:'已保存',toolCalls:[]}});
+ assert.equal(f.calls.length,1);assert.equal(initial.trace[1].status,'reused');assert.equal(store.steps[0].scopeId,'first');
+ first.steps=store.steps;
+ const second=f.job('second',pageId),oldOnly=checkpointStore(structuredClone(store.steps));
+ const absent=await runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:1,checkpoints:oldOnly,requiredTools:['save_notion_draft'],beforeStep:async()=>{},tools:[f.docs.tool(s,'second','task',second,async()=>{},f.getBody())],call:async()=>({content:'旧文章已保存',toolCalls:[]})});
+ assert.deepEqual(absent.requiredMissing,['save_notion_draft'],'prior attempts never fulfil this revision');
+ const plan=notionRetryCheckpointPlan(first,{newWrite:true,scopeId:'second'});
+ second.steps=plan.steps;turn=0;
+ await runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:2,checkpoints:checkpointStore(second.steps),requiredTools:['save_notion_draft'],beforeStep:async()=>{},tools:[f.docs.tool(s,'second','task',second,async()=>{},f.getBody())],call:async()=>++turn===1?{content:'',toolCalls:[write('second',{old_str:'等待补料的旧正文',new_str:'按新补料写好的完整文章'})]}:{content:'已修订',toolCalls:[]}});
+ assert.equal(f.calls.length,2);assert.equal(f.calls[1].name,'notion-update-page');assert.equal(f.calls[1].args.page_id,pageId);assert.equal(f.getBody(),'按新补料写好的完整文章');assert.equal(second.notionReceipt!.state,'verified');
+});
+test('different Notion arguments sequentially revise the same page; only verified final manuscript finishes the task',async()=>{
+ const f=fixture(),job=f.job(),store=checkpointStore();let turn=0;
+ const result=await runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:4,checkpoints:store,requiredTools:['save_notion_draft'],beforeStep:async()=>{},tools:[f.docs.tool(s,'op','task',job,async()=>{})],completeAfterTools:()=>verifiedNotionCompletion(job.notionReceipt,store.steps,['save_notion_draft'],{scopeId:'op'}),call:async()=>{
+  turn++;assert.ok(turn<=3,'final readback should not buy another model round');
+  const args=turn<3?{title:'文章',content:'中间稿，尚未写完整'}:{old_str:'中间稿，尚未写完整',new_str:'按全部要求写好的完整终稿。\n结尾已经补齐。',final:true};
+  return {content:'',toolCalls:[{id:`edit-${turn}`,type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify(args)}}]};
+ }});
+ assert.equal(turn,3);assert.equal(f.calls.length,2);assert.deepEqual(f.calls.map(c=>c.name),['notion-create-pages','notion-update-page']);assert.equal(f.calls[1].args.page_id,pageId);
+ assert.equal(result.trace[1].status,'reused');assert.equal(result.trace[2].status,'returned');assert.equal(store.steps.length,2);
+ assert.equal(f.getBody(),'按全部要求写好的完整终稿。\n结尾已经补齐。');assert.equal(job.notionReceipt!.final,true);assert.match(result.content,/文章已保存/);
+ assert.ok(!verifiedNotionCompletion({...job.notionReceipt!,final:false},store.steps,['save_notion_draft'],{scopeId:'op'}),'nonfinal saved draft cannot terminate the complete article');
+});
+test('sequential revisions use the actual canonical readback when Notion serializes line breaks',async()=>{
+ const f=fixture(),job=f.job();
+ f.mcp.callDocumentTool=async(_ws,_cid,_grant,_uid,name,args:any)=>{
+  f.calls.push({name,args});
+  f.setBody((name==='notion-create-pages'?args.pages[0].content:f.getBody().replace(args.content_updates[0].old_str,args.content_updates[0].new_str)).replace(/\n/g,'<br />'));
+  return {id:pageId};
+ };
+ const tool=f.docs.tool(s,'op','task',job,async()=>{}).structured!;
+ const first=await tool.run(tool.validate({title:'合成文章',content:'第一行\n第二行'})) as any;
+ assert.equal(first.currentDocument,'第一行<br />第二行');
+ await tool.run(tool.validate({old_str:first.currentDocument,new_str:'完整的最终正文',final:true}));
+ assert.equal(f.getBody(),'完整的最终正文');assert.equal(f.calls.length,2);assert.equal(job.notionReceipt!.final,true);
+});
+test('a second sequential save that loses its response cannot be followed by a third write or reuse the first final proof',async()=>{
+ const f=fixture(),job=f.job(),store=checkpointStore(),tool=f.docs.tool(s,'op','task',job,async()=>{});let turn=0;
+ const invoke=f.mcp.callDocumentTool.bind(f.mcp);
+ f.mcp.callDocumentTool=async(...args:Parameters<NotionMcpService['callDocumentTool']>)=>{const result=await invoke(...args);if(args[4]==='notion-update-page')throw Error('lost second response');return result;};
+ const next=()=>({content:'',toolCalls:[{id:`save-${++turn}`,type:'function' as const,function:{name:'save_notion_draft',arguments:JSON.stringify(turn===1?{title:'合成文章',content:'第一稿',final:true}:{old_str:'第一稿',new_str:'第二稿',final:true})}}]});
+ await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:3,checkpoints:store,beforeStep:async()=>{},tools:[tool],call:async()=>next()}),/保存未确认/);
+ assert.equal(f.calls.length,2);assert.equal(job.notionReceipt!.state,'uncertain');
+ assert.equal(verifiedNotionCompletion(job.notionReceipt,store.steps,[],{scopeId:'op'}),undefined);
+ await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:2,checkpoints:store,beforeStep:async()=>{},tools:[tool],call:async()=>({content:'',toolCalls:[{id:'third',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({old_str:'第一稿',new_str:'第三稿',final:true})}}]})}),/不会重复写入/);
+ assert.equal(f.calls.length,2);assert.equal(f.getBody(),'第二稿');
+});
+test('a previous unknown Notion write blocks a new attempt even with different arguments and scope',async()=>{
+ const f=fixture(),job=f.job('new',pageId),store=checkpointStore([{key:'unknown',namespace:'worker',scopeId:'old',tool:'save_notion_draft',label:'保存',effect:'external_write',state:'started',updatedAt:'now'}]);
+ await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:2,checkpoints:store,beforeStep:async()=>{},tools:[f.docs.tool(s,'new','task',job,async()=>{},f.getBody())],call:async()=>({content:'',toolCalls:[{id:'edit',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({old_str:'原来的文章',new_str:'新文章'})}}]})}),/不会重复写入/);
+ assert.equal(f.calls.length,0);assert.equal(f.getBody(),'原来的文章');
+});
+test('document handler also rejects unresolved prior writes without inherited checkpoints, but never consults a foreign workspace',async()=>{
+ for(const mode of ['receipt','started','foreign'] as const){
+  const f=fixture(),old=f.job('old',pageId),next=f.job('new',pageId);
+  if(mode==='started')old.steps=[{key:'s',namespace:'worker',tool:'save_notion_draft',label:'保存',effect:'external_write',state:'started',updatedAt:'now'}];
+  else old.notionReceipt={state:'uncertain',delivery:'unknown',pageId};
+  if(mode==='foreign'){f.db.chatOperations![0].workspaceId='wb';f.db.chatOperations![0].userId='b';}
+  const tool=f.docs.tool(s,'new','task',next,async()=>{},f.getBody()).structured!;
+  const pending=()=>tool.run(tool.validate({old_str:'原来的文章',new_str:'本轮新文章'}));
+  if(mode==='foreign'){await pending();assert.equal(f.calls.length,1);}
+  else{await assert.rejects(pending,/先核对原页面/);assert.equal(f.calls.length,0);}
+ }
+});
 test('Notion destination validates links and exact workspace/user grant; legacy read-only stays read-only',async()=>{
   assert.equal(notionPageId(`https://www.notion.so/Title-${parentId}?v=ignored`),parentId);
   for(const input of ['https://evil.example/'+parentId,'self','notion://docs/spec','https://notion.so.evil.example/'+parentId]) assert.throws(()=>notionPageId(input));
@@ -175,7 +247,7 @@ test('Notion create is scoped to the selected parent, verified and deduplicated;
   assert.equal(f.db.conversations[0].notionDocument!.pageId,pageId);
   assert.equal(f.db.chatOperations![0].workRun!.notionReceipt!.state,'verified');
   assert.deepEqual(f.calls[0].args.parent,{page_id:parentId});
-  await assert.rejects(()=>tool.structured!.run(args),/已经提交/);assert.equal(f.calls.length,1);
+  await assert.rejects(()=>tool.structured!.run(args),/最新已回读正文/);assert.equal(f.calls.length,1);
   const second=f.job('op2',pageId),context=await f.docs.context(s,second),current=context.currentDocument;
   assert.equal(context.location,`https://www.notion.so/${pageId}`);assert.equal(context.parentLocation,`https://www.notion.so/${parentId}`);
   const update=f.docs.tool(s,'op2','task',second,async()=>{},current);

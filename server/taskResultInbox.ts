@@ -54,28 +54,72 @@ function reportLine(line: string) {
   return line.replace(/^\s*(?:#{1,6}\s*|[-*•]\s*|\d+[.、]\s*)/, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/<[^>]*>/g, '').replace(/[*_`]/g, '').trim();
 }
+const briefHeading=/^(?:情况说明|需要你给我的一步|需要你补充|下一步|已保存到 Notion|【本机执行回执)(?:[：:\s]*|[（(].*)$/;
+const taskButtonNavigation=/(?:任务(?:里|中|页|区)|按钮|点击|点[“"「『]?继续|开始处理最新要求|重新处理最新要求)/;
+const nextAction=/(?:请(?:先|你|提供|补充|确认|发|核对|检查|选择)|(?:需要你|麻烦你)(?:补充|提供|确认|核对|检查|选择)|你可以|(?:把|将).{0,40}(?:发给我|告诉我|贴给我)|^(?:补充|提供|告诉我|确认|核对|检查|选择).{1,70})/;
+function briefSentences(text:string){
+  return text.split('\n').filter(line=>!/^\s*#{1,6}\s/.test(line)).map(reportLine).filter(line=>line&&!briefHeading.test(line)&&!/^(?:需要你给我的一步|需要你补充)/.test(line))
+    .flatMap(line=>line.split(/(?<=[。！？!?；;])|(?<=[，,：:])(?=(?:请|你可以|需要你|麻烦你))/).map(value=>value.trim()).filter(Boolean));
+}
+function briefMaterialRequests(text:string){
+  const result:string[]=[];
+  let collecting=false;
+  for(const raw of text.split('\n')){
+    const line=reportLine(raw),heading=line.match(/^(?:需要你给我的一步|需要你补充)[：:\s]*(.*)$/);
+    if(heading){collecting=true;if(heading[1])result.push(heading[1]);continue;}
+    if(!collecting)continue;
+    if(/^\s*#{1,6}\s/.test(raw)||!line&&result.length)break;
+    if(line&&!taskButtonNavigation.test(line)&&!nextAction.test(line)&&!/^(?:已|还|本轮|这次|目前|由于|因为|尚|结果|草稿|任务|我)/.test(line))result.push(line);
+    if(result.length>=2)break;
+  }
+  return result;
+}
+function repeatedBriefPart(value:string,existing:string[]){
+  const normalize=(text:string)=>text.replace(/[\s\p{P}\p{S}]/gu,'');
+  const candidate=normalize(value);
+  return existing.some(item=>{
+    const known=normalize(item);
+    return candidate===known||Math.min(candidate.length,known.length)>=4&&(candidate.includes(known)||known.includes(candidate));
+  });
+}
+function uniqueBriefParts(values:string[],previous:string[]=[]){
+  const result:string[]=[];
+  for(const value of values)if(!repeatedBriefPart(value,[...previous,...result]))result.push(value);
+  return result;
+}
 function resultBrief(outcome: TaskResultOutcome, primary: string | undefined, content: string, error = '') {
-  const raw = [primary, content, error].filter(Boolean).join('\n');
-  const lines = raw.split('\n').map(reportLine).filter(line => line && !/^(?:情况说明|需要你给我的一步|需要你补充|下一步|已保存到 Notion|【本机执行回执)/.test(line));
+  // A progress fallback is not evidence of what the user actually needs to
+  // supply. Only this outcome prefers its concrete final request; partial
+  // article bodies retain the existing progress-first summarization order.
+  const concreteInput=outcome==='needs_input'&&briefSentences(content).some(line=>
+    !taskButtonNavigation.test(line)&&(nextAction.test(line)||/(?:还缺|缺少|缺了|没有提供|尚未提供|需要补充).{1,80}/.test(line)));
+  const raw = [concreteInput?undefined:primary, content, error].filter(Boolean).join('\n');
+  const lines = uniqueBriefParts(briefSentences(raw));
+  const materials=uniqueBriefParts(briefMaterialRequests(raw));
   const useful = lines.find(line => !/^(?:这次没能做完，原来的要求还在|这次还没做成，原来的要求还在|未取得可确认的结果|任务已结束，但没有可确认的结果)/.test(line)
-    && !/已经做好，结果会保留.*还没做好/.test(line));
-  const sentence = (value: string) => clip(value.split(/(?<=[。！？])/).slice(0, 2).join(''), 180);
-  if (outcome === 'completed' || outcome === 'returned') return useful ? sentence(useful) : '结果已经返回，可以打开看看。';
+    && !/已经做好，结果会保留.*还没做好/.test(line)&&!taskButtonNavigation.test(line));
+  if (outcome === 'completed' || outcome === 'returned') {
+    const summary=uniqueBriefParts(briefSentences(primary??'')).filter(line=>!taskButtonNavigation.test(line));
+    return summary.length?clip(summary.slice(0,2).join(''),180)
+      :useful?clip(lines.slice(lines.indexOf(useful),lines.indexOf(useful)+2).join(''),180):'结果已经返回，可以打开看看。';
+  }
   if (outcome === 'cancelled') return '已经停下了；之前保存的内容还在，不会自动撤销或重新执行。';
   if (/here-document|(?:拒绝|无法|未能|不能)[^。\n]{0,20}(?:创建|写入)[^。\n]{0,20}临时文件|(?:命令执行|执行命令)[^。\n]{0,20}(?:失败|报错)/i.test(raw))
     return '本机保存这一步没成功；先核对目标文件，再继续未完成部分，原文件不会自动覆盖。';
   if (/没有找到能确认属于这一天|日期都?对不上|(?:缺少|没有|没找到|还没找到)[^。\n]{0,30}(?:那天|昨天|当日|所需日期)[^。\n]{0,30}(?:素材|记录|内容)|(?:昨天|那天)[^。\n]{0,50}(?:没有|没找到)/.test(raw))
     return '还没找到能确认属于所需日期的素材，正文还没写成。把那天的几句原话或相关记录发给我，就能接着写。';
-  const nextHeading = raw.search(/(?:需要你给我的一步|需要你补充|下一步)[：: \t]*\n/);
-  const next = nextHeading >= 0 ? raw.slice(nextHeading).split('\n').slice(1).map(reportLine).filter(Boolean).slice(0, 2).join('；')
-    : lines.find(line => /(?:请(?:先|你|提供|补充|确认|发)|你可以|把.{0,30}(?:发给我|告诉我))/.test(line)) ?? '';
-  let reason = useful ? sentence(useful) : '';
+  let reason=clip(lines.filter(line=>!taskButtonNavigation.test(line)&&!nextAction.test(line)&&!materials.includes(line)).slice(0,2).join(''),180);
   if (/stream disconnected|response\.completed|ECONN|timeout|连接中断|模型[^。\n]*(?:中断|未完整)/i.test(raw)) reason = '处理中连接中断了，还没拿到完整结果。';
   else if (/功能未开放|已下架|版本已变更|工具[^。\n]*(?:未授权|不可用|没就位)/.test(raw)) reason = '需要用到的功能暂时没接好，这次还没做成。';
   else if (/预算|电力不足|额度不足/.test(raw)) reason = '这次卡在可用电力或本次使用上限上，已有内容会保留。';
   else if (/输出[^。\n]*(?:限额|截断)|达到[^。\n]*(?:输出|限额)/.test(raw)) reason = '返回的内容被截短了，还不能当作完整成果。';
   if (!reason) reason = outcome === 'partial' ? '已有部分内容，但这件事还没有全部做好。' : outcome === 'needs_input' ? '还缺一些必要信息，这件事先停在这里。' : '这次还没做成，原要求和已有内容都保留了。';
-  const continuation = next && !reason.includes(next) ? `你可以先补充：${clip(next, 160)}` : /[？?]|(?:请|需要|你可以|把.{0,20}发给)/.test(reason) ? '' : '打开这件事，核对已有内容后继续未完成部分就行，不用重发整个任务。';
+  // Only actual actions/material requests belong in the next step. A whole
+  // status paragraph or a legacy "click Continue" instruction is not user input.
+  const materialRequest=materials.length?`请补充：${materials.map(value=>value.replace(/[。；;]$/,'')).join('、')}。`:'';
+  const actions=uniqueBriefParts([...lines.filter(line=>nextAction.test(line)&&!taskButtonNavigation.test(line)),...(materialRequest?[materialRequest]:[])],briefSentences(reason));
+  let continuation=clip(actions.slice(0,2).join(''),160);
+  if(!continuation&&!/[？?]|(?:请|需要|你可以|把.{0,20}发给)/.test(reason))continuation='先核对已有内容后继续未完成部分就行，不用重发整个任务。';
   return clip([reason, continuation].filter(Boolean).join(''), 340);
 }
 function authorize(db: Database, scope: TaskResultScope) {

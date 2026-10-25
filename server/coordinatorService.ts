@@ -60,7 +60,7 @@ import type { FeatureRunDependencies } from "./featureRuns.js";
 import fs from "node:fs/promises";
 import {createHash} from 'node:crypto';
 import { NotionDocuments, NotionDocumentError, writingTarget } from './notionDocuments.js';
-import {verifiedNotionCompletion,notionDeliveryNote} from './notionCompletion.js';
+import {verifiedNotionCompletion,notionDeliveryNote,notionRetryCheckpointPlan,notionRevisionRequested} from './notionCompletion.js';
 import {
   publicAttachmentSummary,
   selectConversationAttachments,
@@ -81,6 +81,7 @@ import {validateVisualDocument} from './visualDocument.js';
 import {taskReportPrompt,taskReportFallback,validateTaskReport,type TaskReportFacts} from './taskNarration.js';
 import {adaptiveGuidance,recentCoordinatorMessages,compactTaskCandidates,compactCapabilities,initialCoordinatorToolNames,contextReadSchema,validateContextRead,readCoordinatorContext,requiresCoordinatorDelivery,coordinatorNeedsInput,requiresHtmlArtifact,needsTaskContext,type CoordinatorContextMode,type ContextRead} from './adaptiveCoordinator.js';
 import {datedDraftPrerequisite} from './datedDraftPrerequisite.js';
+import {taskContinuation,actionableTaskSupplement,supersedeQueuedSupplements,supplementKnowledgeRequest,taskStatusQuestion,plainTaskContinuation} from './taskContinuation.js';
 
 export type WorkScope = { workspaceId: string; userId: string };
 export type DispatchInput = {
@@ -269,7 +270,7 @@ export class CoordinatorService {
   async cancelTask(s: WorkScope, id: string, verifyKey: () => Promise<void>) {
     await verifyKey();
     await this.store.mutate(d=>{
-      const task=taskOf(d,s,id);task.workPaused=true;task.updatedAt=at();
+      const task=taskOf(d,s,id);task.workPaused=true;task.workPauseReason='user_stopped';task.updatedAt=at();
       for(const op of d.chatOperations??[])if(own(op,s)&&op.conversationId===id&&op.workRun&&['queued','running','prepared'].includes(op.workRun.state)) {
         op.workRun.state='cancelled';op.workRun.unread=true;op.status='interrupted';op.updatedAt=at();
       }
@@ -395,9 +396,12 @@ export class CoordinatorService {
   async task(s: WorkScope, id: string) {
     const db = await this.store.read(),
       c = taskOf(db, s, id);
+    const awaitingSupplement=c.workPaused&&taskContinuation(db,s,c).canResume;
     return {
       conversation: c,
-      recovery: taskRecovery((db.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === id && o.workRun).map(o => ({ id: o.id, ...o.workRun! }))),
+      recovery: awaitingSupplement
+        ?{kind:'none' as const,message:'把缺少的材料直接发给我，或告诉我继续，就会在这件任务接着处理，不用另外点开始。'}
+        :taskRecovery((db.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === id && o.workRun).map(o => ({ id: o.id, ...o.workRun! }))),
       jobs: (db.chatOperations ?? [])
         .filter((o) => own(o, s) && o.conversationId === id && o.workRun)
         .slice(-50)
@@ -545,7 +549,7 @@ export class CoordinatorService {
       // orchestration still apply. Explicit user/API caps remain authoritative.
       routeBudget = input.routeBudget===undefined ? undefined : budget(input.routeBudget),
       workerBudget = budget(input.budget);
-    const answerOnly = discussionOnly(content)||/(?:不要|不用|无需|不必|不)(?:创建|新建|分派)(?:独立)?(?:任务|事情)|(?:don't|do not)\s+create\s+(?:a\s+)?task/i.test(content);
+    const answerOnly = discussionOnly(content)||taskStatusQuestion(content)||/(?:不要|不用|无需|不必|不)(?:创建|新建|分派)(?:独立)?(?:任务|事情)|(?:don't|do not)\s+create\s+(?:a\s+)?task/i.test(content);
     if (answerOnly && input.localExecution) throw new CoordinatorError('这条消息明确要求只讨论或不执行，本机尚未开始。请修改要求后再点执行。', 409);
     if (!/^[A-Za-z0-9_-]{16,100}$/.test(input.operationId))
       throw new CoordinatorError("消息标识无效", 400);
@@ -1308,6 +1312,18 @@ export class CoordinatorService {
     await verifyKey();
     const db = await this.store.read(),
       c = taskOf(db, s, taskId);
+    if(taskStatusQuestion(text(input.text,8000,'消息'))){
+      const claim=await beginChatOperation(this.store,{...s,operationId:input.operationId,conversationId:taskId,requestId:uid('status'),payload:{kind:'task_status',taskId,text:input.text},beforeClaim:d=>{featureMember(d,s);taskOf(d,s,taskId);}});
+      if(claim.kind!=='completed')await this.store.mutate(d=>{
+        featureMember(d,s);const task=taskOf(d,s,taskId),latest=(d.chatOperations??[]).filter(op=>own(op,s)&&op.conversationId===taskId&&op.workRun).at(-1)?.workRun;
+        const paused=task.workPaused===true;
+        const state=latest?.state==='running'?'还在处理最新要求，有结果会在这里告诉你。':paused&&task.workPauseReason==='user_stopped'?'这件事已经按你的要求停下，没有重新开工。':paused&&latest?.resultOutcome==='needs_input'?'这件事还在等补充资料；把缺的内容发来，就能继续处理。':paused?'这件事还有部分没做完，已有成果和原要求都保留着；需要先核对卡住的步骤。':latest?.state==='queued'?'最新要求正在排队，前一轮处理完就会接着做。':'最新一轮已经返回结果，可以查看上面的内容；有修改要求直接补充就行。';
+        saveMessage(d,s,task,{id:uid('msg'),role:'user',content:input.text,createdAt:at()});
+        const id=uid('msg');saveMessage(d,s,task,{id,role:'assistant',content:state,createdAt:at()});
+        completeChatOperation(d,{...s,operationId:input.operationId},{conversationId:taskId,assistantMessageId:id});
+      });
+      return {taskId};
+    }
     return {
       taskId: await this.enqueue(
         s,
@@ -1375,7 +1391,7 @@ export class CoordinatorService {
         // A new, explicitly confirmed generation is paid once the first gift
         // reached billing. Admission-only failures can still use the same gift.
         operation.workRun.welcomeSponsored=!!job.welcomeSponsored&&!d.modelUsageRecords.some(r=>own(r,s)&&r.sponsorship?.operationId===job.welcomeOperationId&&(r.sponsorship?.stage??'image')==='image');
-        task.workPaused=false;task.updatedAt=at();
+        task.workPaused=false;task.workPauseReason=undefined;task.updatedAt=at();
       });}catch(error){await failChatOperation(this.store,{...s,operationId});throw error;}
       return {taskId,status:'queued'};
     }
@@ -1388,7 +1404,7 @@ export class CoordinatorService {
         featureMember(d,s);assertSources(d,s,job.sources);verifyCredentialBindings(d,s,job.credentials);
         const prices=job.skills.map(f=>{availableFeature(d,s,f.id,f.releaseId);return{id:f.id,name:f.values.name,releaseId:f.releaseId,version:f.version,multiplier:featureMultiplier(f.values)};});
         requireFeatureApproval(d,s,prices,featureApprovals);
-        task.workPaused=false;task.updatedAt=at();
+        task.workPaused=false;task.workPauseReason=undefined;task.updatedAt=at();
         for(const older of current)if(older.id!==source.id&&older.workRun!.state==='queued'){
           older.workRun!.state='cancelled';older.workRun!.unread=false;older.status='interrupted';older.updatedAt=at();
         }
@@ -1539,6 +1555,10 @@ export class CoordinatorService {
     const db = await this.store.read();
     featureMember(db, s);
     const existing = input.taskId ? taskOf(db, s, input.taskId) : undefined;
+    const continuation=existing?taskContinuation(db,s,existing):undefined;
+    const supplement=actionableTaskSupplement(input.text)&&continuation?.canAcceptSupplement===true;
+    const supplementSource=supplement?supplementKnowledgeRequest(input.text):'';
+    const namedSupplement=supplement?knowledgePolicy(db,s,[input.text,supplementSource].filter(Boolean).join('\n')):undefined;
     if (input.outputDestination !== undefined && !['chat', 'notion'].includes(input.outputDestination)) throw new CoordinatorError('保存位置无效', 400);
     const boundRead=Boolean(existing?.notionDocument?.pageId&&freshDocumentReadRequested(input.text)&&/只读|(?:不|不要)(?:修改|保存|写入)/.test(input.text));
     // The composer defaults to chat; it is not a denial of a destination named
@@ -1546,7 +1566,9 @@ export class CoordinatorService {
     // scoped instruction, never a model-only destination or another task's goal.
     const newNotionWrite=!existing&&!input.localExecution&&input.expectedOutput!=='image'&&notionWriteRequested(input.text)&&notionWriteRequested(input.instruction);
     const outputDestination=newNotionWrite?'notion':input.outputDestination;
-    const notionTarget = outputDestination === 'chat'&&!boundRead ? undefined : existing?.notionDocument ? { ...existing.notionDocument, referenceIds: writingTarget(db, s).referenceIds } : outputDestination === 'notion' ? writingTarget(db, s) : undefined;
+    const declinedNotionWrite=/只在对话|仅在对话|只回答|只讨论/.test(input.text)||input.text.split(/[，,。；;\n]/).some(clause=>/(?:不要|不用|别|不必|无需|不再|禁止|不)(?:再|继续|实际|自行)?(?:保存|写入|更新|同步)/.test(clause)&&!/其他|其它|别的/.test(clause));
+    const continuingNotion=Boolean(supplement&&continuation?.prior?.workRun?.notionTarget&&!declinedNotionWrite);
+    let notionTarget:WorkRun['notionTarget'] = declinedNotionWrite&&!boundRead&&!newNotionWrite||outputDestination === 'chat'&&!boundRead&&!continuingNotion ? undefined : existing?.notionDocument ? { ...existing.notionDocument, referenceIds: writingTarget(db, s).referenceIds } : outputDestination === 'notion' ? writingTarget(db, s) : undefined;
     if (notionTarget) {
       if (input.localExecution || !this.deps.notionDocuments) throw new CoordinatorError('Notion 写入尚未连接', 428);
       this.deps.notionDocuments.assertTarget(db, s, notionTarget);
@@ -1606,13 +1628,14 @@ export class CoordinatorService {
       )
     )
       throw new CoordinatorError("请确认执行器的功能和外部数据使用范围", 400);
-    if (previous && input.sources === undefined)
+    if (previous && input.sources === undefined&&!namedSupplement?.requested.length)
       assertSources(db, s, previous.sources);
     // The user's original restriction survives model-written handoffs. A model
     // cannot reopen private retrieval by selecting knowledge:'all'.
     const knowledgeDeclined=knowledgePolicy(db,s,input.text).declined||knowledgePolicy(db,s,input.instruction).declined;
     const sourceIds = knowledgeDeclined ? [] :
       input.sources ??
+      (namedSupplement?.requested.length?namedSupplement.sourceIds:undefined) ??
       previous?.sources.map((s) => s.id) ??
       db.knowledgeConnections
         .filter(
@@ -1639,12 +1662,28 @@ export class CoordinatorService {
       s,
       skills.flatMap((f) => f.values.tools ?? []),
     );
-    const policy=knowledgeDeclined?{required:false,sourceIds:[],requested:[],missing:[],declined:true}:knowledgePolicy(db,s,input.instruction,sourceIds,input.knowledge);
-    const requiredTools=[...new Set([...(input.requiredTools??[]).filter(name=>name!=='knowledge_search'||!policy.declined),...(policy.required?['knowledge_search']:[])])];
-    const allowedTools=new Set([...config.values.tools,...skills.flatMap(f=>f.values.tools?.map(t=>t.id)??[]),...(sources.length?['knowledge_search']:[])]);
+    const suppliedMaterial=Boolean(supplement&&!supplementSource&&((input.attachmentIds?.length??0)>0||/(?:素材|材料|正文|原话|原文)(?:如下|是|为)?\s*[:：][\s\S]{12,}/.test(input.text)));
+    const plainContinue=Boolean(supplement&&plainTaskContinuation(input.text));
+    const originalPendingGoal=plainContinue?continuation?.prior?.workRun?.instruction.split('\n本轮用户明确要求：')[0]:undefined;
+    const effectiveInstruction=originalPendingGoal?`${originalPendingGoal}\n本轮用户明确要求：${input.text}。只继续未完成部分，已完成成果不重做。`:[input.instruction,supplementSource].filter(Boolean).join('\n');
+    let policy=knowledgeDeclined?{required:false,sourceIds:[],requested:[],missing:[],declined:true}:knowledgePolicy(db,s,effectiveInstruction,sourceIds,supplementSource?undefined:input.knowledge);
+    const priorKnowledge=supplement?continuation?.prior?.workRun?.contract?.knowledgeSourceIds:undefined;
+    if(!policy.required&&!knowledgeDeclined&&!suppliedMaterial&&priorKnowledge?.length)policy={...policy,required:true,sourceIds:priorKnowledge.filter(id=>sourceIds.includes(id))};
+    const inheritedContract=supplement?continuation?.prior?.workRun?.contract:undefined;
+    const requiredFeatureIds=[...new Set([...(inheritedContract?.requiredFeatureIds??[]),...(input.requiredFeatureIds??[])])];
+    const restore=input.retrySourceJobId?db.chatOperations?.find(o=>own(o,s)&&o.id===input.retrySourceJobId)?.workRun:undefined;
+    // Fresh user material requires a fresh write and fresh source evidence. An
+    // explicit recovery may reuse completed steps, but never an obsolete save.
+    const notionRestore=restore??(supplement&&continuation?.prior?.workRun?.notionTarget?{...continuation.prior.workRun,steps:[]}:undefined);
+    const newNotionRevision=!input.retrySourceJobId&&Boolean(continuingNotion||existing&&notionRevisionRequested(input.text));
+    const notionPlan=notionTarget&&notionRestore?notionRetryCheckpointPlan(notionRestore,{newWrite:newNotionRevision}):undefined;
+    if(notionPlan?.blocked)throw new NotionDocumentError(notionPlan.message!);
+    if(notionTarget&&notionPlan?.pageId){notionTarget={...notionTarget,pageId:notionPlan.pageId,url:`https://www.notion.so/${notionPlan.pageId}`};this.deps.notionDocuments!.assertTarget(db,s,notionTarget);}
+    const inheritedTools=(inheritedContract?.requiredTools??[]).filter(name=>name!=='knowledge_search'||!suppliedMaterial||policy.required);
+    const requiredTools=[...new Set([...inheritedTools,...(input.requiredTools??[]),...(policy.required?['knowledge_search']:[]),...(notionTarget&&(newNotionRevision||notionPlan&&!notionPlan.notionReceipt)?['save_notion_draft']:[])])].filter(name=>(name!=='knowledge_search'||!policy.declined)&&(name!=='save_notion_draft'||Boolean(notionTarget&&!boundRead)));
+    const allowedTools=new Set([...config.values.tools,...skills.flatMap(f=>f.values.tools?.map(t=>t.id)??[]),...(sources.length?['knowledge_search']:[]),...(notionTarget?['save_notion_draft']:[])]);
     if(requiredTools.some(name=>!allowedTools.has(name))&&!policy.missing.length)throw new CoordinatorError('这件事需要的工具尚未开放，请先检查对应功能。');
     if(input.directVisual){validateVisualDocument(input.directVisual.document);if(notionTarget||input.localExecution||policy.required||!skills.some(f=>f.values.tools?.some(t=>t.id===input.directVisual!.tool)))throw new CoordinatorError('本轮不能直接生成这份说明，请先确认功能与保存范围。');}
-    const restore=input.retrySourceJobId?db.chatOperations?.find(o=>own(o,s)&&o.id===input.retrySourceJobId)?.workRun:undefined;
     if(restore?.steps?.some(step=>step.state==='completed'||step.state==='started'&&['artifact','external_write'].includes(step.effect))&&(JSON.stringify(restore.skills.map(f=>[f.id,f.releaseId,f.version]))!==JSON.stringify(skills.map(f=>[f.id,f.releaseId,f.version]))||JSON.stringify(restore.sources)!==JSON.stringify(sources)))throw new CoordinatorError('功能或资料授权已经变化，已有成果保留。请先重新确认这件事的范围。');
     const verifyRetry = (d: Database) => {
       if (!input.retrySourceJobId) return;
@@ -1750,18 +1789,26 @@ export class CoordinatorService {
           createdAt: at(),
         });
         const op = d.chatOperations!.find((o) => o.id === claim.operation.id)!;
+        const currentContinuation=taskContinuation(d,s,c);
+        if(!input.retrySourceJobId&&!input.localExecution&&actionableTaskSupplement(input.text)&&currentContinuation.canAcceptSupplement){
+          // Only not-yet-started supplements are superseded. Their original
+          // messages remain available below as this task's pending context.
+          supersedeQueuedSupplements(currentContinuation.queued,at());
+          if(currentContinuation.canResume){c.workPaused=false;c.workPauseReason=undefined;}
+        }
         if(input.retrySourceJobId){
-          c.workPaused=false;
+          c.workPaused=false;c.workPauseReason=undefined;
           for(const older of d.chatOperations??[])if(own(older,s)&&older.conversationId===c.id&&older.id!==op.id&&older.workRun?.state==='queued'){
             older.workRun.state='cancelled';older.workRun.unread=false;older.status='interrupted';older.updatedAt=at();
           }
         }
         op.conversationId = c.id;
         op.workRun = {
-          runtimeContext:restore?.runtimeContext??db.chatOperations?.find(o=>own(o,s)&&o.operationId===input.parentOperationId)?.runtimeContext??runtimeContext(db,s,op.createdAt),
-          steps:restore?.steps?structuredClone(restore.steps.filter(step=>step.tool!=='read_notion_document'&&!(step.tool==='save_notion_draft'&&step.state==='started'&&['not_sent','rejected'].includes(restore.notionReceipt?.delivery||'')))):[],
+          runtimeContext:restore?.runtimeContext??(plainContinue?continuation?.prior?.workRun?.runtimeContext:undefined)??db.chatOperations?.find(o=>own(o,s)&&o.operationId===input.parentOperationId)?.runtimeContext??runtimeContext(db,s,op.createdAt),
+          steps:notionTarget&&notionRestore?notionRetryCheckpointPlan(notionRestore,{newWrite:newNotionRevision,scopeId:op.id}).steps:restore?.steps?structuredClone(restore.steps.filter(step=>step.tool!=='read_notion_document')):[],
+          notionReceipt:notionPlan?.notionReceipt,
           retryOfOperationId:input.retrySourceJobId?db.chatOperations?.find(o=>own(o,s)&&o.id===input.retrySourceJobId)?.operationId:undefined,
-          contract:{version:1,requiredFeatureIds:input.directVisual?[]:input.requiredFeatureIds??[],requiredTools,knowledgeSourceIds:knowledgeDeclined?undefined:restore?.contract?.knowledgeSourceIds??(policy.required?policy.sourceIds:undefined),execution:input.directVisual?'direct':'model'},
+          contract:{version:1,requiredFeatureIds:input.directVisual?[]:requiredFeatureIds,requiredTools,knowledgeSourceIds:knowledgeDeclined?undefined:restore?.contract?.knowledgeSourceIds??(policy.required?policy.sourceIds:undefined),execution:input.directVisual?'direct':'model'},
           directVisual:input.directVisual,
           notionTarget,
           featurePricingVersion: 1,
@@ -1772,7 +1819,7 @@ export class CoordinatorService {
           values: config.values,
           modelId: config.model.id,
           modelPrompt: config.model.systemPrompt,
-          instruction: input.instruction,
+          instruction: effectiveInstruction,
           inputMessageId: mid,
           originConversationId: input.originConversationId,
           originMessageId: input.originMessageId,
@@ -1814,7 +1861,7 @@ export class CoordinatorService {
             op.workRun!.state='cancelled';op.workRun!.unread=false;op.status='interrupted';op.updatedAt=at();
           }
         }
-        task.workPaused = false;task.updatedAt=at();
+        task.workPaused = false;task.workPauseReason=undefined;task.updatedAt=at();
       });
     const db = await this.store.read();
     featureMember(db, s);
@@ -2014,7 +2061,7 @@ export class CoordinatorService {
                 own(o, s) &&
                 o.conversationId === cid &&
                 o.workRun?.inputMessageId === message.id &&
-                o.workRun?.state === "completed",
+                (o.workRun?.state === "completed"||o.workRun?.state==='failed'&&['needs_input','partial'].includes(o.workRun.resultOutcome??'')||o.workRun?.failureCode==='task_superseded'),
             ),
         )
         .slice(-20);
@@ -2135,6 +2182,11 @@ export class CoordinatorService {
       if (notionContext?.readOnly) tools.push(this.deps.notionDocuments!.readTool(s,job,verify));
       if (notionContext&&!notionContext.readOnly) {
         const save=this.deps.notionDocuments!.tool(s, id, cid, job, verify, notionContext.currentDocument, c.messages[start].content);
+        if(requiredKnowledge&&save.structured){
+          const structured=save.structured,ready=()=>completedSteps(steps).some(step=>step.tool==='knowledge_search');
+          save.cacheable=false; // A rejected prerequisite must not become a cached no-op after a successful read.
+          save.structured={...structured,effect:value=>ready()?structured.effect?.(value)??'external_write':'read',run:async value=>ready()?structured.run(value):{status:'needs_input',saved:false,message:'先查找并核对本轮必须使用的资料，再一次保存正文；这次还没有写入。'}};
+        }
         tools.push(datedDraft?datedDraft.wrap(save):save);
       }
       if (!executionKnowledgeDeclined&&((job.values.tools.includes("knowledge_search") && job.sources.length)||requiredKnowledge))
@@ -2221,7 +2273,7 @@ export class CoordinatorService {
           cacheScope:'stable',
           content: `${db.settings.safetyRules}\n${m.systemPrompt}\n${referenceBoundary}\n${friendlyConversationGuidance}\n${legacyAgent?.prompt ?? ""}\n${job.featurePricingVersion===1?'使用对应 feature_N 调用功能，按分工各处理相关部分，不重复制作。':job.skills.map((skill) => `功能：${skill.values.name}\n${skill.values.instructions}\n边界：${skill.values.limitations}`).join("\n\n")}\n${taskExecutionGuidance}\n${knowledgeGuidance}\n${taskOutcomeGuidance}\n你已在独立任务内，创建任务、并行和归档由平台负责，不是交付步骤。只完成最新用户消息的本轮交接，历史讨论和前置成果不扩大范围；不重做或总结其他任务。只报告本任务的完成情况，不因缺少其他任务的工具虚构缺项。结果封套只写最外层，content 是可用正文。`,
         },
-        {role:'system',content:`当前任务参考：${JSON.stringify({taskId:cid,title:c.title,expectedOutput:job.expectedOutput??'text'})}\n附件参考：${attachmentResult.text}\n前置成果：${JSON.stringify(dependencyContext)}`},
+        {role:'system',content:`当前任务参考：${JSON.stringify({taskId:cid,title:c.title,expectedOutput:job.expectedOutput??'text'})}\n附件参考：${attachmentResult.text}\n前置成果：${JSON.stringify(dependencyContext)}\n最新消息若是补充材料或要求继续，延续本任务尚未完成的目标并合并此前尚未处理的补充；已完成部分不重做，冲突以最新明确要求为准。状态询问只回答现状，不视为重复执行的要求。`},
         ...previous.map((message) => {
           const handoff = message.role === 'user' ? db.chatOperations?.find(operation =>
             own(operation, s) && operation.conversationId === cid && operation.workRun?.inputMessageId === message.id,
@@ -2262,13 +2314,16 @@ export class CoordinatorService {
         },run:raw=>selected.run((raw as {query:string}).query)};
       }
       let selectedFeatureStarted=false;
+      let workerNeedsInput=false;
+      const needsInputCanReturn=()=>workerNeedsInput&&(!requiredKnowledge||steps.some(step=>step.tool==='knowledge_search'&&step.state!=='started'&&step.output!==undefined));
+      const requiredForRound=()=>needsInputCanReturn()?[]:[...(notionContext?.readOnly?['read_notion_document']:[]),...(!notionContext?.pageId&&job.notionTarget&&!datedDraft?.blocked?['save_notion_draft']:[]),...(job.contract?.requiredFeatureIds??[]).flatMap(id=>{const i=job.skills.findIndex(f=>f.id===id);return i<0?[]:[`feature_${i}`];}),...requiredWorkerTools.filter(name=>tools.some(t=>t.name===name)&&!(name==='save_notion_draft'&&datedDraft?.blocked)&&!(name==='knowledge_search'&&datedDraft?.missing))];
       const result = await runTaskOrchestrator({
         entryPoint: "workspace",
         messages,
         tools,
         checkpoints:checkpoint('worker'),
-        requiredTools:()=>[...(notionContext?.readOnly?['read_notion_document']:[]),...(!notionContext?.pageId&&job.notionTarget&&!datedDraft?.blocked?['save_notion_draft']:[]),...(job.contract?.requiredFeatureIds??[]).flatMap(id=>{const i=job.skills.findIndex(f=>f.id===id);return i<0?[]:[`feature_${i}`];}),...requiredWorkerTools.filter(name=>tools.some(t=>t.name===name)&&!(name==='save_notion_draft'&&datedDraft?.blocked)&&!(name==='knowledge_search'&&datedDraft?.missing))],
-        completeAfterTools:()=>datedDraft?.missing?datedDraft.result():undefined,
+        requiredTools:requiredForRound,
+        completeAfterTools:()=>datedDraft?.missing?datedDraft.result():job.notionTarget&&!notionContext?.readOnly&&!job.skills.length?verifiedNotionCompletion(job.notionReceipt,steps,requiredForRound(),{scopeId:id}):undefined,
         maxSteps: job.values.maxSteps,
         beforeStep: verify,
         onTrace: (t) => {workerTrace=t;collectTrace();},
@@ -2292,8 +2347,8 @@ export class CoordinatorService {
             // failure just because another prose acknowledgement cannot reserve
             // a full generation allowance. No additional tool or model runs.
             const receipt=fresh!.chatOperations?.find(o=>own(o,s)&&o.id===id)?.workRun?.notionReceipt;
-            const completed=job.notionTarget&&!notionContext?.pageId&&!job.skills.length
-              ?verifiedNotionCompletion(receipt,steps,['save_notion_draft',...requiredWorkerTools]):undefined;
+            const completed=job.notionTarget&&!notionContext?.readOnly&&!job.skills.length
+              ?verifiedNotionCompletion(receipt,steps,requiredForRound(),{scopeId:id}):undefined;
             if(completed)return {content:completed,toolCalls:[],finishReason:'stop'};
             throw new CoordinatorError('本批任务超过已授权预算，已停止新的调用',402);
           }
@@ -2328,6 +2383,7 @@ export class CoordinatorService {
             content: response.content, modelId: m.id, requestId: op!.requestId, toolCalls: response.toolCalls.length,
           };
           if (response.finishReason === 'filtered') { filteredResponse = true; limitedResponse = undefined; }
+          workerNeedsInput=!response.toolCalls.length&&parseTaskOutcome(response.content).outcome==='needs_input';
           return response;
         },
       });
@@ -2339,7 +2395,7 @@ export class CoordinatorService {
       await verify();
       if(datedDraft?.missing)result.content=datedDraft.result();
       const parsedOutcome=parseTaskOutcome(result.content);
-      const missing=[...new Set([...result.requiredMissing,...requiredWorkerTools.filter(name=>!(name==='save_notion_draft'&&datedDraft?.blocked)&&!(name==='knowledge_search'&&datedDraft?.missing)&&!completedSteps(steps).some(step=>step.tool===name))])];
+      const missing=needsInputCanReturn()?[]:[...new Set([...result.requiredMissing,...requiredWorkerTools.filter(name=>!(name==='save_notion_draft'&&datedDraft?.blocked)&&!(name==='knowledge_search'&&datedDraft?.missing)&&!completedSteps(steps).some(step=>step.tool===name))])];
       if(missing.length){
         const done=stepProgress(steps).completed;
         const pending=missing.map(name=>name.startsWith('feature_')?job.skills[Number(name.slice(8))]?.values.name||'整理内容':({knowledge_search:'查找资料',oneHtml:'保存网页',oneFlowchart:'保存流程图',save_notion_draft:'保存到 Notion'} as Record<string,string>)[name]||'后续处理');
@@ -2353,6 +2409,11 @@ export class CoordinatorService {
           return output?.content&&!output.artifacts?.length?[parseTaskOutcome(output.content).content]:[];
         }).join('\n\n').slice(0,600);
         result.content=JSON.stringify({outcome:done.length?'partial':'failed',content:[job.userReport,parts].filter(Boolean).join('\n\n'),summary:job.userReport});
+      }else if(parsedOutcome.outcome==='needs_input'&&parsedOutcome.content.trim()&&!/\b(?:HTTP|MCP|API)\b|execution_\w+|feature_\d|工具未授权|参数无效|执行器|回执/.test(parsedOutcome.content)){
+        // The actual missing-input question is already user-facing. Generic
+        // progress narration must not bury it behind “the rest is unfinished”.
+        job.userReport=datedDraft?.missing?datedDraft.message():parsedOutcome.summary;
+        result.content=JSON.stringify(parsedOutcome);
       }else if(['partial','failed','needs_input'].includes(parsedOutcome.outcome)){
         const progress=stepProgress(steps);
         job.userReport=datedDraft?.missing?datedDraft.message():await this.describeProgress(s,op,{done:progress.completed,pending:progress.pending.length?progress.pending:['剩下的内容'],files:[],reason:parsedOutcome.summary},verify);
@@ -2395,7 +2456,11 @@ export class CoordinatorService {
         o.workRun!.userReport = job.userReport || (outcome.outcome !== 'returned' ? outcome.summary : undefined);
         o.workRun!.resultOutcome=outcome.outcome;
         if(job.expectedOutput==='image'&&outputFiles.some(file=>file.kind==='image'))o.workRun!.resultOutcome='completed';
-        if(['failed','needs_input','partial'].includes(outcome.outcome)){o.workRun!.state='failed';target.workPaused=true;}
+        if(['failed','needs_input','partial'].includes(outcome.outcome)){
+          o.workRun!.state='failed';target.workPaused=true;target.workPauseReason=outcome.outcome==='needs_input'?'needs_input':outcome.outcome==='partial'?'partial':'failed';
+          const continuation=taskContinuation(d,s,target);
+          if(continuation.canResume&&continuation.queued.some(queued=>actionableTaskSupplement(target.messages.find(message=>message.id===queued.workRun!.inputMessageId)?.content??''))){target.workPaused=false;target.workPauseReason=undefined;}
+        }
         const resultMessage=target.messages.find(m=>m.id===mid)!;resultMessage.content=outcome.content+(job.notionTarget&&!datedDraft?.missing?notionDeliveryNote(o.workRun!.notionReceipt,notionContext?.pageId):'');
         const relational=d.messages.find(m=>m.id===mid&&m.conversationId===cid&&own(m,s));if(relational)relational.content=resultMessage.content;
         o.workRun!.resultMessageId = mid;
@@ -2470,7 +2535,7 @@ export class CoordinatorService {
         const c = d.conversations.find(
           (c) => c.id === o.conversationId && own(c, s),
         );
-        if (c) c.workPaused = true;
+        if (c) {c.workPaused = true;c.workPauseReason='failed';}
         if(c&&savedPartsAuthorized&&!filteredResponse){
           const files=d.attachments.filter(f=>own(f,s)&&f.conversationId===c.id&&generatedArtifactIds.includes(f.id)&&f.status==='ready');
           const parts=completedSteps(o.workRun.steps??[]).filter(step=>step.namespace==='worker'&&step.tool.startsWith('feature_')).flatMap(step=>{const content=(step.output as {content?:string})?.content;return content?[parseTaskOutcome(content).content]:[];});

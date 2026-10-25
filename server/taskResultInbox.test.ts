@@ -8,6 +8,14 @@ import { acknowledgeTaskResults, acknowledgeAllTaskResults, appendTaskResultRepo
 import { saveExecutionReceipt } from './executionService.js';
 import {latestTaskResults,pendingConversationTaskResults} from './taskResultInbox.js';
 
+test('a completed result uses its brief once instead of echoing the longer saved-body acknowledgement',()=>{
+ const db=fixture(),{operation}=cloud(db,'complete-brief-once',a,{state:'completed',outcome:'completed',text:'文章已保存到 Notion，正文也回读核对过了。'});
+ operation.workRun!.userReport='文章已保存，正文已回读核对。';
+ const report=appendTaskResultReport(db,a);
+ assert.equal(report.results[0].brief,'文章已保存，正文已回读核对。');
+ assert.doesNotMatch(db.conversations.find(c=>c.id==='main-a')!.messages.at(-1)!.content,/正文也回读核对过了/);
+});
+
 test('automatic conversation reporting includes every latest outcome even after viewing the detail, never stale successes behind failure',()=>{
  const db=fixture(),good=local(db,'good'),old=local(db,'old'),bad=local(db,'bad');
  bad.conversationId=old.conversationId;bad.updatedAt='2026-10-16T12:00:00Z';bad.status='failed';bad.finalResponse='尚未创建文件';
@@ -55,6 +63,26 @@ test('automatic technical failures use a plain next step rather than diagnostics
   assert.match(report.content, /核对已有内容后继续未完成部分/);
   assert.doesNotMatch(report.content, /PRIVATE_SECRET|Authorization|Bearer|response\.completed|stream disconnected/);
   assert.equal(pendingTaskResults(db, b).length, 0);
+});
+
+test('ordinary missing materials outrank a generic progress fallback in the main conversation without dated rules',async()=>{
+ const db=fixture(),{operation}=cloud(db,'missing-launcher-material',a,{state:'failed',outcome:'needs_input',text:'还缺启动器的素材。请直接补充一两句素材，我接着写。'});
+ operation.workRun!.userReport='这次还没做成，原来的要求还在。剩下的内容还没做好。可以接着处理，不用重做已经完成的部分。';
+ const receipt=pendingTaskResults(db,a)[0];
+ assert.match(receipt.brief!,/还缺启动器的素材/);assert.match(receipt.brief!,/请直接补充一两句素材/);
+ assert.doesNotMatch(receipt.brief!,/剩下的内容|原来的要求还在|先核对已有内容|任务里|点继续/);
+ await service(db).state(a);
+ const reply=db.conversations.find(c=>c.id==='main-a')!.messages[0].content;
+ assert.match(reply,/还缺启动器的素材.*请直接补充一两句素材/);
+ assert.doesNotMatch(reply,/剩下的内容|先核对已有内容|任务里|点继续/);
+ assert.equal(db.conversations.find(c=>c.id==='main-b')!.messages.length,0);
+});
+
+test('partial article bodies keep their concise progress report ahead of the article content',()=>{
+ const db=fixture(),{operation}=cloud(db,'partial-article-order',a,{state:'failed',outcome:'partial',text:'文章的第一段正文。这一段不应该变成主对话进展。'});
+ operation.workRun!.userReport='正文已写到第二节，第三节还没有完成。请补充结尾的实例。';
+ const brief=pendingTaskResults(db,a)[0].brief!;
+ assert.match(brief,/^正文已写到第二节/);assert.match(brief,/请补充结尾的实例/);
 });
 
 test('a dispatcher claimed between the idle read and report transaction takes priority, without losing the result', async () => {
@@ -378,6 +406,67 @@ test('local shell temporary-file failures get a short saving next step, not raw 
   const report=appendTaskResultReport(db,a);
   assert.match(report.results[0].brief!,/本机保存这一步没成功.*先核对目标文件/);
   assert.doesNotMatch(db.conversations.find(c=>c.id==='main-a')!.messages[0].content,/here-document|临时文件|\/bin\/zsh|首次写入命令/);
+});
+
+test('partial status paragraphs are not copied back as requested materials or repeated after a clipped reason',()=>{
+  const db=fixture();
+  const paragraph='本轮已完成资料整理，但报告还没有全部写完。已保存的提纲和正文会保留。你可以在任务里点“开始处理最新要求”继续。';
+  const {operation}=cloud(db,'partial-paragraph',a,{state:'failed',outcome:'partial',text:paragraph});
+  operation.workRun!.userReport=paragraph;
+  const report=appendTaskResultReport(db,a),brief=report.results[0].brief!;
+  assert.equal(brief.split('本轮已完成资料整理').length-1,1);
+  assert.equal(brief.split('已保存的提纲和正文会保留').length-1,1);
+  assert.doesNotMatch(brief,/你可以先补充|任务里|开始处理最新要求|点击|按钮/);
+  assert.match(brief,/还没有全部写完/);
+});
+
+test('a next-step paragraph containing its own reason reports each sentence only once',()=>{
+  const db=fixture(),reason='活动方案还缺举办日期。';
+  cloud(db,'overlapping-next-step',a,{state:'failed',outcome:'needs_input',text:`${reason}\n## 下一步\n${reason}请补充活动是哪一天。\n${reason}`});
+  const brief=appendTaskResultReport(db,a).results[0].brief!;
+  assert.equal(brief.split(reason).length-1,1);
+  assert.equal(brief.split('请补充活动是哪一天').length-1,1);
+  assert.doesNotMatch(brief,/你可以先补充/);
+});
+
+test('deduplication preserves a real request after a repeated status prefix in the same sentence',()=>{
+  const db=fixture(),{operation}=cloud(db,'inline-material-action',a,{state:'failed',outcome:'partial',text:'正文还没有全部写完，请补充活动的原始记录。'});
+  operation.workRun!.userReport='正文还没有全部写完。';
+  const brief=appendTaskResultReport(db,a).results[0].brief!;
+  assert.equal(brief.split('正文还没有全部写完').length-1,1);
+  assert.equal(brief.split('请补充活动的原始记录').length-1,1);
+});
+
+test('a real material heading with terse fields remains a concrete request rather than generic continuation',()=>{
+  const db=fixture();
+  cloud(db,'material-fields',a,{state:'failed',outcome:'needs_input',text:'方案还缺必要信息。\n## 需要你补充\n- 活动日期\n- 参与人数'});
+  const brief=appendTaskResultReport(db,a).results[0].brief!;
+  assert.match(brief,/请补充：活动日期、参与人数。/);
+  assert.equal(brief.split('活动日期').length-1,1);assert.equal(brief.split('参与人数').length-1,1);
+});
+
+test('an inline material heading becomes one request instead of repeating its label and content',()=>{
+  const db=fixture();
+  cloud(db,'inline-material-heading',a,{state:'failed',outcome:'needs_input',text:'还缺活动安排。\n需要你补充：活动日期与参与人数'});
+  const brief=appendTaskResultReport(db,a).results[0].brief!;
+  assert.equal(brief.split('活动日期与参与人数').length-1,1);
+  assert.match(brief,/请补充：活动日期与参与人数。/);
+});
+
+test('uncertain saving keeps the real safety check and never disguises it as missing material or a start button',()=>{
+  const db=fixture();
+  cloud(db,'uncertain-save-action',a,{state:'failed',outcome:'partial',text:'本轮写入的保存结果尚未确认。请先核对 Notion 原页面是否已有草稿；确认后再继续，不要重复新建。\n你可以在任务里点继续。'});
+  const brief=appendTaskResultReport(db,a).results[0].brief!;
+  assert.match(brief,/保存结果尚未确认/);assert.match(brief,/核对 Notion 原页面/);assert.match(brief,/不要重复新建/);
+  assert.doesNotMatch(brief,/你可以先补充|任务里|点继续/);
+});
+
+test('budget recovery actions are not labeled as requested content',()=>{
+  const db=fixture();
+  cloud(db,'budget-action',a,{state:'failed',text:'这次超过本轮预算。你可以先调整本次预算，再告诉我继续。'});
+  const brief=appendTaskResultReport(db,a).results[0].brief!;
+  assert.match(brief,/可用电力或本次使用上限/);assert.match(brief,/调整本次预算/);
+  assert.doesNotMatch(brief,/你可以先补充|开始处理最新要求/);
 });
 test('coordinator snapshot keeps reported but unreviewed results, correct badge count and all batch links', async () => {
   const db = fixture(), own = cloud(db, 'one', a, { text: '第一任务结果' }), second = cloud(db, 'two', a, { text: '第二任务结果' });

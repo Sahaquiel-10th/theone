@@ -16,6 +16,7 @@ import { NotionDocuments } from './notionDocuments.js';
 import { NotionWriteError, type NotionMcpService } from './knowledge/notionMcpService.js';
 import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
 import {runtimeContext} from './runtimeContext.js';
+import {sourceBinding} from './publicSharing.js';
 import JSZip from 'jszip';
 import XLSX from 'xlsx';
 
@@ -283,7 +284,7 @@ test('results arriving during a busy answer merge into that reply, including rev
   releaseSecond();await waitFor(async()=>(await f.store.read()).chatOperations!.some(o=>o.workRun?.resultOutcome==='needs_input'));
   releaseAnswer(answer('挺好的。'));
   const reply=await pending;
-  assert.match(reply.message.content,/先完成的方案/);assert.match(reply.message.content,/稍后完成的核算/);assert.match(reply.message.content,/还缺活动日期/);
+  assert.match(reply.message.content,/先完成的方案/);assert.match(reply.message.content,/稍后完成的核算/);assert.match(reply.message.content,/还缺活动日期|请补充活动是哪一天/);
   const db=await f.store.read(),first=db.chatOperations!.find(o=>o.conversationId===initial.taskIds[0]&&o.workRun)!,second=db.chatOperations!.find(o=>o.conversationId===initial.taskIds[1]&&o.workRun)!;
   assert.ok(first.workRun!.reportedToCoordinatorAt);assert.equal(first.workRun!.unread,false);
   assert.ok(second.workRun!.reportedToCoordinatorAt);assert.equal(second.workRun!.unread,true);
@@ -745,7 +746,7 @@ test('a multi-feature deliverable preserves completed work, reports it through O
   const retained=(await f.store.read()).chatOperations!.find(o=>o.conversationId===id&&o.workRun)!.workRun!.steps!.find(step=>step.namespace==='worker'&&step.tool==='feature_0')!.output as {content:string};
   assert.ok(retained.content.length>3000,'full content remains available for recovery, not repeated in the brief receipt');
   assert.doesNotMatch(JSON.stringify(partial),/private provider failure|"namespace"|"steps"/);
-  assert.equal(partial.recovery.kind,'retry');await assert.rejects(()=>f.service.retryLatest(b,id,source.id,undefined,key));
+  assert.equal(partial.recovery.kind,'none','a new supplement can continue safe partial work without another start button');await assert.rejects(()=>f.service.retryLatest(b,id,source.id,undefined,key));
   const beforeBudgetRetry=(await f.store.read()).chatOperations!.length;
   for(const requested of [0,11,NaN,'1',null])await assert.rejects(()=>f.service.retryLatest(a,id,source.id,undefined,key,requested as number),/电力上限/);
   assert.equal((await f.store.read()).chatOperations!.length,beforeBudgetRetry);
@@ -1029,7 +1030,7 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
   failReadSummary=true;await service.resume(a,key);
   await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.at(-1)!.state==='failed');
   const failedSummary=(await service.task(a,result.taskId!)).jobs.at(-1)!;
-  assert.equal(actualReads,readCount+1);assert.equal((await service.task(a,result.taskId!)).recovery.kind,'retry');
+  assert.equal(actualReads,readCount+1);assert.equal((await service.task(a,result.taskId!)).recovery.kind,'none','safe summary recovery accepts a new request without a second confirmation');
   body+='\n新的结尾。';
   await service.retryLatest(a,result.taskId!,failedSummary.id,undefined,key);await service.resume(a,key);
   await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.at(-1)!.state==='completed');
@@ -1087,7 +1088,7 @@ test('a verified new document still completes when the remaining budget cannot r
   if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('已经安排。'):{...answer(''),toolCalls:[{id:'plan',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'预算内文章',instruction:'写好合成文章并保存到 Notion，保存后回读。不必联网或查知识库。',executorId:'general'})}}]};
   workerCalls++;assert.equal(workerCalls,1,'no extra model call should be billed just to acknowledge a verified save');assert.ok(!tools.some(t=>t.function.name==='knowledge_search'));
   const hold=(await f.store.read()).modelUsageRecords.find(u=>u.modelId===model.id&&u.status==='pending')!.reservedMicros!;
-  return {...answer(''),usage:{inputTokens:hold-1,outputTokens:1,totalTokens:hold,source:'provider'},toolCalls:[{id:'save-budget',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({title:'预算内文章',content:article})}}]};
+  return {...answer(''),usage:{inputTokens:hold-1,outputTokens:1,totalTokens:hold,source:'provider'},toolCalls:[{id:'save-budget',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({title:'预算内文章',content:article,final:true})}}]};
  }});
  const result=await service.dispatch(a,{...input('operation_notion_budget_finish','写好一篇文章并保存到 Notion'),budget:.03,outputDestination:'notion'},key);
  // Reproduce an older snapshot's stale mandatory search without modifying its
@@ -2709,4 +2710,137 @@ test('next answer reports the captured old local round after the same execution 
   await f.store.mutate(d=>{const task=d.executionTasks[0];task.status='completed';task.finalResponse='NEW_ROUND_RESULT：改好新标题并回读';task.updatedAt=new Date().toISOString();task.completedAt=task.updatedAt;saveExecutionReceipt(d,task);});
   const next=await service.state(a);assert.deepEqual(next.notices.map(n=>n.id),['same-local-execution_1']);assert.equal(next.notices[0].reported,true);assert.equal(next.notices[0].read,false);
   db=await f.store.read();assert.equal(db.messages.filter(m=>m.id==='execution_receipt_same-local-execution_0').length,1);assert.equal(db.messages.filter(m=>m.id==='execution_receipt_same-local-execution_1').length,1);
+});
+
+test('new material and explicit continue automatically resume the same needs-input task through main chat and task send',async()=>{
+ for(const entry of ['main','task']){
+  const f=fixture();let executions=0;
+  f.setWorker(async messages=>{
+   executions++;const context=JSON.stringify(messages);
+   if(executions===1)return answer(JSON.stringify({outcome:'needs_input',content:'还缺启动器的素材，请补充后再写。',summary:'还缺素材'}));
+   assert.match(context,/UI 原目标：写一篇启动器说明/);assert.match(context,/素材补充：小小启动器/);
+   return answer(JSON.stringify({outcome:executions===2?'partial':'completed',content:executions===2?'素材已写入正文，排版还没完成。':'启动器说明与排版均已完成。',summary:executions===2?'排版还没完成':'说明已完成'}));
+  });
+  const original=await f.service.dispatch(a,input(`operation_auto_${entry}_1`,'UI 原目标：写一篇启动器说明'),key);
+  await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,original.taskId!)).jobs[0].state==='failed');
+  const awaiting=await f.service.task(a,original.taskId!);
+  assert.equal(awaiting.recovery.kind,'none','safe material waiting does not offer a second manual start');
+  assert.match(awaiting.recovery.message,/直接发给我.*不用另外点开始/);
+  const supplement={...input(`operation_auto_${entry}_2`,'素材补充：小小启动器，按这个写'),boundTaskId:original.taskId};
+  if(entry==='main')await f.service.dispatch(a,supplement,key);else await f.service.direct(a,original.taskId!,supplement,key);
+  assert.equal((await f.service.task(a,original.taskId!)).conversation.workPaused,false,'new material does not need a second start button');
+  await Promise.all([f.service.resume(a,key),f.service.resume(a,key)]);
+  await waitFor(async()=>(await f.service.task(a,original.taskId!)).jobs.at(-1)!.state==='failed');
+  await f.service.direct(a,original.taskId!,input(`operation_auto_${entry}_3`,'继续干'),key);
+  await Promise.all([f.service.resume(a,key),f.service.resume(a,key)]);
+  await waitFor(async()=>(await f.service.task(a,original.taskId!)).jobs.at(-1)!.state==='completed');
+  await f.service.direct(a,original.taskId!,input(`operation_auto_${entry}_3`,'继续干'),key);await f.service.resume(a,key);
+  assert.equal(executions,3,'each accepted instruction executes once, without replaying an old failed round');
+  await assert.rejects(()=>f.service.direct(b,original.taskId!,input('operation_auto_foreign_1','继续干'),key));
+ }
+});
+
+test('supplements arriving during a run merge into one latest sequential continuation after a normal partial result',async()=>{
+ const f=fixture();let executions=0,release!:()=>void;const gate=new Promise<void>(resolve=>release=resolve);
+ f.setWorker(async messages=>{
+  if(++executions===1){await gate;return answer(JSON.stringify({outcome:'partial',content:'已完成开头，等待补充后接着写。',summary:'还要接着写'}));}
+  assert.match(JSON.stringify(messages),/UI 原稿目标/);assert.match(JSON.stringify(messages),/补充甲：不要使用真实姓名/);assert.match(JSON.stringify(messages),/补充乙：结尾加一个例子/);
+  return answer(JSON.stringify({outcome:'completed',content:'完整说明已写好。',summary:'已完成'}));
+ });
+ const first=await f.service.dispatch(a,input('operation_auto_busy_1','UI 原稿目标'),key);await f.service.resume(a,key);
+ await waitFor(async()=>executions===1);
+ await f.service.direct(a,first.taskId!,input('operation_auto_busy_2','补充甲：不要使用真实姓名'),key);
+ await f.service.direct(a,first.taskId!,input('operation_auto_busy_3','补充乙：结尾加一个例子'),key);
+ let detail=await f.service.task(a,first.taskId!);assert.deepEqual(detail.jobs.map(j=>j.state),['running','cancelled','queued']);
+ await f.service.resume(a,key);assert.equal(executions,1,'a supplement never interrupts the running round');
+ release();await waitFor(async()=>(await f.service.task(a,first.taskId!)).jobs.at(-1)!.state==='completed');
+ detail=await f.service.task(a,first.taskId!);assert.equal(executions,2);assert.equal(detail.jobs[1].state,'cancelled');assert.equal(detail.conversation.workPaused,false);
+});
+
+test('a status question or a new supplement cannot release an explicit user stop or a local safety hold',async()=>{
+ for(const hold of ['question','stop','local']){
+  const f=fixture();let executions=0;
+  f.setWorker(async()=>{executions++;return answer(JSON.stringify({outcome:'needs_input',content:'请补充素材。',summary:'缺素材'}));});
+  const first=await f.service.dispatch(a,input(`operation_auto_hold_${hold}_1`,'UI 原稿目标'),key);await f.service.resume(a,key);
+  await waitFor(async()=>(await f.service.task(a,first.taskId!)).jobs[0].state==='failed');
+  if(hold==='stop')await f.service.cancelTask(a,first.taskId!,key);
+  if(hold==='local')await f.store.mutate(d=>(d.executionTasks??=[]).push({...a,id:'protected-local',conversationId:first.taskId!,status:'failed',executionSafetyHold:'command_unconfirmed'} as any));
+  await f.service.direct(a,first.taskId!,input(`operation_auto_hold_${hold}_2`,hold==='question'?'现在怎么了？':'补充素材，请继续写'),key);
+  await f.service.resume(a,key);assert.equal(executions,1,hold);assert.equal((await f.service.task(a,first.taskId!)).conversation.workPaused,true,hold);
+ }
+});
+
+test('a real partial step-limit with an old verified Notion save resumes on named new material, reads the new source first and updates the same page once',async()=>{
+ const f=fixture(),parentId='a'.repeat(32),pageId='b'.repeat(32);let body='旧的待素材说明',writes=0,recalls=0,workerCalls=0,selected:readonly string[]|undefined;
+ const original=await f.service.dispatch(a,input('operation_step_material_1','UI 原目标：写一篇小小启动器专栏'),key);
+ await f.store.mutate(d=>{
+  d.knowledgeConnections.push({id:'notion-material',workspaceId:a.workspaceId,provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:a.userId,authorizedAt:'now',parentId}},{id:'getnote-material',workspaceId:a.workspaceId,provider:'getnote',status:'connected',clientId:'test'} as any);
+  const task=d.conversations.find(c=>c.id===original.taskId)!,op=d.chatOperations!.find(o=>o.conversationId===task.id&&o.workRun)!,run=op.workRun!;
+  task.workPaused=true;task.workPauseReason='failed';task.notionDocument={connectionId:'notion-material',grantId:'grant',parentId,pageId};
+  op.status='failed';run.state='failed';run.resultOutcome='partial';run.failureCode='task_step_limit';run.notionTarget={...task.notionDocument,referenceIds:[]};run.notionReceipt={state:'verified',pageId,digest:'c'.repeat(64),expectedDigest:'c'.repeat(64)};
+  run.contract={version:1,requiredFeatureIds:[],requiredTools:['knowledge_search','save_notion_draft'],knowledgeSourceIds:['notion-material'],execution:'model'};
+  run.sources=[{id:'notion-material',binding:sourceBinding(d.knowledgeConnections[0])}];
+  run.steps=[{key:'old-save',namespace:'worker',tool:'save_notion_draft',label:'旧说明',effect:'external_write',state:'completed',output:{state:'verified',pageId},updatedAt:'2026-10-25T01:00:00Z'}];
+ });
+ const mcp={readDocument:async()=>({text:body}),callDocumentTool:async(_w:string,_c:string,_g:string,_u:string,name:string,args:any)=>{
+  assert.equal(name,'notion-update-page');assert.equal(args.page_id??args.pageId,pageId);writes++;for(const update of args.content_updates)body=body.replace(update.old_str,update.new_str);return {};
+ }} as unknown as NotionMcpService;
+ const finalBody='小小启动器把复杂操作收在一个入口：插上后先定位手边材料，再把关键决定写成可交付的说明。';
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async(_ws,_query,_top,ids)=>{recalls++;selected=ids;return {status:'used',chunks:[{title:'小小启动器',content:'把复杂操作收在一个入口，插上就能找资料并完成工作。'}],failures:[]};}},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages)=>{
+  if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('按新补充的素材接着写。'):{...answer(''),toolCalls:[{id:'continue',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:original.taskId,title:'小小启动器专栏',instruction:'按新补充材料继续完成这篇专栏',executorId:'general'})}}]};
+  workerCalls++;
+  if(workerCalls===2)return {...answer(''),toolCalls:[{id:'source-first',type:'function',function:{name:'knowledge_search',arguments:JSON.stringify({query:'小小启动器'})}}]};
+  if(workerCalls===1){assert.equal(writes,0);return {...answer(''),toolCalls:[{id:'premature-save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({old_str:'旧的待素材说明',new_str:finalBody,final:true})}}]};}
+  assert.equal(workerCalls,3,'final verified write must not buy another model round or repeat save');assert.equal(recalls,1);
+  return {...answer(''),toolCalls:[{id:'final-save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({old_str:'旧的待素材说明',new_str:finalBody,final:true})}}]};
+ }});
+ const reply=await service.dispatch(a,{...input('operation_step_material_2','得到大脑有小小启动器内容，按这个写。不要新建重复页面，继续改原文'),boundTaskId:original.taskId,outputDestination:'chat'},key);
+ assert.equal(reply.taskId,original.taskId);assert.equal((await service.task(a,original.taskId!)).conversation.workPaused,false);
+ await Promise.all([service.resume(a,key),service.resume(a,key)]);await waitFor(async()=>['failed','completed'].includes((await service.task(a,original.taskId!)).jobs.at(-1)!.state));
+ const detail=await service.task(a,original.taskId!);assert.equal(detail.jobs.at(-1)!.state,'completed',JSON.stringify({job:detail.jobs.at(-1),writes,recalls,workerCalls,selected,body,trace:(await f.store.read()).contextTraces.at(-1)?.executionSteps}));assert.deepEqual(selected,['getnote-material']);assert.equal(writes,1);assert.equal(body,finalBody);assert.equal(detail.jobs.length,2);assert.equal(detail.jobs[0].state,'failed');assert.equal(detail.jobs.at(-1)!.notionReceipt?.state,'verified');assert.equal(workerCalls,3);
+ assert.match((await service.state(a)).conversation!.messages.at(-1)!.content,new RegExp(pageId));
+});
+
+test('plain continue retains the unfinished feature contract and still checks the current release before admitting work',async()=>{
+ const f=fixture();await f.store.mutate(d=>{
+  const values={name:'合成网页',author:'ONE',description:'合成能力',instructions:'仅测试',limitations:'不联网',integration:'question_answer' as const,knowledgeMode:'none' as const,tools:[{id:'oneHtml',description:'网页'}]};const version={version:1,values,evidence:'test',approvedBy:'a',approvedAt:'now'};
+  d.settings.officialFeatures=[{id:'continuation-page',revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:'continuation-release',version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}}] as any;
+ });
+ const first=await f.service.dispatch(a,input('operation_contract_continue_1','UI 原目标'),key);
+ await f.store.mutate(d=>{const task=d.conversations.find(c=>c.id===first.taskId)!,run=d.chatOperations!.find(o=>o.conversationId===task.id&&o.workRun)!.workRun!,feature=d.settings.officialFeatures![0];
+  task.workPaused=true;task.workPauseReason='partial';run.state='failed';run.resultOutcome='partial';run.steps=[];run.instruction='整理昨天的活动安排';run.runtimeContext=runtimeContext(d,a,'2026-10-24T01:00:00Z');run.skills=[{id:feature.id,releaseId:feature.release!.id,version:1,values:feature.current!.values}];run.contract={version:1,requiredFeatureIds:[feature.id],requiredTools:['oneHtml'],execution:'model'};
+ });
+ await f.service.direct(a,first.taskId!,input('operation_contract_continue_2','继续干'),key);
+ let detail=await f.service.task(a,first.taskId!);assert.equal(detail.conversation.workPaused,false);
+ const run=(await f.store.read()).chatOperations!.filter(o=>o.conversationId===first.taskId&&o.workRun).at(-1)!.workRun!;
+ assert.deepEqual(run.contract!.requiredFeatureIds,['continuation-page']);assert.deepEqual(run.contract!.requiredTools,['oneHtml']);assert.equal(run.skills[0].releaseId,'continuation-release');
+ assert.equal(run.runtimeContext!.today,'2026-10-24');assert.match(run.instruction,/整理昨天的活动安排/,'plain continue keeps the original pending goal and its relative-date origin');
+ await f.store.mutate(d=>{d.settings.officialFeatures![0].status='draft';d.settings.officialFeatures![0].release=undefined;});
+ await assert.rejects(()=>f.service.direct(a,first.taskId!,input('operation_contract_continue_3','继续干'),key),/功能未开放|已下架|版本已变更/);
+ detail=await f.service.task(a,first.taskId!);assert.equal(detail.jobs.length,2,'a revoked feature cannot silently execute on old permissions');
+});
+
+test('generic missing material in a Notion task returns needs-input once without forcing a placeholder, then supplied text resumes and saves',async()=>{
+ const f=fixture(),parentId='a'.repeat(32),pageId='d'.repeat(32);let calls=0,writes=0,body='';
+ await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion-missing',workspaceId:a.workspaceId,provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:a.userId,authorizedAt:'now',parentId}}));
+ const mcp={readDocument:async()=>({text:body||'保存目录'}),callDocumentTool:async(_w:string,_c:string,_g:string,_u:string,name:string,args:any)=>{assert.equal(name,'notion-create-pages');writes++;body=args.pages[0].content;return {pages:[{id:pageId}]};}} as unknown as NotionMcpService;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{assert.fail('user supplied all material and declined retrieval');}},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages)=>{
+  if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('我来处理。'):{...answer(''),toolCalls:[{id:'delegate',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'启动器说明',instruction:'缺少素材先询问；拿到资料后写说明并保存到Notion。不查知识库。',executorId:'general'})}}]};
+  calls++;
+  if(calls===1)return answer(JSON.stringify({outcome:'needs_input',content:'还缺启动器的素材。请直接补充一两句素材，我接着写。',summary:'还缺启动器的素材，请补充一两句。'}));
+  assert.equal(calls,2,'missing input must not buy four empty attempts, and final write needs no extra acknowledgement');
+  assert.match(JSON.stringify(messages),/小小启动器让用户插上就能开始工作/);
+  return {...answer(''),toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({title:'启动器说明',content:'小小启动器让用户插上就能开始工作，把资料、工具和交付连接起来。',final:true})}}]};
+ }});
+ const accepted=await service.dispatch(a,{...input('operation_generic_material_1','请写启动器说明并保存到Notion，缺素材先问我，不查知识库。'),outputDestination:'notion'},key);await service.resume(a,key);
+ await waitFor(async()=>(await service.task(a,accepted.taskId!)).jobs[0].state==='failed');
+ let detail=await service.task(a,accepted.taskId!);assert.equal((await f.store.read()).chatOperations!.find(op=>op.conversationId===accepted.taskId&&op.workRun)!.workRun!.resultOutcome,'needs_input');assert.equal(calls,1);assert.equal(writes,0);
+ assert.match(detail.conversation.messages.at(-1)!.content,/请直接补充一两句素材/);
+ const missingInputReport=await service.state(a);
+ assert.match(missingInputReport.conversation!.messages.at(-1)!.content,/启动器的素材/);
+ assert.doesNotMatch(missingInputReport.conversation!.messages.at(-1)!.content,/剩下的内容还没做好|确认启动/);
+ await service.direct(a,accepted.taskId!,{...input('operation_generic_material_2','素材：小小启动器让用户插上就能开始工作，把资料、工具和交付连接起来。按这个写。'),outputDestination:'chat'},key);
+ assert.equal((await service.task(a,accepted.taskId!)).conversation.workPaused,false);
+ await service.resume(a,key);await waitFor(async()=>(await service.task(a,accepted.taskId!)).jobs.at(-1)!.state==='completed');
+ detail=await service.task(a,accepted.taskId!);assert.equal(writes,1);assert.equal(calls,2);assert.equal(detail.jobs.at(-1)!.notionReceipt!.state,'verified');
 });

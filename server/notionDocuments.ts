@@ -168,6 +168,7 @@ export class NotionDocuments {
     for (const id of readOnly?[]:target.referenceIds) refs.push({ id, content: notionBody(await this.mcp.readDocument(s.workspaceId, id)).slice(0, 12000) });
     const current = target.pageId && !readOnly ? notionBody(await this.mcp.readDocument(s.workspaceId, target.pageId)) : undefined;
     return { references: refs, currentDocument: current, pageId: target.pageId, readOnly,
+      ...(!readOnly?{writingPolicy:'完整文章先组织好整稿再保存，不把一段中间稿当交付。修订整篇时 old_str 可使用本轮完整原文、new_str 写完整修订稿；局部修改仅用于用户明确指定的局部要求。每次保存已回读核对后可继续修改同页；只有已完成本轮全部写作要求的最后一次保存才传 final:true，中间稿不传。'}:{}),
       ...(sameTitleCheckRequested(originalRequest)?{creationPolicy:'save_notion_draft 会先读取已选父页面的完整子页面列表核对同名；内容一致则回读并复用，不新建。目录不完整或同名内容不同会停止，不覆盖。以工具返回的 duplicateCheck 为准。'}:{}),
       location: `https://www.notion.so/${target.pageId || target.parentId}`,
       parentLocation: `https://www.notion.so/${target.parentId}` };
@@ -185,38 +186,48 @@ export class NotionDocuments {
   }
   tool(s: WorkScope, opId: string, cid: string, job: WorkRun, verify: () => Promise<void>, current?: string, originalRequest = ''): OrchestrationTool {
     const target = job.notionTarget!;
-    return { name: 'save_notion_draft',label:'保存到 Notion',effect:'external_write', description: '由 ONE 写入已授权的 Notion 草稿。首次提供 title/content；继续修改只能提供 old_str/new_str，精确替换本轮读到的一段原文，不修改其他页面。只有 verified 回执才表示已保存。每轮只保存一次。', run: async () => { throw new NotionDocumentError('参数无效'); },
-      structured: { schema: { type: 'object', additionalProperties: false, properties: { title: { type: 'string', maxLength: 200 }, content: { type: 'string', maxLength: 50000 }, old_str: { type: 'string', maxLength: 50000 }, new_str: { type: 'string', maxLength: 50000 } } },
-        validate: value => {
+    let currentBody=current;
+    let validateSave:(value:unknown)=>unknown;
+    return { name: 'save_notion_draft',label:'保存到 Notion',effect:'external_write',checkpointReuse:'arguments',checkpointScope:opId,
+      description: '由 ONE 写入已授权的 Notion 草稿。首次提供 title/content；后续保存只提供 old_str/new_str，精确替换最新已回读的一处原文，可用整篇原文替换完整修订稿。只有 verified 回执才表示这次保存成功；成功后可继续修改同一页，不重复创建。请先完成必需资料查找、组织完整正文，最后一次完成本轮全部要求的保存传 final:true；中间稿不传 final。不要用局部段落冒充完整文章。', run: async () => { throw new NotionDocumentError('参数无效'); },
+      structured: { schema: { type: 'object', additionalProperties: false, properties: { title: { type: 'string', maxLength: 200 }, content: { type: 'string', maxLength: 50000 }, old_str: { type: 'string', maxLength: 50000 }, new_str: { type: 'string', maxLength: 50000 }, final:{type:'boolean',description:'仅当写入的是完成本轮全部写作要求的最终稿时为true，不能为中间稿或未完成整篇的局部修改标记true。'} } },
+        validate: validateSave = value => {
           if(readOnlyRequest(originalRequest))throw new NotionDocumentError('这轮只读，不会修改或保存文章。');
           const v = value as any;
-          if (!v || typeof v !== 'object' || Object.keys(v).some(k => !['title','content','old_str','new_str'].includes(k))) throw new NotionDocumentError('保存参数无效');
+          if (!v || typeof v !== 'object' || Object.keys(v).some(k => !['title','content','old_str','new_str','final'].includes(k))||v.final!==undefined&&typeof v.final!=='boolean') throw new NotionDocumentError('保存参数无效');
           if (target.pageId) {
-            if (v.content !== undefined || v.title !== undefined || !current || typeof v.old_str !== 'string' || !v.old_str || current.split(v.old_str).length !== 2 || !v.new_str?.trim()) throw new NotionDocumentError('请精确选择一处原文再修改，不支持删除整篇内容');
+            if (v.content !== undefined || v.title !== undefined || !currentBody || typeof v.old_str !== 'string' || !v.old_str || currentBody.split(v.old_str).length !== 2 || !v.new_str?.trim()) throw new OrchestrationInputError('请用最新已回读正文中的一处唯一原文提供 old_str/new_str；首次保存后继续修改同一页，不再提供 title/content。整稿修订可使用完整原文替换。');
             safeArticle(v.old_str); safeArticle(v.new_str);
             const exact=quotedReplacement(originalRequest);
-            if(exact&&(current.split(exact.old).length!==2||current.replace(v.old_str,v.new_str)!==current.replace(exact.old,exact.replacement)))
+            if(exact&&(currentBody.split(exact.old).length!==2||currentBody.replace(v.old_str,v.new_str)!==currentBody.replace(exact.old,exact.replacement)))
               throw new OrchestrationInputError('用户明确引用了要替换的原文和新文字。请逐字执行这一处替换，其余文字、标点和换行保持原样；原文不唯一时先核对，不要猜测或扩大修改。');
           } else { if (v.old_str !== undefined || v.new_str !== undefined || typeof v.title !== 'string' || !v.title.trim() || v.title.length > 200) throw new NotionDocumentError('草稿标题无效'); safeArticle(v.content); }
           return v;
         }, run: async value => {
           if(readOnlyRequest(originalRequest))throw new NotionDocumentError('这轮只读，不会修改或保存文章。');
-          const v = value as any;
-          await verify(); this.assertTarget(await this.store.read(), s, target);
-          if (target.pageId && notionBody(await this.mcp.readDocument(s.workspaceId, target.pageId)) !== current) throw new NotionDocumentError('Notion 文档已被修改，请重新读取后再继续；本轮没有覆盖原文');
-          const expected = target.pageId ? current!.replace(v.old_str, v.new_str) : v.content;
+          await verify();const beforeWrite=await this.store.read();this.assertTarget(beforeWrite,s,target);
+          const active=beforeWrite.chatOperations?.find(o=>o.id===opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId&&o.conversationId===cid)?.workRun;
+          if(active?.state!=='running'||active.notionReceipt&&active.notionReceipt.state!=='verified')throw new NotionDocumentError('本轮保存已经提交或任务已停止，请查看原回执，不会重复写入');
+          const v = validateSave(value) as any;
+          if(beforeWrite.chatOperations?.some(o=>o.id!==opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId&&o.conversationId===cid&&o.workRun&&(
+            o.workRun.notionReceipt&&o.workRun.notionReceipt.state!=='verified'&&!['not_sent','rejected'].includes(o.workRun.notionReceipt.delivery||'')||
+            o.workRun.steps?.some(step=>step.tool==='save_notion_draft'&&step.effect==='external_write'&&step.state==='started')&&o.workRun.notionReceipt?.state!=='verified'&&!['not_sent','rejected'].includes(o.workRun.notionReceipt?.delivery||'')
+          )))throw new NotionDocumentError('上次 Notion 保存还没确认，请先核对原页面；没有重复写入。');
+          if (target.pageId && notionBody(await this.mcp.readDocument(s.workspaceId, target.pageId)) !== currentBody) throw new NotionDocumentError('Notion 文档已被修改，请重新读取后再继续；本轮没有覆盖原文');
+          const expected = target.pageId ? currentBody!.replace(v.old_str, v.new_str) : v.content;
           // Persist before sending. Duplicate calls, disconnects and restarts
           // cannot turn a possibly-applied write into an automatic retry.
           await this.store.mutate(d => {
             this.assertTarget(d, s, target);
             const o = d.chatOperations?.find(o => o.id === opId && o.workspaceId === s.workspaceId && o.userId === s.userId && o.conversationId === cid);
-            if (o?.workRun?.state !== 'running' || o.workRun.notionReceipt) throw new NotionDocumentError('本轮保存已经提交或任务已停止，请查看原回执，不会重复写入');
-            o.workRun.notionReceipt = { state: 'pending', delivery: 'not_sent', pageId: target.pageId, url: target.url, expectedDigest: hash(normalized(expected)) };
+            if (o?.workRun?.state !== 'running' || o.workRun.notionReceipt&&o.workRun.notionReceipt.state!=='verified') throw new NotionDocumentError('本轮保存已经提交或任务已停止，请查看原回执，不会重复写入');
+            o.workRun.notionReceipt = { state: 'pending', delivery: 'not_sent', pageId: target.pageId, url: target.url, expectedDigest: hash(normalized(expected)),final:v.final===true };
           });
           const record = async (receipt: NonNullable<WorkRun['notionReceipt']>) => this.store.mutate(d => {
             const o = d.chatOperations?.find(o => o.id === opId && o.workspaceId === s.workspaceId && o.userId === s.userId && o.conversationId === cid);
             if (!o?.workRun) throw new NotionDocumentError('保存回执不存在');
             o.workRun.notionReceipt = { ...o.workRun.notionReceipt, ...receipt };
+            if(receipt.pageId){target.pageId=receipt.pageId;target.url=receipt.url;if(o.workRun.notionTarget){o.workRun.notionTarget.pageId=receipt.pageId;o.workRun.notionTarget.url=receipt.url;}}
             const c = d.conversations.find(c => c.id === cid && c.workspaceId === s.workspaceId && c.userId === s.userId);
             if (c?.notionDocument && receipt.pageId) { c.notionDocument.pageId = receipt.pageId; c.notionDocument.url = receipt.url; }
             job.notionReceipt = { ...o.workRun.notionReceipt };
@@ -245,8 +256,8 @@ export class NotionDocuments {
                 pageId=matches[0].id;const url=`https://www.notion.so/${pageId}`;
                 const fresh=await this.store.read();this.assertTarget(fresh,s,target);
                 if(fresh.chatOperations?.find(o=>o.id===opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId)?.workRun?.state!=='running')throw new NotionPreflightError('这轮已经停下，没有新建或修改文档。');
-                await record({state:'verified',pageId,url,digest:hash(actual),delivery:undefined});
-                return {state:'verified',url,pageId,reused:true,duplicateCheck:'matched_existing',message:'已核对保存位置并回读同名便笺，内容一致，复用原页面，没有重复新建。'};
+                await record({state:'verified',pageId,url,digest:hash(actual),delivery:undefined});currentBody=actual;
+                return {state:'verified',url,pageId,digest:hash(actual),expectedDigest:hash(normalized(expected)),final:v.final===true,...(actual!==expected?{currentDocument:actual}:{}),reused:true,duplicateCheck:'matched_existing',message:'已核对保存位置并回读同名便笺，内容一致，复用原页面，没有重复新建。后续替换以 currentDocument（如有）为最新原文。'};
               }
               duplicateCheck='no_same_title_in_parent';
             }
@@ -283,8 +294,9 @@ export class NotionDocuments {
             failureCode = 'readback_mismatch';
             if (normalized(actual) !== normalized(expected)) throw new Error('readback mismatch');
             await record({ state: 'verified', pageId, url, digest: hash(actual), failureCode: undefined, delivery: undefined, diagnostic: undefined });
+            currentBody=actual;
             await verify();
-            return { state: 'verified', url, pageId, ...(duplicateCheck?{duplicateCheck}:{}), message: `${duplicateCheck?'已核对保存位置，没有同名便笺；':''}已保存并回读核对；可打开 Notion。后续修改继续这一篇。` };
+            return { state: 'verified', url, pageId, digest:hash(actual),expectedDigest:hash(normalized(expected)),final:v.final===true,...(actual!==expected?{currentDocument:actual}:{}), ...(duplicateCheck?{duplicateCheck}:{}), message: `${duplicateCheck?'已核对保存位置，没有同名便笺；':''}已保存并回读核对；可打开 Notion。后续修改继续这一篇，以 currentDocument（如有）为最新原文，否则沿用刚写入的正文；只有完成整份要求的最终稿才标记 final:true。` };
           } catch (error) {
             if(checkKey&&failureCode==='write_unconfirmed'&&(await this.store.read()).chatOperations?.find(o=>o.id===opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId)?.workRun?.notionReceipt?.delivery==='not_sent'){
               const message=error instanceof NotionPreflightError?error.message:'本轮保存前的检查没能完成，还没有发送写入请求。';
