@@ -1,7 +1,7 @@
 import { canReadKnowledge } from "./enterprisePolicy.js";
 import type { Store } from "./db.js";
 import { executionReceipts } from "./executionService.js";
-import { pendingTaskResults, unreviewedTaskResults, appendTaskResultReport, acknowledgeTaskResults, acknowledgeAllTaskResults, markTaskResultsReported, taskResultIdsReportedInMessage, taskResultConversationContext, captureTaskResults, capturedTaskResultsForReport, taskResultReportContent, taskReportReplyPending, taskResultIsLatestAttempt, visibleTaskResultReceipts, type TaskResultCapture } from './taskResultInbox.js';
+import { pendingTaskResults, unreviewedTaskResults, appendTaskResultReport, acknowledgeTaskResults, acknowledgeAllTaskResults, markTaskResultsReported, taskResultIdsReportedInMessage, taskResultConversationContext, captureTaskResults, capturedTaskResultsForReport, taskResultReportContent, taskReportReplyPending, taskResultIsLatestAttempt, visibleTaskResultReceipts, initializeTaskResultReporting, type TaskResultCapture } from './taskResultInbox.js';
 import { taskRecovery } from '../src/taskRecovery.js';
 import {latestTaskResults, pendingConversationTaskResults} from './taskResultInbox.js';
 import {ChatImageGatewayError} from './responsesImageGateway.js';
@@ -320,9 +320,10 @@ export class CoordinatorService {
    * picked up by the ordinary state refresh. A busy dispatcher wins the race. */
   private async deliverIdleTaskResults(s: WorkScope) {
     const db = await this.store.read(); featureMember(db, s);
-    if (!db.conversations.some(c => own(c, s) && c.coordinatorMain && !c.archived)
-      || !pendingConversationTaskResults(db, s, {count: 1}).length || taskReportReplyPending(db, s)) return;
-    await this.store.mutate(d => { featureMember(d, s); appendTaskResultReport(d, s); });
+    const main=db.conversations.find(c=>own(c,s)&&c.coordinatorMain&&!c.archived);
+    if(!main)return;
+    if(main.taskResultReportSince&&(!pendingConversationTaskResults(db, s, {count: 1}).length || taskReportReplyPending(db, s)))return;
+    await this.store.mutate(d => { featureMember(d, s); initializeTaskResultReporting(d,s); appendTaskResultReport(d, s); });
   }
   async state(s: WorkScope, page = 1) {
     await this.deliverIdleTaskResults(s);
@@ -504,9 +505,13 @@ export class CoordinatorService {
           messages: [],
           createdAt: time,
           updatedAt: time,
+          taskResultReportSince:time,
         };
         db.conversations.push(c);
       }
+      // Initialize before appending the new user turn, so a just-finished
+      // result cannot be overtaken by that new message on a legacy main.
+      initializeTaskResultReporting(db,s);
       return c.id;
     });
   }

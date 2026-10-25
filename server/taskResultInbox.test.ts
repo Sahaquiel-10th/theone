@@ -4,7 +4,7 @@ import type { Attachment, Conversation, Database, ExecutionTask } from './types.
 import type { ChatOperation } from './chatOperations.js';
 import type { WorkRun } from './coordinatorTypes.js';
 import { CoordinatorService } from './coordinatorService.js';
-import { acknowledgeTaskResults, acknowledgeAllTaskResults, appendTaskResultReport, markTaskResultsReported, pendingTaskResults, unreviewedTaskResults, taskResultIdsReportedInMessage, taskResultConversationContext, captureTaskResults, capturedTaskResultsForReport } from './taskResultInbox.js';
+import { acknowledgeTaskResults, acknowledgeAllTaskResults, appendTaskResultReport, markTaskResultsReported, pendingTaskResults, unreviewedTaskResults, taskResultIdsReportedInMessage, taskResultConversationContext, captureTaskResults, capturedTaskResultsForReport, initializeTaskResultReporting } from './taskResultInbox.js';
 import { saveExecutionReceipt } from './executionService.js';
 import {latestTaskResults,pendingConversationTaskResults} from './taskResultInbox.js';
 
@@ -192,7 +192,7 @@ test('welcome guide is successful only with an owned ready image and its server 
   assert.equal('nickname' in reply.attachments![0],false);
 });
 function conversation(id: string, scope = a, main = false): Conversation {
-  return { ...scope, id, modelId: 'worker', title: id, coordinatorMain: main, archived: false, messages: [], createdAt: timestamp, updatedAt: timestamp };
+  return { ...scope, id, modelId: 'worker', title: id, coordinatorMain: main, ...(main?{taskResultReportSince:timestamp}:{}), archived: false, messages: [], createdAt: timestamp, updatedAt: timestamp };
 }
 function fixture() {
   return { users: [{ id: 'a', enabled: true }, { id: 'b', enabled: true }], workspaces: [{ id: 'wa', status: 'active' }, { id: 'wb', status: 'active' }],
@@ -325,6 +325,60 @@ function service(db: Database) {
   return new CoordinatorService({ read: async () => db, mutate: async fn => fn(db) },
     { recallWithDiagnostics: async () => ({ chunks: [], failures: [], status: 'no_match' }) });
 }
+test('legacy auto-report origin excludes the observed 32-task history flood, retains the latest real handoff and is persisted once',async()=>{
+  const db=fixture(),main=db.conversations.find(c=>c.id==='main-a')!;delete main.taskResultReportSince;
+  main.messages.push({id:'latest-real-request',role:'user',content:'用昨天素材写专栏',createdAt:'2026-10-25T01:00:00Z'});
+  for(let i=0;i<32;i++){
+    const item=cloud(db,`legacy-qa-${i}`,a,{state:'failed',text:'旧QA失败'});
+    item.operation.createdAt=item.operation.updatedAt='2026-10-01T01:00:00Z';item.operation.workRun!.unread=i%2===0;
+  }
+  const column=cloud(db,'latest-column',a,{state:'failed',outcome:'needs_input',text:'还缺昨天素材，正文还没写成。请补充几句原话。'});
+  column.operation.createdAt='2026-10-25T01:00:01Z';column.operation.updatedAt='2026-10-25T01:05:00Z';
+  const coordinator=service(db);await Promise.all([coordinator.state(a),coordinator.state(a),coordinator.state(a)]);
+  assert.equal(main.taskResultReportSince,'2026-10-25T01:00:00Z');
+  assert.equal(main.messages.filter(m=>m.role==='assistant').length,1);
+  assert.match(main.messages.at(-1)!.content,/latest-column.*需要你确认/);assert.doesNotMatch(main.messages.at(-1)!.content,/legacy-qa|旧QA/);
+  for(let i=0;i<6;i++){
+    const snapshot=await coordinator.state(a);
+    assert.ok(snapshot.notices.every(notice=>!notice.id.startsWith('legacy-qa-')),'excluded history must not linger in notification bubbles');
+  }
+  assert.equal(main.messages.filter(m=>m.role==='assistant').length,1,'ordinary polls cannot drain the older history into chat');
+  const old=db.chatOperations!.filter(o=>o.id.startsWith('legacy-qa-'));
+  assert.equal(old.length,32);assert.ok(old.every(o=>!o.workRun!.reportedToCoordinatorAt));
+  assert.equal(pendingTaskResults(db,a,{count:50}).length,32,'history remains real, unreported and available for explicit inspection');
+  assert.equal(db.conversations.find(c=>c.id==='main-b')!.messages.length,0);
+});
+
+test('the fixed origin never advances: early-started parallel work and results before a later message still return days later',async()=>{
+  const db=fixture(),main=db.conversations.find(c=>c.id==='main-a')!;delete main.taskResultReportSince;
+  main.messages.push({id:'start',role:'user',content:'本轮工作',createdAt:'2026-10-25T01:00:00Z'});
+  initializeTaskResultReporting(db,a,'2026-10-25T01:00:01Z');
+  const parallel=cloud(db,'early-parallel',a,{state:'running'});parallel.operation.createdAt='2026-10-01T01:00:00Z';
+  parallel.operation.workRun!.state='completed';parallel.operation.workRun!.resultOutcome='completed';parallel.operation.updatedAt='2026-10-26T01:00:00Z';
+  parallel.task.messages.push({id:parallel.operation.workRun!.resultMessageId!,role:'assistant',content:'较早开始的任务刚做完',createdAt:'2026-10-26T01:00:00Z'});
+  main.messages.push({id:'later-user',role:'user',content:'继续聊新话题',createdAt:'2026-10-26T01:00:01Z'});
+  initializeTaskResultReporting(db,a,'2026-10-28T01:00:00Z');
+  assert.equal(main.taskResultReportSince,'2026-10-25T01:00:00Z');
+  const report=appendTaskResultReport(db,a,{timestamp:'2026-10-28T01:00:00Z'});
+  assert.deepEqual(report.results.map(r=>r.id),['early-parallel']);assert.match(main.messages.at(-1)!.content,/较早开始的任务刚做完/);
+  assert.equal(appendTaskResultReport(db,a).results.length,0);
+});
+
+test('an empty main starts automatic reporting now while explicit history reporting stays available',()=>{
+  const db=fixture(),main=db.conversations.find(c=>c.id==='main-a')!;delete main.taskResultReportSince;
+  cloud(db,'older-unreported',a,{state:'failed',text:'历史问题'});
+  initializeTaskResultReporting(db,a,'2026-10-25T01:00:00Z');
+  assert.equal(pendingConversationTaskResults(db,a).length,0);assert.equal(appendTaskResultReport(db,a).results.length,0);
+  assert.deepEqual(appendTaskResultReport(db,a,{ids:['older-unreported']}).results.map(r=>r.id),['older-unreported']);
+});
+
+test('local shell temporary-file failures get a short saving next step, not raw command diagnostics',()=>{
+  const db=fixture(),execution=local(db,'shell-failed');execution.status='failed';
+  execution.lastError='首次写入命令因系统拒绝创建 here-document 临时文件而失败；/bin/zsh -lc ...';execution.finalResponse='目标已存在，未读取。';
+  const report=appendTaskResultReport(db,a);
+  assert.match(report.results[0].brief!,/本机保存这一步没成功.*先核对目标文件/);
+  assert.doesNotMatch(db.conversations.find(c=>c.id==='main-a')!.messages[0].content,/here-document|临时文件|\/bin\/zsh|首次写入命令/);
+});
 test('coordinator snapshot keeps reported but unreviewed results, correct badge count and all batch links', async () => {
   const db = fixture(), own = cloud(db, 'one', a, { text: '第一任务结果' }), second = cloud(db, 'two', a, { text: '第二任务结果' });
   cloud(db, 'other', b, { text: 'foreign secret' });

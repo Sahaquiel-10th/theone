@@ -2688,6 +2688,7 @@ test('next answer reports the captured old local round after the same execution 
   const f=fixture(),stamp=new Date().toISOString();
   const {saveExecutionReceipt}=await import('./executionService.js');
   await f.store.mutate(d=>{
+    d.conversations.push({...a,id:'main-before-local-round',coordinatorMain:true,taskResultReportSince:stamp,title:'与 ONE 对话',modelId:'worker',archived:false,messages:[],createdAt:stamp,updatedAt:stamp});
     d.conversations.push({...a,id:'same-local-conversation',title:'连续本机文档',modelId:'worker',archived:false,messages:[],createdAt:stamp,updatedAt:stamp});
     (d.executionTasks??=[]).push({...a,id:'same-local-execution',conversationId:'same-local-conversation',sourceMessageId:'original',provider:'codex',status:'completed',reportRound:0,finalResponse:'OLD_ROUND_RESULT：创建 /QA/hello.md，回读 hello',instruction:'创建文档',deviceId:'fixture-key',targetName:'/QA',createdAt:stamp,updatedAt:stamp,completedAt:stamp});
     saveExecutionReceipt(d,d.executionTasks[0]);

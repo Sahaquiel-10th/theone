@@ -35,6 +35,8 @@ export type MessageRecord = Required<Pick<Message, "id" | "role" | "content" | "
 export type Conversation = {
   notionDocument?: { connectionId: string; grantId: string; parentId: string; pageId?: string; url?: string };
   coordinatorMain?: boolean; executorProfileId?: string; workPaused?: boolean;
+  /** One-time automatic result-delivery origin; never advances with new chat messages. */
+  taskResultReportSince?: string;
   id: string; workspaceId: string; userId: string; modelId: string; agentId?: string; folderId?: string;
   archived: boolean; title: string; messages: Message[]; createdAt: string; updatedAt: string;
 };

@@ -62,6 +62,8 @@ function resultBrief(outcome: TaskResultOutcome, primary: string | undefined, co
   const sentence = (value: string) => clip(value.split(/(?<=[。！？])/).slice(0, 2).join(''), 180);
   if (outcome === 'completed' || outcome === 'returned') return useful ? sentence(useful) : '结果已经返回，可以打开看看。';
   if (outcome === 'cancelled') return '已经停下了；之前保存的内容还在，不会自动撤销或重新执行。';
+  if (/here-document|(?:拒绝|无法|未能|不能)[^。\n]{0,20}(?:创建|写入)[^。\n]{0,20}临时文件|(?:命令执行|执行命令)[^。\n]{0,20}(?:失败|报错)/i.test(raw))
+    return '本机保存这一步没成功；先核对目标文件，再继续未完成部分，原文件不会自动覆盖。';
   if (/没有找到能确认属于这一天|日期都?对不上|(?:缺少|没有|没找到|还没找到)[^。\n]{0,30}(?:那天|昨天|当日|所需日期)[^。\n]{0,30}(?:素材|记录|内容)|(?:昨天|那天)[^。\n]{0,50}(?:没有|没找到)/.test(raw))
     return '还没找到能确认属于所需日期的素材，正文还没写成。把那天的几句原话或相关记录发给我，就能接着写。';
   const nextHeading = raw.search(/(?:需要你给我的一步|需要你补充|下一步)[：: \t]*\n/);
@@ -201,17 +203,33 @@ function bounded(results: TaskResultReceipt[], limits: TaskResultLimits) {
 export function pendingTaskResults(db: Database, scope: TaskResultScope, limits: TaskResultLimits = {}) {
   return bounded(allResults(db, scope, Math.max(100, Math.min(limits.summaryChars ?? 1200, 6000))).filter(r => !r.reported), limits);
 }
+function reportMain(db:Database,scope:TaskResultScope){return db.conversations.find(c=>own(c,scope)&&c.coordinatorMain&&!c.archived);}
+function initialReportSince(main:Conversation,now:string){
+  return main.taskResultReportSince??main.messages.filter(m=>m.role==='user').at(-1)?.createdAt??now;
+}
+/** Call only inside Store.mutate. Existing task history is neither removed nor
+ * marked reported; the one-time origin only prevents legacy backlog flooding. */
+export function initializeTaskResultReporting(db:Database,scope:TaskResultScope,now=new Date().toISOString()){
+  authorize(db,scope);const main=reportMain(db,scope);if(!main)return;
+  main.taskResultReportSince??=initialReportSince(main,now);return main.taskResultReportSince;
+}
 function currentTaskResultReceipts(db: Database, scope: TaskResultScope, limits: TaskResultLimits) {
   const latest=latestAttemptSources(db,scope);
   return allResults(db,scope,Math.max(100,Math.min(limits.summaryChars??1200,6000)))
     .filter(result=>{const attempt=latest.get(result.taskId);return attempt?.source===result.source&&attempt.sourceId===result.sourceId&&attempt.round===result.round;});
 }
 export function pendingConversationTaskResults(db: Database, scope: TaskResultScope, limits: TaskResultLimits = {}) {
-  return bounded(currentTaskResultReceipts(db,scope,limits).filter(result=>!result.reported).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||b.id.localeCompare(a.id)),limits);
+  authorize(db,scope);
+  const main=reportMain(db,scope);if(!main)return [];
+  const since=Date.parse(initialReportSince(main,new Date().toISOString()));
+  return bounded(currentTaskResultReceipts(db,scope,limits).filter(result=>!result.reported&&Date.parse(result.createdAt)>=since).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||b.id.localeCompare(a.id)),limits);
 }
 /** Notification bubbles describe the current attempt, not every historical failure. */
 export function visibleTaskResultReceipts(db:Database,scope:TaskResultScope,limits:TaskResultLimits={}){
-  return bounded(currentTaskResultReceipts(db,scope,limits).filter(result=>!result.reported||!result.reviewed),limits);
+  authorize(db,scope);
+  const main=reportMain(db,scope);if(!main)return [];
+  const since=Date.parse(initialReportSince(main,new Date().toISOString()));
+  return bounded(currentTaskResultReceipts(db,scope,limits).filter(result=>(!result.reported||!result.reviewed)&&Date.parse(result.createdAt)>=since),limits);
 }
 /** The review badge persists after a result was reported in the main conversation. */
 export function unreviewedTaskResults(db: Database, scope: TaskResultScope, limits: TaskResultLimits = {}) {
@@ -329,6 +347,7 @@ export function taskReportReplyPending(db: Database, scope: TaskResultScope) {
 /** Same-transaction, idempotent delivery. An active dispatcher owns the next reply instead. */
 export function appendTaskResultReport(db: Database, scope: TaskResultScope, input: { ids?: string[]; assistantMessageId?: string; content?: string; mainConversationId?: string; timestamp?: string } = {}) {
   authorize(db, scope);
+  if(!input.ids)initializeTaskResultReporting(db,scope,input.timestamp);
   if (taskReportReplyPending(db, scope))
     return { deferred: true, results: [] as TaskResultReceipt[], messageId: undefined };
   const main = db.conversations.find(c => own(c, scope) && c.coordinatorMain && !c.archived && (!input.mainConversationId || c.id === input.mainConversationId));

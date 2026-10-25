@@ -10,6 +10,7 @@ import {applyReviewedReceipts} from './taskTransferLifecycle';
 import {mergeCoordinatorMessages, mergeCoordinatorLinks, mergeCoordinatorReceipt, seedCoordinatorReceipt, coordinatorHistoryCursor, type CoordinatorReceipt} from './coordinatorHistory';
 import {coordinatorPendingKey,coordinatorRequest, createCoordinatorRefreshQueue, forgetStoredCoordinatorOperation} from './coordinatorTransport';
 import {useCoordinatorScopedState} from './coordinatorScopedState';
+import {coordinatorDetailReadIsCurrent,coordinatorDetailRefreshPlan,coordinatorDetailVersion,type CoordinatorDetailVersion} from './coordinatorDetailRefresh';
 import type { Conversation } from "../server/types";
 import type {
   Action,
@@ -39,6 +40,7 @@ type Notice = {
   reported?: boolean;
   read?: boolean;
   outcome?: string;
+  notionReceipt?:{state:string;url?:string;error?:string;delivery?:string};
 };
 type Snapshot = {
   clientScope?: string;
@@ -122,6 +124,8 @@ export function useCoordinator(
   const directReceipts=useMemo(()=>({current:new Map<string,string>()}),[scope]);
   const receiptReads=useMemo(()=>new Map<string,Promise<void>>(),[scope]);
   const detailReads=useMemo(()=>new Map<string,Promise<Detail>>(),[scope]);
+  const detailVersions=useMemo(()=>new Map<string,CoordinatorDetailVersion>(),[scope]);
+  const detailReadRevisions=useMemo(()=>new Map<string,number>(),[scope]);
   const refreshRevision=useRef(0);
   const isCurrent=useCallback(()=>live.current&&scopeRef.current===scope,[scope]);
   const setCurrentPending=useCallback((value:string|null)=>{if(!isCurrent())return;pendingRef.current=value;setPending(value);},[isCurrent,setPending]);
@@ -133,10 +137,12 @@ export function useCoordinator(
   detailsRef.current = details;
   selectedRef.current = selected;
   const load = useCallback(
-    async (id: string,force=false) => {
+    async (id: string,force=false,observed?:CoordinatorDetailVersion) => {
       if(!isCurrent())throw new ApiError('登录账号已切换，旧页面的操作已取消',undefined,409,'SESSION_CHANGED');
       const existing=detailReads.get(id);
       if(existing&&!force)return existing;
+      const version=observed??coordinatorDetailVersion(id,[...(snapshotRef.current?.tasks??[]),...(snapshotRef.current?.transfers??[])],snapshotRef.current?.notices??[]);
+      const revision=(detailReadRevisions.get(id)??0)+1;detailReadRevisions.set(id,revision);
       const request=(async()=>{
         let detail: Detail;
         try {
@@ -146,13 +152,16 @@ export function useCoordinator(
           detail = {...(await coordinatorRequest<{conversation:Conversation}>(api,`/api/conversations/${encodeURIComponent(id)}`)),jobs: []};
         }
         if(!isCurrent())throw new ApiError('登录账号已切换，旧页面的操作已取消',undefined,409,'SESSION_CHANGED');
-        setDetails((old) => ({ ...old, [id]: detail }));
+        if(coordinatorDetailReadIsCurrent(detailReadRevisions,id,revision)){
+          detailVersions.set(id,version);
+          setDetails((old) => coordinatorDetailReadIsCurrent(detailReadRevisions,id,revision)?({ ...old, [id]: detail }):old);
+        }
         return detail;
       })();
       detailReads.set(id,request);
       try{return await request;}finally{if(detailReads.get(id)===request)detailReads.delete(id);}
     },
-    [api,detailReads,isCurrent],
+    [api,detailReads,detailVersions,detailReadRevisions,isCurrent,setDetails],
   );
   const acceptReceipt=useCallback((operation:string,status:CoordinatorReceipt)=>{
     if(!isCurrent())return;
@@ -240,27 +249,10 @@ export function useCoordinator(
         pageRef.current = Math.max(nextPage, pageRef.current);
         setPage(pageRef.current);
         setError(submissionError.current);
-        const affected = [
-          ...new Set(
-            [
-              selectedRef.current,
-              ...next.tasks
-                .filter(
-                  (t) =>
-                    t.running ||
-                    t.queued ||
-                    (detailsRef.current[t.id] &&
-                      detailsRef.current[t.id].conversation.updatedAt !==
-                        t.updatedAt),
-                )
-                .map((t) => t.id),
-              ...next.notices.map((n) => n.taskId),
-            ].filter((id): id is string => !!id),
-          ),
-        ];
+        const affected=coordinatorDetailRefreshPlan({selected:selectedRef.current,tasks:[...next.tasks,...(next.transfers??[])],notices:next.notices,details:detailsRef.current,loadedVersions:detailVersions});
         // A slow/offline detail must never freeze sending feedback or the whole polling loop.
         void Promise.all(
-          affected.map((id) => load(id).catch(() => undefined)),
+          affected.map(({id,version}) => load(id,false,version).catch(() => undefined)),
         );
         const additionalPages=Array.from({length:pageRef.current-1},(_,i)=>coordinatorRequest<Snapshot>(api,`/api/coordinator?page=${i+2}`).catch(()=>null));
         if(additionalPages.length)void Promise.all(additionalPages).then(pages=>{
@@ -289,7 +281,7 @@ export function useCoordinator(
       const failed=results.find(result=>result.status==='rejected');
       if(failed?.status==='rejected')setError(failed.reason instanceof Error?failed.reason.message:'连接暂时不可用');
     },
-    [api, enabled, isCurrent, load, readReceipt, settledReceipts, userId, pendingKey,setSnapshot,setPage,setError],
+    [api, enabled, isCurrent, load, readReceipt, settledReceipts, detailVersions, userId, pendingKey,setSnapshot,setPage,setError],
   );
   const refreshQueue=useMemo(()=>createCoordinatorRefreshQueue(performRefresh),[performRefresh]);
   const refresh=useCallback((nextPage=1)=>{

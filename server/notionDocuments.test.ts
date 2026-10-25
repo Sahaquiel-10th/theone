@@ -279,7 +279,7 @@ test('a newly verified reconciliation returns once after an earlier failure brie
   const stamp='2026-10-24T01:00:00Z';
   f.db.messages=[];f.db.executionTasks=[];f.db.attachments=[];
   Object.assign(f.db.conversations[0],{title:'原任务',messages:[],archived:false,createdAt:stamp,updatedAt:stamp});
-  f.db.conversations.push({...s,id:'main',title:'ONE',modelId:'model',coordinatorMain:true,archived:false,messages:[],createdAt:stamp,updatedAt:stamp});
+  f.db.conversations.push({...s,id:'main',title:'ONE',modelId:'model',coordinatorMain:true,taskResultReportSince:stamp,archived:false,messages:[],createdAt:stamp,updatedAt:stamp});
   Object.assign(f.db.chatOperations![0],{operationId:'original-operation',requestId:'work_original',status:'failed',createdAt:stamp,updatedAt:stamp});
   const old=appendTaskResultReport(f.db,s);assert.equal(old.results[0].id,'op');assert.ok(job.reportedToCoordinatorAt);
   await f.docs.reconcile(s,'task',async()=>{});
