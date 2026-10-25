@@ -20,3 +20,18 @@ test('literal code, links, list order, cells and unknown markup are never stripp
   ['```\nx \n\n```','```\nx\n```'],
  ])assert.notEqual(canonicalNotionDigest(a),canonicalNotionDigest(b),a);
 });
+test('v3 canonicalizes only typed table delimiter hyphen lengths while preserving v2 digests',()=>{
+ const table=(delimiter:string)=>`|项目|费用|备注|\n${delimiter}\n|场地|100|不变|`;
+ const expected=table('|---|----|------|'),actual=table('| --- | --- | --- |');
+ assert.notEqual(canonicalNotionDigest(expected,2),canonicalNotionDigest(actual,2));
+ assert.equal(canonicalNotionDigest(expected,3),canonicalNotionDigest(actual,3));
+ for(const [left,right] of [
+  ['|:----|----:|:------:|','| :--- | ---: | :---: |'],
+  ['|------|---|----|','|---|------|---|'],
+ ])assert.equal(canonicalNotionDigest(table(left),3),canonicalNotionDigest(table(right),3));
+ for(const changed of ['|---|---:|:---:|','|:---|---|:---:|','|:---|---:|---|'])
+  assert.notEqual(canonicalNotionDigest(table('|:----|----:|:------:|'),3),canonicalNotionDigest(table(changed),3));
+ assert.notEqual(canonicalNotionDigest(table('|---|---|---|')+'\n|----|----|----|',3),canonicalNotionDigest(table('|---|---|---|')+'\n|---|---|---|',3));
+ assert.notEqual(canonicalNotionDigest('|----|----|',3),canonicalNotionDigest('|---|---|',3));
+ assert.notEqual(canonicalNotionDigest('|a|b|\n\n|----|----|\n|x|y|',3),canonicalNotionDigest('|a|b|\n\n|---|---|\n|x|y|',3));
+});

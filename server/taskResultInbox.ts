@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { localExecutionResultId } from './executionService.js';
 import { executionExplicitlyUnfinished } from './executionResultState.js';
 import {artifactResultLinks} from './artifactLinks.js';
+import {selectedNotionVerification} from './notionVerificationSelection.js';
 
 export type TaskResultScope = { workspaceId: string; userId: string };
 export type TaskResultOutcome = 'completed' | 'returned' | 'failed' | 'partial' | 'needs_input' | 'cancelled' | 'interrupted';
@@ -171,7 +172,7 @@ export function taskResultIsLatestAttempt(db:Database,scope:TaskResultScope,resu
 }
 function cloudResult(db: Database, scope: TaskResultScope, operation: ChatOperation, max: number): TaskResultReceipt | undefined {
   const run = operation.workRun, task = ownedTask(db, scope, operation.conversationId);
-  if (!run || !task || !terminal.has(run.state)||operation.status==='pending'&&run.failureCode==='notion_verification_pending'||run.notionReceipt?.state!=='verified'&&['scheduled','checking'].includes(run.notionReceipt?.verification?.state??'')) return;
+  if (!run || !task || !terminal.has(run.state)||selectedNotionVerification(operation)||operation.status==='pending'&&run.failureCode==='notion_verification_pending'||run.notionReceipt?.state!=='verified'&&['scheduled','checking'].includes(run.notionReceipt?.verification?.state??'')) return;
   const result = task.messages.find(message => message.id === run.resultMessageId && message.role === 'assistant');
   const attachments = ownedFiles(db, scope, task, result);
   const imageFile = db.attachments.find(file => own(file, scope) && file.kind === 'image'

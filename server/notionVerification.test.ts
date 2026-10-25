@@ -79,19 +79,49 @@ test('legacy formatting recovery requires exact owned create arguments and their
   const f=fixture(),args=mode==='update'?{old_str:'old',new_str:expected,final:true}:{title:'测试',content:expected,final:true},query=JSON.stringify(args),key=taskStepKey('worker','save_notion_draft',query);
   f.job.state='failed';f.job.notionReceipt={state:'uncertain',pageId,expectedDigest:mode==='changed_hash'?'0'.repeat(64):notionHash(legacyNotionNormalized(expected)),final:true};f.job.steps=[{key:mode==='wrong_key'?'other':key,scopeId:'op',namespace:'worker',tool:'save_notion_draft',effect:'external_write',state:'started',label:'保存',updatedAt:'2026-10-25T01:00:00Z'}];
   f.db.contextTraces.push({...scope,workspaceId:mode==='foreign'?'wb':'wa',conversationId:'task',requestId:'request',executionSteps:[{tool:'save_notion_draft',query}]} as any);f.mcp.readDocument=async()=>({text:actual});
-  if(mode==='exact'){const result=await f.docs.reconcile(scope,'task',async()=>{});assert.equal(result.operationId,'op');assert.equal(f.job.notionReceipt!.canonicalVersion,2);assert.equal(f.job.notionReceipt!.expectedDigest,notionHash(legacyNotionNormalized(expected)));assert.equal(f.job.steps[0].state,'completed');}
+  if(mode==='exact'){const result=await f.docs.reconcile(scope,'task',async()=>{});assert.equal(result.operationId,'op');assert.equal(f.job.notionReceipt!.canonicalVersion,3);assert.equal(f.job.notionReceipt!.expectedDigest,notionHash(legacyNotionNormalized(expected)));assert.equal(f.job.steps[0].state,'completed');}
   else{await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));assert.equal(f.job.notionReceipt!.state,'uncertain');assert.equal(f.job.notionReceipt!.expectedCanonicalDigest,undefined);}
   assert.equal(f.writes(),0);
  }
 });
-test('new v2 receipts do not use the permissive legacy whitespace path for literal code',async()=>{
+test('new v3 receipts do not use the permissive legacy whitespace path for literal code',async()=>{
  const f=fixture(),body='```\nx \n\n```';f.mcp.readDocument=async()=>({text:'```\nx\n```'});await f.failWrite({title:'代码',content:body,final:true});
- assert.equal(f.job.notionReceipt!.canonicalVersion,2);assert.equal(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(body));f.advance(10);assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'scheduled');assert.equal(f.job.notionReceipt!.state,'uncertain');
+ assert.equal(f.job.notionReceipt!.canonicalVersion,3);assert.equal(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(body));f.advance(10);assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'scheduled');assert.equal(f.job.notionReceipt!.state,'uncertain');
+});
+test('manual v2 create recovery reproves the original body before upgrading to v3 and persists the exact selection before a failed read',async()=>{
+ for(const status of ['failed','completed'] as const){
+  const f=fixture(),expected='**预算**\n|项目|费用|备注|\n|---|----|------|\n|场地|100|不变|',actual='<b>预算</b>\n|项目|费用|备注|\n| --- | --- | --- |\n|场地|100|不变|',query=JSON.stringify({title:'测试',content:expected,final:true}),key=taskStepKey('worker','save_notion_draft',query);
+  f.job.state='failed';f.db.chatOperations![0].status=status;
+  f.job.steps=[{key,scopeId:'op',namespace:'worker',tool:'save_notion_draft',effect:'external_write',state:'started',label:'保存',updatedAt:'2026-10-25T01:00:00Z'}];
+  const legacyDigest=notionHash(legacyNotionNormalized(expected)),v2Digest=canonicalNotionDigest(expected,2);
+  f.job.notionReceipt={state:'uncertain',delivery:'unknown',pageId,expectedDigest:legacyDigest,expectedCanonicalDigest:v2Digest,canonicalVersion:2,checkpointKey:key,final:true};
+  f.db.contextTraces.push({...scope,conversationId:'task',requestId:'request',executionSteps:[{tool:'save_notion_draft',query}]} as any);
+  f.mcp.readDocument=async()=>{assert.equal(f.job.notionReceipt!.canonicalVersion,3);assert.equal(f.job.notionVerificationSelection!.operationId,'op');assert.equal(f.job.notionVerificationSelection!.checkpointKey,key);throw Error('first read unavailable');};
+  await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}),/稍后会继续只读核对/);
+  assert.equal(f.job.notionReceipt!.expectedDigest,legacyDigest);assert.notEqual(f.job.notionReceipt!.expectedCanonicalDigest,v2Digest);assert.equal(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(expected,3));
+  assert.deepEqual(f.job.notionVerificationSelection,{operationId:'op',expectedDigest:legacyDigest,pageId,asyncTaskId:undefined,checkpointKey:key,version:f.job.notionReceipt!.verification!.version,connectionId:'notion',grantId:'grant',parentId,requestedAt:new Date(f.now()).toISOString()});
+  f.mcp.readDocument=async()=>({text:actual});f.advance(20);assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'verified');assert.equal(f.job.steps[0].state,'completed');assert.equal(f.writes(),0);
+ }
+});
+test('a v2 update without original complete create proof keeps its v2 digest instead of assuming v3 equivalence',async()=>{
+ const f=fixture(),expected='|项目|费用|\n|----|------|\n|场地|100|',actual='|项目|费用|\n| --- | --- |\n|场地|100|',query=JSON.stringify({old_str:'旧正文',new_str:expected,final:true}),key=taskStepKey('worker','save_notion_draft',query),oldDigest=canonicalNotionDigest(expected,2);
+ f.job.state='failed';f.db.chatOperations![0].status='failed';
+ f.job.steps=[{key,scopeId:'op',namespace:'worker',tool:'save_notion_draft',effect:'external_write',state:'started',label:'保存',updatedAt:'2026-10-25T01:00:00Z'}];
+ f.job.notionReceipt={state:'uncertain',delivery:'unknown',pageId,expectedDigest:notionHash(legacyNotionNormalized(expected)),expectedCanonicalDigest:oldDigest,canonicalVersion:2,checkpointKey:key,final:true};
+ f.db.contextTraces.push({...scope,conversationId:'task',requestId:'request',executionSteps:[{tool:'save_notion_draft',query}]} as any);f.mcp.readDocument=async()=>({text:actual});
+ await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));assert.equal(f.job.notionReceipt!.canonicalVersion,2);assert.equal(f.job.notionReceipt!.expectedCanonicalDigest,oldDigest);assert.equal(f.job.notionReceipt!.state,'uncertain');assert.equal(f.job.steps[0].state,'started');assert.equal(f.writes(),0);
+});
+test('manual reading a stopped, archived, cancelled or completed job never enrolls a completion selection',async()=>{
+ for(const mode of ['stopped','archived','cancelled','completed'] as const){
+  const f=fixture();f.mcp.readDocument=async()=>{throw Error('first read unavailable');};await f.failWrite();
+  if(mode==='stopped')f.db.conversations[0].workPauseReason='user_stopped';if(mode==='archived')f.db.conversations[0].archived=true;if(mode==='cancelled')f.job.state='cancelled';if(mode==='completed')f.job.state='completed';
+  await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));assert.equal(f.job.notionVerificationSelection,undefined,mode);assert.equal(f.writes(),1);
+ }
 });
 test('known async handle only polls its read-only task result, then reads the returned exact page',async()=>{
  const f=fixture(),query=JSON.stringify(f.args),key=taskStepKey('worker','save_notion_draft',query);f.job.state='failed';f.setBody(f.args.content);
  f.job.steps=[{key,scopeId:'op',namespace:'worker',tool:'save_notion_draft',label:'保存',effect:'external_write',state:'started',updatedAt:'2026-10-25T01:00:00Z'}];
- f.job.notionReceipt={state:'uncertain',asyncTaskId:'async-test',expectedDigest:notionHash(legacyNotionNormalized(f.args.content)),canonicalVersion:2,expectedCanonicalDigest:canonicalNotionDigest(f.args.content),checkpointKey:key,final:true,verification:{state:'scheduled',version:1,attempt:0,nextCheckAt:new Date(f.now()).toISOString(),deadlineAt:new Date(f.now()+1000).toISOString()}};
+ f.job.notionReceipt={state:'uncertain',asyncTaskId:'async-test',expectedDigest:notionHash(legacyNotionNormalized(f.args.content)),canonicalVersion:2,expectedCanonicalDigest:canonicalNotionDigest(f.args.content,2),checkpointKey:key,final:true,verification:{state:'scheduled',version:1,attempt:0,nextCheckAt:new Date(f.now()).toISOString(),deadlineAt:new Date(f.now()+1000).toISOString()}};
  let polls=0;f.mcp.callDocumentTool=async(_w,_c,_g,_u,name,args)=>{assert.equal(name,'notion-get-async-task');assert.deepEqual(args,{task_id:'async-test'});polls++;return {status:'succeeded',result:{pages:[{id:pageId}]}};};
  assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'verified');assert.equal(polls,1);assert.equal(f.reads(),1);assert.equal(f.writes(),0);assert.equal(f.job.notionReceipt.pageId,pageId);assert.equal(f.job.steps[0].state,'completed');
  assert.equal(f.job.notionTarget!.pageId,pageId);assert.equal(f.job.notionTarget!.url,`https://www.notion.so/${pageId}`);assert.equal(f.db.conversations[0].notionDocument!.pageId,pageId);assert.equal(f.db.conversations[0].notionDocument!.url,`https://www.notion.so/${pageId}`);

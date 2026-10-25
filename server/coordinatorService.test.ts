@@ -2983,3 +2983,77 @@ test('an explicit legacy receipt check finalizes only its selected verified fina
  assert.equal(old.workRun!.state,'completed');assert.equal(old.status,'completed');assert.equal(newer.workRun!.state,'queued');assert.equal(newer.status,'pending');assert.equal(detail.conversation.workPaused,true);
  await service.verifyNotionResult(a,f.taskId,key);assert.equal((await service.task(a,f.taskId)).conversation.messages.filter(m=>m.role==='assistant').length,1);
 });
+
+test('an explicit legacy check that first schedules a mismatch survives restart and later finalizes only that exact selected operation',async()=>{
+ const f=await pendingNotionVerificationFixture();let reads=0;
+ await f.store.mutate(d=>{const op=d.chatOperations!.find(o=>o.id===f.operationId)!;op.status='failed';op.workRun!.failureCode='task_execution_failed';op.workRun!.notionReceipt!.verification=undefined;const other=structuredClone(op),task=structuredClone(d.conversations.find(c=>c.id===f.taskId)!);other.id='unselected-old-operation';other.operationId='unselected_old_operation_001';other.conversationId=task.id='unselected-old-task';task.messages=[];other.workRun!.notionReceipt!.pageId='b'.repeat(32);d.chatOperations!.push(other);d.conversations.push(task);});
+ let service=verificationService(f,async()=>({text:++reads===1?'暂未同步的正文':f.body}));
+ await assert.rejects(()=>service.verifyNotionResult(a,f.taskId,key),/稍后会继续只读核对/);
+ let db=await f.store.read(),op=db.chatOperations!.find(o=>o.id===f.operationId)!;
+ assert.equal(op.status,'failed');assert.equal(op.workRun!.failureCode,'task_execution_failed');assert.equal(op.workRun!.notionVerificationSelection!.operationId,f.operationId);assert.equal(op.workRun!.notionVerificationSelection!.expectedDigest,op.workRun!.notionReceipt!.expectedDigest);
+ assert.equal((await service.state(a)).transfers.find(t=>t.id===f.taskId)!.state,'reconciling');assert.equal((await service.task(a,f.taskId)).recovery.kind,'reconciling');
+ await service.reconcileNotionResults(b,key);await assert.rejects(()=>service.verifyNotionResult(b,f.taskId,key),/不存在/);assert.equal(reads,1,'manual enrollment never grants another workspace a read');
+ await f.store.mutate(d=>reconcileInterruptedChatOperations(d));
+ service=verificationService(f,async()=>{reads++;return {text:f.body};});f.clock.now+=10;
+ await service.reconcileNotionResults(a,key);db=await f.store.read();op=db.chatOperations!.find(o=>o.id===f.operationId)!;
+ assert.equal(reads,2);assert.equal(op.status,'completed');assert.equal(op.workRun!.resultOutcome,'completed');assert.equal(op.workRun!.notionVerificationSelection,undefined);
+ assert.equal(db.chatOperations!.find(o=>o.id==='unselected-old-operation')!.status,'failed');assert.equal(db.chatOperations!.find(o=>o.id==='unselected-old-operation')!.workRun!.notionReceipt!.verification,undefined,'no unselected history is enrolled or read');
+ const reported=op.workRun!.reportMessageId;assert.ok(reported);assert.match((await service.state(a)).conversation!.messages.find(m=>m.id===reported)!.content,new RegExp(f.pageId));
+ await service.reconcileNotionResults(a,key);assert.equal(reads,2);assert.equal((await service.task(a,f.taskId)).conversation.messages.filter(m=>m.role==='assistant').length,1);
+});
+
+test('a delayed manual proof survives the readback/finalization restart gap without leaking a failed main result',async()=>{
+ const f=await pendingNotionVerificationFixture();
+ await f.store.mutate(d=>{const op=d.chatOperations!.find(o=>o.id===f.operationId)!;op.status='failed';op.workRun!.failureCode='task_execution_failed';op.workRun!.notionReceipt!.verification=undefined;});
+ const service=verificationService(f,async()=>({text:'暂未同步'}));await assert.rejects(()=>service.verifyNotionResult(a,f.taskId,key),/稍后会继续只读核对/);f.clock.now+=10;
+ const reader=new NotionDocuments(f.store,{readDocument:async()=>({text:f.body}),callDocumentTool:async()=>assert.fail('readback is not a write')} as unknown as NotionMcpService,{now:()=>f.clock.now,delays:[1,2]});
+ await reader.reconcileDue(a,key);await f.store.mutate(d=>reconcileInterruptedChatOperations(d));
+ const state=await service.state(a),detail=await service.task(a,f.taskId);assert.equal(detail.jobs[0].notionReceipt!.state,'verified');assert.equal(detail.jobs[0].verificationPending,true);assert.equal(detail.recovery.kind,'reconciling');assert.match(state.transfers.find(t=>t.id===f.taskId)!.phase!,/保存已经核对/);assert.equal(state.notices.length,0);
+ await service.reconcileNotionResults(a,key);assert.equal((await service.task(a,f.taskId)).jobs[0].state,'completed');
+});
+
+test('a manually selected legacy intermediate draft clears its readback selection but never promotes the unfinished task',async()=>{
+ const f=await pendingNotionVerificationFixture({final:false});
+ await f.store.mutate(d=>{const op=d.chatOperations!.find(o=>o.id===f.operationId)!;op.status='failed';op.workRun!.failureCode='task_execution_failed';op.workRun!.notionReceipt!.verification=undefined;});
+ const service=verificationService(f,async()=>({text:f.body}));await service.verifyNotionResult(a,f.taskId,key);
+ const op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!,detail=await service.task(a,f.taskId);
+ assert.equal(op.workRun!.notionReceipt!.state,'verified');assert.equal(op.workRun!.notionVerificationSelection,undefined);assert.equal(op.workRun!.state,'failed');assert.notEqual(op.workRun!.resultOutcome,'completed');assert.equal(detail.conversation.workPaused,true);assert.equal(detail.jobs[0].verificationPending,false);assert.match((await service.state(a)).conversation!.messages.at(-1)!.content,/只确认了保存状态|其余没做完/);
+});
+
+test('an explicitly selected legacy check that exhausts gives one new main next-step report despite an old reported failure',async()=>{
+ const f=await pendingNotionVerificationFixture();let reads=0;
+ await f.store.mutate(d=>{const op=d.chatOperations!.find(o=>o.id===f.operationId)!;op.status='failed';op.workRun!.failureCode='task_execution_failed';op.workRun!.notionReceipt!.verification=undefined;op.workRun!.reportedToCoordinatorAt='2020-01-01T00:00:00Z';op.workRun!.reportMessageId='old-failure-report';});
+ const service=verificationService(f,async()=>{reads++;return {text:'仍然不一致的正文'};});
+ await assert.rejects(()=>service.verifyNotionResult(a,f.taskId,key),/稍后会继续只读核对/);f.clock.now+=10;
+ await service.reconcileNotionResults(a,key);
+ let op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!;
+ assert.equal(reads,2);assert.equal(op.workRun!.notionReceipt!.verification!.state,'exhausted');assert.equal(op.workRun!.notionVerificationSelection,undefined);assert.equal(op.workRun!.resultOutcome,'partial');assert.equal(op.workRun!.reportRevision,1);assert.notEqual(op.workRun!.reportMessageId,'old-failure-report');
+ const report=(await service.state(a)).conversation!.messages.find(m=>m.id===op.workRun!.reportMessageId)!;assert.match(report.content,/未完整核对/);assert.match(report.content,new RegExp(f.pageId));
+ await service.reconcileNotionResults(a,key);await service.state(a);op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!;assert.equal(op.workRun!.reportRevision,1);assert.equal(reads,2);
+});
+
+test('automatic exhaustion can be explicitly rechecked, schedule once and later complete the exact final save without replaying work',async()=>{
+ const f=await pendingNotionVerificationFixture();let reads=0,matched=false;
+ const service=verificationService(f,async()=>{reads++;return {text:matched?f.body:'暂时仍未同步的正文'};});
+ await service.reconcileNotionResults(a,key);f.clock.now+=10;await service.reconcileNotionResults(a,key);
+ let op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!;
+ assert.equal(op.status,'completed');assert.equal(op.workRun!.state,'failed');assert.equal(op.workRun!.failureCode,'notion_verification_exhausted');
+ const oldMessage=op.workRun!.resultMessageId;
+ await assert.rejects(()=>service.verifyNotionResult(a,f.taskId,key),/稍后会继续只读核对/);
+ op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!;assert.ok(op.workRun!.notionVerificationSelection);assert.equal(op.status,'completed');assert.equal((await service.task(a,f.taskId)).recovery.kind,'reconciling');
+ matched=true;f.clock.now+=10;await service.reconcileNotionResults(a,key);
+ op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!;assert.equal(op.status,'completed');assert.equal(op.workRun!.state,'completed');assert.equal(op.workRun!.resultOutcome,'completed');assert.equal(op.workRun!.notionVerificationSelection,undefined);
+ const detail=await service.task(a,f.taskId);assert.ok(detail.conversation.messages.some(m=>m.id===oldMessage),'the old partial history is retained');assert.equal(detail.conversation.messages.filter(m=>m.role==='assistant').length,2);
+ const count=(await service.state(a)).conversation!.messages.length;await service.reconcileNotionResults(a,key);assert.equal((await service.state(a)).conversation!.messages.length,count);assert.equal(reads,4);
+});
+
+test('an old verified receipt is not fresh proof when an explicit recheck finds the page externally edited',async()=>{
+ const f=await pendingNotionVerificationFixture();let reads=0;
+ await f.store.mutate(d=>{const op=d.chatOperations!.find(o=>o.id===f.operationId)!,run=op.workRun!,r=run.notionReceipt!;op.status='failed';run.failureCode='task_execution_failed';r.state='verified';r.digest=r.expectedDigest;r.verification=undefined;run.steps![0].state='completed';run.steps![0].output={state:'verified',pageId:r.pageId,digest:r.digest,expectedDigest:r.expectedDigest,final:true};});
+ const service=verificationService(f,async()=>{reads++;return {text:'用户已经在Notion改过的新正文'};});
+ await assert.rejects(()=>service.verifyNotionResult(a,f.taskId,key),/自动核对已停下/);
+ await service.reconcileNotionResults(a,key);
+ const op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!,detail=await service.task(a,f.taskId);
+ assert.equal(op.workRun!.notionReceipt!.state,'verified','historical save evidence is not erased');assert.equal(op.workRun!.notionReceipt!.verification!.state,'exhausted');assert.equal(op.workRun!.state,'failed');assert.equal(op.workRun!.resultOutcome,'partial');assert.equal(op.workRun!.notionVerificationSelection,undefined);assert.equal(reads,1);
+ assert.match(detail.conversation.messages.at(-1)!.content,/未能完整核对|没能完整核对/);assert.doesNotMatch(detail.conversation.messages.at(-1)!.content,/已保存到 Notion · 已回读核对|任务已完成/);assert.match(detail.conversation.messages.at(-1)!.content,/打开 Notion 原文/);
+});

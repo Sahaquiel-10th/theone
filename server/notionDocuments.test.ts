@@ -362,6 +362,9 @@ test('a newly verified reconciliation returns once after an earlier failure brie
   const old=appendTaskResultReport(f.db,s);assert.equal(old.results[0].id,'op');assert.ok(job.reportedToCoordinatorAt);
   await f.docs.reconcile(s,'task',async()=>{});
   assert.equal(job.reportRevision,1);assert.equal(job.state,'failed');assert.equal(job.resultOutcome,'partial');assert.equal(f.calls.length,1);
+  assert.equal(job.notionVerificationSelection!.operationId,'op');
+  assert.equal(pendingConversationTaskResults(f.db,s).length,0,'the coordinator must first settle this exact manual selection');
+  job.notionVerificationSelection=undefined; // Coordinator consumes a verified nonfinal selection as save-confirmation only.
   assert.deepEqual(pendingConversationTaskResults(f.db,s).map(r=>r.id),['op_r1']);
   const fresh=appendTaskResultReport(f.db,s);assert.equal(fresh.results.length,1);assert.match(fresh.results[0].brief!,/刚核对过.*Notion/);
   assert.match(f.db.conversations.find(c=>c.id==='main')!.messages.at(-1)!.content,/打开 Notion/);

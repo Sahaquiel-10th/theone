@@ -82,6 +82,7 @@ import {taskReportPrompt,taskReportFallback,validateTaskReport,type TaskReportFa
 import {adaptiveGuidance,recentCoordinatorMessages,compactTaskCandidates,compactCapabilities,initialCoordinatorToolNames,contextReadSchema,validateContextRead,readCoordinatorContext,requiresCoordinatorDelivery,coordinatorNeedsInput,requiresHtmlArtifact,needsTaskContext,type CoordinatorContextMode,type ContextRead} from './adaptiveCoordinator.js';
 import {datedDraftPrerequisite} from './datedDraftPrerequisite.js';
 import {taskContinuation,actionableTaskSupplement,supersedeQueuedSupplements,supplementKnowledgeRequest,taskStatusQuestion,plainTaskContinuation} from './taskContinuation.js';
+import {selectedNotionVerification} from './notionVerificationSelection.js';
 
 export type WorkScope = { workspaceId: string; userId: string };
 export type DispatchInput = {
@@ -280,7 +281,8 @@ export class CoordinatorService {
     await verifyKey();
     await this.store.mutate(d=>{
       const task=taskOf(d,s,id);task.workPaused=true;task.workPauseReason='user_stopped';task.updatedAt=at();
-      for(const op of d.chatOperations??[])if(own(op,s)&&op.conversationId===id&&op.workRun&&(['queued','running','prepared'].includes(op.workRun.state)||notionVerificationActive(op.workRun))) {
+      for(const op of d.chatOperations??[])if(own(op,s)&&op.conversationId===id&&op.workRun&&(['queued','running','prepared'].includes(op.workRun.state)||notionVerificationActive(op.workRun)||selectedNotionVerification(op))) {
+        op.workRun.notionVerificationSelection=undefined;
         if(op.workRun.notionReceipt?.verification){op.workRun.notionReceipt.verification.state='exhausted';op.workRun.notionReceipt.verification.lastReason='stale';op.workRun.notionReceipt.verification.leaseId=undefined;op.workRun.notionReceipt.verification.leaseUntil=undefined;}
         op.workRun.state='cancelled';op.workRun.unread=true;op.status='interrupted';op.updatedAt=at();
       }
@@ -297,7 +299,8 @@ export class CoordinatorService {
       task.workPaused = true;
       task.updatedAt = at();
       for (const op of d.chatOperations ?? []) if (own(op,s) && op.conversationId === id && op.workRun) {
-        if (['queued','running'].includes(op.workRun.state)||notionVerificationActive(op.workRun)) {
+        if (['queued','running'].includes(op.workRun.state)||notionVerificationActive(op.workRun)||selectedNotionVerification(op)) {
+          op.workRun.notionVerificationSelection=undefined;
           if(op.workRun.notionReceipt?.verification){op.workRun.notionReceipt.verification.state='exhausted';op.workRun.notionReceipt.verification.lastReason='stale';op.workRun.notionReceipt.verification.leaseId=undefined;op.workRun.notionReceipt.verification.leaseUntil=undefined;}
           op.workRun.state = 'cancelled'; op.status = 'interrupted'; op.updatedAt = at();
         }
@@ -344,25 +347,33 @@ export class CoordinatorService {
       const job=op.workRun,task=d.conversations.find(c=>own(c,s)&&c.id===op.conversationId&&!c.archived&&!c.coordinatorMain);
       const automatic=op.status==='pending'&&job?.failureCode==='notion_verification_pending';
       const receipt=job?.notionReceipt;
-      const selected=manual?.operationId===op.id&&op.status==='failed'&&receipt?.state==='verified'&&receipt.expectedDigest===manual.expectedDigest&&receipt.digest===manual.digest&&receipt.checkpointKey===manual.checkpointKey;
-      if(!own(op,s)||!job||!task||job.state!=='failed'||!automatic&&!selected||task.workPauseReason==='user_stopped'||notionVerificationActive(job))continue;
+      const selected=selectedNotionVerification(op)||manual?.operationId===op.id&&['failed','completed'].includes(op.status)&&receipt?.state==='verified'&&receipt.expectedDigest===manual.expectedDigest&&receipt.digest===manual.digest&&receipt.checkpointKey===manual.checkpointKey;
+      if(!own(op,s)||!job||!task||job.state!=='failed'||!automatic&&!selected||task.workPauseReason==='user_stopped'||notionVerificationActive(job)||['scheduled','checking'].includes(receipt?.verification?.state??''))continue;
       if(!receipt||receipt.state!=='verified'&&receipt.verification?.state!=='exhausted')continue;
       const required=[...(job.contract?.requiredTools??[]),...(job.contract?.requiredFeatureIds??[]).map(id=>{const index=job.skills.findIndex(skill=>skill.id===id);return index<0?'unavailable_required_feature':`feature_${index}`;})];
       let authorizationChanged=false;
       try{if(job.notionTarget)this.deps.notionDocuments!.assertTarget(d,s,job.notionTarget);else authorizationChanged=true;}catch{authorizationChanged=true;}
-      const completed=receipt.state==='verified'&&!authorizationChanged?verifiedNotionCompletion(receipt,job.steps??[],required,{scopeId:op.id}):undefined;
+      const saveConfirmed=receipt.state==='verified'&&!receipt.verification;
+      const completed=saveConfirmed&&!authorizationChanged?verifiedNotionCompletion(receipt,job.steps??[],required,{scopeId:op.id}):undefined;
       // Explicit legacy reconciliation confirms only its selected save. An
       // unfinished/cancelled old job must not be promoted or silently resumed.
-      if(selected&&!completed)continue;
+      if(selected&&saveConfirmed&&!completed){job.notionVerificationSelection=undefined;continue;}
       const authorizationBlocked=authorizationChanged||receipt.verification?.lastReason==='authorization';
-      const result=completed?parseTaskOutcome(completed):{outcome:'partial' as const,summary:authorizationBlocked?'Notion 连接或保存授权已变化，需要先恢复原连接。':receipt.state==='verified'?'Notion 保存已核对，其余步骤还没有全部完成。':'Notion 保存仍未完整核对，原稿和要求都保留着。',content:authorizationBlocked?'Notion 连接或保存授权已变化，暂时不能继续核对原稿。请先恢复原连接，再核对保存结果；不会重发保存请求。':receipt.state==='verified'?'Notion 里的内容已核对保存，但这件事还有其他步骤未完成。可以接着处理未完成的部分；不会重复新建原稿。':'内容已经交给 Notion，但这轮仍没能完整核对保存结果。请先打开原稿确认内容，再告诉我接着处理哪一部分；不会重复创建或覆盖。'};
+      const result=completed?parseTaskOutcome(completed):{outcome:'partial' as const,summary:authorizationBlocked?'Notion 连接或保存授权已变化，需要先恢复原连接。':saveConfirmed?'Notion 保存已核对，其余步骤还没有全部完成。':'Notion 保存仍未完整核对，原稿和要求都保留着。',content:authorizationBlocked?'Notion 连接或保存授权已变化，暂时不能继续核对原稿。请先恢复原连接，再核对保存结果；不会重发保存请求。':saveConfirmed?'Notion 里的内容已核对保存，但这件事还有其他步骤未完成。可以接着处理未完成的部分；不会重复新建原稿。':'内容已经交给 Notion，但这轮仍没能完整核对保存结果。请先打开原稿确认内容，再告诉我接着处理哪一部分；不会重复创建或覆盖。'};
       const mid=uid('msg');
-      saveMessage(d,s,task,{id:mid,role:'assistant',content:result.content+(!completed?notionDeliveryNote(receipt,receipt.pageId):''),createdAt:at()});
+      saveMessage(d,s,task,{id:mid,role:'assistant',content:result.content+(!completed?notionDeliveryNote(saveConfirmed?receipt:{...receipt,state:'uncertain'},receipt.pageId):''),createdAt:at()});
+      if(selected&&(!saveConfirmed||job.reportedToCoordinatorAt||job.reportMessageId)){
+        // The explicit check reached a new terminal fact, not a replay of the
+        // historical failure that may already have been briefed.
+        job.reportRevision=(job.reportRevision??0)+1;job.reportRevisionAt=at();
+        job.reportedToCoordinatorAt=undefined;job.reportMessageId=undefined;
+      }
       if(selected)op.status='pending';
       completeChatOperation(d,{...s,operationId:op.operationId},{conversationId:task.id,assistantMessageId:mid});
       job.state=completed?'completed':'failed';job.resultOutcome=result.outcome;job.userReport=result.summary;job.resultMessageId=mid;job.unread=true;
-      job.failureCode=completed?undefined:authorizationBlocked?'task_authorization_required':receipt.state==='verified'?'notion_saved_task_incomplete':'notion_verification_exhausted';
+      job.failureCode=completed?undefined:authorizationBlocked?'task_authorization_required':saveConfirmed?'notion_saved_task_incomplete':'notion_verification_exhausted';
       job.error=completed?undefined:result.summary;
+      job.notionVerificationSelection=undefined;
       // A late readback belongs to its own attempt, not a newer request.
       const newer=(d.chatOperations??[]).some(other=>own(other,s)&&other.workRun&&other.conversationId===task.id&&other.id!==op.id&&other.createdAt>=op.createdAt);
       if(!newer){task.workPaused=!completed;task.workPauseReason=completed?undefined:'partial';}
@@ -390,7 +401,7 @@ export class CoordinatorService {
     if(this.notionChecks.size>=4)return;
     const check=(async()=>{
       const snapshot=await this.store.read();featureMember(snapshot,s);
-      if(!(snapshot.chatOperations??[]).some(o=>own(o,s)&&o.workRun&&(notionVerificationActive(o.workRun)||o.status==='pending'&&o.workRun.failureCode==='notion_verification_pending')))return;
+      if(!(snapshot.chatOperations??[]).some(o=>own(o,s)&&o.workRun&&(notionVerificationActive(o.workRun)||selectedNotionVerification(o)||o.status==='pending'&&o.workRun.failureCode==='notion_verification_pending')))return;
       await verifyKey();
       await this.deps.notionDocuments!.reconcileDue(s,verifyKey);
       await verifyKey();
@@ -429,8 +440,8 @@ export class CoordinatorService {
       const latest = jobs.at(-1), local = (db.executionTasks ?? []).filter(t => own(t, s) && t.conversationId === task.id);
       const activeLocal = local.find(t => ['queued', 'selecting_target', 'running'].includes(t.status));
       const running = jobs.some(o => o.workRun!.state === 'running') || activeLocal?.status === 'running';
-      const reconciling=jobs.some(o=>notionVerificationActive(o.workRun)||o.status==='pending'&&o.workRun!.failureCode==='notion_verification_pending');
-      const saveVerified=jobs.some(o=>o.status==='pending'&&o.workRun!.failureCode==='notion_verification_pending'&&o.workRun!.notionReceipt?.state==='verified');
+      const reconciling=jobs.some(o=>notionVerificationActive(o.workRun)||selectedNotionVerification(o)||o.status==='pending'&&o.workRun!.failureCode==='notion_verification_pending');
+      const saveVerified=jobs.some(o=>(selectedNotionVerification(o)||o.status==='pending'&&o.workRun!.failureCode==='notion_verification_pending')&&o.workRun!.notionReceipt?.state==='verified');
       const queued = jobs.filter(o => o.workRun!.state === 'queued').length + local.filter(t => ['queued', 'selecting_target'].includes(t.status)).length;
       const localPrepared = latest?.workRun?.state === 'prepared' && !local.some(t => t.sourceMessageId === latest.workRun!.inputMessageId);
       const waiting = jobs.some(o => ['queued','prepared'].includes(o.workRun!.state) && dependencyState(db,s,o.workRun!.dependsOnOperationIds)!=='ready');
@@ -478,7 +489,7 @@ export class CoordinatorService {
       conversation: c,
       recovery: awaitingSupplement
         ?{kind:'none' as const,message:'把缺少的材料直接发给我，或告诉我继续，就会在这件任务接着处理，不用另外点开始。'}
-        :taskRecovery((db.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === id && o.workRun).map(o => ({ id: o.id, ...o.workRun!,verificationPending:o.status==='pending'&&o.workRun!.failureCode==='notion_verification_pending' }))),
+        :taskRecovery((db.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === id && o.workRun).map(o => ({ id: o.id, ...o.workRun!,verificationPending:selectedNotionVerification(o)||o.status==='pending'&&o.workRun!.failureCode==='notion_verification_pending' }))),
       jobs: (db.chatOperations ?? [])
         .filter((o) => own(o, s) && o.conversationId === id && o.workRun)
         .slice(-50)
@@ -486,7 +497,7 @@ export class CoordinatorService {
           id: o.id,
           operationId: o.operationId,
           state: o.workRun!.state,
-          verificationPending:o.status==='pending'&&o.workRun!.failureCode==='notion_verification_pending',
+          verificationPending:selectedNotionVerification(o)||o.status==='pending'&&o.workRun!.failureCode==='notion_verification_pending',
           budget:o.workRun!.budget,
           kind:o.workRun!.kind,
           retryPower: o.workRun!.kind==='image'?(()=>{try{return welcomeRetryPower(o.workRun!,resolveImageTask(db,Boolean(this.deps.artifactDirectory)).billingModel.imagePowerPerCall!);}catch{return undefined;}})():undefined,

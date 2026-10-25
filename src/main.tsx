@@ -45,6 +45,7 @@ import {notionReceiptForReview,unstartedLocalInput} from './taskRecovery';
 import {taskConversationView} from './taskConversationView';
 import {friendlyExecutionProgress,readCapturedNotices} from './friendlyTaskStatus';
 import {internalTaskId} from './taskLink';
+import {claimInitialTaskLink,settleInitialTaskLink,coordinatorTaskConversation} from './coordinatorTaskView';
 import {FeatureShelf,type FeatureChoice} from './preview/FeatureShelf';
 import {KnowledgeConnections} from './KnowledgeConnections';
 import {captureFeatureHandoff,FeatureHandoff,FeatureArmedRim,pulseFeatureComposer,type FeatureHandoffTransfer} from './FeatureHandoff';
@@ -663,7 +664,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const conversationPageSize = 30;
   const [models, setModels] = useState<Model[]>([]);
   const [storedConversations, setConversations] = useState<Conversation[]>([]);
-  const conversations: Conversation[] = demo.enabled ? demo.state.tasks.map(task => ({id: task.id, title: task.title, userId: user.id, modelId: 'preview-model', archived: false, messagesLoaded: true, createdAt: user.createdAt, updatedAt: user.createdAt, messages: task.messages.map(message => ({id:message.id,role:message.role,content:message.text,createdAt:user.createdAt}))})) : coordinator.enabled ? [...coordinator.state.tasks.map(task=>{const detail=coordinator.details[task.id]?.conversation,old=storedConversations.find(c=>c.id===task.id),meta=coordinator.snapshot?.tasks.find(c=>c.id===task.id);return detail?{...detail,messagesLoaded:true}:old||{id:task.id,title:task.title,userId:user.id,modelId:models.find(m=>m.isDefault)?.id||models[0]?.id||'',archived:false,messagesLoaded:false,messages:[],createdAt:user.createdAt,updatedAt:meta?.updatedAt||user.createdAt};}),...storedConversations.filter(c=>!coordinator.state.tasks.some(t=>t.id===c.id)&&!(c as Conversation&{coordinatorMain?:boolean}).coordinatorMain)] : storedConversations;
+  const listedConversations: Conversation[] = demo.enabled ? demo.state.tasks.map(task => ({id: task.id, title: task.title, userId: user.id, modelId: 'preview-model', archived: false, messagesLoaded: true, createdAt: user.createdAt, updatedAt: user.createdAt, messages: task.messages.map(message => ({id:message.id,role:message.role,content:message.text,createdAt:user.createdAt}))})) : coordinator.enabled ? [...coordinator.state.tasks.map(task=>{const detail=coordinator.details[task.id]?.conversation,old=storedConversations.find(c=>c.id===task.id),meta=coordinator.snapshot?.tasks.find(c=>c.id===task.id);return detail?{...detail,messagesLoaded:true}:old||{id:task.id,title:task.title,userId:user.id,modelId:models.find(m=>m.isDefault)?.id||models[0]?.id||'',archived:false,messagesLoaded:false,messages:[],createdAt:user.createdAt,updatedAt:meta?.updatedAt||user.createdAt};}),...storedConversations.filter(c=>!coordinator.state.tasks.some(t=>t.id===c.id)&&!(c as Conversation&{coordinatorMain?:boolean}).coordinatorMain)] : storedConversations;
+  const conversations=coordinator.enabled?listedConversations.map(item=>coordinatorTaskConversation(item,coordinator.details)):listedConversations;
   const [conversationPage, setConversationPage] = useState(1);
   const [hasMoreConversations, setHasMoreConversations] = useState(false);
   const [loadingMoreConversations, setLoadingMoreConversations] = useState(false);
@@ -781,7 +783,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [visibleReceiptId, setVisibleReceiptId] = useState("");
   const observedTasksRef = useRef<ExecutionTask[]>([]);
   const motionTasksRef = useRef<Set<string> | null>(null);
-  const initialTaskLinkRef = useRef(false);
+  const initialTaskLinkRef = useRef({opening:false,opened:false});
   const executionOriginRef = useRef<TransitionPoint>({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
   const executionPointerRef = useRef<{element: HTMLElement; point: TransitionPoint} | null>(null);
   const draftsRef = useRef<Record<string, { content: string; attachments: AttachmentSummary[] }>>({});
@@ -945,16 +947,22 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     }
   }, [executionTasks]);
   useEffect(()=>{
-    if(initialTaskLinkRef.current||!models.length)return;
-    initialTaskLinkRef.current=true;
+    const state=initialTaskLinkRef.current;
+    if(!claimInitialTaskLink(state,{modelsLoaded:models.length>0,demo:demo.enabled,snapshotKnown:coordinator.ready}))return;
     const id=internalTaskId(window.location.href,window.location.href);
-    if(id)void openLinkedTask(id);
-  },[models.length,coordinator.enabled]);
+    if(!id){settleInitialTaskLink(state,true);return;}
+    void openLinkedTask(id).then(opened=>settleInitialTaskLink(state,opened));
+  },[models.length,demo.enabled,coordinator.enabled,coordinator.ready]);
+  useEffect(()=>{
+    if(!coordinator.enabled)return;
+    const id=view==='chat'?(workLayer==='things'?thingId:!workLayer?activeId:''):'';
+    void coordinator.viewTask(id||null).catch(e=>setError(e instanceof Error?e.message:'暂时无法打开结果'));
+  },[coordinator.enabled,coordinator.viewTask,view,workLayer,thingId,activeId]);
   function closeResultLamp() { setResultLampOpen(false); if(coordinator.enabled)void coordinator.acknowledge().catch(e=>setError(e.message)); setDismissedResults(previous=>[...previous,...lampTasks.map(task=>`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`)]); }
   async function selectThing(id:string,markRead=true) {
     setThingId(id);
     void loadLatestExecution(id);
-    if(coordinator.enabled){try{await coordinator.load(id);if(markRead)await coordinator.acknowledge(id);}catch(e){setError(e instanceof Error?e.message:'暂时无法打开结果');}return;}
+    if(coordinator.enabled){try{const detail=await coordinator.viewTask(id);if(detail&&markRead)await coordinator.acknowledge(id);}catch(e){setError(e instanceof Error?e.message:'暂时无法打开结果');}return;}
     await loadThingMessages(id);
   }
   async function removeCoordinatorTask(id:string) {
@@ -1468,7 +1476,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       const conversation=current||((coordinator.enabled?await coordinator.load(id):await api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(id)}`)).conversation);
       if(!current)setConversations(old=>[{...conversation,messagesLoaded:true},...old.filter(c=>c.id!==id)]);
       await openConversation(conversation);
-    } catch(e) {setError(e instanceof Error?e.message:'无法打开此任务，请从任务列表查看');}
+      return true;
+    } catch(e) {setError(e instanceof Error?e.message:'无法打开此任务，请从任务列表查看');return false;}
   }
 
   async function openExecution(task: ExecutionTask) {

@@ -11,6 +11,7 @@ import {mergeCoordinatorMessages, mergeCoordinatorLinks, mergeCoordinatorReceipt
 import {coordinatorPendingKey,coordinatorRequest, createCoordinatorRefreshQueue, forgetStoredCoordinatorOperation} from './coordinatorTransport';
 import {useCoordinatorScopedState} from './coordinatorScopedState';
 import {coordinatorDetailReadIsCurrent,coordinatorDetailRefreshPlan,coordinatorDetailVersion,type CoordinatorDetailVersion} from './coordinatorDetailRefresh';
+import {viewCoordinatorTask} from './coordinatorTaskView';
 import type { Conversation } from "../server/types";
 import type {
   Action,
@@ -99,6 +100,7 @@ export function useCoordinator(
   const pendingKey=useCallback((user:string)=>coordinatorPendingKey(user,workspaceId),[workspaceId]);
   const submissionScope=`coordinator:${userId}${workspaceId?':'+encodeURIComponent(workspaceId):''}`;
   const [storedSnapshot, setSnapshot] = useCoordinatorScopedState<Snapshot | null>(scope,null),
+    [ready,setReady] = useCoordinatorScopedState(scope,false),
     [loadingHistory,setLoadingHistory] = useCoordinatorScopedState(scope,false),
     [historyError,setHistoryError] = useCoordinatorScopedState(scope,''),
     [outgoing, setOutgoing] = useCoordinatorScopedState<{id:string;text:string;priorIds:string[];failed?:boolean} | null>(scope,null),
@@ -128,6 +130,7 @@ export function useCoordinator(
   const detailReads=useMemo(()=>new Map<string,Promise<Detail>>(),[scope]);
   const detailVersions=useMemo(()=>new Map<string,CoordinatorDetailVersion>(),[scope]);
   const detailReadRevisions=useMemo(()=>new Map<string,number>(),[scope]);
+  const viewedTask=useMemo(()=>({current:undefined as string|null|undefined}),[scope]);
   const refreshRevision=useRef(0);
   const isCurrent=useCallback(()=>live.current&&scopeRef.current===scope,[scope]);
   const setCurrentPending=useCallback((value:string|null)=>{if(!isCurrent())return;pendingRef.current=value;setPending(value);},[isCurrent,setPending]);
@@ -165,6 +168,7 @@ export function useCoordinator(
     },
     [api,detailReads,detailVersions,detailReadRevisions,isCurrent,setDetails],
   );
+  const viewTask=useCallback((id:string|null)=>viewCoordinatorTask(id,{isCurrent,load,select:taskId=>{viewedTask.current=taskId;}}),[isCurrent,load,viewedTask]);
   const acceptReceipt=useCallback((operation:string,status:CoordinatorReceipt)=>{
     if(!isCurrent())return;
     if(status.conversation&&(status.conversation.userId!==userId||workspaceId&&status.conversation.workspaceId!==workspaceId))return;
@@ -233,6 +237,7 @@ export function useCoordinator(
       const snapshotRead=(async()=>{
         const next=await coordinatorRequest<Snapshot>(api,'/api/coordinator?page=1');
         if (!isCurrent()) return;
+        setReady(true);
         if(next.pendingOperationId&&settledReceipts.has(next.pendingOperationId))next.pendingOperationId=undefined;
         setSnapshot((old) => {
           let merged:Snapshot={
@@ -251,7 +256,7 @@ export function useCoordinator(
         pageRef.current = Math.max(nextPage, pageRef.current);
         setPage(pageRef.current);
         setError(submissionError.current);
-        const affected=coordinatorDetailRefreshPlan({selected:selectedRef.current,tasks:[...next.tasks,...(next.transfers??[])],notices:next.notices,details:detailsRef.current,loadedVersions:detailVersions});
+        const affected=coordinatorDetailRefreshPlan({selected:viewedTask.current===undefined?selectedRef.current:viewedTask.current,tasks:[...next.tasks,...(next.transfers??[])],notices:next.notices,details:detailsRef.current,loadedVersions:detailVersions});
         // A slow/offline detail must never freeze sending feedback or the whole polling loop.
         void Promise.all(
           affected.map(({id,version}) => load(id,false,version).catch(() => undefined)),
@@ -283,7 +288,7 @@ export function useCoordinator(
       const failed=results.find(result=>result.status==='rejected');
       if(failed?.status==='rejected')setError(failed.reason instanceof Error?failed.reason.message:'连接暂时不可用');
     },
-    [api, enabled, isCurrent, load, readReceipt, settledReceipts, detailVersions, userId, pendingKey,setSnapshot,setPage,setError],
+    [api, enabled, isCurrent, load, readReceipt, settledReceipts, detailVersions, viewedTask, userId, pendingKey,setSnapshot,setReady,setPage,setError],
   );
   const refreshQueue=useMemo(()=>createCoordinatorRefreshQueue(performRefresh),[performRefresh]);
   const refresh=useCallback((nextPage=1)=>{
@@ -298,7 +303,7 @@ export function useCoordinator(
   useEffect(()=>{
     pendingRef.current=null;sending.current=null;snapshotRef.current=null;detailsRef.current={};selectedRef.current=null;
     pageRef.current=1;resumeKey.current='';submissionError.current='';
-    setSnapshot(null);setDetails({});setSelected(null);setBound(null);setPending(null);setProgress(null);
+    setSnapshot(null);setReady(false);setDetails({});setSelected(null);setBound(null);setPending(null);setProgress(null);
     setOutgoing(null);setFailureReply(null);setSettlement(null);setError('');setHistoryError('');setLoadingHistory(false);setPage(1);
   },[scope]);
   useEffect(() => {
@@ -554,11 +559,13 @@ export function useCoordinator(
   };
   return {
     enabled: enabled && snapshot?.enabled === true,
+    ready,
     state,
     dispatch,
     submit,
     direct,
     load,
+    viewTask,
     refresh,
     acknowledge,
     readAll,
