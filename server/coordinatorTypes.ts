@@ -13,6 +13,9 @@ export type WorkRun = {
   /** Reporting to ONE and the user's review are independent durable acknowledgements. */
   reportedToCoordinatorAt?: string;
   reportMessageId?: string;
+  /** Explicit server-confirmed material update; legacy receipts keep revision zero. */
+  reportRevision?: number;
+  reportRevisionAt?: string;
   reviewedAt?: string;
   resultOutcome?: 'completed' | 'failed' | 'partial' | 'needs_input' | 'returned';
   notionTarget?: NonNullable<import('./types.js').Conversation['notionDocument']> & { referenceIds: string[] };

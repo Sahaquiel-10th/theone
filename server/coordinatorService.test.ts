@@ -242,56 +242,58 @@ test('single-task function selection cannot bypass entitlement, pause or multipl
   assert.equal((await f.store.read()).chatOperations!.filter(op=>op.workRun).length,0,mode);
  }
 });
-test('one request runs two tasks concurrently and feeds their durable results into the next answer once',async()=>{
+test('one request runs two tasks concurrently and briefs their durable results while idle, once',async()=>{
  const f=fixture();
  f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('两项已安排'):{...answer(''),toolCalls:[{id:'batch',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:['逻辑分析','写作草稿'].map(title=>({taskId:null,title,instruction:`只做${title}`,executorId:'general',outputKind:'text',featureIds:[],dependsOn:[]}))})}}]});
  let started=0,release!:()=>void;const gate=new Promise<void>(r=>release=r);f.setWorker(async()=>{started++;await gate;return answer(JSON.stringify({outcome:'completed',content:'可核对的独立成果',summary:'成果已返回'}));});
  const reply=await f.service.dispatch(a,input('operation_batch_two_001','分析和独立草稿同时做'),key);
  assert.equal(reply.taskIds.length,2);await f.service.resume(a,key);await waitFor(async()=>started===2);release();
  await waitFor(async()=>(await f.store.read()).chatOperations!.filter(o=>o.workRun?.state==='completed').length===2);
- f.setRoute(messages=>{assert.match(JSON.stringify(messages),/刚返回、尚未向用户汇报/);assert.match(JSON.stringify(messages),/逻辑分析/);assert.match(JSON.stringify(messages),/写作草稿/);return answer('两项任务完成了。');});
- const next=await f.service.dispatch(a,input('operation_batch_follow_01','现在做了吗？'),key);assert.match(next.message.content,/task=/);
+ const completed=await f.service.state(a);assert.match(completed.conversation!.messages.map(m=>m.content).join('\n'),/逻辑分析.*已完成/);assert.match(completed.conversation!.messages.map(m=>m.content).join('\n'),/写作草稿.*已完成/);
+ f.setRoute(messages=>{assert.ok(!messages.some(m=>m.content?.startsWith('刚返回、尚未向用户汇报')));return answer('两项任务完成了。');});
+ await f.service.dispatch(a,input('operation_batch_follow_01','现在做了吗？'),key);
  const state=await f.service.state(a);assert.equal(state.notices.length,2);assert.ok(state.notices.every(n=>n.reported&&!n.read));
  await f.service.report(a,state.notices.map(n=>n.id),key);assert.equal((await f.service.state(a)).conversation!.messages.length,state.conversation!.messages.length);
  await f.service.acknowledge(a,state.notices.map(n=>n.id));assert.equal((await f.service.state(a)).notices.length,0);
 });
 
-test('completed tasks stay quietly in the sidebar until the next answer and late results are not swallowed',async()=>{
-  const f=fixture();let releaseSecond!:()=>void;const secondGate=new Promise<void>(resolve=>releaseSecond=resolve);
+test('results arriving during a busy answer merge into that reply, including reviewed and unfinished work, without another model call',async()=>{
+  const f=fixture();let releaseFirst!:()=>void,releaseSecond!:()=>void;
+  const firstGate=new Promise<void>(resolve=>releaseFirst=resolve),secondGate=new Promise<void>(resolve=>releaseSecond=resolve);
   f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('已经安排，结果会留在侧栏'):{...answer(''),toolCalls:[{id:'feedback-tasks',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:['先完成的方案','稍后完成的核算'].map((title,i)=>({taskId:null,title,instruction:`只做FEEDBACK_${i}`,executorId:'general',outputKind:'text',featureIds:[],dependsOn:[]}))})}}]});
   f.setWorker(async messages=>{
-    if(messages.at(-1)?.content?.includes('FEEDBACK_1'))await secondGate;
-    return answer(JSON.stringify({outcome:'completed',content:'实际成果',summary:'已返回'}));
+    if(messages.at(-1)?.content?.includes('FEEDBACK_1')){await secondGate;return answer(JSON.stringify({outcome:'needs_input',content:'还缺活动日期。请补充活动是哪一天，再继续整理。',summary:'还缺活动日期。请补充活动是哪一天。'}));}
+    await firstGate;return answer(JSON.stringify({outcome:'completed',content:'实际成果',summary:'方案正文做好了。'}));
   });
   const initial=await f.service.dispatch(a,input('operation_quiet_feedback_01','两项同时做'),key);
-  await f.service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.filter(o=>o.workRun?.state==='completed').length===1);
+  await f.service.resume(a,key);
   const before=(await f.service.state(a)).conversation!.messages.length;
-  for(let i=0;i<3;i++)assert.equal((await f.service.state(a)).conversation!.messages.length,before,'polling must not generate unsolicited main-chat answers');
   let releaseAnswer!:(r:ToolChatResult)=>void, modelStarted!:()=>void;
   const answerGate=new Promise<ToolChatResult>(resolve=>releaseAnswer=resolve),started=new Promise<void>(resolve=>modelStarted=resolve);
   const follow=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{modelCall:async(_model,messages)=>{
-    const feedback=messages.find(m=>m.content?.startsWith('刚返回、尚未向用户汇报'))!.content!;
-    assert.match(feedback,/先完成的方案/);assert.doesNotMatch(feedback,/稍后完成的核算|sourceId|resultMessageId/);
-    assert.match(messages[0].content!,/熟悉搭档/);assert.match(messages[0].content!,/新成果只简短提及/);
+    assert.ok(!messages.some(m=>m.content?.startsWith('刚返回、尚未向用户汇报')),'neither worker has finished when the reply begins');
+    assert.match(messages[0].content!,/熟悉搭档/);
     modelStarted();return answerGate;
   }});
   const pending=follow.dispatch(a,input('operation_quiet_follow_01','今天怎么样？只聊聊，不执行。'),key);
   await started;
+  releaseFirst();await waitFor(async()=>(await f.store.read()).chatOperations!.filter(o=>o.workRun?.state==='completed').length===1);
+  for(let i=0;i<3;i++)assert.equal((await f.service.state(a)).conversation!.messages.length,before+1,'while answering, task polling cannot insert a competing reply');
   const read=await f.service.acknowledgeAll(a,key);assert.equal(read.count,1);
-  releaseSecond();await waitFor(async()=>(await f.store.read()).chatOperations!.filter(o=>o.workRun?.state==='completed').length===2);
-  releaseAnswer(answer('挺好的。之前的方案有结果了，要不要看看？'));
+  releaseSecond();await waitFor(async()=>(await f.store.read()).chatOperations!.some(o=>o.workRun?.resultOutcome==='needs_input'));
+  releaseAnswer(answer('挺好的。'));
   const reply=await pending;
-  assert.match(reply.message.content,/先完成的方案/);assert.doesNotMatch(reply.message.content,/稍后完成的核算/);
+  assert.match(reply.message.content,/先完成的方案/);assert.match(reply.message.content,/稍后完成的核算/);assert.match(reply.message.content,/还缺活动日期/);
   const db=await f.store.read(),first=db.chatOperations!.find(o=>o.conversationId===initial.taskIds[0]&&o.workRun)!,second=db.chatOperations!.find(o=>o.conversationId===initial.taskIds[1]&&o.workRun)!;
   assert.ok(first.workRun!.reportedToCoordinatorAt);assert.equal(first.workRun!.unread,false);
-  assert.equal(second.workRun!.reportedToCoordinatorAt,undefined);assert.equal(second.workRun!.unread,true);
+  assert.ok(second.workRun!.reportedToCoordinatorAt);assert.equal(second.workRun!.unread,true);
   const snapshot=await follow.state(a);
-  assert.deepEqual(snapshot.recentReportedReceiptIds,[first.id]);
+  assert.deepEqual(snapshot.recentReportedReceiptIds.sort(),[first.id,second.id].sort());
   assert.deepEqual(snapshot.notices.map(n=>n.id),[second.id]);
-  f.setRoute(()=>answer('刚才的核算也有结果了。'));
+  f.setRoute(messages=>{assert.ok(!messages.some(m=>m.content?.startsWith('刚返回、尚未向用户汇报')));return answer('继续聊。');});
   const after=await f.service.dispatch(a,input('operation_quiet_after_001','再聊两句，不执行'),key);
-  assert.match(after.message.content,/稍后完成的核算/);
-  assert.equal((await f.store.read()).chatOperations!.find(o=>o.id===second.id)!.workRun!.reportMessageId,after.message.id);
+  assert.doesNotMatch(after.message.content,/稍后完成的核算/);
+  assert.equal((await f.store.read()).chatOperations!.find(o=>o.id===second.id)!.workRun!.reportMessageId,reply.message.id);
 });
 
 test('batch workers receive only their own handoff while exact source messages stay in durable history',async()=>{
@@ -857,6 +859,62 @@ test('a new Notion draft cannot be completed by a model claim without a verified
   assert.doesNotMatch(task.conversation.messages.at(-1)!.content,/已保存到 Notion/);
   await assert.rejects(()=>service.task(b,r.taskId!));
 });
+test('a verified saved explanation is still needs-input when yesterday material is missing, and main chat reports that fact once', async () => {
+  const f=fixture(), parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', pageId='cccccccccccccccccccccccccccccccc';
+  let body='', writes=0, reportCalls=0;
+  await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:'a',authorizedAt:'now',parentId}}));
+  const mcp={readDocument:async()=>({text:body||'保存目录'}),callDocumentTool:async(_ws:string,_connection:string,_grant:string,_user:string,_name:string,args:any)=>{
+    writes++;body=args.pages[0].content;return {pages:[{id:pageId}]};
+  }} as unknown as NotionMcpService;
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({status:'no_match',chunks:[],failures:[]})},{
+    notionDocuments:new NotionDocuments(f.store,mcp), reportCall:async()=>{reportCalls++;throw Error('report summary unavailable');},
+    modelCall:async(model,messages)=>{
+      if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('我先找昨天的素材，再整理成专栏。'):{...answer(''),toolCalls:[{id:'column',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'昨天的专栏',instruction:'整理合成专栏；没有昨天素材时如实说明，若保存说明也不能视作正文完成。不查知识库。',executorId:'general',featureIds:[]})}}]};
+      if(messages.at(-1)?.role!=='tool')return {...answer(''),toolCalls:[{id:'save-explanation',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({title:'专栏（待素材）',content:'还没有找到能确认属于这一天的内容，正文还没有写成。请补充昨天几句原话。'})}}]};
+      return answer(JSON.stringify({outcome:'needs_input',summary:'没有找到能确认属于这一天的内容，专栏正文还没写成。',content:'没有找到能确认属于这一天的内容，专栏正文还没写成。已经保存的是说明，不是文章。\n## 需要你给我的一步\n- 昨天说过的几句原话，直接发来就好。'}));
+    },
+  });
+  const accepted=await service.dispatch(a,{...input('operation_column_missing_material','请整理合成专栏，结果保存到Notion；不查知识库。'),outputDestination:'notion'},key);
+  await service.resume(a,key);await waitFor(async()=>(await service.task(a,accepted.taskId!)).jobs[0].state==='failed');
+  const detail=await service.task(a,accepted.taskId!);assert.equal(detail.jobs[0].notionReceipt?.state,'verified');
+  const snapshots=await Promise.all([service.state(a),service.state(a)]), db=await f.store.read(), job=db.chatOperations!.find(o=>o.workRun)!;
+  assert.equal(job.workRun!.resultOutcome,'needs_input');assert.equal(writes,1);assert.ok(reportCalls<=1,'a failed existing summary call never triggers a report retry');
+  const main=snapshots[0].conversation!, report=main.messages.find(m=>m.id===job.workRun!.reportMessageId)!;
+  assert.match(report.content,/所需日期的素材.*正文还没写成/);assert.match(report.content,/几句原话或相关记录/);assert.match(report.content,new RegExp(pageId));
+  assert.doesNotMatch(report.content,/已完成|工具|回执|错误码|summary unavailable/);
+  assert.equal(main.messages.filter(m=>m.id===report.id).length,1);assert.ok(snapshots.every(s=>s.recentReportedReceiptIds.includes(job.id)));
+  await service.state(a);assert.equal(writes,1,'refresh only reports existing evidence; it never rewrites Notion');
+  await assert.rejects(()=>service.task(b,accepted.taskId!));assert.equal(db.powerAccounts[1].balanceMicros,100e6);
+});
+for(const recallStatus of ['no_match','failed'] as const)test(`dated retrieval ${recallStatus} never creates a placeholder Notion page, and later supplied sources produce the real article`,async()=>{
+  const f=fixture(), parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',pageId='dddddddddddddddddddddddddddddddd';
+  let materials=false,body='',writes=0,workerCalls=0;
+  await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:'a',authorizedAt:'now',parentId}}));
+  const mcp={readDocument:async()=>({text:body||'保存目录'}),callDocumentTool:async(_w:string,_c:string,_g:string,_u:string,_n:string,args:any)=>{writes++;body=args.pages[0].content;return{pages:[{id:pageId}]};}} as unknown as NotionMcpService;
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async(_ws,_q,_k,sourceIds)=>{assert.deepEqual(sourceIds,['notion']);return{status:materials?'used':recallStatus,chunks:materials?[{title:'昨天的笔记',content:'2026-10-24 合成原话：AI让实现更容易，也让判断更重要。',dateEvidence:{basis:'event',date:'2026-10-24',status:'requires_content_verification'}}]:[],failures:[]};}}, {
+    notionDocuments:new NotionDocuments(f.store,mcp),reportCall:async()=>{assert.fail('missing material should not buy another report model round');},modelCall:async(model,messages)=>{
+      if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('我先查昨天的素材，再写专栏。'):{...answer(''),toolCalls:[{id:'dated-column',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'昨天的专栏',instruction:'从Notion检索2026-10-24的会议笔记，依据真实素材写专栏并保存到Notion。',executorId:'general',featureIds:[],knowledge:'notion',requiredTools:['knowledge_search'],outputKind:'text',dependsOn:[]}]})}}]};
+      workerCalls++;
+      if(messages.at(-1)?.role!=='tool')return {...answer(''),toolCalls:[{id:'dated-search',type:'function',function:{name:'knowledge_search',arguments:JSON.stringify({query:'会议笔记'})}},...(!materials?[{id:'bad-placeholder',type:'function' as const,function:{name:'save_notion_draft',arguments:JSON.stringify({title:'待素材说明',content:'没找到素材，先留下说明。'})}}]:[])]};
+      if(messages.at(-1)?.content?.includes('"state":"verified"'))return answer(JSON.stringify({outcome:'completed',content:'根据真实素材写成的专栏已保存。',summary:'专栏已保存。'}));
+      assert.equal(materials,true,'no-match should return needs_input directly without forcing another generation');
+      return {...answer(''),toolCalls:[{id:'real-article',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({title:'合成专栏',content:'AI让实现更容易，也让判断更重要。以下依据2026-10-24的会议笔记展开。'})}}]};
+    },
+  });
+  const accepted=await service.dispatch(a,{...input('operation_no_material_placeholder','请从Notion检索2026-10-24的会议笔记，写专栏并保存到Notion。'),outputDestination:'notion'},key);
+  await service.resume(a,key);await waitFor(async()=>(await service.task(a,accepted.taskId!)).jobs[0].state==='failed');
+  let detail=await service.task(a,accepted.taskId!),snapshot=await service.state(a);
+  assert.equal(writes,0);assert.equal(workerCalls,1);assert.equal(detail.jobs[0].notionReceipt,undefined);
+  assert.match(snapshot.conversation!.messages.at(-1)!.content,recallStatus==='failed'?/资料来源这次没查成.*2026-10-24/:/2026-10-24.*正文还没写成/);assert.match(snapshot.conversation!.messages.at(-1)!.content,/没有新建占位文档/);
+  assert.doesNotMatch(snapshot.conversation!.messages.at(-1)!.content,/已保存到 Notion|已完成/);
+  materials=true;
+  await service.direct(a,accepted.taskId!,{operationId:'operation_material_supplied_followup',text:'请再从Notion检索2026-10-24的会议笔记，按原要求写专栏并保存到Notion。',outputDestination:'notion'},key);
+  await service.resume(a,key,accepted.taskId!);await waitFor(async()=>(await service.task(a,accepted.taskId!)).jobs.at(-1)!.state==='completed');
+  detail=await service.task(a,accepted.taskId!);snapshot=await service.state(a);
+  assert.equal(writes,1);assert.equal(detail.jobs.at(-1)!.notionReceipt?.state,'verified');assert.match(body,/AI让实现更容易/);assert.doesNotMatch(body,/没找到素材/);
+  assert.match(snapshot.conversation!.messages.at(-1)!.content,/专栏.*已完成/);assert.match(snapshot.conversation!.messages.at(-1)!.content,new RegExp(pageId));
+  await assert.rejects(()=>service.task(b,accepted.taskId!));
+});
 test('a new explicit Notion task with default chat binds only its own scoped write and verifies the real page',async()=>{
  for(const batch of [false,true]){
   const f=fixture(),parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',pageId='cccccccccccccccccccccccccccccccc';let body='',writes=0;
@@ -1180,7 +1238,8 @@ test('chat image task is independent, private, billed once and returns to the sa
     assert.equal(image.workspaceId,a.workspaceId);assert.equal(image.userId,a.userId);
     assert.equal(done.modelUsageRecords.filter(r=>r.activity==='image_generation').length,1);
     assert.equal(done.modelUsageRecords.find(r=>r.activity==='image_generation')!.chargedMicros,100000);
-    await f.service.report(b,[job.id],key);assert.equal((await f.store.read()).conversations.find(c=>c.coordinatorMain)!.messages.filter(m=>m.imageUrl).length,0);
+    await f.service.state(a);
+    await f.service.report(b,[job.id],key);assert.equal((await f.store.read()).conversations.find(c=>c.coordinatorMain)!.messages.filter(m=>m.imageUrl).length,1,'idle completion already returned the owned image; another owner cannot duplicate it');
     await f.service.report(a,[job.id],key);await f.service.report(a,[job.id],key);
     const main=(await f.store.read()).conversations.find(c=>c.coordinatorMain)!;
     assert.equal(main.messages.filter(m=>m.imageUrl).length,1);
@@ -1201,7 +1260,10 @@ test('cancelled or invalid image output never claims completion or charges an im
       const db=await f.store.read();assert.equal(db.attachments.length,0);
       assert.equal(db.modelUsageRecords.find(r=>r.activity==='image_generation')!.chargedMicros,0);
       assert.equal(db.chatOperations!.find(o=>o.id===job.id)!.workRun!.state,cancel?'cancelled':'failed');
-      assert.match(db.conversations.find(c=>c.coordinatorMain)!.messages.at(-1)!.content,/文案先/);
+      const main=await f.service.state(a);
+      assert.match(main.conversation!.messages[1].content,/文案先/);
+      assert.match(main.conversation!.messages.at(-1)!.content,cancel?/已停止/:/未完成|没做成/);
+      assert.doesNotMatch(main.conversation!.messages.at(-1)!.content,/已完成|生成完成/);
     }finally{release?.();rmSync(f.directory,{recursive:true,force:true});}
   }
 });
@@ -1390,10 +1452,9 @@ test('local notices acknowledge their own execution round without suppressing a 
  assert.equal((await f.store.read()).executionTasks[0].noticeReadRound,undefined);
  await f.service.acknowledge(a,['notice-execution']); await f.service.acknowledge(a,['notice-execution']);
  const reviewed=await f.service.state(a);
- assert.equal(reviewed.notices.length,1);
- assert.equal(reviewed.notices[0].read,true);
- assert.equal(reviewed.notices[0].reported,false);
- assert.equal((await f.store.read()).executionTasks[0].reportedToCoordinatorAt,undefined);
+ assert.equal(reviewed.notices.length,0,'the already-reviewed result is still briefed in main chat, then its note retracts');
+ assert.match(reviewed.conversation!.messages.at(-1)!.content,/已回读/);
+ assert.ok((await f.store.read()).executionTasks[0].reportedToCoordinatorAt);
  await f.service.report(a,['notice-execution'],key);
  assert.ok((await f.store.read()).executionTasks[0].reportedToCoordinatorAt);
  assert.equal((await f.service.state(a)).notices.length,0,'reviewed and reported result is fully acknowledged');
@@ -1788,7 +1849,7 @@ test("same-task supplements wait; another task proceeds; running snapshot exclud
       .messages.filter((m) => m.content === "本轮成果").length,
     0,
   );
-  assert.equal((await f.service.state(a)).notices.length, 3);
+  assert.equal((await f.service.state(a)).notices.length, 2,'a task bubble represents its latest attempt, not each earlier supplement');
 });
 test("direct task continuation never changes the main conversation, and scoped reads/notifications cannot cross users", async () => {
   const f = fixture(),
@@ -1826,8 +1887,7 @@ test("direct task continuation never changes the main conversation, and scoped r
     notices.map((n) => n.id),
   );
   const reviewed=await f.service.state(a);
-  assert.equal(reviewed.notices.length, notices.length,'task review does not drop unreported dispatcher feedback');
-  assert.ok(reviewed.notices.every(n=>n.read&&!n.reported));
+  assert.equal(reviewed.notices.length, 0,'idle task updates have been briefed; viewing details clears only the review badge');
   await f.service.report(a,notices.map(n=>n.id),key);
   assert.equal((await f.service.state(a)).notices.length,0);
   assert.equal((await f.service.state(b)).total, 0);
@@ -2640,12 +2700,12 @@ test('next answer reports the captured old local round after the same execution 
   await ready;
   await f.store.mutate(d=>{const task=d.executionTasks[0];task.reportRound=1;task.status='running';task.finalResponse=undefined;task.completedAt=undefined;task.updatedAt=new Date().toISOString();});
   release(answer('上一轮已经返回了文件内容和回读结果。'));
-  const reply=await response;assert.match(reply.message.content,/连续本机文档.*有新反馈/);assert.match(reply.message.content,/task=same-local-conversation/);
+  const reply=await response;assert.match(reply.message.content,/上一轮的「连续本机文档」.*已返回结果/);assert.match(reply.message.content,/task=same-local-conversation/);assert.doesNotMatch(reply.message.content,/执行器|回执|验证证据/);
   let db=await f.store.read();assert.equal(db.chatOperations!.filter(o=>o.id==='notice_same-local-execution'&&o.assistantMessageId===reply.message.id).length,1);
   assert.equal(db.executionTasks[0].status,'running');assert.equal(db.executionTasks[0].reportedRound,undefined);assert.equal(db.executionTasks[0].reportedToCoordinatorAt,undefined);
   const state=await service.state(a);assert.deepEqual(state.recentReportedReceiptIds,['same-local-execution']);assert.ok(state.transfers.some(t=>t.id==='same-local-conversation'&&t.running));
   assert.equal((await service.dispatch(a,input('operation_report_old_round','上一轮做了什么？只回答，不执行。'),key)).message.id,reply.message.id,'replaying the same answer cannot report twice');
   await f.store.mutate(d=>{const task=d.executionTasks[0];task.status='completed';task.finalResponse='NEW_ROUND_RESULT：改好新标题并回读';task.updatedAt=new Date().toISOString();task.completedAt=task.updatedAt;saveExecutionReceipt(d,task);});
-  const next=await service.state(a);assert.deepEqual(next.notices.map(n=>n.id),['same-local-execution_1']);assert.equal(next.notices[0].reported,false);assert.equal(next.notices[0].read,false);
+  const next=await service.state(a);assert.deepEqual(next.notices.map(n=>n.id),['same-local-execution_1']);assert.equal(next.notices[0].reported,true);assert.equal(next.notices[0].read,false);
   db=await f.store.read();assert.equal(db.messages.filter(m=>m.id==='execution_receipt_same-local-execution_0').length,1);assert.equal(db.messages.filter(m=>m.id==='execution_receipt_same-local-execution_1').length,1);
 });

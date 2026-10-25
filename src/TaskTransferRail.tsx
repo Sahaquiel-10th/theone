@@ -40,7 +40,7 @@ export function transferFeedbackLabel(task:Transfer) {
 type RailProps={tasks:Transfer[];busy:boolean;onOpen:(id:string)=>void;onOpenAll?:()=>void;onStop?:(task:Transfer,source:HTMLElement)=>Promise<void>;onReport?:(ids:string[])=>Promise<boolean|void>;onReadAll?:()=>Promise<void>;onDismiss?:(task:Transfer)=>Promise<void>;recentReportedReceiptIds?:string[];departureAnchor?:()=>HTMLElement|null;returnAnchor?:()=>HTMLElement|null;animateNotes?:boolean};
 type CardGeometry={node:HTMLElement;rect:NoteRect};
 
-/** Completed notes wait for the next dispatcher answer. Motion never sends a chat or marks work read. */
+/** Notes return only after the outcome reached the main dialogue. Motion never executes work or marks it read. */
 export function TaskTransferRail({tasks,busy,onOpen,onOpenAll,onStop,onReadAll,onDismiss,recentReportedReceiptIds=[],departureAnchor,returnAnchor,animateNotes=true}:RailProps) {
   const [returning,setReturning]=useState<Transfer[]>([]),[departing,setDeparting]=useState<string[]>([]),[expanded,setExpanded]=useState(true);
   const [stopping,setStopping]=useState<string[]>([]),[stopError,setStopError]=useState(''),[readError,setReadError]=useState('');
@@ -87,7 +87,7 @@ export function TaskTransferRail({tasks,busy,onOpen,onOpenAll,onStop,onReadAll,o
   return <aside ref={rail} className="task-transfer-rail" aria-label="正在处理的任务">
     <button type="button" className="task-transfer-bubble task-transfer-heading" aria-expanded={expanded} onClick={()=>setExpanded(value=>!value)}>
       {feedbackCount?<Lightbulb size={15} className="task-feedback-light"/>:<Loader2 size={14} className={visible.some(task=>!transferSettled(task.state)&&task.state!=='paused'&&task.state!=='prepared_local')?'task-transfer-spinner':''}/>}
-      <span><strong>任务 · {visible.length}</strong><small>{returningCards.length?'正在返回主对话':visible.some(transferNeedsRecovery)?'有任务没做完，可重试或忽略':feedbackCount?`${feedbackCount} 件有结果 · 继续聊时带回来`:'处理期间可以继续聊天'}</small></span><ChevronDown size={14}/>
+      <span><strong>任务 · {visible.length}</strong><small>{returningCards.length?'正在返回主对话':feedbackCount?'正在把结果带回主对话':'处理期间可以继续聊天'}</small></span><ChevronDown size={14}/>
     </button>
     {onReadAll&&feedbackCount?<TaskReadAllButton count={unreadCount} onReadAll={onReadAll}/> : null}
     {expanded?notes.map(task=><div className="task-transfer-row" data-task-transfer-id={task.taskId} data-task-receipt-id={task.id} key={task.id}>

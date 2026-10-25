@@ -145,7 +145,16 @@ export class NotionDocuments {
       this.assertTarget(d, s, target);
       const own = d.chatOperations?.find(o => o.id === op!.id && o.workspaceId === s.workspaceId && o.userId === s.userId && o.conversationId === cid);
       if (!own?.workRun?.notionReceipt || own.workRun.notionReceipt.expectedDigest !== receipt.expectedDigest || own.workRun.state === 'running') throw new NotionDocumentError('保存记录已改变，请重新检查');
+      const newlyVerified=own.workRun.notionReceipt.state!=='verified';
       own.workRun.notionReceipt.state = 'verified'; own.workRun.notionReceipt.digest = hash(body); own.workRun.notionReceipt.error = undefined; own.workRun.notionReceipt.failureCode = undefined;
+      if(newlyVerified){
+        // A real new readback is reportable evidence, unlike timestamps or a
+        // repeated click. Keep legacy notice markers; version only this event.
+        own.workRun.reportRevision=(own.workRun.reportRevision??0)+1;
+        own.workRun.reportRevisionAt=new Date().toISOString();
+        own.workRun.reportedToCoordinatorAt=undefined;own.workRun.reportMessageId=undefined;own.workRun.unread=true;
+        own.workRun.userReport='刚核对过，之前拟保存的内容已经在 Notion 里，文章入口可以打开了。这次只确认了保存状态；其余没做完的部分仍保留在这件事里，没有重新执行。';
+      }
       // This reconciles the save only. Never change cancelled/failed task state
       // or lift the pause: the connected client resumes any unpaused queue.
     });

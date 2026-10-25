@@ -8,16 +8,72 @@ import { acknowledgeTaskResults, acknowledgeAllTaskResults, appendTaskResultRepo
 import { saveExecutionReceipt } from './executionService.js';
 import {latestTaskResults,pendingConversationTaskResults} from './taskResultInbox.js';
 
-test('unrelated conversation reports only unseen successful latest work, never stale successes behind a failure',()=>{
+test('automatic conversation reporting includes every latest outcome even after viewing the detail, never stale successes behind failure',()=>{
  const db=fixture(),good=local(db,'good'),old=local(db,'old'),bad=local(db,'bad');
  bad.conversationId=old.conversationId;bad.updatedAt='2026-10-16T12:00:00Z';bad.status='failed';bad.finalResponse='尚未创建文件';
  const read=local(db,'read');read.noticeReadRound=0;
  const stopped=local(db,'stop');stopped.status='cancelled';
  const uncertain=local(db,'uncertain');uncertain.finalResponse='停止操作。无法确认内容，未完成回读';
  local(db,'other-owner',b);
- assert.deepEqual(pendingConversationTaskResults(db,a).map(r=>r.sourceId),[good.id]);
+ assert.deepEqual(pendingConversationTaskResults(db,a).map(r=>r.sourceId).sort(),[good.id,read.id,stopped.id,uncertain.id,bad.id].sort());
  assert.equal(unreviewedTaskResults(db,a,{count:50}).some(r=>r.sourceId===bad.id),true);
  assert.equal(pendingConversationTaskResults(db,b).length,1);
+});
+
+test('verified Notion saving does not promote an unfinished article, and idle multi-window refresh briefs it once', async () => {
+  const db = fixture(), { operation } = cloud(db, 'yesterday-column', a, {state: 'completed', outcome: 'needs_input', text: `## 情况说明\n昨天（2026-10-24，上海时间）的思考和碎碎念，我在你的笔记和 Notion 里没有找到能确认属于这一天的内容。翻到的都是更早的记录，日期都对不上，我不拿它们拼一篇冒充昨天。\n已经把这份说明存进 Notion 草稿了，正文还没有写成。\n## 需要你给我的一步\n- 昨天随口说过的话，原样发来就好\n- 或给几个关键词`});
+  operation.workRun!.notionReceipt = {state: 'verified', pageId: 'owned-page', url: 'https://www.notion.so/owned-page'} as any;
+  operation.workRun!.unread = false; // Looking at task details must not swallow its main-chat return.
+  assert.equal(pendingTaskResults(db, a)[0].outcome, 'needs_input');
+  const coordinator = service(db);
+  const snapshots = await Promise.all([coordinator.state(a), coordinator.state(a), coordinator.state(a)]);
+  const main = db.conversations.find(c => c.id === 'main-a')!;
+  assert.equal(main.messages.length, 1);
+  assert.match(main.messages[0].content, /所需日期的素材/);
+  assert.match(main.messages[0].content, /正文还没写成/);
+  assert.match(main.messages[0].content, /几句原话或相关记录/);
+  assert.match(main.messages[0].content, /打开 Notion/);
+  assert.doesNotMatch(main.messages[0].content, /已完成|已交代|已有任务不会重复安排|翻到的都是/);
+  assert.equal(pendingTaskResults(db, a).length, 0);
+  assert.equal(db.chatOperations!.filter(o => o.requestId === 'result_notice').length, 1);
+  assert.ok(snapshots.every(snapshot => snapshot.recentReportedReceiptIds.includes(operation.id)));
+  assert.equal(db.conversations.find(c => c.id === 'main-b')!.messages.length, 0);
+});
+
+test('automatic technical failures use a plain next step rather than diagnostics, and a busy dispatcher defers delivery', async () => {
+  const db = fixture(), { operation } = cloud(db, 'connection-failure', a, {state: 'failed'});
+  operation.workRun!.error = 'stream disconnected before completion: response.completed; Authorization Bearer PRIVATE_SECRET';
+  const busy = {...a, id: 'busy', operationId: 'busy', requestId: 'coord_busy', status: 'pending', payloadHash: '', createdAt: timestamp, updatedAt: timestamp} as ChatOperation;
+  db.chatOperations!.push(busy);
+  const coordinator = service(db);
+  assert.equal((await coordinator.state(a)).conversation!.messages.length, 0);
+  assert.equal(pendingTaskResults(db, a).length, 1);
+  busy.status = 'completed';
+  await coordinator.state(a);
+  const report = db.conversations.find(c => c.id === 'main-a')!.messages[0];
+  assert.match(report.content, /连接中断/);
+  assert.match(report.content, /核对已有内容后继续未完成部分/);
+  assert.doesNotMatch(report.content, /PRIVATE_SECRET|Authorization|Bearer|response\.completed|stream disconnected/);
+  assert.equal(pendingTaskResults(db, b).length, 0);
+});
+
+test('a dispatcher claimed between the idle read and report transaction takes priority, without losing the result', async () => {
+  const db=fixture();cloud(db,'racing-result',a,{state:'failed',outcome:'needs_input',text:'还缺活动日期。请补充活动是哪一天。'});
+  let enter!:()=>void, release!:()=>void;
+  const entered=new Promise<void>(resolve=>enter=resolve), gate=new Promise<void>(resolve=>release=resolve);
+  let held=false;
+  const coordinator=new CoordinatorService({read:async()=>db,mutate:async fn=>{if(!held){held=true;enter();await gate;}return fn(db);}},
+    {recallWithDiagnostics:async()=>({status:'no_match',chunks:[],failures:[]})});
+  const snapshot=coordinator.state(a);await entered;
+  const busy={...a,id:'racing-dispatch',operationId:'racing-dispatch',requestId:'coord_racing',status:'pending',payloadHash:'',createdAt:timestamp,updatedAt:timestamp} as ChatOperation;
+  db.chatOperations!.push(busy);release();
+  assert.equal((await snapshot).conversation!.messages.length,0);
+  assert.equal(pendingTaskResults(db,a).length,1);
+  assert.equal(db.chatOperations!.filter(o=>o.requestId==='result_notice').length,0);
+  busy.status='completed';await coordinator.state(a);
+  assert.equal(db.conversations.find(c=>c.id==='main-a')!.messages.length,1);
+  assert.match(db.conversations.find(c=>c.id==='main-a')!.messages[0].content,/还缺活动日期.*请补充活动是哪一天/);
+  assert.equal(pendingTaskResults(db,a).length,0);
 });
 
 test('one task briefing keeps only its newest result, without erasing history or other owners',()=>{
@@ -26,6 +82,54 @@ test('one task briefing keeps only its newest result, without erasing history or
   local(db,'foreign',b);const pending=pendingTaskResults(db,a);
   const brief=latestTaskResults(pending);assert.equal(brief.length,1);assert.equal(brief[0].sourceId,'last');assert.equal(brief[0].outcome,'cancelled');
   assert.equal(pending.length,2);assert.equal(pendingTaskResults(db,b).length,1);
+});
+
+test('an already-reported newer success cannot be replaced by an older unreported failure during another task briefing',()=>{
+  const db=fixture(),old=cloud(db,'stale-failure',a,{state:'failed',text:'旧失败'}),fresh=cloud(db,'new-success',a,{outcome:'completed',text:'新成果'});
+  fresh.operation.conversationId=old.task.id;fresh.operation.createdAt='2026-10-24T01:00:00Z';fresh.operation.updatedAt='2026-10-24T02:00:00Z';fresh.operation.workRun!.reportedToCoordinatorAt='2026-10-24T02:00:01Z';
+  old.operation.updatedAt='2026-10-25T01:00:00Z';
+  cloud(db,'another-task',a,{outcome:'completed',text:'另一个成果'});
+  assert.deepEqual(pendingConversationTaskResults(db,a).map(r=>r.sourceId),['another-task']);
+  assert.deepEqual(appendTaskResultReport(db,a).results.map(r=>r.sourceId),['another-task']);
+  assert.doesNotMatch(db.conversations.find(c=>c.id==='main-a')!.messages[0].content,/旧失败|stale-failure/);
+  assert.equal(appendTaskResultReport(db,a).results.length,0);
+});
+
+for(const state of ['queued','running','prepared'] as const)test(`a newer ${state} attempt suppresses an older terminal notice even if the old attempt updates late`,()=>{
+  const db=fixture(),old=cloud(db,'old-failed',a,{state:'failed',text:'旧失败'}),active=cloud(db,'active-attempt',a,{state});
+  active.operation.conversationId=old.task.id;active.operation.createdAt='2026-10-24T01:00:00Z';active.operation.updatedAt='2026-10-24T01:00:00Z';
+  old.operation.updatedAt='2026-10-25T01:00:00Z';
+  assert.equal(pendingConversationTaskResults(db,a).length,0);assert.equal(appendTaskResultReport(db,a).results.length,0);
+  assert.equal(pendingTaskResults(db,a).length,1,'the historical failure remains available in its original task');
+});
+
+test('automatic grouping happens before bounding, so many old attempts cannot starve a fresh task',()=>{
+  const db=fixture();let taskId='';
+  for(let i=0;i<70;i++){
+    const {operation}=cloud(db,`old-attempt-${i}`,a,{state:'failed',text:'旧失败'});taskId||=operation.conversationId!;
+    operation.conversationId=taskId;operation.createdAt=`2026-10-14T01:${String(i%60).padStart(2,'0')}:00Z`;
+  }
+  const active=cloud(db,'active-replacement',a,{state:'running'});active.operation.conversationId=taskId;active.operation.createdAt='2026-10-24T01:00:00Z';
+  cloud(db,'fresh-independent',a,{outcome:'completed',text:'真实新成果'});
+  assert.deepEqual(pendingConversationTaskResults(db,a,{count:1}).map(r=>r.sourceId),['fresh-independent']);
+  assert.deepEqual(appendTaskResultReport(db,a).results.map(r=>r.sourceId),['fresh-independent']);
+});
+test('current results are prioritized ahead of a backlog of unrelated historical terminal work',()=>{
+  const db=fixture();for(let i=0;i<70;i++)cloud(db,`historical-${i}`,a,{state:'failed',text:'旧记录'});
+  const fresh=cloud(db,'latest-real-task',a,{outcome:'needs_input',text:'请补充昨天的素材。'});fresh.operation.createdAt=fresh.operation.updatedAt='2026-10-25T01:00:00Z';
+  assert.deepEqual(pendingConversationTaskResults(db,a,{count:1}).map(r=>r.id),[fresh.operation.id]);
+  const report=appendTaskResultReport(db,a);assert.equal(report.results[0].id,fresh.operation.id);assert.equal(report.results.length,10);
+  assert.equal(pendingTaskResults(db,a,{count:50}).length,50,'older historical records are not silently migrated or marked reported');
+});
+
+test('a new local continuation round is ordered by its round input, not original execution creation or a late terminal timestamp',()=>{
+  const db=fixture(),first=cloud(db,'prior-cloud',a,{state:'failed',text:'先前失败'}),execution=local(db,'continued-local');
+  execution.conversationId=first.task.id;execution.reportRound=1;execution.status='running';execution.finalResponse=undefined;
+  first.operation.createdAt='2026-10-24T01:00:00Z';first.operation.updatedAt='2026-10-25T02:00:00Z';
+  db.executionEvents=[{...a,id:'round-input',taskId:execution.id,kind:'user_message',text:'新一轮要求',round:1,createdAt:'2026-10-25T01:00:00Z'}];
+  assert.equal(pendingConversationTaskResults(db,a).length,0);
+  execution.status='completed';execution.finalResponse='新一轮正确结果';execution.completedAt='2026-10-25T03:00:00Z';
+  assert.deepEqual(pendingConversationTaskResults(db,a).map(r=>r.sourceId),[execution.id]);
 });
 
 function recoverReceipt(db: Database, task: ExecutionTask) {

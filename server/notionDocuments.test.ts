@@ -5,6 +5,7 @@ import type { Store } from './db.js';
 import type { WorkRun } from './coordinatorTypes.js';
 import { NotionDocuments, notionPageId, notionBody, writingTarget } from './notionDocuments.js';
 import { NotionWriteError, type NotionMcpService } from './knowledge/notionMcpService.js';
+import {appendTaskResultReport,pendingConversationTaskResults,pendingTaskResults} from './taskResultInbox.js';
 const s = { workspaceId: 'wa', userId: 'a' };
 const parentId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', pageId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 function fixture() {
@@ -269,6 +270,28 @@ test('Notion uncertain save can be reconciled by readback only without restartin
   assert.equal(result.state,'verified');assert.equal(f.calls.length,1);
   assert.equal(f.db.chatOperations![0].workRun!.state,'cancelled');
   assert.equal(f.db.chatOperations![0].workRun!.notionReceipt!.state,'verified');
+});
+test('a newly verified reconciliation returns once after an earlier failure briefing without replaying legacy notices or the write',async()=>{
+  const f=fixture(),job=f.job();let reads=0;
+  const read=f.mcp.readDocument.bind(f.mcp);f.mcp.readDocument=async(...args)=>{if(++reads===1)throw Error('lost readback');return read(...args);};
+  await assert.rejects(()=>f.docs.tool(s,'op','task',job,async()=>{}).structured!.run({title:'测试',content:'真实内容'}));
+  job.state='failed';job.error='保存结果尚未确认';job.unread=true;job.resultOutcome='partial';
+  const stamp='2026-10-24T01:00:00Z';
+  f.db.messages=[];f.db.executionTasks=[];f.db.attachments=[];
+  Object.assign(f.db.conversations[0],{title:'原任务',messages:[],archived:false,createdAt:stamp,updatedAt:stamp});
+  f.db.conversations.push({...s,id:'main',title:'ONE',modelId:'model',coordinatorMain:true,archived:false,messages:[],createdAt:stamp,updatedAt:stamp});
+  Object.assign(f.db.chatOperations![0],{operationId:'original-operation',requestId:'work_original',status:'failed',createdAt:stamp,updatedAt:stamp});
+  const old=appendTaskResultReport(f.db,s);assert.equal(old.results[0].id,'op');assert.ok(job.reportedToCoordinatorAt);
+  await f.docs.reconcile(s,'task',async()=>{});
+  assert.equal(job.reportRevision,1);assert.equal(job.state,'failed');assert.equal(job.resultOutcome,'partial');assert.equal(f.calls.length,1);
+  assert.deepEqual(pendingConversationTaskResults(f.db,s).map(r=>r.id),['op_r1']);
+  const fresh=appendTaskResultReport(f.db,s);assert.equal(fresh.results.length,1);assert.match(fresh.results[0].brief!,/刚核对过.*Notion/);
+  assert.match(f.db.conversations.find(c=>c.id==='main')!.messages.at(-1)!.content,/打开 Notion/);
+  assert.doesNotMatch(f.db.conversations.find(c=>c.id==='main')!.messages.at(-1)!.content,/已完成/);
+  await f.docs.reconcile(s,'task',async()=>{});assert.equal(job.reportRevision,1);assert.equal(pendingTaskResults(f.db,s).length,0);
+  assert.equal(appendTaskResultReport(f.db,s).results.length,0);assert.equal(f.calls.length,1);
+  assert.equal(f.db.chatOperations!.filter(o=>o.requestId==='result_notice').length,2);
+  await assert.rejects(()=>f.docs.reconcile({workspaceId:'wb',userId:'b'},'task',async()=>{}));
 });
 test('readback selects the unresolved round after a shuffled restart, never the older verified create',async()=>{
   const f=fixture(),first=f.job('create');

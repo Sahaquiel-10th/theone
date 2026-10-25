@@ -49,7 +49,7 @@ export function useFluidPanels(options: UseFluidPanelsOptions) {
       if (!options.localSignal) announced.current.local = '';
     }
     controller.current?.setInputs(options);
-  }, [options.enabled, options.activitySignal, options.localSignal, options.activityProtected, options.localProtected]);
+  }, [options.enabled, options.activitySignal, options.localSignal, options.activityProtected, options.localProtected, options.activityReported]);
 
   const toggle = useCallback((kind: FluidPanelKind) => controller.current?.toggle(kind), []);
   const open = useCallback((kind: FluidPanelKind) => controller.current?.open(kind), []);

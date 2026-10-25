@@ -11,6 +11,12 @@ export type TaskResultReceipt = {
   /** Stable per-result identity; local executions include their round. */
   id: string; sourceId: string; source: 'cloud' | 'local'; taskId: string; title: string;
   outcome: TaskResultOutcome; state: TaskResultOutcome; summary: string; createdAt: string;
+  /** Bounded plain-language briefing derived from the full owned result before clipping. */
+  brief?: string;
+  /** Attempt order is independent of when an old attempt later receives a terminal update. */
+  attemptAt?: string;
+  /** Presentation only: an already-captured previous round is not the active attempt. */
+  previousAttempt?: boolean;
   resultMessageId?: string; imageUrl?: string; attachments: AttachmentSummary[];
   location?: string; notionUrl?: string; round?: number; reported: boolean; reviewed: boolean;
 };
@@ -20,15 +26,14 @@ export function latestTaskResults(results: TaskResultReceipt[]) {
   const latest = new Map<string, TaskResultReceipt>();
   for (const result of results) {
     const previous = latest.get(result.taskId);
-    if (!previous || result.createdAt >= previous.createdAt) latest.set(result.taskId, result);
+    if (!previous || (result.attemptAt??result.createdAt) > (previous.attemptAt??previous.createdAt)
+      || (result.attemptAt??result.createdAt) === (previous.attemptAt??previous.createdAt) && result.createdAt >= previous.createdAt) latest.set(result.taskId, result);
   }
   return [...latest.values()];
 }
-/** Only successful, unseen latest outcomes may accompany an unrelated reply.
- * Failed/uncertain work remains on its note and is available to explicit reads. */
+/** Reading a detail page is not a main-chat briefing. Every terminal outcome must return once. */
 export function automaticTaskResults(results: TaskResultReceipt[]) {
-  return latestTaskResults(results).filter(result => !result.reported && !result.reviewed
-    && (result.outcome === 'completed' || result.outcome === 'returned'));
+  return latestTaskResults(results).filter(result => !result.reported);
 }
 /** Server-internal snapshot, never accepted from a browser. Old local rounds require durable message evidence. */
 export type TaskResultCapture = TaskResultScope & { result: TaskResultReceipt;
@@ -41,6 +46,36 @@ export class TaskResultInboxError extends Error {
 const own = (record: TaskResultScope, scope: TaskResultScope) => record.workspaceId === scope.workspaceId && record.userId === scope.userId;
 const terminal = new Set(['completed', 'failed', 'interrupted', 'cancelled']);
 const clip = (text: string | undefined, max: number) => (text ?? '').trim().slice(0, max);
+// Never copy transport diagnostics, credentials, JSON/tool instructions or stack
+// traces into an automatic reply. The full owned task retains its detailed text.
+const technical = /(?:\b(?:MCP|HTTP|API|JSON|ECONN\w*|ETIMEDOUT|EPIPE|Bearer|api[_ -]?key|authorization|password|secret|token|stack|traceback|execution_unconfirmed)\b|feature_\d|stream disconnected|response\.completed|执行器|回执|验收证据|^工作位置[：:]|https?:\/\/[^\s]+[?&](?:key|token|secret)=|^\s*[{}]|^\s*at\s+\S+\s*\()/i;
+function reportLine(line: string) {
+  if (technical.test(line)) return '';
+  return line.replace(/^\s*(?:#{1,6}\s*|[-*•]\s*|\d+[.、]\s*)/, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/<[^>]*>/g, '').replace(/[*_`]/g, '').trim();
+}
+function resultBrief(outcome: TaskResultOutcome, primary: string | undefined, content: string, error = '') {
+  const raw = [primary, content, error].filter(Boolean).join('\n');
+  const lines = raw.split('\n').map(reportLine).filter(line => line && !/^(?:情况说明|需要你给我的一步|需要你补充|下一步|已保存到 Notion|【本机执行回执)/.test(line));
+  const useful = lines.find(line => !/^(?:这次没能做完，原来的要求还在|这次还没做成，原来的要求还在|未取得可确认的结果|任务已结束，但没有可确认的结果)/.test(line)
+    && !/已经做好，结果会保留.*还没做好/.test(line));
+  const sentence = (value: string) => clip(value.split(/(?<=[。！？])/).slice(0, 2).join(''), 180);
+  if (outcome === 'completed' || outcome === 'returned') return useful ? sentence(useful) : '结果已经返回，可以打开看看。';
+  if (outcome === 'cancelled') return '已经停下了；之前保存的内容还在，不会自动撤销或重新执行。';
+  if (/没有找到能确认属于这一天|日期都?对不上|(?:缺少|没有|没找到|还没找到)[^。\n]{0,30}(?:那天|昨天|当日|所需日期)[^。\n]{0,30}(?:素材|记录|内容)|(?:昨天|那天)[^。\n]{0,50}(?:没有|没找到)/.test(raw))
+    return '还没找到能确认属于所需日期的素材，正文还没写成。把那天的几句原话或相关记录发给我，就能接着写。';
+  const nextHeading = raw.search(/(?:需要你给我的一步|需要你补充|下一步)[：: \t]*\n/);
+  const next = nextHeading >= 0 ? raw.slice(nextHeading).split('\n').slice(1).map(reportLine).filter(Boolean).slice(0, 2).join('；')
+    : lines.find(line => /(?:请(?:先|你|提供|补充|确认|发)|你可以|把.{0,30}(?:发给我|告诉我))/.test(line)) ?? '';
+  let reason = useful ? sentence(useful) : '';
+  if (/stream disconnected|response\.completed|ECONN|timeout|连接中断|模型[^。\n]*(?:中断|未完整)/i.test(raw)) reason = '处理中连接中断了，还没拿到完整结果。';
+  else if (/功能未开放|已下架|版本已变更|工具[^。\n]*(?:未授权|不可用|没就位)/.test(raw)) reason = '需要用到的功能暂时没接好，这次还没做成。';
+  else if (/预算|电力不足|额度不足/.test(raw)) reason = '这次卡在可用电力或本次使用上限上，已有内容会保留。';
+  else if (/输出[^。\n]*(?:限额|截断)|达到[^。\n]*(?:输出|限额)/.test(raw)) reason = '返回的内容被截短了，还不能当作完整成果。';
+  if (!reason) reason = outcome === 'partial' ? '已有部分内容，但这件事还没有全部做好。' : outcome === 'needs_input' ? '还缺一些必要信息，这件事先停在这里。' : '这次还没做成，原要求和已有内容都保留了。';
+  const continuation = next && !reason.includes(next) ? `你可以先补充：${clip(next, 160)}` : /[？?]|(?:请|需要|你可以|把.{0,20}发给)/.test(reason) ? '' : '打开这件事，核对已有内容后继续未完成部分就行，不用重发整个任务。';
+  return clip([reason, continuation].filter(Boolean).join(''), 340);
+}
 function authorize(db: Database, scope: TaskResultScope) {
   if (!db.users.some(user => user.id === scope.userId && user.enabled)
     || !db.workspaces.some(workspace => workspace.id === scope.workspaceId && workspace.status === 'active')
@@ -64,6 +99,30 @@ function ownedFiles(db: Database, scope: TaskResultScope, task: Conversation, me
     return file ? [publicFile(file)] : [];
   });
 }
+function localAttemptAt(db: Database, scope: TaskResultScope, task: ExecutionTask) {
+  if(!(task.reportRound??0))return task.createdAt;
+  const event=(db.executionEvents??[]).filter(e=>own(e,scope)&&e.taskId===task.id&&e.kind==='user_message'&&e.round===task.reportRound).at(-1);
+  return event?.createdAt??task.deliveryAttempt?.issuedAt??task.startedAt??task.updatedAt;
+}
+/** Pick attempts before looking at terminal outcomes or report flags. A newer
+ * queued/running/prepared attempt suppresses stale failure announcements. */
+function latestAttemptSources(db:Database,scope:TaskResultScope){
+  type Attempt={source:'cloud'|'local';sourceId:string;taskId:string;attemptAt:string;round?:number};
+  const latest=new Map<string,Attempt>();
+  const local=(db.executionTasks??[]).filter(t=>own(t,scope)&&ownedTask(db,scope,t.conversationId));
+  const attempts:Attempt[]=(db.chatOperations??[]).filter(o=>own(o,scope)&&o.workRun&&ownedTask(db,scope,o.conversationId))
+    // A prepared cloud handoff is the same attempt as its actual local run,
+    // not an eternally active second job that can hide the local result.
+    .filter(o=>o.workRun!.state!=='prepared'||!local.some(t=>t.conversationId===o.conversationId&&t.sourceMessageId===o.workRun!.inputMessageId))
+    .map(o=>({source:'cloud',sourceId:o.id,taskId:o.conversationId!,attemptAt:o.createdAt}));
+  attempts.push(...local.map(t=>({source:'local' as const,sourceId:t.id,taskId:t.conversationId,attemptAt:localAttemptAt(db,scope,t),round:t.reportRound??0})));
+  for(const attempt of attempts){const previous=latest.get(attempt.taskId);if(!previous||attempt.attemptAt>=previous.attemptAt)latest.set(attempt.taskId,attempt);}
+  return latest;
+}
+export function taskResultIsLatestAttempt(db:Database,scope:TaskResultScope,result:TaskResultReceipt){
+  const latest=latestAttemptSources(db,scope).get(result.taskId);
+  return latest?.source===result.source&&latest.sourceId===result.sourceId&&latest.round===result.round;
+}
 function cloudResult(db: Database, scope: TaskResultScope, operation: ChatOperation, max: number): TaskResultReceipt | undefined {
   const run = operation.workRun, task = ownedTask(db, scope, operation.conversationId);
   if (!run || !task || !terminal.has(run.state)) return;
@@ -83,17 +142,16 @@ function cloudResult(db: Database, scope: TaskResultScope, operation: ChatOperat
   if (run.kind === 'image' && run.state === 'completed') {
     outcome = imageUrl || guideFile ? 'completed' : 'failed';
     if (!imageUrl && !guideFile) summary = '绘图任务没有返回可确认的图片，尚未完成。请查看本轮反馈，不会自动重做。';
-  } else if (run.state === 'completed' && run.notionReceipt?.state === 'verified') {
-    outcome = 'completed';
   } else if (run.state === 'completed' && !result?.content.trim() && !attachments.length) {
     outcome = 'needs_input';
     summary = '任务已结束，但没有可确认的结果。请查看过程，不会自动重做。';
   }
   if (!summary) summary = outcome === 'cancelled' ? '本轮已停止，已产生的修改不会自动撤销。' : '未取得可确认的结果，请查看本轮反馈。';
-  return { id: operation.id, sourceId: operation.id, source: 'cloud', taskId: task.id, title: clip(task.title, 120),
-    outcome, state: outcome, summary, createdAt: operation.updatedAt, resultMessageId: run.resultMessageId,
+  const receiptId=run.reportRevision?`${operation.id}_r${run.reportRevision}`:operation.id;
+  return { id: receiptId, sourceId: operation.id, source: 'cloud', taskId: task.id, title: clip(task.title, 120),
+    outcome, state: outcome, summary, brief: resultBrief(run.reportRevision?'returned':outcome, run.userReport, result?.content ?? summary, run.error), attemptAt:operation.createdAt, createdAt: run.reportRevisionAt??operation.updatedAt, resultMessageId: run.resultMessageId,
     imageUrl, attachments, notionUrl: run.notionReceipt?.state === 'verified' ? run.notionReceipt.url : undefined,
-    reported: Boolean(run.reportedToCoordinatorAt || marker(db, scope, operation.id)), reviewed: run.unread !== true };
+    reported: Boolean(run.reportedToCoordinatorAt || marker(db, scope, receiptId)), reviewed: run.unread !== true };
 }
 function localResult(db: Database, scope: TaskResultScope, execution: ExecutionTask, max: number): TaskResultReceipt | undefined {
   const task = ownedTask(db, scope, execution.conversationId);
@@ -116,6 +174,8 @@ function localResult(db: Database, scope: TaskResultScope, execution: ExecutionT
   const summary = persisted?.content || result || '没有可确认的执行结果，请查看本轮过程。';
   return { id, sourceId: execution.id, source: 'local', taskId: task.id, title: clip(task.title, 120), outcome, state: outcome,
     summary: clip(outcome === 'cancelled' ? `本轮已停止，已产生的修改不会自动撤销。\n${summary}` : summary, max),
+    brief: resultBrief(outcome, undefined, summary),
+    attemptAt:localAttemptAt(db,scope,execution),
     createdAt: execution.terminalReceipt?.round === round ? execution.terminalReceipt.receivedAt : execution.completedAt ?? execution.updatedAt,
     resultMessageId: persisted?.id, attachments: [],
     location: clip(execution.targetName, 500) || undefined, round, reported, reviewed: execution.noticeReadRound === round };
@@ -141,8 +201,17 @@ function bounded(results: TaskResultReceipt[], limits: TaskResultLimits) {
 export function pendingTaskResults(db: Database, scope: TaskResultScope, limits: TaskResultLimits = {}) {
   return bounded(allResults(db, scope, Math.max(100, Math.min(limits.summaryChars ?? 1200, 6000))).filter(r => !r.reported), limits);
 }
+function currentTaskResultReceipts(db: Database, scope: TaskResultScope, limits: TaskResultLimits) {
+  const latest=latestAttemptSources(db,scope);
+  return allResults(db,scope,Math.max(100,Math.min(limits.summaryChars??1200,6000)))
+    .filter(result=>{const attempt=latest.get(result.taskId);return attempt?.source===result.source&&attempt.sourceId===result.sourceId&&attempt.round===result.round;});
+}
 export function pendingConversationTaskResults(db: Database, scope: TaskResultScope, limits: TaskResultLimits = {}) {
-  return bounded(automaticTaskResults(allResults(db, scope, Math.max(100, Math.min(limits.summaryChars ?? 1200, 6000)))), limits);
+  return bounded(currentTaskResultReceipts(db,scope,limits).filter(result=>!result.reported).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||b.id.localeCompare(a.id)),limits);
+}
+/** Notification bubbles describe the current attempt, not every historical failure. */
+export function visibleTaskResultReceipts(db:Database,scope:TaskResultScope,limits:TaskResultLimits={}){
+  return bounded(currentTaskResultReceipts(db,scope,limits).filter(result=>!result.reported||!result.reviewed),limits);
 }
 /** The review badge persists after a result was reported in the main conversation. */
 export function unreviewedTaskResults(db: Database, scope: TaskResultScope, limits: TaskResultLimits = {}) {
@@ -248,31 +317,38 @@ const labels: Record<TaskResultOutcome, string> = {
   completed: '已完成', returned: '已返回结果，待你查看', failed: '未完成', partial: '部分结果已返回，需要核对',
   needs_input: '需要你确认', cancelled: '已停止', interrupted: '结果尚未确认',
 };
-/** Explicit compatibility delivery only. Completion/polling must not call this; pending replies take priority. */
+/** Short facts, not another paid model turn. Reuses the worker's own progress summary where available. */
+export function taskResultReportContent(results: TaskResultReceipt[]) {
+  return latestTaskResults(results).map(result => `${result.previousAttempt?'上一轮的「'+result.title+'」':result.title}：${labels[result.outcome]}。${result.brief ?? resultBrief(result.outcome, undefined, result.summary)}\n[查看这件事](/?task=${encodeURIComponent(result.taskId)})${result.notionUrl ? ` · [打开 Notion](${result.notionUrl})` : ''}`).join('\n\n');
+}
+export function taskReportReplyPending(db: Database, scope: TaskResultScope) {
+  const mainIds = new Set(db.conversations.filter(c => own(c, scope) && c.coordinatorMain && !c.archived).map(c => c.id));
+  return db.chatOperations?.some(o => own(o, scope) && o.status === 'pending'
+    && (o.requestId.startsWith('coord_') || !o.workRun && Boolean(o.conversationId && mainIds.has(o.conversationId)))) === true;
+}
+/** Same-transaction, idempotent delivery. An active dispatcher owns the next reply instead. */
 export function appendTaskResultReport(db: Database, scope: TaskResultScope, input: { ids?: string[]; assistantMessageId?: string; content?: string; mainConversationId?: string; timestamp?: string } = {}) {
   authorize(db, scope);
-  if (db.chatOperations?.some(o => own(o, scope) && o.status === 'pending' && o.requestId.startsWith('coord_')))
+  if (taskReportReplyPending(db, scope))
     return { deferred: true, results: [] as TaskResultReceipt[], messageId: undefined };
   const main = db.conversations.find(c => own(c, scope) && c.coordinatorMain && !c.archived && (!input.mainConversationId || c.id === input.mainConversationId));
   if (!main) return { deferred: false, results: [] as TaskResultReceipt[], messageId: undefined };
   const wanted = input.ids ? new Set(input.ids) : undefined;
-  const results = pendingTaskResults(db, scope, { count: 50, totalChars: 30_000 }).filter(r => !wanted || wanted.has(r.id)).slice(0, 10);
+  const pending = wanted?pendingTaskResults(db, scope, { count: 50, totalChars: 30_000 }).filter(r => wanted.has(r.id))
+    :pendingConversationTaskResults(db,scope,{count:50,totalChars:30_000});
+  const results = latestTaskResults(pending).slice(0, 10), selectedTasks = new Set(results.map(result => result.taskId));
   if (!results.length) return { deferred: false, results, messageId: undefined };
   const messageId = input.assistantMessageId ?? `report_${results[0].id}`, timestamp = input.timestamp ?? new Date().toISOString();
   if (!main.messages.some(m => m.id === messageId)) {
     const singleImage = results.length === 1 && results[0].imageUrl;
     const message: Message = { id: messageId, role: 'assistant', createdAt: timestamp,
-      content: input.content ?? results.map(r => {
-        const preview = r.summary.split('\n').filter(line => !/^【本机执行回执/.test(line))
-          .map(line => line.replace(/^\s*[#>*-]+\s*/, '').trim()).find(Boolean) ?? '';
-        return `${r.title}：${labels[r.outcome]}。${preview ? ` ${preview.slice(0, 140)}${preview.length > 140 ? '…' : ''}` : ''}\n[查看结果](#task:${encodeURIComponent(r.taskId)})${r.imageUrl && !singleImage ? `\n![生成的图片](${r.imageUrl})` : ''}`;
-      }).join('\n\n'),
+      content: input.content ?? taskResultReportContent(results),
       ...(singleImage ? { imageUrl: results[0].imageUrl, attachments: results[0].attachments }
         : { attachments: results.flatMap(result => result.attachments.filter(file => file.welcomeGuide||file.visualDocument)) }) };
     main.messages.push(message); main.updatedAt = timestamp;
     db.messages.push({ ...message, id: messageId, ...scope, conversationId: main.id, attachmentIds: message.attachments?.map(a => a.id) });
   }
-  markTaskResultsReported(db, scope, { ids: results.map(r => r.id), assistantMessageId: messageId, mainConversationId: main.id, timestamp });
+  markTaskResultsReported(db, scope, { ids: pending.filter(result => selectedTasks.has(result.taskId)).map(r => r.id), assistantMessageId: messageId, mainConversationId: main.id, timestamp });
   return { deferred: false, results, messageId };
 }
 

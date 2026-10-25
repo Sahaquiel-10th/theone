@@ -39,6 +39,30 @@ test('feature default 0.6 is billed once; retry and unrelated tenant do not incu
   assert.equal(f.db().powerLedger.length,1);assert.equal(f.db().powerAccounts[1].balanceMicros,1000000);
 });
 
+test('standalone knowledge features preserve the original day across explicit retries and pass structured date options',async()=>{
+  const f=fixture(),body={...f.body,prompt:'用昨天的思考新建一篇文章'};
+  await startFeatureRun(f.store,f.scope,'research',body,async()=>{});
+  const original=f.db().chatOperations![0];
+  original.runtimeContext={at:'2026-10-25T02:00:00Z',today:'2026-10-25',yesterday:'2026-10-24',timeZone:'Asia/Shanghai'};
+  await executeFeatureRun(f.store,f.scope,body.operationId,async()=>{},noKnowledge,{modelCall:async()=>{throw new ModelRequestError(408,'timeout');}});
+  f.db().users[0].contextPreferences=[{workspaceId:'wa',userId:'a',timeZone:'America/Los_Angeles',city:''}];
+  const retry=await retryFeatureRun(f.store,f.scope,body.operationId,{confirmed:true,budget:.1,releaseId:body.releaseId},async()=>{});
+  const child=f.db().chatOperations!.find(o=>o.operationId===retry.result.operationId)!;
+  assert.deepEqual(child.runtimeContext,original.runtimeContext);
+  let modelCalls=0,reads=0;
+  await executeFeatureRun(f.store,f.scope,child.operationId,async()=>{},{recallWithDiagnostics:async(w,_q,_k,ids,userId,options)=>{
+    reads++;assert.equal(w,'wa');assert.equal(userId,'a');assert.deepEqual(ids,['ka']);
+    assert.deepEqual(options?.dateRange,{from:'2026-10-24',to:'2026-10-24',timeZone:'Asia/Shanghai',anchorAt:'2026-10-25T02:00:00Z',basis:'event'});
+    return {chunks:[],status:'no_match',failures:[]};
+  }},{modelCall:async(_model,messages)=>{
+    assert.match(messages[0].content??'',/2026-10-24/);
+    if(modelCalls++===0)return {...done,content:'',toolCalls:[{id:'read',type:'function',function:{name:'knowledge_search',arguments:JSON.stringify({query:'思考'})}}]};
+    assert.match(messages.find(m=>m.role==='tool')?.content??'',/不能据此说该日期没有资料/);
+    return done;
+  }});
+  assert.equal(reads,1);assert.equal(featureRunResult(f.db(),f.scope,child.operationId).status,'completed');
+});
+
 const usage={inputTokens:10,outputTokens:5,totalTokens:15,source:'provider' as const};
 const done={content:'本人资料结果',toolCalls:[],usage,finishReason:'stop' as const};
 function fixture(){

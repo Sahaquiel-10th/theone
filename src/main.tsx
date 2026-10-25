@@ -571,7 +571,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const storyRequested=useRef(false),storyStarter=useRef<()=>Promise<void>>(async()=>{});
   const demo = useWorkspacePreview();
   const api = useContext(PrivateApiContext);
-  const coordinator = useCoordinator(api,user.id,!demo.enabled);
+  const coordinator = useCoordinator(api,user.id,!demo.enabled,user.access?.workspaceId??user.defaultWorkspaceId);
   const preview = coordinator.enabled ? coordinator : demo;
   const [profile, setProfile] = useState<AccountProfile>(user.profile || { workspaceId: user.defaultWorkspaceId, displayName: "", onboarding: { knowledgeChoice: "pending" }, updatedAt: user.createdAt });
   const [handbookOffer,setHandbookOffer]=useState<OnboardingHandbookOffer>(),[handbookNotice,setHandbookNotice]=useState('');
@@ -854,6 +854,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const localTaskSignal = preparingExecution || awaitingExecutionOperationId ? `preparing:${awaitingExecutionOperationId||preparingConversationId}` : fluidLocalTask && (isExecutionRunning(fluidLocalTask)||fluidLocalTask.id===takeoverTaskId) ? `${fluidLocalTask.id}:${fluidLocalTask.status}` : '';
   const fluidLocalSignal=[localTaskSignal,runtimeNotice?`runtime:${runtimeUpdate?.latestVersion||runtimeUpdate?.current?.version}:${runtimeUpdate?.progress?.status||'ready'}`:''].filter(Boolean).join('|');
   const fluidPanels = useFluidPanels({enabled:fluidEnabled,activitySignal:fluidActivitySignal,localSignal:fluidLocalSignal,
+    activityReported:Boolean(coordinator.snapshot?.recentReportedReceiptIds?.length||coordinator.snapshot?.notices.some(notice=>notice.reported)),
     activityProtected:featureRuns.some(run=>run.status==='pending') || fluidFeedback.some(task=>!transferSettled(task.state)) || fluidFeedback.some(task=>['needs_input','partial','failed','interrupted'].includes(task.outcome||task.state)),
     localProtected:preparingExecution || Boolean(awaitingExecutionOperationId) || isExecutionRunning(fluidLocalTask),
     onAttention:kind=>setFluidAttention(old=>({target:kind,version:old.version+1})),

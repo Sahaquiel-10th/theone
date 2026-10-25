@@ -1,6 +1,8 @@
 export type FluidPanelKind = 'activity' | 'local';
 
 export const FLUID_PANEL_IDLE_MS = 180_000;
+/** Let the last note finish its return flight before reclaiming reading space. */
+export const FLUID_TASK_RETURN_MS = 1_200;
 
 export interface FluidPanelSnapshot {
   activityOpen: boolean;
@@ -13,6 +15,7 @@ export interface FluidPanelInputs {
   localSignal: string;
   activityProtected: boolean;
   localProtected: boolean;
+  activityReported?: boolean;
 }
 
 interface PanelState {
@@ -67,7 +70,7 @@ export function createPanelLifetime(options: PanelLifetimeOptions = {}) {
     panel.timer = null;
   }
 
-  function arm(kind: FluidPanelKind) {
+  function arm(kind: FluidPanelKind, delay = idleMs) {
     const panel = panels[kind];
     clearTimer(panel);
     if (disposed || !enabled || !panel.open || panel.protected || panel.editing) return;
@@ -82,7 +85,7 @@ export function createPanelLifetime(options: PanelLifetimeOptions = {}) {
       clearTimer(panel);
       panel.open = false;
       notify();
-    }, idleMs);
+    }, delay);
   }
 
   function reveal(kind: FluidPanelKind, signal?: string) {
@@ -119,6 +122,8 @@ export function createPanelLifetime(options: PanelLifetimeOptions = {}) {
       const signalChanged = signal !== panel.signal;
       panel.signal = signal;
       if (signalChanged && signal !== '') reveal(kind, signal);
+      else if (kind === 'activity' && signalChanged && !signal && inputs.activityReported)
+        arm(kind, FLUID_TASK_RETURN_MS);
       else if (protectionChanged) arm(kind);
     }
   }

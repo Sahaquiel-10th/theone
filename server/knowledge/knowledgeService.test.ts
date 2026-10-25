@@ -5,6 +5,7 @@ import type { Database } from "../types.js";
 import { ConnectorRegistry, type KnowledgeAdapter } from "../connectors/registry.js";
 import { encryptCredential } from "./credentialCipher.js";
 import { KnowledgeService } from "./knowledgeService.js";
+import type { KnowledgeDateRange } from './temporal.js';
 
 test('opt-in knowledge reads retry at most twice and report real source coverage',async()=>{
   const store=storeWithConnection('workspace-a');let attempts=0;
@@ -21,6 +22,48 @@ test('revoking a source during read retry aborts before another provider call',a
   const adapter:KnowledgeAdapter={kind:'knowledge',manifest:{id:'getnote',name:'test',version:'1.0.0',kind:'knowledge',capabilities:['knowledge.read'],auth:'oauth_pkce',security:{trust:'untrusted_reference',transport:'fixed_https',access:'read_only',allowedHosts:['example.com']}},status:()=>({state:'configured',code:'OK',message:'ok',evidence:'stored'}),recall:async()=>{attempts++;await store.mutate(d=>{d.knowledgeConnections[0].status='revoked';});throw Error('timeout');}};
   await assert.rejects(new KnowledgeService(store,new ConnectorRegistry([adapter])).recallWithDiagnostics('workspace-a','question',5,['connection-a'],'owner',{retry:true}),/撤销/);
   assert.equal(attempts,1);
+});
+
+test('dated recall reports native-vs-semantic limits, retains evidence and does not turn old or undated content into yesterday facts',async()=>{
+  const store=storeWithConnection('workspace-a');let calls=0;
+  const range:KnowledgeDateRange={from:'2026-10-24',to:'2026-10-24',timeZone:'Asia/Shanghai',anchorAt:'2026-10-25T02:00:00Z',basis:'event'};
+  const adapter:KnowledgeAdapter={kind:'knowledge',manifest:{id:'getnote',name:'test',version:'1.0.0',kind:'knowledge',capabilities:['knowledge.search'],auth:'oauth_pkce',security:{trust:'untrusted_reference',transport:'fixed_https',access:'read_only',allowedHosts:['example.com']}},status:()=>({state:'configured',code:'OK',message:'ok',evidence:'stored'}),recall:async(_db,w,q,k)=>{
+    calls++;assert.equal(w,'workspace-a');assert.equal(q,'2026-10-24 思考');assert.equal(k,10);
+    return [{id:'old',title:'旧想法',content:'旧内容',createdAt:'2026-08-01T00:00:00Z'},{id:'new',title:'最近记录',content:'还需确认事件日期',createdAt:'2026-10-24T03:00:00Z'},{id:'diary',title:'长期日记',content:'2026年10月24日：新想法',createdAt:'2026-01-01T00:00:00Z'},{id:'unknown',title:'无日期',content:'碎碎念'}];
+  }};
+  const service=new KnowledgeService(store,new ConnectorRegistry([adapter]));
+  const found=await service.recallWithDiagnostics('workspace-a','昨天思考',5,['connection-a'],'owner',{dateRange:range});
+  assert.deepEqual(found.chunks.map(c=>c.id),['new','diary']);
+  assert.equal(found.chunks[0].dateEvidence?.status,'metadata_candidate_only');
+  assert.equal(found.chunks[1].dateEvidence?.status,'requires_content_verification');
+  assert.equal(found.temporal?.complete,false);assert.equal(found.temporal?.contentDateCandidates,1);assert.equal(found.temporal?.metadataCandidates,1);
+  assert.equal(found.temporal?.excludedOutsideRange,1);assert.equal(found.temporal?.excludedUnverified,1);
+  assert.deepEqual(found.temporal?.sources,[{provider:'getnote',method:'semantic_date_hint',filterApplied:false}]);
+  await assert.rejects(service.recallWithDiagnostics('workspace-b','昨天',5,['connection-a'],'owner',{dateRange:range}),/失效/);assert.equal(calls,1);
+  adapter.recallWithDiagnostics=async(_d,_w,_q,_k,options)=>{assert.equal(options.dateRange?.anchorAt,range.anchorAt);return {chunks:[],dateSearch:{method:'native_date_filter',filterApplied:true,field:'created',complete:false}};};
+  const native=await new KnowledgeService(store,new ConnectorRegistry([adapter])).recallWithDiagnostics('workspace-a','思考',5,['connection-a'],'owner',{dateRange:range});
+  assert.equal(native.status,'no_match');assert.equal(native.temporal?.sources[0].filterApplied,true);assert.equal(native.temporal?.complete,false);
+  assert.match(native.temporal!.note,/不能断言当天没有资料/);
+});
+
+test('revocation after a successful dated retrieval discards private results before returning',async()=>{
+  const store=storeWithConnection('workspace-a');
+  const adapter:KnowledgeAdapter={kind:'knowledge',manifest:{id:'getnote',name:'test',version:'1.0.0',kind:'knowledge',capabilities:['knowledge.search'],auth:'oauth_pkce',security:{trust:'untrusted_reference',transport:'fixed_https',access:'read_only',allowedHosts:['example.com']}},status:()=>({state:'configured',code:'OK',message:'ok',evidence:'stored'}),recall:async()=>{
+    await store.mutate(d=>{d.knowledgeConnections[0].status='revoked';});
+    return [{title:'private',content:'2026-10-24 PRIVATE_LATE_RESULT'}];
+  }};
+  await assert.rejects(new KnowledgeService(store,new ConnectorRegistry([adapter])).recallWithDiagnostics('workspace-a','昨天',5,['connection-a'],'owner',{dateRange:{from:'2026-10-24',to:'2026-10-24',timeZone:'Asia/Shanghai',anchorAt:'2026-10-25T00:00:00Z',basis:'event'}}),/撤销/);
+});
+
+test('partial secondary date search preserves native results and reports a safe partial source without replaying it',async()=>{
+  const store=storeWithConnection('workspace-a');let calls=0;
+  const adapter:KnowledgeAdapter={kind:'knowledge',manifest:{id:'getnote',name:'test',version:'1.0.0',kind:'knowledge',capabilities:['knowledge.search'],auth:'oauth_pkce',security:{trust:'untrusted_reference',transport:'fixed_https',access:'read_only',allowedHosts:['example.com']}},status:()=>({state:'configured',code:'OK',message:'ok',evidence:'stored'}),recall:async()=>{assert.fail();},recallWithDiagnostics:async()=>{
+    calls++;return {chunks:[{id:'native',title:'当天思考',content:'2026-10-24：当天的思考'}],dateSearch:{method:'native_date_filter',filterApplied:true,field:'created',complete:false,partial:true,secondaryFailure:'rate_limited'}};
+  }};
+  const found=await new KnowledgeService(store,new ConnectorRegistry([adapter])).recallWithDiagnostics('workspace-a','昨天',5,['connection-a'],'owner',{retry:true,dateRange:{from:'2026-10-24',to:'2026-10-24',timeZone:'Asia/Shanghai',anchorAt:'2026-10-25T00:00:00Z',basis:'event'}});
+  assert.equal(calls,1);assert.equal(found.chunks[0].id,'native');assert.equal(found.status,'partial');
+  assert.equal(found.failures[0].code,'RATE_LIMITED');assert.equal(found.temporal?.sources[0].partial,true);
+  assert.equal(found.temporal?.complete,false);
 });
 
 function storeWithConnection(workspaceId: string): Store {
@@ -235,7 +278,7 @@ test("a completed old-credential request cannot undo a disconnect or overwrite a
         else { db.knowledgeConnections[0].encryptedApiKey = encryptCredential("new-mock-token"); db.knowledgeConnections[0].lastError = "new-connection-state"; }
         return Response.json({ data: { results: [] } });
       }) as typeof fetch;
-      await new KnowledgeService(store).recallWithDiagnostics("workspace-a", "question");
+      await assert.rejects(new KnowledgeService(store).recallWithDiagnostics("workspace-a", "question"),/知识授权已撤销/);
       if (change === "disconnect") assert.equal(db.knowledgeConnections[0].status, "revoked");
       else assert.equal(db.knowledgeConnections[0].lastError, "new-connection-state");
     }

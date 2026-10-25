@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { api as Api } from "./oneApi";
 import { ApiError } from "./oneApi";
 import { approveFeaturePrices } from './FeatureBudgetSettings';
@@ -7,7 +7,9 @@ import {coordinatorRecoveryCopy} from './coordinatorRecovery';
 import {chatSubmission,forgetChatSubmission} from './chatSubmission';
 import {receiptMayBeMissing} from './responseProgressState';
 import {applyReviewedReceipts} from './taskTransferLifecycle';
-import {mergeCoordinatorMessages, mergeCoordinatorLinks} from './coordinatorHistory';
+import {mergeCoordinatorMessages, mergeCoordinatorLinks, mergeCoordinatorReceipt, seedCoordinatorReceipt, coordinatorHistoryCursor, type CoordinatorReceipt} from './coordinatorHistory';
+import {coordinatorPendingKey,coordinatorRequest, createCoordinatorRefreshQueue, forgetStoredCoordinatorOperation} from './coordinatorTransport';
+import {useCoordinatorScopedState} from './coordinatorScopedState';
 import type { Conversation } from "../server/types";
 import type {
   Action,
@@ -82,91 +84,159 @@ export type CoordinatorSubmission = {
   confirmedExternal?: boolean;
   webSearch?: boolean;
 };
-const pendingKey = (user: string) => `one-coordinator-operation:${user}`;
 export function useCoordinator(
   api: typeof Api,
   userId: string,
   enabled: boolean,
+  workspaceId = '',
 ) {
-  const [storedSnapshot, setSnapshot] = useState<Snapshot | null>(null),
-    [loadingHistory,setLoadingHistory] = useState(false),
-    [historyError,setHistoryError] = useState(''),
-    [outgoing, setOutgoing] = useState<{id:string;text:string;priorIds:string[];failed?:boolean} | null>(null),
-    [progress, setProgress] = useState<{phase:string;startedAt:string} | null>(null),
-    [details, setDetails] = useState<Record<string, Detail>>({}),
-    [selected, setSelected] = useState<string | null>(null),
-    [bound, setBound] = useState<string | null>(null),
-    [localPending, setPending] = useState<string | null>(null),
-    [error, setError] = useState(""),
-    [failureReply,setFailureReply]=useState<{scope:string;operationId:string;text:string}|null>(null),
-    [settlement, setSettlement] = useState<{operationId:string;status:string;taskId?:string;taskIds?:string[]} | null>(null),
-    [page, setPage] = useState(1);
+  const scope=useMemo(()=>({userId,api,workspaceId}),[userId,api,workspaceId]);
+  const boundedApi=useMemo(()=>(<T,>(path:string,options?:RequestInit)=>coordinatorRequest<T>(api,path,options)),[api]);
+  const pendingKey=useCallback((user:string)=>coordinatorPendingKey(user,workspaceId),[workspaceId]);
+  const submissionScope=`coordinator:${userId}${workspaceId?':'+encodeURIComponent(workspaceId):''}`;
+  const [storedSnapshot, setSnapshot] = useCoordinatorScopedState<Snapshot | null>(scope,null),
+    [loadingHistory,setLoadingHistory] = useCoordinatorScopedState(scope,false),
+    [historyError,setHistoryError] = useCoordinatorScopedState(scope,''),
+    [outgoing, setOutgoing] = useCoordinatorScopedState<{id:string;text:string;priorIds:string[];failed?:boolean} | null>(scope,null),
+    [progress, setProgress] = useCoordinatorScopedState<{phase:string;startedAt:string} | null>(scope,null),
+    [details, setDetails] = useCoordinatorScopedState<Record<string, Detail>>(scope,{}),
+    [selected, setSelected] = useCoordinatorScopedState<string | null>(scope,null),
+    [bound, setBound] = useCoordinatorScopedState<string | null>(scope,null),
+    [localPending, setPending] = useCoordinatorScopedState<string | null>(scope,null),
+    [error, setError] = useCoordinatorScopedState(scope,""),
+    [failureReply,setFailureReply]=useCoordinatorScopedState<{scope:string;operationId:string;text:string}|null>(scope,null),
+    [settlement, setSettlement] = useCoordinatorScopedState<{operationId:string;status:string;taskId?:string;taskIds?:string[]} | null>(scope,null),
+    [page, setPage] = useCoordinatorScopedState(scope,1);
   const snapshot=storedSnapshot?.clientScope===userId?storedSnapshot:null;
-  const scopeRef=useRef(userId);scopeRef.current=userId;
+  const scopeRef=useRef(scope);scopeRef.current=scope;
   const live = useRef(true),
-    refreshing = useRef(false),
-    sending = useRef(false),
+    sending = useRef<string|null>(null),
+    pendingRef = useRef<string|null>(null),
     snapshotRef = useRef(snapshot),
     detailsRef = useRef(details),
     selectedRef = useRef(selected),
     pageRef = useRef(1),
-    directReceipts = useRef(new Map<string, string>()),
     submissionError = useRef(""),
     resumeKey = useRef("");
+  const settledReceipts=useMemo(()=>new Map<string,CoordinatorReceipt>(),[scope]);
+  const directReceipts=useMemo(()=>({current:new Map<string,string>()}),[scope]);
+  const receiptReads=useMemo(()=>new Map<string,Promise<void>>(),[scope]);
+  const detailReads=useMemo(()=>new Map<string,Promise<Detail>>(),[scope]);
+  const refreshRevision=useRef(0);
+  const isCurrent=useCallback(()=>live.current&&scopeRef.current===scope,[scope]);
+  const setCurrentPending=useCallback((value:string|null)=>{if(!isCurrent())return;pendingRef.current=value;setPending(value);},[isCurrent,setPending]);
   const resumeAt = useRef(0);
-  const retrying=useRef(new Set<string>());
-  const [retryingTasks,setRetryingTasks]=useState<string[]>([]);
-  const [removedTask,setRemovedTask] = useState<string|null>(null);
+  const retrying=useMemo(()=>({current:new Set<string>()}),[scope]);
+  const [retryingTasks,setRetryingTasks]=useCoordinatorScopedState<string[]>(scope,[]);
+  const [removedTask,setRemovedTask] = useCoordinatorScopedState<string|null>(scope,null);
   snapshotRef.current = snapshot;
   detailsRef.current = details;
   selectedRef.current = selected;
   const load = useCallback(
-    async (id: string) => {
-      let detail: Detail;
-      try {
-        detail = await api<Detail>(
-          `/api/coordinator/tasks/${encodeURIComponent(id)}`,
-        );
-      } catch (e) {
-        if (!(e instanceof ApiError) || e.status !== 400) throw e;
-        detail = {
-          ...(await api<{ conversation: Conversation }>(
-            `/api/conversations/${encodeURIComponent(id)}`,
-          )),
-          jobs: [],
-        };
-      }
-      if (live.current) setDetails((old) => ({ ...old, [id]: detail }));
-      return detail;
+    async (id: string,force=false) => {
+      if(!isCurrent())throw new ApiError('登录账号已切换，旧页面的操作已取消',undefined,409,'SESSION_CHANGED');
+      const existing=detailReads.get(id);
+      if(existing&&!force)return existing;
+      const request=(async()=>{
+        let detail: Detail;
+        try {
+          detail = await coordinatorRequest<Detail>(api,`/api/coordinator/tasks/${encodeURIComponent(id)}`);
+        } catch (e) {
+          if (!(e instanceof ApiError) || e.status !== 400 || !isCurrent()) throw e;
+          detail = {...(await coordinatorRequest<{conversation:Conversation}>(api,`/api/conversations/${encodeURIComponent(id)}`)),jobs: []};
+        }
+        if(!isCurrent())throw new ApiError('登录账号已切换，旧页面的操作已取消',undefined,409,'SESSION_CHANGED');
+        setDetails((old) => ({ ...old, [id]: detail }));
+        return detail;
+      })();
+      detailReads.set(id,request);
+      try{return await request;}finally{if(detailReads.get(id)===request)detailReads.delete(id);}
     },
-    [api],
+    [api,detailReads,isCurrent],
   );
-  const refresh = useCallback(
+  const acceptReceipt=useCallback((operation:string,status:CoordinatorReceipt)=>{
+    if(!isCurrent())return;
+    if(status.conversation&&(status.conversation.userId!==userId||workspaceId&&status.conversation.workspaceId!==workspaceId))return;
+    if(status.status==='pending'){
+      if(settledReceipts.has(operation)||pendingRef.current&&pendingRef.current!==operation)return;
+      setCurrentPending(operation);
+      setProgress(old=>status.progress||old||{phase:'正在等待处理结果',startedAt:snapshotRef.current?.conversation?.messages.at(-1)?.createdAt||new Date().toISOString()});
+      return;
+    }
+    settledReceipts.set(operation,{...status,...(status.conversation?{conversation:{...status.conversation,messages:status.conversation.messages.slice(-40)}}:{})});
+    if(settledReceipts.size>100)settledReceipts.delete(settledReceipts.keys().next().value!);
+    if(sending.current===operation)sending.current=null;
+    if(pendingRef.current===operation){setCurrentPending(null);setProgress(null);}
+    setSettlement({operationId:operation,status:status.status,taskId:status.taskId,taskIds:status.taskIds});
+    forgetStoredCoordinatorOperation(localStorage,pendingKey(userId),operation);
+    forgetChatSubmission(submissionScope,operation);
+    setSnapshot(old=>{
+      if(old?.clientScope===userId)return mergeCoordinatorReceipt(old,operation,status);
+      // A recovered server receipt is enough to show its saved answer while the
+      // first snapshot is offline. An explicitly empty server conversation is not.
+      if(old===null&&status.status==='completed'&&status.conversation){
+        return seedCoordinatorReceipt(userId,operation,status);
+      }
+      return old;
+    });
+    if(status.status!=='completed'){
+      setOutgoing(old=>old?.id===operation?{...old,failed:true}:old);
+      setFailureReply({scope:userId,operationId:operation,text:coordinatorRecoveryCopy(status.error??'',status.status==='interrupted')});
+      submissionError.current='';setError('');
+    }else setFailureReply(old=>old?.scope===userId&&old.operationId===operation?null:old);
+  },[isCurrent,setCurrentPending,settledReceipts,userId,workspaceId,pendingKey,submissionScope,setSnapshot,setSettlement,setProgress,setOutgoing,setFailureReply,setError]);
+  const readReceipt=useCallback((operation:string,serverOperation?:string)=>{
+    const existing=receiptReads.get(operation);
+    if(existing)return existing;
+    const request=(async()=>{
+      try{
+        const status=await coordinatorRequest<CoordinatorReceipt>(api,`/api/coordinator/messages/${encodeURIComponent(operation)}`);
+        acceptReceipt(operation,status);
+      }catch(e){
+        if(!isCurrent())return;
+        if(e instanceof ApiError&&e.status===404){
+          if(!receiptMayBeMissing(sending.current===operation,serverOperation,operation)||pendingRef.current&&pendingRef.current!==operation)return;
+          forgetStoredCoordinatorOperation(localStorage,pendingKey(userId),operation);
+          if(pendingRef.current===operation){setCurrentPending(null);setProgress(null);}
+          setOutgoing(old=>old?.id===operation?{...old,failed:true}:old);
+          setFailureReply({scope:userId,operationId:operation,text:coordinatorRecoveryCopy('暂未找到接收记录')});
+          submissionError.current='';setError('');
+          return;
+        }
+        throw e;
+      }
+    })();
+    receiptReads.set(operation,request);
+    void request.finally(()=>{if(receiptReads.get(operation)===request)receiptReads.delete(operation);}).catch(()=>{});
+    return request;
+  },[acceptReceipt,api,isCurrent,receiptReads,setCurrentPending,userId,pendingKey,setProgress,setOutgoing,setFailureReply,setError]);
+  const performRefresh = useCallback(
     async (nextPage = 1) => {
-      if (!enabled || refreshing.current) return;
-      refreshing.current = true;
-      try {
-        const pages = await Promise.all(Array.from({length: Math.max(nextPage, pageRef.current)}, (_, i) => api<Snapshot>(`/api/coordinator?page=${i+1}`)));
-        const next = {...pages[0], tasks: [...new Map(pages.flatMap(p=>p.tasks).map(t=>[t.id,t])).values()]};
-        if (!live.current || scopeRef.current!==userId) return;
-        setSnapshot((old) => ({
+      if (!enabled || !isCurrent()) return;
+      const revision=++refreshRevision.current;
+      let persisted:string|null=null;
+      try{persisted=localStorage.getItem(pendingKey(userId));}catch{}
+      const operation=pendingRef.current||persisted||snapshotRef.current?.pendingOperationId;
+      // Receipt recovery must not wait behind task details, history pages or even a stalled snapshot.
+      const receipt=operation&&!settledReceipts.has(operation)?readReceipt(operation,snapshotRef.current?.pendingOperationId):Promise.resolve();
+      const snapshotRead=(async()=>{
+        const next=await coordinatorRequest<Snapshot>(api,'/api/coordinator?page=1');
+        if (!isCurrent()) return;
+        if(next.pendingOperationId&&settledReceipts.has(next.pendingOperationId))next.pendingOperationId=undefined;
+        setSnapshot((old) => {
+          let merged:Snapshot={
           ...next,
           clientScope:userId,
           ...(old?.clientScope===userId&&old.conversation?.id===next.conversation?.id&&next.conversation?{
             conversation:{...next.conversation,messages:mergeCoordinatorMessages(old.conversation!.messages,next.conversation.messages)},
             links:mergeCoordinatorLinks(old.links??[],next.links??[]),
-            history:old.history?{...old.history,total:next.history?.total??old.history.total}:next.history,
+            history:coordinatorHistoryCursor(old.conversation!.messages,next.conversation.messages,old.history,next.history),
           }:{}),
-          tasks:
-            nextPage === 1
-              ? next.tasks
-              : [
-                  ...(old?.tasks ?? []).filter(
-                    (t) => !next.tasks.some((n) => n.id === t.id),
-                  ),
-                  ...next.tasks,
-                ],
-        }));
+          tasks:pageRef.current>1||nextPage>1?[...next.tasks,...(old?.clientScope===userId?old.tasks:[]).filter(t=>!next.tasks.some(n=>n.id===t.id))]:next.tasks,
+          };
+          for(const [id,result] of settledReceipts)merged=mergeCoordinatorReceipt(merged,id,result);
+          return merged;
+        });
         pageRef.current = Math.max(nextPage, pageRef.current);
         setPage(pageRef.current);
         setError(submissionError.current);
@@ -188,9 +258,16 @@ export function useCoordinator(
             ].filter((id): id is string => !!id),
           ),
         ];
-        await Promise.all(
+        // A slow/offline detail must never freeze sending feedback or the whole polling loop.
+        void Promise.all(
           affected.map((id) => load(id).catch(() => undefined)),
         );
+        const additionalPages=Array.from({length:pageRef.current-1},(_,i)=>coordinatorRequest<Snapshot>(api,`/api/coordinator?page=${i+2}`).catch(()=>null));
+        if(additionalPages.length)void Promise.all(additionalPages).then(pages=>{
+          if(!isCurrent()||refreshRevision.current!==revision)return;
+          const incoming=pages.flatMap(p=>p?.tasks??[]);
+          setSnapshot(old=>old?.clientScope===userId?{...old,tasks:[...new Map([...(pages.some(p=>!p)?old.tasks:[]),...next.tasks,...incoming].map(t=>[t.id,t])).values()]}:old);
+        });
         const queued = next.tasks
           .filter((t) => t.queued > 0 && !t.paused)
           .map((t) => `${t.id}:${t.queued}:${t.updatedAt}`)
@@ -198,132 +275,125 @@ export function useCoordinator(
         if (next.enabled && queued && (queued !== resumeKey.current || Date.now()-resumeAt.current >= 15000)) {
           resumeKey.current = queued;
           resumeAt.current = Date.now();
-          void api("/api/coordinator/resume", {
+          void coordinatorRequest(api,"/api/coordinator/resume", {
             method: "POST",
             body: "{}",
           }).catch(() => {
-            resumeKey.current = "";
+            if(isCurrent())resumeKey.current = "";
           });
         }
-        let persisted: string | null = null;
-        try {
-          persisted = localStorage.getItem(pendingKey(userId));
-        } catch {}
-        const operation = next.pendingOperationId || persisted;
-        if (operation) {
-          setPending(operation);
-          let status: {status:string;error?:string;taskId?:string;taskIds?:string[];progress?:{phase:string;startedAt:string}};
-          try { status = await api(`/api/coordinator/messages/${encodeURIComponent(operation)}`); }
-          catch(e) {
-            if(e instanceof ApiError && e.status===404) {
-              if(!receiptMayBeMissing(sending.current,next.pendingOperationId,operation))return;
-              try {localStorage.removeItem(pendingKey(userId));}catch{}
-              setPending(null);
-              setProgress(null);
-              setOutgoing(old=>old?{...old,failed:true}:null);
-              setFailureReply({scope:userId,operationId:operation,text:coordinatorRecoveryCopy('暂未找到接收记录')});
-              submissionError.current='';setError('');
-              return;
-            }
-            throw e;
-          }
-          if (status.status !== "pending") {
-            setProgress(null);
-            setSettlement({operationId:operation,...status});
-            try {
-              localStorage.removeItem(pendingKey(userId));
-            } catch {}
-            setPending(null);
-            forgetChatSubmission(`coordinator:${userId}`,operation);
-            if (status.status !== "completed") {
-              setFailureReply({scope:userId,operationId:operation,text:coordinatorRecoveryCopy(status.error??'',status.status==='interrupted')});
-              submissionError.current='';setError('');
-            } else setFailureReply(old=>old?.scope===userId&&old.operationId===operation?null:old);
-          } else setProgress(status.progress || {phase:'正在等待处理结果',startedAt:next.conversation?.messages.at(-1)?.createdAt || new Date().toISOString()});
-        } else {setPending(null);setProgress(null);}
-      } catch (e) {
-        if (live.current)
-          setError(e instanceof Error ? e.message : "连接暂时不可用");
-      } finally {
-        refreshing.current = false;
-      }
+        if(next.pendingOperationId&&!settledReceipts.has(next.pendingOperationId))await readReceipt(next.pendingOperationId,next.pendingOperationId);
+      })();
+      const results=await Promise.allSettled([snapshotRead,receipt]);
+      if(!isCurrent())return;
+      const failed=results.find(result=>result.status==='rejected');
+      if(failed?.status==='rejected')setError(failed.reason instanceof Error?failed.reason.message:'连接暂时不可用');
     },
-    [api, enabled, load, userId],
+    [api, enabled, isCurrent, load, readReceipt, settledReceipts, userId, pendingKey,setSnapshot,setPage,setError],
   );
+  const refreshQueue=useMemo(()=>createCoordinatorRefreshQueue(performRefresh),[performRefresh]);
+  const refresh=useCallback((nextPage=1)=>{
+    // A prior snapshot may still be waiting when a new submission is accepted.
+    // Probe its receipt now, rather than waiting for that older refresh's deadline.
+    let persisted:string|null=null;
+    try{persisted=localStorage.getItem(pendingKey(userId));}catch{}
+    const operation=pendingRef.current||persisted||snapshotRef.current?.pendingOperationId;
+    if(enabled&&isCurrent()&&operation&&!settledReceipts.has(operation))void readReceipt(operation,snapshotRef.current?.pendingOperationId).catch(e=>{if(isCurrent())setError(e instanceof Error?e.message:'连接暂时不可用');});
+    return refreshQueue.request(nextPage);
+  },[enabled,isCurrent,readReceipt,refreshQueue,settledReceipts,userId,pendingKey,setError]);
+  useEffect(()=>{
+    pendingRef.current=null;sending.current=null;snapshotRef.current=null;detailsRef.current={};selectedRef.current=null;
+    pageRef.current=1;resumeKey.current='';submissionError.current='';
+    setSnapshot(null);setDetails({});setSelected(null);setBound(null);setPending(null);setProgress(null);
+    setOutgoing(null);setFailureReply(null);setSettlement(null);setError('');setHistoryError('');setLoadingHistory(false);setPage(1);
+  },[scope]);
   useEffect(() => {
     live.current = true;
     if (!enabled) return;
+    refreshQueue.activate();
     void refresh();
     const timer = setInterval(() => {
       if (document.visibilityState === "visible") void refresh();
     }, 3000);
     const focus = () => void refresh();
+    const visibility = () => {if(document.visibilityState==='visible')void refresh();};
+    const storage = (event:StorageEvent) => {if(event.key===pendingKey(userId))void refresh();};
     window.addEventListener("focus", focus);
+    window.addEventListener('online',focus);
+    document.addEventListener('visibilitychange',visibility);
+    window.addEventListener('storage',storage);
     return () => {
       live.current = false;
+      refreshQueue.dispose();
       clearInterval(timer);
       window.removeEventListener("focus", focus);
+      window.removeEventListener('online',focus);
+      document.removeEventListener('visibilitychange',visibility);
+      window.removeEventListener('storage',storage);
     };
-  }, [enabled, refresh]);
+  }, [enabled, refresh, refreshQueue, userId,pendingKey]);
   async function loadHistory() {
     const current=snapshotRef.current;
     if(loadingHistory||current?.clientScope!==userId||!current.history?.hasMore||!current.history.before||!current.conversation)return;
     setLoadingHistory(true);setHistoryError('');
     try {
-      const page=await api<{conversationId:string;messages:Conversation['messages'];history:NonNullable<Snapshot['history']>;links:{messageId:string;taskId:string}[]}>(`/api/coordinator/history?before=${encodeURIComponent(current.history.before)}`);
-      if(!live.current||scopeRef.current!==userId)return;
+      const page=await coordinatorRequest<{conversationId:string;messages:Conversation['messages'];history:NonNullable<Snapshot['history']>;links:{messageId:string;taskId:string}[]}>(api,`/api/coordinator/history?before=${encodeURIComponent(current.history.before)}`);
+      if(!isCurrent())return;
       setSnapshot(old=>old?.clientScope===userId&&old.conversation?.id===page.conversationId?{...old,conversation:{...old.conversation,messages:mergeCoordinatorMessages(page.messages,old.conversation.messages)},history:page.history,links:mergeCoordinatorLinks(page.links,old.links??[])}:old);
-    }catch(e){if(live.current&&scopeRef.current===userId)setHistoryError(e instanceof Error?e.message:'更早的记录暂时没打开，可以再试一次');}
-    finally{if(live.current)setLoadingHistory(false);}
+    }catch(e){if(isCurrent())setHistoryError(e instanceof Error?e.message:'更早的记录暂时没打开，可以再试一次');}
+    finally{if(isCurrent())setLoadingHistory(false);}
   }
   async function submit(input: CoordinatorSubmission) {
     if (
       sending.current ||
-      localPending ||
-      snapshotRef.current?.pendingOperationId
+      pendingRef.current ||
+      snapshotRef.current?.pendingOperationId&&!settledReceipts.has(snapshotRef.current.pendingOperationId)
     )
       throw Error("ONE 正在承接上一句话，请稍候");
-    sending.current = true;
+    sending.current = input.operationId;
     setOutgoing({id:input.operationId,text:input.text,priorIds:snapshotRef.current?.conversation?.messages.map(m=>m.id!)||[]});
     setProgress({phase:'正在发送你的要求',startedAt:new Date().toISOString()});
-    setPending(input.operationId);
+    setCurrentPending(input.operationId);
     submissionError.current = "";
     setFailureReply(null);
     setError("");
     try {
-      input={...input,operationId:await chatSubmission(`coordinator:${userId}`,{...input,operationId:undefined})};
-      setPending(input.operationId);
+      input={...input,operationId:await chatSubmission(submissionScope,{...input,operationId:undefined})};
+      if(!isCurrent())throw new ApiError('登录账号已切换，旧页面的操作已取消',undefined,409,'SESSION_CHANGED');
+      sending.current=input.operationId;
+      setCurrentPending(input.operationId);
+      setOutgoing(old=>old?{...old,id:input.operationId}:old);
       try {localStorage.setItem(pendingKey(userId), input.operationId);}catch{}
-      await api("/api/coordinator/messages", {
+      const result=await coordinatorRequest<CoordinatorReceipt>(api,"/api/coordinator/messages", {
         method: "POST",
         body: JSON.stringify(input),
       });
+      if(!isCurrent())throw new ApiError('登录账号已切换，旧页面的操作已取消',undefined,409,'SESSION_CHANGED');
+      acceptReceipt(input.operationId,result);
       submissionError.current='';setError('');
       await refresh();
       return input.operationId;
     } catch (e) {
-      setOutgoing(old=>old?{...old,failed:true}:null);
-      if (e instanceof ApiError && e.status && e.status < 500) {
-        try {
-          localStorage.removeItem(pendingKey(userId));
-        } catch {}
-        setPending(null);
-      }
+      if(!isCurrent()||e instanceof ApiError&&e.code==='SESSION_CHANGED')throw e;
+      if(settledReceipts.get(input.operationId)?.status==='completed')return input.operationId;
       await refresh();
-      if(e instanceof ApiError&&e.code==='SESSION_CHANGED'||scopeRef.current!==userId)throw e;
+      if(!isCurrent())throw e;
       // A response may be lost after the server saved the reply. Reconcile the
       // same receipt before adding a fallback; never send the request again.
       try {
-        const receipt=await api<{status:string}>(`/api/coordinator/messages/${encodeURIComponent(input.operationId)}`);
-        if(scopeRef.current!==userId)throw e;
+        const receipt=await coordinatorRequest<CoordinatorReceipt>(api,`/api/coordinator/messages/${encodeURIComponent(input.operationId)}`);
+        if(!isCurrent())throw e;
+        acceptReceipt(input.operationId,receipt);
         if(receipt.status==='completed'){setFailureReply(null);submissionError.current='';setError('');return input.operationId;}
-      } catch {if(scopeRef.current!==userId)throw e;}
+        if(receipt.status==='pending'){submissionError.current='';setError('');if(input.localExecution)throw e;return input.operationId;}
+      } catch {if(!isCurrent())throw e;}
+      setOutgoing(old=>old?.id===input.operationId?{...old,failed:true}:old);
       setFailureReply({scope:userId,operationId:input.operationId,text:coordinatorRecoveryCopy(e instanceof Error?e.message:'')});
       submissionError.current='';setError('');
       if(input.localExecution)throw e;
       return input.operationId;
     } finally {
-      sending.current = false;
+      if(isCurrent()&&sending.current===input.operationId)sending.current = null;
     }
   }
   async function direct(
@@ -333,9 +403,10 @@ export function useCoordinator(
     outputDestination?: 'chat' | 'notion',
   ) {
     setError("");
-    const receiptKey = JSON.stringify([userId,id,text,attachmentIds,outputDestination]);
-    const featureApprovals=await approveFeaturePrices(api,[],id);
-    const storageKey = `one-task-operation:${userId}:${id}`;
+    const receiptKey = JSON.stringify([userId,workspaceId,id,text,attachmentIds,outputDestination]);
+    const featureApprovals=await approveFeaturePrices(boundedApi,[],id);
+    if(!isCurrent())throw new ApiError('登录账号已切换，旧页面的操作已取消',undefined,409,'SESSION_CHANGED');
+    const storageKey = `one-task-operation:${userId}:${encodeURIComponent(workspaceId)}:${id}`;
     let operationId = directReceipts.current.get(receiptKey);
     if(!operationId) {
       try { const saved=JSON.parse(localStorage.getItem(storageKey)||"null");
@@ -346,12 +417,27 @@ export function useCoordinator(
       } catch { operationId=crypto.randomUUID(); }
       directReceipts.current.set(receiptKey,operationId!);
     }
-    await api(`/api/coordinator/tasks/${encodeURIComponent(id)}/messages`, {
-      method: "POST",
-      body: JSON.stringify({ operationId, text, attachmentIds, featureApprovals, outputDestination }),
-    });
-    await load(id);
+    if(!isCurrent())throw new ApiError('登录账号已切换，旧页面的操作已取消',undefined,409,'SESSION_CHANGED');
+    try{
+      await coordinatorRequest(api,`/api/coordinator/tasks/${encodeURIComponent(id)}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ operationId, text, attachmentIds, featureApprovals, outputDestination }),
+      });
+    }catch(e){
+      if(!isCurrent())throw e;
+      let accepted=false;
+      try{const detail=await load(id,true);accepted=detail.jobs.some(job=>job.operationId===operationId);}catch{/* Keep the original request identifier when its outcome is unknown. */}
+      if(!isCurrent())throw e;
+      if(!accepted){
+        const message='这次续写是否收到还没确认，原话和原提交都保留着；先查看任务进展，不用重发。';
+        setError(message);void refresh();
+        throw new ApiError(message,undefined,undefined,'COORDINATOR_DIRECT_UNCONFIRMED',false);
+      }
+    }
+    // A slow details panel must not keep an accepted follow-up stuck forever.
+    void load(id,true).catch(e=>{if(isCurrent())setError(e instanceof Error?e.message:'任务进度暂时没连上，可以稍后查看。');});
     await refresh();
+    if(!isCurrent())return;
     directReceipts.current.delete(receiptKey);
     try { localStorage.removeItem(storageKey); } catch {}
   }
@@ -364,6 +450,7 @@ export function useCoordinator(
       method: "POST",
       body: JSON.stringify({ ids }),
     });
+    if(!isCurrent())return;
     setSnapshot((old) =>
       old
         ? { ...old, notices: applyReviewedReceipts(old.notices,ids) }
@@ -372,6 +459,7 @@ export function useCoordinator(
   }
   async function readAll() {
     const result=await api<{ids:string[];count:number}>("/api/coordinator/notices/read-all",{method:"POST",body:"{}"});
+    if(!isCurrent())return;
     setSnapshot(old=>old?{...old,notices:applyReviewedReceipts(old.notices,result.ids)}:old);
     await refresh();
   }
@@ -392,10 +480,10 @@ export function useCoordinator(
     if(!job)throw new Error('此任务没有可重新处理的要求');
     if(confirmedJobId&&job.id!==confirmedJobId)throw new Error('任务已有新要求或进展，请重新看一眼再确认。');
     if(!detail.recovery||!['retry','resume','review_image'].includes(detail.recovery.kind))throw new Error(detail.recovery?.message||'请刷新后查看任务恢复方式');
-    const featureApprovals=await approveFeaturePrices(api,[],id);
+    const featureApprovals=await approveFeaturePrices(boundedApi,[],id);
     await api(`/api/coordinator/tasks/${encodeURIComponent(id)}/retry`,{method:'POST',body:JSON.stringify({sourceJobId:job.id,confirmed:true,featureApprovals,budget})});
     await load(id);await refresh();
-    }finally{retrying.current.delete(id);if(live.current)setRetryingTasks([...retrying.current]);}
+    }finally{retrying.current.delete(id);if(isCurrent())setRetryingTasks([...retrying.current]);}
   }
   function dispatch(action: Action) {
     if (action.type === "select") {
@@ -404,7 +492,7 @@ export function useCoordinator(
       if (id)
         void load(id)
           .then(() => acknowledge(id))
-          .catch((e) => setError(e.message));
+          .catch((e) => {if(isCurrent())setError(e.message);});
     } else if (action.type === "bind") setBound(action.taskId);
   }
   const metas = [...new Map([...(snapshot?.tasks ?? []),...(snapshot?.transfers ?? [])].map(t=>[t.id,t])).values()];
@@ -452,7 +540,7 @@ export function useCoordinator(
       taskIds: [...new Set(snapshot?.links?.filter(l => l.messageId === m.id).map(l => l.taskId) ?? [])],
     })), ...(outgoing && !snapshot?.conversation?.messages.some(m=>m.role==='user'&&!outgoing.priorIds.includes(m.id!)&&m.content===outgoing.text) ? [{id:`outgoing_${outgoing.id}`,role:'user' as const,text:outgoing.text,status:outgoing.failed?'failed' as const:undefined,featureName:outgoing.failed?'发送状态待确认 · 原话保留':'发送中'}] : []),...(failureReply?.scope===userId?[{id:`feedback_${failureReply.operationId}`,role:'assistant' as const,text:failureReply.text}]:[])],
     pending:
-      localPending || snapshot?.pendingOperationId
+      (localPending&&!settledReceipts.has(localPending)) || (snapshot?.pendingOperationId&&!settledReceipts.has(snapshot.pendingOperationId))
         ? {
             id: localPending || snapshot!.pendingOperationId!,
             text: "",
@@ -487,10 +575,11 @@ export function useCoordinator(
     removedTask,
     removeTask: async (id:string) => {
       await api(`/api/coordinator/tasks/${encodeURIComponent(id)}`,{method:'DELETE'});
+      if(!isCurrent())return;
       setRemovedTask(id); if(selectedRef.current===id)setSelected(null);if(bound===id)setBound(null);
       setDetails(old=>{const next={...old};delete next[id];return next;});await refresh();
     },
-    restoreTask: async () => {if(!removedTask)return;await api(`/api/coordinator/tasks/${encodeURIComponent(removedTask)}/restore`,{method:'POST',body:'{}'});setRemovedTask(null);await refresh();},
+    restoreTask: async () => {if(!removedTask)return;await api(`/api/coordinator/tasks/${encodeURIComponent(removedTask)}/restore`,{method:'POST',body:'{}'});if(!isCurrent())return;setRemovedTask(null);await refresh();},
     error:error||historyError,
     settlement,
     clearError: () => {setError("");setHistoryError('');},

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createPanelLifetime, FLUID_PANEL_IDLE_MS } from './fluid/panelLifetime';
+import { createPanelLifetime, FLUID_PANEL_IDLE_MS, FLUID_TASK_RETURN_MS } from './fluid/panelLifetime';
 import type { FluidPanelInputs, FluidPanelKind } from './fluid/panelLifetime';
 
 class FakeClock {
@@ -97,6 +97,35 @@ test('empty signal does not immediately remove a visible result and allows the n
   f.update({ activitySignal: 'task-1:completed' });
   assert.equal(f.controller.snapshot().activityOpen, true);
   assert.equal(f.attention.length, 2);
+});
+
+test('last reported task reclaims the activity panel after its return flight, without waiting three minutes', () => {
+  const f=fixture({activitySignal:'task-1:running',activityProtected:true});
+  f.update({activitySignal:'',activityProtected:false,activityReported:true});
+  assert.equal(f.controller.snapshot().activityOpen,true);
+  f.clock.advance(FLUID_TASK_RETURN_MS-1);
+  assert.equal(f.controller.snapshot().activityOpen,true);
+  f.clock.advance(1);
+  assert.equal(f.controller.snapshot().activityOpen,false);
+  assert.deepEqual(f.collapsed,['activity']);
+  f.controller.open('activity');
+  f.update({});
+  f.clock.advance(FLUID_TASK_RETURN_MS);
+  assert.equal(f.controller.snapshot().activityOpen,true,'an explicit reopen keeps the normal reading deadline');
+});
+
+test('another task, renewed attention or editing prevents the reported task from hiding active work', () => {
+  const f=fixture({activitySignal:'task-1:running',activityProtected:true});
+  f.update({activitySignal:'',activityProtected:false,activityReported:true});
+  f.clock.advance(100);
+  f.update({activitySignal:'task-2:running',activityProtected:true});
+  f.clock.advance(FLUID_TASK_RETURN_MS);
+  assert.equal(f.controller.snapshot().activityOpen,true);
+  f.controller.protectEditing('activity',true);
+  f.update({activitySignal:'',activityProtected:false});
+  f.clock.advance(FLUID_PANEL_IDLE_MS*2);
+  assert.equal(f.controller.snapshot().activityOpen,true);
+  assert.deepEqual(f.collapsed,[]);
 });
 
 test('real interactions renew only their own panel and do not move eye attention', () => {

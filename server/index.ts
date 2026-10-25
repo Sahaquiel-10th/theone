@@ -43,7 +43,7 @@ import { adminModel, publicModel, publicUser, publicUsageRecord, safeAdminAuditL
 import { Agent, Attachment, AttachmentSummary, Conversation, ConversationFolder, ExecutionTask, KnowledgeConnection, Message, MessageRecord, ModelConfig, User, Workspace } from "./types.js";
 import { buildSearchContext, createWorkspaceSearch } from "./webSearch.js";
 import type {SearchSource} from './types.js';
-import {runtimeContext,runtimeContextText} from './runtimeContext.js';
+import {runtimeContext,runtimeContextText,knowledgeRecallOptions,temporalKnowledgeResult} from './runtimeContext.js';
 import {AttentionService} from './attention.js';
 import {installAttentionRoutes} from './attentionRoutes.js';
 import {explicitlyNeedsPublicSearch,publicSearchPermitted,publicSearchOutcome} from './publicSearch.js';
@@ -471,7 +471,7 @@ app.post("/api/chat", ...keyAuth, asyncRoute(async (req, res) => {
     return outcome;
   };
   let [recall, searchSources] = await Promise.all([
-    !useOrchestrator && executionModel.kind === "chat" ? knowledgeService.recallWithDiagnostics(req.workspaceId!, content, 5, undefined, req.user!.id) : undefined,
+    !useOrchestrator && executionModel.kind === "chat" ? knowledgeService.recallWithDiagnostics(req.workspaceId!, content, 5, undefined, req.user!.id,knowledgeRecallOptions(content,runtimeContext(db,scope,userMessage.createdAt,req.get('X-ONE-Time-Zone')))) : undefined,
     !useOrchestrator && legacyWebAllowed && explicitlyNeedsPublicSearch(content) ? legacyPublicSearch(content).then((result): SearchSource[] => result.sources ?? []) : [] as SearchSource[]
   ]);
   let orchestrated: Awaited<ReturnType<typeof runTaskOrchestrator>> | undefined;
@@ -491,9 +491,10 @@ app.post("/api/chat", ...keyAuth, asyncRoute(async (req, res) => {
       beforeStep: verifyScope,
       tools: [
         ...(config.values.tools.includes("knowledge_search") ? [{ name: "knowledge_search", description: config.values.toolDescriptions?.knowledge_search, run: async (query: string) => {
-          const found = await knowledgeService.recallWithDiagnostics(scope.workspaceId, query, 5, undefined, scope.userId);
+          const timeContext=runtimeContext(db,scope,userMessage.createdAt,req.get('X-ONE-Time-Zone'));
+          const found = await knowledgeService.recallWithDiagnostics(scope.workspaceId, query, 5, undefined, scope.userId,knowledgeRecallOptions(content,timeContext));
           recall = recall ? { ...found, chunks: [...recall.chunks, ...found.chunks].slice(0, 15), failures: [...recall.failures, ...found.failures], status: recall.chunks.length || found.chunks.length ? (recall.failures.length || found.failures.length ? "partial" : "used") : found.status } : found;
-          return found;
+          return temporalKnowledgeResult(found,content,timeContext);
         } }] : []),
         ...(legacyWebAllowed && config.values.tools.includes("web_search") ? [{ name: "web_search", description: config.values.toolDescriptions?.web_search, run: async (query: string) => { const found = await legacyPublicSearch(query); searchSources.push(...(found.sources ?? [])); return found; } }] : [])
       ],

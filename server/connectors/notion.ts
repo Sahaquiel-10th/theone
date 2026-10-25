@@ -18,6 +18,7 @@ export function notionConnector(service: NotionMcpService): KnowledgeAdapter {
         return { state: "error", code: "REMOTE_CHECK_FAILED", message: "Notion 读取接口检查失败，请重新连接或稍后重试", evidence: "remote" };
       }
     },
-    recall(_db, workspaceId, query, topK) { return service.search(workspaceId, query, topK); }
+    recall(_db, workspaceId, query, topK) { return service.search(workspaceId, query, topK); },
+    recallWithDiagnostics(_db, workspaceId, query, topK, options) { return service.searchWithDiagnostics(workspaceId, query, topK, options); }
   };
 }

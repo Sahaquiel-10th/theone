@@ -1,5 +1,6 @@
 import type { Database, ExecutionTask } from "../types.js";
 import type { KnowledgeChunk } from "../knowledge/provider.js";
+import type { KnowledgeSearchOptions, KnowledgeSearchResult } from '../knowledge/temporal.js';
 
 export type ConnectorScope = { workspaceId: string; userId: string; deviceId?: string; installationId?: string };
 export type ConnectorState = "not_connected" | "pending" | "configured" | "expired" | "error" | "offline" | "transport_ready" | "unavailable" | "disabled" | "verified";
@@ -22,6 +23,7 @@ type BaseAdapter = {
 export type KnowledgeAdapter = BaseAdapter & {
   kind: "knowledge";
   recall(db: Database, workspaceId: string, query: string, topK: number): Promise<KnowledgeChunk[]>;
+  recallWithDiagnostics?(db: Database, workspaceId: string, query: string, topK: number, options: KnowledgeSearchOptions): Promise<KnowledgeSearchResult>;
 };
 export type ExecutionAdapter = BaseAdapter & {
   kind: "execution";

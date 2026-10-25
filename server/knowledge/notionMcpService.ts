@@ -9,6 +9,7 @@ import type { ConnectorAuthorizationSession, Database, KnowledgeConnection } fro
 import { decryptCredential, encryptCredential, knowledgeCredentialContext } from "./credentialCipher.js";
 import type { KnowledgeChunk } from "./provider.js";
 import { createNotionFetch } from './notionTransport.js';
+import { dateSearchQuery, type KnowledgeDateRange, type KnowledgeDateSearch, type KnowledgeSearchOptions, type KnowledgeSearchResult } from './temporal.js';
 
 const MCP_URL = "https://mcp.notion.com/mcp";
 const AUTHORIZATION_URL = "https://mcp.notion.com/authorize";
@@ -66,7 +67,7 @@ function validatedToken(value: unknown): TokenResponse {
   };
 }
 type McpClient = {
-  listTools(): Promise<{ tools: Array<{ name: string }> }>;
+  listTools(): Promise<{ tools: Array<{ name: string; inputSchema?: Record<string, unknown> }> }>;
   callTool(params: { name: string; arguments?: Record<string, unknown> }): Promise<unknown>;
   close(): Promise<void>;
 };
@@ -105,12 +106,12 @@ export class NotionWriteError extends Error {
 
 /** Keep only a reviewed error code. Never persist raw provider text: it can
  * contain article content, URLs, credentials, or untrusted instructions. */
-function notionErrorCode(value: unknown): string | undefined {
-  if (!value || typeof value !== 'object') return undefined;
+function notionErrorCode(value: unknown, depth=0): string | undefined {
+  if (!value || typeof value !== 'object' || depth>6) return undefined;
   const v = value as Record<string, unknown>;
   const codes = ['unauthorized','restricted_resource','object_not_found','validation_error','rate_limited','internal_server_error','service_unavailable','permission_denied','access_denied'];
   if (typeof v.code === 'string' && codes.includes(v.code)) return v.code;
-  if (v.error && typeof v.error === 'object') return notionErrorCode(v.error);
+  if (v.error && typeof v.error === 'object') return notionErrorCode(v.error,depth+1);
   return undefined;
 }
 function rejectedWrite(result: unknown): NotionWriteError | undefined {
@@ -174,6 +175,13 @@ function safeNotionSourceUrl(value?: string) {
 function jsonContent(text: string): unknown {
   try { return JSON.parse(text); } catch { return undefined; }
 }
+function toolData(result: unknown): unknown {
+  if(result&&typeof result==='object'){
+    const structured=(result as {structuredContent?:unknown}).structuredContent;
+    if(structured&&typeof structured==='object'&&!Array.isArray(structured))return structured;
+  }
+  return jsonContent(textContent(result));
+}
 
 function objectString(value: unknown, keys: string[]) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -193,7 +201,7 @@ function searchCandidates(value: unknown) {
     const url = safeNotionSourceUrl(objectString(current, ["url", "href"]));
     const title = objectString(current, ["title", "name"]);
     const excerpt = objectString(current, ["highlight", "excerpt", "snippet", "text"]);
-    if ((id || url) && (title || excerpt)) found.push({ id, url, title, excerpt,createdAt:objectString(current,['created_time','created_at'])?.slice(0,40),updatedAt:objectString(current,['last_edited_time','updated_at'])?.slice(0,40) });
+    if ((id || url) && (title || excerpt)) found.push({ id, url, title, excerpt,createdAt:objectString(current,['created_time','created_at'])?.slice(0,40),updatedAt:objectString(current,['last_edited_time','updated_at','page_last_edited_at'])?.slice(0,40) });
     Object.values(current as Record<string, unknown>).forEach(item => visit(item, depth + 1));
   }
   visit(value);
@@ -204,7 +212,7 @@ function searchCandidates(value: unknown) {
 
 function fetchedChunk(result: unknown, fallback: { id?: string; title?: string; url?: string; excerpt?: string;createdAt?:string;updatedAt?:string }): KnowledgeChunk {
   const text = textContent(result);
-  const parsed = jsonContent(text);
+  const parsed = toolData(result);
   const title = objectString(parsed, ["title", "name"]) || fallback.title || "Notion 页面";
   const sourceUrl = safeNotionSourceUrl(objectString(parsed, ["url", "href"]) || fallback.url);
   const body = objectString(parsed, ["text", "content", "markdown"]) || text || fallback.excerpt || "";
@@ -212,7 +220,74 @@ function fetchedChunk(result: unknown, fallback: { id?: string; title?: string; 
   // Neither the as-of wrapper nor a changing fetch timestamp is note content.
   const wrapped=body.match(/<content>([\s\S]*?)<\/content>/);
   const content=wrapped?wrapped[1].replace(/^\r?\n/,'').replace(/\r?\n$/,''):body;
-  return { id: fallback.id, provider: "notion", title, sourceUrl, content: content.slice(0, maxChunkChars),createdAt:objectString(parsed,['created_time','created_at'])?.slice(0,40)??fallback.createdAt,updatedAt:objectString(parsed,['last_edited_time','updated_at'])?.slice(0,40)??fallback.updatedAt };
+  return { id: fallback.id, provider: "notion", title, sourceUrl, content: content.slice(0, maxChunkChars),createdAt:objectString(parsed,['created_time','created_at'])?.slice(0,40)??fallback.createdAt,updatedAt:objectString(parsed,['last_edited_time','updated_at','page_last_edited_at'])?.slice(0,40)??fallback.updatedAt };
+}
+
+function schemaObject(value:unknown):Record<string,unknown>{return value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};}
+function schemaReference(value:unknown,root:unknown):unknown{
+  if(typeof value!=='string'||!value.startsWith('#/')||value.length>1000)return;
+  const parts=value.slice(2).split('/');if(parts.length>16)return;
+  let current:unknown=root;
+  for(const part of parts){const key=part.replace(/~1/g,'/').replace(/~0/g,'~'),object=schemaObject(current);if(!Object.hasOwn(object,key))return;current=object[key];}
+  return current;
+}
+function schemaProperties(value: unknown,root:unknown=value,depth=0,seen=new Set<unknown>()): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)||depth>12||seen.size>=128||seen.has(value)) return {};
+  seen.add(value);const schema=value as Record<string,unknown>;
+  const direct=schema.properties&&typeof schema.properties==='object'&&!Array.isArray(schema.properties)?schema.properties as Record<string,unknown>:{};
+  const branches=[schemaReference(schema.$ref,root),...[schema.anyOf,schema.oneOf,schema.allOf].flatMap(v=>Array.isArray(v)?v.slice(0,32):[])];
+  return Object.assign(Object.create(null),...branches.map(branch=>schemaProperties(branch,root,depth+1,seen)),direct);
+}
+function queryNeedsText(schema:unknown){
+  const root=schemaObject(schema),query=schemaProperties(root).query;
+  const visit=(value:unknown,depth=0,seen=new Set<unknown>()):boolean=>{
+    if(!value||typeof value!=='object'||depth>12||seen.size>=128||seen.has(value))return false;
+    seen.add(value);const node=schemaObject(value);
+    return typeof node.minLength==='number'&&node.minLength>0
+      ||[schemaReference(node.$ref,root),...[node.anyOf,node.oneOf,node.allOf].flatMap(v=>Array.isArray(v)?v.slice(0,32):[])].some(v=>visit(v,depth+1,seen));
+  };
+  return visit(query);
+}
+function invalidToolParameters(error:unknown,depth=0):boolean{
+  if(!error||typeof error!=='object'||depth>4)return false;
+  const e=error as {code?:unknown;cause?:unknown};
+  return e.code===-32602||e.code==='invalid_params'||e.code==='validation_error'||invalidToolParameters(e.cause,depth+1);
+}
+function deniedKnowledgeRead(error:unknown,depth=0):boolean{
+  if(!error||typeof error!=='object'||depth>4)return false;
+  const e=error as {status?:unknown;statusCode?:unknown;code?:unknown;message?:unknown;cause?:unknown};
+  if([e.status,e.statusCode,e.code].some(value=>value===401||value===403))return true;
+  if(['unauthorized','restricted_resource','permission_denied','access_denied'].includes(String(e.code)))return true;
+  return typeof e.message==='string'&&/unauthori[sz]ed|invalid[_ -]?token|expired[_ -]?token|forbidden|permission.?denied|access.?denied|\b40[13]\b/i.test(e.message)||deniedKnowledgeRead(e.cause,depth+1);
+}
+function secondaryReadFailure(error:unknown):NonNullable<KnowledgeDateSearch['secondaryFailure']>{
+  const e=error&&typeof error==='object'?error as {status?:unknown;code?:unknown;message?:unknown}:{};
+  const message=typeof e.message==='string'?e.message:'';
+  return e.status===429||e.code===429||e.code==='rate_limited'||/rate.?limit|\b429\b|频率|限流/i.test(message)?'rate_limited':['ETIMEDOUT','UND_ERR_CONNECT_TIMEOUT'].includes(String(e.code))||/timeout|timed out|超时/i.test(message)?'timeout':'unavailable';
+}
+/** Only send date fields actually advertised by this connection's official tool. */
+function notionDateFilter(schema: Record<string,unknown> | undefined, range: KnowledgeDateRange) {
+  const filters=schemaProperties(schemaProperties(schema).filters,schema);
+  const field:'created'|'updated'=range.basis==='updated'?'updated':'created';
+  const names=field==='updated'?['last_edited_date_range','edited_date_range']:['created_date_range'];
+  const name=names.find(key=>key in filters);
+  if(!name)return;
+  const bounds=schemaProperties(filters[name],schema);
+  if(!('start_date' in bounds)||!('end_date' in bounds))return;
+  // Calendar-only MCP filters may use a different server timezone and vary in
+  // inclusive-end semantics. Widen by a day and enforce the user's range locally.
+  const shift=(day:string,n:number)=>new Date(Date.parse(day+'T12:00:00Z')+n*86400000).toISOString().slice(0,10);
+  return {field,name,filters:{[name]:{start_date:shift(range.from,-1),end_date:shift(range.to,1)}}};
+}
+
+function dateFilterDropped(result: unknown, fieldName: string) {
+  const parsed=toolData(result);
+  const root=parsed&&typeof parsed==='object'?parsed as Record<string,unknown>:{};
+  const notices=[root.notices,root.warnings].flatMap(v=>Array.isArray(v)?v:[]);
+  return notices.some(notice=>{
+    const text=JSON.stringify(notice);
+    return text.includes(fieldName)||/date|日期|时间|filter|筛选|plan_required|upgrade_required/i.test(text);
+  });
 }
 
 export class NotionMcpService {
@@ -364,38 +439,98 @@ export class NotionMcpService {
   }
 
   async search(workspaceId: string, query: string, topK: number): Promise<KnowledgeChunk[]> {
-    return this.withRefresh(workspaceId, connection => this.searchConnected(connection, query, topK));
+    return (await this.searchWithDiagnostics(workspaceId,query,topK)).chunks;
   }
 
-  private async searchConnected(connection: KnowledgeConnection, query: string, topK: number): Promise<KnowledgeChunk[]> {
+  async searchWithDiagnostics(workspaceId: string, query: string, topK: number, options: KnowledgeSearchOptions = {}): Promise<KnowledgeSearchResult> {
+    return this.withRefresh(workspaceId, connection => this.searchConnected(connection, query, topK, options));
+  }
+
+  private async searchConnected(connection: KnowledgeConnection, query: string, topK: number, options: KnowledgeSearchOptions): Promise<KnowledgeSearchResult> {
+    const expectedId=connection.id,expectedToken=connection.encryptedAccessToken;
+    const verify=async()=>{
+      const current=connectionFor(await this.store.read(),connection.workspaceId);
+      if(!current||current.id!==expectedId||!['connected','error'].includes(current.status)||current.encryptedAccessToken!==expectedToken)throw new Error('Notion 知识授权已撤销或改变');
+    };
     const client = await this.clientFor(connection);
     try {
       const listed = await withinDeadline(client.listTools(), "Notion MCP 工具查询超时");
       const available = new Set(listed.tools.map(tool => tool.name).filter(name => readOnlyTools.has(name)));
       const searchTool = available.has("notion-search") ? "notion-search" : "";
       if (!searchTool) throw new Error("Notion MCP 当前没有可用的只读搜索工具");
+      await verify();
+      const range=options.dateRange;
+      const searchSchema=listed.tools.find(tool=>tool.name===searchTool)?.inputSchema;
+      const filter=range?notionDateFilter(searchSchema,range):undefined;
+      let dateSearch:KnowledgeDateSearch|undefined=range?{method:filter?'native_date_filter':'semantic_date_hint',filterApplied:Boolean(filter),...(filter?{field:filter.field}:{}),complete:false}:undefined;
       // Non-relevance ordering forces workspace search, never Notion AI search.
-      const searchResult = await withinDeadline(client.callTool({ name: searchTool, arguments: { query, sort: 'last_edited' } }), "Notion MCP 搜索超时");
+      const callSearch=async(args:Record<string,unknown>)=>{
+        await verify();
+        const value=await withinDeadline(client.callTool({name:searchTool,arguments:args}),'Notion MCP 搜索超时');
+        await verify();return value;
+      };
+      let semanticAlreadySearched=false;
+      let searchResult:unknown;
+      try {
+        searchResult=await callSearch({query:range?(filter&&!queryNeedsText(searchSchema)?'':dateSearchQuery(query,range)):query,sort:'last_edited',...(filter?{filters:filter.filters}:{})});
+      } catch(error){
+        await verify();
+        if(!range||!filter||!invalidToolParameters(error)||deniedKnowledgeRead(error))throw error;
+        dateSearch={method:'semantic_date_hint',filterApplied:false,filterDropped:true,complete:false};
+        searchResult=await callSearch({query:dateSearchQuery(query,range),sort:'last_edited'});
+        semanticAlreadySearched=true;
+      }
+      if(range&&filter&&searchResult&&typeof searchResult==='object'&&(searchResult as {isError?:unknown}).isError===true&&notionErrorCode(toolData(searchResult))==='validation_error'){
+        dateSearch={method:'semantic_date_hint',filterApplied:false,filterDropped:true,complete:false};
+        searchResult=await callSearch({query:dateSearchQuery(query,range),sort:'last_edited'});
+        semanticAlreadySearched=true;
+      }
       this.assertToolResult(searchResult);
+      await verify();
+      if(filter&&dateFilterDropped(searchResult,filter.name))dateSearch={method:'semantic_date_hint',filterApplied:false,filterDropped:true,complete:false};
       const searchText = textContent(searchResult);
-      const candidates = searchCandidates(jsonContent(searchText)).slice(0, topK);
-      if (!candidates.length) return searchText ? [{ provider: "notion", title: "Notion 搜索结果", content: searchText.slice(0, maxChunkChars) }] : [];
+      const candidateLimit=range?Math.min(topK,5):topK;
+      let candidates = searchCandidates(toolData(searchResult)).slice(0,candidateLimit);
+      // Creation date is only a candidate locator for an event. Search absolute
+      // event-date content too, so older pages containing yesterday's entry are
+      // not excluded just because their page was originally created months ago.
+      if(range&&filter&&!semanticAlreadySearched&&(range.basis==='event'||dateSearch?.filterDropped)){
+        try{
+          await verify();
+          const semantic=await callSearch({query:dateSearchQuery(query,range),sort:'last_edited'});
+          this.assertToolResult(semantic);await verify();
+          const byId=new Map(candidates.map(candidate=>[candidate.id||candidate.url,candidate]));
+          for(const candidate of searchCandidates(toolData(semantic)).slice(0,candidateLimit))byId.set(candidate.id||candidate.url,candidate);
+          candidates=[...byId.values()].slice(0,candidateLimit*2);
+        }catch(error){
+          // Secondary recall must not erase the successful native response.
+          // A revoked connection is different: discard all cached candidates.
+          await verify();
+          if(deniedKnowledgeRead(error))throw error;
+          dateSearch={...dateSearch!,partial:true,secondaryFailure:secondaryReadFailure(error)};
+        }
+      }
+      if (!candidates.length) return {chunks:!range&&searchText&&!jsonContent(searchText) ? [{ provider: "notion", title: "Notion 搜索结果", content: searchText.slice(0, maxChunkChars) }] : [],...(dateSearch?{dateSearch}:{})};
       const chunks: KnowledgeChunk[] = [];
       for (const candidate of candidates) {
+        await verify();
         if (available.has("notion-fetch") && (candidate.id || candidate.url)) {
           try {
             const result = await withinDeadline(client.callTool({ name: "notion-fetch", arguments: { id: candidate.id || candidate.url! } }), "Notion MCP 读取超时");
             this.assertToolResult(result);
+            await verify();
             chunks.push(fetchedChunk(result, candidate));
             continue;
           } catch (error) {
+            await verify();
             if (this.isAuthorizationError(error)) throw error;
             // A search excerpt is still useful when one page cannot be fetched.
           }
         }
         chunks.push({ id: candidate.id, provider: "notion", title: candidate.title || "Notion 页面", sourceUrl: candidate.url, content: (candidate.excerpt || candidate.title || "").slice(0, maxChunkChars),createdAt:candidate.createdAt,updatedAt:candidate.updatedAt });
       }
-      return chunks.filter(chunk => chunk.content);
+      await verify();
+      return {chunks:chunks.filter(chunk => chunk.content),...(dateSearch?{dateSearch}:{})};
     } finally {
       await closeClient(client);
     }
@@ -480,7 +615,11 @@ export class NotionMcpService {
   }
 
   private assertToolResult(result: unknown) {
-    if (result && typeof result === "object" && (result as { isError?: unknown }).isError === true) throw new Error("Notion MCP 读取失败");
+    if (result && typeof result === "object" && (result as { isError?: unknown }).isError === true) {
+      const code=notionErrorCode(toolData(result));
+      const status=code==='unauthorized'?401:['restricted_resource','permission_denied','access_denied'].includes(code??'')?403:code==='rate_limited'?429:502;
+      throw Object.assign(new Error('Notion MCP 读取失败'),{status,code});
+    }
   }
 
   private async withRefresh<T>(workspaceId: string, operation: (connection: KnowledgeConnection) => Promise<T>) {
@@ -495,6 +634,7 @@ export class NotionMcpService {
   }
 
   private isAuthorizationError(error: unknown) {
+    if(error&&typeof error==='object'&&(error as {status?:unknown}).status===401)return true;
     const value = error instanceof Error ? `${error.name} ${error.message}` : String(error);
     return /unauthori[sz]ed|invalid[_ -]?token|expired[_ -]?token|\b401\b/i.test(value);
   }

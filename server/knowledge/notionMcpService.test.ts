@@ -134,6 +134,134 @@ test("Notion refresh stays scoped to the exact workspace connection", async () =
   assert.equal(decryptCredential(f.database.knowledgeConnections[1].encryptedAccessToken!), "old-workspace-b");
 });
 
+const dateRange={from:'2026-10-24',to:'2026-10-24',timeZone:'Asia/Shanghai',anchorAt:'2026-10-25T02:00:00Z',basis:'event' as const};
+const dateSchema={type:'object',properties:{query:{type:'string'},filters:{type:'object',properties:{created_date_range:{type:'object',properties:{start_date:{type:'string'},end_date:{type:'string'}}}}}}};
+const textResult=(value:unknown)=>({content:[{type:'text',text:JSON.stringify(value)}]});
+test('Notion discovers native date filters and separately searches event-date content in older pages',async()=>{
+  const f=writingFixture(),calls:Array<{name:string;arguments?:Record<string,unknown>}>=[];
+  const service=new NotionMcpService(f.store,{createClient:async()=>({
+    listTools:async()=>({tools:[{name:'notion-search',inputSchema:dateSchema},{name:'notion-fetch'}]}),
+    callTool:async params=>{
+      calls.push(params);
+      if(params.name==='notion-search')return textResult({results:params.arguments?.filters?[{id:'new-page',title:'昨天新建的页面',created_time:'2026-10-24T02:00:00Z'}]:[{id:'old-page',title:'长期日记',created_time:'2026-01-01T00:00:00Z'}]});
+      return textResult({title:'资料',text:params.arguments?.id==='old-page'?'2026-10-24：社区计划讨论':'这页讲的是以前的事'});
+    },close:async()=>{}
+  })});
+  const found=await service.searchWithDiagnostics('workspace-a','昨天思考',10,{dateRange});
+  assert.deepEqual(calls.filter(c=>c.name==='notion-search').map(c=>c.arguments),[
+    {query:'',sort:'last_edited',filters:{created_date_range:{start_date:'2026-10-23',end_date:'2026-10-25'}}},
+    {query:'2026-10-24 思考',sort:'last_edited'}
+  ]);
+  assert.equal(found.dateSearch?.method,'native_date_filter');assert.equal(found.dateSearch?.field,'created');assert.equal(found.dateSearch?.complete,false);
+  assert.deepEqual(found.chunks.map(c=>c.id),['new-page','old-page']);
+  assert.equal(found.chunks[1].createdAt,'2026-01-01T00:00:00Z');
+});
+test('Notion date fallback never invents fields, treats plan notices as dropped filters and excludes empty metadata blobs',async()=>{
+  for(const mode of ['unsupported','notice','validation'] as const){
+    const f=writingFixture(),calls:Array<Record<string,unknown>>=[];
+    const service=new NotionMcpService(f.store,{createClient:async()=>({
+      listTools:async()=>({tools:[{name:'notion-search',inputSchema:mode==='unsupported'?{type:'object',properties:{query:{type:'string'}}}:dateSchema}]}),
+      callTool:async({arguments:args})=>{
+        calls.push(args!);
+        if(args?.filters&&mode==='validation')return {...textResult({code:'validation_error'}),isError:true};
+        return textResult({results:[],...(mode==='notice'&&args?.filters?{notices:[{fields:['filters.created_date_range'],message:'upgrade required PRIVATE_PROVIDER_TEXT'}]}:{})});
+      },close:async()=>{}
+    })});
+    const result=await service.searchWithDiagnostics('workspace-a','昨天会议',10,{dateRange});
+    assert.deepEqual(result.chunks,[]);assert.equal(result.dateSearch?.filterApplied,false);
+    assert.equal(calls.length,mode==='unsupported'?1:2);
+    assert.equal(calls.at(-1)?.query,'2026-10-24 会议');
+    assert.doesNotMatch(JSON.stringify(result),/PRIVATE_PROVIDER_TEXT/);
+  }
+  const f=writingFixture();
+  const service=new NotionMcpService(f.store,{createClient:async()=>({listTools:async()=>({tools:[{name:'notion-search'}]}),callTool:async()=>textResult({results:[]}),close:async()=>{}})});
+  assert.deepEqual(await service.search('workspace-a','不命中',5),[]);
+});
+test('Notion date pipeline checks authorization between read steps and never crosses workspaces',async()=>{
+  const f=writingFixture();let calls=0;
+  const service=new NotionMcpService(f.store,{createClient:async token=>{
+    assert.equal(token,'own-token');
+    return {listTools:async()=>({tools:[{name:'notion-search',inputSchema:dateSchema},{name:'notion-fetch'}]}),callTool:async()=>{
+      calls++;f.database.knowledgeConnections[0].status='revoked';
+      return textResult({results:[{id:'must-not-fetch',title:'private',created_time:'2026-10-24T02:00:00Z'}]});
+    },close:async()=>{}};
+  }});
+  await assert.rejects(service.searchWithDiagnostics('workspace-b','会议',5,{dateRange}),/连接 Notion/);assert.equal(calls,0);
+  await assert.rejects(service.searchWithDiagnostics('workspace-a','会议',5,{dateRange}),/撤销|改变/);assert.equal(calls,1);
+});
+
+test('Notion keeps native date candidates when secondary recall fails, but never keeps them after revocation',async()=>{
+  for(const failure of ['timeout','rate_limited','revoked','permission','unauthorized','permission_sdk'] as const){
+    const f=writingFixture();let searches=0,fetches=0;
+    const service=new NotionMcpService(f.store,{createClient:async()=>({
+      listTools:async()=>({tools:[{name:'notion-search',inputSchema:dateSchema},{name:'notion-fetch'}]}),
+      callTool:async({name})=>{
+        if(name==='notion-fetch'){fetches++;return {structuredContent:{title:'原生日期候选',text:'2026-10-24 当天的思考'}};}
+        if(++searches===1)return {structuredContent:{results:[{id:'native',title:'原生日期候选',created_time:'2026-10-24T03:00:00Z'}]}};
+        if(failure==='revoked')f.database.knowledgeConnections[0].status='revoked';
+        if(failure==='permission_sdk')throw Object.assign(new Error('HTTP error status 403 Forbidden'),{code:-32000});
+        if(failure==='permission'||failure==='unauthorized')return {isError:true,structuredContent:{code:failure==='permission'?'restricted_resource':'unauthorized'}};
+        throw Object.assign(new Error('PRIVATE_PROVIDER_DETAIL'),{code:failure==='timeout'?'ETIMEDOUT':429,status:failure==='rate_limited'?429:undefined});
+      },close:async()=>{}
+    })});
+    if(['revoked','permission','unauthorized','permission_sdk'].includes(failure)){
+      await assert.rejects(service.searchWithDiagnostics('workspace-a','思考',10,{dateRange}));
+      assert.equal(fetches,0);
+    }else{
+      const found=await service.searchWithDiagnostics('workspace-a','思考',10,{dateRange});
+      assert.equal(found.chunks[0].content,'2026-10-24 当天的思考');
+      assert.equal(found.dateSearch?.partial,true);assert.equal(found.dateSearch?.secondaryFailure,failure);assert.equal(fetches,1);
+      assert.doesNotMatch(JSON.stringify(found),/PRIVATE_PROVIDER_DETAIL/);
+    }
+    assert.equal(searches,2,'no retry of the entire successful native branch');
+  }
+});
+
+test('Notion honors nonempty query schemas and safely degrades SDK InvalidParams exceptions',async()=>{
+  for(const minLength of [undefined,1]){
+    const f=writingFixture(),calls:Array<Record<string,unknown>>=[];
+    const schema={...dateSchema,properties:{...dateSchema.properties,query:{type:'string',...(minLength?{minLength}:{})}}};
+    const service=new NotionMcpService(f.store,{createClient:async()=>({
+      listTools:async()=>({tools:[{name:'notion-search',inputSchema:schema}]}),
+      callTool:async({arguments:args})=>{
+        calls.push(args!);
+        if(args?.filters)throw Object.assign(new Error('MCP InvalidParams PRIVATE_RAW'),{code:-32602});
+        return {structuredContent:{results:[]}};
+      },close:async()=>{}
+    })});
+    const found=await service.searchWithDiagnostics('workspace-a','会议',10,{dateRange});
+    assert.equal(calls.length,2);assert.equal(calls[0].query,minLength?'2026-10-24 会议':'');
+    assert.equal(calls[1].query,'2026-10-24 会议');assert.equal(calls[1].filters,undefined);
+    assert.equal(found.dateSearch?.filterApplied,false);assert.equal(found.dateSearch?.filterDropped,true);
+    assert.doesNotMatch(JSON.stringify(found),/PRIVATE_RAW/);
+  }
+});
+
+test('Notion reads structured-only responses and resolves only bounded local schema references',async()=>{
+  const schema={type:'object',properties:{query:{$ref:'#/$defs/query'},filters:{$ref:'#/$defs/filters'}},$defs:{query:{type:'string',minLength:1},filters:{type:'object',properties:{created_date_range:{$ref:'#/$defs/range'}}},range:{type:'object',properties:{start_date:{type:'string'},end_date:{type:'string'}}}}};
+  const f=writingFixture(),calls:Array<Record<string,unknown>>=[];
+  const service=new NotionMcpService(f.store,{createClient:async()=>({
+    listTools:async()=>({tools:[{name:'notion-search',inputSchema:schema},{name:'notion-fetch'}]}),
+    callTool:async({name,arguments:args})=>{
+      if(name==='notion-fetch')return {structuredContent:{title:'计划',text:'2026-10-24 计划正文'}};
+      calls.push(args!);return {structuredContent:{results:[{id:'page',title:'计划',created_time:'2026-10-24T01:00:00Z'}],...(args?.filters?{notices:[{fields:['filters.created_date_range'],message:'filter dropped'}]}:{})}};
+    },close:async()=>{}
+  })});
+  const found=await service.searchWithDiagnostics('workspace-a','计划',10,{dateRange});
+  assert.equal(calls[0].query,'2026-10-24 计划');assert.ok(calls[0].filters);
+  assert.equal(found.chunks[0].content,'2026-10-24 计划正文');
+  assert.equal(found.dateSearch?.filterDropped,true,'structured notices remain visible');
+  for(const reference of ['#/$defs/loop','https://unreviewed.example/schema.json']){
+    const g=writingFixture();let calls=0;
+    const guarded=new NotionMcpService(g.store,{createClient:async()=>({
+      listTools:async()=>({tools:[{name:'notion-search',inputSchema:{properties:{filters:{$ref:reference}},$defs:{loop:{$ref:'#/$defs/loop'}}}}]}),
+      callTool:async({arguments:args})=>{calls++;assert.equal(args?.filters,undefined);return {structuredContent:{results:[]}};},close:async()=>{}
+    })});
+    assert.equal((await guarded.searchWithDiagnostics('workspace-a','会议',10,{dateRange})).dateSearch?.method,'semantic_date_hint');
+    assert.equal(calls,1);
+  }
+});
+
 test('Notion explicit writing OAuth grants only the authorizing user, rejects unavailable write tools and never invokes Notion AI', async () => {
   const f=fixture();let writesAvailable=true;
   const calls:string[]=[];

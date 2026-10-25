@@ -30,6 +30,15 @@ test('new rounds remain independent from the old result flight and restored task
  assert.deepEqual(departingCardTransitions(new Map([[running.id,running]]),[running]),[]);
  assert.deepEqual(reportedCardTransitions(previous,[running],[card.id]),[card]);
 });
+test('a task finished and reported between polls returns its exact outcome, including blocked work',()=>{
+ const running:Transfer={...card,id:'work:ui',state:'running',reportable:false};
+ const blocked:Transfer={...card,id:'needs-input-round',state:'needs_input',reported:true};
+ assert.deepEqual(reportedCardTransitions(new Map([[running.id,running]]),[blocked]),[blocked]);
+ assert.deepEqual(reportedCardTransitions(new Map([[running.id,running]]),[{...blocked,reported:false}]),[]);
+ assert.deepEqual(reportedCardTransitions(new Map([[running.id,running]]),[{...blocked,taskId:'another-task'}]),[]);
+ assert.deepEqual(reportedCardTransitions(new Map([[blocked.id,blocked]]),[blocked]),[]);
+ assert.deepEqual(reportedCardTransitions(null,[blocked]),[]);
+});
 test('read-all updates only the captured receipts and cannot mark them reported or swallow future work',()=>{
  const next={...card,id:'round-2'};
  const changed=applyReviewedReceipts([card,next],[card.id]);
