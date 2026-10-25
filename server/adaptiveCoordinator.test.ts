@@ -7,6 +7,10 @@ import {inputProfile} from './oneContext.js';
 import {mkdtemp,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
+import {NotionDocuments} from './notionDocuments.js';
+import type {NotionMcpService} from './knowledge/notionMcpService.js';
+import {resolveExecutor} from './executorProfiles.js';
+import {sourceBinding} from './publicSharing.js';
 const key=async()=>{};
 const call=(name:string,args:unknown)=>({...evalAnswer(''),toolCalls:[{id:`call-${name}`,type:'function' as const,function:{name,arguments:JSON.stringify(args)}}]});
 const knowledge={recallWithDiagnostics:async()=>{throw Error('knowledge must not be read');}};
@@ -70,6 +74,42 @@ test('an unbound explicit same-task update keeps delegate tools even when duplic
   const db=await f.store.read(),jobs=db.chatOperations!.filter(op=>op.workRun);
   assert.equal(result.taskId,'old-task-0');assert.equal(jobs.length,1);assert.equal(jobs[0].conversationId,'old-task-0');assert.equal(db.conversations.filter(c=>!c.coordinatorMain).length,31);
  }
+});
+
+test('the verbatim live final-edit request never renews knowledge search and updates its already-bound Notion manuscript through the same task',async()=>{
+ const request='继续同一件「基于昨天思考写小报童专栏」，不要新建任务或另一篇页面。现有 Notion 草稿已经有全文，本轮只做最终整理：保留全文内容和自然结尾，删掉正文开头重复的二级标题「我把对AI的所有理解都变成了一个小小的启动器」，只留一个主标题。沿用这篇原稿：https://www.notion.so/403a50159991810f8a36fcb45cb015bf。素材已经足够，不要重新搜索知识库或旧资料，不增加或虚构经历，不发布、不分享。请实际更新同一篇草稿，回读核对正文完整和结尾后，在主对话汇报完成并给出原稿入口，不要让我再点开始。';
+ const f=dispatchFixture(),taskId='old-task-0',pageId='403a50159991810f8a36fcb45cb015bf',parentId='a'.repeat(32);
+ const duplicate='## 我把对AI的所有理解都变成了一个小小的启动器\n\n这是保留不变的合成正文。';
+ let body=`# 唯一主标题\n\n${duplicate}\n\n这是保留不变的自然结尾。`,updates=0,reads=0,knowledgeCalls=0,mainCalls=0,workerCalls=0;
+ const expected=body.replace(duplicate,'这是保留不变的合成正文。');
+ await f.store.mutate(db=>{
+  const connection={id:'live-edit-notion',workspaceId:evalScope.workspaceId,provider:'notion' as const,status:'connected' as const,clientId:'synthetic',createdAt:'2026-10-20T00:00:00Z',updatedAt:'2026-10-20T00:00:00Z',notionWriting:{grantId:'synthetic-grant',userId:evalScope.userId,authorizedAt:'2026-10-20T00:00:00Z',parentId}};
+  db.knowledgeConnections.push(connection);
+  const task=db.conversations.find(c=>c.id===taskId)!,executor=resolveExecutor(db,'general',f.model),stamp='2026-10-20T01:00:00Z';
+  task.title='基于昨天思考写小报童专栏';task.workPaused=true;delete task.workPauseReason;task.notionDocument={connectionId:connection.id,grantId:'synthetic-grant',parentId,pageId};
+  db.chatOperations!.push({...evalScope,id:'previous-live-edit',operationId:'previous_live_edit_20261025',requestId:'previous-live-edit',payloadHash:'synthetic',status:'failed',conversationId:taskId,createdAt:stamp,updatedAt:stamp,workRun:{state:'failed',resultOutcome:'partial',failureCode:'task_step_limit',executorId:'general',executorVersion:executor.version,values:executor.values,modelId:f.model.id,modelPrompt:'',instruction:'用昨天的思考写专栏，保存到Notion。',inputMessageId:'old-input-0',budget:.5,webSearch:false,sources:[{id:connection.id,binding:sourceBinding(connection)}],skills:[],credentials:[],contract:{version:1,requiredFeatureIds:[],requiredTools:['knowledge_search'],knowledgeSourceIds:[connection.id],execution:'model'},notionTarget:{...task.notionDocument,referenceIds:[]},notionReceipt:{state:'verified',pageId,digest:'c'.repeat(64),expectedDigest:'c'.repeat(64)},steps:[{key:'previous-read',namespace:'worker',tool:'read_notion_document',label:'旧正文回读',effect:'read',state:'completed',output:{content:body,pageId},updatedAt:stamp},{key:'previous-save',namespace:'worker',tool:'save_notion_draft',label:'旧保存',effect:'external_write',state:'completed',output:{state:'verified',pageId,digest:'c'.repeat(64),expectedDigest:'c'.repeat(64)},updatedAt:stamp}]}});
+ });
+ const mcp={readDocument:async(_workspace:string,id:string)=>{assert.equal(id,pageId);reads++;return {text:body};},callDocumentTool:async(workspace:string,_connection:string,_grant:string,user:string,name:string,args:any)=>{
+  assert.deepEqual([workspace,user,name],[evalScope.workspaceId,evalScope.userId,'notion-update-page']);assert.equal(args.page_id,pageId);updates++;assert.equal(updates,1,'one current update, never a new page or old-task replay');
+  for(const update of args.content_updates)body=body.replace(update.old_str,update.new_str);return {};
+ }} as unknown as NotionMcpService;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{knowledgeCalls++;throw Error('the complete live instruction explicitly forbids renewed knowledge search');}},{contextMode:'adaptive',notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(_model,messages,tools)=>{
+  assert.ok(!tools.some(tool=>tool.function.name==='knowledge_search'),'both main dispatcher and resumed worker must honour 不要重新搜索');
+  if(tools.some(tool=>tool.function.name==='save_notion_draft')){
+   workerCalls++;assert.equal(workerCalls,1,'final verified write should complete without another worker generation');assert.match(JSON.stringify(messages),/不要重新搜索知识库或旧资料/);
+   return call('save_notion_draft',{old_str:duplicate,new_str:'这是保留不变的合成正文。',final:true});
+  }
+  mainCalls++;if(mainCalls===1)return call('read_task',{query:taskId});
+  assert.equal(mainCalls,2);return call('delegate_task',{taskId,title:'基于昨天思考写小报童专栏',instruction:request,executorId:'general',featureIds:[]});
+ }});
+ const result=await service.dispatch(evalScope,{operationId:'verbatim_live_final_edit_20261025',text:request},key);
+ assert.equal(result.taskId,taskId);assert.doesNotMatch(result.message.content,/还没查全|知识不完整|只有只读/);
+ await service.resume(evalScope,key);
+ for(let i=0;i<100;i++){const run=(await f.store.read()).chatOperations!.find(op=>op.operationId==='verbatim_live_final_edit_20261025_work')?.workRun;if(run&&['completed','failed'].includes(run.state))break;await new Promise(resolve=>setTimeout(resolve,10));}
+ const db=await f.store.read(),jobs=db.chatOperations!.filter(op=>op.workRun),current=jobs.find(op=>op.operationId==='verbatim_live_final_edit_20261025_work')!;
+ assert.equal(current.workRun!.state,'completed',current.workRun!.error);assert.deepEqual(current.workRun!.contract!.requiredTools,['save_notion_draft']);assert.equal(current.workRun!.notionReceipt!.pageId,pageId);assert.equal(current.workRun!.notionReceipt!.state,'verified');assert.equal(body,expected);
+ assert.equal(knowledgeCalls,0);assert.equal(updates,1);assert.equal(workerCalls,1);assert.equal(jobs.length,2);assert.ok(jobs.every(op=>op.conversationId===taskId));assert.equal(db.conversations.filter(c=>!c.coordinatorMain).length,31);assert.ok(reads>=2);
+ const state=await service.state(evalScope);assert.match(state.conversation!.messages.at(-1)!.content,new RegExp(pageId));
 });
 
 test('existing-task-only rejects every new-task shortcut and foreign task even after another owned task has been read',async()=>{

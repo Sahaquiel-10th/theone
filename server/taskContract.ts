@@ -7,21 +7,38 @@ export type KnowledgePolicy={required:boolean;sourceIds:string[];requested:strin
  * and exhaustive authorized searches are checked by the server. */
 export function knowledgePolicy(db:Database,scope:{workspaceId:string;userId:string},text:string,allowed?:readonly string[],choice?:string):KnowledgePolicy{
   const original=text;
-  text=text.replace(/(?:不要|不必|不需要|不|无需|不用)(?:(?:联网|上网)(?:或|和|及|、)?)?(?:查找|查询|检索|搜索|查|读取|读)[^，。；;\n]{0,40}/g,'');
+  // Strip only the declined action, including ordinary adverbs between the
+  // negation and verb. Preserve a following affirmative instruction in the
+  // same sentence instead of consuming "但去得到大脑查…" with the refusal.
+  const modifiers='(?:(?:再|重新|继续|额外|另外|再次|自行|自动|主动|顺便|单独|直接|帮我|去)\\s*)*';
+  const negativeQuery=new RegExp(`(?:不要|不必|不需要|无需|不用|别|不)${modifiers}(?:(?:联网|上网)(?:或|和|及|、)?${modifiers})?(?:查找|查询|查阅|检索|搜索|搜|查|读取|读)([^，,。；;\\n]{0,120})`,'g');
+  let previous:string;
+  do{
+    previous=text;
+    text=text.replace(negativeQuery,(_match,tail:string)=>{
+      const affirmative=tail.search(/但是|但|不过|而是|然后|随后|(?:另外|同时|并且|并)(?=(?:请|帮我|去|到|在|从))/);
+      return affirmative<0?'':tail.slice(affirmative);
+    });
+    // A retained contrast can itself be a refusal. Every changed pass removes
+    // at least its negation and verb, so this is bounded by the input length.
+  }while(text!==previous);
   const connected=db.knowledgeConnections.filter(c=>c.workspaceId===scope.workspaceId&&['connected','error'].includes(c.status)&&canReadKnowledge(db,scope,c.id)&&(allowed===undefined||allowed.includes(c.id)));
   // A named write destination is not a retrieval request. In particular the
   // single character 查 in 检查 used to turn "save to Notion; check the result"
   // into a mandatory knowledge search, blocking the actual write delegation.
-  const clauses=text.split(/[，。；;\n]/);
-  const isQuery=(clause:string)=>/查找|查询|查阅|查查|查一下|搜|检索|寻找|找找|找一下|(?:^|[\s]|请|帮我|去|到|在|从|里|中|想)(?:查|找)(?!看)/.test(clause)
+  const clauses=text.split(/[，,。；;\n]/);
+  const isQuery=(clause:string)=>/查找|查询|查阅|查查|查一下|搜|检索|寻找|找找|找一下|(?:^|[\s]|请|帮我|去|到|在|从|里|中|想|再|继续|重新|额外|另外)(?:查|找)(?!看)/.test(clause)
     || /看看|查看/.test(clause)&&!/(?:保存|写入|回读|核对|检查|创建|新建)/.test(clause)
     || /我记得/.test(clause);
   const named=Object.entries(knowledgeNames).filter(([id,name])=>clauses.some(clause=>new RegExp(id+'|'+name,'i').test(clause)&&isQuery(clause))).map(([id])=>id);
   const query=clauses.some(isQuery);
   const personal=/我记得有(?:个|一|件)/.test(text)||/(?:昨天|前天|今天|上周|本周)(?:.{0,12}我的.{0,8}(?:会议|录音|笔记)|.{0,12}(?:会议记录|会议纪要|录音|笔记))/.test(text);
   const declined=original!==text&&!query&&!personal;
-  const all=!declined&&(choice==='all'||(!named.length&&((/(?:我记得|知识库|资料库|笔记|自己的资料|所有.*资料)/.test(text)&&query)||personal)));
-  const requested=declined?[]:choice&&choice!=='none'&&choice!=='all'?[choice]:query?named:[];
+  // After a mixed refusal/request, a stale planner choice must not re-add the
+  // refused source or widen the surviving explicit affirmative source names.
+  const queryChoice=original!==text&&named.length?undefined:choice;
+  const all=!declined&&(queryChoice==='all'||(!named.length&&((/(?:我记得|知识库|资料库|笔记|自己的资料|所有.*资料)/.test(text)&&query)||personal)));
+  const requested=declined?[]:queryChoice&&queryChoice!=='none'&&queryChoice!=='all'?[queryChoice]:query?named:[];
   const required=all||requested.length>0;
   return {required,sourceIds:connected.filter(c=>all||requested.includes(c.provider)).map(c=>c.id),requested,missing:requested.filter(id=>!connected.some(c=>c.provider===id)).map(id=>knowledgeNames[id]||'指定资料来源'),declined};
 }

@@ -39,6 +39,44 @@ test('Notion writing and readback do not require unrelated knowledge search beca
  assert.equal(knowledgePolicy(db,scope,'不联网搜索；去 Notion 查会议资料',undefined,'notion').required,true);
  assert.deepEqual(knowledgePolicy(db,scope,'昨天我的会议说了什么？不联网搜索。').sourceIds,['n','g']);
 });
+test('a supplied complete Notion manuscript can decline renewed knowledge search without blocking same-page final edits',()=>{
+ const request='继续同一件「基于昨天思考写小报童专栏」，不要新建任务或另一篇页面。现有 Notion 草稿已经有全文，本轮只做最终整理：保留全文内容和自然结尾，删掉正文开头重复的二级标题「我把对AI的所有理解都变成了一个小小的启动器」，只留一个主标题。沿用这篇原稿：https://www.notion.so/403a50159991810f8a36fcb45cb015bf。素材已经足够，不要重新搜索知识库或旧资料，不增加或虚构经历，不发布、不分享。请实际更新同一篇草稿，回读核对正文完整和结尾后，在主对话汇报完成并给出原稿入口，不要让我再点开始。';
+ for(const choice of [undefined,'all','notion']){
+  const policy=knowledgePolicy(database(),scope,request,undefined,choice);
+  assert.equal(policy.required,false);assert.equal(policy.declined,true);assert.deepEqual(policy.sourceIds,[]);assert.deepEqual(policy.requested,[]);assert.deepEqual(policy.missing,[]);
+ }
+});
+test('common renewal adverbs stay inside a declined retrieval action without hiding a later affirmative source',()=>{
+ const db=database();
+ for(const modifier of ['再','重新','继续','额外','另外','再次','再重新','额外去','再帮我'])for(const negative of ['不要','不用','无需','不必','别']){
+  const policy=knowledgePolicy(db,scope,`素材已经足够，${negative}${modifier}搜索知识库或旧资料。只整理现有 Notion 草稿。`,undefined,'all');
+  assert.equal(policy.required,false,`${negative}${modifier}`);assert.equal(policy.declined,true);assert.deepEqual(policy.sourceIds,[]);
+ }
+ for(const text of [
+  '不要重新搜索 Notion 旧资料，但去得到大脑查一下新材料',
+  '不用再搜索旧资料，不过从得到大脑找一下最新会议记录',
+  '无需继续查找旧资料而是去得到大脑检索最新资料',
+  '不必额外搜索 Notion 旧资料并去得到大脑查一下新记录',
+  '别另外查询旧资料，然后去得到大脑继续查会议记录',
+  '不要重新搜索旧资料，但也不用查找 Notion，而是去得到大脑检索新资料',
+  '不要重新搜索 Notion 旧资料,去得到大脑查一下新资料',
+ ]){
+  for(const choice of [undefined,'all','notion']){
+   const policy=knowledgePolicy(db,scope,text,undefined,choice);assert.equal(policy.required,true,text);assert.equal(policy.declined,false,text);assert.deepEqual(policy.sourceIds,['g'],text);assert.deepEqual(policy.requested,['getnote'],text);
+  }
+  assert.deepEqual(knowledgePolicy(db,scope,text,['n']).sourceIds,[],`${text}: explicit selection is never expanded`);
+  assert.deepEqual(knowledgePolicy(db,{workspaceId:'b',userId:'u'},text).sourceIds,[],`${text}: another workspace is never queried`);
+ }
+ for(const text of [
+  '不要重新搜索旧资料，但也不用查Notion',
+  '不要重新搜索旧资料，但也不用查找 Notion',
+  '不用再查询旧笔记，不过不要另外搜索 Notion',
+  '不要继续检索旧资料，然后也无需再搜索得到大脑',
+  '不用额外搜索 Notion,也不要重新检索得到大脑',
+ ])for(const choice of [undefined,'all','notion']){
+  const policy=knowledgePolicy(db,scope,text,undefined,choice);assert.equal(policy.required,false,text);assert.equal(policy.declined,true,text);assert.deepEqual(policy.sourceIds,[],text);
+ }
+});
 test('no match is a real completed search, not a euphemism for an outage',()=>{
   assert.equal(knowledgeResultComplete({status:'no_match',coverage:[{connectionId:'n',status:'no_match'}]},['n']),true);
   for(const status of ['failed','unavailable'])assert.equal(knowledgeResultComplete({status:'used',coverage:[{connectionId:'n',status:'used'},{connectionId:'g',status}]},['n','g']),false);
