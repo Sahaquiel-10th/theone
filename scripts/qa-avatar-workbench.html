@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- The fixture API is an in-memory function. Fetch/XHR cannot reach even
+         the development proxy; only the local Vite HMR socket is permitted. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src ws://127.0.0.1:5177; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'" />
+    <title>ONE 分身工作台 · 本地合成验收</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/scripts/qa-avatar-workbench.tsx"></script>
+  </body>
+</html>

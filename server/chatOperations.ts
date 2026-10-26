@@ -6,6 +6,12 @@ import {canResumeWorkflowAfterRestart} from './workflowRecovery.js';
 /** Durable submission records. Ordinary chat keeps compact tombstones;
  * private queued work additionally stores its immutable execution configuration. */
 export type ChatOperation = {
+  /** Private owner-only debug receipt. Never serialize this through public,
+   * feature, coordinator or admin projections. It is not a conversation. */
+  avatarPreviewResult?: {
+    operationId: string; response: string; finishReason?: Message['finishReason']; warning?: string;
+    limitations: string; chargedMicros: number; heldMicros: number;
+  };
   runtimeContext?:import('./runtimeContext.js').RuntimeContext;
   executionCancelled?: boolean;
   workRun?: import('./coordinatorTypes.js').WorkRun; dispatchedTaskId?: string; dispatchedTaskIds?: string[];

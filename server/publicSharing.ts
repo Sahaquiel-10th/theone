@@ -21,7 +21,7 @@ export function sourceBinding(c: KnowledgeConnection) {
   return digest(JSON.stringify([c.id, c.workspaceId, c.provider, c.clientId, c.providerUserId, c.providerSpaceId,
     c.providerUserId || c.providerSpaceId ? null : [c.encryptedApiKey, c.encryptedAccessToken]]));
 }
-function ownerActive(db: Database, p: { workspaceId: string; userId: string }) {
+export function ownerActive(db: Database, p: { workspaceId: string; userId: string }) {
   if(!publicSharingAllowed(db,p.workspaceId))throw new SharingError("企业空间暂不开放对外分享和 API",403);
   if (!db.users.some(u => u.id === p.userId && u.enabled) || !db.workspaces.some(w => w.id === p.workspaceId && w.status === "active") || !db.workspaceMembers.some(m => m.status !== "disabled" && m.workspaceId === p.workspaceId && m.userId === p.userId && m.role === "owner")) throw new SharingError("分享已停止", 410);
 }
@@ -48,6 +48,21 @@ function text(value: unknown, max: number, required = true) {
   return value.trim();
 }
 function power(value: unknown) { if (typeof value !== "number" || !Number.isFinite(value) || value < .01 || value > 10000) throw new SharingError("电力限额应为 0.01 至 10000"); return Math.round(value * 1e6); }
+export function publicationModel(db: Database, modelId: unknown) {
+  const base = db.models.find(m => m.id === modelId && m.kind === 'chat' && m.enabled && m.apiKey);
+  if (!base) throw new SharingError('请选择可用的问答模型');
+  const config = resolveAiTask(db.settings, db.models, 'shared_answer', base);
+  if (!config.model.apiKey) throw new SharingError('问答模型尚未配置');
+  return config;
+}
+export function publicationSources(db: Database, scope: {workspaceId: string; userId: string}, sourceIds: unknown) {
+  if (!Array.isArray(sourceIds) || sourceIds.length > 5 || sourceIds.some(id => typeof id !== 'string')) throw new SharingError('请选择最多 5 个已连接的知识来源');
+  return [...new Set(sourceIds as string[])].map(id => {
+    const c = db.knowledgeConnections.find(c => c.id === id && c.workspaceId === scope.workspaceId && c.status === 'connected');
+    if (!c) throw new SharingError('知识来源不可用或不属于你');
+    return {id, provider: c.provider, binding: sourceBinding(c), label: c.providerSpaceName || c.provider};
+  });
+}
 export function publish(db: Database, scope: { workspaceId: string; userId: string }, input: Record<string, unknown>, updateId?: string) {
   requireSharing(db); ownerActive(db, scope);
   const old=updateId?ownedPublication(db,scope.workspaceId,scope.userId,updateId):undefined;
@@ -61,10 +76,7 @@ export function publish(db: Database, scope: { workspaceId: string; userId: stri
     if(db.publicRuns!.some(r=>r.publicationId===old.id&&r.status==='running'))throw new SharingError('还有问题正在回答，请稍后再发布更新',409);
   }
   if (input.confirmed !== true || !Array.isArray(input.sourceIds) || input.sourceIds.length > 5 || input.sourceIds.some(x => typeof x !== "string")) throw new SharingError("请确认分享范围与费用");
-  const base = db.models.find(m => m.id === input.modelId && m.kind === "chat" && m.enabled && m.apiKey);
-  if (!base) throw new SharingError("请选择可用的问答模型");
-  const config = resolveAiTask(db.settings, db.models, "shared_answer", base);
-  if (!config.model.apiKey) throw new SharingError("问答模型尚未配置");
+  const config = publicationModel(db, input.modelId);
   const budgetMicros = power(input.budget), perRunMicros = power(input.perRun);
   if(old){const used=usageFor(db,old);if(budgetMicros<used.spent+used.held)throw new SharingError('总额度不能低于历史已用和预留电力');}
   if (perRunMicros > budgetMicros) throw new SharingError("单次限额不能大于总限额");
@@ -74,11 +86,7 @@ export function publish(db: Database, scope: { workspaceId: string; userId: stri
   if(old)validateServiceCommitments(db,old,budgetMicros,expiresAt);
   if (!draft && (!old||old.status==='draft') && db.publications!.filter(p => p.workspaceId === scope.workspaceId && p.userId === scope.userId && p.status === "active").length >= 20) throw new SharingError("最多保留 20 个有效分享，请先关闭不需要的分享");
   if(draft&&!old&&db.publications!.filter(p=>p.workspaceId===scope.workspaceId&&p.userId===scope.userId&&p.status==='draft').length>=50)throw new SharingError('最多保留 50 个未分享分身，请先整理现有分身');
-  const sources = [...new Set(input.sourceIds as string[])].map(id => {
-    const c = db.knowledgeConnections.find(c => c.id === id && c.workspaceId === scope.workspaceId && c.status === "connected");
-    if (!c) throw new SharingError("知识来源不可用或不属于你");
-    return { id, provider: c.provider, binding: sourceBinding(c), label: c.providerSpaceName || c.provider };
-  });
+  const sources = publicationSources(db, scope, input.sourceIds);
   const service=validatePublicAvatarService(db,scope,input.service===undefined?old?.service:input.service);
   const serviceBusiness=validateBusinessConfig(db,scope,input.serviceBusiness,old?.serviceBusiness);
   const commerce=publicationCommerceFields(db,input);

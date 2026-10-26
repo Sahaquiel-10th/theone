@@ -1,0 +1,273 @@
+/* A teacher's workbench, using the existing ONE glass, ink and focus tokens.
+   The list owns its wheel scroll; records own natural content height. The
+   editor is the focal pane and a trial conversation splits off beside it. */
+main.one-fluid-workspace.one-shell.one-studio .one-settings-dialog.fluid-work-layer.fluid-work-layer-avatars:not(.is-maximized) {
+  width:min(1480px,calc(100vw - 64px));
+  height:min(880px,calc(100dvh - 64px));
+  max-height:calc(100dvh - 64px);
+}
+main.one-fluid-workspace.one-shell.one-studio .one-settings-dialog.fluid-work-layer.fluid-work-layer-avatars:not(.is-maximized):has(.sharing-workspace-split[data-split-open=false]) {
+  width:min(1040px,calc(100vw - 64px));
+}
+main.one-fluid-workspace.one-shell.one-studio .one-settings-dialog.fluid-work-layer.fluid-work-layer-avatars>.settings-dialog-body {
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+  overflow:hidden;
+  scrollbar-gutter:auto;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-work-layer-avatars .sharing-hierarchy {
+  flex:1;
+  min-height:0;
+  height:100%;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-work-layer-avatars .sharing-workspace-split {
+  --fluid-split-height:100%;
+  height:100%;
+  min-height:0;
+}
+
+/* The only list scroll viewport. A wheel over any part of a record reaches
+   this pane rather than a fixed-height scroll container inside that record. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-workspace-split>.fluid-split-primary {
+  overflow-x:hidden;
+  overflow-y:auto;
+  overscroll-behavior-y:contain;
+  scrollbar-gutter:stable;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-cards {
+  display:grid;
+  align-content:start;
+  gap:12px;
+  overflow:visible;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-cards>.sharing-owner>.sharing-owner-split {
+  --fluid-split-padding:16px;
+  display:grid;
+  grid-template-columns:minmax(0,1fr);
+  align-items:start;
+  height:auto;
+  min-height:120px;
+  max-height:none;
+  transition:none;
+}
+/* Both child panes occupy the same grid cell with their animated horizontal
+   geometry. Their natural maximum height sizes the row even when sharing or
+   the More disclosure is open; the SVG still draws the original split seam. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split>.fluid-split-primary,
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split>.fluid-split-secondary {
+  position:relative;
+  grid-area:1/1;
+  top:auto;
+  bottom:auto;
+  min-height:0;
+  max-height:none;
+  margin-block:2px;
+  overflow:visible;
+  overscroll-behavior:auto;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split>.fluid-split-secondary[hidden] {
+  display:none;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main {
+  display:grid;
+  grid-template-columns:minmax(0,1fr);
+  align-content:start;
+  gap:4px;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main>* {
+  grid-column:1/-1;
+  grid-row:auto;
+  min-width:0;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main>header,
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main>header>div {
+  flex-wrap:wrap;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main h4 {
+  overflow:visible;
+  white-space:normal;
+  text-overflow:clip;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main :is(.avatar-list-author,.sharing-owner-usage) {
+  margin:0;
+  white-space:normal;
+  overflow-wrap:anywhere;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main>footer {
+  flex-wrap:wrap;
+  margin-top:8px!important;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main>footer>button {
+  min-height:36px;
+}
+
+/* A form or a trial conversation has a single full-height scroll pane, not
+   another collection of small nested viewports. The outer detail is only a
+   layout host while this workbench is mounted. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-workspace-split>.fluid-split-secondary:has(.avatar-editor-workbench) {
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-workspace-split>.fluid-split-secondary[hidden] {
+  display:none;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-subview:has(.avatar-editor-workbench) {
+  display:flex;
+  flex-direction:column;
+  height:100%;
+  min-height:0;
+  width:100%;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-subview:has(.avatar-editor-workbench)>header {
+  flex:none;
+  margin-bottom:12px;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-subview:has(.avatar-editor-workbench)>.sharing-subview-body {
+  flex:1;
+  min-height:0;
+  overflow:hidden;
+}
+.sharing-hierarchy .avatar-editor-workbench {
+  display:flex;
+  flex-direction:column;
+  height:100%;
+  min-height:0;
+  min-width:0;
+  width:100%;
+  max-width:1240px;
+  margin-inline:auto;
+}
+/* Keep navigation beside the title; stacked legacy heading margins otherwise
+   consume a third of a laptop's usable editor height. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-work-layer-avatars .sharing-subview:has(.avatar-editor-workbench)>header>div {
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:8px 20px;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-work-layer-avatars .sharing-subview:has(.avatar-editor-workbench)>header :is(h3,.sharing-subview-back) {
+  margin:0;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-work-layer-avatars .avatar-debug-panel>header {
+  flex-wrap:nowrap;
+}
+.sharing-hierarchy .avatar-editor-toolbar {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  gap:12px;
+  flex:none;
+  margin-bottom:12px;
+}
+.sharing-hierarchy .avatar-editor-toolbar p {
+  margin:0;
+  color:var(--fluid-muted,var(--studio-muted));
+  font-size:12px;
+  line-height:1.7;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .avatar-editor-split {
+  --fluid-split-height:100%;
+  --fluid-split-padding:16px;
+  flex:1;
+  min-height:0;
+  height:100%;
+}
+.sharing-hierarchy .avatar-editor-split>.fluid-split-primary,
+.sharing-hierarchy .avatar-editor-split>.fluid-split-secondary {
+  overflow-x:hidden;
+  overflow-y:auto;
+  scroll-padding-block:16px;
+  scrollbar-gutter:stable;
+}
+.sharing-hierarchy .avatar-editor-form {
+  width:100%;
+  min-width:0;
+  max-width:760px;
+  margin-inline:auto;
+}
+.sharing-hierarchy .avatar-editor-section {
+  display:grid;
+  gap:16px;
+  min-width:0;
+  padding-block:24px;
+  border-bottom:1px solid var(--fluid-line,var(--studio-line));
+}
+.sharing-hierarchy .avatar-editor-section:first-child {padding-top:0;}
+.sharing-hierarchy .avatar-editor-section-heading {
+  display:flex;
+  align-items:flex-start;
+  gap:12px;
+}
+.sharing-hierarchy .avatar-editor-section-heading :is(h3,h4) {
+  margin:0;
+  font-size:16px;
+  font-weight:600;
+  line-height:1.5;
+}
+.sharing-hierarchy .avatar-editor-section-heading p {
+  margin:4px 0 0;
+  color:var(--fluid-muted,var(--studio-muted));
+  font-size:12px;
+  line-height:1.7;
+}
+.sharing-hierarchy .avatar-editor-section-body {
+  display:grid;
+  gap:16px;
+  min-width:0;
+}
+.sharing-hierarchy .avatar-editor-section-body>.avatar-config-section {
+  padding:0;
+  border:0;
+}
+.sharing-hierarchy .avatar-debug-panel {
+  display:grid;
+  align-content:start;
+  gap:16px;
+  min-width:0;
+  color:var(--fluid-ink,var(--studio-ink));
+}
+.sharing-hierarchy .avatar-debug-panel>header {
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+}
+.sharing-hierarchy .avatar-debug-panel :is(h3,h4,p) {margin:0;}
+.sharing-hierarchy .avatar-debug-panel :is(p,small) {line-height:1.7;}
+.sharing-hierarchy .avatar-debug-panel :is(input,textarea,button) {max-width:100%;}
+.sharing-hierarchy .avatar-debug-panel .avatar-starter-questions button {text-align:left;}
+.sharing-hierarchy .avatar-debug-panel :is(.public-question,.avatar-public-error) {margin-inline:0;}
+
+/* Trial mode promotes the editor and its child to the full work surface.
+   The list stays mounted, preserving both its selection and scroll position. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy.avatar-debug-open>.sharing-workspace-split>.fluid-split-primary {
+  display:none;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy.avatar-debug-open>.sharing-workspace-split>.fluid-split-material {
+  display:none;
+}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy.avatar-debug-open>.sharing-workspace-split>.fluid-split-secondary {
+  left:0;
+  width:100%;
+  padding:0;
+  border-radius:0;
+}
+.sharing-hierarchy :is(.avatar-editor-toolbar,.avatar-debug-panel) :is(button,a):focus-visible {
+  outline:2px solid var(--fluid-focus,var(--studio-ink));
+  outline-offset:3px;
+}
+
+@media(max-width:1080px) {
+  main.one-fluid-workspace.one-shell.one-studio .one-settings-dialog.fluid-work-layer.fluid-work-layer-avatars:not(.is-maximized) {
+    width:calc(100vw - 32px);
+    max-height:calc(100dvh - 32px);
+    height:calc(100dvh - 32px);
+  }
+  main.one-fluid-workspace.one-shell.one-studio .one-settings-dialog.fluid-work-layer.fluid-work-layer-avatars:not(.is-maximized):has(.sharing-workspace-split[data-split-open=false]) {
+    width:min(1040px,calc(100vw - 32px));
+  }
+  .sharing-hierarchy .avatar-editor-toolbar {gap:8px;}
+}

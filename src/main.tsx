@@ -68,7 +68,7 @@ import {createEyeMotion} from './interruptibleEye';
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { MessageMarkdown, ImagePreview, hasInlineImage } from "./MessageMarkdown";
-import { PublicSharingPage } from "./PublicSharing";
+import { PublicSharingPage, SharingPanel } from "./PublicSharing";
 import "katex/dist/katex.min.css";
 import {
   Archive,
@@ -702,8 +702,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [view, setView] = useState<"chat" | "things" | "admin" | "company" | "account" | "features" | "agents" | "agentEditor">(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "account" : user.access?.role === "company_admin" ? "company" : user.role === "admin" ? "admin" : "chat"; });
-  type WorkLayer = 'features'|'account'|'things'|'history'|'admin'|'company'|'guide';
+  const [view, setView] = useState<"chat" | "things" | "admin" | "company" | "account" | "features" | "avatars" | "agents" | "agentEditor">(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "account" : user.access?.role === "company_admin" ? "company" : user.role === "admin" ? "admin" : "chat"; });
+  type WorkLayer = 'features'|'avatars'|'account'|'things'|'history'|'admin'|'company'|'guide';
   const [workLayer,setWorkLayer] = useState<WorkLayer|null>(null);
   const [visitedLayers,setVisitedLayers] = useState<WorkLayer[]>([]);
   const [featureOperationId,setFeatureOperationId] = useState('');
@@ -715,7 +715,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const knowledgeReturnRef=useRef({notion:new URLSearchParams(window.location.search).get('notion'),provider:new URLSearchParams(window.location.search).get('knowledge'),status:new URLSearchParams(window.location.search).get('status')});
   // A connector callback may arrive before the coordinator finishes loading.
   // Adopt its settings destination without moving or remounting the main chat.
-  useEffect(()=>{if(preview.enabled&&['account','things','features','admin','company'].includes(view)){setWorkLayer(view as WorkLayer);setView('chat');}},[preview.enabled,view]);
+  useEffect(()=>{if(preview.enabled&&['account','things','features','avatars','admin','company'].includes(view)){setWorkLayer(view as WorkLayer);setView('chat');}},[preview.enabled,view]);
   const [accountSection, setAccountSection] = useState(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "knowledge" : "profile"; });
   const eyeMotion = useRef<ReturnType<typeof createEyeMotion> | null>(null);
   if (!eyeMotion.current) eyeMotion.current = createEyeMotion();
@@ -1426,7 +1426,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
   function updateFeatureRun(run:FeatureRunSummary){setFeatureRuns(old=>[run,...old.filter(item=>item.operationId!==run.operationId)].slice(0,8));setFeatureRunIssue('');}
   function openFeatureRun(operationId:string){setFeatureOperationId(operationId);openSurface('features');}
-  function openSurface(next: "chat" | "things" | "admin" | "company" | "knowledge" | "account" | "features",taskId?:string) {
+  function openSurface(next: "chat" | "things" | "admin" | "company" | "knowledge" | "account" | "features" | "avatars",taskId?:string) {
     featurePicker.close();
     if(preview.enabled&&next!=='chat'){
       if(next==='admin'&&user.role!=='admin'||next==='company'&&user.access?.role!=='company_admin')return;
@@ -2229,6 +2229,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <button type="button" aria-current={view === "chat" ? "page" : undefined} onClick={() => openSurface("chat")}>工作台</button>
           <button type="button" aria-current={view === "things" ? "page" : undefined} onClick={() => openSurface("things")}>任务{unviewedResultCount?<span className="task-review-dot" aria-label={`${unviewedResultCount} 个结果待确认`}/>:null}</button>
           <FeatureNav quiet={!canPeekAtFeatures(view!=='chat'||studioIdle,isWaiting,content)} active={view==='features'} onClick={()=>openSurface('features')}/>
+          <button type="button" aria-current={view === "avatars" ? "page" : undefined} onClick={() => openSurface("avatars")}>分身</button>
           <button type="button" aria-current={view === "account" ? "page" : undefined} onClick={() => openSurface("account")}>设置</button>
           {user.role === "admin" ? <button type="button" aria-current={view === "admin" ? "page" : undefined} onClick={() => openSurface("admin")}>管理</button> : null}
           {user.access?.role === "company_admin" ? <button type="button" aria-current={view === "company" ? "page" : undefined} onClick={() => openSurface("company")}>公司管理</button> : null}
@@ -2262,7 +2263,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         <div className="fluid-rail-top">
           <button type="button" title="回到主对话" aria-label="回到主对话" onClick={()=>openSurface('chat')}><MessageSquare size={19}/><span>主页</span></button>
           <button type="button" title="任务" aria-label="任务" onClick={()=>openSurface('things')}><Folder size={19}/><span>所有任务</span>{fluidReminderCount?<i className="fluid-task-dot" aria-label={`${fluidReminderCount} 条待查看动态`}/>:null}</button>
-          <button type="button" title="功能与分身" aria-label="功能与分身" onClick={()=>openSurface('features')}><Sparkles size={19}/><span>功能与分身</span></button>
+          <button type="button" title="功能" aria-label="功能" onClick={()=>openSurface('features')}><Sparkles size={19}/><span>功能</span></button>
+          <button type="button" title="分身" aria-label="分身" onClick={()=>openSurface('avatars')}><Users size={19}/><span>分身</span></button>
         </div>
         <div className="fluid-rail-tasks" aria-label="待处理任务"><small className="fluid-rail-section-label">正在进行与待查看</small>{fluidFeedback.slice(0,4).map(task=><button type="button" key={task.id} title={task.title} onClick={()=>{const item=conversations.find(c=>c.id===task.taskId);if(item)void openConversation(item);}}><span aria-hidden="true">{transferSettled(task.state)?'•':'·'}</span><strong>{task.title}</strong><small>{transferSettled(task.state)?'待查看':'处理中'}</small></button>)}{featureRuns.slice(0,2).map(run=><button type="button" key={`feature:${run.operationId}`} title={run.name} onClick={()=>openFeatureRun(run.operationId)}><span aria-hidden="true">•</span><strong>{run.name}</strong><small>{run.status==='pending'?'处理中':'待查看'}</small></button>)}</div>
         <div className="fluid-rail-bottom">
@@ -2287,6 +2289,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         <AdminPanel actorId={user.id} refreshModels={refresh} onOpenSidebar={() => setHistoryOpen(true)} />
       ) : view === "features" ? (
         renderFeatures()
+      ) : view === "avatars" ? (
+        <SharingPanel api={api} models={models}/>
       ) : view === "account" ? (
         renderAccount()
       ) : (
@@ -2486,7 +2490,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       {demo.enabled ? <details className="workspace-preview-debug"><summary>本地调试</summary><p>规则分流 / 合成结果，不调用 AI。自动分流示例：UI、露营；其他内容可手动指定。</p><label>任务等待（秒）<input type="number" min="1" max="120" value={preview.state.workerMs/1000} onChange={event=>preview.dispatch({type:'settings',workerMs:Math.max(1,Math.min(120,Number(event.target.value)||1))*1000})}/></label><label><input type="checkbox" checked={preview.state.manual} onChange={event=>preview.dispatch({type:'settings',manual:event.target.checked})}/>手动结束任务</label>{preview.state.tasks.map(task=><div key={task.id}><button type="button" onClick={()=>void openConversation(conversations.find(item=>item.id===task.id)!)}>{task.title}</button><span>{task.status} · 排队 {task.queue.length}</span><button type="button" disabled={task.status!=='running'} onClick={()=>preview.dispatch({type:'finish',taskId:task.id,round:task.round,now:Date.now()})}>模拟完成</button></div>)}</details> : null}
       </div>
       {preview.enabled?<>
-        {visitedLayers.includes('features')||workLayer==='features'?<FluidWorkLayer title="功能与分身" open={workLayer==='features'} className="fluid-work-layer-features" onClose={closeWorkLayer}>{renderFeatures()}</FluidWorkLayer>:null}
+        {visitedLayers.includes('features')||workLayer==='features'?<FluidWorkLayer title="功能" open={workLayer==='features'} className="fluid-work-layer-features" onClose={closeWorkLayer}>{renderFeatures()}</FluidWorkLayer>:null}
+        {visitedLayers.includes('avatars')||workLayer==='avatars'?<FluidWorkLayer title="分身" open={workLayer==='avatars'} className="fluid-work-layer-avatars" onClose={closeWorkLayer}><SharingPanel api={api} models={models}/></FluidWorkLayer>:null}
         {visitedLayers.includes('account')||workLayer==='account'?<FluidWorkLayer title="设置" open={workLayer==='account'} className="fluid-work-layer-account" onClose={closeWorkLayer}>{renderAccount()}</FluidWorkLayer>:null}
         {workLayer==='things'?<FluidWorkLayer title="任务与成果" className="fluid-work-layer-things" onClose={closeWorkLayer}>{renderThings()}</FluidWorkLayer>:null}
         {workLayer==='history'?<FluidWorkLayer title={showArchived?'已归档记录':'历史记录'} className="fluid-work-layer-history" onClose={closeWorkLayer}>{renderHistory()}</FluidWorkLayer>:null}

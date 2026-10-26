@@ -9,10 +9,20 @@ test('preview preserves the main conversation and result identity across navigat
  assert.match(main,/demo.enabled\?<ResultSignal/);
  assert.match(main,/coordinator.enabled && view==='chat' \? <TaskTransferRail/);
  const shelf=fs.readFileSync(new URL('./preview/FeatureShelf.tsx',import.meta.url),'utf8');
- assert.match(shelf,/我的分身/);
- assert.match(shelf,/<SharingPanel api=\{api\} models=\{models\}/);
+ assert.doesNotMatch(shelf,/我的分身|SharingPanel/);
+ assert.match(shelf,/功能列表/);
  const signal=fs.readFileSync(new URL('./preview/ResultSignal.tsx',import.meta.url),'utf8');
  assert.match(signal,/if\(open\)onDismiss\(\)/);
+});
+test('avatars and features have independent destinations in both navigation paths',()=>{
+ const shelf=fs.readFileSync(new URL('./preview/FeatureShelf.tsx',import.meta.url),'utf8');
+ const marketplace=fs.readFileSync(new URL('./FeatureMarketplace.tsx',import.meta.url),'utf8');
+ assert.doesNotMatch(shelf,/SharingPanel|我的分身/);
+ assert.doesNotMatch(marketplace,/SharingPanel|我的分身|setKind|kind==='personal'/);
+ assert.match(marketplace,/<FeatureCatalog api=\{api\} query=\{query\} category=\{category\} equipment\/>/);
+ assert.match(main,/onClick=\{\(\) => openSurface\("avatars"\)\}>分身<\/button>/);
+ assert.match(main,/aria-label="分身" onClick=\{\(\)=>openSurface\('avatars'\)\}/);
+ assert.match(main,/<FluidWorkLayer title="分身" open=\{workLayer==='avatars'\} className="fluid-work-layer-avatars"/);
 });
 test("features is a top-level destination; knowledge and OAuth returns live in settings", () => {
   const nav = main.slice(main.indexOf('<nav className="studio-navigation"'), main.indexOf('<div className="one-chrome-actions"'));

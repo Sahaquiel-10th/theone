@@ -8,6 +8,9 @@ import {AvatarBusinessFields,AvatarMethodFields,AvatarWelcomeFields} from './Ava
 import {AvatarGuestService,AvatarServiceManagement} from './AvatarBusinessPanels';
 import {AvatarArtifacts,type AvatarArtifact} from './AvatarArtifacts';
 import {AvatarPublicIdentity} from './AvatarPublicIdentity';
+import {AvatarDebugPanel,type AvatarDebugSession} from './AvatarDebugPanel';
+import {SESSION_EVENT} from './oneApi';
+import {copyAvatarDraft} from './avatarDraftCopy';
 import {avatarRunProgress,avatarServicePayload,emptyAvatarBusiness,emptyAvatarService,normalizedAvatarBusiness,normalizedAvatarService,type AvatarServiceConfig} from './AvatarService';
 import {ShareLinkBubble,type ShareLinkReceipt} from './ShareLinkBubble';
 import {publicationShareUrl,publishWithReceipt} from './shareLinkFission';
@@ -15,6 +18,9 @@ import {ArrowLeft,Settings2,Link2,BarChart3,Code2} from 'lucide-react';
 import {FluidSplitWorkspace} from './fluid/FluidSplitWorkspace';
 import {confirmedPublicationRow,createSharingOwnerRequestGate,initialSharingWorkspace,publicationSubmitIsUncertain,reconcilePublicationList,sharingWorkspaceTransition,upsertConfirmedPublication,type PublicationDraft,type PublicationList as List,type PublicationRow,type PublicationReceipt,type SharingOwnerRequest,type SharingWorkspaceAction} from './sharingWorkspaceState';
 import "./public-sharing.css";
+import "./avatar-configuration.css";
+import "./avatar-workbench.css";
+import "./avatar-debug.css";
 
 const power=(n:number)=>(n/1e6).toLocaleString("zh-CN",{maximumFractionDigits:6});
 const failure=(e:unknown)=>e instanceof Error?e.message:"暂时未能完成";
@@ -25,6 +31,9 @@ export type PublicationReadyNotice={url:string;name:string;updated:boolean};
 export function SharingPanel({api,models,externalQuery,hideSearch=false,onPublicationReady,privateSave=true}:{api:typeof Api;models:{id:string;name:string;kind:string}[];externalQuery?:string;hideSearch?:boolean;privateSave?:boolean;onPublicationReady?:(notice:PublicationReadyNotice)=>void}){
  const [data,setData]=useState<List>(),[page,setPage]=useState(1),[query,setQuery]=useState(''),[listError,setListError]=useState(''),[editorError,setEditorError]=useState(''),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[uncertain,setUncertain]=useState(false);
  const [workspace,dispatch]=useReducer(sharingWorkspaceTransition,initialSharingWorkspace);
+ const [debugOpen,setDebugOpen]=useState(false),[newEditorGeneration,setNewEditorGeneration]=useState(0);
+ const debugSessions=useRef(new Map<string,AvatarDebugSession>());
+ useEffect(()=>{const clear=()=>debugSessions.current.clear();window.addEventListener(SESSION_EVENT,clear);return()=>{clear();window.removeEventListener(SESSION_EVENT,clear);};},[]);
  const [draft,setDraft]=useState<PublicationDraft>(()=>emptyDraft(models)),[editing,setEditing]=useState<{id:string;version:number;legacy:boolean;owner:PublicationRow}>();
  const [usagePage,setUsagePage]=useState(1),[usageRefresh,setUsageRefresh]=useState(0),[usageError,setUsageError]=useState(''),[rows,setRows]=useState<{total:number;items:{id:string;status:string;createdAt:string;spent:number;held:number;calls:{model:string;activity:string;spent:number;status:string}[]}[]}>( );
  const [successByOwner,setSuccessByOwner]=useState<Record<string,string>>({});
@@ -39,6 +48,7 @@ export function SharingPanel({api,models,externalQuery,hideSearch=false,onPublic
  const currentUsage=workspace.pane?.kind==='usage'?workspace.pane.owner:undefined;
  function navigate(action:SharingWorkspaceAction,source?:HTMLElement){
   editRequests.current.invalidate();
+  setDebugOpen(false);
   const current=workspaceRef.current.pane;
   const sameReview=action.type==='open-pane'&&action.pane.kind==='publish'&&current?.kind==='publish'&&action.pane.owner.id===current.owner.id;
   if(!sameReview){shareReviewRequest.current++;setShareReview(undefined);setShareConfirmed(false);setShareReviewError('');}
@@ -81,8 +91,21 @@ export function SharingPanel({api,models,externalQuery,hideSearch=false,onPublic
    if(!editRequests.current.isCurrent(request))return;
    const cached=draftsByOwner.current.get(owner.id);
    setDraft(cached?.version===config.version?{...cached.draft,confirmed:false}:{...config,visitorPercent:config.visitorPercent??0,requireLogin:config.requireLogin??false,allowedUsernames:config.allowedUsernames??[],confirmed:false,service:normalizedAvatarService(config.service),serviceBusiness:normalizedAvatarBusiness(config.serviceBusiness)});
-   setEditing({id:owner.id,version:config.version,legacy:config.legacyPrompt,owner});setUncertain(uncertainKeys.current.has(owner.id));setEditorError('');dispatch({type:'open-pane',pane:{kind:'edit',owner}});
+   setDebugOpen(false);setEditing({id:owner.id,version:config.version,legacy:config.legacyPrompt,owner});setUncertain(uncertainKeys.current.has(owner.id));setEditorError('');dispatch({type:'open-pane',pane:{kind:'edit',owner}});
   }catch(e){if(editRequests.current.isCurrent(request))setListError(failure(e));}
+  finally{if(pendingEdit.current===request){pendingEdit.current=null;setBusy(false);}}
+ }
+ async function copyClosed(owner:PublicationRow,source?:HTMLElement){
+  if(busy)return;
+  const request=editRequests.current.begin(owner.id);pendingEdit.current=request;
+  if(source)paneOpener.current=source;
+  setBusy(true);setListError('');
+  try{
+   const config=await api<PublicationDraft>(`/api/sharing/manage/${owner.id}/config`);
+   if(!editRequests.current.isCurrent(request))return;
+   const copy=copyAvatarDraft(config);
+   newDraft.current=copy;setNewEditorGeneration(value=>value+1);setDraft(copy);setEditing(undefined);setDebugOpen(false);setUncertain(uncertainKeys.current.has('new'));setEditorError('');dispatch({type:'open-pane',pane:{kind:'create'}});
+  }catch(error){if(editRequests.current.isCurrent(request))setListError(failure(error));}
   finally{if(pendingEdit.current===request){pendingEdit.current=null;setBusy(false);}}
  }
  async function create(event:FormEvent){
@@ -96,7 +119,7 @@ export function SharingPanel({api,models,externalQuery,hideSearch=false,onPublic
      const row=confirmedPublicationRow(response,draft,data?.sources??[],editing?.owner);
      confirmedRows.current.set(row.id,row);setData(current=>upsertConfirmedPublication(current??{ready:true,items:[],total:0,sources:[]},row));
      setSuccessByOwner(current=>({...current,[row.id]:row.status==='draft'?'分身已保存，目前未分享。':updated?'配置已更新，原分享链接保留。':'创建完成。分享链接可从这个分身打开。'}));
-     uncertainKeys.current.delete(key);if(updated)draftsByOwner.current.delete(key);else newDraft.current=null;
+     uncertainKeys.current.delete(key);if(updated)draftsByOwner.current.delete(key);else {newDraft.current=null;setNewEditorGeneration(value=>value+1);}
      if(editRequests.current.isCurrent(request)){setUncertain(false);setPage(1);setQuery('');dispatch({type:'saved'});}
      if(row.slug&&row.status==='active')onPublicationReady?.({url:publicationShareUrl(location.origin,row.slug),name,updated});
     },refresh:()=>editRequests.current.isCurrent(request)?load(1,''):Promise.resolve()
@@ -138,28 +161,72 @@ export function SharingPanel({api,models,externalQuery,hideSearch=false,onPublic
   {!hideSearch?<input aria-label="搜索分享分身" placeholder="搜索分身" value={query} onChange={event=>{setQuery(event.target.value);setPage(1);}}/>:null}
   {listError?<div className="sharing-list-error" role="alert"><p>{listError}</p><button type="button" disabled={busy} onClick={()=>void load().catch(e=>setListError(failure(e)))}>刷新分身列表</button></div>:null}
   {!data&&loading?<p role="status">正在读取分身…</p>:null}
-  <div className="sharing-list sharing-owner-cards">{data?.items.map(owner=>{const expired=owner.status!=='draft'&&Date.parse(owner.expiresAt)<Date.now(),linkOpen=workspace.linkOwnerId===owner.id;const receipt:ShareLinkReceipt|undefined=owner.slug?{url:publicationShareUrl(location.origin,owner.slug),name:owner.name,updated:false,fresh:false,sequence:receiptSequences.current.get(owner.id)??0}:undefined;const row=<div className="sharing-owner-main"><header><div><h4 title={owner.name}>{owner.name}</h4><small>v{owner.version??1}</small></div><span className={`sharing-owner-status ${owner.status==='closed'||expired?'is-inactive':''}`}>{owner.status==='draft'?'未分享':owner.status==='closed'?'分享已关闭':expired?'分享已到期':'分享已开放'}</span></header><p className="avatar-list-author">{owner.authorName||data.authorName||'账号作者'} · {owner.service?.mode==='knowledge'?'知识服务':'售前咨询'}</p><p className="sharing-owner-description">{owner.description||'还没有填写介绍。'}</p><p className="sharing-owner-usage">{owner.syncPending?'配置已确认，详细用量待同步。':`已用 ${power(owner.spent)} / ${power(owner.budgetMicros)} 电力${owner.held?` · 预留 ${power(owner.held)}`:''}`}</p>{successByOwner[owner.id]?<p className="sharing-owner-success" role="status">{successByOwner[owner.id]}</p>:null}<footer><button type="button" aria-expanded={linkOpen} onClick={event=>linkOpen?navigate({type:'close-link'}):showShare(owner,event.currentTarget)}><Link2 size={14}/>{owner.status==='draft'?'开放分享':linkOpen?'收起链接':'分享链接'}</button>{owner.status!=='closed'?<button type="button" disabled={busy} onClick={event=>void edit(owner,event.currentTarget)}><Settings2 size={14}/>配置</button>:null}{owner.status!=='draft'?<details className="sharing-owner-more"><summary>更多</summary><div><button type="button" onClick={event=>{setUsagePage(1);navigate({type:'open-pane',pane:{kind:'usage',owner}},event.currentTarget);}}><BarChart3 size={14}/>用量详情</button><button type="button" onClick={event=>navigate({type:'open-pane',pane:{kind:'services',owner}},event.currentTarget)}><Code2 size={14}/>服务资格、API 与收益</button>{owner.status==='active'?<button type="button" disabled={busy} onClick={event=>navigate({type:'open-pane',pane:{kind:'close',owner}},event.currentTarget)}>关闭分享</button>:null}</div></details>:null}</footer></div>;return <article className="sharing-owner" key={owner.id} data-publication-id={owner.id}><FluidSplitWorkspace compact height={246} ratio={.46} open={linkOpen} primary={row} secondary={linkOpen&&receipt?<ShareLinkBubble key={receipt.sequence} surfaceOwned receipt={receipt} availability={owner.status==='closed'||expired?'inactive':'active'} onDismiss={()=>navigate({type:'close-link'})}/>:null} primaryLabel={`${owner.name}的分身`} secondaryLabel={`${owner.name}的分享链接`} className="sharing-owner-split"/></article>;})}</div>
+  <div className="sharing-list sharing-owner-cards">{data?.items.map(owner=>{const expired=owner.status!=='draft'&&Date.parse(owner.expiresAt)<Date.now(),linkOpen=workspace.linkOwnerId===owner.id;const receipt:ShareLinkReceipt|undefined=owner.slug?{url:publicationShareUrl(location.origin,owner.slug),name:owner.name,updated:false,fresh:false,sequence:receiptSequences.current.get(owner.id)??0}:undefined;const row=<div className="sharing-owner-main"><header><div><h4 title={owner.name}>{owner.name}</h4><small>v{owner.version??1}</small></div><span className={`sharing-owner-status ${owner.status==='closed'||expired?'is-inactive':''}`}>{owner.status==='draft'?'未分享':owner.status==='closed'?'分享已关闭':expired?'分享已到期':'分享已开放'}</span></header><p className="avatar-list-author">{owner.authorName||data.authorName||'账号作者'} · {owner.service?.mode==='knowledge'?'知识服务':'售前咨询'}</p><p className="sharing-owner-description">{owner.description||'还没有填写介绍。'}</p><p className="sharing-owner-usage">{owner.syncPending?'配置已确认，详细用量待同步。':`已用 ${power(owner.spent)} / ${power(owner.budgetMicros)} 电力${owner.held?` · 预留 ${power(owner.held)}`:''}`}</p>{successByOwner[owner.id]?<p className="sharing-owner-success" role="status">{successByOwner[owner.id]}</p>:null}<footer><button type="button" aria-expanded={linkOpen} onClick={event=>linkOpen?navigate({type:'close-link'}):showShare(owner,event.currentTarget)}><Link2 size={14}/>{owner.status==='draft'?'开放分享':linkOpen?'收起链接':'分享链接'}</button>{owner.status!=='closed'?<button type="button" aria-label={`编辑分身：${owner.name}`} disabled={busy} onClick={event=>void edit(owner,event.currentTarget)}><Settings2 size={14} aria-hidden="true"/>编辑分身</button>:<button type="button" disabled={busy} onClick={event=>void copyClosed(owner,event.currentTarget)}>复制为新分身</button>}{owner.status!=='draft'?<details className="sharing-owner-more"><summary>更多</summary><div><button type="button" onClick={event=>{setUsagePage(1);navigate({type:'open-pane',pane:{kind:'usage',owner}},event.currentTarget);}}><BarChart3 size={14}/>用量详情</button><button type="button" onClick={event=>navigate({type:'open-pane',pane:{kind:'services',owner}},event.currentTarget)}><Code2 size={14}/>服务资格、API 与收益</button>{owner.status==='active'?<button type="button" disabled={busy} onClick={event=>navigate({type:'open-pane',pane:{kind:'close',owner}},event.currentTarget)}>关闭分享</button>:null}</div></details>:null}</footer></div>;return <article className="sharing-owner" key={owner.id} data-publication-id={owner.id}><FluidSplitWorkspace compact height={246} ratio={.46} open={linkOpen} primary={row} secondary={linkOpen&&receipt?<ShareLinkBubble key={receipt.sequence} surfaceOwned receipt={receipt} availability={owner.status==='closed'||expired?'inactive':'active'} onDismiss={()=>navigate({type:'close-link'})}/>:null} primaryLabel={`${owner.name}的分身`} secondaryLabel={`${owner.name}的分享链接`} className="sharing-owner-split"/></article>;})}</div>
   {data?.ready&&!data.items.length&&!loading?<p className="sharing-empty">{query?'没有匹配的分身':'还没有分身。创建后，它会留在这里。'}</p>:null}
   {data&&data.total>10?<Pagination page={page} total={data.total} onChange={setPage}/>:null}
  </section>;
  const pane=workspace.pane;
- const editor=<SharingSubview title={editing?`更新分身 · ${editing.owner.name}`:'创建分身'} busy={busy} headingRef={editorHeading} onClose={()=>{if(!busy)closePane();}}><form className="sharing-form" onSubmit={create} aria-busy={busy}><fieldset disabled={busy} className="sharing-editor-fields">
-      {editing?<><p className="hint">{privateEditor?'仅保存这个分身的配置，目前不会对外开放。':'更新后原链接不变，历史消耗不清零。访客需重新开始，新版不会带入旧会话资料。有效期从本次发布起算；有问题正在回答时暂不能更新。'}</p>{editing.legacy?<p role="alert">这是旧版发布记录，请重新填写回答要求；旧系统提示词不会重复叠加。</p>:null}<PublicationHistory api={api} id={editing.id}/></>:null}
-      <label>名称<input required maxLength={60} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label>
-      <label>介绍<input maxLength={300} value={draft.description} onChange={e=>setDraft({...draft,description:e.target.value})}/></label>
-      <AvatarWelcomeFields value={normalizedAvatarService(draft.service)} onChange={service=>setDraft({...draft,service})} authorName={data?.authorName} disabled={busy}/><AvatarMethodFields value={normalizedAvatarService(draft.service)} onChange={service=>setDraft({...draft,service})} features={data?.availableFeatures??[]} disabled={busy}/><AvatarBusinessFields value={normalizedAvatarBusiness(draft.serviceBusiness)} onChange={serviceBusiness=>setDraft({...draft,serviceBusiness,visitorPercent:serviceBusiness.access==='entitlement'?0:draft.visitorPercent,requireLogin:serviceBusiness.access==='entitlement'?true:draft.requireLogin})} disabled={busy}/><label>回答要求<textarea rows={5} maxLength={12000} value={draft.prompt} onChange={e=>setDraft({...draft,prompt:e.target.value})} placeholder="这个分身擅长什么，如何回答？"/></label>
-      <div className="sharing-model-field"><span>问答模型</span><SearchPicker label="问答模型" value={draft.modelId} options={models.filter(m=>m.kind==="chat").map(m=>({value:m.id,label:m.name}))} onChange={modelId=>setDraft({...draft,modelId})}/></div>
-      <fieldset><legend>这个分身可使用哪些知识</legend>{data?.sources.map(s=><label className="sharing-check" key={s.id}><input type="checkbox" checked={draft.sourceIds.includes(s.id)} onChange={e=>setDraft({...draft,sourceIds:e.target.checked?[...draft.sourceIds,s.id]:draft.sourceIds.filter(id=>id!==s.id)})}/>{labels[s.provider]||s.provider} · {s.name}</label>)}<small>{privateEditor?'保存后仍未分享。开放分享时会再次确认这些来源和费用；未选择的来源不会读取。':'访客可提问并检索所选连接的全部已授权资料，不是单篇文档。未选择的来源不会读取。'}</small></fieldset>
-      <label className="sharing-check"><input type="checkbox" checked={draft.attachments} onChange={e=>setDraft({...draft,attachments:e.target.checked})}/>允许访客上传附件用于问答</label>
-      {draft.sourceIds.filter(id=>!data?.sources.some(s=>s.id===id)).map(id=><p key={id}>一个原知识连接已不可用。<button type="button" onClick={()=>setDraft({...draft,sourceIds:draft.sourceIds.filter(s=>s!==id)})}>移除该来源</button></p>)}
-      <details><summary>访客收费与访问范围 · {draft.visitorPercent?`${draft.visitorPercent}%`:'我请客'}</summary><label>访客按 ONE 基础费用的多少百分比消费<input type="number" min="0" max="1000" step="1" value={draft.visitorPercent} onChange={e=>setDraft({...draft,visitorPercent:Number(e.target.value)})}/></label><p className="hint">0 表示你请客；100 表示访客承担基础费用；120 表示加价 20%。加价收益只在实际消费后形成，暂不提现。</p>{!data?.visitorPaymentsEnabled?<p>管理员尚未启用访客付费，目前只能设置 0%。</p>:null}<label><input type="checkbox" checked={draft.requireLogin||draft.serviceBusiness?.access==='entitlement'} disabled={draft.serviceBusiness?.access==='entitlement'} onChange={e=>setDraft({...draft,requireLogin:e.target.checked})}/>要求访客登录账号</label><label>仅这些已注册账号可以访问（每行一个，留空不限定）<textarea rows={3} value={draft.allowedUsernames.join('\n')} onChange={e=>setDraft({...draft,allowedUsernames:e.target.value.split('\n')})}/></label></details>
-      <section className="sharing-budget"><header><span>{privateEditor?'开放分享后的使用额度':'使用额度'}</span><SharingCostHelp/></header><div className="sharing-grid"><label>总电力<input type="number" min="0.01" max="10000" step="0.01" required value={draft.budget} onChange={e=>setDraft({...draft,budget:Number(e.target.value)})}/></label><label>单次电力<input type="number" min="0.01" max={draft.budget} step="0.01" required value={draft.perRun} onChange={e=>setDraft({...draft,perRun:Number(e.target.value)})}/></label><label>有效天数<input type="number" min="1" max="90" required value={draft.days} onChange={e=>setDraft({...draft,days:Number(e.target.value)})}/></label></div></section>
-      <label className="sharing-check"><input required type="checkbox" checked={draft.confirmed} onChange={e=>setDraft({...draft,confirmed:e.target.checked})}/>{privateEditor?'确认分身的知识使用范围；保存不会开放分享，也不会调用模型。':'确认知识范围、收费方式和费用承担规则'}</label>
-      {editorError?<p role="alert">{editorError}</p>:null}{uncertain?<section className="sharing-uncertain" aria-label="核对发布结果"><p>这次提交的结果尚未确认。先核对列表，避免重复发布同一个分身。</p><div><button type="button" onClick={()=>void checkUncertainResult()}>核对分身列表</button><button type="button" onClick={()=>{uncertainKeys.current.delete(editing?.id??'new');setUncertain(false);setEditorError('');}}>我已核对，恢复编辑</button></div></section>:null}<button className="primary" disabled={busy||uncertain||!draft.modelId}>{busy?"正在保存…":privateEditor?editing?"保存配置":"创建分身":editing?"确认更新，保留原链接":"发布并生成链接"}</button>
-    </fieldset></form></SharingSubview>;
+ const service=normalizedAvatarService(draft.service),business=normalizedAvatarBusiness(draft.serviceBusiness),debugKey=editing?.id??`new:${newEditorGeneration}`;
+ const changeBusiness=(serviceBusiness:typeof business)=>setDraft({...draft,serviceBusiness,visitorPercent:serviceBusiness.access==='entitlement'?0:draft.visitorPercent,requireLogin:serviceBusiness.access==='entitlement'?true:draft.requireLogin});
+ const configForm=<form className="sharing-form avatar-config-form avatar-editor-form" onSubmit={create} aria-busy={busy}><fieldset disabled={busy} className="sharing-editor-fields">
+  {editing?<><p className="hint">{privateEditor?'仅保存这个分身的配置，目前不会对外开放。':'更新后原链接不变，历史消耗不清零。访客需重新开始，新版不会带入旧会话资料。有效期从本次发布起算；有问题正在回答时暂不能更新。'}</p>{editing.legacy?<p role="alert">这是旧版发布记录，请重新填写回答要求；旧系统提示词不会重复叠加。</p>:null}</>:null}
+  <AvatarEditorSection index="01" title="身份与用途" hint="先让访客知道这是谁的分身，能帮他做什么。">
+   <label>分身名称<input required maxLength={60} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})} placeholder="例如：林老师的学习顾问"/></label>
+   <label>一句话介绍<input maxLength={300} value={draft.description} onChange={e=>setDraft({...draft,description:e.target.value})} placeholder="告诉访客适合问什么、能得到什么帮助"/></label>
+   <AvatarWelcomeFields section="purpose" value={service} onChange={service=>setDraft({...draft,service})} authorName={data?.authorName} disabled={busy}/>
+  </AvatarEditorSection>
+  <div className="avatar-editor-section">
+   <AvatarMethodFields value={service} onChange={service=>setDraft({...draft,service})} features={data?.availableFeatures??[]} disabled={busy}/>
+   <fieldset><legend>连接你的知识库 <span>选填</span></legend>
+    {data?.sources.map(s=><label className="sharing-check" key={s.id}><input type="checkbox" checked={draft.sourceIds.includes(s.id)} onChange={e=>setDraft({...draft,sourceIds:e.target.checked?[...draft.sourceIds,s.id]:draft.sourceIds.filter(id=>id!==s.id)})}/>{labels[s.provider]||s.provider} · {s.name}</label>)}
+    {!data?.sources.length?<p className="hint">还没有可用连接。你仍可导入上方文档，或粘贴方法资料。</p>:null}
+    <small>{privateEditor?'保存后仍未分享。开放分享时会再次确认这些来源和费用；未选择的来源不会读取。':'访客可提问并检索所选连接的全部已授权资料，不是单篇文档。未选择的来源不会读取。'}</small>
+   </fieldset>
+   {draft.sourceIds.filter(id=>!data?.sources.some(s=>s.id===id)).map(id=><p key={id}>一个原知识连接已不可用。<button type="button" onClick={()=>setDraft({...draft,sourceIds:draft.sourceIds.filter(s=>s!==id)})}>移除该来源</button></p>)}
+   <label className="sharing-check"><input type="checkbox" checked={draft.attachments} onChange={e=>setDraft({...draft,attachments:e.target.checked})}/>允许访客上传附件用于问答</label>
+  </div>
+  <AvatarEditorSection index="03" title="回答方式" hint="这里写给 AI 看，不会作为开场白展示给访客。">
+   <label>回答要求<textarea rows={5} maxLength={12000} value={draft.prompt} onChange={e=>setDraft({...draft,prompt:e.target.value})} placeholder={service.mode==='consultation'?'如何了解需求、解释服务边界，什么时候建议联系你本人？':'按什么方法分析、怎样引用资料、成果需要包含什么？'}/></label>
+   <div className="sharing-model-field"><span>问答模型</span><SearchPicker label="问答模型" value={draft.modelId} options={models.filter(m=>m.kind==="chat").map(m=>({value:m.id,label:m.name}))} onChange={modelId=>setDraft({...draft,modelId})}/></div>
+  </AvatarEditorSection>
+  <AvatarEditorSection index="04" title="访客开场" hint="开场白与快捷问题会实时显示在旁边的访客预览里。">
+   <AvatarWelcomeFields section="welcome" value={service} onChange={service=>setDraft({...draft,service})} authorName={data?.authorName} disabled={busy}/>
+   <button type="button" onClick={()=>setDebugOpen(true)}>在旁边预览并试聊</button>
+  </AvatarEditorSection>
+  <AvatarEditorSection index="05" title="收费与访问" hint="先设置谁可以使用，再决定是否收费；不会自动代收款或续费。">
+   <AvatarBusinessFields section="pricing" mode={service.mode} value={business} onChange={changeBusiness} disabled={busy}/>
+   <details><summary>访客的电力与登录设置 · {draft.visitorPercent?`${draft.visitorPercent}%`:'我请客'}</summary>
+    <label>访客按 ONE 基础费用的多少百分比消费<input type="number" min="0" max="1000" step="1" value={draft.visitorPercent} onChange={e=>setDraft({...draft,visitorPercent:Number(e.target.value)})}/></label>
+    <p className="hint">0 表示你请客；100 表示访客承担基础费用；120 表示加价 20%。加价收益只在实际消费后形成，暂不提现。</p>
+    {!data?.visitorPaymentsEnabled?<p>管理员尚未启用访客付费，目前只能设置 0%。</p>:null}
+    <label className="sharing-check"><input type="checkbox" checked={draft.requireLogin||business.access==='entitlement'} disabled={business.access==='entitlement'} onChange={e=>setDraft({...draft,requireLogin:e.target.checked})}/>要求访客登录账号</label>
+    <label>仅这些已注册账号可以访问（每行一个，留空不限定）<textarea rows={3} value={draft.allowedUsernames.join('\n')} onChange={e=>setDraft({...draft,allowedUsernames:e.target.value.split('\n')})}/></label>
+   </details>
+   <section className="sharing-budget"><header><span>{privateEditor?'开放分享后的使用额度':'使用额度'}</span><SharingCostHelp/></header>
+    <div className="sharing-grid"><label>总电力<input type="number" min="0.01" max="10000" step="0.01" required value={draft.budget} onChange={e=>setDraft({...draft,budget:Number(e.target.value)})}/></label><label>单次电力<input type="number" min="0.01" max={draft.budget} step="0.01" required value={draft.perRun} onChange={e=>setDraft({...draft,perRun:Number(e.target.value)})}/></label><label>有效天数<input type="number" min="1" max="90" required value={draft.days} onChange={e=>setDraft({...draft,days:Number(e.target.value)})}/></label></div>
+   </section>
+  </AvatarEditorSection>
+  <AvatarEditorSection index="06" title="客户信息" hint={service.mode==='consultation'?'让有意向的访客自愿留下需求，方便你本人跟进。':'需要人工辅导或后续服务时，再收集必要的信息。'}>
+   <AvatarBusinessFields section="contact" mode={service.mode} value={business} onChange={changeBusiness} disabled={busy}/>
+  </AvatarEditorSection>
+  {editing?<PublicationHistory api={api} id={editing.id}/>:null}
+  <label className="sharing-check"><input required type="checkbox" checked={draft.confirmed} onChange={e=>setDraft({...draft,confirmed:e.target.checked})}/>{privateEditor?'确认分身的知识使用范围；保存不会开放分享，也不会调用模型。':'确认知识范围、收费方式和费用承担规则'}</label>
+  {editorError?<p role="alert">{editorError}</p>:null}
+  {uncertain?<section className="sharing-uncertain" aria-label="核对发布结果"><p>这次提交的结果尚未确认。先核对列表，避免重复发布同一个分身。</p><div><button type="button" onClick={()=>void checkUncertainResult()}>核对分身列表</button><button type="button" onClick={()=>{uncertainKeys.current.delete(editing?.id??'new');setUncertain(false);setEditorError('');}}>我已核对，恢复编辑</button></div></section>:null}
+  <button className="primary" disabled={busy||uncertain||!draft.modelId}>{busy?"正在保存…":privateEditor?editing?"保存配置":"创建分身":editing?"确认更新，保留原链接":"发布并生成链接"}</button>
+ </fieldset></form>;
+ const editor=<SharingSubview title={editing?`编辑分身 · ${editing.owner.name}`:'创建分身'} busy={busy} headingRef={editorHeading} onClose={()=>{if(!busy)closePane();}}>
+  <div className="avatar-editor-workbench" key={debugKey}>
+   <div className="avatar-editor-toolbar"><p>{privateEditor?'先配置、再试聊，满意后再决定是否开放分享。':'正在编辑已分享的分身；保存后才对访客生效。'}</p><button type="button" aria-expanded={debugOpen} onClick={()=>setDebugOpen(value=>!value)}>{debugOpen?'收起调试窗口':'打开访客预览与调试'}</button></div>
+   <FluidSplitWorkspace className="avatar-editor-split" ratio={.66} open={debugOpen} primary={configForm} secondary={<AvatarDebugPanel api={api} draft={draft} authorName={data?.authorName} modelName={models.find(model=>model.id===draft.modelId)?.name} initialSession={debugSessions.current.get(debugKey)} onSessionChange={session=>debugSessions.current.set(debugKey,session)} onClose={()=>setDebugOpen(false)}/>} primaryLabel="分身配置" secondaryLabel="访客预览与调试"/>
+  </div>
+ </SharingSubview>;
  const review=<SharingSubview title={`开放分享 · ${publishingOwner?.name??'分身'}`} busy={shareBusy} onClose={()=>{if(!shareBusy)closePane();}}>{shareReview?<section className="sharing-publish-review"><p>这个分身目前只由你管理。确认开放后，持有链接的访客才能按以下范围提问。</p><dl><div><dt>知识范围</dt><dd>{publishingOwner?.sources.join('、')||'不使用个人知识来源'}</dd></div><div><dt>访客附件</dt><dd>{shareReview.attachments?'允许上传，用于访客自己的问答':'不接受附件'}</dd></div><div><dt>费用承担</dt><dd>{shareReview.visitorPercent?`访客按基础费用的 ${shareReview.visitorPercent}% 支付，相关补贴规则保留。`:'实际问答费用由你承担；未发生问答不会扣费。'}</dd></div><div><dt>使用上限</dt><dd>总计 {shareReview.budget} 电力 · 每次 {shareReview.perRun} 电力</dd></div><div><dt>有效期</dt><dd>开放后 {shareReview.days} 天</dd></div><div><dt>访问范围</dt><dd>{shareReview.allowedUsernames?.length?`仅指定账号：${shareReview.allowedUsernames.join('、')}`:shareReview.requireLogin?'访客需要登录':'持有链接的访客'}</dd></div></dl><label className="sharing-check"><input type="checkbox" checked={shareConfirmed} disabled={shareBusy} onChange={event=>setShareConfirmed(event.target.checked)}/>确认开放所列知识范围，并按这些规则承担实际问答费用。</label><button type="button" className="primary" disabled={!shareConfirmed||shareBusy} onClick={()=>void activateShare()}>{shareBusy?'正在核对开放结果…':'开放分享并生成链接'}</button></section>:!shareReviewError?<p role="status">正在核对分身的配置与分享范围…</p>:null}{shareReviewError?<p role="alert">{shareReviewError}</p>:null}</SharingSubview>;
  const secondary=pane?.kind==='close'?<SharingSubview title={`关闭分享 · ${pane.owner.name}`} busy={busy} onClose={closePane}><p>“{pane.owner.name}”的链接将停止服务。已产生的费用和成果保留，不会继续接受新问题。</p><footer className="avatar-dialog-actions"><button type="button" disabled={busy} onClick={closePane}>继续分享</button><button type="button" disabled={busy} onClick={()=>void close(pane.owner)}>关闭分享</button></footer></SharingSubview>:pane?.kind==='publish'?review:pane?.kind==='services'?<SharingSubview title={`${pane.owner.name} · 接入与收益`} onClose={closePane}><AvatarServiceManagement key={pane.owner.id} api={api} id={pane.owner.id}/><details><summary>API、访客赠送与收益</summary><PublicServicePanel api={api} publication={pane.owner}/></details></SharingSubview>:pane?.kind==='usage'?<SharingSubview title={`${pane.owner.name} · 用量`} onClose={closePane}><p>仅显示任务状态和费用，不展示访客原文或附件。</p>{usageError?<div role="alert"><p>{usageError}</p><button type="button" onClick={()=>setUsageRefresh(value=>value+1)}>重新读取用量</button></div>:null}{rows?.items.map(row=><details key={row.id}><summary>{new Date(row.createdAt).toLocaleString()} · {({completed:'完成',running:'进行中',failed:'未完成',interrupted:'已中断'} as Record<string,string>)[row.status]} · {power(row.spent)} 电力</summary><p>任务编号 {row.id}</p><p>预留 {power(row.held)} 电力</p>{row.calls?.map((call,index)=><p key={index}>{call.activity} · {call.model} · {power(call.spent)} 电力</p>)}</details>)}{rows?<Pagination page={usagePage} total={rows.total} onChange={setUsagePage}/>:!usageError?<p role="status">正在读取用量…</p>:null}</SharingSubview>:pane?editor:null;
- return <section ref={panel} className="sharing-panel market-section sharing-hierarchy"><FluidSplitWorkspace open={pane!==null} detailKey={pane?`${pane.kind}:${'owner' in pane?pane.owner.id:'new'}`:undefined} ratio={.34} primary={ownerList} secondary={secondary} primaryLabel="我的分身列表" secondaryLabel={pane?.kind==='create'?'创建分身':pane?.kind==='edit'?`${pane.owner.name}的配置`:pane?.kind==='usage'?'分身用量':pane?.kind==='publish'?'开放分身分享':'分身接入与收益'} onSettled={open=>{if(!open&&!workspaceRef.current.pane)dispatch({type:'main-merged'});}} className="sharing-workspace-split"/></section>;
+ return <section ref={panel} className={`sharing-panel market-section sharing-hierarchy ${debugOpen&&(pane?.kind==='create'||pane?.kind==='edit')?'avatar-debug-open':''}`}><FluidSplitWorkspace open={pane!==null} detailKey={pane?`${pane.kind}:${'owner' in pane?pane.owner.id:'new'}`:undefined} ratio={.28} primary={ownerList} secondary={secondary} primaryLabel="我的分身列表" secondaryLabel={pane?.kind==='create'?'创建分身':pane?.kind==='edit'?`${pane.owner.name}的配置`:pane?.kind==='usage'?'分身用量':pane?.kind==='publish'?'开放分身分享':'分身接入与收益'} onSettled={open=>{if(!open&&!workspaceRef.current.pane)dispatch({type:'main-merged'});}} className="sharing-workspace-split"/></section>;
+}
+function AvatarEditorSection({index,title,hint,children}:{index:string;title:string;hint:string;children:ReactNode}){
+ return <section className="avatar-editor-section" aria-label={title}><header className="avatar-editor-section-heading"><span className="avatar-section-index">{index}</span><div><h4>{title}</h4><p>{hint}</p></div></header><div className="avatar-editor-section-body">{children}</div></section>;
 }
 function SharingSubview({title,onClose,children,busy=false,headingRef}:{title:string;onClose:()=>void;children:ReactNode;busy?:boolean;headingRef?:RefObject<HTMLHeadingElement|null>}) {
  const ownHeading=useRef<HTMLHeadingElement>(null),heading=headingRef??ownHeading;
