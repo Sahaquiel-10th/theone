@@ -37,3 +37,12 @@
 旧 QA10 缺失的回执不能通过新代码凭空补造。若原驻留已消失，应在精确现场核对、明确批准后单独审计结束旧占用，保留原失败历史、文件和 attempt，不重跑它，也不自动启动新网站任务。
 
 本轮用户明确批准后，已通过上线后的页面内人工确认通道仅结束 `ext_685259c9a3bc25353d85` 原轮次占用。页面确认“原任务仍为已停止，没有标记完成，也没有重新执行”；没有恢复 QA10 或启动新网站。保留截图 `/tmp/one-local-qa10-reconciled-20261026.png`。真实新隔离任务验收待系统磁盘确认后继续。
+
+## 11:46 之后真机续验
+
+- 用户确认完成系统授权。仅一个新版 0.4.26 驻留（PID 89433），原 PID 80592 已退出。服务端 `8e3f222cbdcfc04f739d96fb2f8306f15f867dc5` 通过 CI 40253852640 全部门禁并部署，最终 1547 项：1546 通过、1 项既有跳过、零失败。服务器 current、systemd、localhost health 现场一致。
+- A：`cnv_8a8bf6a2a4021c1d1a95`，一次提交就执行，未选新目录、未受 QA10 阻挡。真实文件 `/Users/machao/Desktop/test/ONE-LOCAL-RECOVERY-1026-A.md` 为 28 bytes，内容严格两行“青色42 / 目录复用验收A”，SHA-256 `43ba2ab7f3988a4337824fd54513984f5c1be072cea5ff13d1a6fa40e2cb82b1`。服务端 round 0 completed，1 次 attempt、1 次真实终态，无 interruption/hold。主对话实际带回路径。
+- B：`cnv_ef735c5916cbe9afb9fa`，新独立任务。观察到原 ONE 子进程中的真实 `sleep`，在写文件前停止。原命令及模型进程退出，文件当时不存在。一次点击“核对后继续这件事”，同一 execution 进入 round 1、跳过剩余等待，没有再选目录。真实文件 `/Users/machao/Desktop/test/ONE-LOCAL-RECOVERY-1026-B.md` 为 27 bytes、单行“停止后继续：青色42”，SHA-256 `247eb14bf70f3d49a092f1f825f4dace15a35a3463becc99d60939ca1573f8b8`。服务端一个 execution、2 次 attempt、2 次终态：原轮 cancelled、继续轮 completed，无 interruption/hold；主对话实际带回继续后结果。
+- 这次顺带发现真实终态到达后，current lastError 仍保留“正在停止、等确认”。已补窄修复：仅用当前轮首次真实终态清除既有暂态诊断，不清真实失败/保护、不改历史。补充 4 项回归覆盖当前轮、迟到旧轮、重复回执和安全保护；发布状态后补。
+- 原网站任务只读核对：已经显示“本机这件事还没开始 / 开始本机任务”，不再引用旧 QA10 阻挡。未点击开始、未重跑原项目。旧 QA10 仍 cancelled、原 round/attempt 不变、无伪造 terminal。
+- 证据截图：`/tmp/one-local-recovery-A-20261026.png`、`/tmp/one-local-recovery-B-resumed-20261026.png`。两个独立合成文件保留，未删除用户文件，未联网、读知识库或写 Notion。

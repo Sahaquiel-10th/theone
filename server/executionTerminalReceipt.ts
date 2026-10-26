@@ -18,6 +18,17 @@ export type TerminalAck = {
 };
 export type TerminalOwner = Pick<TerminalReceipt, 'deviceId' | 'installationId' | 'workspaceId' | 'userId'>;
 
+// Only transient server diagnostics may be retired by the matching real
+// terminal. Genuine failures and the append-only history remain untouched.
+const pendingCancellationDiagnostics = new Set([
+  '停止请求已提交，正在等本机确认原操作结束；已产生的文件修改不会自动撤销。',
+  '当前本机连接找不到这轮原操作的结束记录，尚不能确认它已退出。请先核对原操作和文件；新要求仍保留，不会自动重跑。',
+  '正在停止这轮原操作，仍需等本机确认结束；已产生的修改不会自动撤销。',
+  '正在检查这轮原操作的收尾情况，不会重新开始任务。',
+  '本机记录显示这轮结果已交回，正在核对已有结果；不会重新执行原操作。',
+  '本机已找到这轮结束记录，正在补回结果；不会重新执行原操作。'
+]);
+
 // This framing is shared with Swift: decimal UTF-8 byte count, colon, bytes.
 // No JSON escaping, newline normalization or trimming participates in the hash.
 export function terminalReceiptHash(receipt: Omit<TerminalReceipt, 'receiptHash'> | TerminalReceipt) {
@@ -177,6 +188,12 @@ export function acceptTerminalReceipt(database: Database, owner: TerminalOwner, 
       round: receipt.round, outcome: receipt.outcome, receivedAt: timestamp, disposition: 'supplemental' };
     task.updatedAt = timestamp;
     task.transportInterruption = undefined;
+  }
+  if (currentRound && firstForAttempt && task.status === 'cancelled'
+    && !task.executionSafetyHold && !safetyHold && pendingCancellationDiagnostics.has(task.lastError ?? '')) {
+    // A normal terminal proves this attempt ended, never that its goal was
+    // completed. Do not leave the earlier "still stopping" diagnostic live.
+    task.lastError = '已停止，本轮不再继续执行；已产生的文件修改不会自动撤销。';
   }
   database.auditLogs.push({ id: auditId, workspaceId: owner.workspaceId, actorUserId: owner.userId,
     action: 'execution.delivery.terminal', targetType: 'execution_task', targetId: task.id,
