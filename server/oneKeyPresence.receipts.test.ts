@@ -45,7 +45,7 @@ async function setup(t: test.TestContext) {
     for (const socket of sockets) socket.terminate();
     await presence.close(); await new Promise<void>((resolve, reject) => server.close(e => e ? reject(e) : resolve()));
   });
-  async function connect(authenticate = true, answerProof = true) {
+  async function connect(authenticate = true, answerProof = true, additionalCapabilities: string[] = []) {
     const socket = new WebSocket(`ws://127.0.0.1:${port}/api/one-key/launcher?deviceId=${owner.deviceId}&installationId=${installationId}`);
     const frames: any[] = []; sockets.push(socket);
     socket.on('message', raw => {
@@ -58,7 +58,7 @@ async function setup(t: test.TestContext) {
       const ready = once(socket, 'message');
       socket.send(JSON.stringify({ type: 'auth_response', challengeId: challenge.challengeId,
         signature: crypto.sign(null, Buffer.from(challenge.nonce, 'base64url'), pair.privateKey).toString('base64url'),
-        capabilities: [terminalReceiptCapability, 'execution_round_v1'] }));
+        capabilities: [terminalReceiptCapability, 'execution_round_v1', ...additionalCapabilities] }));
       assert.deepEqual(JSON.parse((await ready)[0].toString()), { type: 'ready', deviceId: owner.deviceId,
         owner: { workspaceId: owner.workspaceId, userId: owner.userId } });
     }
@@ -279,4 +279,54 @@ test('an old browser stop round cannot mutate or signal a newer resumed attempt'
   await waitUntil(() => connection.frames.filter(frame => frame.type === 'execution_cancel').length === cancellations + 1, 'current-round stop did not send');
   const stop = connection.frames.filter(frame => frame.type === 'execution_cancel').at(-1);
   assert.equal(stop.round, 1); assert.notEqual(stop.attemptId, first.attemptId);
+});
+
+test('a no-op stop on an already settled execution does not reject its pending preview', async t => {
+  const f = await setup(t), connection = await f.connect(true, true, ['static_preview_v1','static_preview_status_v1']);
+  const receipt = await f.issue(connection); connection.socket.send(JSON.stringify(receipt));
+  await waitUntil(() => connection.frames.some(frame => frame.type === 'execution_terminal_ack'), 'missing settled terminal');
+  const preview = f.presence.staticPreview(owner, receipt.taskId, 'status').then(value => ({value}),error => ({error}));
+  await waitUntil(() => connection.frames.some(frame => frame.type === 'preview_status'), 'missing preview request');
+  const request = connection.frames.find(frame => frame.type === 'preview_status');
+  await f.presence.cancelExecution(owner.deviceId, receipt.taskId, installationId, receipt.round);
+  connection.socket.send(JSON.stringify({type:'local_ready',taskId:receipt.taskId,requestId:request.requestId,output:''}));
+  const result = await preview;
+  assert.equal('error' in result, false, 'an already-finished stop must not cancel a preview/configuration');
+  assert.equal('value' in result && result.value.status, 'stopped');
+  assert.equal(f.db.executionTasks[0].status, 'completed');
+  assert.equal(connection.frames.some(frame => frame.type === 'execution_cancel'), false);
+});
+
+test('stop cleanup rejects only its original execution pending objects, not requests added during commit', async t => {
+  const task = {id:'task-a',...owner,conversationId:'conversation-a',status:'queued',reportRound:0};
+  const db = {executionTasks:[task],oneKeyDevices:[{id:owner.deviceId,...owner,status:'active'}],conversations:[]} as any;
+  let release!:()=>void, changed!:()=>void;
+  const entered = new Promise<void>(resolve=>{changed=resolve;});
+  const commit = new Promise<void>(resolve=>{release=resolve;});
+  const presence = new OneKeyPresence({read:async()=>db,mutate:async(fn:any)=>{
+    const result=fn(db); changed(); await commit; return result;
+  }} as any);
+  const socket = {readyState:WebSocket.OPEN} as WebSocket;
+  (presence as any).sockets.set(owner.deviceId,socket);
+  const pending = (presence as any).pendingLocal as Map<string, any>, rejected:string[]=[];
+  function request(id:string,patch:Record<string,unknown>={}) {
+    const timeout=setTimeout(()=>{},10_000);timeout.unref();
+    return {deviceId:owner.deviceId,socket,taskId:task.id,timeout,resolve(){},reject(){rejected.push(id);},...patch};
+  }
+  t.after(async()=>{await presence.close();});
+  const original=request('original'), replaced=request('replaced');
+  pending.set('original',original);pending.set('replaced',replaced);
+  pending.set('preview',request('preview',{configuration:true,previewAction:'status'}));
+  pending.set('configuration',request('configuration',{configuration:true}));
+  pending.set('other-task',request('other-task',{taskId:'other-task'}));
+  const stop = presence.cancelExecution(owner.deviceId,task.id,installationId,0);
+  await entered;
+  pending.set('new-round',request('new-round'));
+  clearTimeout(replaced.timeout);
+  const replacement=request('replacement');pending.set('replaced',replacement);
+  release();await stop;
+  assert.deepEqual(rejected,['original']);
+  assert.equal(pending.has('original'),false);
+  assert.equal(pending.get('replaced'),replacement);
+  for(const id of ['new-round','preview','configuration','other-task'])assert.equal(pending.has(id),true,id);
 });

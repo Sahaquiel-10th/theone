@@ -384,6 +384,13 @@ export class OneKeyPresence {
 
   async cancelExecution(deviceId: string, taskId: string, installationId?: string, expectedRound?: number) {
     if (!validInstallationId(installationId)) throw new OneKeyPresenceError('请更新 ONE Key 启动器');
+    // A durable commit may await I/O while other requests are registered.
+    // Stop only the execution requests that belonged to this call's original
+    // snapshot, never a newer round or an independent preview/configuration.
+    const socketAtStop = this.sockets.get(deviceId);
+    const pendingAtStop = [...this.pendingLocal.entries()].filter(([, pending]) => socketAtStop
+      && pending.socket === socketAtStop && pending.deviceId === deviceId && pending.taskId === taskId
+      && !pending.configuration && !pending.previewAction);
     let cancellation: { attemptId?: string; round: number } | undefined;
     await this.store.mutate(db => {
       const task = db.executionTasks.find(t => t.id === taskId && t.deviceId === deviceId && t.installationId === installationId);
@@ -391,9 +398,10 @@ export class OneKeyPresence {
       if (!device || !task || task.workspaceId !== device.workspaceId || task.userId !== device.userId) throw new OneKeyPresenceError('执行任务不属于当前 ONE Key 或这台电脑');
       cancellation = requestExecutionCancellation(db, task, new Date().toISOString(), expectedRound);
     });
+    if (!cancellation) return;
     const socket = this.sockets.get(deviceId);
-    if (cancellation && socket && this.isConnected(deviceId, installationId)) socket.send(JSON.stringify({ type: "execution_cancel", taskId, ...cancellation }));
-    for (const [id, pending] of this.pendingLocal) if (pending.socket === socket && pending.taskId === taskId) {
+    if (socket && this.isConnected(deviceId, installationId)) socket.send(JSON.stringify({ type: "execution_cancel", taskId, ...cancellation }));
+    for (const [id, pending] of pendingAtStop) if (this.pendingLocal.get(id) === pending) {
       clearTimeout(pending.timeout); this.pendingLocal.delete(id); pending.reject(new Error("执行已停止"));
     }
   }
