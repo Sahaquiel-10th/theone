@@ -16,6 +16,7 @@ test('owner-bound editor caches private trial receipts across pane navigation bu
  assert.ok(source.includes('new Map<string,AvatarDebugSession>()'));
  assert.ok(source.includes('initialSession={debugSessions.current.get(debugKey)}'));
  assert.ok(source.includes('debugSessions.current.set(debugKey,session)'));
+ assert.ok(source.includes('if(trial)debugSessions.current.set(row.id,trial)'));
  assert.ok(source.includes('key={debugKey}'));
  assert.ok(source.includes('`new:${newEditorGeneration}`'));
  assert.ok(source.includes('window.addEventListener(SESSION_EVENT,clear)'));

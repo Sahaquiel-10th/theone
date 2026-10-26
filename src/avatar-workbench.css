@@ -199,6 +199,8 @@ main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-
 .sharing-hierarchy .avatar-editor-section-heading {
   display:flex;
   align-items:flex-start;
+  justify-content:flex-start;
+  flex-wrap:nowrap;
   gap:12px;
 }
 .sharing-hierarchy .avatar-editor-section-heading :is(h3,h4) {

@@ -141,6 +141,53 @@ Launcher 声明设备与 installationId 后完成签名认证。每次受保护�
 
 保存前持久化本轮意图，返回页面编号后立即绑定任务，回读正文核对后保存 verified 回执。失败、超时、断连或停止可能留下 uncertain 回执和已知页面位置；不得自动重跑，也不能用文字宣称已保存。未确定结果的旧任务暂停后续写入。参考文章按需读取，不执行整库同步。
 
+## 分身私有试聊（2026-10-26）
+
+### `POST /api/sharing/manage/preview`
+
+仅用于作者在配置旁测试尚未保存的分身回答，不是公开分享、正式访客会话或功能验收入口。沿用 `keyAuth`，要求已启用账号、有效 Workspace、该空间的 owner Membership 与当前 ONE Key 在场；用户及 Workspace 由服务端身份确定，不能由请求体覆盖。企业空间仍沿用已有分身访问限制。
+
+请求体：
+
+```json
+{
+  "confirmed": true,
+  "operationId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "content": "请按你的方法介绍这项服务",
+  "config": {
+    "prompt": "依据资料回答，不足时说明",
+    "modelId": "已开放的问答模型编号",
+    "sourceIds": [],
+    "service": {
+      "mode": "consultation",
+      "welcome": "你好",
+      "starterQuestions": [],
+      "method": "先了解需求，再介绍适合的服务",
+      "features": []
+    }
+  },
+  "history": []
+}
+```
+
+- `confirmed:true` 表示明确确认本次真实测试按作者本人电力计费；外观预览不调用此接口，也不消耗模型电力。试聊不走访客收费、分账或服务资格额度，不修改分身收费配置。
+- `operationId` 为 16–128 位字母、数字、下划线或横线；`content` 必填，最多 2000 字符。客户端保留首次提交的完整请求，核对时重用原编号与原内容，不自动换编号重发。
+- `config` 接受当前未保存的回答配置：`modelId`、`prompt`（最多 12000 字符）、`sourceIds`（最多 5 个当前 Workspace 已连接来源）及可选 `service`。方法资料最多 12000 字符；用途只允许 `consultation` 或 `knowledge`，与正式分身复用方法及目标提示。服务端重新校验来源与授权绑定，检索前、检索后、计费前均检查授权；未选来源时完全跳过知识检索，不默认读取全部来源。
+- `history` 可省略；只接受 `user` / `assistant` 文本，最多 6 条、每条最多 4000 字符、总计最多 12000 字符。客户端仅提交同一分身及同一配置的试聊历史；改变资料、用途或模型后新开试聊，不自动读取作者的私人对话。
+- 本接口不提供可执行工具。`service.features` 不参加试聊功能授权或执行，未填写完整的调用条件也不阻塞普通问答，但原始配置仍参与请求指纹。正式保存与发布继续完整校验功能与发布版本，试聊成功不代表功能交付已验收。附件、客户信息提交、访客收费、资格兑换、文件制作及公开分享均不执行；不创建正式 publication、guest session、public run 或作者聊天记录。
+- 每次新测试最多取 4 条相关知识候选，注入参考文字最多 12000 字符；无匹配、全部来源不可用及部分失败分别提示，不宣称查全。单次模型输出上限 1200 Token，模型请求超时上限 60 秒，不自动续写或重试。每位作者同一 Workspace 最多一项待处理测试，每分钟最多新建 10 项，超过返回 429。
+
+成功返回 HTTP 200：`{operationId,response,finishReason,warning?,limitations,chargedMicros,heldMicros}`。`response` 为实际模型回答；`chargedMicros`、`heldMicros` 分别为这一次模型调用完成时的实际扣费及仍待核对预留，单位为微电力。用量不确定时提示待核对，不能把预留当成新增已扣费用。回答正文（最多 12000 字符）、费用快照及完成状态在同一事务内写入本人私有回执。
+
+同一用户、Workspace、`operationId` 与请求指纹：
+
+- 已完成：重复 POST 返回持久保存的原回答及原费用；不重新检索、调用模型或扣费，即使之后模型停用，也只核对原回执。
+- 问题、配置（包括本轮不执行的功能配置）或历史改变：409 `CHAT_OPERATION_CONFLICT`，不执行新请求。
+- 处理中：409 `CHAT_OPERATION_PENDING`；客户端稍后使用原请求再次核对，不生成新编号。
+- 已失败或重启后未确认：409 `CHAT_OPERATION_FAILED` / `CHAT_OPERATION_INTERRUPTED`，不重跑原测试。原完成状态缺少可恢复回执时返回 409 `AVATAR_PREVIEW_RESULT_UNAVAILABLE`，不能因此自动调用模型。首次未完成可返回 `AVATAR_PREVIEW_FAILED`；已发生的实际用量保留。
+
+回执读取同样要求当前本人 owner 身份与 Workspace，停用账号或失效 Membership 不能借旧编号读取结果。响应禁止缓存，不包含供应商凭据、模型原始错误、知识连接凭证或其他空间资料。私有测试正文仅由该端点按精确 owner / Workspace 回放，不进入公共分身元数据、访客接口、管理员用量明细、健康统计或上下文日志；此更新不增加管理员查看私人试聊正文的入口。
+
 ## Chat（当前，已调整）
 
 聊天请求由服务端使用当前 Workspace 已连接的知识来源执行实时搜索；多个 Provider 的结果公平合并后，将 Top K 作为不可信参考上下文注入模型，并在回答中附带来源。连接缺失时不执行第三方召回；单个 Provider 失败不允许回退到其他 Workspace 的连接。

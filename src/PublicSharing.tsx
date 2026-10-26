@@ -117,6 +117,10 @@ export function SharingPanel({api,models,externalQuery,hideSearch=false,onPublic
     publish:()=>api<PublicationReceipt>(editing?`/api/sharing/manage/${editing.id}/update`:'/api/sharing/manage',{method:'POST',body:JSON.stringify({...draft,service:avatarServicePayload(normalizedAvatarService(draft.service)),...(privateEditor?{intent:'draft'}:{}),version:editing?.version})}),
     onConfirmed:response=>{
      const row=confirmedPublicationRow(response,draft,data?.sources??[],editing?.owner);
+     // A new draft gains a durable owner ID on save. Carry its original trial
+     // submission along so saving during an answer never loses receipt recovery.
+     const trial=debugSessions.current.get(editing?.id??`new:${newEditorGeneration}`);
+     if(trial)debugSessions.current.set(row.id,trial);
      confirmedRows.current.set(row.id,row);setData(current=>upsertConfirmedPublication(current??{ready:true,items:[],total:0,sources:[]},row));
      setSuccessByOwner(current=>({...current,[row.id]:row.status==='draft'?'分身已保存，目前未分享。':updated?'配置已更新，原分享链接保留。':'创建完成。分享链接可从这个分身打开。'}));
      uncertainKeys.current.delete(key);if(updated)draftsByOwner.current.delete(key);else {newDraft.current=null;setNewEditorGeneration(value=>value+1);}
