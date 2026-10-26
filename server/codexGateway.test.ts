@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { CodexGateway, installCodexGatewayRoutes } from "./codexGateway.js";
 import type { Store } from "./db.js";
 import type { Database, ExecutionTask, ModelConfig } from "./types.js";
+import {localExecutionCapabilityGuidance} from './localDocumentPolicy.js';
 
 const request = { model: "one-executor", input: [{ role: "user", content: "Create a test page" }], stream: true, store: false };
 function fixture() {
@@ -18,6 +19,7 @@ function fixture() {
     modelUsageRecords: [], powerLedger: [], powerAccounts: [{ id: "pa", workspaceId: "wa", userId: "a", balanceMicros: 10_000_000 }, { id: "pb", workspaceId: "wb", userId: "b", balanceMicros: 10_000_000 }]
   } as unknown as Database;
   let calls = 0, proof = 0, clock = Date.now(), mode = "success", deny = false, persistenceFailure = false;
+  const instructions: string[] = [];
   let keyAbsent = false, waits = 0, waitEffect: (() => void) | undefined;
   let proofEffect: (() => void | Promise<void>) | undefined, fetchEffect: (() => Promise<void>) | undefined;
   const store: Store = { read: async () => db, mutate: async fn => {
@@ -37,6 +39,7 @@ function fixture() {
       const body = JSON.parse(String(init?.body)); assert.equal(body.model, "coding-model"); assert.equal(body.store, false);
       assert.ok(!Object.hasOwn(body, "client_metadata")); assert.ok(body.prompt_cache_key.startsWith("codex_"));
       assert.ok(body.instructions.includes("本机执行器"));
+      instructions.push(body.instructions);
       await fetchEffect?.();
       if (mode === "error") return new Response("upstream-secret", { status: 403 });
       const events = [{ type: "response.created", response: { id: "resp_1", model: "coding-model" } },
@@ -47,12 +50,24 @@ function fixture() {
       return new Response(new ReadableStream({ start(controller) { for (const byte of bytes) controller.enqueue(Uint8Array.of(byte)); controller.close(); } }), { headers: { "content-type": "text/event-stream" } });
     }
   });
-  return { gateway, db, task, calls: () => calls, proof: () => proof, setMode: (value: string) => { mode = value; }, deny: () => { deny = true; },
+  return { gateway, db, task, instructions, calls: () => calls, proof: () => proof, setMode: (value: string) => { mode = value; }, deny: () => { deny = true; },
     afterProof: (effect: () => void | Promise<void>) => { proofEffect = effect; }, beforeSupplierResponse: (effect: () => Promise<void>) => { fetchEffect = effect; },
     failPersistence: () => { persistenceFailure = true; }, advance: () => { clock += 61 * 60_000; },
     setKeyAbsent: (value: boolean) => { keyAbsent = value; }, onWait: (effect: () => void) => { waitEffect = effect; }, waits: () => waits };
 }
 const signal = () => new AbortController().signal;
+test('Codex receives current sandbox and static-delivery boundaries even with a custom model prompt', async () => {
+  const f = fixture(), config = await f.gateway.prepare(f.task);
+  await f.gateway.responses(config.token, {...request, instructions: '按本轮网站要求交付，不添加其他目标。'}, signal(), () => {});
+  assert.equal(f.instructions.length, 1);
+  assert.ok(f.instructions[0].includes(localExecutionCapabilityGuidance));
+  assert.equal(f.instructions[0].split(localExecutionCapabilityGuidance).length, 2, 'inject one shared capability boundary per provider call');
+  assert.match(f.instructions[0], /不能联网或监听本地端口/);
+  assert.match(f.instructions[0], /不擅自把“必须启动开发服务器”添加为必需目标/);
+  assert.match(f.instructions[0], /未实测不得声称功能已验收/);
+  assert.match(f.instructions[0], /用户明确要求的后端服务、服务启动或浏览器验证仍是必需目标/);
+  assert.match(f.instructions[0], /按本轮网站要求交付，不添加其他目标/);
+});
 test('missing supplier usage keeps its hold without stopping the next local tool decision',async()=>{
   const f=fixture(),config=await f.gateway.prepare(f.task);f.setMode('missing_usage');
   const events:string[]=[];await f.gateway.responses(config.token,request,signal(),e=>events.push(String(e.type)));

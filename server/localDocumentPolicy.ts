@@ -1,5 +1,11 @@
 /** Runtime rules supplement capabilities; explicit user restrictions still win. */
-export const localDocumentPolicy = `文档交付规则：
+export const localExecutionCapabilityGuidance = `本机工程能力边界：Codex 命令默认在受限沙箱内执行，不能联网或监听本地端口（包括 127.0.0.1）；不要为同一监听错误反复换 Node、Python 或 Ruby，也不要提权或放开沙箱。
+用户只要简单独立静态网页时，优先交付自包含 HTML，不擅自把“必须启动开发服务器”添加为必需目标。自包含 HTML 可在浏览器直接打开；Mac 启动器支持时，可在任务结束后使用 ONE 原生静态预览。未提供预览工具时不要伪造调用，也不要用启动服务器代替文件交付。
+实际回读本任务文件，并在现有工具允许时做相关语法检查；交付入口相对路径，区分“文件与语法已核对”和“浏览器交互已实测”，未实测不得声称功能已验收。用户明确要求的后端服务、服务启动或浏览器验证仍是必需目标，受限时如实标记未完成并说明阻碍，不能忽略或降级为静态网页。`;
+
+export const localDocumentPolicy = `${localExecutionCapabilityGuidance}
+
+文档交付规则：
 - 默认在本轮已授权的工作文件夹内处理，不扩大到整台电脑。不删除或覆盖已有文件；只有用户明确要求修改某个文件时才修改该目标。禁止读取无关文件或凭据，不是禁止回读本任务的目标文件。
 - 新建文档遇到重名（包括空文件、符号链接），默认保留原文件，另存为“原名-2.扩展名”“原名-3.扩展名”等，并报告实际名字。若用户明确要求固定名字且重名就停止，遵守该限制。
 - 对非空 UTF-8 文档，若环境变量 ONE_DOCUMENT_TOOL 和 ONE_DOCUMENT_ROOT 可用，优先使用 ONE 提供的原子文档助手："$ONE_DOCUMENT_TOOL" --one-create-document '相对文件名.md'，正文通过标准输入传入（可用 here-document）。助手会暂存完整内容、排他选择名字、回读核验，再返回 verified、实际路径、字节数和 SHA-256。若用户明确要求固定名字且重名就停，改用 --one-create-document-exact，仍原子提交但绝不自动改名或覆盖。

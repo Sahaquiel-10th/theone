@@ -25,6 +25,16 @@ private final class KeyState: @unchecked Sendable {
             return ((response as! HTTPURLResponse).statusCode, String(decoding: data, as: UTF8.self))
         }
         let good = try await get(url); precondition(good.0 == 200 && good.1.contains("ONE_PREVIEW_OK"))
+        let (_, response) = try await URLSession.shared.data(from: URL(string: url)!)
+        let policy = (response as! HTTPURLResponse).value(forHTTPHeaderField: "Content-Security-Policy") ?? ""
+        let directives = policy.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
+        precondition(directives.contains("img-src 'self' data: blob:"), "local photo previews must support FileReader and object URLs")
+        for directive in directives where !directive.hasPrefix("img-src ") {
+            precondition(!directive.contains("data:") && !directive.contains("blob:"), "local image sources must not expand other capabilities")
+        }
+        for directive in ["default-src 'self'", "connect-src 'none'", "frame-src 'none'", "object-src 'none'", "form-action 'none'", "base-uri 'none'", "frame-ancestors 'none'"] {
+            precondition(directives.contains(directive), "preview isolation must retain \(directive)")
+        }
         precondition(preview.currentURL() == url)
         let base = String(url.prefix(upTo: url.lastIndex(of: "/")!))
         let escape = try await get(base + "/escape.css"); precondition(escape.0 == 404 && !escape.1.contains("PRIVATE"))
@@ -68,6 +78,6 @@ private final class KeyState: @unchecked Sendable {
         precondition(Date().timeIntervalSince(beforeStop) < 1)
         do { _ = try await pending.value; preconditionFailure("late startup resurrected stopped preview") } catch {}
         let lateStatus = await slow.status("slow"); precondition(lateStatus.isEmpty)
-        print("PASS: loopback HTTP, token, host, traversal, symlink, Chinese filename, Key removal and stop")
+        print("PASS: local image CSP, blocked external capabilities, loopback HTTP, token, host, traversal, symlink, Chinese filename, Key removal and stop")
     }
 }

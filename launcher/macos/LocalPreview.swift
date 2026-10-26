@@ -100,7 +100,9 @@ final class LocalPreview: @unchecked Sendable {
     private func reply(_ data: Data, port: UInt16) -> Data {
         func response(_ status: String, _ body: String = "", _ mime: String = "text/plain; charset=utf-8") -> Data {
             let bytes = Data(body.utf8)
-            let headers = "HTTP/1.1 \(status)\r\nContent-Type: \(mime)\r\nContent-Length: \(bytes.count)\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'\r\n\r\n"
+            // FileReader and object URLs are local image sources, not network
+            // permissions. Keep their allowance limited to images.
+            let headers = "HTTP/1.1 \(status)\r\nContent-Type: \(mime)\r\nContent-Length: \(bytes.count)\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'\r\n\r\n"
             return Data(headers.utf8) + bytes
         }
         guard !stopped, present(), Date() <= expires else { close(); return response("403 Forbidden") }

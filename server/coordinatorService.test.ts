@@ -17,6 +17,7 @@ import { NotionWriteError, type NotionMcpService } from './knowledge/notionMcpSe
 import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
 import {runtimeContext} from './runtimeContext.js';
 import {sourceBinding} from './publicSharing.js';
+import {localExecutionCapabilityGuidance} from './localDocumentPolicy.js';
 import JSZip from 'jszip';
 import XLSX from 'xlsx';
 
@@ -1463,6 +1464,24 @@ test('natural local execution requires the enabled tool, saves complete handoff 
  assert.ok(r.taskId);assert.equal(count,1);await f.service.resume(a,key);assert.equal(f.calls.filter(c=>c.modelId==='worker').length,0);
  const denied=fixture();await denied.store.mutate(d=>{d.settings.aiTasks!.coordinator!.published!.tools=['delegate_task'];});denied.setRoute(()=>({...answer(''),toolCalls:[{id:'blocked',type:'function',function:{name:'execute_local_task',arguments:'{}'}}]}));
  await assertRoutingBlocked(denied.service.dispatch(a,input('operation_natural_denied','开始执行'),key,undefined,async()=>{throw Error('must never invoke');}));assert.equal((await denied.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
+});
+test('local-capable dispatch receives static-delivery boundaries without adding them to cloud-only prompts', async () => {
+  for (const localAvailable of [false, true]) {
+    const f = fixture();
+    await f.store.mutate(db => { db.settings.aiTasks!.coordinator!.published!.prompt = '自定义调度提示，只回答当前要求。'; });
+    f.setRoute(() => answer('可以交付自包含 HTML；现在先讨论，不执行。'));
+    await f.service.dispatch(a, input(`operation_static_boundary_${localAvailable ? 'local' : 'cloud'}`, '先讨论本地独立静态网页怎么做，不要执行'), key, undefined,
+      localAvailable ? async () => { throw Error('discussion must not execute local work'); } : undefined);
+    const prompt = f.calls[0].messages.filter(message => message.role === 'system').map(message => message.content).join('\n');
+    assert.equal(prompt.includes(localExecutionCapabilityGuidance), localAvailable);
+    if (localAvailable) {
+      assert.equal(prompt.split(localExecutionCapabilityGuidance).length, 2);
+      assert.match(prompt, /不能联网或监听本地端口/);
+      assert.match(prompt, /不擅自把“必须启动开发服务器”添加为必需目标/);
+      assert.match(prompt, /用户明确要求的后端服务、服务启动或浏览器验证仍是必需目标/);
+    }
+    assert.equal((await f.store.read()).chatOperations!.filter(operation => operation.workRun).length, 0);
+  }
 });
 test('on-demand task reading is private and local completion reporting is persistent and idempotent',async()=>{
  const f=fixture(),stamp=new Date().toISOString();await f.store.mutate(d=>{d.conversations.push({...a,id:'owned',title:'旧UI',modelId:'worker',messages:[{id:'old',role:'user',content:'文件只能写一句荷叶饼',createdAt:stamp}],archived:false,createdAt:stamp,updatedAt:stamp},{...b,id:'foreign',title:'不能读取',modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp});});

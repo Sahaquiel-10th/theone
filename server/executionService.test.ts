@@ -4,6 +4,7 @@ import type { Database, ExecutionTask, MessageRecord } from "./types.js";
 import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, saveExecutionInput, messagesThrough, publicExecutionTask, taskEvents, executionTrace, type ExecutionHandoff } from "./executionService.js";
 import { saveExecutionReceipt, executionReceipts, assertLocalExecutionAvailable, executionDeliveryPending, executionBlocksDevice,
   executionHasCurrentTerminal, localExecutionBlocker, requestExecutionCancellation } from './executionService.js';
+import {localExecutionCapabilityGuidance} from './localDocumentPolicy.js';
 
 test('unacknowledged disconnected rounds block repeat work only for their exact owner and device', () => {
   const scope = {workspaceId:'a', userId:'u', deviceId:'d', installationId:'i'};
@@ -218,6 +219,22 @@ const records: MessageRecord[] = [
 const handoffFor = (record: MessageRecord, instruction: string): ExecutionHandoff => ({
   workspaceId: record.workspaceId, userId: record.userId, conversationId: record.conversationId,
   messageId: record.id, instruction,
+});
+
+test('default and configured execution compilers preserve required services without inventing them for static pages', () => {
+  for (const taskPrompt of [undefined, '按管理员配置整理本机交接']) {
+    for (const goal of ['创建一个可直接打开的自包含 HTML 个人空间', '必须启动本地后端服务，并在浏览器验证照片上传']) {
+      const owned = {...records[0], content: goal};
+      const compiled = buildExecutionCompilerMessages([owned, records[3]], owned.id, taskPrompt)[0].content;
+      assert.ok(compiled.includes(localExecutionCapabilityGuidance));
+      assert.equal(compiled.split(localExecutionCapabilityGuidance).length, 2);
+      assert.ok(compiled.includes(goal), 'the actual user requirement survives the capability guidance');
+      assert.match(compiled, /不擅自把“必须启动开发服务器”添加为必需目标/);
+      assert.match(compiled, /仍是必需目标，受限时如实标记未完成/);
+      assert.match(compiled, /未实测不得声称功能已验收/);
+      assert.doesNotMatch(compiled, /别人的内容/);
+    }
+  }
 });
 
 test('long execution histories retain the original goal and latest handoff beside the recent context',()=>{
