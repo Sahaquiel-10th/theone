@@ -65,8 +65,9 @@ import { connectorRegistry, connectorService, notionMcpService, yinxiangService,
 import { installFeishuRoutes } from "./feishuRoutes.js";
 import { connectorRoutes } from "./connectorRoutes.js";
 import { AuthorizationSessionError, AuthorizationSessions } from "./connectors/authorizationSessions.js";
-import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, saveExecutionInput, messagesThrough, publicExecutionTask, taskEvents, executionTrace, executionReceipts, saveExecutionReceipt, executionTerminal, assertLocalExecutionAvailable, executionBlocksDevice } from "./executionService.js";
+import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, saveExecutionInput, messagesThrough, publicExecutionTask, taskEvents, executionTrace, executionReceipts, saveExecutionReceipt, executionTerminal, assertLocalExecutionAvailable, ExecutionRoundChangedError } from "./executionService.js";
 import { buildDirectExecutionInstruction } from "./directExecutionInstruction.js";
+import {installExecutionReconciliationRoutes} from './executionReconciliationRoutes.js';
 import { adminUsageSummaries, adminUserUsageDetail } from "./adminUsage.js";
 import { operationsHealth } from "./operationsHealth.js";
 import { batchGift } from "./batchGift.js";
@@ -823,20 +824,24 @@ app.get("/api/knowledge/connections/yinxiang/oauth/callback", asyncRoute(async (
 }));
 app.delete("/api/knowledge/connections/yinxiang", ...keyAuth, requireWorkspaceOwner, asyncRoute(async (req, res) => { await yinxiangService.disconnect(req.workspaceId!, req.user!.id); res.json({ ok: true }); }));
 
+function publicExecutionForRequest(req: express.Request, task: ExecutionTask) {
+  return publicExecutionTask(task, {workspaceId:req.workspaceId!,userId:req.user!.id,
+    deviceId:req.oneKeyDeviceId!,installationId:req.oneKeyInstallationId});
+}
 app.get("/api/executions", ...keyAuth, asyncRoute(async (req, res) => {
   const conversationId = typeof req.query.conversationId === "string" ? req.query.conversationId : "";
   const db = await store.read();
   const tasks = db.executionTasks
     .filter((item) => item.workspaceId === req.workspaceId && item.userId === req.user!.id && (!conversationId || item.conversationId === conversationId))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  res.json({ tasks: tasks.map(task=>({...publicExecutionTask(task),blocksCurrentDevice:executionBlocksDevice(task,{workspaceId:req.workspaceId!,userId:req.user!.id,deviceId:req.oneKeyDeviceId!,installationId:req.oneKeyInstallationId})})) });
+  res.json({ tasks: tasks.map(task=>publicExecutionForRequest(req, task)) });
 }));
 
 app.get("/api/executions/:id", ...keyAuth, asyncRoute(async (req, res) => {
   const db = await store.read();
   const task = db.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
   if (!task) return res.status(404).json({ error: "执行任务不存在", code: "EXECUTION_NOT_FOUND" });
-  res.json({ task: publicExecutionTask(task), events: taskEvents(db, task) });
+  res.json({ task: publicExecutionForRequest(req, task), events: taskEvents(db, task) });
 }));
 
 app.get("/api/executions/:id/trace", ...keyAuth, asyncRoute(async (req, res) => {
@@ -866,7 +871,7 @@ app.get("/api/executions/:id/stream", ...keyAuth, asyncRoute(async (req, res) =>
       || !oneKeyPresence.isConnected(req.oneKeyDeviceId!, req.oneKeyInstallationId)) { res.end(); return; }
     const task = database.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
     if (!task) { res.write("event: error\ndata: {\"error\":\"执行任务不存在\"}\n\n"); res.end(); return; }
-    const payload = JSON.stringify({ task: publicExecutionTask(task), events: taskEvents(database, task) });
+    const payload = JSON.stringify({ task: publicExecutionForRequest(req, task), events: taskEvents(database, task) });
     if (payload !== lastPayload) {
       // A long-lived stream is not a permanent read permit. Verify only when there
       // is new content to send, never sign periodic empty heartbeats.
@@ -919,7 +924,7 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
     const latest = await store.read();
     const saved = latest.executionTasks.find(t => t.dispatchOperationId === requestOperationId && t.workspaceId === req.workspaceId && t.userId === req.user!.id);
     if (!saved) throw new Error("执行回执尚未确认，请勿重复执行");
-    return { task: publicExecutionTask(saved), events: taskEvents(latest, saved) };
+    return { task: publicExecutionForRequest(req, saved), events: taskEvents(latest, saved) };
   }
   try {
   const scope = { workspaceId: req.workspaceId!, userId: req.user!.id, deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId };
@@ -975,7 +980,7 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
     await store.mutate((mutable) => { const target = mutable.executionTasks.find((item) => item.id === task.id && item.workspaceId === task.workspaceId && item.userId === task.userId); if (target && !executionTerminal(target.status)) { target.status = "failed"; target.lastError = failure; target.updatedAt = now(); target.completedAt = target.updatedAt; appendExecutionEvent(mutable, { id: uid("exe"), workspaceId: target.workspaceId, userId: target.userId, taskId: target.id, kind: "error", text: failure, createdAt: target.updatedAt }); saveExecutionReceipt(mutable, target); } });
   }
   const latest = await store.read(); const saved = latest.executionTasks.find((item) => item.id === task.id)!;
-  return { task: publicExecutionTask(saved), events: taskEvents(latest, saved) };
+  return { task: publicExecutionForRequest(req, saved), events: taskEvents(latest, saved) };
   } catch (error) {
     await store.mutate(d => failChatOperationInMutation(d, { workspaceId: req.workspaceId!, userId: req.user!.id, operationId: requestOperationId }));
     throw error;
@@ -1047,17 +1052,26 @@ app.post("/api/executions/:id/messages", ...keyAuth, asyncRoute(async (req, res)
     });
     throw error;
   }
-  res.status(202).json({ task: publicExecutionTask(task) });
+  res.status(202).json({ task: publicExecutionForRequest(req, task) });
 }));
 
 app.post("/api/executions/:id/cancel", auth(jwtSecret, undefined, { executionStopOnly: true }), requireOneKeySession, asyncRoute(async (req, res) => {
+  const expectedRound = req.body?.expectedRound;
+  if (expectedRound !== undefined && (!Number.isSafeInteger(expectedRound) || expectedRound < 0))
+    return res.status(400).json({error:'本机执行轮次无效',code:'EXECUTION_ROUND_INVALID'});
   const db = await store.read();
   const task = db.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
   if (!task) return res.status(404).json({ error: "执行任务不存在", code: "EXECUTION_NOT_FOUND" });
-  await connectorService.dispatch({ workspaceId: req.workspaceId!, userId: req.user!.id, deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId }, task.id, "cancel");
+  try {
+    await connectorService.dispatch({ workspaceId: req.workspaceId!, userId: req.user!.id, deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId }, task.id, "cancel", undefined, expectedRound);
+  } catch (error) {
+    if (error instanceof ExecutionRoundChangedError) return res.status(409).json({error:error.message,code:error.code});
+    throw error;
+  }
   res.status(202).json({ ok: true });
 }));
 
+installExecutionReconciliationRoutes(app,keyAuth,store);
 const admin = [...keyAuth, requireRole("admin")] as const;
 installCompanyRoutes(app, keyAuth, admin, store, oneKeyService);
 installPublicCommerceRoutes(app,keyAuth,admin,store);

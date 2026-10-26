@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import test from "node:test";
 import { LocalAgentService } from "./localAgentService.js";
 import type { Database, ModelConfig } from "./types.js";
+import {requestExecutionCancellation} from './executionService.js';
 const installationId = "a".repeat(32);
 
 for (const scenario of ["normal", "unplug", "excluded", "native-command"]) test(`Local Agent policy: ${scenario}`, async () => {
@@ -70,4 +71,33 @@ for (const scenario of ["normal", "unplug", "excluded", "native-command"]) test(
   } finally {
     await new Promise<void>((resolve, reject) => modelServer.close((error) => error ? reject(error) : resolve()));
   }
+});
+
+test('Local Agent rejects an old stop before touching its current worker cancellation state', async () => {
+  const task = {id:'local-task',workspaceId:'w',userId:'u',deviceId:'d',installationId,status:'running',reportRound:2} as Database['executionTasks'][number];
+  const database = {executionTasks:[task],conversations:[]} as unknown as Database;
+  const store = {read:async()=>database, mutate:async(change:(db:Database)=>unknown)=>change(database)} as any;
+  const presence = {cancelExecution:async(_device:string,_task:string,_installation:string,expectedRound?:number)=>{
+    await store.mutate((db:Database)=>requestExecutionCancellation(db, task, 'stop', expectedRound));
+  }} as any;
+  const service = new LocalAgentService(store, presence), before = JSON.stringify(database);
+  await assert.rejects(() => service.cancel(task.id, 1), /已进入新一轮/);
+  assert.equal(JSON.stringify(database), before);
+  assert.equal((service as any).cancelled.size, 0);
+  await service.cancel(task.id, 2);
+  assert.equal(task.status, 'cancelled'); assert.equal((service as any).cancelled.get(task.id), 2);
+});
+
+test('a late Local Agent stop marker remains round-specific if a new round was admitted during delivery', async () => {
+  const task = {id:'local-task',workspaceId:'w',userId:'u',deviceId:'d',installationId,status:'running',reportRound:2} as Database['executionTasks'][number];
+  const database = {executionTasks:[task],conversations:[]} as unknown as Database;
+  const store = {read:async()=>database, mutate:async(change:(db:Database)=>unknown)=>change(database)} as any;
+  const presence = {cancelExecution:async(_device:string,_task:string,_installation:string,expectedRound?:number)=>{
+    await store.mutate((db:Database)=>requestExecutionCancellation(db, task, 'stop', expectedRound));
+    Object.assign(task, {status:'queued',reportRound:3});
+  }} as any;
+  const service = new LocalAgentService(store, presence);
+  await service.cancel(task.id, 2);
+  assert.equal(task.status, 'queued'); assert.equal(task.reportRound, 3);
+  assert.equal((service as any).isCancelled(task), false);
 });

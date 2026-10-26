@@ -5,6 +5,7 @@ import Foundation
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("one-local-files-\(UUID().uuidString)")
         let outside = FileManager.default.temporaryDirectory.appendingPathComponent("one-local-sentinel-\(UUID().uuidString).txt")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        try workFolderPersistence(root: root)
         try "OUTSIDE_UNCHANGED".write(to: outside, atomically: true, encoding: .utf8)
         let files = try MacLocalFiles(root: root.path)
         let document = try files.createDocument("成品.md", content: String(repeating: "完整文档🙂\n", count: 10000))
@@ -55,5 +56,78 @@ import Foundation
         precondition(!list.contains("linked.txt"))
         let repeatedList = try files.list(".", depth: 2); precondition(repeatedList == list)
         print("Mac native file create/read/replace/no-overwrite/traversal/symlink/hardlink checks passed: \(root.path)")
+    }
+
+    static func workFolderPersistence(root: URL) throws {
+        let suite = "one-work-folder-test-\(UUID().uuidString)"
+        final class ModalCancellationProbe: @unchecked Sendable {
+            private let lock = NSLock()
+            private var delivered = false
+            func deliver() { lock.lock(); delivered = true; lock.unlock() }
+            func wasDelivered() -> Bool { lock.lock(); defer { lock.unlock() }; return delivered }
+        }
+        let modalCancellation = ModalCancellationProbe()
+        DispatchQueue.global().async { scheduleWorkFolderCancellation { modalCancellation.deliver() } }
+        let modalDeadline = Date(timeIntervalSinceNow: 2)
+        while !modalCancellation.wasDelivered(), Date() < modalDeadline {
+            RunLoop.main.run(mode: RunLoop.Mode("NSModalPanelRunLoopMode"), before: Date(timeIntervalSinceNow: 0.02))
+        }
+        precondition(modalCancellation.wasDelivered(), "Stop must be delivered inside the picker's modal run loop")
+        var picker = WorkFolderPickerOwnership()
+        precondition(picker.begin("attempt-a"))
+        precondition(!picker.begin("attempt-b"), "only one folder picker may be active")
+        precondition(!picker.owns("attempt-b"), "another task cannot close the current permission picker")
+        picker.finish("attempt-b")
+        precondition(picker.owns("attempt-a"), "stale task finish must not release another picker")
+        picker.finish("attempt-a")
+        precondition(picker.begin("attempt-b"), "picker ownership releases only after original unwind")
+        precondition(!picker.owns("attempt-a"), "late cancellation cannot close the next task's picker")
+        picker.finish("attempt-b")
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite); defaults.synchronize() }
+        let canonicalRoot = root.resolvingSymlinksInPath().path
+        var selections = 0
+        let select = { selections += 1; return root.path as String? }
+        let initiallyConfigured = try MacWorkFolderConfiguration.configured(defaults: defaults, deviceId: "key-a")
+        precondition(initiallyConfigured == nil)
+        let first = try MacWorkFolderConfiguration.resolve(defaults: defaults, deviceId: "key-a", choose: select)
+        precondition(first == canonicalRoot && selections == 1)
+        for _ in 0..<3 {
+            let saved = try MacWorkFolderConfiguration.resolve(defaults: defaults, deviceId: "key-a", choose: select)
+            precondition(saved == canonicalRoot && selections == 1, "a new task must reuse the selected folder")
+        }
+        let relaunched = UserDefaults(suiteName: suite)!
+        let restored = try MacWorkFolderConfiguration.resolve(defaults: relaunched, deviceId: "key-a", choose: select)
+        precondition(restored == canonicalRoot && selections == 1, "relaunch must preserve the same Key folder")
+        let otherKey = try MacWorkFolderConfiguration.configured(defaults: defaults, deviceId: "key-b")
+        precondition(otherKey == nil, "another Key must not inherit authorization")
+        let cancelled = try MacWorkFolderConfiguration.resolve(defaults: defaults, deviceId: "key-a", change: true, choose: { nil })
+        precondition(cancelled == nil)
+        let afterCancellation = try MacWorkFolderConfiguration.configured(defaults: defaults, deviceId: "key-a")
+        precondition(afterCancellation == canonicalRoot, "cancelling change must preserve authorization")
+
+        func rejectsWithoutChoosing(_ saved: String) {
+            defaults.set(saved, forKey: MacWorkFolderConfiguration.key("key-stale"))
+            do {
+                _ = try MacWorkFolderConfiguration.resolve(defaults: defaults, deviceId: "key-stale", choose: select)
+                preconditionFailure("unavailable or redirected saved root must not be authorized")
+            } catch {}
+            precondition(selections == 1, "an unavailable saved folder must not implicitly reopen the chooser")
+            precondition(defaults.string(forKey: MacWorkFolderConfiguration.key("key-stale")) == saved)
+        }
+        rejectsWithoutChoosing(root.appendingPathComponent("missing").path)
+        let notDirectory = root.appendingPathComponent("not-a-folder")
+        try "fixture".write(to: notDirectory, atomically: true, encoding: .utf8)
+        rejectsWithoutChoosing(notDirectory.path)
+        let redirected = root.appendingPathComponent("redirected-folder")
+        try FileManager.default.createSymbolicLink(at: redirected, withDestinationURL: root)
+        rejectsWithoutChoosing(redirected.path)
+        let recovered = try MacWorkFolderConfiguration.resolve(defaults: defaults, deviceId: "key-stale", change: true, choose: select)
+        precondition(recovered == canonicalRoot && selections == 2)
+        do {
+            _ = try MacWorkFolderConfiguration.resolve(defaults: defaults, deviceId: "key-wide", choose: { FileManager.default.homeDirectoryForCurrentUser.path })
+            preconditionFailure("folder configuration must not authorize the entire home directory")
+        } catch {}
+        print("Mac work folder persistence/new-task/relaunch/Key isolation/cancel/stale/redirect checks passed")
     }
 }

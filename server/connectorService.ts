@@ -55,7 +55,7 @@ export class ConnectorService {
     return adapter.provider;
   }
 
-  async dispatch(scope: ConnectorScope, taskId: string, action: "start" | "continue" | "cancel", instruction?: string) {
+  async dispatch(scope: ConnectorScope, taskId: string, action: "start" | "continue" | "cancel", instruction?: string, expectedRound?: number) {
     const db = await this.authorized(scope);
     if (!validInstallationId(scope.installationId)) throw new ConnectorAccessError("请更新 ONE Key 并在原电脑创建新的执行任务");
     const task = db.executionTasks.find(item => item.id === taskId && item.workspaceId === scope.workspaceId && item.userId === scope.userId && item.deviceId === scope.deviceId && item.installationId === scope.installationId);
@@ -68,6 +68,6 @@ export class ConnectorService {
     // The authenticated launcher receives only that cancellation after reconnecting.
     if (!adapter || action !== 'cancel' && health?.state !== "transport_ready") throw new Error("任务原执行连接不可用，请恢复原连接后重试");
     if (action === "continue" && !instruction?.trim()) throw new Error("执行消息不能为空");
-    await adapter.dispatch(action, task, instruction);
+    await adapter.dispatch(action, task, instruction, expectedRound);
   }
 }

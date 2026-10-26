@@ -21,13 +21,13 @@ export function executionConnectors(presence: ExecutionPresence, local: LocalExe
       if (provider === "local_agent" ? !isLocal : !(presence.supportsCodex?.(device.id, scope.installationId) ?? !isLocal)) return { state: "unavailable", code: "RUNTIME_NOT_SELECTED", message: "当前启动器没有此执行能力", evidence: "transport" };
       return { state: "transport_ready", code: "TRANSPORT_CONNECTED", message: "本机通道在线；运行环境、账号和目录权限仍需执行时确认", evidence: "transport" };
     },
-    async dispatch(action, task, instruction) {
+    async dispatch(action, task, instruction, expectedRound) {
       if (provider === "local_agent") {
-        if (action === "cancel") await local.cancel(task.id);
+        if (action === "cancel") await local.cancel(task.id, expectedRound);
         else local.start(task.id, action === "continue" ? instruction : undefined);
       } else if (action === "start") await presence.startExecution(task.deviceId, task.id, task.instruction, task.installationId);
       else if (action === "continue") await presence.continueExecution(task.deviceId, task.id, instruction!, task.installationId);
-      else await presence.cancelExecution(task.deviceId, task.id, task.installationId);
+      else await presence.cancelExecution(task.deviceId, task.id, task.installationId, expectedRound);
     }
   }));
 }

@@ -31,18 +31,18 @@ function fixture(disabled: string[] = []) {
     knowledgeConnections: [{ id: "ka", workspaceId: "a", provider: "getnote", status: "connected", clientId: "private-client", encryptedApiKey: encryptCredential("private-key"), lastError: "private-provider-error" }],
     executionTasks: [{ id: "ta", workspaceId: "a", userId: "ua", deviceId: "da", installationId, provider: "codex", status: "queued", instruction: "private-instruction" }]
   } as unknown as Database;
-  const calls: string[] = [];
+  const calls: string[] = [], cancellationRounds: (number | undefined)[] = [];
   let online = true, localEnabled = false;
   const presence: ExecutionPresence = {
     isConnected: (_device, computer) => online && computer === installationId,
     supportsLocalAgent: (_device, computer) => localEnabled && computer === installationId,
     async startExecution(device, task, _instruction, computer) { assert.equal(computer, installationId); calls.push(`start:${device}:${task}`); },
     async continueExecution(device, task, _instruction, computer) { assert.equal(computer, installationId); calls.push(`continue:${device}:${task}`); },
-    async cancelExecution(device, task, computer) { assert.equal(computer, installationId); calls.push(`cancel:${device}:${task}`); }
+    async cancelExecution(device, task, computer, expectedRound) { assert.equal(computer, installationId); cancellationRounds.push(expectedRound); calls.push(`cancel:${device}:${task}`); }
   };
   const store = { async read() { return db; }, async mutate<T>(fn: (db: Database) => T) { return fn(db); } } as Store;
-  const registry = new ConnectorRegistry([getnoteConnector, ...executionConnectors(presence, { start(id) { calls.push(`local:${id}`); }, async cancel(id) { calls.push(`local-cancel:${id}`); } })], disabled);
-  return { db, calls, store, registry, service: new ConnectorService(store, registry), online(value: boolean) { online = value; }, local(value: boolean) { localEnabled = value; } };
+  const registry = new ConnectorRegistry([getnoteConnector, ...executionConnectors(presence, { start(id) { calls.push(`local:${id}`); }, async cancel(id, expectedRound) { cancellationRounds.push(expectedRound); calls.push(`local-cancel:${id}`); } })], disabled);
+  return { db, calls, cancellationRounds, store, registry, service: new ConnectorService(store, registry), online(value: boolean) { online = value; }, local(value: boolean) { localEnabled = value; } };
 }
 
 test("connector registry rejects duplicates and unknown disable targets", () => {
@@ -161,6 +161,15 @@ test("execution dispatch enforces membership, owner, device and original runtime
   assert.deepEqual(f.calls.slice(-2), ["local:ta", "local-cancel:ta"]);
   f.db.oneKeyDevices[0].status = "revoked";
   await assert.rejects(f.service.selectExecution(scope));
+});
+
+test('expected stop rounds reach both reviewed execution adapters without becoming instructions', async () => {
+  const f = fixture();
+  await f.service.dispatch(scope, 'ta', 'cancel', undefined, 3);
+  assert.deepEqual(f.cancellationRounds, [3]);
+  f.local(true); f.db.executionTasks[0].provider = 'local_agent';
+  await f.service.dispatch(scope, 'ta', 'cancel', undefined, 4);
+  assert.deepEqual(f.cancellationRounds, [3, 4]);
 });
 
 test("disabled adapters cannot check, recall, dispatch or silently select a fallback", async () => {

@@ -153,6 +153,16 @@ final class TerminalReceiptOutbox: @unchecked Sendable {
         try synchronized { try entries().filter { !$0.acknowledged }.compactMap(\.receipt).sorted { $0.occurredAt < $1.occurredAt } }
     }
 
+    // An explicit repeated Stop asks for this exact attempt's existing end
+    // record; it must not manufacture a new cancellation or restart work.
+    func receiptForReplay(_ identity: ExecutionReceiptIdentity) throws -> ExecutionTerminalReceipt? {
+        try synchronized {
+            try validate(identity)
+            guard let entry = try read(identity), !entry.acknowledged else { return nil }
+            return entry.receipt
+        }
+    }
+
     func hasTerminal(_ identity: ExecutionReceiptIdentity) throws -> Bool {
         try synchronized {
             try validate(identity)

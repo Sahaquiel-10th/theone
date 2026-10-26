@@ -6,6 +6,7 @@ import test from 'node:test';
 import { WebSocket } from 'ws';
 import { OneKeyPresence } from './oneKeyPresence.js';
 import { terminalReceiptCapability, terminalReceiptHash, type TerminalReceipt } from './executionTerminalReceipt.js';
+import { assertLocalExecutionAvailable, executionBlocksDevice, executionDeliveryPending } from './executionService.js';
 
 const installationId = 'a'.repeat(32);
 const owner = { workspaceId: 'workspace-a', userId: 'user-a', deviceId: 'device-a', installationId };
@@ -205,4 +206,77 @@ test('outbox failure cannot mutate another attempt or round and cannot overwrite
     code: 'outbox_unavailable', phase: 'result_not_persisted' }));
   await new Promise(resolve => setTimeout(resolve, 30)); assert.equal(f.db.executionTasks[0].status, 'cancelled');
   assert.equal(f.db.executionTasks[0].transportInterruption.reason, 'cancellation_pending');
+});
+
+test('an unanswered cancellation can resend the same attempt and its real terminal unlocks a new independent task', async t => {
+  const f = await setup(t), connection = await f.connect(), original = await f.issue(connection);
+  await f.presence.cancelExecution(owner.deviceId, original.taskId, installationId);
+  await waitUntil(() => connection.frames.filter(frame => frame.type === 'execution_cancel').length === 1, 'missing first stop');
+  assert.equal(executionDeliveryPending(f.db.executionTasks[0]), true);
+  assert.throws(() => assertLocalExecutionAvailable(f.db, owner), /等本机确认/);
+  await f.presence.cancelExecution(owner.deviceId, original.taskId, installationId);
+  await waitUntil(() => connection.frames.filter(frame => frame.type === 'execution_cancel').length === 2, 'unanswered stop was silently dropped');
+  for (const stop of connection.frames.filter(frame => frame.type === 'execution_cancel')) {
+    assert.equal(stop.attemptId, original.attemptId); assert.equal(stop.round, original.round);
+  }
+  const stopped = {...original, receiptId:crypto.randomUUID(), outcome:'cancelled' as const, finalResponse:'已确认本轮进程结束，修改保留。'};
+  stopped.receiptHash = terminalReceiptHash(stopped);
+  connection.socket.send(JSON.stringify(stopped));
+  await waitUntil(() => connection.frames.some(frame => frame.type === 'execution_terminal_ack'), 'missing real stopped receipt');
+  assert.equal(f.db.executionTasks[0].status, 'cancelled');
+  assert.equal(executionBlocksDevice(f.db.executionTasks[0], owner), false);
+  assert.doesNotThrow(() => assertLocalExecutionAvailable(f.db, owner));
+  const next = {...f.db.executionTasks[0], id:'independent-task', conversationId:'independent-conversation', status:'queued',
+    reportRound:0, deliveryAttempt:undefined, terminalReceipt:undefined, transportInterruption:undefined};
+  f.db.executionTasks.push(next);
+  await f.presence.startExecution(owner.deviceId, next.id, 'new independent task only', installationId);
+  await waitUntil(() => connection.frames.some(frame => frame.type === 'execution_start' && frame.taskId === next.id), 'independent task did not start');
+  assert.equal(connection.frames.filter(frame => frame.type === 'execution_start' && frame.taskId === original.taskId).length, 1, 'old task must not replay');
+});
+
+test('a held terminal remains stoppable but diagnostics cannot release unknown side effects or cross ownership', async t => {
+  const f = await setup(t), connection = await f.connect(), original = await f.issue(connection);
+  f.db.executionTasks[0].status = 'failed'; f.db.executionTasks[0].executionSafetyHold = 'command_unconfirmed';
+  await f.presence.cancelExecution(owner.deviceId, original.taskId, installationId);
+  await waitUntil(() => connection.frames.some(frame => frame.type === 'execution_cancel'), 'held terminal cannot be checked/stopped');
+  const snapshot = JSON.stringify(f.db.executionTasks[0]);
+  const diagnostic = {type:'execution_recovery_status', ...owner, taskId:original.taskId, attemptId:original.attemptId,
+    round:original.round, state:'not_found'};
+  for (const patch of [{workspaceId:'foreign-workspace'}, {userId:'foreign-user'}, {deviceId:'foreign-device'},
+    {installationId:'b'.repeat(32)}, {attemptId:'foreign-attempt'}, {round:3}, {state:'stopped'}]) {
+    connection.socket.send(JSON.stringify({...diagnostic,...patch}));
+  }
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(JSON.stringify(f.db.executionTasks[0]), snapshot);
+  connection.socket.send(JSON.stringify(diagnostic));
+  await waitUntil(() => /找不到这轮原操作/.test(f.db.executionTasks[0].lastError), 'missing useful scoped recovery diagnostic');
+  assert.equal(f.db.executionTasks[0].status, 'cancelled');
+  assert.equal(f.db.executionTasks[0].executionSafetyHold, 'command_unconfirmed');
+  assert.equal(executionDeliveryPending(f.db.executionTasks[0]), true);
+  assert.throws(() => assertLocalExecutionAvailable(f.db, owner), /没确认结束/);
+  const events = f.db.executionEvents.length;
+  connection.socket.send(JSON.stringify(diagnostic));
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(f.db.executionEvents.length, events, 'repeated inspection must not grow history forever');
+  assert.equal(connection.frames.some(frame => frame.type === 'execution_terminal_ack'), false);
+});
+
+test('an old browser stop round cannot mutate or signal a newer resumed attempt', async t => {
+  const f = await setup(t), connection = await f.connect(), first = await f.issue(connection);
+  connection.socket.send(JSON.stringify(first));
+  await waitUntil(() => connection.frames.some(frame => frame.type === 'execution_terminal_ack'), 'missing original terminal');
+  const resumed = f.db.executionTasks[0];
+  Object.assign(resumed, {status:'queued',reportRound:1,deliveryAttempt:undefined,terminalReceipt:undefined,
+    transportInterruption:undefined,finalResponse:undefined,lastError:undefined});
+  await f.presence.continueExecution(owner.deviceId, resumed.id, 'new round only', installationId);
+  await waitUntil(() => connection.frames.some(frame => frame.type === 'execution_continue'), 'missing resumed attempt');
+  const before = JSON.stringify(f.db), cancellations = connection.frames.filter(frame => frame.type === 'execution_cancel').length;
+  await assert.rejects(() => f.presence.cancelExecution(owner.deviceId, resumed.id, installationId, 0), /已进入新一轮/);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(JSON.stringify(f.db), before, 'stale stop must fail before changing task, history or audit');
+  assert.equal(connection.frames.filter(frame => frame.type === 'execution_cancel').length, cancellations);
+  await f.presence.cancelExecution(owner.deviceId, resumed.id, installationId, 1);
+  await waitUntil(() => connection.frames.filter(frame => frame.type === 'execution_cancel').length === cancellations + 1, 'current-round stop did not send');
+  const stop = connection.frames.filter(frame => frame.type === 'execution_cancel').at(-1);
+  assert.equal(stop.round, 1); assert.notEqual(stop.attemptId, first.attemptId);
 });

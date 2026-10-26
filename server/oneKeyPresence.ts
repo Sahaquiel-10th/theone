@@ -6,7 +6,7 @@ import type { Store } from "./db.js";
 import { uid } from "./security.js";
 import type { CodexGatewayConfiguration } from "./codexGateway.js";
 import type { ExecutionTask } from "./types.js";
-import { appendExecutionEvent, executionTerminal, saveExecutionReceipt } from "./executionService.js";
+import { appendExecutionEvent, executionDeliveryPending, executionTerminal, requestExecutionCancellation, saveExecutionReceipt } from "./executionService.js";
 import { validInstallationId } from "./oneKeyInstallation.js";
 import { compareRuntimeVersions, validRuntimeVersion, type RuntimeArchitecture, type RuntimeIdentity, type RuntimePlatform, type SignedRuntimeUpdate } from "./runtimeUpdate.js";
 import { recoverRuntimeUpdate, disconnectedRuntimeUpdate, confirmedRuntimeUpdate, runtimeRecoveryReceipt, type UpdateOwner } from './runtimeUpdateRecovery.js';
@@ -382,28 +382,16 @@ export class OneKeyPresence {
     await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_continue", taskId, instruction, round, gateway });
   }
 
-  async cancelExecution(deviceId: string, taskId: string, installationId?: string) {
+  async cancelExecution(deviceId: string, taskId: string, installationId?: string, expectedRound?: number) {
     if (!validInstallationId(installationId)) throw new OneKeyPresenceError('请更新 ONE Key 启动器');
-    const socket = this.sockets.get(deviceId);
     let cancellation: { attemptId?: string; round: number } | undefined;
     await this.store.mutate(db => {
       const task = db.executionTasks.find(t => t.id === taskId && t.deviceId === deviceId && t.installationId === installationId);
       const device = db.oneKeyDevices.find(d => d.id === deviceId && d.status === 'active');
       if (!device || !task || task.workspaceId !== device.workspaceId || task.userId !== device.userId) throw new OneKeyPresenceError('执行任务不属于当前 ONE Key 或这台电脑');
-      const recoveryPending = task.status === 'failed' && task.transportInterruption?.attemptId === task.deliveryAttempt?.id
-        && task.transportInterruption?.round === (task.reportRound ?? 0)
-        && task.terminalReceipt?.attemptId !== task.deliveryAttempt?.id;
-      if (executionTerminal(task.status) && !recoveryPending) return;
-      task.status = "cancelled"; task.updatedAt = task.completedAt = new Date().toISOString();
-      task.lastError = "停止请求已提交；已经产生的文件修改不会自动撤销。";
-      if (task.deliveryAttempt && task.deliveryAttempt.round === (task.reportRound ?? 0)
-        && task.terminalReceipt?.attemptId !== task.deliveryAttempt.id) task.transportInterruption = {
-        attemptId: task.deliveryAttempt.id, round: task.deliveryAttempt.round,
-        reason: 'cancellation_pending', at: task.updatedAt
-      };
-      saveExecutionReceipt(db, task);
-      cancellation = { attemptId: task.deliveryAttempt?.id, round: task.reportRound ?? 0 };
+      cancellation = requestExecutionCancellation(db, task, new Date().toISOString(), expectedRound);
     });
+    const socket = this.sockets.get(deviceId);
     if (cancellation && socket && this.isConnected(deviceId, installationId)) socket.send(JSON.stringify({ type: "execution_cancel", taskId, ...cancellation }));
     for (const [id, pending] of this.pendingLocal) if (pending.socket === socket && pending.taskId === taskId) {
       clearTimeout(pending.timeout); this.pendingLocal.delete(id); pending.reject(new Error("执行已停止"));
@@ -455,7 +443,7 @@ export class OneKeyPresence {
       type?: string; challengeId?: string; signature?: string; taskId?: string;
       kind?: string; text?: string; providerThreadId?: string; targetName?: string; status?: string; round?: number;
       requestId?: string; ok?: boolean; output?: string; error?: string; capabilities?: unknown;
-      platform?: unknown; architecture?: unknown; launcherVersion?: unknown; updateProtocol?: unknown; version?: unknown; attemptId?: string;
+      platform?: unknown; architecture?: unknown; launcherVersion?: unknown; updateProtocol?: unknown; version?: unknown; attemptId?: string; state?: string;
     };
     try { message = JSON.parse(raw); } catch { socket.close(4000, "Invalid message"); return; }
     if (message.type === "auth_response" && !state.authenticated && message.challengeId === state.authChallengeId && message.signature) {
@@ -526,6 +514,39 @@ export class OneKeyPresence {
           }
         }
       }
+      return;
+    }
+    if (message.type === 'execution_recovery_status') {
+      if (!state.authenticated || !state.capabilities.has(terminalReceiptCapability)
+        || this.sockets.get(state.deviceId) !== socket || !['not_found', 'active', 'checking', 'receipt_replayed', 'receipt_acknowledged'].includes(message.state ?? '')) return;
+      const value = message as unknown as Record<string, unknown>;
+      try { await this.store.mutate(database => {
+        if (!state.authenticated || this.sockets.get(state.deviceId) !== socket) return;
+        const device = database.oneKeyDevices.find(d => d.id === state.deviceId && d.status === 'active');
+        if (!device || value.workspaceId !== device.workspaceId || value.userId !== device.userId
+          || value.deviceId !== device.id || value.installationId !== state.installationId) return;
+        if (!database.users.some(user => user.id === device.userId && user.enabled)
+          || !database.workspaces.some(workspace => workspace.id === device.workspaceId && workspace.status === 'active')
+          || !database.workspaceMembers.some(member => member.workspaceId === device.workspaceId && member.userId === device.userId && member.status !== 'disabled')) return;
+        const task = database.executionTasks.find(t => t.id === message.taskId && t.deviceId === state.deviceId
+          && t.installationId === state.installationId && t.workspaceId === device?.workspaceId && t.userId === device?.userId);
+        if (!task || !executionDeliveryPending(task) || !task.deliveryAttempt
+          || task.deliveryAttempt.id !== message.attemptId || task.deliveryAttempt.round !== message.round
+          || (task.reportRound ?? 0) !== message.round) return;
+        // Diagnostics are never completion evidence. In particular, absence
+        // from a freshly started resident is not proof an old child exited.
+        const text = message.state === 'not_found'
+          ? '当前本机连接找不到这轮原操作的结束记录，尚不能确认它已退出。请先核对原操作和文件；新要求仍保留，不会自动重跑。'
+          : message.state === 'active' ? '正在停止这轮原操作，仍需等本机确认结束；已产生的修改不会自动撤销。'
+            : message.state === 'checking' ? '正在检查这轮原操作的收尾情况，不会重新开始任务。'
+              : message.state === 'receipt_acknowledged' ? '本机记录显示这轮结果已交回，正在核对已有结果；不会重新执行原操作。'
+                : '本机已找到这轮结束记录，正在补回结果；不会重新执行原操作。';
+        if (task.lastError === text) return;
+        task.lastError = text; task.updatedAt = new Date().toISOString();
+        appendExecutionEvent(database, { id: `exe_recovery_${task.id}_${message.round}_${message.state}`,
+          taskId: task.id, workspaceId: task.workspaceId, userId: task.userId, round: message.round,
+          kind: 'status', text, createdAt: task.updatedAt });
+      }); } catch { /* A diagnostic must not acknowledge or settle a failed durable mutation. */ }
       return;
     }
     if (message.type === 'execution_terminal_receipt') {

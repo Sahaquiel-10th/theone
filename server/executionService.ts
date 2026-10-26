@@ -5,6 +5,17 @@ import {executionNeedsReview} from '../src/executionReview.js';
 const maxCompilerContextChars = 36_000;
 
 export const executionTerminal = (status: string) => ["completed", "failed", "cancelled"].includes(status);
+export type ExecutionDeviceScope = Pick<ExecutionTask, 'workspaceId' | 'userId' | 'deviceId' | 'installationId'>;
+export class ExecutionRoundChangedError extends Error {
+  readonly code = 'EXECUTION_ROUND_CHANGED';
+  constructor() { super('任务已进入新一轮，请先核对最新状态再停止；没有停止新一轮。'); }
+}
+const onExecutionDevice = (task: ExecutionTask, scope: ExecutionDeviceScope) => task.workspaceId === scope.workspaceId
+  && task.userId === scope.userId && task.deviceId === scope.deviceId && task.installationId === scope.installationId;
+export function executionHasCurrentTerminal(task: ExecutionTask) {
+  return Boolean(task.deliveryAttempt && task.deliveryAttempt.round === (task.reportRound ?? 0)
+    && task.terminalReceipt?.attemptId === task.deliveryAttempt.id && task.terminalReceipt.round === task.deliveryAttempt.round);
+}
 
 /** A disconnected process may still be changing files. Do not dispatch another round until stopped or acknowledged. */
 export function executionDeliveryPending(task: ExecutionTask) {
@@ -12,21 +23,47 @@ export function executionDeliveryPending(task: ExecutionTask) {
     && task.deliveryAttempt.id === task.transportInterruption.attemptId
     && task.deliveryAttempt.round === (task.reportRound ?? 0)
     && task.transportInterruption.round === (task.reportRound ?? 0)
-    && !(task.terminalReceipt?.attemptId === task.deliveryAttempt.id && task.terminalReceipt.round === task.deliveryAttempt.round));
+    && !executionHasCurrentTerminal(task));
 }
-export function executionBlocksDevice(task:ExecutionTask,scope:Pick<ExecutionTask,'workspaceId'|'userId'|'deviceId'|'installationId'>){
-  return task.workspaceId===scope.workspaceId&&task.userId===scope.userId&&task.deviceId===scope.deviceId&&task.installationId===scope.installationId&&executionDeliveryPending(task);
+export function executionBlocksDevice(task: ExecutionTask, scope: ExecutionDeviceScope) {
+  return onExecutionDevice(task, scope) && (!executionTerminal(task.status) || executionDeliveryPending(task));
 }
-export function assertLocalExecutionAvailable(database: Database, scope: Pick<ExecutionTask, 'workspaceId' | 'userId' | 'deviceId' | 'installationId'>) {
-  if (database.executionTasks.some(t => t.workspaceId === scope.workspaceId && t.userId === scope.userId
-    && t.deviceId === scope.deviceId && t.installationId === scope.installationId && t.executionSafetyHold))
+/** Share exactly the same owned-device gate between admission and the browser.
+ * An incomplete goal is not a running process. Only active execution or an
+ * unresolved delivery/process checkpoint may reserve this computer. */
+export function localExecutionBlocker(database: Database, scope: ExecutionDeviceScope) {
+  const tasks = database.executionTasks.filter(task => executionBlocksDevice(task, scope));
+  return tasks.find(task => task.executionSafetyHold) ?? tasks.find(task => !executionTerminal(task.status)) ?? tasks[0];
+}
+export function assertLocalExecutionAvailable(database: Database, scope: ExecutionDeviceScope) {
+  const blocker = localExecutionBlocker(database, scope);
+  if (blocker?.executionSafetyHold)
     throw new Error('上一轮还有本机操作没确认结束。请先核对文件与执行工具，不要重复操作；本轮不会自动重跑。');
-  if (database.executionTasks.some(t => t.workspaceId === scope.workspaceId && t.userId === scope.userId
-    && t.deviceId === scope.deviceId && t.installationId === scope.installationId && ['queued','selecting_target','running'].includes(t.status)))
+  if (blocker && !executionTerminal(blocker.status))
     throw new Error('本机还有任务正在执行。当前要求已保留，请等本轮结束后再执行；不会同时修改文件。');
-  if (database.executionTasks.some(t => t.workspaceId === scope.workspaceId && t.userId === scope.userId
-    && t.deviceId === scope.deviceId && t.installationId === scope.installationId && executionDeliveryPending(t)))
-    throw new Error('上一轮本机连接中断，正在等待执行结果补回；为避免重复操作，先不要重新执行。你可以先停止上一轮，再安排新任务。');
+  if (blocker)
+    throw new Error(blocker.status === 'cancelled'
+      ? '上一轮的停止请求还在等本机确认，为避免重复操作，暂不启动新的本机任务。可以重新检查或再次停止上一轮；不需要重发新要求。'
+      : '上一轮本机连接中断，正在等待执行结果补回；为避免重复操作，先不要重新执行。你可以先停止上一轮，再安排新任务。');
+}
+
+/** Explicit stop is idempotent, but an unanswered stop must remain resendable.
+ * A terminal UI status alone never proves that file-changing children exited. */
+export function requestExecutionCancellation(database: Database, task: ExecutionTask, timestamp: string, expectedRound?: number) {
+  if (expectedRound !== undefined && (!Number.isSafeInteger(expectedRound) || expectedRound < 0)) throw new Error('本机执行轮次无效');
+  if (expectedRound !== undefined && expectedRound !== (task.reportRound ?? 0)) throw new ExecutionRoundChangedError();
+  if (executionTerminal(task.status) && !executionDeliveryPending(task)) return;
+  task.status = 'cancelled'; task.updatedAt = task.completedAt = timestamp;
+  if (task.deliveryAttempt && task.deliveryAttempt.round === (task.reportRound ?? 0) && !executionHasCurrentTerminal(task)) {
+    task.transportInterruption = { attemptId: task.deliveryAttempt.id, round: task.deliveryAttempt.round,
+      reason: 'cancellation_pending', at: timestamp };
+  }
+  task.lastError = executionDeliveryPending(task)
+    ? '停止请求已提交，正在等本机确认原操作结束；已产生的文件修改不会自动撤销。'
+    : '已停止，本轮不再继续执行；已产生的文件修改不会自动撤销。';
+  saveExecutionReceipt(database, task);
+  const round = task.reportRound ?? 0;
+  return { attemptId: task.deliveryAttempt?.round === round ? task.deliveryAttempt.id : undefined, round };
 }
 
 /** Distinguish a recovered receipt from the earlier disconnect notice without exposing delivery tokens. */
@@ -44,7 +81,11 @@ export function saveExecutionReceipt(database: Database, task: ExecutionTask) {
   conversation.messages ??= [];
   const id = `execution_receipt_${task.id}_${task.reportRound ?? 0}`;
   if (conversation.messages.some(m => m.id === id)) return;
-  const outcome = task.status === "completed" ? "执行器本轮已结束；以下为执行器回执，是否达到目标请以验证证据为准" : task.status === "cancelled" ? "执行已取消；已产生的修改不会自动撤销" : executionNeedsReview(task) ? "执行器已结束，过程中有工具报错；最终结果需核对，不会自动重跑" : "执行未完成或结果尚未确认，不会自动重跑";
+  const outcome = task.status === "completed" ? "执行器本轮已结束；以下为执行器回执，是否达到目标请以验证证据为准"
+    : task.status === "cancelled" ? executionDeliveryPending(task)
+      ? "停止请求已提交，但本机尚未确认原操作结束；已产生的修改不会自动撤销"
+      : "执行已取消；已产生的修改不会自动撤销"
+    : executionNeedsReview(task) ? "执行器已结束，过程中有工具报错；最终结果需核对，不会自动重跑" : "执行未完成或结果尚未确认，不会自动重跑";
   // Some executors attach the actual answer to a failure notice. Preserve the
   // notice without saving the answer twice (or truncating the useful suffix).
   const error = task.lastError?.trim() ?? "";
@@ -161,10 +202,11 @@ export function buildExecutionCompilerMessages(records: MessageRecord[], sourceM
   }];
 }
 
-export function publicExecutionTask(task: ExecutionTask) {
+export function publicExecutionTask(task: ExecutionTask, scope?: ExecutionDeviceScope) {
   const { instruction: _instruction, deviceId: _deviceId, deliveryAttempt: _attempt,
     terminalReceipt: _receipt, transportInterruption: _transport, executionSafetyHold: _hold, ...safe } = task;
-  return { ...safe, resultDeliveryPending: executionDeliveryPending(task), requiresExecutionCheck: Boolean(task.executionSafetyHold) };
+  return { ...safe, resultDeliveryPending: executionDeliveryPending(task), requiresExecutionCheck: Boolean(task.executionSafetyHold),
+    ...(scope ? {blocksCurrentDevice: executionBlocksDevice(task, scope)} : {}) };
 }
 
 export function taskEvents(database: Database, task: ExecutionTask) {

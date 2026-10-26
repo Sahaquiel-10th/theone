@@ -85,6 +85,12 @@ import Foundation
             precondition(terminal.response.contains("真实回答：QA_CANCEL_B_STARTED") && terminal.response.contains("没有确认结束"))
             precondition(!terminal.response.contains("已停止"), "a cancellation request is not proof that the yielded tool stopped")
         }
+        let unstarted = CodexCommandLifecycle.terminalResponse(cancelled: true, status: "cancelled", text: "已停止，本机任务尚未开始。", error: nil)
+        precondition(unstarted == "已停止，本机任务尚未开始。", "a known preparation stop must retain its actual reason")
+        let lateCompletion = CodexCommandLifecycle.terminalResponse(cancelled: true, status: "completed", text: "everything complete", error: nil)
+        precondition(!lateCompletion.contains("everything complete"), "late completion must not undo a user stop")
+        let uncertain = CodexCommandLifecycle.terminalResponse(cancelled: true, status: "cancelled", text: "工具还没有确认结束", error: "command_unconfirmed")
+        precondition(uncertain.contains("没有确认结束"), "unknown tool termination must retain its warning")
         print("Mac Codex command lifecycle tests passed (attempt isolation, confirmed exits, yielded sessions, missing and negative exits)")
     }
 }

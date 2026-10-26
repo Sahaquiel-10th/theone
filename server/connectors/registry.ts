@@ -28,7 +28,7 @@ export type KnowledgeAdapter = BaseAdapter & {
 export type ExecutionAdapter = BaseAdapter & {
   kind: "execution";
   provider: ExecutionTask["provider"];
-  dispatch(action: "start" | "continue" | "cancel", task: ExecutionTask, instruction?: string): Promise<void>;
+  dispatch(action: "start" | "continue" | "cancel", task: ExecutionTask, instruction?: string, expectedRound?: number): Promise<void>;
 };
 export type ConnectorAdapter = KnowledgeAdapter | ExecutionAdapter;
 

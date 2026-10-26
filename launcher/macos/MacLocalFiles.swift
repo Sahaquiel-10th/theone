@@ -30,6 +30,68 @@ enum LocalFileFailure: LocalizedError {
     var errorDescription: String? { if case .message(let text) = self { return text }; return nil }
 }
 
+/// Picker cancellation is scoped to the exact request, never a global modal
+/// abort that could close a different task's or the settings permission UI.
+struct WorkFolderPickerOwnership {
+    private(set) var activeRequest: String?
+    mutating func begin(_ request: String) -> Bool {
+        guard activeRequest == nil else { return false }
+        activeRequest = request
+        return true
+    }
+    func owns(_ request: String) -> Bool { activeRequest == request }
+    mutating func finish(_ request: String) {
+        if owns(request) { activeRequest = nil }
+    }
+}
+
+func scheduleWorkFolderCancellation(_ cancel: @escaping @Sendable () -> Void) {
+    // A normal main-actor Task may wait behind AppKit's nested modal loop.
+    // Deliver to that mode as well so Stop can close the active chooser now.
+    RunLoop.main.perform(inModes: [.default, RunLoop.Mode("NSModalPanelRunLoopMode")], block: cancel)
+}
+
+/// A remembered folder belongs to one Key on this computer. A missing or
+/// redirected folder is not a new request to choose a different authorization.
+/// Only first setup or an explicit settings change may open the picker.
+enum MacWorkFolderConfiguration {
+    static func key(_ deviceId: String) -> String { "one.execution.project.\(deviceId)" }
+
+    static func configured(defaults: UserDefaults, deviceId: String) throws -> String? {
+        guard let saved = defaults.string(forKey: key(deviceId)) else { return nil }
+        let canonical = URL(fileURLWithPath: saved).resolvingSymlinksInPath().path
+        guard canonical == URL(fileURLWithPath: saved).standardizedFileURL.path else {
+            throw LocalFileFailure.message("已选的 ONE 工作文件夹位置发生变化。请在设置 → 本机执行中重新选择；本轮尚未操作文件。")
+        }
+        return try available(canonical)
+    }
+
+    static func resolve(defaults: UserDefaults, deviceId: String, change: Bool = false, choose: () throws -> String?) throws -> String? {
+        if !change, let saved = try configured(defaults: defaults, deviceId: deviceId) { return saved }
+        guard let selected = try choose() else { return nil }
+        let canonical = try available(URL(fileURLWithPath: selected).resolvingSymlinksInPath().path)
+        let storageKey = key(deviceId), previous = defaults.string(forKey: storageKey)
+        defaults.set(canonical, forKey: storageKey)
+        guard defaults.synchronize() else {
+            if let previous { defaults.set(previous, forKey: storageKey) } else { defaults.removeObject(forKey: storageKey) }
+            throw LocalFileFailure.message("没能记住 ONE 工作文件夹，本轮尚未操作文件。请在设置 → 本机执行中重新选择。")
+        }
+        return canonical
+    }
+
+    private static func available(_ path: String) throws -> String {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw LocalFileFailure.message("已选的 ONE 工作文件夹暂时不可用。请恢复该文件夹，或在设置 → 本机执行中更换；本轮尚未操作文件。")
+        }
+        // Keep the same exact-root and protected-location checks as file tools.
+        // Opening the directory also distinguishes a remembered path from an
+        // actual currently usable authorization; no files are read here.
+        _ = try MacLocalFiles(root: path)
+        return path
+    }
+}
+
 /// No shell: every path component is opened relative to the authorized root.
 /// Symlinks are rejected, not followed. Existing files require exact replacement.
 final class MacLocalFiles {

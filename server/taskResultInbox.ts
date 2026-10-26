@@ -1,7 +1,7 @@
 import type { Attachment, AttachmentSummary, Conversation, Database, ExecutionTask, Message } from './types.js';
 import type { ChatOperation } from './chatOperations.js';
 import { createHash } from 'node:crypto';
-import { localExecutionResultId } from './executionService.js';
+import { executionDeliveryPending, localExecutionResultId } from './executionService.js';
 import { executionExplicitlyUnfinished } from './executionResultState.js';
 import {artifactResultLinks} from './artifactLinks.js';
 import {selectedNotionVerification} from './notionVerificationSelection.js';
@@ -213,12 +213,18 @@ function localResult(db: Database, scope: TaskResultScope, execution: ExecutionT
   const result = answer && error.startsWith(answer) ? error : error && answer.startsWith(error) ? answer : [error, answer].filter(Boolean).join('\n');
   let outcome: TaskResultOutcome = execution.status === 'completed' ? (answer ? 'returned' : 'needs_input')
     : execution.status as TaskResultOutcome;
+  const endingUnconfirmed = executionDeliveryPending(execution);
+  if (endingUnconfirmed) outcome = 'interrupted';
   // A normal process exit is not proof of goal completion. Preserve the full
   // receipt, but don't promote an executor's explicit non-completion to success.
   if (outcome === 'returned' && executionExplicitlyUnfinished(answer)) outcome = 'needs_input';
   const reported = Boolean(marker(db, scope, id) || (execution.reportedToCoordinatorAt
     && (execution.reportedRound === round || execution.reportedRound === undefined && round === 0)));
-  const summary = persisted?.content || result || '没有可确认的执行结果，请查看本轮过程。';
+  const summary = endingUnconfirmed
+    ? execution.status === 'cancelled'
+      ? '停止请求已发出，但电脑还没有确认原操作结束。请保持 ONE Key 连接，核对本轮状态或再次请求停止原操作；确认前不会重新启动或重复修改文件。'
+      : '原本机操作的结束情况还没确认。请保持 ONE Key 连接，核对本轮状态；已有文件会保留，确认前不会重复启动。'
+    : persisted?.content || result || '没有可确认的执行结果，请查看本轮过程。';
   return { id, sourceId: execution.id, source: 'local', taskId: task.id, title: clip(task.title, 120), outcome, state: outcome,
     summary: clip(outcome === 'cancelled' ? `本轮已停止，已产生的修改不会自动撤销。\n${summary}` : summary, max),
     brief: resultBrief(outcome, undefined, summary),

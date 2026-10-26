@@ -32,6 +32,11 @@ import Darwin
         let reopened = try outbox("normal")
         let recovered = try reopened.pending()
         precondition(recovered == [result], "durable reload retains actual answer and location")
+        let exactReplay = try reopened.receiptForReplay(key)
+        let wrongRoundReplay = try reopened.receiptForReplay(identity(round: 2))
+        let unknownReplay = try reopened.receiptForReplay(identity("attempt_unknown"))
+        precondition(exactReplay == result && wrongRoundReplay == nil && unknownReplay == nil,
+                     "repeated Stop may replay only the exact durable terminal, never infer an unknown attempt stopped")
         let changed = receipt(key, outcome: "failed", text: "late replacement")
         let immutable = try reopened.persist(changed)
         precondition(immutable == result, "terminal is immutable")
@@ -41,6 +46,7 @@ import Darwin
         }
         for foreign in [identity(workspace: "ws_other"), identity(user: "usr_other"), identity(device: "dev_other"), identity(installation: "install_other")] {
             do { _ = try reopened.acknowledge(ack(result, identity: foreign)); fatalError("foreign ACK accepted") } catch { }
+            do { _ = try reopened.receiptForReplay(foreign); fatalError("foreign terminal lookup accepted") } catch { }
         }
         let beforeACK = try reopened.pending()
         precondition(beforeACK == [result])
@@ -51,6 +57,8 @@ import Darwin
         let stillSettled = try reopened.hasTerminal(key)
         let terminalAcknowledged = try reopened.isAcknowledged(key)
         precondition(stillSettled && terminalAcknowledged, "a late cancellation must not create a new failed/unsaved terminal after ACK")
+        let acknowledgedReplay = try reopened.receiptForReplay(key)
+        precondition(acknowledgedReplay == nil, "the server-owned result is not reconstructed after local content was purged")
 
         let cancelStore = try outbox("cancel")
         _ = try cancelStore.reserve(key)
@@ -71,6 +79,8 @@ import Darwin
         try interruptedReopened.recoverInterrupted()
         let unknown = try interruptedReopened.pending()
         precondition(unknown.count == 1 && unknown[0].outcome == "failed" && unknown[0].error == "launcher_interrupted")
+        let recoveredUnknown = try interruptedReopened.receiptForReplay(key)
+        precondition(recoveredUnknown?.error == "launcher_interrupted", "replay must retain uncertainty after restart")
         let cannotRestart = try interruptedReopened.reserve(key)
         precondition(!cannotRestart)
 

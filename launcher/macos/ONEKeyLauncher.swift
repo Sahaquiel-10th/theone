@@ -656,11 +656,25 @@ func installRuntimeUpdate(_ artifact: RuntimeUpdateArtifact, credentialUrl: URL,
 }
 
 @MainActor
-func executionProject(deviceId: String, change: Bool = false) -> String? {
-    let key = "one.execution.project.\(deviceId)"
-    if !change, let saved = oneDefaults().string(forKey: key), FileManager.default.fileExists(atPath: saved) { return saved }
+final class ExecutionProjectPicker {
+    static let shared = ExecutionProjectPicker()
+    var ownership = WorkFolderPickerOwnership()
+    var panel: NSOpenPanel?
+    func cancel(_ attemptId: String) {
+        guard ownership.owns(attemptId) else { return }
+        panel?.cancel(nil)
+    }
+}
+
+@MainActor
+func executionProject(deviceId: String, change: Bool = false, attemptId: String? = nil) throws -> String? {
+  try MacWorkFolderConfiguration.resolve(defaults: oneDefaults(), deviceId: deviceId, change: change) {
+    let picker = ExecutionProjectPicker.shared, request = attemptId ?? "settings-\(UUID().uuidString)"
+    guard picker.ownership.begin(request) else { throw LocalFileFailure.message("电脑上还有一个文件夹选择窗口。请先完成或取消该窗口，本轮尚未操作文件。") }
+    defer { picker.panel = nil; picker.ownership.finish(request) }
     NSApplication.shared.activate(ignoringOtherApps: true)
     let panel = NSOpenPanel()
+    picker.panel = panel
     panel.title = "选择 ONE 工作文件夹"
     panel.message = "ONE 默认在这里做文件，以后可以在设置中更换。选择后，ONE 的文件工具可以在这里读取和按要求创建、修改文件，不代表全盘授权；其他执行工具仍受各自权限限制。"
     panel.prompt = "在这里工作"
@@ -668,9 +682,8 @@ func executionProject(deviceId: String, change: Bool = false) -> String? {
     panel.canChooseFiles = false
     panel.allowsMultipleSelection = false
     guard panel.runModal() == .OK, let path = panel.url?.path else { return nil }
-    let canonical = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
-    oneDefaults().set(canonical, forKey: key)
-    return canonical
+    return path
+  }
 }
 
 @MainActor
@@ -874,6 +887,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
         }
         let accepted = synchronized { () -> Bool in
             if processes[taskId] != nil || preparing.contains(taskId) { return false }
+            if let previous = identities[taskId], finishing.contains(previous.attemptId) { return false }
             preparing.insert(taskId); rounds[taskId] = round; identities[taskId] = identity
             commandLifecycles[identity.attemptId] = CodexCommandLifecycle(attemptId: identity.attemptId)
             return true
@@ -886,12 +900,40 @@ final class CodexExecutionRunner: @unchecked Sendable {
     }
 
     func cancel(taskId: String, attemptId: String, round: Int) {
-        let value = synchronized { () -> (Process?, CodexProcessTree?, ExecutionReceiptIdentity, Bool, String?)? in
+        let requested = ExecutionReceiptIdentity(workspaceId: owner.workspaceId, userId: owner.userId,
+            deviceId: deviceId, installationId: installationId(), attemptId: attemptId, taskId: taskId, round: round)
+        do {
+            if let receipt = try outbox.receiptForReplay(requested) {
+                Task {
+                    await transmitReceipt(receipt)
+                    await recoveryStatus(identity: requested, state: "receipt_replayed")
+                }
+                return
+            }
+            if try outbox.isAcknowledged(requested) {
+                Task { await recoveryStatus(identity: requested, state: "receipt_acknowledged") }
+                return
+            }
+        } catch {
+            Task { await recoveryStatus(identity: requested, state: "checking") }
+            return
+        }
+        let value = synchronized { () -> (Process?, CodexProcessTree?, ExecutionReceiptIdentity)? in
             guard let identity = identities[taskId], identity.attemptId == attemptId, identity.round == round, !finishing.contains(attemptId), processes[taskId] != nil || preparing.contains(taskId), (try? outbox.hasTerminal(identity)) != true, unsavedTerminals[attemptId] == nil else { return nil }
             cancelled.insert(identity.attemptId)
-            return (processes[taskId], processTrees[identity.attemptId], identity, commandLifecycles[identity.attemptId]?.hasUnconfirmedCommands == true, lastResponses[taskId])
+            return (processes[taskId], processTrees[identity.attemptId], identity)
         }
-        guard let (process, processTree, identity, commandUnconfirmed, finalResponse) = value else { return }
+        guard let (process, processTree, identity) = value else {
+            let state = synchronized { () -> String in
+                guard identities[taskId] == requested else { return "not_found" }
+                return finishing.contains(attemptId) || unsavedTerminals[attemptId] != nil ? "checking" : "not_found"
+            }
+            // Missing memory after a resident restart is not proof that an old
+            // tool exited. This diagnostic cannot settle or clear any hold.
+            Task { await recoveryStatus(identity: requested, state: state) }
+            return
+        }
+        Task { await recoveryStatus(identity: requested, state: "active") }
         if process != nil {
             let managed = synchronized { (appServers[identity.attemptId], appServerInputs[identity.attemptId]) }
             if let controller = managed.0 {
@@ -913,12 +955,24 @@ final class CodexExecutionRunner: @unchecked Sendable {
             // a signal sent. run() publishes it after the EOF barrier below.
             return
         }
-        Task {
-            let terminal = CodexCommandLifecycle.unconfirmedTerminal(finalResponse: finalResponse, cancelled: true)
-            await send(taskId: taskId, kind: "status", text: commandUnconfirmed ? terminal.response
-                : "已停止；已产生的修改不会自动撤销。", status: "cancelled", identity: identity,
-                error: commandUnconfirmed ? terminal.error : nil)
+        // Preparing is still owned by run(). Close only this attempt's picker,
+        // then let that worker unwind and publish its unstarted terminal. An
+        // early receipt here would claim "stopped" while the modal is live.
+        scheduleWorkFolderCancellation {
+            MainActor.assumeIsolated { ExecutionProjectPicker.shared.cancel(identity.attemptId) }
         }
+    }
+
+    private func finishPreparation(identity: ExecutionReceiptIdentity, text: String, status: String = "failed") async {
+        let stopped = synchronized { () -> Bool? in
+            guard identities[identity.taskId] == identity, processes[identity.taskId] == nil else { return nil }
+            preparing.remove(identity.taskId); finishing.insert(identity.attemptId)
+            return cancelled.contains(identity.attemptId)
+        }
+        guard let stopped else { return }
+        await send(taskId: identity.taskId, kind: stopped ? "status" : "error",
+            text: stopped ? "已停止，本机任务尚未开始。" : text,
+            status: stopped ? "cancelled" : status, identity: identity)
     }
 
     private func run(taskId: String, instruction: String, resume: Bool, gateway: CodexGatewayConfiguration?, identity: ExecutionReceiptIdentity) async {
@@ -926,34 +980,54 @@ final class CodexExecutionRunner: @unchecked Sendable {
             await send(taskId: taskId, kind: kind, text: text, providerThreadId: providerThreadId, targetName: targetName, status: status, identity: identity, error: error)
         }
         defer { synchronized { preparing.remove(taskId); commandLifecycles.removeValue(forKey: identity.attemptId); finishing.remove(identity.attemptId) } }
+        if synchronized({ cancelled.contains(identity.attemptId) }) {
+            await finishPreparation(identity: identity, text: "已停止，本机任务尚未开始。", status: "cancelled")
+            return
+        }
         let alreadyRunning = synchronized { processes[taskId] != nil }
-        if managedCodexActivity.isActive() { await report(taskId: taskId, kind: "error", text: "正在准备本机执行工具，本轮尚未操作文件，请准备完成后再执行", status: "failed"); return }
+        if managedCodexActivity.isActive() { await finishPreparation(identity: identity, text: "正在准备本机执行工具，本轮尚未操作文件，请准备完成后再执行"); return }
         if alreadyRunning { await report(taskId: taskId, kind: "error", text: "Codex 正在执行当前任务", status: "failed"); return }
         guard let executable = await codexExecutable(credentialUrl: credentialUrl, allowSelection: gateway == nil) else {
-            await report(taskId: taskId, kind: "error", text: gateway != nil ? "尚未找到执行工具。请在设置 → 本机执行中准备工具，然后重新执行；本轮未操作文件，不需要个人 Codex 登录。" : "尚未连接可用的 Codex，或已取消选择。请安装 Codex 并登录，或执行时选择已有应用。更新 ONE 不会自动安装 Codex。", status: "failed")
+            await finishPreparation(identity: identity, text: gateway != nil ? "尚未找到执行工具。请在设置 → 本机执行中准备工具，然后重新执行；本轮未操作文件，不需要个人 Codex 登录。" : "尚未连接可用的 Codex，或已取消选择。请安装 Codex 并登录，或执行时选择已有应用。更新 ONE 不会自动安装 Codex。")
             return
         }
         let authenticated = gateway != nil ? true : await Task.detached { probeCodex(executable, arguments: ["login", "status"])?.status == 0 }.value
         guard authenticated else {
-            await report(taskId: taskId, kind: "error", text: "已找到 Codex，但无法确认登录状态。请先在 Codex 完成登录，再重新执行；ONE 不会读取或上传你的登录凭证。", status: "failed")
+            await finishPreparation(identity: identity, text: "已找到 Codex，但无法确认登录状态。请先在 Codex 完成登录，再重新执行；ONE 不会读取或上传你的登录凭证。")
+            return
+        }
+        if synchronized({ cancelled.contains(identity.attemptId) }) {
+            await finishPreparation(identity: identity, text: "已停止，本机任务尚未开始。", status: "cancelled")
             return
         }
 
         var projectPath = synchronized { projectPaths[taskId] }
-        let configuredPath = oneDefaults().string(forKey: "one.execution.project.\(deviceId)")
+        let configuredPath: String?
+        do { configuredPath = try MacWorkFolderConfiguration.configured(defaults: oneDefaults(), deviceId: deviceId) }
+        catch {
+            await finishPreparation(identity: identity, text: error.localizedDescription)
+            return
+        }
         if let projectPath, let configuredPath, projectPath != configuredPath {
-            await report(taskId: taskId, kind: "error", text: "ONE 工作文件夹已更换。请回到这件事继续，本轮不会在原文件夹里执行。", status: "failed")
+            await finishPreparation(identity: identity, text: "ONE 工作文件夹已更换。请回到这件事继续，本轮不会在原文件夹里执行。")
             return
         }
         if projectPath == nil {
             await report(taskId: taskId, kind: "status", text: configuredPath == nil ? "请在电脑上选择工作文件夹" : "正在确认已选择的工作目录：\(configuredPath!)", status: "selecting_target")
-            projectPath = await executionProject(deviceId: deviceId)
+            do { projectPath = try await executionProject(deviceId: deviceId, attemptId: identity.attemptId) }
+            catch {
+                await finishPreparation(identity: identity, text: error.localizedDescription)
+                return
+            }
         }
         guard let projectPath else {
-            await report(taskId: taskId, kind: "error", text: "没有选择执行文件夹", status: "cancelled")
+            await finishPreparation(identity: identity, text: "没有选择执行文件夹", status: "cancelled")
             return
         }
-        if synchronized({ cancelled.contains(identity.attemptId) }) { return }
+        if synchronized({ cancelled.contains(identity.attemptId) }) {
+            await finishPreparation(identity: identity, text: "已停止，本机任务尚未开始。", status: "cancelled")
+            return
+        }
         let threadId = synchronized { projectPaths[taskId] = projectPath; return threadIds[taskId] }
 
         if let gateway {
@@ -988,7 +1062,10 @@ final class CodexExecutionRunner: @unchecked Sendable {
                 processTree = tree; processTrees[identity.attemptId] = tree; processes[taskId] = process
                 return true
             }
-            guard launched else { return }
+            guard launched else {
+                await finishPreparation(identity: identity, text: "已停止，本机任务尚未开始。", status: "cancelled")
+                return
+            }
             // Read both pipes through EOF. Process exit alone is not an output
             // barrier; each event is awaited before publishing the terminal.
             try? stdout.fileHandleForWriting.close()
@@ -1155,7 +1232,10 @@ final class CodexExecutionRunner: @unchecked Sendable {
                 appServerInputs[identity.attemptId] = writer
                 return true
             }
-            guard launched, let tree = ownedTree else { return }
+            guard launched, let tree = ownedTree else {
+                await finishPreparation(identity: identity, text: "已停止，本机任务尚未开始。", status: "cancelled")
+                return
+            }
             // One exit waiter is shared through a Task; CodexProcessExit itself
             // intentionally has only one continuation.
             let exitTask = Task { await processExit.value() }
@@ -1303,7 +1383,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
                 // unsaved receipt for an already-settled attempt.
                 if (try? outbox.isAcknowledged(identity)) == true { return (nil, false) }
                 let wasCancelled = cancelled.contains(identity.attemptId)
-                let candidate = unsavedTerminals[identity.attemptId] ?? ExecutionTerminalReceipt(identity: identity, outcome: wasCancelled ? "cancelled" : status, finalResponse: wasCancelled && error != "command_unconfirmed" ? "已停止；已产生的修改不会自动撤销。" : (text ?? "执行器未返回结果，完成情况尚未确认。"), error: error ?? (status == "failed" ? "execution_unconfirmed" : nil), targetName: targetName ?? projectPaths[taskId], providerThreadId: providerThreadId ?? threadIds[taskId])
+                let candidate = unsavedTerminals[identity.attemptId] ?? ExecutionTerminalReceipt(identity: identity, outcome: wasCancelled ? "cancelled" : status, finalResponse: CodexCommandLifecycle.terminalResponse(cancelled: wasCancelled, status: status, text: text, error: error), error: error ?? (status == "failed" ? "execution_unconfirmed" : nil), targetName: targetName ?? projectPaths[taskId], providerThreadId: providerThreadId ?? threadIds[taskId])
                 do {
                     let first = try outbox.persist(candidate)
                     unsavedTerminals.removeValue(forKey: identity.attemptId)
@@ -1342,6 +1422,14 @@ final class CodexExecutionRunner: @unchecked Sendable {
 
     private func deliveryError(identity: ExecutionReceiptIdentity, phase: String) async {
         let message: [String: Any] = ["type": "execution_delivery_error", "workspaceId": identity.workspaceId, "userId": identity.userId, "deviceId": identity.deviceId, "installationId": identity.installationId, "taskId": identity.taskId, "round": identity.round, "attemptId": identity.attemptId, "code": "outbox_unavailable", "phase": phase]
+        guard let bytes = try? JSONSerialization.data(withJSONObject: message) else { return }
+        await transmit(bytes)
+    }
+
+    private func recoveryStatus(identity: ExecutionReceiptIdentity, state: String) async {
+        let message: [String: Any] = ["type": "execution_recovery_status", "workspaceId": identity.workspaceId,
+            "userId": identity.userId, "deviceId": identity.deviceId, "installationId": identity.installationId,
+            "taskId": identity.taskId, "round": identity.round, "attemptId": identity.attemptId, "state": state]
         guard let bytes = try? JSONSerialization.data(withJSONObject: message) else { return }
         await transmit(bytes)
     }
@@ -1386,7 +1474,7 @@ final class MacLocalExecutor {
     func cancel(_ taskId: String) { cancelled.insert(taskId) }
     func prepare(_ taskId: String) throws -> String {
         cancelled.remove(taskId)
-        guard let path = executionProject(deviceId: deviceId) else { throw LauncherError.message("已取消目录授权，尚未操作文件") }
+        guard let path = try executionProject(deviceId: deviceId) else { throw LauncherError.message("已取消目录授权，尚未操作文件") }
         roots[taskId] = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         return roots[taskId]!
     }
@@ -1502,10 +1590,15 @@ func serveProofs(_ transport: LauncherLiveSocket, credentialUrl: URL, deviceId: 
             if message.change == true { await previews.stopAll() }
             Task { @MainActor in
                 guard transport.active, !Task.isCancelled else { return }
-                let selected = message.change == true ? executionProject(deviceId: deviceId, change: true) : oneDefaults().string(forKey: "one.execution.project.\(deviceId)")
-                guard transport.active, !Task.isCancelled else { return }
-                let response = LocalConfigurationResponse(type: message.change == true && selected == nil ? "local_error" : "local_ready", taskId: "device_settings", requestId: requestId, targetName: selected, output: selected ?? "", error: message.change == true && selected == nil ? "已取消选择，原授权目录保持不变" : nil)
-                if let data = try? JSONEncoder().encode(response) { try? await transport.send(.string(String(decoding: data, as: UTF8.self))) }
+                do {
+                    let selected = message.change == true ? try executionProject(deviceId: deviceId, change: true) : try MacWorkFolderConfiguration.configured(defaults: oneDefaults(), deviceId: deviceId)
+                    guard transport.active, !Task.isCancelled else { return }
+                    let response = LocalConfigurationResponse(type: message.change == true && selected == nil ? "local_error" : "local_ready", taskId: "device_settings", requestId: requestId, targetName: selected, output: selected ?? "", error: message.change == true && selected == nil ? "已取消选择，原授权目录保持不变" : nil)
+                    if let data = try? JSONEncoder().encode(response) { try? await transport.send(.string(String(decoding: data, as: UTF8.self))) }
+                } catch {
+                    let response = LocalConfigurationResponse(type: "local_error", taskId: "device_settings", requestId: requestId, targetName: nil, output: "", error: error.localizedDescription)
+                    if let data = try? JSONEncoder().encode(response) { try? await transport.send(.string(String(decoding: data, as: UTF8.self))) }
+                }
             }
         } else if ["executor_status", "executor_prepare"].contains(message.type), let requestId = message.requestId {
             Task {

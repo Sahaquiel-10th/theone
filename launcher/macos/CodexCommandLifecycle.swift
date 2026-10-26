@@ -62,6 +62,16 @@ struct CodexCommandLifecycle {
                 "command_unconfirmed")
     }
 
+    static func terminalResponse(cancelled: Bool, status: String, text: String?, error: String?) -> String {
+        // A late completed/failed result may not undo Stop. But an explicit
+        // cancelled terminal from the preparation/exit worker contains the
+        // actual reason (e.g. never started) and must not become "stopped".
+        if cancelled && status != "cancelled" && error != "command_unconfirmed" {
+            return "已停止；已产生的修改不会自动撤销。"
+        }
+        return text ?? "执行器未返回结果，完成情况尚未确认。"
+    }
+
     private static func confirmedExitCode(_ raw: Any?) -> Int? {
         guard let number = raw as? NSNumber,
               CFGetTypeID(number) != CFBooleanGetTypeID(),

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Database, ExecutionTask, MessageRecord } from "./types.js";
 import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs, saveExecutionInput, messagesThrough, publicExecutionTask, taskEvents, executionTrace, type ExecutionHandoff } from "./executionService.js";
-import { saveExecutionReceipt, executionReceipts, assertLocalExecutionAvailable, executionDeliveryPending, executionBlocksDevice } from './executionService.js';
+import { saveExecutionReceipt, executionReceipts, assertLocalExecutionAvailable, executionDeliveryPending, executionBlocksDevice,
+  executionHasCurrentTerminal, localExecutionBlocker, requestExecutionCancellation } from './executionService.js';
 
 test('unacknowledged disconnected rounds block repeat work only for their exact owner and device', () => {
   const scope = {workspaceId:'a', userId:'u', deviceId:'d', installationId:'i'};
@@ -51,6 +52,84 @@ test('ordinary terminal tasks with no process safety hold allow new local work',
   }
 });
 
+test('the browser blocker and admission share active and unresolved states, not unfinished goal history', () => {
+  const scope = { workspaceId:'a', userId:'u', deviceId:'d', installationId:'i' };
+  for (const status of ['queued', 'selecting_target', 'running'] as const) {
+    const active = { ...scope, id:'active', status } as ExecutionTask;
+    const db = { executionTasks:[{ ...active, id:'old-incomplete', status:'failed' }, active] } as Database;
+    assert.equal(executionBlocksDevice(active, scope), true);
+    assert.equal(localExecutionBlocker(db, scope)?.id, 'active');
+    assert.throws(() => assertLocalExecutionAvailable(db, scope), /正在执行/);
+    for (const foreign of [{...scope,workspaceId:'other'}, {...scope,userId:'other'}, {...scope,deviceId:'other'}, {...scope,installationId:'other'}]) {
+      assert.equal(executionBlocksDevice(active, foreign), false);
+      assert.equal(localExecutionBlocker(db, foreign), undefined);
+    }
+  }
+});
+
+test('stopping an unanswered round remains resendable, then its exact terminal frees independent work without replay', () => {
+  const scope = { workspaceId:'a', userId:'u', deviceId:'d', installationId:'i' };
+  const task = { ...scope, id:'old', conversationId:'old-conversation', status:'failed', reportRound:2,
+    deliveryAttempt:{id:'original-attempt',round:2,issuedAt:'first'},
+    transportInterruption:{attemptId:'original-attempt',round:2,reason:'socket_close',at:'first'} } as ExecutionTask;
+  const db = { executionTasks:[task], conversations:[] } as unknown as Database;
+  assert.deepEqual(requestExecutionCancellation(db, task, 'stop-1'), {attemptId:'original-attempt',round:2});
+  assert.equal(task.status, 'cancelled');
+  assert.match(task.lastError!, /等本机确认/);
+  assert.deepEqual(requestExecutionCancellation(db, task, 'stop-2'), {attemptId:'original-attempt',round:2});
+  assert.equal(task.reportRound, 2); assert.equal(task.deliveryAttempt!.id, 'original-attempt');
+  assert.throws(() => assertLocalExecutionAvailable(db, scope), /停止请求还在等本机确认/);
+  task.terminalReceipt = {id:'terminal',hash:'h',attemptId:'different',round:2,outcome:'cancelled',receivedAt:'now',disposition:'supplemental'};
+  assert.equal(executionHasCurrentTerminal(task), false);
+  assert.throws(() => assertLocalExecutionAvailable(db, scope));
+  task.terminalReceipt.attemptId = 'original-attempt';
+  task.terminalReceipt.round = 1;
+  assert.equal(executionHasCurrentTerminal(task), false);
+  task.terminalReceipt.round = 2;
+  assert.equal(executionHasCurrentTerminal(task), true);
+  assert.equal(executionBlocksDevice(task, scope), false);
+  assert.doesNotThrow(() => assertLocalExecutionAvailable(db, scope));
+  assert.equal(requestExecutionCancellation(db, task, 'stop-3'), undefined);
+  assert.equal(task.status, 'cancelled'); assert.equal(task.reportRound, 2);
+});
+
+test('repeated stop never clears an unknown-process hold even with a delivered terminal', () => {
+  const scope = { workspaceId:'a', userId:'u', deviceId:'d', installationId:'i' };
+  for (const hold of ['launcher_interrupted', 'command_unconfirmed'] as const) {
+    const task = { ...scope, id:'held', status:'failed', reportRound:0, executionSafetyHold:hold,
+      deliveryAttempt:{id:'attempt',round:0,issuedAt:'first'},
+      terminalReceipt:{id:'terminal',hash:'h',attemptId:'attempt',round:0,outcome:'failed',receivedAt:'now',disposition:'accepted'} } as ExecutionTask;
+    const db = { executionTasks:[task], conversations:[] } as unknown as Database;
+    assert.deepEqual(requestExecutionCancellation(db, task, 'again'), {attemptId:'attempt',round:0});
+    assert.equal(task.executionSafetyHold, hold);
+    assert.equal(executionDeliveryPending(task), true);
+    assert.throws(() => assertLocalExecutionAvailable(db, scope), /没确认结束/);
+  }
+});
+
+test('an old cancel round cannot change a resumed task and malformed supplied rounds fail closed', () => {
+  const task = {id:'t',workspaceId:'a',userId:'u',deviceId:'d',installationId:'i',status:'running',reportRound:2,
+    deliveryAttempt:{id:'new-attempt',round:2,issuedAt:'now'}} as ExecutionTask;
+  const db = {executionTasks:[task],conversations:[]} as unknown as Database;
+  const before = JSON.stringify(db);
+  assert.throws(() => requestExecutionCancellation(db, task, 'stop', 1), /已进入新一轮/);
+  for (const bad of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '2', null] as any[])
+    assert.throws(() => requestExecutionCancellation(db, task, 'stop', bad), /轮次无效/);
+  assert.equal(JSON.stringify(db), before);
+  assert.deepEqual(requestExecutionCancellation(db, task, 'stop', 2), {attemptId:'new-attempt',round:2});
+});
+
+test('request-scoped snapshots keep device blocking explicit for list, detail and stream projections', () => {
+  const scope = {workspaceId:'a',userId:'u',deviceId:'d',installationId:'i'};
+  const task = {...scope,id:'t',status:'running'} as ExecutionTask;
+  assert.equal(publicExecutionTask(task, scope).blocksCurrentDevice, true);
+  for (const foreign of [{...scope,workspaceId:'b'}, {...scope,userId:'v'}, {...scope,deviceId:'e'}, {...scope,installationId:'j'}])
+    assert.equal(publicExecutionTask(task, foreign).blocksCurrentDevice, false);
+  assert.equal('blocksCurrentDevice' in publicExecutionTask(task), false, 'non-request callers must not guess a device');
+  task.status = 'cancelled';
+  assert.equal(publicExecutionTask(task, scope).blocksCurrentDevice, false);
+});
+
 test('public process-check flags are explicit booleans without leaking the private hold or attempt', () => {
   const task = { id:'held', instruction:'private-instruction', deviceId:'private-device', status:'failed', reportRound:1,
     deliveryAttempt:{id:'private-attempt',round:1,issuedAt:'now'},
@@ -83,6 +162,16 @@ test('execution receipts retain source and round, deduplicate and isolate worksp
   saveExecutionReceipt(db,{...task,workspaceId:'b',reportRound:2}); assert.equal(db.messages.length,2);
   for (let reportRound=2;reportRound<8;reportRound++) saveExecutionReceipt(db,{...task,reportRound});
   assert.equal(executionReceipts(db,'a','u','c').length,3);
+});
+
+test('the first cancellation receipt does not claim an unanswered stop already ended the process', () => {
+  const task = {id:'t',workspaceId:'a',userId:'u',conversationId:'c',provider:'codex',status:'cancelled',reportRound:0,
+    deliveryAttempt:{id:'attempt',round:0,issuedAt:'now'},transportInterruption:{attemptId:'attempt',round:0,reason:'cancellation_pending',at:'now'},
+    updatedAt:'now'} as ExecutionTask;
+  const db = {conversations:[{id:'c',workspaceId:'a',userId:'u',messages:[]}],messages:[]} as unknown as Database;
+  saveExecutionReceipt(db, task);
+  assert.match(db.messages[0].content, /停止请求已提交，但本机尚未确认原操作结束/);
+  assert.doesNotMatch(db.messages[0].content, /执行已取消/);
 });
 
 test('failed receipts retain the actual answer once and keep the failure notice', () => {

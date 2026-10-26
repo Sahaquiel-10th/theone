@@ -8,6 +8,30 @@ import { acknowledgeTaskResults, acknowledgeAllTaskResults, appendTaskResultRepo
 import { saveExecutionReceipt } from './executionService.js';
 import {latestTaskResults,pendingConversationTaskResults} from './taskResultInbox.js';
 
+test('unconfirmed stop is reported as waiting for the original computer, never a completed stop',()=>{
+ const db=fixture(),task=local(db,'pending-stop');
+ task.status='cancelled';task.reportRound=0;
+ task.deliveryAttempt={id:'original-attempt',round:0,issuedAt:timestamp};
+ task.transportInterruption={attemptId:'original-attempt',round:0,reason:'cancellation_pending',at:timestamp};
+ task.finalResponse='已经停下了';
+ const receipt=pendingTaskResults(db,a)[0];
+ assert.equal(receipt.outcome,'interrupted');assert.match(receipt.summary,/还没有确认原操作结束/);
+ const report=appendTaskResultReport(db,a);
+ const message=db.conversations.find(c=>c.id==='main-a')!.messages.at(-1)!;
+ assert.equal(report.results.length,1);assert.match(message.content,/停止请求已发出/);
+ assert.doesNotMatch(message.content,/已经停下了|本轮已停止|已停止。/);
+ assert.equal(db.conversations.find(c=>c.id==='main-b')!.messages.length,0);
+});
+
+test('a confirmed terminal stop can be reported as stopped but process holds cannot',()=>{
+ for(const hold of [undefined,'launcher_interrupted','command_unconfirmed'] as const){
+  const db=fixture(),task=local(db,`stop-${hold??'settled'}`);task.status='cancelled';task.executionSafetyHold=hold;
+  const receipt=pendingTaskResults(db,a)[0];
+  assert.equal(receipt.outcome,hold?'interrupted':'cancelled');
+  assert.equal(/已经停下了/.test(receipt.brief??''),!hold);
+ }
+});
+
 test('a completed result uses its brief once instead of echoing the longer saved-body acknowledgement',()=>{
  const db=fixture(),{operation}=cloud(db,'complete-brief-once',a,{state:'completed',outcome:'completed',text:'文章已保存到 Notion，正文也回读核对过了。'});
  operation.workRun!.userReport='文章已保存，正文已回读核对。';

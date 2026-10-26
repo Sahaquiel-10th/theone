@@ -102,7 +102,7 @@ const systemPrompt = `你是 ONE Local Agent，正在用户明确授权的本地
 
 export class LocalAgentService {
   private running = new Set<string>();
-  private cancelled = new Set<string>();
+  private cancelled = new Map<string, number>();
 
   constructor(private store: Store, private presence: OneKeyPresence) {}
 
@@ -115,14 +115,17 @@ export class LocalAgentService {
     void this.run(taskId, followup).finally(() => this.running.delete(taskId));
   }
 
-  async cancel(taskId: string) {
+  async cancel(taskId: string, expectedRound?: number) {
     const db = await this.store.read();
     const task = db.executionTasks.find((item) => item.id === taskId);
     if (!task) throw new Error("执行任务不存在");
     requireInstallationId(task.installationId);
-    this.cancelled.add(taskId);
-    await this.presence.cancelExecution(task.deviceId, task.id, task.installationId).catch(() => undefined);
-    await this.finish(task, "cancelled", "执行已由用户停止");
+    const cancelledTask = {...task}, round = task.reportRound ?? 0;
+    // Validate the round atomically before touching the in-memory worker. A
+    // stale tab must not cancel a newly resumed round on this same task id.
+    await this.presence.cancelExecution(task.deviceId, task.id, task.installationId, expectedRound ?? round);
+    this.cancelled.set(taskId, round);
+    await this.finish(cancelledTask, "cancelled", "执行已由用户停止");
   }
 
   private async run(taskId: string, followup?: string) {
@@ -145,7 +148,7 @@ export class LocalAgentService {
       const prepared = await this.presence.prepareLocalExecution(task.deviceId, task.id, task.installationId);
       if (!await this.active(task)) return;
       if (prepared.output === "files_only") taskTools = taskTools.filter(tool => tool.function.name !== "run_command").map(tool => tool.function.name === "write_file" ? { ...tool, function: { ...tool.function, description: "在授权目录内新建 UTF-8 文本文件，必须使用相对路径。本机询问用户，已有文件绝不覆盖。自动回读验证。不支持 Word、Excel、PDF 或其他二进制格式，不得用文本伪装扩展名。" } } : tool);
-      if (this.cancelled.has(task.id)) return;
+      if (this.isCancelled(task)) return;
       task = { ...task, targetName: prepared.targetName || task.targetName || "ONE 工作文件夹" };
       await this.update(task, "running", `ONE Local Agent 已连接：${task.targetName}`);
 
@@ -224,12 +227,14 @@ export class LocalAgentService {
       }
       throw new Error(`Local Agent 已达到 ${stepLimit} 步上限，请缩小任务后继续`);
     } catch (error) {
-      if (task && !this.cancelled.has(task.id)) await this.finish(task, "failed", error instanceof Error ? error.message : "Local Agent 执行失败");
+      if (task && !this.isCancelled(task)) await this.finish(task, "failed", error instanceof Error ? error.message : "Local Agent 执行失败");
     }
   }
 
+  private isCancelled(task: ExecutionTask) { return this.cancelled.get(task.id) === (task.reportRound ?? 0); }
+
   private async active(task: ExecutionTask) {
-    if (this.cancelled.has(task.id)) return false;
+    if (this.isCancelled(task)) return false;
     const db = await this.store.read();
     const current = db.executionTasks.find(t => t.id === task.id && t.workspaceId === task.workspaceId && t.userId === task.userId);
     return Boolean(current && !executionTerminal(current.status) && (current.reportRound ?? 0) === (task.reportRound ?? 0));

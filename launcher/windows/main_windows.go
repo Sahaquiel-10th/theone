@@ -960,19 +960,15 @@ func replaceRuntimeFile(source, target string) error {
 func (executor *localExecutor) prepare(deviceID string) (string, error) {
 	executor.mutex.Lock()
 	defer executor.mutex.Unlock()
-	if executor.root != "" && directoryExists(executor.root) {
-		return executor.root, nil
+	saved := loadSavedWorkspace(deviceID)
+	if executor.root != "" && executor.root != saved {
+		return "", errors.New("ONE 工作文件夹已更换，请重新连接后继续；本轮尚未操作文件")
 	}
-	if saved := loadSavedWorkspace(deviceID); saved != "" && directoryExists(saved) {
-		executor.root = saved
-		return saved, nil
-	}
-	selected, err := chooseWorkspace()
+	selected, err := resolveWorkFolder(saved, directoryExists, chooseWorkspace, func(path string) error { return saveWorkspace(deviceID, path) })
 	if err != nil {
 		return "", err
 	}
 	executor.root = selected
-	_ = saveWorkspace(deviceID, selected)
 	return selected, nil
 }
 
