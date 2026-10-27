@@ -1,0 +1,9 @@
+/* Empty task state describes this panel, never the availability of a device. */
+main.one-fluid-workspace.one-shell.one-studio .local-task-empty {gap:8px;}
+main.one-fluid-workspace.one-shell.one-studio .local-task-empty>p {font-size:13px;line-height:1.5;font-weight:600;}
+main.one-fluid-workspace.one-shell.one-studio .local-task-empty>small {max-width:30em;font-size:12px;line-height:1.7;}
+main.one-fluid-workspace.one-shell.one-studio .local-task-empty-actions {display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;margin-top:6px;}
+main.one-fluid-workspace.one-shell.one-studio .local-task-empty-actions>button {display:inline-flex;align-items:center;justify-content:center;gap:6px;width:auto;min-height:32px;margin:0;padding:6px 10px;border:1px solid var(--fluid-line);border-radius:9px;background:var(--fluid-input);color:var(--fluid-ink);font:inherit;font-size:12px;line-height:1.5;cursor:pointer;}
+main.one-fluid-workspace.one-shell.one-studio .local-task-empty-actions>button.local-task-settings {padding:6px 0;border-color:transparent;border-radius:4px;background:transparent;color:var(--fluid-muted);}
+main.one-fluid-workspace.one-shell.one-studio .local-task-empty-actions>button:focus-visible {outline:2px solid var(--fluid-focus);outline-offset:3px;}
+main.one-fluid-workspace.one-shell.one-studio .local-task-empty-actions>button:hover {color:var(--fluid-ink);border-color:var(--fluid-muted);}

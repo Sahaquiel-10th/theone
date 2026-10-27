@@ -1,0 +1,71 @@
+/* A real activity label inside the conversation, without an estimated meter or
+   another card surface competing with the reply that will appear here. */
+.response-progress.response-progress-live {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  padding: 8px 0;
+  color: var(--fluid-muted,var(--studio-muted));
+  font-size: 13px;
+  line-height: 1.5;
+}
+.response-progress-live .response-progress-heading {
+  display: flex;
+  flex: none;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: 32px;
+}
+.response-progress-live .response-progress-icon { flex: 0 0 15px; }
+.response-progress-live .response-progress-stage {
+  display: inline;
+  flex: 0 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-weight: 500;
+  color: var(--fluid-ink,var(--studio-ink));
+  overflow-wrap: anywhere;
+}
+.response-progress-live .response-progress-elapsed {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fluid-muted,var(--studio-muted));
+}
+.one-studio .response-progress-live button.response-progress-stop {
+  flex: 0 0 auto;
+  min-height: 32px;
+  margin: 0 0 0 4px;
+  padding: 5px 10px;
+  border: 1px solid var(--fluid-line,var(--studio-line));
+  border-radius: 10px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--fluid-muted,var(--studio-muted));
+  font: inherit;
+  font-size: 12px;
+  line-height: 20px;
+  cursor: pointer;
+}
+.one-studio .response-progress-live button.response-progress-stop:hover:not(:disabled) {
+  color: var(--fluid-ink,var(--studio-ink));
+  background: var(--fluid-input,var(--studio-paper));
+}
+.one-studio .response-progress-live button.response-progress-stop:focus-visible {
+  outline: 2px solid var(--fluid-focus,var(--studio-ink));
+  outline-offset: 2px;
+}
+.one-studio .response-progress-live button.response-progress-stop:disabled { opacity: .6;cursor: wait; }
+.response-progress-live .response-progress-error {
+  margin: 6px 0 0 23px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fluid-ink,var(--studio-ink));
+  overflow-wrap: anywhere;
+}
+@media(prefers-reduced-motion:reduce) {
+  .response-progress-live .task-transfer-spinner { animation: none; }
+}

@@ -1,6 +1,5 @@
 import {useFollowLatest} from '../useFollowLatest';
 import type {Message,Task} from './dispatchPreviewState';
-import {OneWaitingCopy} from '../OnePersonality';
 import {Lightbulb} from 'lucide-react';
 import {MessageMarkdown, ImagePreview, hasInlineImage} from '../MessageMarkdown';
 import {ResponseProgress} from '../ResponseProgress';
@@ -30,7 +29,7 @@ export function CoordinatorConversation({messages,tasks,pending,onOpen,visible=t
     {!report?taskIds.map(id=><button key={id} type="button" className="coordinator-task-link" aria-label={`打开任务：${tasks.find(task=>task.id===id)?.title || '查看任务'}`} onClick={()=>onOpen(id)}><Lightbulb size={13}/>{tasks.find(task=>task.id===id)?.title || '查看任务'} <span aria-hidden="true">↗</span></button>):null}
     {message.role==='assistant'&&!report&&renderAssistantActions?<div className="coordinator-answer-actions">{renderAssistantActions(message)}</div>:null}
    </article>;})}
-   {pending||retainProgress?<div data-task-dispatch-anchor="" data-task-progress-anchor="">{onStop?<ResponseProgress key={(progress||lastProgress.current)?.startedAt} {...(progress||lastProgress.current)} completed={!pending&&completed} onStop={onStop}/>:pending?<OneWaitingCopy/>:null}</div>:null}
+   {pending||retainProgress?<div data-task-dispatch-anchor="" data-task-progress-anchor=""><ResponseProgress key={(progress||lastProgress.current)?.startedAt} {...(progress||lastProgress.current)} completed={!pending&&completed} onStop={onStop}/></div>:null}
   </div>
   {newMessages?<button className="coordinator-new-message" type="button" onClick={showLatest}>有新消息 ↓</button>:null}
  </div>;

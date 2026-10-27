@@ -1,7 +1,9 @@
+import {createStatusAuditFixture} from './status-audit-fixture';
 // Local visual fixture only. All API calls are intercepted; no keys, models or production data.
 const stamp=new Date().toISOString();
 const fixtureParams=new URLSearchParams(location.search);
 const uxAudit=fixtureParams.get('uxAudit')==='1';
+const statusAudit=fixtureParams.get('statusAudit')==='1';
 const profile:any={workspaceId:'preview',displayName:'小马',onboarding:{completedAt:stamp,knowledgeChoice:'skipped'},updatedAt:stamp};
 const profileStorageKey='one-focus-preview-profile:v1:preview:preview';
 try{const saved=JSON.parse(localStorage.getItem(profileStorageKey)||'null');if(saved?.appearance?.scene==='silver'||saved?.appearance?.scene==='graphite')profile.appearance={scene:saved.appearance.scene};if(typeof saved?.displayName==='string'&&saved.displayName.trim())profile.displayName=saved.displayName.trim().slice(0,40);}catch{/* Private browser storage is optional. */}
@@ -10,7 +12,7 @@ if(uxAudit&&fixtureParams.get('auditRole')==='admin')user.role='admin';
 if(uxAudit&&fixtureParams.get('auditRole')==='company')user.access={kind:'company',role:'company_admin',workspaceId:'preview'};
 const conversations:any[]=[],operations=new Map<string,any>();
 // Opt-in density regression dataset; never allow this mode to reach a real API.
-const densityQA = uxAudit || new URLSearchParams(location.search).get('densityQA') === '1';
+const densityQA = statusAudit || uxAudit || new URLSearchParams(location.search).get('densityQA') === '1';
 const workflowPreview = densityQA || new URLSearchParams(location.search).has('workflowPreview');
 const transferPreview = new URLSearchParams(location.search).has('transferPreview')||workflowPreview;
 const designStudy = densityQA || new URLSearchParams(location.search).has('designStudy');
@@ -189,6 +191,15 @@ if (densityQA) {
 // Same immutable short-facts message format as taskResultReportContent:
 // title + outcome + brief + canonical task link. Every fact here is invented.
 if(uxAudit)coordinatorMessages.push({id:'report_fixture-ux-audit',role:'assistant',taskIds:['density-active-01','density-review-18','workflow-outline'],createdAt:stamp,content:'项目资料整理：已完成。已整理一份核对清单，内容留在对应任务里。\n[查看这件事](/?task=density-active-01)\n\n图文成果检查：部分结果已返回，需要核对。文字清单已经整理，图文成果还需要你检查。\n[查看这件事](/?task=density-review-18)\n\nNotion 保存：结果尚未确认。先检查原保存位置和已有结果，避免重复新建。\n[查看这件事](/?task=workflow-outline)'});
+// Match the pending receipt contract instead of drawing a fake progress component.
+const statusFixture=statusAudit?createStatusAuditFixture(fixtureParams):null;
+if(statusFixture){
+ conversations.splice(0,conversations.length,...statusFixture.conversations);
+ coordinatorMessages.splice(0,coordinatorMessages.length,...statusFixture.messages);
+ localRuns.splice(0,localRuns.length,...statusFixture.localRuns);
+ transferNotices.length=0;workflowJobs.clear();
+ for(const [id,jobs] of statusFixture.jobs)workflowJobs.set(id,jobs);
+}
 function workflowMeta(conversation:any){const jobs=workflowJobs.get(conversation.id)||[],running=jobs.some(job=>job.state==='running'),queued=jobs.filter(job=>job.state==='queued').length;return{id:conversation.id,title:conversation.title,updatedAt:conversation.updatedAt,executorId:conversation.executorProfileId,running,queued,paused:Boolean(conversation.workPaused),state:running?'running':conversation.workPaused?'paused':queued?'queued':'idle',phase:running?'合成任务处理中；没有调用模型或本机设备。':undefined};}
 function workflowNotice(conversation:any,job:any,state='completed'){
  const id=`${job.id}-receipt`;if(transferNotices.some(notice=>notice.id===id))return;
@@ -222,6 +233,8 @@ window.fetch=async(input,options={})=>{
  if(realService && (path.startsWith('/api/coordinator')||path.startsWith('/api/conversations')||path.startsWith('/api/attachments')||path.startsWith('/api/features'))){logRequest(method,path,'explicit-real-service');return nativeFetch('http://127.0.0.1:4291'+url.pathname+url.search,{...options,credentials:'include'});}
  const requestRecord=logRequest(method,path);
  const reply=(value:any,status=200)=>{requestRecord.status=status;previewLog.textContent=JSON.stringify(previewApiLog);return json(value,status);};
+ const statusResult=statusFixture?.handle(method,url,body);
+ if(statusResult)return reply(statusResult.body,statusResult.status);
  let result:any={};
  if(path==='/api/me/profile'){
   if(method==='PATCH'){
@@ -475,6 +488,22 @@ if(designStudy&&!realService){
  guideButton.onclick=()=>window.dispatchEvent(new Event('one-onboarding-preview'));document.body.append(guideButton);
 }
 await import('/src/main.tsx');
+if(statusFixture){
+ // Open through actual public buttons, never private React state. Disconnect
+ // after the initial open so manual closing and reopening remain testable.
+ const opened=new Set<string>();
+ const openPanels=()=>{for(const kind of ['activity','local']){
+  if(opened.has(kind))continue;
+  const button=document.querySelector<HTMLButtonElement>(`[data-fluid-trigger="${kind}"]`);
+  if(!button)continue;
+  if(button.getAttribute('aria-expanded')==='true'){opened.add(kind);continue;}
+  button.click();
+ }return opened.size===2;};
+ // Initial React effects may not be installed during the first DOM mutation.
+ // Confirm aria-expanded on the next tick before marking a panel as opened.
+ const deadline=Date.now()+10000;
+ const openTimer=setInterval(()=>{if(openPanels()||Date.now()>deadline)clearInterval(openTimer);},100);
+}
 const badge=document.createElement('div');badge.textContent='本地预览 · 演示数据 · 不计费';badge.style.cssText='position:fixed;bottom:8px;left:14px;z-index:9999;font:10px sans-serif;color:#88907e;pointer-events:none';document.body.append(badge);
 
 // Opt-in local QA only. Observe animation updates; never call external services.

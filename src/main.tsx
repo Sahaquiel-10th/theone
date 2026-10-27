@@ -14,7 +14,9 @@ import { FeatureBudgetSettings, approveFeaturePrices } from './FeatureBudgetSett
 import {ContextSettings,AttentionSettings,AttentionInbox} from './AttentionPanel';
 import { FeatureMarketplace } from "./FeatureMarketplace";
 import {ProductMetricsPanel} from './ProductMetricsPanel';
-import {OneWaitingCopy,useOneGreeting} from './OnePersonality';
+import {useOneGreeting} from './OnePersonality';
+import {ResponseProgress} from './ResponseProgress';
+import {LocalTaskEmptyState} from './LocalTaskEmptyState';
 import {FeatureNav} from './FeatureNav';
 import {ThingsPanel} from './ThingsPanel';
 import {TaskReadAllButton} from './TaskReadAllButton';
@@ -146,6 +148,9 @@ import './fluid-control-rhythm.css';
 import './fluid/fluid-work-layer-arrival.css';
 import './conversation-clarity.css';
 import './ux-clarity.css';
+import './response-progress.css';
+import './task-rail-clarity.css';
+import './workspace-status-clarity.css';
 import { Pagination, SearchPicker, SettingsDialog } from "./SettingsControls";
 import { BetaUserInsights } from "./BetaUserInsights";
 import { mergeTaskSnapshots, recoverTaskDraft } from "./oneStudioState";
@@ -2345,7 +2350,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               </React.Fragment>
             ))
           ) : <div className="studio-empty">{activeLoading ? "正在打开…" : failedTaskIds.has(activeId) ? "发送失败，草稿已保留。" : "发一条消息。"}</div>}
-          {replyPending?<OneWaitingCopy key={`waiting:${activeId}:${latestTurnStart}`}/>:null}
+          {replyPending?<ResponseProgress key={`waiting:${activeId}:${latestTurnStart}`}/>:null}
           {activePreparing || executionTask ? <ExecutionDisclosure key={executionTask?.id || "preparing"} task={executionTask} events={executionEvents} preparing={activePreparing} expanded={Boolean(executionTask && expandedExecutionId === executionTask.id)} onToggle={() => setExpandedExecutionId(expandedExecutionId === executionTask?.id ? "" : executionTask?.id || "")} onStop={source => cancelExecution(source)} onContinue={source=>void sendExecutionMessage(executionResumeInstruction,executionTask,source,true)} actorRole={user.role} onReconciled={rememberReconciledExecution} continuationDisabled={preparingExecution||executionBusy||taskStatusUnavailable} onCheck={()=>{if(executionTask)void loadLatestExecution(executionTask.conversationId,executionTask.id,true);}} /> : null}
         </div>
       </section>
@@ -2484,7 +2489,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <header className="fluid-panel-heading"><h2>接管任务</h2><button type="button" aria-label="收起本机执行" onClick={()=>toggleFluidPanel('local')}><X size={15}/></button></header>
           <div className="fluid-panel-content" data-fluid-panel-content="local">
           <div className="fluid-runtime-notices">{renderRuntimeNotices()}</div>
-          {fluidLocalTask||preparingExecution||awaitingExecutionOperationId?<ExecutionDisclosure idPrefix="fluid-local" task={fluidLocalTask} events={fluidLocalTask?eventsByTask[fluidLocalTask.id]||[]:[]} preparing={preparingExecution||Boolean(awaitingExecutionOperationId)} expanded={true} onToggle={()=>toggleFluidPanel('local')} onStop={source=>void cancelExecution(source,fluidLocalTask)} onContinue={source=>void sendExecutionMessage(executionResumeInstruction,fluidLocalTask,source,true)} actorRole={user.role} onReconciled={rememberReconciledExecution} continuationDisabled={preparingExecution||executionBusy||taskStatusUnavailable} onCheck={()=>{if(fluidLocalTask)void loadLatestExecution(fluidLocalTask.conversationId,fluidLocalTask.id,true);}}/>:<div className="fluid-panel-empty"><p>电脑现在空闲。</p><small>需要整理文件、处理表格时，直接告诉 ONE。</small><button type="button" onClick={()=>{setAccountSection('device');openSurface('account');}}>本机设置 <ArrowUpRight size={12}/></button></div>}
+          {fluidLocalTask||preparingExecution||awaitingExecutionOperationId?<ExecutionDisclosure idPrefix="fluid-local" task={fluidLocalTask} events={fluidLocalTask?eventsByTask[fluidLocalTask.id]||[]:[]} preparing={preparingExecution||Boolean(awaitingExecutionOperationId)} expanded={true} onToggle={()=>toggleFluidPanel('local')} onStop={source=>void cancelExecution(source,fluidLocalTask)} onContinue={source=>void sendExecutionMessage(executionResumeInstruction,fluidLocalTask,source,true)} actorRole={user.role} onReconciled={rememberReconciledExecution} continuationDisabled={preparingExecution||executionBusy||taskStatusUnavailable} onCheck={()=>{if(fluidLocalTask)void loadLatestExecution(fluidLocalTask.conversationId,fluidLocalTask.id,true);}}/>:<LocalTaskEmptyState unavailable={taskStatusUnavailable} canExecute={composeMode==='chat'&&!demo.enabled&&outputDestination!=='notion'&&currentModel?.kind==='chat'} onCompose={()=>{focusFluid('main');requestAnimationFrame(()=>featurePicker.input.current?.focus({preventScroll:true}));}} onSettings={()=>{setAccountSection('device');openSurface('account');}} onRetry={()=>void refreshExecutionTasks()}/>}
           {runningExecutions.length>1?<p className="fluid-queue-note">另有 {runningExecutions.length-1} 个任务等待这台电脑处理</p>:null}
                   </div>
         </section>

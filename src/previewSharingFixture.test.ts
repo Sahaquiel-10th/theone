@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import {randomUUID} from 'node:crypto';
 import ts from 'typescript';
+import * as statusAuditFixture from '../output/playwright/status-audit-fixture';
 
 /** Executes only the local request fixture, with fake DOM/timers and no native network. */
 function fixtureHarness(query='richPreview=1&workflowPreview=1&shareRefreshFailure=1'){
@@ -11,9 +12,12 @@ function fixtureHarness(query='richPreview=1&workflowPreview=1&shareRefreshFailu
  const element=()=>({id:'',hidden:false,textContent:'',style:{},setAttribute(){},remove(){}});
  const document={documentElement:{dataset:{} as Record<string,string>},body:{append(node:any){nodes.set(node.id,node);}},createElement:element,addEventListener(){},getElementById(id:string){return nodes.get(id);}};
  const window={fetch:async()=>{nativeCalls++;throw Error('The synthetic fixture must not call native fetch');},EventSource:undefined};
- const sandbox={window,document,location:{origin:'http://127.0.0.1:5346',href:`http://127.0.0.1:5346/?${query}`,search:`?${query}`},localStorage:{getItem:(key:string)=>storage.get(key)??null,setItem:(key:string,value:string)=>storage.set(key,value)},URL,URLSearchParams,Response,Request,Headers,Event,crypto:{randomUUID},setTimeout:(callback:()=>void)=>{timers.push(callback);return timers.length;},clearTimeout(){},setInterval:()=>1,clearInterval(){},console};
+ // Load approved local fixture dependencies through CommonJS transpilation.
+ // Unknown imports fail closed, instead of stripping source declarations.
+ const require=(name:string)=>{if(name==='./status-audit-fixture')return statusAuditFixture;throw Error(`Unapproved fixture dependency: ${name}`);};
+ const sandbox={window,document,exports:{},require,location:{origin:'http://127.0.0.1:5346',href:`http://127.0.0.1:5346/?${query}`,search:`?${query}`},localStorage:{getItem:(key:string)=>storage.get(key)??null,setItem:(key:string,value:string)=>storage.set(key,value)},URL,URLSearchParams,Response,Request,Headers,Event,crypto:{randomUUID},setTimeout:(callback:()=>void)=>{timers.push(callback);return timers.length;},clearTimeout(){},setInterval:()=>1,clearInterval(){},console};
  const source=fs.readFileSync(new URL('../output/playwright/focus-preview.ts',import.meta.url),'utf8').split("await import('/src/main.tsx');")[0];
- const compiled=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
+ const compiled=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
  vm.runInNewContext(compiled,sandbox,{filename:'focus-preview-fixture.js'});
  const request=async(path:string,body?:unknown,method=body?'POST':'GET')=>{const response=await (window.fetch as any)(path,{method,...(body?{body:JSON.stringify(body)}:{})});assert.equal(response.headers.get('X-ONE-Preview'),'synthetic');const text=await response.text();let data:any;try{data=JSON.parse(text);}catch{data=text;}return {status:response.status,data};};
  return {request,flush(){while(timers.length)timers.shift()!();},get nativeCalls(){return nativeCalls;},get log(){return JSON.parse(nodes.get('fixture-api-log')?.textContent||'[]');},get mode(){return document.documentElement.dataset.onePreviewMode;}};
@@ -117,6 +121,26 @@ test('UX audit empty and offline devices, and management roles need no real serv
  assert.equal((await admin.request('/api/admin/users',{username:'never-create'})).status,409);
  const company=fixtureHarness('uxAudit=1&auditRole=company');assert.equal((await company.request('/api/me')).data.user.access.role,'company_admin');assert.equal((await company.request('/api/company')).data.members.length,2);
  assert.equal(admin.nativeCalls+company.nativeCalls+empty.nativeCalls+offline.nativeCalls,0);
+});
+
+test('status audit entry imports its fixture and stays synthetic even when a real service is requested',async()=>{
+ const f=fixtureHarness('statusAudit=1&realService=1&taskCount=5&taskState=needs_input');
+ assert.equal(f.mode,'synthetic');
+ const snapshot=(await f.request('/api/coordinator')).data;
+ assert.equal(snapshot.tasks.length,5);
+ assert.equal(snapshot.notices.length,5);
+ assert.ok(snapshot.notices.every((notice:any)=>notice.outcome==='needs_input'));
+ const receipt=(await f.request('/api/coordinator/messages/'+snapshot.pendingOperationId)).data;
+ assert.equal(receipt.status,'pending');
+ assert.equal(receipt.progress.phase,'正在查找已授权知识库');
+ assert.ok(Date.now()-Date.parse(receipt.progress.startedAt)>=65000);
+ assert.equal((await f.request('/api/coordinator/messages',{text:'Do not start'})).status,409);
+ assert.equal((await f.request('/api/executions/from-input',{content:'Do not execute'})).status,409);
+ const unavailable=fixtureHarness('statusAudit=1&statusCase=unavailable');
+ assert.equal((await unavailable.request('/api/executions')).status,503);
+ assert.equal((await unavailable.request('/api/me/local-device')).status,200);
+ assert.equal(f.nativeCalls+unavailable.nativeCalls,0);
+ assert.ok([...f.log,...unavailable.log].every((row:any)=>row.scope==='synthetic'));
 });
 
 test('the public UX preview uses only explicit synthetic requests and idempotent mock questions',async()=>{

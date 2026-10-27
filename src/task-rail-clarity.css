@@ -1,0 +1,32 @@
+/* A task has one current state. Keep its title, state and actions on one text
+   axis instead of laying the secondary buttons out as loose wrapped items. */
+.one-studio .task-transfer-rail.task-rail-clarity {gap:8px;}
+.one-studio .task-rail-clarity .task-transfer-row {display:grid;grid-template-columns:minmax(0,1fr);gap:8px;}
+.one-studio .task-rail-clarity button.task-transfer-heading {display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:28px;padding:2px 0;border:0;border-radius:0;background:transparent;box-shadow:none;}
+.one-studio .task-rail-clarity .task-transfer-heading>strong {font-size:12px;line-height:1.5;font-weight:550;}
+.one-studio .task-rail-clarity .task-transfer-heading>svg {flex:none;transition:transform .18s ease;}
+.one-studio .task-rail-clarity .task-transfer-heading[aria-expanded=false]>svg {transform:rotate(-90deg);}
+.one-studio .task-rail-clarity .task-transfer-row>button.task-transfer-bubble {display:grid;grid-template-columns:14px minmax(0,1fr) 12px;align-items:start;gap:8px;min-width:0;width:100%;margin:0;text-align:left;}
+.one-studio .task-rail-clarity .task-transfer-row>button.task-transfer-bubble>svg {margin:3px 0 0;}
+.one-studio .task-rail-clarity .task-transfer-row>button.task-transfer-bubble>span {min-width:0;}
+.one-studio .task-rail-clarity .task-transfer-actions {display:flex;align-items:center;justify-content:flex-start;gap:7px;flex-wrap:wrap;min-width:0;margin-left:22px;}
+.one-studio .task-rail-clarity .task-transfer-actions>button.task-transfer-more {display:inline-flex;align-items:center;justify-content:center;min-height:28px;width:auto;max-width:100%;margin:0;padding:4px 8px;border:1px solid var(--studio-line);border-radius:8px;background:transparent;color:var(--studio-muted);font:inherit;font-size:11px;line-height:1.5;white-space:nowrap;cursor:pointer;}
+.one-studio .task-rail-clarity .task-transfer-actions>.task-stop-action {min-width:64px;}
+.one-studio .task-rail-clarity .task-transfer-actions>.task-retry-action {color:var(--studio-ink);}
+.one-studio .task-rail-clarity .task-transfer-actions>.task-dismiss-action {margin-left:auto;}
+.one-studio .task-rail-clarity .task-transfer-actions>button:disabled {opacity:.55;cursor:wait;}
+
+/* The fluid panel has older control rules with a shared main prefix. Scope
+   this layout explicitly so those rules cannot restore the loose flex rows. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-transfer-rail.task-rail-clarity {gap:8px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-rail-clarity button.task-transfer-heading {display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:27px;padding:0 0 4px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-rail-clarity .task-transfer-row {display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:11px 12px;border:1px solid var(--fluid-line);border-radius:13px;background:var(--fluid-input);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-rail-clarity .task-transfer-row>button.task-transfer-bubble {display:grid;grid-template-columns:14px minmax(0,1fr) 12px;align-items:start;gap:8px;min-height:0;padding:0;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-rail-clarity .task-transfer-row>button.task-transfer-bubble>svg {margin:3px 0 0;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-rail-clarity .task-transfer-row strong {font-size:12px;font-weight:650;line-height:1.55;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-rail-clarity .task-transfer-row small {margin-top:4px;font-size:11px;line-height:1.55;-webkit-line-clamp:3;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-rail-clarity .task-transfer-actions {margin-left:22px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-rail-clarity .task-transfer-actions>button.task-transfer-more {min-height:28px;padding:4px 8px;border-color:var(--fluid-line);background:transparent;color:var(--fluid-muted);font-size:10px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-rail-clarity .task-transfer-actions>.task-retry-action {color:var(--fluid-ink);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-rail-clarity .task-transfer-actions>.task-stop-action {min-width:62px;}
+@media(prefers-reduced-motion:reduce){.one-studio .task-rail-clarity .task-transfer-heading>svg {transition:none;}}
