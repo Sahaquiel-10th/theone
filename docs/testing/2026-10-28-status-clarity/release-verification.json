@@ -1,0 +1,28 @@
+{
+  "sourceSha": "9c505b7aef0465f5f962e889ff747f1721c868cf",
+  "workflow": "https://github.com/Sahaquiel-10th/theone/actions/runs/40589780255",
+  "checkedAt": "2026-10-27T22:02:53.148182+00:00",
+  "assets": [
+    {
+      "path": "/assets/index-DNCD5ook.js",
+      "status": 200,
+      "bytes": 1330516,
+      "sha256": "0db351bd028fcd7058fe834c8f0ae7ec954b0d3334b5802db8a0dccee811c6ec",
+      "matchesLocal": true
+    },
+    {
+      "path": "/assets/index-BLbW822m.css",
+      "status": 200,
+      "bytes": 560547,
+      "sha256": "cda880340e2c05b0e7c932e8709964baf62c0c2358c865f4c256e496f2b77676",
+      "matchesLocal": true
+    }
+  ],
+  "health": {
+    "status": 200,
+    "body": {
+      "ok": true
+    }
+  },
+  "documentStatus": 200
+}

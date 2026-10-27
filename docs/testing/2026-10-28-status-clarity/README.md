@@ -32,3 +32,11 @@
 - `taskCount=5&taskState=needs_input|paused|running|reconciling`
 
 截图均为合成数据的真实组件渲染，不是修改 DOM 得出的演示图。线上发布结果单独记录。
+
+## 发布结果
+
+- 已发布前端源码：`9c505b7aef0465f5f962e889ff747f1721c868cf`。
+- 自动流程 `40589780255` 的网页、Windows、Mac 与部署四项全部成功。
+- 2026-10-28 06:02（Asia/Shanghai）核对线上首页及 `/api/health` 均为 200，健康返回 `ok:true`。
+- 线上 `index-DNCD5ook.js` 和 `index-BLbW822m.css` 与本地构建逐字节一致，详见 `release-verification.json`。
+- 浏览器状态验收使用合成数据；线上确认覆盖发布、静态资源一致性和服务健康，没有发起真实收费任务或改动用户数据。

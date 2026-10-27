@@ -1,0 +1,34 @@
+{
+  "headSha": "9c505b7aef0465f5f962e889ff747f1721c868cf",
+  "conclusion": "success",
+  "jobs": [
+    {
+      "name": "verify-macos-runtime",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "2026-10-27T21:53:59Z",
+      "completedAt": "2026-10-27T21:55:22Z"
+    },
+    {
+      "name": "verify-windows-runtime",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "2026-10-27T21:48:13Z",
+      "completedAt": "2026-10-27T21:49:04Z"
+    },
+    {
+      "name": "verify",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "2026-10-27T21:48:13Z",
+      "completedAt": "2026-10-27T21:49:35Z"
+    },
+    {
+      "name": "deploy",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "2026-10-27T21:55:24Z",
+      "completedAt": "2026-10-27T22:01:41Z"
+    }
+  ]
+}
