@@ -1,0 +1,108 @@
+{
+  "verifiedAt": "2026-10-27T00:17:32.983788+00:00",
+  "releaseSha": "2462c3f5fe213254878328ca1f40076f13f79649",
+  "workflow": {
+    "status": "completed",
+    "conclusion": "success",
+    "headSha": "2462c3f5fe213254878328ca1f40076f13f79649",
+    "url": "https://github.com/Sahaquiel-10th/theone/actions/runs/40424367321",
+    "createdAt": "2026-10-27T00:07:42Z",
+    "updatedAt": "2026-10-27T00:15:44Z"
+  },
+  "jobs": [
+    {
+      "name": "verify-windows-runtime",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "2026-10-27T00:07:45Z",
+      "completedAt": "2026-10-27T00:08:41Z",
+      "url": "https://github.com/Sahaquiel-10th/theone/actions/runs/40424367321/job/121926342626"
+    },
+    {
+      "name": "verify",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "2026-10-27T00:07:44Z",
+      "completedAt": "2026-10-27T00:09:29Z",
+      "url": "https://github.com/Sahaquiel-10th/theone/actions/runs/40424367321/job/121926342824"
+    },
+    {
+      "name": "verify-macos-runtime",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "2026-10-27T00:07:45Z",
+      "completedAt": "2026-10-27T00:09:13Z",
+      "url": "https://github.com/Sahaquiel-10th/theone/actions/runs/40424367321/job/121926342891"
+    },
+    {
+      "name": "deploy",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "2026-10-27T00:09:32Z",
+      "completedAt": "2026-10-27T00:15:43Z",
+      "url": "https://github.com/Sahaquiel-10th/theone/actions/runs/40424367321/job/121926999858"
+    }
+  ],
+  "deploymentLogMarkers": [
+    "deploy\tDeploy source package\t2026-10-27T00:15:25.8987604Z vite v7.3.6 building client environment for production...",
+    "deploy\tDeploy source package\t2026-10-27T00:15:33.3277651Z ✓ built in 7.40s",
+    "deploy\tDeploy source package\t2026-10-27T00:15:40.2985776Z ONE deployed: 2462c3f5fe213254878328ca1f40076f13f79649"
+  ],
+  "health": {
+    "url": "https://theone.aiarrival.cn/api/health",
+    "httpStatus": 200,
+    "contentType": "application/json; charset=utf-8",
+    "contentEncoding": "identity",
+    "bytes": 11,
+    "sha256": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+    "body": {
+      "ok": true
+    }
+  },
+  "html": {
+    "url": "https://theone.aiarrival.cn/",
+    "httpStatus": 200,
+    "contentType": "text/html; charset=utf-8",
+    "contentEncoding": "identity",
+    "bytes": 581,
+    "sha256": "3b5afa3e8dd9986e716c6c80a1e7bcb8c163a927eace59e8aab7a81e1f949d6d",
+    "scripts": [
+      "/assets/index-CS5H_Pxi.js"
+    ],
+    "stylesheets": [
+      "/assets/index-CTm51M9S.css"
+    ]
+  },
+  "assets": [
+    {
+      "url": "https://theone.aiarrival.cn/assets/index-CS5H_Pxi.js",
+      "httpStatus": 200,
+      "contentType": "text/javascript; charset=utf-8",
+      "contentEncoding": "identity",
+      "bytes": 1319674,
+      "sha256": "a64efbb05f03df1e8d368327d1c26f1df4ba2e131d49c85c3cbab49b3e57a66f",
+      "localPath": "/Users/machao/.codex/worktrees/one-ux-clarity-20261027/dist/assets/index-CS5H_Pxi.js",
+      "localBytes": 1319674,
+      "localSha256": "a64efbb05f03df1e8d368327d1c26f1df4ba2e131d49c85c3cbab49b3e57a66f",
+      "expectedSha256": "a64efbb05f03df1e8d368327d1c26f1df4ba2e131d49c85c3cbab49b3e57a66f",
+      "matchesLocalBytes": true,
+      "matchesExpectedSha256": true
+    },
+    {
+      "url": "https://theone.aiarrival.cn/assets/index-CTm51M9S.css",
+      "httpStatus": 200,
+      "contentType": "text/css; charset=utf-8",
+      "contentEncoding": "identity",
+      "bytes": 552138,
+      "sha256": "e13c1fe69f108eb299220808cf3a902a9580397dc0d296c16a636a5459e1ea69",
+      "localPath": "/Users/machao/.codex/worktrees/one-ux-clarity-20261027/dist/assets/index-CTm51M9S.css",
+      "localBytes": 552138,
+      "localSha256": "e13c1fe69f108eb299220808cf3a902a9580397dc0d296c16a636a5459e1ea69",
+      "expectedSha256": "e13c1fe69f108eb299220808cf3a902a9580397dc0d296c16a636a5459e1ea69",
+      "matchesLocalBytes": true,
+      "matchesExpectedSha256": true
+    }
+  ],
+  "allChecksPassed": true,
+  "scope": "Read-only verification; no production writes, deployments, commits, or pushes performed by this verifier."
+}
