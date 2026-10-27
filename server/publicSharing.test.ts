@@ -35,14 +35,14 @@ test('same-link update preserves charges, rejects stale edits and starts fresh g
   });
   assert.equal(r.status,'completed');assert.equal(r.publicationVersion,2);
 });
-test('legacy version one is compatible; closed links never reopen and old prompt is not concatenated twice',()=>{
+test('legacy version one is compatible; closed saves never reopen links and old prompt is not concatenated twice',()=>{
   const f=fixture(),s={workspaceId:'ws',userId:'owner'},p=publish(f.db,s,f.input);
   delete p.version;delete p.userPrompt;const a=createGuest(f.db,p.id);delete a.session.publicationVersion;
   assert.equal(guest(f.db,p.slug,a.token).publication.id,p.id);
   const updated=publish(f.db,s,{...f.input,version:1,prompt:'new instructions'},p.id);
   assert.equal(updated.prompt,`${defaultTaskValues('shared_answer').prompt}\n\nnew instructions`);assert.equal(updated.history![0].userPrompt,undefined);
   assert.doesNotMatch(updated.prompt,/answer briefly/);
-  f.db.publications![0].status='closed';assert.throws(()=>publish(f.db,s,{...f.input,version:2},p.id),/不能重新开启/);
+  f.db.publications![0].status='closed';const closed=publish(f.db,s,{...f.input,version:2},p.id);assert.equal(closed.status,'closed');assert.equal(closed.slug,p.slug);assert.throws(()=>activePublication(f.db,p.id),/关闭或到期/);
 });
 test("publication snapshots are explicit, owner-scoped and public source grants fail closed",()=>{
   const f=fixture();assert.equal(sharingReady(f.db),true);

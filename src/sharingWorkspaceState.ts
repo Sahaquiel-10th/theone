@@ -1,9 +1,9 @@
 import type {AvatarAvailableFeature,AvatarServiceConfig,AvatarBusinessConfig} from './AvatarService';
-export type PublicationRow={authorName?:string;service?:{mode:'consultation'|'knowledge';featureCount:number};id:string;version:number;slug?:string;name:string;description:string;status:string;expiresAt:string;budgetMicros:number;perRunMicros:number;spent:number;held:number;attachments:boolean;sources:string[];syncPending?:boolean};
-export type PublicationList={authorName?:string;availableFeatures?:AvatarAvailableFeature[];ready:boolean;visitorPaymentsEnabled?:boolean;items:PublicationRow[];total:number;sources:{id:string;provider:string;name:string}[]};
+export type PublicationRow={deletedAt?:string;authorName?:string;service?:{mode:'consultation'|'knowledge';featureCount:number};id:string;version:number;slug?:string;name:string;description:string;status:string;expiresAt:string;budgetMicros:number;perRunMicros:number;spent:number;held:number;attachments:boolean;sources:string[];syncPending?:boolean};
+export type PublicationList={trashTotal?:number;authorName?:string;availableFeatures?:AvatarAvailableFeature[];ready:boolean;visitorPaymentsEnabled?:boolean;items:PublicationRow[];total:number;sources:{id:string;provider:string;name:string}[]};
 export type PublicationDraft={service?:AvatarServiceConfig;serviceBusiness?:AvatarBusinessConfig;name:string;description:string;prompt:string;modelId:string;sourceIds:string[];attachments:boolean;budget:number;perRun:number;days:number;confirmed:boolean;visitorPercent:number;requireLogin:boolean;allowedUsernames:string[]};
-export type PublicationReceipt={id:string;slug?:string;version?:number;expiresAt?:string;status?:'draft'|'active'};
-export type SharingPane={kind:'create'}|{kind:'edit'|'usage'|'services'|'publish'|'close';owner:PublicationRow};
+export type PublicationReceipt={id:string;slug?:string;version?:number;expiresAt?:string;status?:'draft'|'active'|'closed'};
+export type SharingPane={kind:'create'}|{kind:'edit'|'usage'|'services'|'publish'|'close'|'delete';owner:PublicationRow};
 export type SharingWorkspaceState={pane:SharingPane|null;linkOwnerId:string|null;queuedLinkOwnerId:string|null};
 export const initialSharingWorkspace:SharingWorkspaceState={pane:null,linkOwnerId:null,queuedLinkOwnerId:null};
 export type SharingWorkspaceAction={type:'open-pane';pane:SharingPane}|{type:'open-link';ownerId:string}|{type:'close-pane'}|{type:'saved'}|{type:'main-merged'}|{type:'close-link'};
@@ -30,7 +30,7 @@ export function sharingWorkspaceTransition(state:SharingWorkspaceState,action:Sh
 }
 /** Only server-confirmed status and identity can enter the owner list. */
 export function confirmedPublicationRow(receipt:PublicationReceipt,draft:PublicationDraft,sources:PublicationList['sources'],previous?:PublicationRow,now=Date.now()):PublicationRow {
- if(!receipt.id||receipt.status!=='draft'&&!receipt.slug)throw new Error('发布已返回，但分身身份信息不完整。请先刷新列表核对，勿重复发布。');
+ if(!receipt.id||receipt.status!=='draft'&&receipt.status!=='closed'&&!receipt.slug)throw new Error('发布已返回，但分身身份信息不完整。请先刷新列表核对，勿重复发布。');
  if(previous&&receipt.id!==previous.id)throw new Error('返回的分身身份与当前编辑项不一致，请刷新列表核对。');
  return {authorName:previous?.authorName,service:draft.service?{mode:draft.service.mode,featureCount:draft.service.features.length}:previous?.service,id:receipt.id,slug:receipt.slug,version:receipt.version??(previous?(previous.version??1)+1:1),name:draft.name.trim(),description:draft.description.trim(),status:receipt.status??'active',expiresAt:new Date(now+draft.days*86400000).toISOString(),budgetMicros:Math.round(draft.budget*1e6),perRunMicros:Math.round(draft.perRun*1e6),spent:previous?.spent??0,held:previous?.held??0,attachments:draft.attachments,sources:draft.sourceIds.map(id=>sources.find(source=>source.id===id)?.name??'已授权来源'),syncPending:true};
 }

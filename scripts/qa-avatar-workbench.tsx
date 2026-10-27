@@ -32,8 +32,10 @@ const models=[{id:'local-qa-model',name:'合成验收模型（不调用模型）
 const names=['林老师的课程顾问','林老师的方法练习室','已关闭的合成咨询分身','项目复盘助手','这是一项用于检查长名称完整换行、按钮可达与列表滚动的本地合成分身','新课售前答疑','写作训练陪练','最后一项：滚动可达验收'];
 const featureNames=['填写需求表','制作预算测算表','制作交互网页','资料对比','写作提纲','会议纪要','项目复盘','学习计划','知识问答','课程设计','邮件润色','阅读助手','输出行动清单'];
 const features:AvatarAvailableFeature[]=featureNames.map((name,index)=>({id:`local-feature-${index+1}`,releaseId:'local-release-1',name,description:`合成能力 ${index+1}：仅供选择、搜索与配置验收，不执行实际工具。`,usageMultiplier:.6}));
-type Config=PublicationDraft&{version:number;legacyPrompt:boolean;status:string};
-const rows:PublicationRow[]=[],configs=new Map<string,Config>(),history=new Map<string,Config[]>(),receipts=new Map<string,AvatarDebugReceipt>();
+type Config=PublicationDraft&{version:number;legacyPrompt:boolean;status:string;deletedAt?:string};
+type FixtureRow=PublicationRow&{deletedAt?:string};
+const rows:FixtureRow[]=[],configs=new Map<string,Config>(),history=new Map<string,Config[]>(),receipts=new Map<string,AvatarDebugReceipt>();
+const transitions=new Map<string,{action:string;baseVersion:number;version:number}>();
 const copy=<T,>(value:T):T=>structuredClone(value);
 const expiry=()=>new Date(Date.now()+30*86400000).toISOString();
 for(let index=0;index<8;index++){
@@ -46,6 +48,16 @@ for(let index=0;index<8;index++){
 }
 function response<T>(value:unknown):T{return copy(value) as T;}
 function bodyOf(options:RequestInit){if(typeof options.body!=='string')return{};return JSON.parse(options.body) as Record<string,unknown>;}
+function receipt(row:FixtureRow){return {id:row.id,status:row.status,version:row.version,...(row.deletedAt?{deletedAt:row.deletedAt}:{}),...(row.status==='active'&&!row.deletedAt?{slug:row.slug,expiresAt:row.expiresAt}:{})};}
+function confirm(body:Record<string,unknown>){if(body.confirmed!==true)throw new ApiError('请确认这次合成生命周期操作。',undefined,400);}
+function version(row:FixtureRow,body:Record<string,unknown>){if(body.version!==row.version)throw new ApiError('合成配置版本已变化，请重新打开。',undefined,409,'PUBLICATION_VERSION_CHANGED');}
+function repeated(row:FixtureRow,action:string,body:Record<string,unknown>){const previous=transitions.get(row.id);return previous?.action===action&&previous.version===row.version&&body.version===previous.baseVersion;}
+function transition(row:FixtureRow,config:Config,action:string,update:()=>void){
+  const baseVersion=row.version;history.set(row.id,[copy({...config,...(row.deletedAt?{deletedAt:row.deletedAt}:{})}),...(history.get(row.id)??[])].slice(0,20));
+  update();row.version++;config.version=row.version;config.status=row.status;
+  if(row.deletedAt)config.deletedAt=row.deletedAt;else delete config.deletedAt;
+  transitions.set(row.id,{action,baseVersion,version:row.version});
+}
 
 /** No network fallback: every unknown route fails locally and visibly. */
 const fixtureApi:typeof Api=async<T,>(path:string,options:RequestInit={}):Promise<T>=>{
@@ -59,21 +71,45 @@ const fixtureApi:typeof Api=async<T,>(path:string,options:RequestInit={}):Promis
   }
   if(url.pathname==='/api/sharing/manage'&&method==='GET'){
     const query=(url.searchParams.get('q')??'').trim().toLocaleLowerCase(),page=Math.max(1,Number(url.searchParams.get('page'))||1);
-    const filtered=rows.filter(row=>`${row.name} ${row.description}`.toLocaleLowerCase().includes(query));
-    return response<T>({ready:true,authorName:'合成作者 · 林老师',visitorPaymentsEnabled:false,availableFeatures:features,sources:[],total:filtered.length,items:filtered.slice((page-1)*10,page*10)});
+    const trash=url.searchParams.get('trash');if(trash!==null&&!['0','1'].includes(trash))throw new ApiError('回收站筛选无效。',undefined,400);
+    const filtered=rows.filter(row=>Boolean(row.deletedAt)===(trash==='1')&&`${row.name} ${row.description}`.toLocaleLowerCase().includes(query));
+    const items=filtered.slice((page-1)*10,page*10).map(row=>{const value=copy(row);if(value.deletedAt||value.status==='draft')delete value.slug;return value;});
+    return response<T>({ready:true,authorName:'合成作者 · 林老师',visitorPaymentsEnabled:false,availableFeatures:features,sources:[],trashTotal:rows.filter(row=>row.deletedAt).length,total:filtered.length,items});
   }
-  const match=url.pathname.match(/^\/api\/sharing\/manage\/([^/]+)\/(config|update|publish|close|usage|service|leads)$/);
+  const match=url.pathname.match(/^\/api\/sharing\/manage\/([^/]+)\/(config|update|publish|close|delete|restore|usage|service|leads)$/);
   if(match){
     const [,id,action]=match,row=rows.find(item=>item.id===id),config=configs.get(id);
-    if(!row||!config)throw new ApiError('合成分身不存在',undefined,404);
+    if(!row||!config||row.deletedAt&&!['delete','restore','usage'].includes(action))throw new ApiError('合成分身不存在',undefined,404);
     if(action==='config'&&method==='GET')return response<T>(url.searchParams.has('page')?{total:history.get(id)?.length??0,history:history.get(id)??[]}:config);
     if(action==='usage')return response<T>({total:0,items:[]});
     if(action==='leads')return response<T>({items:[]});
     if(action==='service')return response<T>({...config.serviceBusiness,codes:[],entitlements:[]});
-    if(action==='close'&&method==='POST'){row.status='closed';config.status='closed';return response<T>({ok:true});}
+    if(action==='close'&&method==='POST'){
+      confirm(body);
+      if(row.status==='closed'&&(body.version===row.version||repeated(row,action,body)))return response<T>({ok:true,...receipt(row)});
+      version(row,body);if(row.status!=='active')throw new ApiError('这个合成分身尚未开放。',undefined,409);
+      transition(row,config,action,()=>{row.status='closed';});return response<T>({ok:true,...receipt(row)});
+    }
     if(action==='publish'&&method==='POST'){
-      row.status='active';row.slug??=`local-synthetic-${id}`;row.version++;row.expiresAt=expiry();config.status='active';config.version=row.version;
-      return response<T>({id,slug:row.slug,status:'active',version:row.version,expiresAt:row.expiresAt});
+      confirm(body);
+      if(row.status==='active'&&(body.version===row.version||repeated(row,action,body)))return response<T>(receipt(row));
+      version(row,body);if(!['draft','closed'].includes(row.status))throw new ApiError('请从未分享或已关闭合成分身重新开放。',undefined,409);
+      transition(row,config,action,()=>{if(row.status==='closed'||!row.slug)row.slug=`local-synthetic-${crypto.randomUUID()}`;row.status='active';row.expiresAt=new Date(Date.now()+config.days*86400000).toISOString();});
+      return response<T>(receipt(row));
+    }
+    if(action==='delete'&&method==='POST'){
+      confirm(body);
+      if(row.deletedAt&&(body.version===row.version||repeated(row,action,body)))return response<T>(receipt(row));
+      if(row.deletedAt)throw new ApiError('合成分身已在回收站。',undefined,409);
+      version(row,body);transition(row,config,action,()=>{row.status=row.status==='draft'?'draft':'closed';row.deletedAt=new Date().toISOString();});
+      return response<T>(receipt(row));
+    }
+    if(action==='restore'&&method==='POST'){
+      confirm(body);
+      if(!row.deletedAt&&repeated(row,action,body))return response<T>(receipt(row));
+      if(!row.deletedAt)throw new ApiError('这个合成分身不在回收站。',undefined,409);
+      version(row,body);transition(row,config,action,()=>{delete row.deletedAt;row.status=row.status==='draft'?'draft':'closed';});
+      return response<T>(receipt(row));
     }
     if(action==='update'&&method==='POST')return save<T>(body,id);
   }
@@ -83,19 +119,25 @@ const fixtureApi:typeof Api=async<T,>(path:string,options:RequestInit={}):Promis
 };
 function save<T>(body:Record<string,unknown>,id?:string):T{
   const existing=id?rows.find(row=>row.id===id):undefined,prior=id?configs.get(id):undefined;
+  if(existing?.deletedAt)throw new ApiError('请先从合成回收站恢复。',undefined,404);
   if(existing&&Number(body.version)!==existing.version)throw new ApiError('合成配置版本已变化，请重新打开。',undefined,409);
+  if(existing?.status==='active'&&body.intent==='draft')throw new ApiError('已开放的分享不能通过保存变成私有，请先关闭。',undefined,409);
+  confirm(body);
+  if(!Array.isArray(body.sourceIds)||body.sourceIds.length)throw new ApiError('合成夹具没有可用知识来源。',undefined,403);
+  if(body.modelId!==models[0].id)throw new ApiError('合成模型不可用。',undefined,400);
   const key=id??`local-created-${crypto.randomUUID()}`,version=(existing?.version??0)+1;
-  const draft=copy(body) as unknown as PublicationDraft;
+  const authorFields=['name','description','prompt','modelId','sourceIds','attachments','budget','perRun','days','visitorPercent','requireLogin','allowedUsernames','service','serviceBusiness'];
+  const draft={...Object.fromEntries(authorFields.filter(field=>body[field]!==undefined).map(field=>[field,copy(body[field])])),confirmed:false} as unknown as PublicationDraft;
   const status=existing?.status??'draft';
   const config:Config={...draft,version,legacyPrompt:false,status};
   if(prior)history.set(key,[copy(prior),...(history.get(key)??[])]);
   configs.set(key,config);
-  const row:PublicationRow={id:key,version,...(existing?.slug?{slug:existing.slug}:{}),name:draft.name,description:draft.description,status,expiresAt:expiry(),budgetMicros:Math.round(draft.budget*1e6),perRunMicros:Math.round(draft.perRun*1e6),spent:existing?.spent??0,held:0,attachments:draft.attachments,sources:[],authorName:'合成作者 · 林老师',service:{mode:draft.service?.mode??'consultation',featureCount:draft.service?.features.length??0}};
+  const row:FixtureRow={id:key,version,...(existing?.slug?{slug:existing.slug}:{}),name:draft.name,description:draft.description,status,expiresAt:new Date(Date.now()+draft.days*86400000).toISOString(),budgetMicros:Math.round(draft.budget*1e6),perRunMicros:Math.round(draft.perRun*1e6),spent:existing?.spent??0,held:0,attachments:draft.attachments,sources:[],authorName:'合成作者 · 林老师',service:{mode:draft.service?.mode??'consultation',featureCount:draft.service?.features.length??0}};
   if(existing)Object.assign(existing,row);else rows.unshift(row);
-  return response<T>({id:key,status,version,slug:row.slug,expiresAt:row.expiresAt});
+  transitions.delete(key);return response<T>(receipt(row));
 }
 function App(){
   const [open,setOpen]=useState(true);
-  return <main className="app-shell one-shell one-studio one-fluid-workspace" data-fluid-material="optical" data-fluid-scene="silver" data-fluid-desktop="true"><section style={{padding:32,color:'var(--fluid-frame-ink)'}}><h1>分身工作台 · 本地合成验收</h1><p>所有数据只保存在本页内存。刷新恢复原样；不调用模型、不读取资料、不接生产，实际费用 0。</p><button type="button" onClick={()=>setOpen(true)}>打开合成分身工作台</button></section><FluidWorkLayer title="分身" eyebrow="本地合成验收 · 8 个虚构分身 · 无网络调用 · 费用 0" open={open} className="fluid-work-layer-avatars" onClose={()=>setOpen(false)}><SharingPanel api={fixtureApi} models={models}/></FluidWorkLayer></main>;
+  return <main className="app-shell one-shell one-studio one-fluid-workspace" data-fluid-material="optical" data-fluid-scene="silver" data-fluid-desktop="true"><section style={{padding:32,color:'var(--fluid-frame-ink)'}}><h1>分身工作台 · 本地合成验收</h1><p>合成分身数据只保存在本页内存，刷新恢复原样；未保存的作者配置按合成账号隔离保留在本页 sessionStorage。不调用模型、不读取资料、不接生产，实际费用 0。</p><button type="button" onClick={()=>setOpen(true)}>打开合成分身工作台</button></section><FluidWorkLayer title="分身" eyebrow="本地合成验收 · 8 个虚构分身 · 无网络调用 · 费用 0" open={open} className="fluid-work-layer-avatars" onClose={()=>setOpen(false)}><SharingPanel api={fixtureApi} models={models} draftScope={{userId:'local-qa-user',workspaceId:'local-qa-workspace'}}/></FluidWorkLayer></main>;
 }
 createRoot(document.getElementById('root')!).render(<App/>);

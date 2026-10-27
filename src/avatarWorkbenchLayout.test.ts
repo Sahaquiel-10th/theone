@@ -55,3 +55,12 @@ test('avatar-only sizing keeps the plain list bounded and section hierarchy read
   assert.match(rule('.sharing-hierarchy .avatar-editor-section'),/border-bottom:1px solid var\(--fluid-line/);
   assert.match(css,/\.avatar-debug-panel\) :is\(button,a\):focus-visible/);
 });
+
+test('save actions stay in the non-scrolling toolbar without fixed or sticky overlays',()=>{
+  const toolbar=rule('.sharing-hierarchy .avatar-editor-toolbar');
+  assert.match(toolbar,/flex:none;/);
+  assert.doesNotMatch(toolbar,/position:\s*(fixed|sticky)/);
+  assert.match(rule('.sharing-hierarchy .avatar-editor-toolbar-actions'),/flex-wrap:wrap;/);
+  assert.match(rule('.sharing-hierarchy .avatar-editor-toolbar .avatar-editor-save'),/min-height:40px;/);
+  assert.match(rule('.sharing-hierarchy .avatar-editor-toolbar .avatar-draft-status'),/overflow-wrap:anywhere;/);
+});

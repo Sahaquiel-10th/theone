@@ -7,9 +7,12 @@ export type Publication = {
   visitorMultiplier?:number; requireLogin?:boolean; allowedUserIds?:string[]; sponsorships?:VisitorSponsorship[];
   apiGrants?: PublicApiGrant[];
   version?: number; userPrompt?: string; updatedAt?: string;
+  /** Recoverable owner trash, never a public availability flag. */
+  deletedAt?: string;
   history?: Omit<Publication, 'history'>[];
   id: string; workspaceId: string; userId: string; slug: string; name: string; description: string;
   prompt: string; modelId: string; taskVersion: number; sources: SharedSource[]; attachments: boolean;
+  /** Configured lifetime when a draft/closed avatar is explicitly opened. */
   draftDays?: number;
   status: "draft" | "active" | "closed"; budgetMicros: number; perRunMicros: number; expiresAt: string; createdAt: string;
 };

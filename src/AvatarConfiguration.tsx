@@ -32,16 +32,16 @@ export function AvatarMethodFields({ value, onChange, features, disabled = false
         finally { setImporting(false); }
     }
     return <section className="avatar-config-section avatar-method-section" aria-labelledby={titleId}>
-        <header><span className="avatar-section-index">02</span><div><h3 id={titleId}>{consultation ? '咨询资料与辅助工具' : '知识资料与交付工具'}</h3><p>{consultation ? '提供服务介绍、常见问题和判断标准，先了解需求，再帮访客选择。' : '放入课程、方法和案例，让分身依据资料回答，并交付具体成果。'}</p></div></header>
+        <header><span className="avatar-section-index">02</span><div><h3 id={titleId}>{'提示词、资料与工具'}</h3><p>{consultation ? '提供服务介绍、常见问题和判断标准，先了解需求，再帮访客选择。' : '放入课程、方法和案例，让分身依据资料回答，并交付具体成果。'}</p></div></header>
         <div className="avatar-document-import"><div><strong>先放入你的资料</strong><p>{consultation ? '例如：你提供什么服务、适合谁、常见疑问及如何联系你。' : '例如：课程讲义、咨询方法、案例和交付标准。'}</p></div>
             <button type="button" className="avatar-document-import-button" disabled={disabled || importing} onClick={() => inputRef.current?.click()} aria-describedby={errorId}><Upload size={17} aria-hidden="true" />{importing ? '正在读取文档…' : value.method.trim() ? '继续导入文档' : '导入文档'}</button>
             <input ref={inputRef} type="file" hidden aria-label="导入分身资料文档" accept=".md,.txt,text/plain,text/markdown" disabled={disabled || importing} onChange={e => { void readMethod(e.target.files?.[0]); e.target.value = ''; }} />
             <small id={errorId}>支持 .md、.txt，单份最多 128 KB；文字追加到下方，不覆盖已有内容。仅读取你选中的文档。</small></div>
         {fileError ? <p className="avatar-config-error" role="alert">{fileError}</p> : null}{importedName ? <p className="avatar-import-result" role="status">已追加《{importedName}》的文字，保存分身后生效。</p> : null}
-        <label>方法资料<textarea rows={7} maxLength={AVATAR_METHOD_LIMIT} value={value.method} disabled={disabled} onChange={e => onChange({ ...value, method: e.target.value })} placeholder={consultation ? '介绍你能解决什么问题、服务适合谁。访客应先说明哪些情况，什么情况下建议与你本人联系？' : '写下你的判断方法、知识要点和交付标准。例如：先确认目标与现状，再按三个维度分析，最后给出建议。'} /><small>{value.method.length.toLocaleString()} / 12,000 字 · 可粘贴或编辑，保存后才生效。</small></label>
+        <label>提示词<textarea rows={7} maxLength={AVATAR_METHOD_LIMIT} value={value.method} disabled={disabled} onChange={e => onChange({ ...value, method: e.target.value })} placeholder={consultation ? '介绍你能解决什么问题、服务适合谁。访客应先说明哪些情况，什么情况下建议与你本人联系？' : '写下你的判断方法、知识要点和交付标准。例如：先确认目标与现状，再按三个维度分析，最后给出建议。'} /><small>{value.method.length.toLocaleString()} / 12,000 字</small></label>
         <fieldset className="avatar-feature-options"><legend>分身可以使用的功能 <span>选填，最多 4 项</span></legend>
             <div className="avatar-feature-picker-header"><p>{consultation ? '按需添加评估、测算或填表，不必把所有功能都开放给访客。' : '按需添加表格、方案或网页交付；不选功能也能用资料回答。'}</p><button type="button" disabled={disabled || !features.length} onClick={() => { setQuery(''); setPage(1); setChoosingFeatures(true); }}>选择功能 <span>{value.features.length} / 4</span></button></div>
-            {!features.length ? <p className="hint">暂无可用于公开交付的功能，仍可用方法资料回答问题。</p> : null}
+            {!features.length ? <p className="hint">暂无可用于公开交付的功能，仍可用提示词回答问题。</p> : null}
             {value.features.map(selected => { const f = features.find(f => f.id === selected.featureId && f.releaseId === selected.releaseId);
                 if (!f) return <div className="avatar-unavailable-feature" key={`${selected.featureId}:${selected.releaseId}`}><p>一项原功能已不可用，请移除后重新选择。</p><button type="button" disabled={disabled} onClick={() => onChange({ ...value, features: value.features.filter(v => v !== selected) })}>移除不可用功能</button></div>;
                 return <div className="avatar-feature-option avatar-selected-feature" key={`${f.id}:${f.releaseId}`}><header><div><strong>{f.name}</strong><small>{f.description}</small>{f.usageMultiplier !== undefined ? <small>功能计费倍率：{f.usageMultiplier}（以该功能模型参考价为基准），按实际用量结算。</small> : null}</div><button type="button" disabled={disabled} aria-label={`移除功能：${f.name}`} onClick={() => onChange(avatarWithFeature(value, f, false))}>移除</button></header>

@@ -2290,7 +2290,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       ) : view === "features" ? (
         renderFeatures()
       ) : view === "avatars" ? (
-        <SharingPanel api={api} models={models}/>
+        <SharingPanel api={api} models={models} draftScope={{userId:user.id,workspaceId:user.access?.workspaceId??user.defaultWorkspaceId}}/>
       ) : view === "account" ? (
         renderAccount()
       ) : (
@@ -2491,7 +2491,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       </div>
       {preview.enabled?<>
         {visitedLayers.includes('features')||workLayer==='features'?<FluidWorkLayer title="功能" open={workLayer==='features'} className="fluid-work-layer-features" onClose={closeWorkLayer}>{renderFeatures()}</FluidWorkLayer>:null}
-        {visitedLayers.includes('avatars')||workLayer==='avatars'?<FluidWorkLayer title="分身" open={workLayer==='avatars'} className="fluid-work-layer-avatars" onClose={closeWorkLayer}><SharingPanel api={api} models={models}/></FluidWorkLayer>:null}
+        {visitedLayers.includes('avatars')||workLayer==='avatars'?<FluidWorkLayer title="分身" open={workLayer==='avatars'} className="fluid-work-layer-avatars" onClose={closeWorkLayer}><SharingPanel api={api} models={models} draftScope={{userId:user.id,workspaceId:user.access?.workspaceId??user.defaultWorkspaceId}}/></FluidWorkLayer>:null}
         {visitedLayers.includes('account')||workLayer==='account'?<FluidWorkLayer title="设置" open={workLayer==='account'} className="fluid-work-layer-account" onClose={closeWorkLayer}>{renderAccount()}</FluidWorkLayer>:null}
         {workLayer==='things'?<FluidWorkLayer title="任务与成果" className="fluid-work-layer-things" onClose={closeWorkLayer}>{renderThings()}</FluidWorkLayer>:null}
         {workLayer==='history'?<FluidWorkLayer title={showArchived?'已归档记录':'历史记录'} className="fluid-work-layer-history" onClose={closeWorkLayer}>{renderHistory()}</FluidWorkLayer>:null}

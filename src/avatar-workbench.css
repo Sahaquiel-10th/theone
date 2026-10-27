@@ -168,6 +168,36 @@ main.one-fluid-workspace.one-shell.one-studio .fluid-work-layer-avatars .avatar-
   font-size:12px;
   line-height:1.7;
 }
+/* This toolbar is already outside the form scroll viewport. Keep save beside
+   preview in normal flow, so neither a fixed bar nor sticky layer hides focus. */
+.sharing-hierarchy .avatar-list-navigation { display:flex; gap:8px; padding-bottom:12px; }
+.sharing-hierarchy .avatar-list-navigation button[aria-pressed=true] { background:var(--fluid-active-fill,var(--fluid-control-bg)); font-weight:600; }
+.sharing-hierarchy .avatar-draft-conflict { flex:none; padding:12px 16px; border-bottom:1px solid var(--fluid-line); }
+.sharing-hierarchy .avatar-draft-conflict p { margin:0 0 8px; }
+.sharing-hierarchy .avatar-draft-conflict button { margin-right:8px; }
+.sharing-hierarchy .avatar-editor-toolbar-actions {
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  flex-wrap:wrap;
+  gap:8px;
+  flex:none;
+}
+.sharing-hierarchy .avatar-editor-toolbar-actions>button {
+  min-height:40px;
+  white-space:nowrap;
+}
+.sharing-hierarchy .avatar-editor-toolbar .avatar-draft-status {
+  flex:1 1 240px;
+  min-width:0;
+  font-size:12px;
+  line-height:1.7;
+  overflow-wrap:anywhere;
+}
+.sharing-hierarchy .avatar-editor-toolbar .avatar-editor-save {
+  min-height:40px;
+  white-space:nowrap;
+}
 main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .avatar-editor-split {
   --fluid-split-height:100%;
   --fluid-split-padding:16px;

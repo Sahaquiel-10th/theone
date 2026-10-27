@@ -28,7 +28,7 @@ export function ownerActive(db: Database, p: { workspaceId: string; userId: stri
 export function activePublication(db: Database, id: string): Publication {
   requireSharing(db);
   const p = db.publications!.find(p => p.id === id);
-  if (!p || p.status !== "active" || Date.parse(p.expiresAt) <= Date.now()) throw new SharingError("分享已关闭或到期", 410);
+  if (!p || p.deletedAt || p.status !== "active" || Date.parse(p.expiresAt) <= Date.now()) throw new SharingError("分享已关闭或到期", 410);
   ownerActive(db, p);
   if (!db.models.some(m => m.id === p.modelId && m.enabled && m.kind === "chat" && m.apiKey)) throw new SharingError("分身暂不可用", 503);
   for (const s of p.sources) {
@@ -37,10 +37,10 @@ export function activePublication(db: Database, id: string): Publication {
   }
   return p;
 }
-export function ownedPublication(db: Database, workspaceId: string, userId: string, id: string) {
+export function ownedPublication(db: Database, workspaceId: string, userId: string, id: string, options: {includeDeleted?: boolean} = {}) {
   requireSharing(db);
   const p = db.publications!.find(p => p.id === id && p.workspaceId === workspaceId && p.userId === userId);
-  if (!p) throw new SharingError("分身不存在", 404);
+  if (!p || p.deletedAt && !options.includeDeleted) throw new SharingError("分身不存在", 404);
   ownerActive(db, p); return p;
 }
 function text(value: unknown, max: number, required = true) {
@@ -48,6 +48,22 @@ function text(value: unknown, max: number, required = true) {
   return value.trim();
 }
 function power(value: unknown) { if (typeof value !== "number" || !Number.isFinite(value) || value < .01 || value > 10000) throw new SharingError("电力限额应为 0.01 至 10000"); return Math.round(value * 1e6); }
+function publicationSnapshot(p: Publication) {
+  const {history, ...snapshot} = structuredClone(p);
+  if (snapshot.serviceBusiness) snapshot.serviceBusiness = {...snapshot.serviceBusiness, codes: [], entitlements: [], leads: []};
+  return snapshot;
+}
+function retainPublicationSnapshot(p: Publication) { p.history = [...(p.history ?? []), publicationSnapshot(p)].slice(-20); }
+function revokePublicationApi(p: Publication, at: string) {
+  for (const grant of p.apiGrants ?? []) if (grant.workspaceId === p.workspaceId && grant.userId === p.userId && grant.status === 'active') {grant.status = 'revoked'; grant.revokedAt ??= at;}
+}
+function assertPublicationIdle(db: Database, p: Publication) {
+  if (db.publicRuns!.some(r => r.publicationId === p.id && r.workspaceId === p.workspaceId && r.status === 'running')) throw new SharingError('还有问题正在回答，请等这一轮完成后再修改分享状态', 409, 'PUBLICATION_BUSY');
+}
+function assertPublicationVersion(p: Publication, version: unknown) {
+  if (version !== (p.version ?? 1)) throw new SharingError('分身已被更新，请重新打开配置', 409, 'PUBLICATION_VERSION_CHANGED');
+}
+export function publicationConfiguredDays(p: Publication) { return p.draftDays ?? Math.max(1, Math.min(90, Math.ceil((Date.parse(p.expiresAt) - Date.now()) / 86400000))); }
 export function publicationModel(db: Database, modelId: unknown) {
   const base = db.models.find(m => m.id === modelId && m.kind === 'chat' && m.enabled && m.apiKey);
   if (!base) throw new SharingError('请选择可用的问答模型');
@@ -67,13 +83,14 @@ export function publish(db: Database, scope: { workspaceId: string; userId: stri
   requireSharing(db); ownerActive(db, scope);
   const old=updateId?ownedPublication(db,scope.workspaceId,scope.userId,updateId):undefined;
   const activate=input.intent==='activate';
-  if(activate&&old?.status!=='draft')throw new SharingError('请从未分享分身的开放入口操作',409);
+  if(activate&&!['draft','closed'].includes(old?.status??''))throw new SharingError('请从未分享或已关闭分身的开放入口操作',409);
   if(old?.status==='active'&&input.intent==='draft')throw new SharingError('已开放的分享不能通过保存变成私有，请先关闭分享',409);
-  const draft=input.intent==='draft'||old?.status==='draft'&&!activate;
+  const draft=(input.intent==='draft'||old?.status==='draft')&&!activate;
+  const status=old?.status==='closed'&&!activate?'closed':draft?'draft':'active';
+  const reopening=activate&&old?.status==='closed';
   if(old){
-    if(old.status==='closed')throw new SharingError('已关闭的分享不能重新开启，请创建新分身',409);
-    if(input.version!==(old.version??1))throw new SharingError('分身已被更新，请重新打开配置',409);
-    if(db.publicRuns!.some(r=>r.publicationId===old.id&&r.status==='running'))throw new SharingError('还有问题正在回答，请稍后再发布更新',409);
+    assertPublicationVersion(old,input.version);
+    assertPublicationIdle(db,old);
   }
   if (input.confirmed !== true || !Array.isArray(input.sourceIds) || input.sourceIds.length > 5 || input.sourceIds.some(x => typeof x !== "string")) throw new SharingError("请确认分享范围与费用");
   const config = publicationModel(db, input.modelId);
@@ -84,8 +101,8 @@ export function publish(db: Database, scope: { workspaceId: string; userId: stri
   if (!Number.isInteger(days) || Number(days) < 1 || Number(days) > 90) throw new SharingError("有效期应为 1 至 90 天");
   const expiresAt=new Date(Date.now() + Number(days) * 86400000).toISOString();
   if(old)validateServiceCommitments(db,old,budgetMicros,expiresAt);
-  if (!draft && (!old||old.status==='draft') && db.publications!.filter(p => p.workspaceId === scope.workspaceId && p.userId === scope.userId && p.status === "active").length >= 20) throw new SharingError("最多保留 20 个有效分享，请先关闭不需要的分享");
-  if(draft&&!old&&db.publications!.filter(p=>p.workspaceId===scope.workspaceId&&p.userId===scope.userId&&p.status==='draft').length>=50)throw new SharingError('最多保留 50 个未分享分身，请先整理现有分身');
+  if (status==='active' && (!old||old.status!=='active') && db.publications!.filter(p => p.workspaceId === scope.workspaceId && p.userId === scope.userId && !p.deletedAt && p.status === "active").length >= 20) throw new SharingError("最多保留 20 个有效分享，请先关闭不需要的分享");
+  if(status==='draft'&&!old&&db.publications!.filter(p=>p.workspaceId===scope.workspaceId&&p.userId===scope.userId&&!p.deletedAt&&p.status==='draft').length>=50)throw new SharingError('最多保留 50 个未分享分身，请先整理现有分身');
   const sources = publicationSources(db, scope, input.sourceIds);
   const service=validatePublicAvatarService(db,scope,input.service===undefined?old?.service:input.service);
   const serviceBusiness=validateBusinessConfig(db,scope,input.serviceBusiness,old?.serviceBusiness);
@@ -97,26 +114,77 @@ export function publish(db: Database, scope: { workspaceId: string; userId: stri
     version:old?(old.version??1)+1:1,userPrompt:text(input.prompt,12000,false),updatedAt:timestamp(),
     name: text(input.name, 60), description: text(input.description, 300, false),
     prompt: [config.model.systemPrompt, text(input.prompt, 12000, false)].filter(Boolean).join("\n\n"), modelId: config.model.id, taskVersion: config.version,
-    sources, attachments: input.attachments === true, status: draft?"draft":"active", ...(draft?{draftDays:Number(days)}:{}), budgetMicros, perRunMicros, createdAt: timestamp(), expiresAt };
-  if(old){const {history,...snapshot}=structuredClone(old);if(snapshot.serviceBusiness)snapshot.serviceBusiness={...snapshot.serviceBusiness,codes:[],entitlements:[],leads:[]};p.id=old.id;p.slug=old.slug;p.createdAt=old.createdAt;p.history=[...(history??[]),snapshot].slice(-20);Object.assign(old,p);}
+    sources, attachments: input.attachments === true, status, draftDays:Number(days), budgetMicros, perRunMicros, createdAt: timestamp(), expiresAt };
+  if(old){p.id=old.id;p.slug=reopening?p.slug:old.slug;p.createdAt=old.createdAt;p.history=[...(old.history??[]),publicationSnapshot(old)].slice(-20);Object.assign(old,p);if(reopening)revokePublicationApi(old,p.updatedAt!);}
   else db.publications!.push(p);
-  db.auditLogs.push({ id: uid("aud"), ...scope, actorUserId: scope.userId, action: draft?(old?"publication.draft.updated":"publication.draft.created"):activate?"publication.activated":old?"publication.updated":"publication.created", targetType: "publication", targetId: p.id, details: {version:p.version, sources: sources.map(s => s.id), budgetMicros, perRunMicros }, createdAt: timestamp() });
+  db.auditLogs.push({ id: uid("aud"), ...scope, actorUserId: scope.userId, action: reopening?'publication.reopened':status==='closed'?'publication.closed.updated':draft?(old?"publication.draft.updated":"publication.draft.created"):activate?"publication.activated":old?"publication.updated":"publication.created", targetType: "publication", targetId: p.id, details: {version:p.version, sources: sources.map(s => s.id), budgetMicros, perRunMicros }, createdAt: timestamp() });
   return p;
 }
 /** Explicit activation is separate from a private configuration save. */
 export function activateSavedPublication(db:Database,scope:{workspaceId:string;userId:string},id:string,input:Record<string,unknown>) {
   const p=ownedPublication(db,scope.workspaceId,scope.userId,id);
   if(input.confirmed!==true)throw new SharingError('请确认开放的知识范围与费用规则');
-  const previous=p.history?.at(-1),activationReceipt=p.status==='active'&&previous?.status==='draft'&&input.version===(previous.version??1)&&(p.version??1)===(previous.version??1)+1;
+  const previous=p.history?.at(-1),activationReceipt=p.status==='active'&&!!previous&&['draft','closed'].includes(previous.status)&&input.version===(previous.version??1)&&(p.version??1)===(previous.version??1)+1;
   if(p.status==='active'&&(input.version===(p.version??1)||activationReceipt))return activePublication(db,p.id); // A lost activation receipt is safe to query again.
   if(input.version!==(p.version??1))throw new SharingError('分身配置已变化，请重新核对后开放分享',409);
-  if(p.status!=='draft')throw new SharingError('已关闭的分享不能重新开启，请创建新分身',409);
+  if(!['draft','closed'].includes(p.status))throw new SharingError('请从未分享或已关闭分身的开放入口操作',409);
+  if(p.userPrompt===undefined)throw new SharingError('这个旧版分身尚未单独保存你的回答要求。请先编辑、填写自己的提示词并保存，再开放分享；不会猜拆或丢弃原提示词。',409,'PUBLICATION_LEGACY_PROMPT');
   for(const source of p.sources){
     const current=db.knowledgeConnections.find(item=>item.id===source.id&&item.workspaceId===scope.workspaceId&&item.status==='connected');
     if(!current||sourceBinding(current)!==source.binding)throw new SharingError('知识连接已变化，请重新打开分身配置核对后再分享',409);
   }
   const allowedUsernames=(p.allowedUserIds??[]).map(userId=>{const user=db.users.find(item=>item.id===userId&&item.enabled);if(!user)throw new SharingError('允许访问的账号已变化，请重新核对配置',409);return user.username;});
-  return publish(db,scope,{intent:'activate',version:p.version??1,name:p.name,description:p.description,prompt:p.userPrompt??'',modelId:p.modelId,sourceIds:p.sources.map(source=>source.id),attachments:p.attachments,budget:p.budgetMicros/1e6,perRun:p.perRunMicros/1e6,days:p.draftDays??7,visitorPercent:(p.visitorMultiplier??0)*100,requireLogin:p.requireLogin??false,allowedUsernames,confirmed:true},p.id);
+  return publish(db,scope,{intent:'activate',version:p.version??1,name:p.name,description:p.description,prompt:p.userPrompt??'',modelId:p.modelId,sourceIds:p.sources.map(source=>source.id),attachments:p.attachments,budget:p.budgetMicros/1e6,perRun:p.perRunMicros/1e6,days:publicationConfiguredDays(p),visitorPercent:(p.visitorMultiplier??0)*100,requireLogin:p.requireLogin??false,allowedUsernames,confirmed:true},p.id);
+}
+/** Deleting is not a revocation workflow. Already-issued customer
+ * rights must be explicitly resolved first, never silently discarded. */
+function assertNoLivePublicationService(p: Publication) {
+  const own = (item: {workspaceId: string; userId: string; publicationId: string}) => item.workspaceId === p.workspaceId && item.userId === p.userId && item.publicationId === p.id;
+  const live = (item: {status: string; expiresAt: string}) => item.status === 'active' && Date.parse(item.expiresAt) > Date.now();
+  if (p.serviceBusiness?.codes.some(code => own(code) && live(code)) || p.serviceBusiness?.entitlements.some(grant => own(grant) && live(grant))) throw new SharingError('还有有效的服务资格或未兑换的服务码。请先在服务管理里明确处理或撤销，再删除分身；不会自动取消客户权益。关闭分享仍然可用。', 409, 'PUBLICATION_SERVICE_COMMITMENT');
+}
+function auditPublicationLifecycle(db: Database, p: Publication, action: string) {
+  db.auditLogs.push({id: uid('aud'), workspaceId: p.workspaceId, actorUserId: p.userId, action, targetType: 'publication', targetId: p.id, details: {version: p.version ?? 1, status: p.status}, createdAt: timestamp()});
+}
+export function closePublication(db: Database, scope: {workspaceId: string; userId: string}, id: string, input: Record<string, unknown>) {
+  const p = ownedPublication(db, scope.workspaceId, scope.userId, id);
+  if (input.confirmed !== true) throw new SharingError('请确认关闭分享', 400);
+  const previous = p.history?.at(-1);
+  if (p.status === 'closed' && (input.version === (p.version ?? 1) || previous?.status === 'active' && input.version === (previous.version ?? 1) && (p.version ?? 1) === (previous.version ?? 1) + 1)) return p;
+  assertPublicationVersion(p, input.version);
+  if (p.status !== 'active') throw new SharingError('这个分身尚未开放分享，不需要关闭', 409);
+  // Privacy withdrawal must remain available even while a visitor is waiting
+  // or a paid service entitlement exists. Stop future access, preserve every
+  // service promise and admitted model usage; do not silently revoke rights.
+  retainPublicationSnapshot(p); p.draftDays ??= publicationConfiguredDays(p); p.status = 'closed'; p.version = (p.version ?? 1) + 1; p.updatedAt = timestamp();
+  revokePublicationApi(p, p.updatedAt);
+  auditPublicationLifecycle(db, p, 'publication.closed');
+  return p;
+}
+export function deletePublication(db: Database, scope: {workspaceId: string; userId: string}, id: string, input: Record<string, unknown>) {
+  const p = ownedPublication(db, scope.workspaceId, scope.userId, id, {includeDeleted: true});
+  if (input.confirmed !== true) throw new SharingError('请确认移入回收站；历史和账单会保留', 400);
+  const previous = p.history?.at(-1);
+  if (p.deletedAt && (input.version === (p.version ?? 1) || !!previous && !previous.deletedAt && input.version === (previous.version ?? 1) && (p.version ?? 1) === (previous.version ?? 1) + 1)) return p;
+  if (p.deletedAt) throw new SharingError('分身已在回收站，请刷新列表', 409, 'PUBLICATION_VERSION_CHANGED');
+  assertPublicationVersion(p, input.version); assertPublicationIdle(db, p); assertNoLivePublicationService(p);
+  retainPublicationSnapshot(p); p.draftDays ??= publicationConfiguredDays(p);
+  p.status = p.status === 'draft' ? 'draft' : 'closed'; p.deletedAt = timestamp(); p.updatedAt = p.deletedAt; p.version = (p.version ?? 1) + 1;
+  revokePublicationApi(p, p.deletedAt);
+  auditPublicationLifecycle(db, p, 'publication.deleted');
+  return p;
+}
+export function restorePublication(db: Database, scope: {workspaceId: string; userId: string}, id: string, input: Record<string, unknown>) {
+  const p = ownedPublication(db, scope.workspaceId, scope.userId, id, {includeDeleted: true});
+  if (input.confirmed !== true) throw new SharingError('请确认从回收站恢复；恢复后不会自动公开', 400);
+  const previous = p.history?.at(-1);
+  if (!p.deletedAt && !!previous?.deletedAt && input.version === (previous.version ?? 1) && (p.version ?? 1) === (previous.version ?? 1) + 1) return p;
+  if (!p.deletedAt) throw new SharingError('这个分身不在回收站', 409);
+  assertPublicationVersion(p, input.version);
+  if (p.status === 'draft' && db.publications!.filter(item => item.workspaceId === scope.workspaceId && item.userId === scope.userId && !item.deletedAt && item.status === 'draft').length >= 50) throw new SharingError('最多保留 50 个未分享分身，请先整理现有分身');
+  retainPublicationSnapshot(p); delete p.deletedAt; p.status = p.status === 'draft' ? 'draft' : 'closed'; p.updatedAt = timestamp(); p.version = (p.version ?? 1) + 1;
+  auditPublicationLifecycle(db, p, 'publication.restored');
+  return p;
 }
 export function createGuest(db: Database, publicationId: string,identity?:VisitorIdentity,internalApi=false) {
   const p = activePublication(db, publicationId);

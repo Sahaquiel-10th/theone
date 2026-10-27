@@ -37,10 +37,10 @@ test("features is a top-level destination; knowledge and OAuth returns live in s
   assert.match(fs.readFileSync(new URL('./AccountPreferencesLayout.tsx',import.meta.url),'utf8'), /id:'knowledge',label:'连接与授权'/);
   assert.doesNotMatch(main, /\["sharing", "分享分身"\]/);
 });
-test("cost disclosure is compact but explicit fee consent remains required", () => {
+test("cost disclosure is compact and live/public changes retain explicit fee consent", () => {
   assert.match(sharing, /summary aria-label="查看分身费用说明"/);
   assert.match(sharing, /从你的余额扣除/);
-  assert.match(sharing, /input required type="checkbox" checked=\{draft.confirmed\}/);
+  assert.match(sharing, /!privateEditor\?<label[^>]*><input form=\{editorFormId\} required type="checkbox" checked=\{draft.confirmed\}/);
 });
 test("only the logo moves; previous page cannot leave a double-image trail", () => {
   const css = fs.readFileSync(new URL("./one-studio.css", import.meta.url), "utf8");

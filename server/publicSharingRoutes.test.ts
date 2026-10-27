@@ -66,7 +66,7 @@ test("real HTTP public flow: Key-managed publication, isolated uploads, paid que
   assert.doesNotMatch(await(await fetch(url)).text(),/PRIVATE_PROMPT|history|sourceIds/);
   const newConfig=await(await fetch(base+`/manage/${pub.id}/config`,{headers:owner})).json();assert.equal(newConfig.version,2);assert.equal(newConfig.history.length,1);
   assert.equal((await fetch(base+`/manage/${pub.id}/close`,{method:"POST"})).status,428);
-  assert.equal((await fetch(base+`/manage/${pub.id}/close`,{method:"POST",headers:owner})).status,200);
+  assert.equal((await fetch(base+`/manage/${pub.id}/close`,{method:"POST",headers:owner,body:JSON.stringify({confirmed:true,version:newConfig.version})})).status,200);
   assert.equal((await fetch(url+"/session",{headers:h1})).status,410);
   assert.equal((await fetch(url+"/questions",{method:"POST",headers:h1,body:JSON.stringify({...payload,operationId:"http_operation_9999"})})).status,410);
   assert.equal(modelCalls,1);

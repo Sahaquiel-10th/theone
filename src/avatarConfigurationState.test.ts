@@ -40,11 +40,22 @@ test('catalog recommendations are bounded and purpose-specific without selecting
     assert.equal(avatarFeatureSuggestions(features, 'consultation')[0].id, 'intake');
     assert.equal(avatarFeatureSuggestions(features, 'knowledge')[0].id, 'report');
     const html = renderToStaticMarkup(createElement(AvatarMethodFields, { value: emptyAvatarService(), features, onChange: () => {} }));
-    assert.ok(html.indexOf('导入文档') < html.indexOf('方法资料'));
+    assert.ok(html.includes('<label>提示词<textarea'));
+    assert.ok(html.indexOf('导入文档') < html.indexOf('<label>提示词<textarea'));
     assert.ok(html.includes('不覆盖已有内容'));
     assert.ok(html.includes('选择功能'));
     assert.ok(!html.includes('无关功能39'));
     assert.equal((html.match(/avatar-feature-option avatar-selected-feature/g) ?? []).length, 0);
+});
+test('the primary prompt remains author text while the visitor greeting stays separate',()=>{
+    const method='只按老师的三步方法回答，不把它当访客开场白。';
+    const value={...emptyAvatarService(),method,welcome:'你好，这是给访客看的。'};
+    const config=renderToStaticMarkup(createElement(AvatarMethodFields,{value,features:[],onChange:()=>{}}));
+    assert.match(config,/<label>提示词<textarea[^>]*>只按老师的三步方法回答/);
+    assert.doesNotMatch(config,/<label>方法资料/);
+    const entrance=renderToStaticMarkup(createElement(AvatarWelcomeFields,{value,section:'welcome',onChange:()=>{}}));
+    assert.ok(entrance.includes('你好，这是给访客看的。'));
+    assert.ok(!entrance.includes(method));
 });
 test('section contracts keep purpose, visitor greeting, pricing and contact separate', () => {
     const renderWelcome = (section: 'purpose' | 'welcome', knowledge = false) => renderToStaticMarkup(createElement(AvatarWelcomeFields, { value: { ...emptyAvatarService(), mode: knowledge ? 'knowledge' : 'consultation' }, section, onChange: () => {} }));

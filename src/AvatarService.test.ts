@@ -24,7 +24,7 @@ test('avatar submission removes blank starter questions without leaking method t
 test('teacher configuration separates welcome, method, selected tools, and eligibility',()=>{
   const value={...emptyAvatarService(),features:[{featureId:'safe',releaseId:'v1',when:'需要预算时',workflow:'先问数字，再生成表格'}]};
   const html=renderToStaticMarkup(createElement(AvatarMethodFields,{value,features:[{id:'safe',releaseId:'v1',name:'预算表格',description:'交付可填写表格',usageMultiplier:0.6}],onChange:()=>{}}));
-  assert.ok(html.includes('方法资料'));assert.ok(html.includes('什么时候用'));assert.ok(html.includes('按什么流程交付'));assert.ok(html.includes('先问数字，再生成表格'));assert.ok(html.includes('accept=".md,.txt'));
+  assert.ok(html.includes('提示词、资料与工具'));assert.ok(html.includes('<label>提示词<textarea'));assert.ok(!html.includes('<label>方法资料'));assert.ok(html.includes('什么时候用'));assert.ok(html.includes('按什么流程交付'));assert.ok(html.includes('先问数字，再生成表格'));assert.ok(html.includes('accept=".md,.txt'));
   assert.ok(html.includes('功能计费倍率'));assert.ok(html.includes('以该功能模型参考价为基准'));assert.ok(!html.includes('ONE 基础费用的 0.6 倍'));
   const welcome=renderToStaticMarkup(createElement(AvatarWelcomeFields,{value:emptyAvatarService(),authorName:'老徐',onChange:()=>{}}));
   assert.ok(welcome.includes('售前咨询'));assert.ok(welcome.includes('知识服务'));assert.ok(welcome.includes('作者'));assert.ok(welcome.includes('老徐'));

@@ -10,11 +10,11 @@ import { avatarDebugConfigKey, avatarDebugFailure, createAvatarDebugGate, create
 export type { AvatarDebugSession } from './avatarDebugState';
 
 const power = (micros: number) => (micros / 1e6).toLocaleString('zh-CN', { maximumFractionDigits: 6 });
-const limits = '仅测试回答和所选知识检索；不执行功能、不接收附件、不提交客户信息、不发布分享，也不向访客收费。';
-
-// Intent: a teacher compares the live visitor entrance with a real private answer.
-// Hierarchy: appearance is explicitly free; the consented test is separate below.
-// Palette/depth: existing ONE glass and ink; 4 px rhythm, one natural scroll owner.
+// Intent: teachers try the exact visitor-facing conversation while editing.
+// Hierarchy: avatar name, greeting and actual messages lead; test boundaries sit
+// quietly at the composer. Palette: clear glass, ink, fog, warm gray and sage.
+// Depth/surfaces: the existing split-pane glass, no second preview card. Shared
+// visitor typography, 4 px spacing and a single outer scroll owner are preserved.
 export function AvatarDebugPanel({ api, draft, authorName, onClose, modelName, initialSession, onSessionChange }: {
     api: typeof Api; draft: PublicationDraft; authorName?: string; onClose: () => void; modelName?: string;
     initialSession?: AvatarDebugSession; onSessionChange?: (session: AvatarDebugSession) => void;
@@ -53,16 +53,16 @@ export function AvatarDebugPanel({ api, draft, authorName, onClose, modelName, i
             if (!gate.current.current(ticket)) return;
             const kind = avatarDebugFailure(failure), message = failure instanceof Error ? failure.message : '暂时没能取得测试结果。';
             if (kind === 'session') { setPending(undefined); setExchanges([]); setQuestion(''); setConsent(false); threadKey.current = undefined; }
-            else if (kind === 'finished') { setPending(undefined); setConsent(false); }
-            setError(kind === 'pending' ? '原测试还在回答。稍后点“核对测试结果”取回原回执，不会重复调用或重复扣费。' : kind === 'uncertain' ? `${message} 原问题和提交编号已保留；请先核对测试结果，不要重新提交。` : `${message} 没有自动重试；如已产生模型用量会保留。`);
+            else if (kind === 'finished') { setPending(undefined); setConsent(false); setQuestion(current=>current.trim()?current:submission.question); }
+            setError(kind === 'pending' ? '这次还在回答，稍后点“找回这次回答”就好，不会重跑。' : kind === 'uncertain' ? `${message} 原问题已保留，先找回这次回答，不用重新发送。` : `${message} 没有自动重试；已产生的用量会保留。`);
         } finally {
             if (gate.current.current(ticket)) { inFlight.current = false; setBusy(false); }
         }
     }
     function submit(event: FormEvent) {
         event.preventDefault();
-        if (!consent || inFlight.current || pending || stale) return;
-        try { const submission = createAvatarDebugSubmission(draft, question, exchanges, crypto.randomUUID()); threadKey.current = submission.configKey; void run(submission); }
+        if (inFlight.current || pending || stale) return;
+        try { const submission = createAvatarDebugSubmission(draft, question, exchanges, crypto.randomUUID()); setConsent(true); setQuestion(''); threadKey.current = submission.configKey; void run(submission); }
         catch (failure) { setError(failure instanceof Error ? failure.message : '请先核对测试配置。'); }
     }
     function resetTrial() {
@@ -70,16 +70,15 @@ export function AvatarDebugPanel({ api, draft, authorName, onClose, modelName, i
         gate.current.invalidate(); threadKey.current = undefined; setExchanges([]); setQuestion(''); setConsent(false); setError(''); input.current?.focus();
     }
     return <section className="avatar-debug-panel" aria-labelledby={titleId}>
-        <header><div><h3 id={titleId}>预览与调试</h3><p>左边改配置，这边看访客入口、试一轮真实回答。不用先保存或分享。</p></div><button type="button" className="avatar-debug-close" aria-label="收起分身调试窗口" onClick={onClose}><X size={18} aria-hidden="true" /></button></header>
-        <section className="avatar-debug-appearance" aria-label="访客入口外观预览"><div className="avatar-debug-section-label"><strong>访客会先看到这些</strong><span>外观预览，不消耗电力</span></div><AvatarPublicIdentity name={draft.name.trim() || '你的分身名称'} authorName={authorName} description={draft.description} mode={service.mode} />
-            <div className="avatar-welcome"><p>{service.welcome.trim() || '在左侧填写开场白，看看你会怎样迎接访客。'}</p><div className="avatar-starter-questions">{service.starterQuestions.map((starter, index) => starter.trim() ? <button type="button" key={index} disabled={busy || !!pending} onClick={() => { setQuestion(starter); input.current?.focus(); }}><span>{starter}</span><ArrowRight size={16} aria-hidden="true" /></button> : null)}</div><small>点选问题只会填入下方输入框；确认并发送后才会使用模型。</small></div>
-        </section>
-        <section className="avatar-debug-live" aria-label="私有真实回答测试"><div className="avatar-debug-section-label"><strong>实际回答测试</strong><button type="button" disabled={busy || !!pending || (!exchanges.length && !threadKey.current)} onClick={resetTrial}><RotateCcw size={14} aria-hidden="true" />新开试聊</button></div><p className="avatar-debug-model-note">模型：{modelName || (draft.modelId ? '左侧选定的问答模型' : '尚未选择')} · {draft.sourceIds.length ? `会检索选中的 ${draft.sourceIds.length} 个知识来源` : '未选择个人知识来源'}</p><p className="avatar-debug-limitations">{limits} 测试用量由你承担。</p>
-            {stale ? <p className="avatar-debug-stale" role="status">左侧配置已经变化。下面的回答仍基于提交时的旧配置；{pending ? '先取回原测试结果，再新开试聊。' : '请点“新开试聊”，避免把旧配置的对话带进新测试。'}</p> : null}
-            <div className="avatar-debug-exchanges" aria-live="polite">{exchanges.map(exchange => <article key={exchange.submission.operationId}><p className="avatar-debug-question"><span>你扮演访客</span>{exchange.submission.question}</p><div className="avatar-debug-response"><small>分身回答{exchange.submission.configKey !== configKey ? ' · 旧配置' : ''}</small><MessageMarkdown allowImages={false}>{exchange.receipt.response}</MessageMarkdown></div>{exchange.receipt.warning ? <p className="avatar-debug-warning">{exchange.receipt.warning}</p> : null}<footer><span>本次已用 {power(exchange.receipt.chargedMicros)} 电力</span>{exchange.receipt.heldMicros > 0 ? <span>另有 {power(exchange.receipt.heldMicros)} 电力待核对</span> : null}</footer><details><summary>本轮测试范围</summary><p>{exchange.receipt.limitations}</p></details></article>)}</div>
-            {pending ? <section className="avatar-debug-pending" aria-label="待核对的测试"><p>{busy ? '正在取得这一次测试的回答…' : '这次结果尚未确认，原提交已保留。'}</p><small>原问题：{pending.question}</small><small>提交编号：{pending.operationId}</small>{!busy ? <button type="button" onClick={() => void run(pending)}>核对测试结果（不重跑）</button> : null}<small>收起窗口不会停止服务端已开始的测试；本次登录内重新打开这位分身，可继续核对原结果。请勿另开相同测试。</small></section> : null}
+        <header className="avatar-debug-toolbar"><div className="avatar-debug-toolbar-title"><h3 id={titleId}>访客试聊</h3><small className="avatar-debug-note">试聊使用你的电力，不会公开分享。</small></div><div className="avatar-debug-toolbar-actions"><button type="button" className="avatar-debug-new" disabled={busy || !!pending || (!exchanges.length && !threadKey.current)} onClick={resetTrial}><RotateCcw size={14} aria-hidden="true" />新开试聊</button><button type="button" className="avatar-debug-close" aria-label="收起分身调试窗口" onClick={onClose}><X size={18} aria-hidden="true" /></button></div></header>
+        <div className="avatar-debug-visitor" aria-label="访客聊天页面">
+            <AvatarPublicIdentity name={draft.name.trim() || '你的分身名称'} authorName={authorName} description={draft.description} mode={service.mode}/>
+            {stale ? <p className="avatar-debug-stale" role="status">左侧配置已经变化。已有回答仍基于旧配置；{pending ? '先取回原测试结果，再新开试聊。' : '新开试聊后，就会使用新配置。'}</p> : null}
+            {!exchanges.length && !pending ? <section className="avatar-welcome"><p>{service.welcome.trim() || '你好，可以先说说你现在想解决的一件事。'}</p>{service.starterQuestions.some(starter=>starter.trim())?<div className="avatar-starter-questions" aria-label="从这些问题开始">{service.starterQuestions.map((starter, index) => starter.trim() ? <button type="button" key={index} disabled={busy || !!pending || stale} onClick={() => { setQuestion(starter); input.current?.focus(); }}>{starter}<ArrowRight size={16} aria-hidden="true" /></button> : null)}</div>:null}</section> : null}
+            <div className="public-answers avatar-debug-exchanges" aria-live="polite">{exchanges.map(exchange => <article key={exchange.submission.operationId}><p className="public-question avatar-debug-question">{exchange.submission.question}</p><div className="markdown-body avatar-debug-response">{exchange.submission.configKey !== configKey?<small className="avatar-debug-old-config">旧配置的回答</small>:null}<MessageMarkdown allowImages={false}>{exchange.receipt.response}</MessageMarkdown></div>{exchange.receipt.warning ? <p className="avatar-debug-warning" role="status">{exchange.receipt.warning}</p> : null}{exchange.receipt.finishReason==='length'?<p className="avatar-debug-warning" role="status">回答还没展开完，可以发送“继续”接着聊。</p>:null}{exchange.receipt.chargedMicros>0||exchange.receipt.heldMicros>0?<footer className="avatar-debug-cost"><span>{power(exchange.receipt.chargedMicros)} 电力</span>{exchange.receipt.heldMicros > 0 ? <span>{power(exchange.receipt.heldMicros)} 电力待核对</span> : null}</footer>:null}</article>)}</div>
+            {pending ? <article className="avatar-debug-pending" aria-label="待返回的回答"><p className="public-question avatar-debug-question">{pending.question}</p><div className="avatar-debug-pending-status" role="status"><span aria-hidden="true"/>{busy ? '正在回答…' : '回答还没取回，原问题已保留。'}</div>{!busy ? <button type="button" onClick={() => void run(pending)}>找回这次回答</button> : null}<details className="avatar-debug-receipt-details"><summary>查看这次记录</summary><small>提交编号：{pending.operationId}</small><small>重新打开这位分身仍可核对原结果，不会重新执行或重复扣费。</small></details></article> : null}
             {error ? <p className="avatar-debug-error" role="alert">{error}</p> : null}
-            <form className="avatar-debug-form" onSubmit={submit}><label htmlFor={questionId}>扮演访客问一句<textarea ref={input} id={questionId} rows={3} maxLength={2000} value={question} disabled={busy || !!pending || stale} onChange={event => setQuestion(event.target.value)} placeholder={service.mode === 'consultation' ? '例如：我现在这个情况，适合找你做咨询吗？' : '例如：请用你的方法，帮我分析这个问题。'} /></label><small className="avatar-debug-input-help">每轮问题最多 2000 字，只带入最近几轮试聊。这里用于短回答测试，达到测试长度上限会提示，不会自动续写。</small><label className="avatar-debug-consent"><input type="checkbox" checked={consent} disabled={busy || !!pending || stale} onChange={event => setConsent(event.target.checked)} /><span>我知道真实试聊会使用我自己的电力；不会开放分享或执行功能。</span></label><button type="submit" className="primary" disabled={!consent || !question.trim() || !draft.modelId || busy || !!pending || stale}>{busy ? '等待本次回答…' : '发送测试（使用我的电力）'}</button></form>
-        </section>
+            <form className="public-composer avatar-debug-form" onSubmit={submit}><label className="avatar-composer-label" htmlFor={questionId}>说说你想解决的事</label><textarea ref={input} id={questionId} aria-label="问题" rows={3} maxLength={2000} value={pending?'':question} disabled={busy || !!pending || stale} onChange={event => setQuestion(event.target.value)} placeholder="从你的实际情况说起…"/>{!draft.modelId?<small className="avatar-debug-note" role="status">先在左侧选择执行模型，就能开始试聊。</small>:null}<footer><small className="avatar-debug-note" title={modelName?`当前模型：${modelName}`:undefined}>问答预览，不执行文件或工具。</small><button type="submit" className="primary" disabled={!question.trim() || !draft.modelId || busy || !!pending || stale}>{busy ? '正在回答…' : '发送'}</button></footer></form>
+        </div>
     </section>;
 }

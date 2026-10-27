@@ -119,7 +119,7 @@ test('real HTTP avatar combines two reviewed features, bills exactly its parent 
   assert.equal((await fetch(`${f.base}/${another.slug}/questions/${receipt.id}/artifacts/${target.id}`, { headers: anotherGuest })).status, 404);
   assert.equal((await fetch(`${url}/questions/${receipt.id}/artifacts/${target.id}`, { headers: anotherGuest })).status, 401);
   assert.equal((await fetch(`${f.base}/manage/${publication.id}/usage`, { headers: { ...ownerHeaders, 'x-user': 'other' } })).status, 404);
-  assert.equal((await fetch(`${f.base}/manage/${publication.id}/close`, { method: 'POST', headers: ownerHeaders })).status, 200);
+  assert.equal((await fetch(`${f.base}/manage/${publication.id}/close`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ confirmed: true, version: f.db.publications!.find(item => item.id === publication.id)!.version ?? 1 }) })).status, 200);
   assert.equal((await fetch(`${url}/questions/${receipt.id}/artifacts/${target.id}`, { headers: guest })).status, 410);
   assert.equal((await fetch(`${url}/sessions`, { method: 'POST' })).status, 410);
   assert.equal(calls, 2);

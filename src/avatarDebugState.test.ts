@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
 import type { PublicationDraft } from './sharingWorkspaceState';
 import type { api as Api } from './oneApi';
 import { emptyAvatarService } from './AvatarService';
@@ -64,14 +65,48 @@ test('changing identity-only appearance does not mix model configuration while m
     assert.throws(() => createAvatarDebugSubmission(current, '问'.repeat(2001), [], operation), /2000/);
     assert.throws(() => createAvatarDebugSubmission({ ...current, modelId: '' }, '问题', [], operation), /选择问答模型/);
 });
-test('debug panel renders one separate consented form and a non-charging visitor appearance preview', () => {
+test('debug panel is one real visitor conversation with a quiet cost note and no extra consent checkbox', () => {
     let requests = 0;
     const api = (async () => { requests++; return receipt(); }) as typeof Api;
     const html = renderToStaticMarkup(createElement(AvatarDebugPanel, { api, draft: draft(), authorName: '林老师', onClose: () => {} }));
     assert.equal(requests, 0); assert.equal((html.match(/<form/g) ?? []).length, 1);
-    for (const text of ['外观预览，不消耗电力', '林老师分身', '林老师', '欢迎来问', '我该从哪里开始？', '我自己的电力', '不会开放分享或执行功能', '发送测试']) assert.ok(html.includes(text), text);
+    for (const text of ['访客试聊', '林老师分身', '林老师', '欢迎来问', '我该从哪里开始？', '试聊使用你的电力，不会公开分享', '问答预览，不执行文件或工具', '>发送</button>']) assert.ok(html.includes(text), text);
+    for (const removed of ['外观预览', '实际回答测试', '你扮演访客', 'type="checkbox"', '发送测试（使用我的电力）'])assert.ok(!html.includes(removed),removed);
+    assert.equal((html.match(/class="avatar-public-identity"/g)??[]).length,1);
+    assert.ok(html.includes('class="public-composer avatar-debug-form"'));
+    const toolbar=html.slice(html.indexOf('avatar-debug-toolbar'),html.indexOf('avatar-debug-visitor'));
+    assert.ok(toolbar.includes('试聊使用你的电力，不会公开分享'));
+    assert.equal((html.match(/试聊使用你的电力/g)??[]).length,1);
+    const composer=html.slice(html.indexOf('public-composer avatar-debug-form'));
+    assert.ok(!composer.includes('试聊使用你的电力'));assert.ok(composer.includes('问答预览，不执行文件或工具'));
     assert.ok(!html.includes('私有方法')); assert.ok(!html.includes('name="workspaceId"')); assert.ok(!html.includes('type="file"'));
     assert.match(html, /type="submit"[^>]*disabled/);
+});
+test('a written question is sendable without an old consent flag; only the explicit send action authorizes the immutable request',()=>{
+    let requests=0;const api=(async()=>{requests++;return receipt();}) as typeof Api;
+    const html=renderToStaticMarkup(createElement(AvatarDebugPanel,{api,draft:draft(),initialSession:createAvatarDebugSession({question:'准备好发送的问题',consent:false,exchanges:[]}),onClose:()=>{}}));
+    const button=html.match(/<button[^>]*type="submit"[^>]*>/)?.[0];assert.ok(button);assert.ok(!button.includes('disabled'));
+    assert.equal(requests,0);
+    const source=readFileSync(new URL('./AvatarDebugPanel.tsx',import.meta.url),'utf8');
+    const submit=source.slice(source.indexOf('function submit('),source.indexOf('function resetTrial('));
+    assert.ok(!submit.includes('!consent'));assert.ok(submit.includes('createAvatarDebugSubmission'));assert.ok(submit.includes('setConsent(true)'));assert.ok(submit.includes('void run(submission)'));
+});
+test('private preview uses actual visitor message markup and preserves markdown without revealing configuration',()=>{
+    const previous=exchange('访客真实提问','**真实回答**\n\n下一步建议');
+    const api=(async()=>receipt()) as typeof Api;
+    const html=renderToStaticMarkup(createElement(AvatarDebugPanel,{api,draft:draft(),authorName:'林老师',initialSession:createAvatarDebugSession({question:'',consent:false,exchanges:[previous]}),onClose:()=>{}}));
+    for(const expected of ['public-answers avatar-debug-exchanges','public-question avatar-debug-question','访客真实提问','<strong>真实回答</strong>','下一步建议'])assert.ok(html.includes(expected),expected);
+    assert.ok(!html.includes('私有方法'));assert.ok(!html.includes('本轮测试范围'));assert.ok(!html.includes('欢迎来问'));
+    const css=readFileSync(new URL('./avatar-debug.css',import.meta.url),'utf8');
+    assert.ok(!/overflow-y:\s*(?:auto|scroll)/.test(css));assert.ok(css.includes('--avatar-line:var(--fluid-line'));
+});
+test('preview keeps the visitor fallback welcome and gives actionable missing-model and truncated-answer guidance',()=>{
+    const api=(async()=>receipt()) as typeof Api,empty=draft();empty.modelId='';empty.service={...emptyAvatarService(),welcome:'',starterQuestions:[]};
+    const entry=renderToStaticMarkup(createElement(AvatarDebugPanel,{api,draft:empty,onClose:()=>{}}));
+    assert.ok(entry.includes('你好，可以先说说你现在想解决的一件事。'));assert.ok(entry.includes('先在左侧选择执行模型'));
+    const limited=exchange('长问题','已回答的一部分');limited.receipt.finishReason='length';
+    const continued=renderToStaticMarkup(createElement(AvatarDebugPanel,{api,draft:draft(),initialSession:createAvatarDebugSession({question:'',consent:false,exchanges:[limited]}),onClose:()=>{}}));
+    assert.ok(continued.includes('回答还没展开完，可以发送“继续”接着聊。'));
 });
 test('in-memory session restoration retains the original receipt request without sharing mutable references', async () => {
     const submission = createAvatarDebugSubmission(draft(), '需要找回的原问题', [], operation);
@@ -85,7 +120,7 @@ test('in-memory session restoration retains the original receipt request without
     let requests = 0;
     const api = (async () => { requests++; return receipt(); }) as typeof Api;
     const html = renderToStaticMarkup(createElement(AvatarDebugPanel, { api, draft: draft(), initialSession: original, onSessionChange: () => {}, onClose: () => {} }));
-    assert.equal(requests, 0); assert.ok(html.includes('核对测试结果（不重跑）')); assert.ok(html.includes('需要找回的原问题')); assert.ok(html.includes(operation));
+    assert.equal(requests, 0); assert.ok(html.includes('找回这次回答')); assert.ok(html.includes('需要找回的原问题')); assert.ok(html.includes(operation));
 });
 test('restored old-config trial stays stale and never requests automatically', () => {
     const submitted = draft(), submission = createAvatarDebugSubmission(submitted, '旧问题', [], operation);
