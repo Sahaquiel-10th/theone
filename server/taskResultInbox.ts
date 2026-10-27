@@ -50,8 +50,11 @@ const clip = (text: string | undefined, max: number) => (text ?? '').trim().slic
 // Never copy transport diagnostics, credentials, JSON/tool instructions or stack
 // traces into an automatic reply. The full owned task retains its detailed text.
 const technical = /(?:\b(?:MCP|HTTP|API|JSON|ECONN\w*|ETIMEDOUT|EPIPE|Bearer|api[_ -]?key|authorization|password|secret|token|stack|traceback|execution_unconfirmed)\b|feature_\d|stream disconnected|response\.completed|执行器|回执|验收证据|^工作位置[：:]|https?:\/\/[^\s]+[?&](?:key|token|secret)=|^\s*[{}]|^\s*at\s+\S+\s*\()/i;
+// The launcher uses this diagnostic as an error field. Match a whole code
+// line before Markdown punctuation cleanup could turn it into goalunfinished.
+const unfinishedCodeLine=/^\s*(?:(?:error|错误(?:码)?|诊断码)\s*[:：]\s*)?`?goal_?unfinished`?\s*$/i;
 function reportLine(line: string) {
-  if (technical.test(line)) return '';
+  if (technical.test(line)||unfinishedCodeLine.test(line)) return '';
   return line.replace(/^\s*(?:#{1,6}\s*|[-*•]\s*|\d+[.、]\s*)/, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/<[^>]*>/g, '').replace(/[*_`]/g, '').trim();
 }
@@ -345,7 +348,7 @@ export function taskResultIdsReportedInMessage(db: Database, scope: TaskResultSc
 /** Model-facing feedback omits storage/operation IDs; its immutable IDs stay server-side for reporting. */
 export function taskResultConversationContext(results: TaskResultReceipt[]) {
   return results.map(result => ({ title: result.title, outcome: result.outcome,
-    summary: result.summary.replace(/^【本机执行回执[^\n]*】\s*\n?/, ''),
+    summary: result.summary.replace(/^【本机执行回执[^\n]*】\s*\n?/, '').split('\n').filter(line=>!unfinishedCodeLine.test(line)).join('\n'),
     taskUrl: `/?task=${encodeURIComponent(result.taskId)}`, imageUrl: result.imageUrl,
     location: result.location, notionUrl: result.notionUrl,
     attachments: result.attachments.map(file => ({ name: file.originalName, kind: file.kind,

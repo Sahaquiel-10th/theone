@@ -1,19 +1,33 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { api as Api } from './oneApi';
 import type { McpDefinition } from '../server/connectors/featureMcp';
 import type { FeatureToolChoice } from '../server/featureTools';
 import { SearchPicker } from './SettingsControls';
 type Auth='bearer'|'api_key';
-export function MyToolCredentials({api}:{api:typeof Api}){
-  const [items,setItems]=useState<{endpoint:string;auth:Auth}[]>([]),[page,setPage]=useState(1),[error,setError]=useState('');
-  async function load(){try{const r=await api<{items:typeof items}>('/api/feature-credentials');setItems(r.items);setPage(1);setError('');}catch{setError('无法读取凭证列表');}}
-  return <details className="quiet-details" onToggle={e=>{if(e.currentTarget.open)void load();}}><summary>工具连接</summary><details><summary>凭证使用范围</summary><p className="hint">即使功能已经下架，也可以在这里撤销凭证。撤销或更换会停止使用旧凭证的后续调用。</p></details><button type="button" onClick={()=>void load()}>刷新列表</button>{items.slice((page-1)*5,page*5).map(c=><ToolCredentialEditor key={`${c.endpoint}:${c.auth}`} api={api} {...c}/>)}{!items.length?<p>暂无凭证</p>:null}{items.length>5?<div className="settings-pagination"><button type="button" disabled={page<=1} onClick={()=>setPage(page-1)}>上一页</button><span> {page} / {Math.max(1,Math.ceil(items.length/5))} </span><button type="button" disabled={page*5>=items.length} onClick={()=>setPage(page+1)}>下一页</button></div>:null}{error?<p role="alert">{error}</p>:null}</details>;
+export function toolCredentialName(endpoint:string){
+  try{const url=new URL(endpoint);return url.host?`${url.host}${url.pathname==='/'?'':url.pathname}`:'工具连接';}catch{return '工具连接';}
 }
-export function ToolCredentialEditor({api,endpoint,auth}:{api:typeof Api;endpoint:string;auth:Auth}){
-  const [secret,setSecret]=useState(''),[configured,setConfigured]=useState(false),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
-  useEffect(()=>{let active=true;setConfigured(false);setSecret('');void api<{items:{endpoint:string;auth:string}[]}>('/api/feature-credentials').then(r=>{if(active)setConfigured(r.items.some(c=>c.endpoint===endpoint&&c.auth===auth));}).catch(()=>{if(active)setMessage('无法读取凭证状态');});return()=>{active=false;};},[api,endpoint,auth]);
-  async function save(remove=false){setBusy(true);setMessage('');try{await api('/api/feature-credentials',{method:remove?'DELETE':'POST',body:JSON.stringify({endpoint,auth,...(!remove?{secret}:{})})});setSecret('');setConfigured(!remove);setMessage(remove?'已撤销':'已加密保存，仅供本人使用');}catch(e){setMessage(e instanceof Error?e.message:'保存失败');}finally{setBusy(false);}}
-  return <details><summary>我的接口凭证 · {configured?'已配置':'未配置'}</summary><p className="hint" style={{overflowWrap:'anywhere'}}>{endpoint} · {auth==='bearer'?'Bearer':'X-API-Key'}。不会分享给其他用户，也不会发送给模型。</p><label>凭证<input type="password" autoComplete="new-password" value={secret} onChange={e=>setSecret(e.target.value)} maxLength={8000}/></label><button type="button" disabled={busy||secret.length<8} onClick={()=>void save()}>保存本人凭证</button>{configured?<button type="button" disabled={busy} onClick={()=>void save(true)}>撤销</button>:null}{message?<p role="status">{message}</p>:null}</details>;
+export function MyToolCredentials({api,inline=false}:{api:typeof Api;inline?:boolean}){
+  const [items,setItems]=useState<{endpoint:string;auth:Auth}[]>([]),[page,setPage]=useState(1),[error,setError]=useState(''),[phase,setPhase]=useState<'idle'|'loading'|'ready'|'error'>(inline?'loading':'idle');
+  const generation=useRef(0);
+  async function load(){const request=++generation.current;setPhase('loading');setError('');try{const r=await api<{items:typeof items}>('/api/feature-credentials');if(request!==generation.current)return;setItems(r.items);setPage(1);setPhase('ready');}catch{if(request===generation.current){setError('暂时无法读取工具连接，请重试。');setPhase('error');}}}
+  useEffect(()=>{if(inline)void load();return()=>{generation.current++;};},[api,inline]);
+  const body=<div className="tool-connections-body" aria-busy={phase==='loading'}>
+    <div className="tool-connections-toolbar"><span>{items.length?`${items.length} 个已保存的工具连接`:''}</span><button type="button" disabled={phase==='loading'} onClick={()=>void load()}>刷新列表</button></div>
+    {phase==='loading'?<p role="status">正在读取工具连接…</p>:null}
+    {error?<p role="alert">{error}</p>:null}
+    <div className="tool-connections-list">{items.slice((page-1)*5,page*5).map(c=><ToolCredentialEditor key={`${c.endpoint}:${c.auth}`} api={api} {...c} initialConfigured onChanged={()=>void load()}/>)}</div>
+    {phase==='ready'&&!items.length?<p className="tool-connections-empty">暂无已保存的工具凭证。</p>:null}
+    {items.length>5?<div className="settings-pagination"><button type="button" disabled={page<=1} onClick={()=>setPage(page-1)}>上一页</button><span> {page} / {Math.max(1,Math.ceil(items.length/5))} </span><button type="button" disabled={page*5>=items.length} onClick={()=>setPage(page+1)}>下一页</button></div>:null}
+    <details className="tool-connections-scope"><summary>凭证使用范围</summary><p className="hint">即使功能已经下架，也可以在这里撤销凭证。撤销或更换会停止使用旧凭证的后续调用。</p></details>
+  </div>;
+  return inline?<section className="tool-connections-inline" aria-label="工具连接列表">{body}</section>:<details className="quiet-details" onToggle={e=>{if(e.target===e.currentTarget&&e.currentTarget.open)void load();}}><summary>工具连接</summary>{body}</details>;
+}
+export function ToolCredentialEditor({api,endpoint,auth,initialConfigured,onChanged}:{api:typeof Api;endpoint:string;auth:Auth;initialConfigured?:boolean;onChanged?:()=>void}){
+  const [secret,setSecret]=useState(''),[configured,setConfigured]=useState<boolean|undefined>(initialConfigured),[checking,setChecking]=useState(initialConfigured===undefined),[readError,setReadError]=useState(''),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
+  useEffect(()=>{let active=true;setConfigured(initialConfigured);setSecret('');setReadError('');if(initialConfigured!==undefined){setChecking(false);return;}setChecking(true);void api<{items:{endpoint:string;auth:string}[]}>('/api/feature-credentials').then(r=>{if(active){setConfigured(r.items.some(c=>c.endpoint===endpoint&&c.auth===auth));setChecking(false);}}).catch(()=>{if(active){setReadError('暂时无法确认凭证状态。');setChecking(false);}});return()=>{active=false;};},[api,endpoint,auth,initialConfigured]);
+  async function save(remove=false){setBusy(true);setMessage('');try{await api('/api/feature-credentials',{method:remove?'DELETE':'POST',body:JSON.stringify({endpoint,auth,...(!remove?{secret}:{})})});setSecret('');setConfigured(!remove);setReadError('');setMessage(remove?'已撤销':'已加密保存，仅供本人使用');onChanged?.();}catch(e){setMessage(e instanceof Error?e.message:'保存失败');}finally{setBusy(false);}}
+  return <details className="tool-credential-editor"><summary><span className="tool-credential-name">{toolCredentialName(endpoint)}</span><small className="tool-credential-auth">{auth==='bearer'?'Bearer':'API Key'}</small><span className="tool-credential-state">{checking?'读取中…':configured===undefined?'状态未确认':configured?'已配置':'未配置'}</span></summary><div className="tool-credential-fields"><p className="hint" style={{overflowWrap:'anywhere'}}>{endpoint} · {auth==='bearer'?'Bearer':'X-API-Key'}。不会分享给其他用户，也不会发送给模型。</p>{readError?<p role="alert">{readError}</p>:null}<label>本人凭证<input type="password" autoComplete="new-password" value={secret} disabled={busy} onChange={e=>setSecret(e.target.value)} maxLength={8000}/></label><div className="tool-credential-actions"><button type="button" disabled={busy||checking||secret.length<8} onClick={()=>void save()}>保存本人凭证</button>{configured?<button type="button" disabled={busy} onClick={()=>void save(true)}>撤销</button>:null}</div>{message?<p role="status">{message}</p>:null}</div></details>;
 }
 export function ToolAuthPicker({value,onChange}:{value?:Auth;onChange:(v:Auth|undefined)=>void}){return <div className="settings-tabs">{([['','无需凭证'],['bearer','Bearer'],['api_key','API Key']] as const).map(([v,label])=><button type="button" key={v} aria-pressed={(value??'')===v} onClick={()=>onChange(v||undefined)}>{label}</button>)}</div>;}
 export function McpToolPicker({api,endpoints,tools,onAdd}:{api:typeof Api;endpoints:string[];tools:FeatureToolChoice[];onAdd:(tool:FeatureToolChoice)=>void}){

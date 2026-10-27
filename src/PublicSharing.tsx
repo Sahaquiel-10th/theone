@@ -160,7 +160,7 @@ export function SharingPanel({api,models,externalQuery,hideSearch=false,onPublic
  }
 
  const ownerList=<section className="sharing-owner-list" aria-label="我的分身列表" aria-busy={loading}>
-  <header className="sharing-owner-list-header"><div><h3>我的分身</h3><p>每个分身的配置、分享与用量，都从它自己的位置展开。</p></div><button type="button" className="primary" ref={createButton} disabled={!data?.ready||busy} onClick={beginCreate}>＋ {newDraft.current?'继续创建':'创建分身'}</button></header>
+  <header className="sharing-owner-list-header"><div><h3>我的分身</h3></div><button type="button" className="primary" ref={createButton} disabled={!data?.ready||busy} onClick={beginCreate}>＋ {newDraft.current?'继续创建':'创建分身'}</button></header>
   {data?.ready===false?<p role="status">分享功能准备中，请管理员完成数据库升级。</p>:null}
   {!hideSearch?<input aria-label="搜索分享分身" placeholder="搜索分身" value={query} onChange={event=>{setQuery(event.target.value);setPage(1);}}/>:null}
   {listError?<div className="sharing-list-error" role="alert"><p>{listError}</p><button type="button" disabled={busy} onClick={()=>void load().catch(e=>setListError(failure(e)))}>刷新分身列表</button></div>:null}

@@ -102,7 +102,9 @@ test('friendly reports preserve actual accomplishments without overstating compl
   const good='文案已经做好，网页这次还没保存成功。可以继续补上，不用重写文案。';
   assert.equal(validateTaskReport(JSON.stringify({message:good}),facts),good);
   for(const message of ['API 调用失败了','大部分完成了，文案已做好','文案和网页全部完成','文案已做好。全部搞定了'])assert.equal(validateTaskReport(JSON.stringify({message}),facts),taskReportFallback(facts));
-  assert.match(validateTaskReport('not json',facts),/文案.*已经做好/);
+  const fallback=validateTaskReport('not json',facts);
+  assert.match(fallback,/文案已完成/);
+  assert.match(fallback,/网页还没做好/);
   assert.doesNotMatch(taskReportFallback({...facts,done:[]}),/成果已|全部|大部分/);
   for(const message of ['文案已经做好，网页还没好。下一步我接着把网页补齐，补完就给你。','文案已做好，网页还差一些，我会继续。','文案已经做好，网页还在处理，我正在补。'])
     assert.equal(validateTaskReport(JSON.stringify({message}),facts),taskReportFallback(facts));

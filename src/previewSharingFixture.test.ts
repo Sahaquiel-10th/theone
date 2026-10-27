@@ -83,3 +83,56 @@ test('a transient guide launch error can retry using the same safe local contrac
  const f=fixtureHarness('guideFailBegin=1'),endpoint='/api/me/profile/onboarding',body={action:'begin',launchId:'fixture-retry-123456789',experience:4};
  assert.equal((await f.request(endpoint,body)).status,503);const retry=await f.request(endpoint,body);assert.equal(retry.status,200);assert.equal(retry.data.profile.onboarding.journey.stage,'name');assert.equal(f.nativeCalls,0);
 });
+
+
+test('UX audit settings stay synthetic with exact authorization and writing routes',async()=>{
+ const f=fixtureHarness('uxAudit=1&realService=1');
+ assert.equal(f.mode,'synthetic');
+ assert.ok((await f.request('/api/me/executor')).data.installedVersion);
+ assert.equal((await f.request('/api/me/local-device')).data.targetName,'ONE 演示工作区');
+ assert.equal((await f.request('/api/knowledge/connections/notion')).data.connection.status,'connected');
+ const writing=await f.request('/api/knowledge/connections/notion/writing');assert.equal(writing.data.ready,true);assert.deepEqual(writing.data.referenceIds,[]);
+ const oauth=await f.request('/api/knowledge/connections/notion/oauth/start',{});assert.equal(oauth.status,409);assert.equal(oauth.data.authorizationUrl,undefined);
+ assert.equal((await f.request('/api/knowledge/connections/notion/unknown')).status,404);
+ await f.request('/api/me/context-preferences',{timeZone:'Asia/Shanghai',city:'合成城市'});
+ assert.equal((await f.request('/api/me/context-preferences')).data.saved.city,'合成城市');
+ const attention=await f.request('/api/attention');assert.equal(attention.data.sources.length,1);
+ const saved=await f.request('/api/attention/settings',{enabled:true,sourceIds:['fixture-notion'],topics:['合成主题'],intervalHours:6,dailyLimit:4,quietStart:22,quietEnd:8,timeZone:'Asia/Shanghai'});assert.equal(saved.data.settings.enabled,true);
+ assert.equal((await f.request('/api/me/membership')).data.active.remainingPercent,68);
+ assert.equal((await f.request('/api/me/billing/history?kind=usage&page=1')).data.items.length,2);
+ assert.equal((await f.request('/api/me/payments/wechat',{productId:'fixture-standard-1'})).status,409);
+ const coordinator=await f.request('/api/coordinator'),report=coordinator.data.conversation.messages.find((message:any)=>message.id==='report_fixture-ux-audit');
+ assert.match(report.content,/：已完成。.+\n\[查看这件事\]\(\/\?task=/);
+ assert.equal(coordinator.data.links.filter((link:any)=>link.messageId===report.id).length,3);
+ assert.equal(f.nativeCalls,0);
+});
+test('UX audit empty and offline devices, and management roles need no real service',async()=>{
+ const empty=fixtureHarness('uxAudit=1&auditDevice=empty&auditKnowledge=empty');
+ assert.equal((await empty.request('/api/me/executor')).data.installedVersion,undefined);
+ assert.equal((await empty.request('/api/attention')).data.sources.length,0);
+ assert.equal((await empty.request('/api/attention/settings',{enabled:true,sourceIds:[],topics:[]})).status,400);
+ const offline=fixtureHarness('uxAudit=1&auditDevice=offline');assert.equal((await offline.request('/api/me/executor')).status,503);
+ const admin=fixtureHarness('uxAudit=1&auditRole=admin');assert.equal((await admin.request('/api/me')).data.user.role,'admin');
+ for(const path of ['/api/admin/users','/api/admin/models','/api/admin/one-keys','/api/admin/operations','/api/admin/context-traces','/api/admin/product-metrics'])assert.equal((await admin.request(path)).status,200);
+ assert.equal((await admin.request('/api/admin/users',{username:'never-create'})).status,409);
+ const company=fixtureHarness('uxAudit=1&auditRole=company');assert.equal((await company.request('/api/me')).data.user.access.role,'company_admin');assert.equal((await company.request('/api/company')).data.members.length,2);
+ assert.equal(admin.nativeCalls+company.nativeCalls+empty.nativeCalls+offline.nativeCalls,0);
+});
+
+test('the public UX preview uses only explicit synthetic requests and idempotent mock questions',async()=>{
+ const source=fs.readFileSync(new URL('../output/playwright/public-sharing-preview.tsx',import.meta.url),'utf8').split('\n').filter(line=>!line.startsWith('import ')).join('\n');
+ const window:{fetch?:any}={},document={documentElement:{dataset:{}},getElementById:()=>({})};
+ const sandbox={window,document,location:{origin:'http://127.0.0.1:5346'},URL,Response,Request,Headers,Date,JSON,createElement:()=>null,createRoot:()=>({render(){}}),PublicSharingPage(){}};
+ vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText,sandbox);
+ const request=async(path:string,body?:unknown)=>{const r=await window.fetch(path,{method:body?'POST':'GET',...(body?{body:JSON.stringify(body)}:{})});assert.equal(r.headers.get('X-ONE-Preview'),'synthetic');return {status:r.status,data:await r.json()};};
+ const base='/api/sharing/fixture-ux-public';
+ assert.equal((await request(base)).data.requireLogin,false);
+ assert.equal((await request('https://example.com/anywhere')).status,403);
+ assert.equal((await request('/api/visitors/login',{username:'not-a-real-account',password:'never-sent'})).status,409);
+ assert.equal((await request('/api/me/payments/wechat',{})).status,409);
+ const question={operationId:'fixture-question-1',content:'合成问题'};
+ assert.equal((await request(base+'/questions',question)).status,200);
+ assert.equal((await request(base+'/questions',question)).status,200);
+ const session=await request(base+'/session');assert.equal(session.data.total,1);assert.equal(session.data.items[0].chargedMicros,0);
+ assert.equal((await request(base+'/uploads',{})).status,409);
+});

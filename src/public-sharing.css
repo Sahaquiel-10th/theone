@@ -288,82 +288,96 @@
 
 /* A closed owner is a list item, not a permanently expanded editor. Its own
    link still gets a full-height child surface while it separates or rejoins. */
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-list-header{align-items:center;gap:10px;margin-bottom:12px;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-list-header h3{font-size:16px!important;margin:0 0 4px!important;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-list-header p{font-size:11px;line-height:1.6;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-list>input{min-height:34px;margin-bottom:10px;padding:7px 10px;font-size:12px;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-cards{container:one-avatar-list / inline-size;gap:9px;margin:0 0 10px;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-split{height:132px;--fluid-split-padding:12px;transition:height 260ms cubic-bezier(.22,.7,.25,1);}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-split[data-split-state]:not([data-split-state=merged]),
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-split:has(.sharing-owner-more[open]){height:246px;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-main>header{align-items:center;gap:8px;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-main h4{font-size:14px;line-height:1.5;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-main .sharing-owner-description{margin:4px 0;font-size:12px;line-height:1.6;-webkit-line-clamp:1;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-main .sharing-owner-usage{font-size:10px;line-height:1.6;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-success{margin:5px 0 0;font-size:10px;line-height:1.6;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-main>footer{gap:6px;margin-top:7px!important;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-main>footer>button,
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-more>summary{display:inline-flex;align-items:center;justify-content:center;gap:5px;width:auto;min-height:30px;padding:5px 9px;border:1px solid color-mix(in srgb,var(--fluid-ink) 28%,transparent);border-radius:10px;background:transparent;color:var(--fluid-ink);font-size:11px;line-height:1.5;}
-@media(prefers-reduced-motion:reduce){main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-split{transition:none;}}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-list-header{align-items:center;gap:10px;margin-bottom:12px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-list-header h3{font-size:16px!important;margin:0 0 4px!important;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-list-header p{font-size:11px;line-height:1.6;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-list>input{min-height:34px;margin-bottom:10px;padding:7px 10px;font-size:12px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-cards{container:one-avatar-list / inline-size;gap:9px;margin:0 0 10px;}
+/* Compact owners retain their own material while the enclosing workspace
+   arrives. Hiding these SVGs exposes the dark seam stage behind dark text. */
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-cards>article.sharing-owner{background:var(--fluid-input);color:var(--fluid-ink);border:0;box-shadow:none;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split>.fluid-split-material{visibility:visible;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split[data-split-state=merged]{background:transparent;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split>.fluid-split-material>.fluid-split-rim{stroke:var(--fluid-line);stroke-width:1;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main,
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main h4{color:var(--fluid-ink);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main>footer>button,
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-more>summary,
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-more>div>button{background:var(--fluid-input);color:var(--fluid-ink);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy details.sharing-owner-more{background:transparent;box-shadow:none;backdrop-filter:none;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split{height:132px;--fluid-split-padding:12px;transition:height 260ms cubic-bezier(.22,.7,.25,1);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split[data-split-state]:not([data-split-state=merged]),
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split:has(.sharing-owner-more[open]){height:246px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main>header{align-items:center;gap:8px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main h4{font-size:14px;line-height:1.5;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main .sharing-owner-description{margin:4px 0;font-size:12px;line-height:1.6;-webkit-line-clamp:1;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main .sharing-owner-usage{font-size:10px;line-height:1.6;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-success{margin:5px 0 0;font-size:10px;line-height:1.6;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main>footer{gap:6px;margin-top:7px!important;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main>footer>button,
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-more>summary{display:inline-flex;align-items:center;justify-content:center;gap:5px;width:auto;min-height:30px;padding:5px 9px;border:1px solid color-mix(in srgb,var(--fluid-ink) 28%,transparent);border-radius:10px;background:var(--fluid-input);color:var(--fluid-ink);font-size:11px;line-height:1.5;}
+@media(prefers-reduced-motion:reduce){main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split{transition:none;}}
 
 /* Author, description and usage are one compact record, not three cards.
    The editor retains every field and public guest pages keep their own scale. */
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-main .avatar-list-author{margin:3px 0;color:var(--fluid-muted);font-size:11px;line-height:1.5;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-split:has(.sharing-owner-success){height:178px;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-split:has(.sharing-owner-success):not([data-split-state=merged]),
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-split:has(.sharing-owner-success):has(.sharing-owner-more[open]){height:246px;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-subview>header{margin-bottom:12px;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-subview-back{margin-bottom:6px;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-subview-body>.sharing-form,
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-form>.sharing-editor-fields{gap:14px;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-publish-review{gap:12px;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-publish-review dl{gap:10px;}
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-publish-review dl>div{gap:12px;padding-bottom:10px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main .avatar-list-author{margin:3px 0;color:var(--fluid-muted);font-size:11px;line-height:1.5;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split:has(.sharing-owner-success){height:178px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split:has(.sharing-owner-success):not([data-split-state=merged]),
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split:has(.sharing-owner-success):has(.sharing-owner-more[open]){height:246px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-subview>header{margin-bottom:12px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-subview-back{margin-bottom:6px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-subview-body>.sharing-form,
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-form>.sharing-editor-fields{gap:14px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-publish-review{gap:12px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-publish-review dl{gap:10px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-publish-review dl>div{gap:12px;padding-bottom:10px;}
 
 /* List metadata shares a line; actions stay beside a record on wide lists.
    Narrow split lists keep their actions below, without changing the workflow. */
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-main {
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main {
   display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 12px;align-content:start;
 }
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-main>header {
-  grid-column:1/-1;grid-row:1;min-height:24px;flex-wrap:nowrap;
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main>header {
+  display:grid;grid-template-columns:minmax(0,1fr) auto;grid-column:1/-1;grid-row:1;min-width:0;min-height:24px;gap:8px;align-items:center;
 }
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-main>header>div {
-  flex:1;min-width:0;flex-wrap:nowrap;
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main>header>div {
+  display:grid;grid-template-columns:minmax(0,1fr) auto;min-width:0;gap:6px;align-items:baseline;
 }
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-main h4 {
-  min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main>header>div>h4 {
+  display:block;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;overflow-wrap:normal;word-break:normal;
 }
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-main .sharing-owner-description {
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main>header>div>small{white-space:nowrap;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main>header>.sharing-owner-status{justify-self:end;white-space:nowrap;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main .sharing-owner-description {
   grid-column:1/-1;grid-row:2;margin:0;
 }
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-main .avatar-list-author {
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main .avatar-list-author {
   grid-column:1;grid-row:3;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-main .sharing-owner-usage {
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main .sharing-owner-usage {
   grid-column:2;grid-row:3;white-space:nowrap;
 }
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-main>footer {
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main>footer {
   grid-column:1/-1;grid-row:4;margin-top:0!important;
 }
-main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-main .sharing-owner-success {
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-main .sharing-owner-success {
   grid-column:1/-1;grid-row:5;
 }
 @container one-avatar-list (min-width:700px) {
-  main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-split {
+  main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split {
     height:108px;
   }
-  main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-split[data-split-state=merged]:not(:has(.sharing-owner-more[open])) .sharing-owner-main {
+  main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split[data-split-state=merged]:not(:has(.sharing-owner-more[open])) .sharing-owner-main {
     grid-template-columns:minmax(0,1fr) auto auto;
   }
-  main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-split[data-split-state=merged]:not(:has(.sharing-owner-more[open])) .sharing-owner-main>header,
-  main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-split[data-split-state=merged]:not(:has(.sharing-owner-more[open])) .sharing-owner-main .sharing-owner-description {
+  main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split[data-split-state=merged]:not(:has(.sharing-owner-more[open])) .sharing-owner-main>header,
+  main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split[data-split-state=merged]:not(:has(.sharing-owner-more[open])) .sharing-owner-main .sharing-owner-description {
     grid-column:1/3;
   }
-  main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-split[data-split-state=merged]:not(:has(.sharing-owner-more[open])) .sharing-owner-main .sharing-owner-usage {
+  main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split[data-split-state=merged]:not(:has(.sharing-owner-more[open])) .sharing-owner-main .sharing-owner-usage {
     grid-column:2;grid-row:3;
   }
-  main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .feature-shelf .sharing-owner-split[data-split-state=merged]:not(:has(.sharing-owner-more[open])) .sharing-owner-main>footer {
+  main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .sharing-panel.sharing-hierarchy .sharing-owner-split[data-split-state=merged]:not(:has(.sharing-owner-more[open])) .sharing-owner-main>footer {
     grid-column:3;grid-row:1/4;align-self:center;flex-wrap:nowrap;
   }
 }

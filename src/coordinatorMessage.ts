@@ -9,6 +9,7 @@ export function privateImageUrl(value: unknown): string | undefined {
 export function coordinatorMessage(message: StoredMessage): Message {
  return {
   id: message.id!, role: message.role === 'user' ? 'user' : 'assistant', text: message.content,
+  ...(message.role==='assistant'&&message.id?.startsWith('report_')?{kind:'result' as const}:{}),
   requestId: message.requestId, finishReason: message.finishReason,
   imageUrl: privateImageUrl(message.imageUrl),
   files: message.attachments?.map(file => ({

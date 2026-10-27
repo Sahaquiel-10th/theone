@@ -16,12 +16,16 @@ test('compact card keeps inspection separate from selection and hands over the a
  const node=FeatureShelfCard({feature,selected:false,inspecting:false,onInspect:()=>inspected++,onChoose:(choice,element)=>choices.push({feature:choice,source:element})});
  const actions=buttons(node);assert.equal(actions.length,2);actions[0].props.onClick();assert.equal(inspected,1);assert.equal(choices.length,0);
  actions[1].props.onClick({currentTarget:source});assert.deepEqual(choices,[{feature,source}]);assert.equal(actions[1].props['aria-pressed'],false);
- const html=renderToStaticMarkup(node);assert.match(html,/办公助手/);assert.match(html,/已购买/);assert.match(html,/0.6/);assert.match(html,/按实际用量扣除/);assert.match(html,/详情与运行/);
+ const html=renderToStaticMarkup(node);assert.match(html,/办公助手/);assert.match(html,/feature-official-badge/);assert.match(html,/官方/);assert.match(html,/查看详情/);assert.doesNotMatch(html,/已购买|0\.6 倍|按实际用量扣除|可使用/);
 });
 test('a locked card only opens access details and can never select or launch the function',()=>{
  let inspected=0,selected=0;const node=FeatureShelfCard({feature:{...feature,access:'locked',purchaseLabel:'开通方式待发布'},selected:false,inspecting:false,onInspect:()=>inspected++,onChoose:()=>selected++});
  const action=buttons(node)[1];assert.equal(action.props['aria-pressed'],undefined);action.props.onClick({currentTarget:{}});assert.equal(inspected,1);assert.equal(selected,0);
- assert.match(renderToStaticMarkup(node),/未开通/);assert.match(renderToStaticMarkup(node),/了解开通/);assert.match(renderToStaticMarkup(node),/开通方式待发布/);
+ assert.match(renderToStaticMarkup(node),/未开通/);assert.match(renderToStaticMarkup(node),/了解开通/);assert.doesNotMatch(renderToStaticMarkup(node),/开通方式待发布/);
+});
+test('community authors never acquire the official badge through a fallback label',()=>{
+ const html=renderToStaticMarkup(FeatureShelfCard({feature:{...feature,author:'合作作者'},selected:false,inspecting:false,onInspect:()=>{},onChoose:()=>{}}));
+ assert.doesNotMatch(html,/feature-official-badge|>官方</);
 });
 test('selected and inspected states retain distinct accessible feedback and cancellation',()=>{
  let cancelled=0;const node=FeatureShelfCard({feature,selected:true,inspecting:true,onInspect:()=>{},onChoose:()=>cancelled++}),actions=buttons(node);

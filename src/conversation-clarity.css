@@ -1,0 +1,16 @@
+/* Task updates are compact records; the full authored message remains in the
+   disclosure. Ordinary answers retain their existing Markdown hierarchy. */
+.coordinator-message.coordinator-system-report{padding:0;}
+.coordinator-report-items{display:grid;gap:8px;}
+.coordinator-report-item{min-width:0;padding:10px 12px;border:1px solid var(--fluid-line,var(--studio-line,#d5dde0));border-radius:14px;background:var(--fluid-input,var(--studio-surface,#f6f8f8));}
+.coordinator-report-item>header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant.coordinator-system-report .coordinator-report-item>header>h3{min-width:0;margin:0;font-size:14px;font-weight:650;line-height:1.5;letter-spacing:0;color:var(--fluid-ink,var(--studio-ink));}
+.coordinator-report-item>header>span{flex:none;font-size:11px;line-height:1.5;color:var(--fluid-muted,var(--studio-muted));}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant.coordinator-system-report .coordinator-report-item>p{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin:5px 0 0;font-size:13px;line-height:1.5;color:var(--fluid-ink,var(--studio-ink));}
+.coordinator-report-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:3px;}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant.coordinator-system-report .coordinator-report-actions>:is(.coordinator-task-link,a){display:inline-flex;align-items:center;gap:5px;width:auto;min-height:24px;margin:0;padding:3px 0;border:0;border-radius:4px;background:transparent;box-shadow:none;color:var(--fluid-focus,var(--studio-ink));font:inherit;font-size:12px;line-height:1.5;text-decoration:none;cursor:pointer;}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant.coordinator-system-report .coordinator-report-details{margin-top:7px;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;backdrop-filter:none;font-size:12px;color:var(--fluid-muted,var(--studio-muted));}
+main.one-fluid-workspace.one-shell.one-studio .coordinator-message.assistant.coordinator-system-report .coordinator-report-details>summary{width:fit-content;min-width:0;min-height:24px;margin:0;padding:0;border:0;border-radius:0;background:none;box-shadow:none;font-size:12px;line-height:24px;cursor:pointer;}
+.coordinator-report-full-text{margin-top:8px;color:var(--fluid-ink,var(--studio-ink));}
+.coordinator-report-full-text>p:empty{display:none;}
+.coordinator-report-item a:focus-visible,.coordinator-report-item button:focus-visible,.coordinator-report-details>summary:focus-visible{outline:2px solid var(--fluid-focus,#8b741f);outline-offset:3px;}

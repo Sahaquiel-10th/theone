@@ -124,7 +124,7 @@ export function ThingsPanel({
             >
               <strong><span className="things-task-label">{item.title}</span>{item.unread?<span className="task-review-dot" aria-label="结果尚未查看"/>:null}</strong>
               <small>
-                {item.taskState==='active'?'正在处理 · ':item.taskState==='review'||item.taskState==='ended'?`${item.outcome?transferStateLabel(item.outcome):'已结束 · 查看回执'} · `:'历史对话 · '}{new Date(item.updatedAt).toLocaleDateString("zh-CN")}
+                {item.taskState==='active'?'正在处理 · ':item.taskState==='review'||item.taskState==='ended'?`${item.outcome?transferStateLabel(item.outcome):'已结束'} · `:'历史对话 · '}{new Date(item.updatedAt).toLocaleDateString("zh-CN")}
               </small>
             </button>
           ))}
@@ -250,7 +250,7 @@ export function ThingsPanel({
                   type="submit"
                   disabled={!draft.trim() || sending.includes(selected.id) || selected.messagesLoaded === false}
                 >
-                  {sending.includes(selected.id) ? "接收中" : sendLabel}
+                  {sending.includes(selected.id) ? "正在发送…" : sendLabel}
                 </button>
                 {onExecuteDraft ? <button className="things-compose-execute" type="button" disabled={!draft.trim()||executionDisabled||executionPreparing||sending.includes(selected.id)||selected.messagesLoaded===false} onClick={event=>{setErrors(old=>({...old,[selected.id]:''}));void onExecuteDraft(selected.id,draft,event.currentTarget).catch(e=>setErrors(old=>({...old,[selected.id]:e instanceof Error?e.message:'执行未确认，草稿已保留'})));}}><Zap size={14} aria-hidden="true"/><span>本机执行</span></button> : null}
                 </div>

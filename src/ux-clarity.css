@@ -1,0 +1,36 @@
+/* Reading order and controls within the existing optical-glass surfaces. */
+.one-fluid-workspace .task-recovery{padding:12px 14px;border:1px solid var(--fluid-line);border-radius:16px;background:var(--fluid-input);font-size:12px;line-height:1.6;}
+.one-fluid-workspace .task-recovery>strong{display:block;font-size:14px;line-height:1.4;color:var(--fluid-ink);}
+.one-fluid-workspace .task-recovery>p{margin:6px 0 10px;}
+.one-fluid-workspace .task-recovery>button{min-height:30px;margin:4px 6px 0 0;padding:5px 10px;width:auto;}
+main.one-fluid-workspace.one-shell.one-studio .task-recovery details{margin:6px 0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;backdrop-filter:none;color:var(--fluid-muted);}
+main.one-fluid-workspace.one-shell.one-studio .task-recovery details>summary{width:fit-content;min-height:26px;cursor:pointer;font-size:12px;line-height:1.5;background:none;padding:4px 0;}
+.one-fluid-workspace .task-recovery details p{white-space:pre-wrap;overflow-wrap:anywhere;max-height:160px;overflow:auto;}
+.one-fluid-workspace .task-recovery .task-recovery-budget{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0;}
+.one-fluid-workspace .task-recovery .task-recovery-budget input{width:110px;min-height:32px;margin:0;padding:5px 8px;}
+.one-fluid-workspace .task-recovery .task-recovery-budget small{flex-basis:100%;font-size:11px;}
+.one-fluid-workspace .task-workflow>summary{font-size:12px;line-height:1.5;}
+.one-fluid-workspace .things-task-notice>.task-workflow{margin-bottom:8px;}
+.one-fluid-workspace .feature-budget-settings>label{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+.one-fluid-workspace .feature-budget-settings .settings-value-field{width:110px;}
+.one-fluid-workspace .feature-budget-settings>button{width:auto;}
+.one-fluid-workspace .account-profile-grid .context-settings{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px 14px;align-items:end;}
+.one-fluid-workspace .account-profile-grid .context-settings>:is(h3,p){grid-column:1/-1;margin:0;}
+.one-fluid-workspace .account-profile-grid .context-settings>label{min-width:0;margin:0;}
+.one-fluid-workspace .account-profile-grid .context-settings>button{width:fit-content;margin:0;min-height:32px;}
+.one-fluid-workspace .account-profile-grid .context-settings>label:first-of-type{grid-column:1;grid-row:3;}
+.one-fluid-workspace .account-profile-grid .context-settings>label:last-of-type{grid-column:2;grid-row:3;}
+.one-fluid-workspace .account-profile-grid .context-settings input{min-width:0;width:100%;margin-top:6px;}
+.one-fluid-workspace .admin-page>.admin-navigation{display:flex;align-items:start;flex-wrap:wrap;gap:12px 24px;padding:12px 0;border-bottom:1px solid var(--fluid-line);}
+.one-fluid-workspace .admin-navigation-group{display:flex;flex-direction:column;gap:6px;min-width:0;}
+.one-fluid-workspace .admin-navigation-group>span{font-size:11px;color:var(--fluid-muted);}
+.one-fluid-workspace .admin-navigation-group>div{display:flex;gap:4px;flex-wrap:wrap;}
+.one-fluid-workspace .admin-navigation button{display:inline-flex;align-items:center;gap:6px;width:auto;min-height:32px;padding:6px 10px;font-size:12px;}
+.one-fluid-workspace .admin-navigation button.active{background:var(--fluid-selection);border-color:var(--fluid-focus);}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .admin-page>.admin-header{display:none;}
+main.one-fluid-workspace.one-shell.one-studio .company-panel>h3{margin:24px 0 12px;padding-top:18px;border-top:1px solid var(--fluid-line);font-size:18px;line-height:1.4;}
+main.one-fluid-workspace.one-shell.one-studio .task-progress-notice{display:flex;align-items:center;gap:6px 12px;flex-wrap:wrap;padding:8px 12px;}
+main.one-fluid-workspace.one-shell.one-studio .task-progress-notice>strong{font-size:12px;}
+main.one-fluid-workspace.one-shell.one-studio .task-progress-notice>p{margin:0;font-size:12px;}
+main.one-fluid-workspace.one-shell.one-studio .task-progress-notice>details{margin:0 0 0 auto;}
+main.one-fluid-workspace.one-shell.one-studio .task-progress-notice>details[open]{flex-basis:100%;margin:0;}
