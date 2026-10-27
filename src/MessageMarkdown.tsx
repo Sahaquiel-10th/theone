@@ -53,7 +53,9 @@ function localArtifactPath(href: string | undefined): string | undefined {
 const messageUrlTransform: UrlTransform = (url, _key, node) => node.tagName === 'a' && localArtifactPath(url) ? url : defaultUrlTransform(url);
 
 /** No raw HTML and no trusted TeX commands from user/model content. */
-export function MessageMarkdown({ children, allowImages = true, privateImagesOnly = false, codeTools = false }: { children: string; allowImages?: boolean; privateImagesOnly?: boolean; codeTools?: boolean }) {
+export function MessageMarkdown({ children, allowImages = true, privateImagesOnly = false, codeTools = false, taskLinkIds, suppressTaskLinks=false, taskLinkBase }: { children: string; allowImages?: boolean; privateImagesOnly?: boolean; codeTools?: boolean; taskLinkIds?:readonly string[]; suppressTaskLinks?:boolean; taskLinkBase?:string }) {
+  const taskLinkKey=taskLinkIds?.join('\0')??'';
+  const canonicalTasks=useMemo(()=>new Set(taskLinkKey?taskLinkKey.split('\0'):[]),[taskLinkKey]);
   // Scene/attention updates are not new content. Stable renderer identities
   // preserve the code tools, image previews and links instead of re-mounting
   // them and making the conversation's mutation observer announce a new reply.
@@ -65,11 +67,14 @@ export function MessageMarkdown({ children, allowImages = true, privateImagesOnl
       if (local) return <code className="one-local-artifact-path">{local}</code>;
       // A stripped/placeholder model URL must not turn into a link to the homepage.
       if (!href || href === '#') return <span>{label}</span>;
-      const task = href && typeof window !== 'undefined' ? internalTaskId(href, window.location.href) : undefined;
+      const task = href ? internalTaskId(href,taskLinkBase||(typeof window!=='undefined'?window.location.href:'https://one.invalid/')) : undefined;
+      // A saved message's metadata supplies its single canonical task action.
+      // Only real Markdown links are projected: code examples remain literal.
+      if(task&&canonicalTasks.has(task))return suppressTaskLinks?null:<span>{label}</span>;
       return <a {...props} href={href} className={task ? 'one-task-result-link' : 'one-conversation-link'}>{label}{task ? <span aria-hidden="true"> ↗</span> : null}</a>;
     },
-  }), [allowImages, privateImagesOnly, codeTools]);
+  }), [allowImages, privateImagesOnly, codeTools,canonicalTasks,suppressTaskLinks,taskLinkBase]);
   const receipt = executionReceiptPresentation(children);
-  if (receipt) return <div className="one-local-feedback"><small>{receipt.headline}</small><MessageMarkdown allowImages={allowImages} privateImagesOnly={privateImagesOnly} codeTools={codeTools}>{receipt.body}</MessageMarkdown><details className="one-result-evidence"><summary>查看操作记录</summary><small>{receipt.provenance}</small>{receipt.tools ? <pre>{receipt.tools}</pre> : null}</details></div>;
+  if (receipt) return <div className="one-local-feedback"><small>{receipt.headline}</small><MessageMarkdown allowImages={allowImages} privateImagesOnly={privateImagesOnly} codeTools={codeTools} taskLinkIds={taskLinkIds} suppressTaskLinks={suppressTaskLinks} taskLinkBase={taskLinkBase}>{receipt.body}</MessageMarkdown><details className="one-result-evidence"><summary>查看操作记录</summary><small>{receipt.provenance}</small>{receipt.originalBody?<pre>{receipt.originalBody}</pre>:null}{receipt.tools ? <pre>{receipt.tools}</pre> : null}</details></div>;
   return <ReactMarkdown urlTransform={messageUrlTransform} components={components} remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[[rehypeKatex, { trust: false, strict: "ignore", maxExpand: 1000, maxSize: 20 }]]}>{children}</ReactMarkdown>;
 }

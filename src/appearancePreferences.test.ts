@@ -25,7 +25,7 @@ test("appearance settings render two keyboard-accessible choices and distinguish
   assert.match(html.match(/<input[^>]*value="graphite"[^>]*>/)?.[0] ?? "", /checked=""/);
   assert.match(html, /石墨框景/);
   assert.match(html, /浅银光场/);
-  assert.match(html, /选择会随账号保存/);
+  assert.doesNotMatch(html, /两种外观保留相同的布局|选择会随账号保存/);
   assert.match(html, /本机执行时会暂时转黑/);
   assert.doesNotMatch(html, /localStorage|跟随系统|执行已完成/);
   const silver = renderToStaticMarkup(createElement(AppearanceSettings, { profile: { ...profile, appearance: { scene: "silver" } }, onSave: async () => {} }));

@@ -10,6 +10,8 @@
 .knowledge-connections .knowledge-source-card small{font-size:10px;line-height:1.5;}
 .knowledge-connections .knowledge-source-status{display:inline-flex;align-items:center;justify-content:flex-end;gap:4px;font-size:10px;white-space:nowrap;}
 .knowledge-connections .knowledge-inline-detail{min-width:0;}
+.knowledge-connections .knowledge-detail-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:22px;}
+.knowledge-connections .knowledge-detail-heading>.knowledge-detail-title{min-width:0;margin:0;}
 .knowledge-connections .knowledge-detail-title{margin:0 0 22px;color:var(--fluid-ink,#24353f);font-size:22px;line-height:1.45;font-weight:600;letter-spacing:-.025em;}
 .knowledge-connections .knowledge-detail-title:focus{outline:none;}
 .knowledge-connections .knowledge-connection-detail{min-width:0;padding:0;border:0;background:transparent;}
@@ -42,6 +44,8 @@ main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledg
 main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-catalog{gap:8px;}
 main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-source-card{min-height:66px;padding:10px 12px;border-radius:14px;}
 main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-detail-title{margin-bottom:12px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-detail-heading{margin-bottom:12px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-detail-heading>.knowledge-detail-title{margin:0;}
 main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-connection-purpose{margin-bottom:12px;line-height:1.65;max-width:55ch;}
 main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections .knowledge-provider-head{margin-bottom:12px;}
 main.one-fluid-workspace.one-shell.one-studio .fluid-formal-work-layer .knowledge-connections :is(.knowledge-connection-detail,.knowledge-enterprise-host) :is(p,li){line-height:1.65;}

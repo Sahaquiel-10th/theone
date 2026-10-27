@@ -106,6 +106,25 @@ test('automatic technical failures use a plain next step rather than diagnostics
   assert.equal(pendingTaskResults(db, b).length, 0);
 });
 
+test('unfinished launcher codes never become a conversation brief or model-facing feedback and do not alter saved evidence',()=>{
+ for(const code of ['goal_unfinished','goalunfinished','错误码：goal_unfinished']){
+  const db=fixture(),task=local(db,'unfinished-code');task.status='failed';task.lastError=code;task.finalResponse='文稿已经保存，结尾还没有完成。请补充结尾实例。';
+  local(db,'foreign',b).finalResponse='其他空间的内容';
+  saveExecutionReceipt(db,task);
+  const conversation=db.conversations.find(c=>c.id===task.conversationId)!,original=conversation.messages.at(-1)!.content;
+  assert.match(original,/goal_?unfinished/);
+  const receipt=pendingTaskResults(db,a)[0];assert.equal(receipt.outcome,'failed');
+  assert.doesNotMatch(receipt.brief!,/goal_?unfinished/);assert.match(receipt.brief!,/结尾还没有完成/);assert.match(receipt.brief!,/请补充结尾实例/);
+  assert.doesNotMatch(taskResultConversationContext([receipt])[0].summary,/goal_?unfinished/);
+  const first=appendTaskResultReport(db,a),second=appendTaskResultReport(db,a);
+  assert.equal(first.results.length,1);assert.equal(second.results.length,0);
+  const message=db.conversations.find(c=>c.id==='main-a')!.messages.at(-1)!;
+  assert.doesNotMatch(message.content,/goal_?unfinished|其他空间/);assert.match(message.content,/未完成/);
+  assert.equal(task.lastError,code);assert.equal(conversation.messages.at(-1)!.content,original);
+  assert.equal(db.conversations.find(c=>c.id==='main-b')!.messages.length,0);
+ }
+});
+
 test('ordinary missing materials outrank a generic progress fallback in the main conversation without dated rules',async()=>{
  const db=fixture(),{operation}=cloud(db,'missing-launcher-material',a,{state:'failed',outcome:'needs_input',text:'还缺启动器的素材。请直接补充一两句素材，我接着写。'});
  operation.workRun!.userReport='这次还没做成，原来的要求还在。剩下的内容还没做好。可以接着处理，不用重做已经完成的部分。';

@@ -1,5 +1,5 @@
 import {useEffect,useRef,useState,type ReactNode,type Ref} from 'react';
-import {ChevronLeft,ChevronRight,Database,FileText,Menu,Search} from 'lucide-react';
+import {ChevronLeft,ChevronRight,Menu,Search} from 'lucide-react';
 import type {api as Api} from './oneApi';
 import {ApiError} from './oneApi';
 import {FluidSplitWorkspace} from './fluid/FluidSplitWorkspace';
@@ -14,8 +14,8 @@ export type KnowledgeConnection={provider:'getnote'|'notion'|'yinxiang'|'flowus'
 type GetNoteDeviceFlow={flowId:string;verificationUri:string;userCode:string;expiresIn:number;interval:number};
 type ReturnOutcome={notion:string|null;provider:string|null;status:string|null};
 const providerLabels:Record<string,string>={getnote:'得到大脑',notion:'Notion',yinxiang:'印象笔记',flowus:'息流 FlowUs',flomo:'flomo',feishu:'飞书',dingtalk:'钉钉',wechat:'微信'};
-export function KnowledgeDetail({title,onClose,children,headingRef}:{title:string;onClose:()=>void;children:ReactNode;headingRef?:Ref<HTMLHeadingElement>}){
- return <section className="knowledge-inline-detail"><button className="feature-workflow-back" type="button" onClick={onClose}><ChevronLeft size={16}/>收回连接详情</button><h3 ref={headingRef} tabIndex={-1} className="knowledge-detail-title">{title}</h3>{children}</section>;
+export function KnowledgeDetail({title,status,onClose,children,headingRef}:{title:string;status?:ReactNode;onClose:()=>void;children:ReactNode;headingRef?:Ref<HTMLHeadingElement>}){
+ return <section className="knowledge-inline-detail"><button className="feature-workflow-back" type="button" onClick={onClose}><ChevronLeft size={16}/>收回连接详情</button><header className="knowledge-detail-heading"><h3 ref={headingRef} tabIndex={-1} className="knowledge-detail-title">{title}</h3>{status}</header>{children}</section>;
 }
 
 /** Only the already identity-bound API is accepted. Opening details never authorizes. */
@@ -226,9 +226,10 @@ export function KnowledgeConnections({api,onOpenSidebar,onConnectionChange,retur
   </div>
  </div>;
  const notice=notices[selectedProvider]||'';
- let detail:ReactNode=null;
+ let detail:ReactNode=null,detailStatus:ReactNode=null;
+ if(selectedProvider==='getnote')detailStatus=<span className={`provider-status ${connection.status}`}>{connection.status==='connected'?'已连接':connection.status==='pending'?'授权中':connection.status==='error'?'需重连':'未连接'}</span>;
  if(selectedProvider==='getnote')detail=<>
-  <section className="knowledge-connection-detail"><div className="knowledge-provider-head"><div className="provider-icon"><Database size={19}/></div><div><strong>得到大脑</strong></div><span className={`provider-status ${connection.status}`}>{connection.status==='connected'?'已连接':connection.status==='pending'?'授权中':connection.status==='error'?'需重连':'未连接'}</span></div>
+  <section className="knowledge-connection-detail">
    {connection.status==='connected'?<button className="danger" type="button" disabled={getNoteBusy} onClick={()=>void disconnect()}>断开连接</button>:<>
     {connection.status==='error'&&connection.lastError?<p className="error" role="alert">{connection.lastError}</p>:null}
     <p className="hint">请先开通得到大脑会员，再完成官方授权。</p><button className="primary" type="button" disabled={!configured||Boolean(flow)||getNoteBusy} onClick={()=>void connect()}>{getNoteBusy?'正在打开授权…':testConnectAvailable?'一键连接测试知识':'连接得到大脑'}</button>
@@ -238,14 +239,13 @@ export function KnowledgeConnections({api,onOpenSidebar,onConnectionChange,retur
   </section>
  </>;
  const remoteProvider=([{id:'notion',label:'Notion'},{id:'yinxiang',label:'印象笔记'},{id:'flowus',label:'息流 FlowUs'},{id:'flomo',label:'flomo'}] as const).find(provider=>provider.id===selectedProvider);
- if(remoteProvider){const provider=remoteProvider,item=remoteConnections[provider.id],awaitingApproval=waitingForOfficialApproval(provider.id,remoteConfigured[provider.id],item.status);detail=<section className="knowledge-connection-detail">
-  <div className="knowledge-provider-head"><div className="provider-icon"><FileText size={19}/></div><div><strong>{provider.label}</strong></div><span className={`provider-status ${item.status}`}>{awaitingApproval?officialApprovalLabel:item.status==='connected'?'已连接':item.status==='pending'?'授权中':item.status==='error'?'需重连':'未连接'}</span></div>
+ if(remoteProvider){const provider=remoteProvider,item=remoteConnections[provider.id],awaitingApproval=waitingForOfficialApproval(provider.id,remoteConfigured[provider.id],item.status);detailStatus=<span className={`provider-status ${item.status}`}>{awaitingApproval?officialApprovalLabel:item.status==='connected'?'已连接':item.status==='pending'?'授权中':item.status==='error'?'需重连':'未连接'}</span>;detail=<section className="knowledge-connection-detail">
   {item.status!=='connected'?<p className="knowledge-connection-purpose">{provider.id==='notion'?'连接后，ONE 可以按你的请求查阅已授权的页面。写入页面需要另行设置，你也可以随时断开连接。':'连接后，ONE 会按你的问题搜索相关笔记。此连接只读，不会修改或删除内容。'}</p>:null}
   {provider.id==='flomo'?<FlomoConnectionNotice/>:null}
-  {item.status==='connected'?<><div className="notice">工作区：{item.providerSpaceName||provider.label}</div><p className="hint">{provider.id==='notion'?'知识检索按需读取、不调用 Notion AI；写入需要下方单独授权与设置。':'只读：ONE 会按需搜索相关内容，不会修改或删除内容。'}</p>{provider.id==='notion'?<NotionWritingSettings api={api}/>:null}<button className="danger" type="button" disabled={Boolean(remoteBusy)} onClick={()=>void disconnectRemote(provider.id,provider.label)}>断开连接</button></>:<><button className="primary" type="button" disabled={!remoteConfigured[provider.id]||Boolean(remoteBusy)} onClick={()=>void connectRemote(provider.id)}>{awaitingApproval?officialApprovalLabel:remoteBusy===provider.id?`正在打开 ${provider.label}…`:`连接 ${provider.label}`}</button>{!remoteConfigured[provider.id]?<p className="hint">{awaitingApproval?officialApprovalHint:`${provider.label} 连接暂未开通，请联系管理员。`}</p>:null}</>}
+  {item.status==='connected'?<><div className="notice">工作区：{item.providerSpaceName||provider.label}</div><p className="hint">{provider.id==='notion'?'可搜索已授权页面。':'只读：ONE 会按需搜索相关内容，不会修改或删除内容。'}</p>{provider.id==='notion'?<NotionWritingSettings api={api}/>:null}<button className="danger" type="button" disabled={Boolean(remoteBusy)} onClick={()=>void disconnectRemote(provider.id,provider.label)}>断开连接</button></>:<><button className="primary" type="button" disabled={!remoteConfigured[provider.id]||Boolean(remoteBusy)} onClick={()=>void connectRemote(provider.id)}>{awaitingApproval?officialApprovalLabel:remoteBusy===provider.id?`正在打开 ${provider.label}…`:`连接 ${provider.label}`}</button>{!remoteConfigured[provider.id]?<p className="hint">{awaitingApproval?officialApprovalHint:`${provider.label} 连接暂未开通，请联系管理员。`}</p>:null}</>}
  </section>;}
  const enterprise=['feishu','dingtalk','wechat'].includes(selectedProvider);
- const secondary=selectedProvider&&providerLabels[selectedProvider]?<KnowledgeDetail title={providerLabels[selectedProvider]} headingRef={heading} onClose={closeDetail}>{enterprise?<div ref={setEnterpriseHost} className="knowledge-enterprise-host"/>:detail}{notice?<p className={`knowledge-owner-notice ${/失败|无法|过期|不稳定|尚未配置|未完成|还没有会员|请联系/.test(notice)?'error':'notice'}`} role="status">{notice}</p>:null}</KnowledgeDetail>:null;
+ const secondary=selectedProvider&&providerLabels[selectedProvider]?<KnowledgeDetail title={providerLabels[selectedProvider]} status={detailStatus} headingRef={heading} onClose={closeDetail}>{enterprise?<div ref={setEnterpriseHost} className="knowledge-enterprise-host"/>:detail}{notice?<p className={`knowledge-owner-notice ${/失败|无法|过期|不稳定|尚未配置|未完成|还没有会员|请联系/.test(notice)?'error':'notice'}`} role="status">{notice}</p>:null}</KnowledgeDetail>:null;
  return <section ref={root} className={`account-page knowledge-page knowledge-connections${selectedProvider?' has-detail':''}`} data-inline={inline}>
   <header className="admin-header"><button className="mobile-menu" title="打开导航" onClick={onOpenSidebar}><Menu size={20}/></button><div><h2>知识来源</h2></div></header>
   <div className="account-body knowledge-catalog-body"><FluidSplitWorkspace open={Boolean(secondary)} detailKey={selectedProvider} primary={primary} secondary={secondary} ratio={.40} primaryLabel="知识来源列表" secondaryLabel="连接与授权详情" className="knowledge-connections-split"/></div>

@@ -4,3 +4,6 @@
 .local-device-settings .local-directory-actions>button:disabled{opacity:.5;cursor:default}
 .local-device-settings .local-directory-actions>.folder-permission-help{display:inline-flex;align-items:center;justify-content:center;flex:0 0 30px;width:30px;height:30px;padding:0;border-radius:50%;font-weight:700}
 .local-device-settings .folder-permission-help:focus-visible{outline:2px solid var(--studio-ink,#30372a);outline-offset:3px}
+
+.local-device-readiness{display:grid;gap:6px}.local-device-readiness>strong{font-size:15px;font-weight:600;line-height:1.5}.local-device-details{font-size:12px;line-height:1.7;color:var(--studio-muted,#747b6a)}.local-device-details>summary{cursor:pointer}.local-device-details dl{display:grid;gap:6px;margin:10px 0}.local-device-details dl>div{display:flex;gap:16px}.local-device-details dt{min-width:5em}.local-device-details dd{margin:0;color:var(--studio-ink,#28312b);overflow-wrap:anywhere}
+.one-shell .local-device-settings details.local-device-details{padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;backdrop-filter:none;}

@@ -144,6 +144,8 @@ import './fluid-flow-integration.css';
 import './fluid-workflow-system.css';
 import './fluid-control-rhythm.css';
 import './fluid/fluid-work-layer-arrival.css';
+import './conversation-clarity.css';
+import './ux-clarity.css';
 import { Pagination, SearchPicker, SettingsDialog } from "./SettingsControls";
 import { BetaUserInsights } from "./BetaUserInsights";
 import { mergeTaskSnapshots, recoverTaskDraft } from "./oneStudioState";
@@ -707,6 +709,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [workLayer,setWorkLayer] = useState<WorkLayer|null>(null);
   const [visitedLayers,setVisitedLayers] = useState<WorkLayer[]>([]);
   const [featureOperationId,setFeatureOperationId] = useState('');
+  const [featureOpenRequest,setFeatureOpenRequest] = useState(0);
   const [viewedFeatureOperation,setViewedFeatureOperation] = useState<string|undefined>();
   const [featureRuns,setFeatureRuns] = useState<FeatureRunSummary[]>([]);
   const [featureRunIssue,setFeatureRunIssue] = useState('');
@@ -1026,7 +1029,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         <button type="button" disabled={preparingExecution||Boolean(awaitingExecutionOperationId)} onClick={event=>void cancelExecution(event.currentTarget,local)}>再次请求停止原操作</button>
       </>}
     </section>;
-    if(!(task?.paused||conversation?.workPaused||!task?.running&&(task?.reconciling||task?.state==='reconciling')||localNeedsAction||lastJob?.dependencyBlocked))return task?.running&&lastJob?.progress?.completed.length?<section className="task-recovery" role="status"><strong>正在接着做</strong><p>已做好：{lastJob.progress.completed.join('、')}。{lastJob.progress.pending.length?`正在处理：${lastJob.progress.pending.join('、')}。`:'后续内容还在整理。'}</p></section>:null;
+    if(!(task?.paused||conversation?.workPaused||!task?.running&&(task?.reconciling||task?.state==='reconciling')||localNeedsAction||lastJob?.dependencyBlocked))return task?.running&&lastJob?.progress?.completed.length?<section className="task-recovery task-progress-notice" role="status"><strong>正在处理</strong><p>已完成 {lastJob.progress.completed.length} 项{lastJob.progress.pending.length?`，还有 ${lastJob.progress.pending.length} 项待处理`:'，正在整理结果'}。</p><details><summary>查看处理进度</summary><p>已完成：{lastJob.progress.completed.join('、')}</p>{lastJob.progress.pending.length?<p>待处理：{lastJob.progress.pending.join('、')}</p>:null}</details></section>:null;
     const error=lastJob?.error;
     const recovery=detail?.recovery;
     if(recovery?.kind==='reconciling')return <section className="task-recovery" role="status"><strong>正在核对保存结果</strong><p>{recovery.message}</p></section>;
@@ -1038,12 +1041,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const invalidBudget=canAdjustBudget&&(!Number.isFinite(retryBudget)||retryBudget<.001||retryBudget>10);
     const actionLabel=recovery?.welcomeStep?'继续制作使用说明':recovery?.kind==='review_image'?'重新生成图片':recovery?.kind==='resume'?'开始处理最新要求':lastJob?.progress?.completed.length?'继续未完成的部分':'重新处理最新要求';
     return <section className="task-recovery" role="status">
-      <strong>{lastJob?.dependencyBlocked?'在等前面的结果':'还有部分没做好'}</strong><p>{lastJob?.userReport||error||'原要求还在，下面可以查看下一步。'}</p>
-      {lastJob?.userReport&&error?<details><summary>查看详细记录</summary><p>{error}</p></details>:null}
-      <p>{recovery?.message||'正在读取恢复方式…'}</p>
+      <strong>{lastJob?.dependencyBlocked?'等待关联任务完成':'任务尚未完成'}</strong>
+      <p>{recovery?.message||lastJob?.userReport||error||'正在检查任务状态…'}</p>
+      {recovery&&(lastJob?.userReport||error)?<details><summary>查看本次处理记录</summary>{lastJob?.userReport?<p>{lastJob.userReport}</p>:null}{error&&error!==lastJob?.userReport?<p>{error}</p>:null}</details>:null}
       {lastJob?.dependencyBlocked?lastJob.waitingFor?.map(parent=><button type="button" key={parent.taskId} onClick={()=>void selectThing(parent.taskId)}>看看「{parent.title}」</button>):null}
-      {recovery&&['retry','resume'].includes(recovery.kind)?<p>本轮范围：{latest}</p>:null}
-      {canAdjustBudget?<label>这次继续，最多使用多少电力<input aria-label="本次恢复电力上限" type="number" min="0.001" max="10" step="0.001" disabled={retrying} value={taskRetryBudgets[lastJob?.id??'']??lastJob?.budget??.5} onChange={e=>setTaskRetryBudgets(old=>({...old,[lastJob!.id]:e.target.value}))}/><small>这是本次继续的上限，不含以前已用的电力，也不会一次扣完。只补没完成的部分，按实际使用结算。</small></label>:null}
+      {recovery&&['retry','resume'].includes(recovery.kind)?<details><summary>查看继续处理的要求</summary><p>{latest}</p></details>:null}
+      {canAdjustBudget?<label className="task-recovery-budget">本次电力上限<input aria-label="本次恢复电力上限" type="number" min="0.001" max="10" step="0.001" disabled={retrying} value={taskRetryBudgets[lastJob?.id??'']??lastJob?.budget??.5} onChange={e=>setTaskRetryBudgets(old=>({...old,[lastJob!.id]:e.target.value}))}/><small>仅计算这次继续的用量，按实际使用结算。</small></label>:null}
       {recovery&&['retry','resume','review_image'].includes(recovery.kind)?<button type="button" disabled={retrying||Boolean(invalidBudget)} onClick={()=>{
         const price=detail?.jobs.at(-1)?.retryPower;
         if(recovery.kind==='review_image'&&!(typeof price==='number'&&(price>0||price===0&&recovery.welcomeStep==='page'))){setError('这次图片价格还没确认，请稍后刷新任务再试。');return;}
@@ -1425,7 +1428,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     else setHistoryOpen(value=>!value);
   }
   function updateFeatureRun(run:FeatureRunSummary){setFeatureRuns(old=>[run,...old.filter(item=>item.operationId!==run.operationId)].slice(0,8));setFeatureRunIssue('');}
-  function openFeatureRun(operationId:string){setFeatureOperationId(operationId);openSurface('features');}
+  function openFeatureRun(operationId:string){setFeatureOperationId(operationId);setFeatureOpenRequest(value=>value+1);openSurface('features');}
   function openSurface(next: "chat" | "things" | "admin" | "company" | "knowledge" | "account" | "features" | "avatars",taskId?:string) {
     featurePicker.close();
     if(preview.enabled&&next!=='chat'){
@@ -2148,10 +2151,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   function renderHistory() { return (
           <section className="one-history-popover fluid-history-content">
             <div className="one-popover-heading">
-              <div><small>YOUR FLOW</small><h3>{showArchived ? "已归档对话" : "历史对话"}</h3></div>
+              <div><h3>{showArchived ? "已归档对话" : "历史对话"}</h3></div>
               <button type="button" onClick={startNewChat}><Plus size={16} />新对话</button>
             </div>
-            <input className="one-history-search" type="search" aria-label="搜索已加载的历史对话" placeholder="搜索已加载的对话" value={historyQuery} onChange={e=>setHistoryQuery(e.target.value)}/>
+            <input className="one-history-search" type="search" aria-label="搜索已加载的历史对话" placeholder="搜索历史对话" value={historyQuery} onChange={e=>setHistoryQuery(e.target.value)}/>
             <div className="one-popover-list">
               {visibleConversations.length ? visibleConversations.map((conversation) => (
                 <div className={`one-history-row ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}>
@@ -2159,14 +2162,13 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                     <span>{conversation.title}</span>
                     <small>{dateTime(conversation.updatedAt)}</small>
                   </button>
-                  <button type="button" title={conversation.archived ? "取消归档" : "归档"} disabled={conversation.id.startsWith("tmp_") || Boolean(loadingByConversation[conversation.id]) || runningExecutions.some(task => task.conversationId === conversation.id)} onClick={() => archiveConversation(conversation)}><Archive size={14} /></button>
+                  <button type="button" aria-label={`${conversation.archived ? '取消归档' : '归档'}：${conversation.title}`} title={conversation.archived ? "取消归档" : "归档"} disabled={conversation.id.startsWith("tmp_") || Boolean(loadingByConversation[conversation.id]) || runningExecutions.some(task => task.conversationId === conversation.id)} onClick={() => archiveConversation(conversation)}><Archive size={14} /></button>
                 </div>
               )) : <div className="one-popover-empty">{historyQuery?"已加载的对话中没有匹配结果，可继续加载更早记录。":"还没有对话，从一句话开始吧。"}</div>}
             </div>
             {hasMoreConversations ? <button className="one-load-more" type="button" disabled={loadingMoreConversations} onClick={loadMoreConversations}>{loadingMoreConversations ? "加载中…" : "加载更多"}</button> : null}
             <footer className="one-popover-footer">
               <button type="button" onClick={() => setShowArchived(!showArchived)}>{showArchived ? "返回历史对话" : "查看归档"}</button>
-              <button type="button" onClick={onLogout}><LogOut size={14} />退出账号</button>
             </footer>
           </section>
   ); }
@@ -2213,10 +2215,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   function renderFeatures() {
-    return (<section className="account-page features-page"><header className="admin-header"><div><h2>功能</h2></div></header><div className="account-body settings-account-body">{featureSelectionNotice?<p className="feature-selection-notice" role="status">{featureSelectionNotice}</p>:null}{preview.enabled?<FeatureShelf api={api} models={models} active={workLayer==='features'} onDone={()=>{closeWorkLayer();requestAnimationFrame(()=>featurePicker.input.current?.focus());}} onOperationChange={setViewedFeatureOperation} initialOperationId={featureOperationId||undefined} onRunStarted={run=>{setFeatureOperationId(run.operationId);updateFeatureRun(run);closeWorkLayer();fluidPanels.open('activity');focusFluid('activity');}} onRunStatus={updateFeatureRun} selected={featureForNext.map(item=>item.id)} onChoose={chooseFeature}/>:<FeatureMarketplace api={api} models={models} onAsk={()=>openSurface('chat')}/>}</div></section>);
+    return (<section className="account-page features-page"><header className="admin-header"><div><h2>功能</h2></div></header><div className="account-body settings-account-body">{featureSelectionNotice?<p className="feature-selection-notice" role="status">{featureSelectionNotice}</p>:null}{preview.enabled?<FeatureShelf api={api} models={models} active={workLayer==='features'} onDone={()=>{closeWorkLayer();requestAnimationFrame(()=>featurePicker.input.current?.focus());}} onOperationChange={setViewedFeatureOperation} initialOperationId={featureOperationId||undefined} initialOpenRequest={featureOpenRequest} onRunStarted={run=>{setFeatureOperationId(run.operationId);updateFeatureRun(run);closeWorkLayer();fluidPanels.open('activity');focusFluid('activity');}} onRunStatus={updateFeatureRun} selected={featureForNext.map(item=>item.id)} onChoose={chooseFeature}/>:<FeatureMarketplace api={api} models={models} onAsk={()=>openSurface('chat')}/>}</div></section>);
   }
   function renderAccount() {
-    return (<AccountPage user={user} profile={profile} onSaveProfile={async patch=>{const result=await saveProfile(patch);if(patch.appearance)setScenePreview(null);return result;}} onOpenGuide={startStory} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={openHistory} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgeConnections api={api} inline={preview.enabled} returnOutcome={knowledgeReturnRef.current} onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : next.provider === "flomo" ? setFlomoConnection(next) : setKnowledgeConnection(next)} />} />);
+    return (<AccountPage user={user} onLogout={onLogout} profile={profile} onSaveProfile={async patch=>{const result=await saveProfile(patch);if(patch.appearance)setScenePreview(null);return result;}} onOpenGuide={startStory} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={openHistory} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgeConnections api={api} inline={preview.enabled} returnOutcome={knowledgeReturnRef.current} onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : next.provider === "flomo" ? setFlomoConnection(next) : setKnowledgeConnection(next)} />} />);
   }
 
   return (
@@ -2440,7 +2442,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               placeholder={composeMode === "execution" ? "补充要求" : currentModel?.kind === "image" ? "描述你想怎么改" : "告诉我，你想做什么"}
               rows={1}
             />
-            <button id="one-studio-send" className="primary send" type="submit" aria-label={composeMode === "execution" ? "发送并继续执行" : "发送消息"} title={targetLoading ? (preview.enabled ? "ONE 正在承接这句话，可以先编辑下一条" : "这件事正在回复，可以新开一件事") : "发送消息"} disabled={uploadingAttachments || pendingAttachments.some(a => a.status && a.status !== "ready") || (composeMode === "execution" ? taskStatusUnavailable || preparingExecution || executionBusy || !content.trim() || pendingAttachments.length > 0 : !activeModelId || targetLoading || (!content.trim() && !pendingAttachments.length))}>
+            <button id="one-studio-send" className="primary send" type="submit" aria-label={composeMode === "execution" ? "发送并继续执行" : "发送消息"} title={targetLoading ? (preview.enabled ? "ONE 正在回复，可以先编辑下一条" : "这件事正在回复，可以新开一件事") : "发送消息"} disabled={uploadingAttachments || pendingAttachments.some(a => a.status && a.status !== "ready") || (composeMode === "execution" ? taskStatusUnavailable || preparingExecution || executionBusy || !content.trim() || pendingAttachments.length > 0 : !activeModelId || targetLoading || (!content.trim() && !pendingAttachments.length))}>
               {composeMode === "execution" ? <Zap size={18} /> : <ArrowUp size={19} />}
             </button>
             {composeMode==='chat' && !demo.enabled && outputDestination !== 'notion' && currentModel?.kind==='chat' ? <button type="button" className="composer-execute" aria-label="发送并执行本机任务" title="把当前要求和相关上下文交给本机执行" disabled={!content.trim()||targetLoading||uploadingAttachments||pendingAttachments.length>0||preparingExecution||executionBusy||taskStatusUnavailable} onClick={event=>void executeDraft(content,event.currentTarget,coordinator.enabled?undefined:targetConversation?.id)}><Zap size={16}/><span>本机执行</span></button> : null}
@@ -2475,7 +2477,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {featureRuns.length?<div className="fluid-feature-runs" aria-label="功能运行进展">{featureRuns.map(run=><article key={run.operationId} data-status={run.status}><button type="button" onClick={()=>openFeatureRun(run.operationId)}><strong>{run.name}</strong><small>{({pending:'正在处理',completed:'成果已返回',failed:'需要查看',interrupted:'已中断'} as Record<string,string>)[run.status]||'查看进展'} ↗</small></button>{run.status!=='pending'?<button type="button" aria-label={`收起${run.name}的动态`} onClick={()=>setFeatureRuns(old=>old.filter(item=>item.operationId!==run.operationId))}><X size={13}/></button>:null}</article>)}</div>:null}
           {featureRunIssue?<p className="fluid-queue-note" role="status">{featureRunIssue}</p>:null}
           {coordinator.enabled ? <TaskTransferRail animateNotes={false} tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} departureAnchor={()=>document.querySelector<HTMLElement>('[data-task-dispatch-anchor]') || document.querySelector<HTMLElement>('.studio-presence')} returnAnchor={()=>document.querySelector<HTMLElement>('[data-task-return-anchor]') || document.querySelector<HTMLElement>('.coordinator-message.assistant:last-of-type')} recentReportedReceiptIds={coordinator.snapshot?.recentReportedReceiptIds} onReadAll={readAllTaskMessages} onOpenAll={()=>openSurface('things')} onDismiss={task=>coordinator.acknowledge(task.taskId,dismissibleReceiptIds(uniqueTransfers,task.taskId))} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null}
-          {!fluidFeedback.length&&!featureRuns.length&&!attentionCount&&(!delivery||delivery.operationId===dismissedDelivery)?<div className="fluid-panel-empty"><p>这里会接住交出去的任务。</p><small>你可以留在主对话继续聊。</small><button type="button" onClick={()=>openSurface('things')}>查看所有任务 <ArrowUpRight size={12}/></button></div>:null}
+          {!fluidFeedback.length&&!featureRuns.length&&!attentionCount&&(!delivery||delivery.operationId===dismissedDelivery)?<div className="fluid-panel-empty"><p>暂无任务动态。</p><small>任务进展和成果会显示在这里。</small><button type="button" onClick={()=>openSurface('things')}>查看所有任务 <ArrowUpRight size={12}/></button></div>:null}
                   </div>
         </section>
         <section className="fluid-local-panel" data-open={fluidPanels.localOpen} aria-label="接管任务" aria-hidden={!fluidPanels.localOpen} inert={!fluidPanels.localOpen} {...fluidInteraction('local')}>
@@ -2804,7 +2806,7 @@ function AgentEditorPage({ agent, agents, models, onCancel, onSaved }: {
   </section>;
 }
 
-function AccountPage({ user, profile, onSaveProfile, onOpenGuide, models, defaultModelId, onModelChange, onOpenSidebar, section, setSection, knowledge }: { user: User; profile: AccountProfile; onSaveProfile: (patch: ProfilePatch) => Promise<unknown>; onOpenGuide:()=>Promise<unknown>; models: Model[]; defaultModelId: string; onModelChange: () => Promise<void>; onOpenSidebar: () => void; section: string; setSection: (section: string) => void; knowledge: React.ReactNode }) {
+function AccountPage({ user, onLogout, profile, onSaveProfile, onOpenGuide, models, defaultModelId, onModelChange, onOpenSidebar, section, setSection, knowledge }: { user: User; onLogout: () => void; profile: AccountProfile; onSaveProfile: (patch: ProfilePatch) => Promise<unknown>; onOpenGuide:()=>Promise<unknown>; models: Model[]; defaultModelId: string; onModelChange: () => Promise<void>; onOpenSidebar: () => void; section: string; setSection: (section: string) => void; knowledge: React.ReactNode }) {
   const api = useContext(PrivateApiContext);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -2860,20 +2862,20 @@ function AccountPage({ user, profile, onSaveProfile, onOpenGuide, models, defaul
         </div>
       </header>
       <AccountPreferencesLayout section={section} onChange={setSection}>
-        {guidePending&&section!=='profile'?<div className="story-settings-return"><span>新手引导还在，接好后回来继续。</span>{guideButton}</div>:null}
+        {guidePending&&section!=='profile'?<div className="story-settings-return"><span>设置完成后，可以继续新手引导。</span>{guideButton}</div>:null}
         {section === "device" ? <LocalDeviceSettings key={user.id} api={api}/> : section === "knowledge" ? <>{knowledge}<FeatureBudgetSettings key={user.id} api={api}/></> : section === "power" ? user.access?.kind === "company" ? <div className="settings-empty"><p>费用由公司按协议对公打款承担，无需个人充值。</p><p>公司可用电力：{((billing?.availableMicros??0)/1e6).toFixed(3)}；个人额度由公司管理员配置。</p></div> : billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载会员与额度…</p> : <>
         <div className="account-profile-grid">
         <AppearanceSettings profile={profile} onSave={onSaveProfile}/>
         <section className="account-panel"><h3>个人资料</h3><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
         <ContextSettings key={'context-'+user.id} api={api}/>
-        <AttentionSettings key={'attention-'+user.id} api={api}/>
+        <AttentionSettings key={'attention-'+user.id} api={api} onOpenKnowledge={()=>setSection('knowledge')}/>
         <SavedWelcomeGuides api={api}/>
-        <section className="account-panel story-settings-entry"><h3>新手引导</h3><p className="settings-muted">重新填写偏好，现有资料和任务都保留。</p>{guideButton}</section>
+        <section className="account-panel story-settings-entry"><h3>新手引导</h3><p className="settings-muted">了解 ONE 的用法，或重新填写偏好。</p>{guideButton}</section>
         <details className="account-panel account-advanced-settings">
           <summary>高级设置 · 默认模型</summary>
           <SearchPicker label="默认模型" value={selectedModelId} onChange={chooseModel} options={models.filter(model => model.kind === "chat").map(model => ({ value: model.id, label: model.name }))} />
         </details>
-        {user.role === "admin" ? <section className="account-panel account-span-full settings-security-entry"><div><div className="account-panel-title"><LockKeyhole size={18} /><h3>账号安全</h3></div><p className="settings-muted">需要时再更新登录密码。</p></div><button type="button" onClick={()=>{setNotice('');setPasswordOpen(true);}}>修改密码</button></section> : null}
+        <section className="account-panel account-span-full settings-security-entry"><div><div className="account-panel-title"><LockKeyhole size={18} /><h3>账号</h3></div><p className="settings-muted">{user.username}</p></div><div className="settings-tabs">{user.role==='admin'?<button type="button" onClick={()=>{setNotice('');setPasswordOpen(true);}}>修改密码</button>:null}<button type="button" onClick={onLogout}><LogOut size={14}/>退出账号</button></div></section>
         </div>
         {passwordOpen?<SettingsDialog title="修改密码" onClose={()=>{setPasswordOpen(false);setCurrentPassword('');setNewPassword('');setConfirmPassword('');}}><form className="settings-password-form" onSubmit={changePassword}>
           <label>当前密码<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
@@ -2927,18 +2929,24 @@ function AdminPanel({ actorId, refreshModels, onOpenSidebar }: { actorId: string
           </button>
           <div><h2>ONE 超管</h2></div>
         </header>
-        <nav className="tabs">
-          <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}><ShieldCheck size={16} />总览</button>
-          <button className={tab === "users" ? "active" : ""} onClick={() => setTab("users")}><Users size={16} />账号</button>
-          <button className={tab === "companies" ? "active" : ""} onClick={() => setTab("companies")}><Users size={16}/>企业</button>
-          <button className={tab === "keys" ? "active" : ""} onClick={() => setTab("keys")}><Usb size={16} />ONE Key</button>
-          <button className={tab === "models" ? "active" : ""} onClick={() => setTab("models")}><Bot size={16} />模型</button>
-          <button className={tab === "ai-tasks" ? "active" : ""} onClick={() => setTab("ai-tasks")}><Bot size={16} />能力配置</button>
-          <button className={tab === "official-features" ? "active" : ""} onClick={() => setTab("official-features")}><Bot size={16} />官方功能</button>
-          <button className={tab === "billing" ? "active" : ""} onClick={() => setTab("billing")}><Wallet size={16} />电力与收费</button>
-          <button className={tab === "usage" ? "active" : ""} onClick={() => setTab("usage")}><ReceiptText size={16} />用户用量</button>
-          <button className={tab === "contexts" ? "active" : ""} onClick={() => setTab("contexts")}><Eye size={16} />上下文</button>
-          <button className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}><FileText size={16} />日志</button>
+        <nav className="admin-navigation" aria-label="管理栏目">
+          <div className="admin-navigation-group"><span>账号与设备</span><div>
+            <button className={tab==='overview'?'active':''} aria-pressed={tab==='overview'} onClick={()=>setTab('overview')}><ShieldCheck size={16}/>总览</button>
+            <button className={tab==='users'?'active':''} aria-pressed={tab==='users'} onClick={()=>setTab('users')}><Users size={16}/>账号</button>
+            <button className={tab==='companies'?'active':''} aria-pressed={tab==='companies'} onClick={()=>setTab('companies')}><Users size={16}/>企业</button>
+            <button className={tab==='keys'?'active':''} aria-pressed={tab==='keys'} onClick={()=>setTab('keys')}><Usb size={16}/>ONE Key</button>
+          </div></div>
+          <div className="admin-navigation-group"><span>模型与功能</span><div>
+            <button className={tab==='models'?'active':''} aria-pressed={tab==='models'} onClick={()=>setTab('models')}><Bot size={16}/>模型</button>
+            <button className={tab==='ai-tasks'?'active':''} aria-pressed={tab==='ai-tasks'} onClick={()=>setTab('ai-tasks')}><Bot size={16}/>能力配置</button>
+            <button className={tab==='official-features'?'active':''} aria-pressed={tab==='official-features'} onClick={()=>setTab('official-features')}><Sparkles size={16}/>官方功能</button>
+          </div></div>
+          <div className="admin-navigation-group"><span>用量与记录</span><div>
+            <button className={tab==='billing'?'active':''} aria-pressed={tab==='billing'} onClick={()=>setTab('billing')}><Wallet size={16}/>电力与收费</button>
+            <button className={tab==='usage'?'active':''} aria-pressed={tab==='usage'} onClick={()=>setTab('usage')}><ReceiptText size={16}/>用户用量</button>
+            <button className={tab==='contexts'?'active':''} aria-pressed={tab==='contexts'} onClick={()=>setTab('contexts')}><Eye size={16}/>上下文记录</button>
+            <button className={tab==='logs'?'active':''} aria-pressed={tab==='logs'} onClick={()=>setTab('logs')}><FileText size={16}/>操作日志</button>
+          </div></div>
         </nav>
         {notice ? <div className="notice">{notice}</div> : null}
         <div className="admin-body">

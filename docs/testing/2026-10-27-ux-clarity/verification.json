@@ -1,0 +1,58 @@
+{
+  "checkedAt": "2026-10-27T00:07:15.492769+00:00",
+  "baseline": "7ac6c26e71da52e9344009e0c27a7d84cf1a4e14",
+  "typecheck": "passed",
+  "productionBuild": "passed",
+  "unitIntegration": {
+    "total": 1614,
+    "passed": 1613,
+    "skipped": 1,
+    "failed": 0,
+    "log": "/tmp/one-ux-clarity-tests-final-20261027.log"
+  },
+  "lastPresentationChecks": {
+    "total": 48,
+    "passed": 48,
+    "failed": 0
+  },
+  "diffCheck": "passed",
+  "artifacts": {
+    "index-CTm51M9S.css": {
+      "sha256": "e13c1fe69f108eb299220808cf3a902a9580397dc0d296c16a636a5459e1ea69",
+      "bytes": 552138
+    },
+    "index-CS5H_Pxi.js": {
+      "sha256": "a64efbb05f03df1e8d368327d1c26f1df4ba2e131d49c85c3cbab49b3e57a66f",
+      "bytes": 1319674
+    }
+  },
+  "browser": {
+    "kind": "ChatGPT in-app browser",
+    "synthetic": true,
+    "viewport": "1280x720",
+    "taskConversationPixels": 297,
+    "taskProgressNoticePixels": 44,
+    "checks": [
+      "feature introduction hierarchy",
+      "create task draft and 0.8 power limit preserved after fold",
+      "continuous selection of two features",
+      "removing one feature keeps armed contour",
+      "avatar list and edit title truncation",
+      "history",
+      "preferences",
+      "local device",
+      "membership records",
+      "knowledge detail",
+      "four onboarding steps",
+      "public avatar first and input pages",
+      "admin overview and company read-only"
+    ]
+  },
+  "productionActionsNotPerformed": [
+    "private task execution",
+    "payment",
+    "external OAuth authorization",
+    "publishing user avatar or files",
+    "production price adjustment"
+  ]
+}

@@ -104,7 +104,7 @@ export function previewReducer(state: PreviewState, action: Action): PreviewStat
   if (!task || task.status !== 'running' || (action.round !== undefined && action.round !== task.round)) return state;
   const noticeId = `${task.id}-round-${task.round}`;
   const requirements = task.messages.filter(m => task.active.includes(m.id)).map(m => m.instruction || m.text);
-  const summary = action.failed ? `${task.title}这轮没有完成，要求都还在。我们可以打开这件事重试。` : `${task.title}第 ${task.round} 版好了。${task.id==='ui'?'这一版保留独立输入框，让当前事情展开，其他事情安静收起。':task.id==='camp'?'先确认地点和天气，再准备交通、帐篷和同行人员。':'已经按选中的功能整理了一版演示结果。'}${task.queue.length?'你的补充也接住了，正在处理下一轮。':'细节留在这件事里，你随时可以接着改。'}`;
+  const summary = action.failed ? `${task.title}这轮没有完成，要求都还在。我们可以打开这件事重试。` : `${task.title}第 ${task.round} 版好了。${task.id==='ui'?'这一版保留独立输入框，让当前事情展开，其他事情安静收起。':task.id==='camp'?'先确认地点和天气，再准备交通、帐篷和同行人员。':'已经按选中的功能整理了一版演示结果。'}${task.queue.length?'已保存你的补充，正在处理下一轮。':'细节留在这件事里，你随时可以接着改。'}`;
   const result = `第 ${task.round} 版 · 模拟成果\n\n本轮收到的要求：\n${requirements.map(s => `• ${s}`).join('\n')}\n\n${task.id === 'ui' ? '保留独立输入框；当前事情展开，其他事情收起。结果只出现在自己的任务里，不挤走当前内容。' : task.id==='camp'?'建议先确认地点与天气，再准备交通、帐篷、饮水与同行人员。这是合成演示，不是真实查询的行程。':`已用“${task.title}”承接这条消息。这是功能选用与独立任务衔接的模拟，不读取真实知识库，也不调用真实模型。`}`;
   let next: Task = action.failed ? { ...task, status: 'failed', dueAt: null, messages: task.messages.map(m => task.active.includes(m.id) ? { ...m, status: 'failed' } : m) } : { ...task, active: [], dueAt: null, status: 'completed', result, unread: true, messages: [...task.messages.map(m => task.active.includes(m.id) ? { ...m, status: 'done' as const } : m), { id: noticeId, role: 'assistant', text: result }] };
   if (!action.failed && task.queue.length) next = start(next, task.queue, action.now, state.workerMs);

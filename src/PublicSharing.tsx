@@ -199,7 +199,7 @@ function SharingPanelScoped({api,models,externalQuery,hideSearch=false,onPublica
  // Teacher workbench: the direct action is Edit; sharing is a separate,
  // explicit decision. Closed records stay editable, deleted records recoverable.
  const ownerList=<section className="sharing-owner-list" aria-label="我的分身列表" aria-busy={loading}>
-  <header className="sharing-owner-list-header"><div><h3>{trash?'分身回收站':'我的分身'}</h3><p>{trash?'恢复后不会自动开放分享，原配置和历史保留。':'配置、试聊和分享，从这里开始。'}</p></div>
+  <header className="sharing-owner-list-header"><div><h3>{trash?'分身回收站':'我的分身'}</h3>{trash?<p>恢复后不会自动开放分享，原配置和历史保留。</p>:null}</div>
    {!trash?<button type="button" className="primary" ref={createButton} disabled={!data?.ready||busy} onClick={beginCreate}>＋ {newDraft.current?'继续创建':'创建分身'}</button>:null}
   </header>
   <div className="avatar-list-navigation"><button type="button" disabled={busy} aria-pressed={!trash} onClick={()=>{closePane();setPage(1);setTrash(false);}}>我的分身</button><button type="button" disabled={busy} aria-pressed={trash} onClick={()=>{closePane();setPage(1);setTrash(true);}}>回收站{data?.trashTotal?' · '+data.trashTotal:''}</button></div>

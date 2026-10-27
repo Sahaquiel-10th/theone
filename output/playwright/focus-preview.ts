@@ -1,12 +1,16 @@
 // Local visual fixture only. All API calls are intercepted; no keys, models or production data.
 const stamp=new Date().toISOString();
+const fixtureParams=new URLSearchParams(location.search);
+const uxAudit=fixtureParams.get('uxAudit')==='1';
 const profile:any={workspaceId:'preview',displayName:'小马',onboarding:{completedAt:stamp,knowledgeChoice:'skipped'},updatedAt:stamp};
 const profileStorageKey='one-focus-preview-profile:v1:preview:preview';
 try{const saved=JSON.parse(localStorage.getItem(profileStorageKey)||'null');if(saved?.appearance?.scene==='silver'||saved?.appearance?.scene==='graphite')profile.appearance={scene:saved.appearance.scene};if(typeof saved?.displayName==='string'&&saved.displayName.trim())profile.displayName=saved.displayName.trim().slice(0,40);}catch{/* Private browser storage is optional. */}
-const user={id:'preview',username:'preview',role:'user',enabled:true,defaultWorkspaceId:'preview',createdAt:stamp,profile};
+const user:any={id:'preview',username:'preview',role:'user',enabled:true,defaultWorkspaceId:'preview',createdAt:stamp,profile};
+if(uxAudit&&fixtureParams.get('auditRole')==='admin')user.role='admin';
+if(uxAudit&&fixtureParams.get('auditRole')==='company')user.access={kind:'company',role:'company_admin',workspaceId:'preview'};
 const conversations:any[]=[],operations=new Map<string,any>();
 // Opt-in density regression dataset; never allow this mode to reach a real API.
-const densityQA = new URLSearchParams(location.search).get('densityQA') === '1';
+const densityQA = uxAudit || new URLSearchParams(location.search).get('densityQA') === '1';
 const workflowPreview = densityQA || new URLSearchParams(location.search).has('workflowPreview');
 const transferPreview = new URLSearchParams(location.search).has('transferPreview')||workflowPreview;
 const designStudy = densityQA || new URLSearchParams(location.search).has('designStudy');
@@ -70,8 +74,21 @@ if(densityQA){
   fixturePublications.push(row);fixturePublicationConfigs.set(id,config);fixturePublicationHistory.set(id,[]);
  }
 }
+// Exact, in-memory account/settings responses for the local UX audit. No
+// OAuth navigation, payment, installation, device access or remote writes occur.
+const fixtureKnowledge=new Map(['getnote','notion','yinxiang','flowus','flomo','feishu'].map(provider=>[provider,{provider,status:uxAudit&&provider==='notion'&&fixtureParams.get('auditKnowledge')!=='empty'?'connected':'disconnected',providerSpaceName:provider==='notion'?'ONE 合成资料空间':undefined}]));
+let fixtureFolder=uxAudit&&fixtureParams.get('auditDevice')!=='empty'?'ONE 演示工作区':'';
+let fixtureExecutor:any={available:true,...(uxAudit&&fixtureParams.get('auditDevice')!=='empty'?{installedVersion:'0.0.0-fixture',installedSource:'managed',version:'0.0.0-fixture'}:{version:'0.0.0-fixture'}),...(fixtureParams.get('auditDevice')==='preparing'?{preparing:true,phase:'verifying'}:{})};
+let fixtureContext:any=null,fixtureAttentionSettings:any=uxAudit&&fixtureParams.get('auditAttention')==='enabled'?{enabled:true,revision:1,sourceIds:['fixture-notion'],topics:['项目进展'],intervalHours:6,dailyLimit:4,quietStart:22,quietEnd:8,timeZone:'Asia/Shanghai',lastStatus:'checked',lastCheckedAt:stamp,checksToday:1}:null;
+let fixtureWriting:any={connected:fixtureKnowledge.get('notion')?.status==='connected',writeAuthorized:true,ready:fixtureKnowledge.get('notion')?.status==='connected',parentId:'11111111111111111111111111111111',referenceIds:[]};
+const fixtureAttentionView=()=>({timeZone:'Asia/Shanghai',settings:fixtureAttentionSettings,sources:fixtureKnowledge.get('notion')?.status==='connected'?fixtureSources:[],notices:[]});
+const fixtureMembership={permanentPowerMicros:12500000,withdrawablePowerMicros:0,withdrawalsEnabled:false,enabled:true,annualDiscountPercent:20,products:(['standard','premium'] as const).flatMap((tier,index)=>[1,12].map(months=>({id:`fixture-${tier}-${months}`,label:`${index?'高级':'普通'}会员 · 合成套餐`,kind:'membership',tier,months,amountFen:(index?29900:9900)*(months===12?10:1),monthlyMicros:(index?70:20)*1e6,version:1}))),active:{tier:'standard',remainingPercent:68,resetsAt:new Date(Date.parse(stamp)+14*86400000).toISOString()},purchasedBalanceCny:0,pendingKeys:[],scheduled:[]};
+const fixtureCompany={company:{id:'preview',name:'ONE 合成公司',status:'active',revision:1,company:{agreementRef:'SYNTHETIC-AGREEMENT'}},members:[{userId:'preview',username:'preview',role:'owner',status:'active',permissions:{knowledgeConnectionIds:['fixture-notion'],featureIds:['research']}},{userId:'fixture-member',username:'合成员工',role:'member',status:'active',permissions:{knowledgeConnectionIds:['fixture-notion'],featureIds:['research'],powerLimitMicros:5000000}}],devices:[{id:'fixture-key',userId:'preview',serialNumber:'DEMO-KEY-ONLY',status:'active',lastUsedAt:stamp}],knowledge:[{id:'fixture-notion',name:'ONE 合成资料空间',status:'connected'}],features:[{id:'research',name:'资料研究',version:1}],billing:{mode:'bank_transfer',balanceMicros:12500000,reservedMicros:0,chargedMicros:120000},payments:[]};
+const fixtureAdminUsers=[user,{id:'fixture-member',username:'合成员工',role:'user',enabled:true,defaultWorkspaceId:'preview',createdAt:stamp}];
+const fixtureModels=[{id:'preview-model',name:'演示模型（不计费）',kind:'chat',enabled:true,isDefault:true,inputPowerPerMillion:0,outputPowerPerMillion:0,costInputPowerPerMillion:0,costOutputPowerPerMillion:0,imagePowerPerCall:0,costImagePowerPerCall:0}];
+const fixtureMetrics={asOf:stamp,definitions:{scope:'仅本地合成数据，不代表真实运营指标。'},excludedUserIds:[],daily:[],users:{items:[],total:0},summary:{accounts:2,selfRegistered:0,provisioned:2,dau:1,wau:2,mau:2,newAccounts30:2,newAccounts7:2,activated:1,d1:{rate:null,retained:0,eligible:0},d7:{rate:null,retained:0,eligible:0},lowBalance:0,atRisk:0,dormant:0,neverActivated:1,rechargeCny30:0,payingUsers30:0,payingUsersEver:0,repeatPayers:0,consumedMicros30:120000,costMicros30:0,stickiness:.5,anonymousQuestions30:0,excludedAccounts:0}};
 let fixtureGuideBeginFailed=false;
-const fixtureWelcome=()=>({profile,welcomeContext:{platforms:[],features:features.map(({id,name,description})=>({id,name,description}))},handbookOffer:{available:false},handbookNotice:'本地引导演示，不会生成说明或使用电力。'});
+const fixtureWelcome=()=>({profile,welcomeContext:{platforms:uxAudit&&fixtureKnowledge.get('notion')?.status==='connected'?['Notion']:[],features:features.map(({id,name,description})=>({id,name,description}))},handbookOffer:{available:false},handbookNotice:'本地引导演示，不会生成说明或使用电力。'});
 /** Mirror the forward-only journey contract, without authorization, model or device side effects. */
 function fixtureJourney(body:any):{status?:number;error?:string} {
  if(body.createGuide===true)return{status:400,error:'本地引导不制作说明或调用模型，请选择只保存设置。'};
@@ -98,12 +115,12 @@ function fixtureJourney(body:any):{status?:number;error?:string} {
     else if(body.choice!=='skipped')return{status:400,error:'请选择称呼或跳过。'};
     journey.nameChoice=body.choice;journey.stage='knowledge';
    }else if(body.step==='knowledge'){
-    if(body.choice==='connected')return{status:409,error:'本地演示没有连接真实资料，可以先跳过。'};
-    if(body.choice!=='skipped')return{status:400,error:'请选择有效的资料连接状态。'};
-    journey.knowledgeChoice='skipped';profile.onboarding.knowledgeChoice='skipped';journey.stage='device';
+    if(body.choice==='connected'&&!(uxAudit&&fixtureKnowledge.get('notion')?.status==='connected'))return{status:409,error:'本地演示没有连接真实资料，可以先跳过。'};
+    if(body.choice!=='skipped'&&body.choice!=='connected')return{status:400,error:'请选择有效的资料连接状态。'};
+    journey.knowledgeChoice=body.choice;profile.onboarding.knowledgeChoice=body.choice;journey.stage='device';
    }else if(body.step==='device'){
     if(!['checked','skipped'].includes(body.choice))return{status:400,error:'请选择有效的本机状态。'};
-    journey.localChoice=body.choice;if(body.choice==='checked')journey.local={connected:false,folderSelected:false,executorReady:false,checkedAt:now};journey.stage='features';
+    journey.localChoice=body.choice;if(body.choice==='checked')journey.local={connected:uxAudit&&fixtureParams.get('auditDevice')!=='offline',folderSelected:Boolean(fixtureFolder),executorReady:uxAudit&&Boolean(fixtureExecutor.installedVersion),checkedAt:now};journey.stage='features';
    }else if(body.step==='features'){
     const purposeIds=body.purposeIds,featureIds=body.featureIds||[];
     if(purposeIds!==undefined&&(!Array.isArray(purposeIds)||purposeIds.length>2||new Set(purposeIds).size!==purposeIds.length||purposeIds.some((id:any)=>!['writing','work','learning','files','life','explore'].includes(id))))return{status:400,error:'最多选择两个有效方向。'};
@@ -169,6 +186,9 @@ if (densityQA) {
  }
  conversations.sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
 }
+// Same immutable short-facts message format as taskResultReportContent:
+// title + outcome + brief + canonical task link. Every fact here is invented.
+if(uxAudit)coordinatorMessages.push({id:'report_fixture-ux-audit',role:'assistant',taskIds:['density-active-01','density-review-18','workflow-outline'],createdAt:stamp,content:'项目资料整理：已完成。已整理一份核对清单，内容留在对应任务里。\n[查看这件事](/?task=density-active-01)\n\n图文成果检查：部分结果已返回，需要核对。文字清单已经整理，图文成果还需要你检查。\n[查看这件事](/?task=density-review-18)\n\nNotion 保存：结果尚未确认。先检查原保存位置和已有结果，避免重复新建。\n[查看这件事](/?task=workflow-outline)'});
 function workflowMeta(conversation:any){const jobs=workflowJobs.get(conversation.id)||[],running=jobs.some(job=>job.state==='running'),queued=jobs.filter(job=>job.state==='queued').length;return{id:conversation.id,title:conversation.title,updatedAt:conversation.updatedAt,executorId:conversation.executorProfileId,running,queued,paused:Boolean(conversation.workPaused),state:running?'running':conversation.workPaused?'paused':queued?'queued':'idle',phase:running?'合成任务处理中；没有调用模型或本机设备。':undefined};}
 function workflowNotice(conversation:any,job:any,state='completed'){
  const id=`${job.id}-receipt`;if(transferNotices.some(notice=>notice.id===id))return;
@@ -252,7 +272,7 @@ window.fetch=async(input,options={})=>{
    const {intent:_intent,confirmed:_confirmed,...values}=body,config={...values,status,days,version:1,legacyPrompt:false};
    const row={id,slug,version:1,name:String(body.name).trim(),description:String(body.description||'').trim(),status,...(status==='draft'?{draftDays:days}:{}),expiresAt:new Date(Date.now()+days*86400000).toISOString(),budgetMicros:Math.round((Number(body.budget)||10)*1e6),perRunMicros:Math.round((Number(body.perRun)||1)*1e6),spent:0,held:0,attachments:Boolean(body.attachments),sources:(body.sourceIds||[]).map((id:string)=>fixtureSources.find(source=>source.id===id)?.name||id)};
    fixturePublications.unshift(row);fixturePublicationConfigs.set(id,config);fixturePublicationHistory.set(id,[]);fixtureFailShareRefresh=new URLSearchParams(location.search).has('shareRefreshFailure');result=status==='draft'?{id,status,version:1}:{id,slug,status,version:1};
-  }else{if(fixtureFailShareRefresh){fixtureFailShareRefresh=false;return reply({error:'合成演示：保存已确认，列表刷新暂时失败'},503);}const page=Math.max(1,Number(url.searchParams.get('page'))||1),query=(url.searchParams.get('q')||'').toLowerCase(),items=fixturePublications.filter(row=>(row.name+' '+row.description).toLowerCase().includes(query));result={ready:true,visitorPaymentsEnabled:false,items:items.slice((page-1)*10,page*10).map(row=>{const {slug,draftDays,...visible}=row;return row.status==='draft'?visible:{...visible,slug};}),total:items.length,sources:fixtureSources};}
+  }else{if(fixtureFailShareRefresh){fixtureFailShareRefresh=false;return reply({error:'合成演示：保存已确认，列表刷新暂时失败'},503);}const page=Math.max(1,Number(url.searchParams.get('page'))||1),query=(url.searchParams.get('q')||'').toLowerCase(),items=fixturePublications.filter(row=>(row.name+' '+row.description).toLowerCase().includes(query));result={ready:true,visitorPaymentsEnabled:false,items:items.slice((page-1)*10,page*10).map(row=>{const {slug,draftDays,...visible}=row;return row.status==='draft'?visible:{...visible,slug};}),total:items.length,sources:fixtureSources,...(uxAudit?{authorName:'本地合成作者',availableFeatures:features.map(feature=>({...feature,usageMultiplier:.6}))}:{})};}
  }
  else if(/^\/api\/sharing\/manage\/[^/]+\/(?:config|update|publish|close|usage)$/.test(path)){
   const id=path.split('/')[4],row=fixturePublications.find(item=>item.id===id),config=fixturePublicationConfigs.get(id);if(!row||!config)return reply({error:'演示分身不存在'},404);
@@ -301,7 +321,7 @@ window.fetch=async(input,options={})=>{
   const file=fixtureFiles.get(decodeURIComponent(path.split('/')[3]));if(!file)return reply({error:'没有这份演示附件'},404);
   if(path.endsWith('/content')){if(file.status!=='ready')return reply({error:'演示附件尚未就绪'},409);return new Response(file.content||'本地演示文件',{headers:{'Content-Type':file.mimeType||'text/plain','X-ONE-Preview':'synthetic','Content-Security-Policy':"default-src 'none'; sandbox"}});}const {content,...attachment}=file;result={attachment};
  }
- else if(transferPreview && path==='/api/coordinator'){const items=workflowPreview?conversations.filter(c=>!c.archived&&(!densityQA||!c.id.startsWith('density-history-'))):conversations;result={enabled:true,conversation:{id:'main',messages:coordinatorMessages},tasks:items.map(c=>workflowPreview?workflowMeta(c):({id:c.id,title:c.title,updatedAt:c.updatedAt,running:false,queued:0})),total:items.length,notices:workflowPreview?transferNotices.filter(n=>items.some(c=>c.id===n.taskId)):transferNotices,links:coordinatorMessages.filter(m=>m.taskId).map(m=>({messageId:m.id,taskId:m.taskId}))};}
+ else if(transferPreview && path==='/api/coordinator'){const items=workflowPreview?conversations.filter(c=>!c.archived&&(!densityQA||!c.id.startsWith('density-history-'))):conversations;result={enabled:true,conversation:{id:'main',messages:coordinatorMessages},tasks:items.map(c=>workflowPreview?workflowMeta(c):({id:c.id,title:c.title,updatedAt:c.updatedAt,running:false,queued:0})),total:items.length,notices:workflowPreview?transferNotices.filter(n=>items.some(c=>c.id===n.taskId)):transferNotices,links:coordinatorMessages.flatMap(m=>[...new Set([...(m.taskIds||[]),...(m.taskId?[m.taskId]:[])])].map(taskId=>({messageId:m.id,taskId})))};}
  else if(workflowPreview&&(path==='/api/coordinator/notices/read'||path==='/api/coordinator/read'||path==='/api/coordinator/notices/read-all')){
   const ids=path.endsWith('/read-all')?transferNotices.filter(notice=>!notice.read).map(notice=>notice.id):Array.isArray(body.ids)?body.ids:[];for(const notice of transferNotices)if(ids.includes(notice.id))notice.read=true;result={ids,count:ids.length};
  }
@@ -371,8 +391,41 @@ window.fetch=async(input,options={})=>{
  }
  else if(path==='/api/folders')result={folders:[]};else if(path==='/api/agents')result={agents:[]};else if(path==='/api/executions')result={tasks:[]};
  else if(path==='/api/capabilities')result={attachments:{enabled:new URLSearchParams(location.search).get('realService')==='1',maxFiles:5,maxBytes:500000000,extensions:['txt','md']},webSearch:{enabled:false},knowledge:{providers:['getnote','notion']}};
- else if(path.startsWith('/api/knowledge/connections/'))result={connection:{provider:path.split('/').at(-1),status:'disconnected'},configured:true};
- else if(path==='/api/me/billing')result={balanceMicros:0,ledger:[],orders:[],usage:[],rechargeCnyPerPower:7};
+ else if(uxAudit&&path==='/api/admin/users'&&method==='GET')result={users:fixtureAdminUsers};
+ else if(uxAudit&&path==='/api/admin/models'&&method==='GET')result={models:fixtureModels};
+ else if(uxAudit&&path==='/api/admin/one-keys'&&method==='GET')result={devices:fixtureCompany.devices};
+ else if(uxAudit&&path==='/api/admin/context-traces'&&method==='GET')result={traces:[]};
+ else if(uxAudit&&path==='/api/admin/operations'&&method==='GET')result={pendingOrders:[],usage:[],userUsage:[],ledger:[],logs:[],settings:{rechargeCnyPerPower:7},summary:{reviewCalls:0,unknownCostCalls:0,users:2,balanceMicros:12500000,chargedMicros:120000,costMicros:0}};
+ else if(uxAudit&&path==='/api/admin/product-metrics'&&method==='GET')result=fixtureMetrics;
+ else if(uxAudit&&path==='/api/admin/companies'&&method==='GET')result={items:[{id:'preview',name:fixtureCompany.company.name,status:'active',agreementRef:'SYNTHETIC-AGREEMENT',members:2}]};
+ else if(uxAudit&&(path==='/api/company'||path==='/api/admin/companies/preview')&&method==='GET')result=fixtureCompany;
+ else if(uxAudit&&path==='/api/admin/companies/preview/features'&&method==='GET')result={items:fixtureCompany.features.map(feature=>({...feature,revision:1,enabled:true}))};
+ else if(uxAudit&&(path.startsWith('/api/admin/')||path.startsWith('/api/company'))&&method!=='GET')return reply({error:'本地验收只展示管理数据，不修改账号、权限、价格或款项。'},409);
+ else if(uxAudit&&/^\/api\/sharing\/manage\/[^/]+\/service$/.test(path)&&method==='GET')result={access:'open',paymentMode:'disabled',plans:[],intakeFields:[],codes:[],entitlements:[]};
+ else if(uxAudit&&/^\/api\/sharing\/manage\/[^/]+\/leads$/.test(path)&&method==='GET')result={items:[],total:0};
+ else if(path==='/api/me/local-device'){
+  if(fixtureParams.get('auditDevice')==='offline')return reply({error:'合成状态：ONE Key 暂未连接，请重新连接后检查。'},503);
+  if(method==='POST')fixtureFolder='ONE 演示工作区';result={targetName:fixtureFolder||undefined};
+ }
+ else if(path==='/api/me/executor'){
+  if(fixtureParams.get('auditDevice')==='offline')return reply({error:'合成状态：本机连接暂未确认。'},503);
+  if(method==='POST')fixtureExecutor={available:true,installedVersion:'0.0.0-fixture',installedSource:'managed',version:'0.0.0-fixture'};result=fixtureExecutor;
+ }
+ else if(path==='/api/me/model'){if(method!=='PATCH')return reply({error:'演示仅支持保存默认模型'},405);result={ok:true};}
+ else if(path==='/api/me/membership')result=fixtureMembership;
+ else if(path==='/api/me/billing/history'){
+  const kind=url.searchParams.get('kind')||'usage',items=kind==='usage'?[{id:'fixture-billing-1',title:'资料整理 · 合成使用记录',status:'success',createdAt:stamp,chargedMicros:120000,source:'fixed'},{id:'fixture-billing-2',title:'图文成果 · 合成使用记录',status:'waived',createdAt:stamp,chargedMicros:0}]:kind==='ledger'?[{id:'fixture-ledger-1',title:'合成演示额度',status:'success',createdAt:stamp,amountMicros:12500000}]:[];result={items,total:items.length,pageSize:10};
+ }
+ else if(path==='/api/pricing')result={prices:[{id:'preview-model',name:'演示模型（不计费）',input:0,output:0,pricing:{label:'合成验收数据'},notices:[]}]};
+ else if(path.startsWith('/api/me/payments/')||path==='/api/me/membership/activate')return reply({error:'本地验收不创建付款或激活真实套餐。'},409);
+ else if(/^\/api\/knowledge\/connections\/[^/]+\/(?:oauth\/start|device-flow(?:\/[^/]+(?:\/poll)?)?)$/.test(path))return reply({error:'本地预览不会发起真实授权；此处仅验收连接状态与布局。'},409);
+ else if(path==='/api/knowledge/connections/notion/writing'){
+  if(method==='PUT')fixtureWriting={...fixtureWriting,parentId:'22222222222222222222222222222222',referenceIds:[],ready:true};result={...fixtureWriting,connected:fixtureKnowledge.get('notion')?.status==='connected'};
+ }
+ else if(/^\/api\/knowledge\/connections\/(?:getnote|notion|yinxiang|flowus|flomo|feishu)$/.test(path)){
+  const provider=path.split('/').at(-1)!;if(method==='DELETE')fixtureKnowledge.set(provider,{provider,status:'disconnected'});result={connection:fixtureKnowledge.get(provider),configured:provider!=='feishu',testConnectAvailable:false};
+ }
+ else if(path==='/api/me/billing')result={balanceMicros:uxAudit?12500000:0,reservedMicros:0,availableMicros:uxAudit?12500000:0,ledger:[],orders:[],usage:[],rechargeCnyPerPower:7};
  else if(path==='/api/connectors')result={connectors:[]};
  else if(path==='/api/chat'){
   const old=conversations.find(c=>c.id===body.conversationId),id=old?.id??'preview-'+crypto.randomUUID();
@@ -380,10 +433,17 @@ window.fetch=async(input,options={})=>{
   operations.set(body.operationId,conversation);await new Promise(resolve=>setTimeout(resolve,8500));const index=conversations.findIndex(c=>c.id===id);if(index>=0)conversations[index]=conversation;else conversations.unshift(conversation);result={conversation};
  }else if(path.startsWith('/api/chat/operations/'))result={conversation:operations.get(path.split('/').at(-1)!)};
  else if(path.startsWith('/api/conversations/')){const conversation=conversations.find(c=>c.id===path.split('/')[3]);if(method==='PATCH'&&conversation){if(typeof body.title==='string')conversation.title=body.title;if(typeof body.archived==='boolean')conversation.archived=body.archived;conversation.updatedAt=new Date().toISOString();}if(method==='DELETE'&&conversation)conversations.splice(conversations.indexOf(conversation),1);result={conversation};}
- else if(path==='/api/features'){const cat=url.searchParams.get('category'),q=(url.searchParams.get('q')??'').toLowerCase(),scope=url.searchParams.get('scope'),page=Math.max(1,Number(url.searchParams.get('page'))||1);const items=catalog.filter(f=>(scope!=='mine'||f.access!=='locked')&&(!cat||cat==='all'||f.category===cat)&&(f.name+' '+f.description).toLowerCase().includes(q));result={items:items.slice((page-1)*10,page*10),total:items.length};}
+ else if(path==='/api/features'){const cat=url.searchParams.get('category'),q=(url.searchParams.get('q')??'').toLowerCase(),page=Math.max(1,Number(url.searchParams.get('page'))||1);const items=catalog.filter(f=>f.access!=='locked'&&(!cat||cat==='all'||f.category===cat)&&(f.name+' '+f.description).toLowerCase().includes(q));result={items:items.slice((page-1)*10,page*10),total:items.length};}
  else if(path.startsWith('/api/features/')){const feature=catalog.find(f=>f.id===decodeURIComponent(path.split('/')[3]));if(!feature)return reply({error:'演示功能不存在'},404);result={...feature,usageMultiplier:.6,sources:fixtureSources.map(source=>({id:source.id,name:source.name}))};}
- else if(path==='/api/attention')result={timeZone:'Asia/Shanghai',settings:null,sources:[],notices:[]};
- else if(path==='/api/me/context-preferences')result={saved:null,current:{timeZone:'Asia/Shanghai'}};
+ else if(path==='/api/attention')result=fixtureAttentionView();
+ else if(path==='/api/attention/settings'){
+  if(method!=='POST')return reply({error:'请使用演示设置保存入口'},405);
+  if(body.enabled===true&&(!Array.isArray(body.sourceIds)||!body.sourceIds.length||!Array.isArray(body.topics)||!body.topics.length))return reply({error:'请先选择来源并填写关注主题。'},400);
+  fixtureAttentionSettings={...body,revision:(fixtureAttentionSettings?.revision||0)+1,checksToday:0,lastStatus:body.enabled?'checked':'paused'};result=fixtureAttentionView();
+ }
+ else if(path==='/api/attention/check'){if(fixtureAttentionSettings)Object.assign(fixtureAttentionSettings,{lastStatus:'checked',lastCheckedAt:stamp});result=fixtureAttentionView();}
+ else if(/^\/api\/attention\/notices\/[^/]+$/.test(path))result={ok:true};
+ else if(path==='/api/me/context-preferences'){if(method==='POST')fixtureContext={timeZone:String(body.timeZone||'Asia/Shanghai'),city:String(body.city||'')};result={saved:fixtureContext,current:{timeZone:fixtureContext?.timeZone||'Asia/Shanghai'}};}
  else return reply({error:'本地预览未启用此接口'},404);
  return reply(result);
 };

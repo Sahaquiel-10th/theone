@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { products, trialCatalog } from '../server/memberships';
 import { featureMention, withoutFeatureMention, monthlyAllowanceComparison, purchaseAction, purchaseTiming, transferStateLabel } from './noviceUx';
+import { localDeviceStatus } from './localDeviceStatus';
 const plans=products(trialCatalog),standard=plans.find(p=>p.id==='standard-monthly')!,premium=plans.find(p=>p.id==='premium-monthly')!;
 
 test('purchase action distinguishes opening, renewal, upgrade and queued lower tier',()=>{
@@ -33,12 +34,12 @@ test('selecting a feature removes only its mention, retains the original request
   assert.equal(withoutFeatureMention('请用 @办公 整理本周工作',mention),'请用 @办公 整理本周工作');
 });
 test('execution labels preserve queued, unknown, failed and cancelled meanings',()=>{
-  assert.match(transferStateLabel('queued'),/等开始/);
-  assert.match(transferStateLabel('failed'),/没做成/);
-  assert.match(transferStateLabel('interrupted'),/还要核对/);
-  assert.match(transferStateLabel('cancelled'),/不会自动再跑/);
-  assert.match(transferStateLabel('selecting_target'),/选一个工作文件夹/);
-  assert.match(transferStateLabel('returned'),/新反馈/);
+  assert.equal(transferStateLabel('queued'),'排队中');
+  assert.equal(transferStateLabel('failed'),'未完成');
+  assert.equal(transferStateLabel('interrupted'),'结果待核对');
+  assert.equal(transferStateLabel('cancelled'),'已停止');
+  assert.equal(transferStateLabel('selecting_target'),'请选择工作文件夹');
+  assert.equal(transferStateLabel('returned'),'有新结果');
   assert.doesNotMatch(transferStateLabel('returned'),/做好|正在处理/);
 });
 test('feature picker only reads the scoped catalog; choosing cannot create a task or incur a charge',()=>{
@@ -69,7 +70,9 @@ test('tool status check is visible and prevents duplicate checks',()=>{
   assert.match(source,/if\(executorRequest.current\)return/);
   assert.match(source,/setChecking\(true\)/);
   assert.match(source,/状态已更新/);
-  assert.match(source,/尚未确认本机工具/);
+  assert.match(source,/localDeviceStatus\(/);
+  assert.equal(localDeviceStatus(undefined,false,false).state,'unconfirmed');
+  assert.equal(localDeviceStatus(undefined,false,false).title,'本机连接未确认');
 });
 test('work folder uses everyday labels and puts permission details beside the chooser',()=>{
   const source=readFileSync(new URL('./LocalDeviceSettings.tsx',import.meta.url),'utf8');

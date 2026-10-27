@@ -85,7 +85,7 @@ export function DispatchPreview() {
     <div className="dp-presence"><OneCompanionEye mood={busy ? 'thinking' : state.draft ? 'attentive' : 'idle'} onActivate={() => select(null)} /><div><small>ONE</small><h2>{state.selected ? '我在，接着说。' : greeting}</h2></div></div>
     <div className="dp-master-dialogue" aria-label="主对话" ref={dialogueRef}><div className="dp-dialogue-heading"><span>和 ONE 说话</span>{state.dialogue.length > 4 && <button onClick={() => setHistoryOpen(v => !v)}>{historyOpen ? '收起' : '之前说过的'}<ChevronDown size={12} /></button>}</div>
      {visibleDialogue.map(m => <div key={m.id} className={`dp-master-message ${m.role}`}><small>{m.role === 'user' ? '你' : 'ONE'}</small><p>{m.text}</p>{m.taskId && <button onClick={() => select(m.taskId!)}>查看这件事 <ArrowUpRight size={12} /></button>}</div>)}
-     {busy && <div className="dp-master-wait" role="status"><span className="dp-status-dot running" />ONE 正在承接这句话…</div>}
+     {busy && <div className="dp-master-wait" role="status"><span className="dp-status-dot running" />ONE 正在回复…</div>}
      {!state.dialogue.length && <p className="dp-opening">不用开新聊天。想到哪件事，直接说。</p>}
     </div>
     <div className="dp-composer-anchor">

@@ -55,8 +55,8 @@ export function AppearanceSettings({ profile, onSave }: {
   }
 
   return <section className="one-appearance-settings" aria-labelledby={`${id}-title`} aria-busy={pending !== null}>
-    <header><h3 id={`${id}-title`}>工作台外观</h3><p id={`${id}-hint`}>两种外观保留相同的布局与操作。选择会随账号保存。</p></header>
-    <fieldset aria-describedby={`${id}-hint`} disabled={pending !== null}>
+    <header><h3 id={`${id}-title`}>工作台外观</h3></header>
+    <fieldset disabled={pending !== null}>
       <legend className="sr-only">选择工作台外观</legend>
       {scenes.map(scene => <label className="one-appearance-choice" key={scene.id} data-selected={selected === scene.id}>
         <input type="radio" name={`${id}-scene`} value={scene.id} checked={selected === scene.id} onChange={() => void choose(scene.id)}/>

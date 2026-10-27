@@ -349,7 +349,7 @@ export function useCoordinator(
       pendingRef.current ||
       snapshotRef.current?.pendingOperationId&&!settledReceipts.has(snapshotRef.current.pendingOperationId)
     )
-      throw Error("ONE 正在承接上一句话，请稍候");
+      throw Error("上一条消息还在处理，请稍候");
     sending.current = input.operationId;
     setOutgoing({id:input.operationId,text:input.text,priorIds:snapshotRef.current?.conversation?.messages.map(m=>m.id!)||[]});
     setProgress({phase:'正在发送你的要求',startedAt:new Date().toISOString()});
