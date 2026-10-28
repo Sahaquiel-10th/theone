@@ -2,7 +2,8 @@ import {createStatusAuditFixture} from './status-audit-fixture';
 // Local visual fixture only. All API calls are intercepted; no keys, models or production data.
 const stamp=new Date().toISOString();
 const fixtureParams=new URLSearchParams(location.search);
-const uxAudit=fixtureParams.get('uxAudit')==='1';
+const startupAudit=fixtureParams.get('startupAudit')==='1';
+const uxAudit=fixtureParams.get('uxAudit')==='1'||startupAudit;
 const statusAudit=fixtureParams.get('statusAudit')==='1';
 const profile:any={workspaceId:'preview',displayName:'小马',onboarding:{completedAt:stamp,knowledgeChoice:'skipped'},updatedAt:stamp};
 const profileStorageKey='one-focus-preview-profile:v1:preview:preview';
@@ -10,9 +11,11 @@ try{const saved=JSON.parse(localStorage.getItem(profileStorageKey)||'null');if(s
 const user:any={id:'preview',username:'preview',role:'user',enabled:true,defaultWorkspaceId:'preview',createdAt:stamp,profile};
 if(uxAudit&&fixtureParams.get('auditRole')==='admin')user.role='admin';
 if(uxAudit&&fixtureParams.get('auditRole')==='company')user.access={kind:'company',role:'company_admin',workspaceId:'preview'};
+if(startupAudit&&fixtureParams.get('startupRole')==='admin')user.role='admin';
+if(startupAudit&&fixtureParams.get('startupRole')==='company')user.access={kind:'company',role:'company_admin',workspaceId:'preview'};
 const conversations:any[]=[],operations=new Map<string,any>();
 // Opt-in density regression dataset; never allow this mode to reach a real API.
-const densityQA = statusAudit || uxAudit || new URLSearchParams(location.search).get('densityQA') === '1';
+const densityQA = startupAudit || statusAudit || uxAudit || new URLSearchParams(location.search).get('densityQA') === '1';
 const workflowPreview = densityQA || new URLSearchParams(location.search).has('workflowPreview');
 const transferPreview = new URLSearchParams(location.search).has('transferPreview')||workflowPreview;
 const designStudy = densityQA || new URLSearchParams(location.search).has('designStudy');
@@ -192,7 +195,7 @@ if (densityQA) {
 // title + outcome + brief + canonical task link. Every fact here is invented.
 if(uxAudit)coordinatorMessages.push({id:'report_fixture-ux-audit',role:'assistant',taskIds:['density-active-01','density-review-18','workflow-outline'],createdAt:stamp,content:'项目资料整理：已完成。已整理一份核对清单，内容留在对应任务里。\n[查看这件事](/?task=density-active-01)\n\n图文成果检查：部分结果已返回，需要核对。文字清单已经整理，图文成果还需要你检查。\n[查看这件事](/?task=density-review-18)\n\nNotion 保存：结果尚未确认。先检查原保存位置和已有结果，避免重复新建。\n[查看这件事](/?task=workflow-outline)'});
 // Match the pending receipt contract instead of drawing a fake progress component.
-const statusFixture=statusAudit?createStatusAuditFixture(fixtureParams):null;
+const statusFixture=statusAudit||startupAudit?createStatusAuditFixture(fixtureParams):null;
 if(statusFixture){
  conversations.splice(0,conversations.length,...statusFixture.conversations);
  coordinatorMessages.splice(0,coordinatorMessages.length,...statusFixture.messages);
@@ -225,6 +228,10 @@ const logRequest=(method:string,path:string,scope='synthetic')=>{const row={meth
 const json=(result:any,status=200)=>new Response(JSON.stringify(result),{status,headers:{'Content-Type':'application/json','X-ONE-Preview':'synthetic'}});
 const nativeFetch=window.fetch.bind(window);
 let runtimePolls=0;
+let startupReads=0;
+const startupDelayMs=Math.min(20000,Math.max(0,Number(fixtureParams.get('startupDelay'))||0));
+const startupFailures=Math.min(20,Math.max(0,Math.floor(Number(fixtureParams.get('startupFailures'))||0)));
+const statusStopDelayMs=Math.min(5000,Math.max(0,Number(fixtureParams.get('statusStopDelay'))||0));
 window.fetch=async(input,options={})=>{
  const url=new URL(typeof input==='string'?input:input instanceof Request?input.url:input.toString(),location.origin);
  if(url.origin!==location.origin)return new Response('{}',{status:403});
@@ -233,7 +240,16 @@ window.fetch=async(input,options={})=>{
  if(realService && (path.startsWith('/api/coordinator')||path.startsWith('/api/conversations')||path.startsWith('/api/attachments')||path.startsWith('/api/features'))){logRequest(method,path,'explicit-real-service');return nativeFetch('http://127.0.0.1:4291'+url.pathname+url.search,{...options,credentials:'include'});}
  const requestRecord=logRequest(method,path);
  const reply=(value:any,status=200)=>{requestRecord.status=status;previewLog.textContent=JSON.stringify(previewApiLog);return json(value,status);};
+ if(startupAudit&&path==='/api/coordinator'&&method==='GET'){
+  const attempt=++startupReads;
+  if(startupDelayMs&&(attempt===1||attempt<=startupFailures))await new Promise(resolve=>setTimeout(resolve,startupDelayMs));
+  if(attempt<=startupFailures)return reply({error:'合成连接暂时不可用，请重新连接。'},503);
+ }
+ // Delay before the state-changing handler so polling cannot observe a
+ // successful stop while the user is still waiting for its response.
+ if(statusFixture&&method==='POST'&&/^\/api\/coordinator\/messages\/[^/]+\/stop$/.test(path)&&statusStopDelayMs)await new Promise(resolve=>setTimeout(resolve,statusStopDelayMs));
  const statusResult=statusFixture?.handle(method,url,body);
+ if(startupAudit&&path==='/api/coordinator'&&statusResult&&fixtureParams.get('startupDisabled')==='1')return reply({...statusResult.body,enabled:false},statusResult.status);
  if(statusResult)return reply(statusResult.body,statusResult.status);
  let result:any={};
  if(path==='/api/me/profile'){
@@ -395,7 +411,11 @@ window.fetch=async(input,options={})=>{
  }
  else if(path==='/api/coordinator'&&new URLSearchParams(location.search).has('runtimePreview'))result={enabled:true,conversation:null,tasks:[],total:0,notices:[]};
  else if(path==='/api/coordinator'&&new URLSearchParams(location.search).has('thingsPreview'))result={enabled:false,conversation:null,tasks:[],total:0,notices:[]};
- else if(path==='/api/me')result={user};
+ else if(startupAudit&&path==='/api/auth/one-key/redeem'&&method==='POST'){
+  if(body.loginCode!=='fixture-startup-code')return reply({error:'此预览只接受本地合成登录码。'},400);
+  result={user,...(user.access?{access:user.access}:{})};
+ }
+ else if(path==='/api/me')result={user,...(user.access?{access:user.access}:{})};
  else if(path==='/api/models')result={models:[{id:'preview-model',name:'演示模型（不计费）',kind:'chat',enabled:true,isDefault:true}],defaultModelId:'preview-model'};
  else if(path==='/api/conversations'){
   if(method==='POST'){const conversation={id:'fixture-'+crypto.randomUUID(),userId:user.id,modelId:'preview-model',title:body.title||'新的事情',archived:false,createdAt:stamp,updatedAt:stamp,messages:[]};conversations.unshift(conversation);result={conversation};}
@@ -488,6 +508,17 @@ if(designStudy&&!realService){
  guideButton.onclick=()=>window.dispatchEvent(new Event('one-onboarding-preview'));document.body.append(guideButton);
 }
 await import('/src/main.tsx');
+if(startupAudit){
+ // Content-free DOM evidence for slow startup: never read private React state.
+ const history=document.createElement('output');history.id='fixture-startup-history';history.hidden=true;document.body.append(history);
+ const samples:Array<{ms:number;mode:string}>=[];let previous='';const began=performance.now();
+ const record=()=>{
+  const root=document.getElementById('root'),main=root?.querySelector('main');
+  const mode=main?.hasAttribute('data-workspace-startup')?`startup:${main.getAttribute('data-workspace-startup')}`:main?.classList.contains('one-fluid-workspace')?'workspace':main?.classList.contains('one-shell')?'legacy':root?.querySelector('.boot')?'auth':'empty';
+  if(mode===previous)return;previous=mode;samples.push({ms:Math.round(performance.now()-began),mode});history.textContent=JSON.stringify(samples);
+ };
+ const observer=new MutationObserver(record);observer.observe(document.getElementById('root')!,{childList:true,subtree:true,attributes:true,attributeFilter:['data-workspace-startup','class']});record();
+}
 if(statusFixture){
  // Open through actual public buttons, never private React state. Disconnect
  // after the initial open so manual closing and reopening remain testable.

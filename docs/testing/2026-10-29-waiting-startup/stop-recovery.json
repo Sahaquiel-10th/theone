@@ -1,0 +1,16 @@
+{
+  "before": {
+    "track": 406,
+    "width": 357.3671875
+  },
+  "held": {
+    "state": "stopping",
+    "width": 357.3671875
+  },
+  "recovery": {
+    "enabled": true,
+    "error": "尚未确认停止，请检查连接后重试。",
+    "state": "waiting",
+    "width": 361.390625
+  }
+}

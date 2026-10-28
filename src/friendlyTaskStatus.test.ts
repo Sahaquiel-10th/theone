@@ -15,7 +15,7 @@ test('read-all cannot consume a notice that arrived while the server request was
   assert.equal(before[0].read,false);
 });
 test('response phases explain real work in everyday language without claiming completion',()=>{
-  assert.equal(friendlyResponsePhase('正在查找已授权知识库'),'正在查找知识资料');
+  assert.equal(friendlyResponsePhase('正在查找已授权知识库'),'正在查找资料');
   assert.equal(friendlyResponsePhase('正在等待模型回答'),'正在生成回复');
   assert.equal(friendlyResponsePhase('正在理解你的要求'),'正在理解问题');
   assert.equal(friendlyResponsePhase('正在交接任务'),'正在安排任务');

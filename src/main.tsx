@@ -17,6 +17,8 @@ import {ProductMetricsPanel} from './ProductMetricsPanel';
 import {useOneGreeting} from './OnePersonality';
 import {ResponseProgress} from './ResponseProgress';
 import {LocalTaskEmptyState} from './LocalTaskEmptyState';
+import {WorkspaceStartup} from './WorkspaceStartup';
+import {workspaceStartupMode,workspaceDestinationPending} from './workspaceStartupState';
 import {FeatureNav} from './FeatureNav';
 import {ThingsPanel} from './ThingsPanel';
 import {TaskReadAllButton} from './TaskReadAllButton';
@@ -151,6 +153,7 @@ import './ux-clarity.css';
 import './response-progress.css';
 import './task-rail-clarity.css';
 import './workspace-status-clarity.css';
+import './workspace-startup.css';
 import { Pagination, SearchPicker, SettingsDialog } from "./SettingsControls";
 import { BetaUserInsights } from "./BetaUserInsights";
 import { mergeTaskSnapshots, recoverTaskDraft } from "./oneStudioState";
@@ -812,6 +815,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const viewedConversationRef = useRef("");
   viewedConversationRef.current = view === "chat" ? activeId : "";
 
+  // Ref-based layout effects must become enabled in the same commit that
+  // mounts their DOM, including initial destination adoption and read retries.
+  const startup=workspaceStartupMode({demoEnabled:demo.enabled,coordinatorReady:coordinator.ready,coordinatorEnabled:coordinator.enabled,hasSnapshot:Boolean(coordinator.snapshot),error:coordinator.error,destinationPending:workspaceDestinationPending(preview.enabled,view)});
+  const workspaceContentMounted=startup==='workspace'||startup==='legacy';
   const active = useMemo(() => conversations.find((item) => item.id === activeId), [activeId, conversations]);
   const targetConversation = preview.enabled || composeNew ? undefined : active;
   const activeModelId = targetConversation?.modelId || draftModelId;
@@ -827,7 +834,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const activeExecutionMode = executionMode;
   const targetLoading = preview.enabled ? Boolean(preview.state.pending) || Boolean(loadingByConversation[activeLoadingKey]) : !composeNew && activeLoading;
   const studioIdle = view === "chat" && !activeId && (!preview.enabled || previewHome);
-  const taskScroll = useFollowLatest<HTMLElement>(activeId, view === 'chat' && Boolean(active));
+  const taskScroll = useFollowLatest<HTMLElement>(activeId, workspaceContentMounted && view === 'chat' && Boolean(active));
   const activePreparing = preparingExecution && preparingConversationId === activeId;
   const liveTaskIds = runningExecutions.map(task => task.id).sort().join("|");
   const currentModel = models.find((model) => model.id === activeModelId);
@@ -855,7 +862,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     || executionTasks.find(t=>t.id===task.id)?.updatedAt
     || coordinatorMetas.find(t=>t.id===task.taskId)?.updatedAt}));
   // Material-only animation: the coordinator and composer remain mounted in place.
-  const fluidEnabled = view === 'chat' && preview.enabled;
+  const fluidEnabled = startup==='workspace' && view === 'chat' && preview.enabled;
   const fluidHasDialogue = preview.state.dialogue.length > 0 || Boolean(preview.state.pending);
   const fluidCanvasRef = useRef<HTMLDivElement>(null);
   const fluidEyeOwnerRef = useRef<'main'|'activity'|'local'>('main');
@@ -948,7 +955,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       input.style.height=fluidEnabled?'0px':'auto';
       input.style.height=`${Math.max(fluidEnabled?36:0,Math.min(fluidEnabled?156:180,input.scrollHeight))}px`;
     }
-  },[content,view,fluidEnabled]);
+  },[content,view,fluidEnabled,workspaceContentMounted]);
   useEffect(() => {
     const previous = motionTasksRef.current; motionTasksRef.current = new Set(executionTasks.map(t=>t.id));
     const eligible=executionTasks.filter(t=>isExecutionRunning(t)&&!stoppedExecutionIdsRef.current.has(t.id)&&!stoppedPreparationIdsRef.current.has(t.dispatchOperationId||'')&&!stoppedPreparationIdsRef.current.has(t.preparationOperationId||''));
@@ -1126,14 +1133,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }, [visibleReceiptId]);
 
   useEffect(() => {
-    if (!revealExecutionId || view !== "chat" || executionTask?.id !== revealExecutionId) return;
+    if (!workspaceContentMounted || !revealExecutionId || view !== "chat" || executionTask?.id !== revealExecutionId) return;
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const timer = window.setTimeout(() => {
       document.getElementById("one-current-execution")?.scrollIntoView({ behavior: reduced ? "instant" : "smooth", block: "nearest" });
       setRevealExecutionId("");
     }, reduced ? 0 : 340);
     return () => window.clearTimeout(timer);
-  }, [revealExecutionId, executionTask?.id, view]);
+  }, [revealExecutionId, executionTask?.id, view, workspaceContentMounted]);
 
   async function refresh() {
     const keep = <T,>(fallback: T) => (error: Error) => { setError(error.message); return fallback; };
@@ -2225,6 +2232,11 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   function renderAccount() {
     return (<AccountPage user={user} onLogout={onLogout} profile={profile} onSaveProfile={async patch=>{const result=await saveProfile(patch);if(patch.appearance)setScenePreview(null);return result;}} onOpenGuide={startStory} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={openHistory} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgeConnections api={api} inline={preview.enabled} returnOutcome={knowledgeReturnRef.current} onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : next.provider === "flomo" ? setFlomoConnection(next) : setKnowledgeConnection(next)} />} />);
   }
+
+  // Until the authenticated first snapshot arrives, a missing feature flag is
+  // unknown. Keep the new shell instead of briefly mounting the legacy app.
+  // Admin/company/connector destinations also wait for work-layer adoption.
+  if(startup==='loading'||startup==='retry')return <WorkspaceStartup scene={fluidScene} error={startup==='retry'?coordinator.error:undefined} onRetry={async()=>{await coordinator.refresh();}}/>;
 
   return (
     <main onClickCapture={event=>{if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;const anchor=event.target instanceof Element?event.target.closest('a[href]'):null;if(!anchor||anchor.hasAttribute('download')||anchor.getAttribute('target')==='_blank')return;const id=internalTaskId(anchor.getAttribute('href')||'',window.location.href);if(id){event.preventDefault();void openLinkedTask(id);}}} onPointerDownCapture={event=>{if(event.target instanceof HTMLElement)executionPointerRef.current={element:event.target,point:{x:event.clientX,y:event.clientY}};else if(event.target instanceof SVGElement)executionPointerRef.current={element:event.target.closest('button')!,point:{x:event.clientX,y:event.clientY}};}} onKeyDownCapture={()=>{executionPointerRef.current=null;}} data-fluid-desktop={fluidDesktop} data-fluid-material={fluidMaterial} data-fluid-accent={fluidAccent} data-fluid-scene={fluidScene} data-fluid-dialogue={fluidHasDialogue?'active':'empty'} data-sidebar-open={sidebarOpen} className={`app-shell one-shell one-studio attention-workspace ${fluidEnabled?"one-fluid-workspace":""} ${preview.enabled&&(view==='chat'||view==='features'||view==='account')?`coordinator-preview ${view==='features'?'coordinator-tools-open':view==='account'?'coordinator-settings-open coordinator-task-open':active?'coordinator-task-open':''}`:''} ${view==='things'?'studio-things':''} ${view==='features'?'studio-discover':''} ${studioIdle ? "studio-idle" : "studio-open"} ${focusedTask && view === "chat" && !studioIdle ? "studio-focused" : ""} ${activeExecutionMode ? "execution-shell" : ""}`}>

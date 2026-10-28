@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {responseElapsedSeconds,responseWaitLabel,receiptMayBeMissing,waitingProgress} from './responseProgressState';
+import {responseElapsedSeconds,responseWaitLabel,receiptMayBeMissing,waitingProgress,compactResponseWait} from './responseProgressState';
 test('decorative progress advances gently but never claims completion while pending',()=>{
  const timeline=[0,1000,10000,60000,300000,3600000,Number.MAX_SAFE_INTEGER].map(waitingProgress);
  assert.ok(timeline[0]>0);
@@ -31,4 +31,9 @@ test('sending and server-acknowledged operations cannot be classified as missing
  assert.equal(receiptMayBeMissing(false,'op','op'),false);
  assert.equal(receiptMayBeMissing(false,undefined,'op'),true);
  assert.equal(receiptMayBeMissing(false,'other','op'),true);
+});
+
+test('compact wait clock keeps metadata short without inventing elapsed time',()=>{
+ for(const n of [null,0,9,NaN,Infinity])assert.equal(compactResponseWait(n),'');
+ assert.equal(compactResponseWait(10),'0:10');assert.equal(compactResponseWait(66),'1:06');assert.equal(compactResponseWait(3600),'60:00');
 });

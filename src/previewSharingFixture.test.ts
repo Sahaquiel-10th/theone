@@ -143,6 +143,57 @@ test('status audit entry imports its fixture and stays synthetic even when a rea
  assert.ok([...f.log,...unavailable.log].every((row:any)=>row.scope==='synthetic'));
 });
 
+test('startup audit holds its first snapshot, fails visibly, then recovers without real service calls',async()=>{
+ const f=fixtureHarness('startupAudit=1&startupDelay=2500&startupFailures=1&realService=1');
+ let settled=false;
+ const first=f.request('/api/coordinator?page=1').then(response=>{settled=true;return response;});
+ await Promise.resolve();assert.equal(settled,false,'a delayed first read must be reproducible before any snapshot exists');
+ f.flush();
+ const failed=await first;assert.equal(failed.status,503);assert.match(failed.data.error,/重新连接/);
+ const recovered=await f.request('/api/coordinator?page=1');
+ assert.equal(recovered.status,200);assert.equal(recovered.data.enabled,true);
+ assert.equal(recovered.data.conversation.userId,'preview');
+ assert.equal(f.mode,'synthetic');assert.equal(f.nativeCalls,0);
+ assert.ok(f.log.every((row:any)=>row.scope==='synthetic'));
+});
+
+test('startup audit covers explicit disabled and actual launcher fragment redemption for admin/company roles',async()=>{
+ const disabled=fixtureHarness('startupAudit=1&startupDisabled=1');
+ assert.equal((await disabled.request('/api/coordinator')).data.enabled,false);
+ for(const role of ['admin','company']){
+  const f=fixtureHarness(`startupAudit=1&startupRole=${role}`);
+  assert.equal((await f.request('/api/auth/one-key/redeem',{loginCode:'not-a-real-code'})).status,400);
+  const authenticated=await f.request('/api/auth/one-key/redeem',{loginCode:'fixture-startup-code'});
+  assert.equal(authenticated.status,200);
+  if(role==='admin'){
+   assert.equal(authenticated.data.user.role,'admin');
+   assert.equal((await f.request('/api/admin/users')).status,200);
+  }else{
+   assert.equal(authenticated.data.access.role,'company_admin','match real auth response access instead of hiding it inside user');
+   assert.equal((await f.request('/api/me')).data.access.role,'company_admin');
+   assert.equal((await f.request('/api/company')).status,200);
+  }
+  assert.equal(f.nativeCalls,0);
+ }
+});
+
+test('delayed synthetic stop keeps pending state until the actual handler settles, including rejection',async()=>{
+ for(const variant of ['waiting','stop-rejected']){
+  const f=fixtureHarness(`statusAudit=1&statusCase=${variant}&statusStopDelay=3000`);
+  const snapshot=(await f.request('/api/coordinator')).data,operation=snapshot.pendingOperationId;
+  let settled=false;
+  const stop=f.request(`/api/coordinator/messages/${operation}/stop`,{}).then(response=>{settled=true;return response;});
+  await Promise.resolve();assert.equal(settled,false);
+  assert.equal((await f.request(`/api/coordinator/messages/${operation}`)).data.status,'pending','polling must not settle before delayed stop handler runs');
+  assert.equal((await f.request('/api/coordinator')).data.pendingOperationId,operation);
+  f.flush();
+  const response=await stop;
+  assert.equal(response.status,variant==='waiting'?200:503);
+  assert.equal((await f.request(`/api/coordinator/messages/${operation}`)).data.status,variant==='waiting'?'interrupted':'pending');
+  assert.equal(f.nativeCalls,0);
+ }
+});
+
 test('the public UX preview uses only explicit synthetic requests and idempotent mock questions',async()=>{
  const source=fs.readFileSync(new URL('../output/playwright/public-sharing-preview.tsx',import.meta.url),'utf8').split('\n').filter(line=>!line.startsWith('import ')).join('\n');
  const window:{fetch?:any}={},document={documentElement:{dataset:{}},getElementById:()=>({})};

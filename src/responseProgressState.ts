@@ -10,6 +10,11 @@ export function responseWaitLabel(seconds:number|null) {
   const whole=Math.floor(seconds),minutes=Math.floor(whole/60),remaining=whole%60;
   return minutes?`已等待 ${minutes} 分 ${remaining} 秒`:`已等待 ${whole} 秒`;
 }
+export function compactResponseWait(seconds:number|null) {
+  if(seconds===null||!Number.isFinite(seconds)||seconds<10)return '';
+  const whole=Math.floor(seconds);
+  return `${Math.floor(whole/60)}:${String(whole%60).padStart(2,'0')}`;
+}
 /** Decorative waiting feedback, not a measured completion percentage. */
 export function waitingProgress(elapsedMs:number) {
   const seconds=Number.isFinite(elapsedMs)?Math.max(0,elapsedMs)/1000:0;

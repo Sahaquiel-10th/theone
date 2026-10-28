@@ -1,0 +1,34 @@
+{
+  "ready": {
+    "activityHeight": "243.2",
+    "canvas": {
+      "bottom": 708,
+      "height": 696,
+      "left": 88,
+      "right": 1268,
+      "top": 12,
+      "width": 1180,
+      "x": 88,
+      "y": 12
+    },
+    "follow": "true",
+    "history": "[{\"ms\":0,\"mode\":\"empty\"},{\"ms\":5,\"mode\":\"auth\"},{\"ms\":10,\"mode\":\"startup:loading\"},{\"ms\":12018,\"mode\":\"startup:retry\"},{\"ms\":12112,\"mode\":\"workspace\"}]",
+    "legacyVisible": false,
+    "readingWidth": "948.0"
+  },
+  "resized": {
+    "activityHeight": "243.2",
+    "canvas": {
+      "bottom": 708,
+      "height": 696,
+      "left": 88,
+      "right": 1140,
+      "top": 12,
+      "width": 1052,
+      "x": 88,
+      "y": 12
+    },
+    "follow": "true",
+    "readingWidth": "884.0"
+  }
+}

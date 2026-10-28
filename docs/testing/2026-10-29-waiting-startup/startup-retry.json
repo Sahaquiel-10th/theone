@@ -1,0 +1,11 @@
+{
+  "failure": {
+    "copy": "工作台暂时没连上请检查网络与 ONE Key 连接，然后重试。重新连接",
+    "history": "[{\"ms\":0,\"mode\":\"empty\"},{\"ms\":5,\"mode\":\"auth\"},{\"ms\":9,\"mode\":\"startup:loading\"},{\"ms\":16,\"mode\":\"startup:retry\"}]",
+    "mode": "retry"
+  },
+  "retry": {
+    "history": "[{\"ms\":0,\"mode\":\"empty\"},{\"ms\":4,\"mode\":\"auth\"},{\"ms\":8,\"mode\":\"startup:loading\"},{\"ms\":12,\"mode\":\"startup:retry\"},{\"ms\":257,\"mode\":\"workspace\"}]",
+    "workspace": true
+  }
+}

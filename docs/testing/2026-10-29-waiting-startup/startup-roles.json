@@ -1,0 +1,28 @@
+{
+  "admin": {
+    "canvas": {
+      "bottom": 708,
+      "height": 696,
+      "left": 88,
+      "right": 1268,
+      "top": 12,
+      "width": 1180,
+      "x": 88,
+      "y": 12
+    },
+    "history": "[{\"ms\":0,\"mode\":\"empty\"},{\"ms\":4,\"mode\":\"auth\"},{\"ms\":10,\"mode\":\"startup:loading\"},{\"ms\":1129,\"mode\":\"workspace\"}]"
+  },
+  "company": {
+    "canvas": {
+      "bottom": 708,
+      "height": 696,
+      "left": 88,
+      "right": 1268,
+      "top": 12,
+      "width": 1180,
+      "x": 88,
+      "y": 12
+    },
+    "history": "[{\"ms\":0,\"mode\":\"empty\"},{\"ms\":5,\"mode\":\"auth\"},{\"ms\":10,\"mode\":\"startup:loading\"},{\"ms\":1116,\"mode\":\"workspace\"}]"
+  }
+}
