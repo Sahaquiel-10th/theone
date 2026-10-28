@@ -15,3 +15,5 @@
 修改前完整前端已备份到桌面 `ONE-UI备份/20261028-等待条改良/before-frontend.zip`。本轮仅修改回复等待组件、对应样式、进度函数和测试，没有改其他模块。
 
 本地预览：`http://127.0.0.1:5354/output/playwright/focus-preview.html?statusAudit=1&scene=graphite`。
+
+发布验证：源码 a3af972，自动流程40607249590的网页、Mac、Windows及部署均成功。线上首页与健康接口200，JS/CSS与本地构建逐字节一致。UI实看使用合成数据，未发起真实收费任务。

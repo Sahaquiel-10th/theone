@@ -1,0 +1,26 @@
+{
+  "sourceSha": "a3af97291676183b27b24d4d8bd2b746a24d53f5",
+  "workflow": "https://github.com/Sahaquiel-10th/theone/actions/runs/40607249590",
+  "checkedAt": "2026-10-28T00:21:24.139156+00:00",
+  "assets": [
+    {
+      "path": "/assets/index-BPW3sLfj.js",
+      "status": 200,
+      "sha256": "3b7294697df242d0bde1acf80203a3c22b12a234baa4f4bcf31f76e2114242d7",
+      "matchesLocal": true
+    },
+    {
+      "path": "/assets/index-DM4UErJg.css",
+      "status": 200,
+      "sha256": "e20e89b595a8f336e7896aa98c834b902690cf77f8bacb67604fdffa71424336",
+      "matchesLocal": true
+    }
+  ],
+  "health": {
+    "status": 200,
+    "body": {
+      "ok": true
+    }
+  },
+  "documentStatus": 200
+}
