@@ -4,11 +4,13 @@ import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {ResponseProgress} from './ResponseProgress';
 
-test('reply waiting renders one live stage and a nearby stop action without invented progress or narration',()=>{
+test('reply waiting keeps a decorative progress line with one live stage and a nearby stop action',()=>{
  const html=renderToStaticMarkup(createElement(ResponseProgress,{phase:'正在等待模型回答',onStop:async()=>{}}));
  assert.match(html,/role="status" aria-live="polite" aria-atomic="true">正在生成回复/);
  assert.match(html,/response-progress-stop[^>]*>停止回复/);
- assert.doesNotMatch(html,/progressbar|response-activity-track|one-waiting-copy|想得久一点|我还在这儿|%|已等待/);
+ assert.match(html,/class="response-wait-track" aria-hidden="true"/);
+ assert.match(html,/class="response-wait-fill" style="transform:scaleX\(/);
+ assert.doesNotMatch(html,/aria-valuenow|one-waiting-copy|想得久一点|我还在这儿|\d+%|已等待/);
  assert.equal((html.match(/role="status"/g)||[]).length,1);
 });
 test('only real elapsed time is displayed and it does not create another live announcement',context=>{
@@ -23,5 +25,6 @@ test('completion briefly acknowledges the actual response and removes waiting, s
  const html=renderToStaticMarkup(createElement(ResponseProgress,{phase:'正在等待模型回答',startedAt:new Date(Date.now()-70000).toISOString(),onStop:async()=>{},completed:true}));
  assert.match(html,/data-state="completed"/);
  assert.match(html,/回复已返回/);
+ assert.match(html,/transform:scaleX\(1\)/);
  assert.doesNotMatch(html,/停止回复|已等待|task-transfer-spinner|progressbar/);
 });

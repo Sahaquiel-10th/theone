@@ -1,0 +1,12 @@
+{
+  "before": {
+    "fill": "transform: scaleX(0.757841);",
+    "sheen": "matrix(1, 0, 0, 1, 683.966, 0)"
+  },
+  "after": {
+    "error": "尚未确认停止，请检查连接后重试。",
+    "fill": "transform: scaleX(0.757841);",
+    "sheen": "matrix(1, 0, 0, 1, 20.2757, 0)",
+    "stopDisabled": false
+  }
+}

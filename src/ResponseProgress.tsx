@@ -1,17 +1,20 @@
 import {useEffect,useState} from 'react';
 import {Check,Loader2} from 'lucide-react';
-import {responseElapsedSeconds,responseWaitLabel} from './responseProgressState';
+import {responseElapsedSeconds,responseWaitLabel,waitingProgress} from './responseProgressState';
 import {friendlyResponsePhase} from './friendlyTaskStatus';
 
 export function ResponseProgress({phase,startedAt,onStop,completed=false}:{phase?:string;startedAt?:string;onStop?:()=>Promise<void>;completed?:boolean}) {
  const [now,setNow]=useState(Date.now),[stopping,setStopping]=useState(false),[error,setError]=useState('');
+ const [mountedAt]=useState(Date.now);
  useEffect(()=>{
-  if(completed||responseElapsedSeconds(startedAt,Date.now())===null)return;
+  if(completed)return;
   setNow(Date.now());
   const timer=setInterval(()=>setNow(Date.now()),1000);
   return()=>clearInterval(timer);
  },[startedAt,completed]);
  const elapsed=responseWaitLabel(responseElapsedSeconds(startedAt,now));
+ const seconds=responseElapsedSeconds(startedAt,now);
+ const fill=completed?1:waitingProgress(seconds===null?now-mountedAt:seconds*1000);
  const stop=async()=>{
   if(!onStop||stopping)return;
   setError('');setStopping(true);
@@ -25,6 +28,7 @@ export function ResponseProgress({phase,startedAt,onStop,completed=false}:{phase
    {!completed&&elapsed?<span className="response-progress-elapsed" aria-live="off">{elapsed}</span>:null}
    {onStop&&!completed?<button type="button" className="response-progress-stop" disabled={stopping} aria-busy={stopping} onClick={()=>{void stop();}}>{stopping?'正在停止…':'停止回复'}</button>:null}
   </div>
+  <div className="response-wait-track" aria-hidden="true"><span className="response-wait-fill" style={{transform:`scaleX(${fill})`}}/></div>
   {!completed&&error?<p className="response-progress-error" role="alert">{error}</p>:null}
  </div>;
 }
