@@ -31,7 +31,7 @@ export type WorkRun = {
   notionVerificationSelection?:{operationId:string;expectedDigest:string;pageId?:string;asyncTaskId?:string;checkpointKey?:string;version:number;connectionId:string;grantId:string;parentId:string;requestedAt:string};
   notionReceipt?: { state: 'pending' | 'verified' | 'uncertain'; pageId?: string; url?: string; asyncTaskId?: string; expectedDigest?: string; digest?: string;
     /** Versioned, server-owned evidence of the exact write being checked. */
-    checkpointKey?:string; canonicalVersion?:2|3|4; expectedCanonicalDigest?:string; expectedRawDigest?:string;
+    checkpointKey?:string; canonicalVersion?:2|3|4|5; expectedCanonicalDigest?:string; expectedRawDigest?:string;
     /** Explicit authored-H1/page-title boundary; source digests stay unchanged. */
     titleProjection?:import('./notionTitleProjection.js').NotionTitleProjection;
     /** Final intent is retained while readback is pending; it is not proof by itself. */

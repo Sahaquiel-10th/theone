@@ -54,3 +54,26 @@ test('v3 canonicalizes only typed table delimiter hyphen lengths while preservin
  assert.notEqual(canonicalNotionDigest('|----|----|',3),canonicalNotionDigest('|---|---|',3));
  assert.notEqual(canonicalNotionDigest('|a|b|\n\n|----|----|\n|x|y|',3),canonicalNotionDigest('|a|b|\n\n|---|---|\n|x|y|',3));
 });
+
+test('v5 recognizes only proven attribute-free plain italic serialization and preserves v2-v4 meaning',()=>{
+ const expected='# 专栏\n\n**保留加粗**\n\n*这篇文章保留最初的主题，不换成其他素材。*';
+ const actual='# 专栏\n<b>保留加粗</b>\n<i>这篇文章保留最初的主题，不换成其他素材。</i>';
+ assert.equal(canonicalNotionDigest(expected,5),canonicalNotionDigest(actual,5));
+ for(const version of [2,3,4] as const)assert.notEqual(canonicalNotionDigest(expected,version),canonicalNotionDigest(actual,version));
+ assert.equal(canonicalNotionDigest(expected),canonicalNotionDigest(actual,5));
+ for(const changed of [actual.replace('最初','别的'),actual.replace('<i>','<i class="x">'),actual.replace('</i>',''),actual.replace('<i>','<em>').replace('</i>','</em>')])assert.notEqual(canonicalNotionDigest(expected,5),canonicalNotionDigest(changed,5));
+ const table='|项目|费用|\n|:----|-----:|\n|场地|100|';
+ assert.equal(canonicalNotionDigest(table,5),canonicalNotionDigest(table,4),'v5 retains v4 table alignment meaning');
+});
+
+test('v5 italic keeps code, literal escapes, edge whitespace and nested Markdown or HTML conservative',()=>{
+ for(const [expected,actual] of [
+  ['`*文字*`','`<i>文字</i>`'],['```\n*文字*\n```','```\n<i>文字</i>\n```'],
+  ['    *文字*','    <i>文字</i>'],['\\<i>文字</i>','*文字*'],
+  ['* 文字*','<i> 文字</i>'],['*文字 *','<i>文字 </i>'],['*第一行\n第二行*','<i>第一行\n第二行</i>'],
+  ['***文字***','<i><b>文字</b></i>'],['***文字***','<i>**文字**</i>'],
+  ['*a_b*','<i>a_b</i>'],['*[文字](https://a.example)*','<i>[文字](https://a.example)</i>'],
+  ['*a\\b*','<i>a\\b</i>'],['*a~b*','<i>a~b</i>'],['*文字*','<strong>文字</strong>'],
+ ])assert.notEqual(canonicalNotionDigest(expected,5),canonicalNotionDigest(actual,5),actual);
+ assert.notEqual(canonicalNotionDigest('<i>文字</i>',4),canonicalNotionDigest('*文字*',5),'an old literal-tag digest is not proof for a new Markdown body');
+});

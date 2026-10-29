@@ -187,6 +187,7 @@ export class NotionDocuments {
       if(!manual&&(!existing||existing.state==='exhausted'||Date.parse(existing.nextCheckAt)>now))return;
       if(manual&&(!existing||existing.state==='exhausted'||Date.parse(existing.deadlineAt)<=now))r.verification=this.schedule(r,true);
       const v=r.verification!;
+      const presentationUpgrade=manual&&r.canonicalVersion===4;
       try{this.assertTarget(db,s,target);}catch{v.state='exhausted';v.lastReason='authorization';v.leaseId=undefined;v.leaseUntil=undefined;return {blocked:true,conversationId:op.conversationId!};}
       if(v.attempt>=this.delays().length||Date.parse(v.deadlineAt)<=now){v.state='exhausted';v.leaseId=undefined;v.leaseUntil=undefined;return {blocked:true,conversationId:op.conversationId!};}
       // A legacy receipt is upgraded only from its exact scoped create args,
@@ -201,7 +202,7 @@ export class NotionDocuments {
       v.state='checking';v.attempt++;v.leaseId=leaseId;v.leaseUntil=new Date(now+(this.verificationOptions.leaseMs??90_000)).toISOString();
       const task=db.conversations.find(c=>c.id===op.conversationId&&c.workspaceId===s.workspaceId&&c.userId===s.userId);
       if(manual&&['failed','completed'].includes(op.status)&&run.state==='failed'&&task&&!task.archived&&task.workPauseReason!=='user_stopped')run.notionVerificationSelection={operationId:op.id,expectedDigest:r.expectedDigest,pageId:r.pageId,asyncTaskId:r.asyncTaskId,checkpointKey:r.checkpointKey,version:v.version,connectionId:target.connectionId,grantId:target.grantId,parentId:target.parentId,requestedAt:new Date(now).toISOString()};
-      return {receipt:structuredClone(r),target:structuredClone(target),conversationId:op.conversationId!,version:v.version};
+      return {receipt:structuredClone(r),target:structuredClone(target),conversationId:op.conversationId!,version:v.version,presentationUpgrade};
     });
     if(!claimed)return;
     if('blocked' in claimed)return {operationId:opId,conversationId:claimed.conversationId,state:'exhausted'};
@@ -223,7 +224,13 @@ export class NotionDocuments {
       // Recheck Key and exact authorization even after a transport failure.
       await verify();try{this.assertTarget(await this.store.read(),s,claimed.target);}catch{reason='authorization';}
     }
-    const matched=sourceBody!==undefined&&(snapshot.canonicalVersion===2||snapshot.canonicalVersion===3||snapshot.canonicalVersion===4?Boolean(snapshot.expectedCanonicalDigest)&&canonicalNotionDigest(sourceBody,snapshot.canonicalVersion)===snapshot.expectedCanonicalDigest:hash(normalized(sourceBody))===snapshot.expectedDigest);
+    const matchedOriginal=sourceBody!==undefined&&(snapshot.canonicalVersion===2||snapshot.canonicalVersion===3||snapshot.canonicalVersion===4||snapshot.canonicalVersion===5?Boolean(snapshot.expectedCanonicalDigest)&&canonicalNotionDigest(sourceBody,snapshot.canonicalVersion)===snapshot.expectedCanonicalDigest:hash(normalized(sourceBody))===snapshot.expectedDigest);
+    // An explicit read-only check can prove this one v4 write with the newly
+    // documented plain-italic presentation. The stored old digest itself must
+    // equal the entire v5 readback: no guessed source, removed text, or retry.
+    // Automatic polls and receipts from earlier versions do not opt into this.
+    const matchedPresentation=!matchedOriginal&&claimed.presentationUpgrade&&sourceBody!==undefined&&Boolean(snapshot.expectedCanonicalDigest)&&canonicalNotionDigest(sourceBody,5)===snapshot.expectedCanonicalDigest;
+    const matched=matchedOriginal||matchedPresentation;
     return this.store.mutate(db=>{
       featureMember(db,s);const op=db.chatOperations?.find(o=>o.id===opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId&&o.conversationId===claimed.conversationId),run=op?.workRun,r=run?.notionReceipt,v=r?.verification;
       if(!op||!run||!r||!v||v.version!==claimed.version||v.leaseId!==leaseId||!sameReceipt(r,snapshot)||run.state==='running'||!manual&&['cancelled','interrupted'].includes(run.state))return {operationId:opId,conversationId:claimed.conversationId,state:'blocked' as const};
@@ -231,6 +238,7 @@ export class NotionDocuments {
       const newer=(db.chatOperations??[]).some(other=>other.id!==op.id&&other.workspaceId===s.workspaceId&&other.userId===s.userId&&other.conversationId===op.conversationId&&mayHaveWritten(other.workRun?.notionReceipt)&&(other.createdAt??'')>(op.createdAt??''));
       if(newer)reason='stale';
       if(matched&&reason!=='authorization'&&reason!=='stale'){
+        if(matchedPresentation)r.canonicalVersion=5;
         const newlyVerified=r.state!=='verified';r.state='verified';r.pageId=pageId;r.url=`https://www.notion.so/${pageId}`;r.digest=hash(body!);r.error=undefined;r.failureCode=undefined;r.verification=undefined;
         if(run.notionTarget?.connectionId===claimed.target.connectionId&&run.notionTarget.grantId===claimed.target.grantId&&run.notionTarget.parentId===claimed.target.parentId){run.notionTarget.pageId=pageId;run.notionTarget.url=r.url;}
         const task=db.conversations.find(c=>c.id===op.conversationId&&c.workspaceId===s.workspaceId&&c.userId===s.userId);
@@ -311,7 +319,7 @@ export class NotionDocuments {
             this.assertTarget(d, s, target);
             const o = d.chatOperations?.find(o => o.id === opId && o.workspaceId === s.workspaceId && o.userId === s.userId && o.conversationId === cid);
             if (o?.workRun?.state !== 'running' || o.workRun.notionReceipt&&o.workRun.notionReceipt.state!=='verified') throw new NotionDocumentError('本轮保存已经提交或任务已停止，请查看原回执，不会重复写入');
-            o.workRun.notionReceipt = { state: 'pending', delivery: 'not_sent', pageId: target.pageId, url: target.url, expectedDigest: hash(normalized(expected)),expectedRawDigest:hash(expected),expectedCanonicalDigest:canonicalNotionDigest(expected,4),canonicalVersion:4,checkpointKey:taskStepKey('worker','save_notion_draft',JSON.stringify(v)),titleProjection,final:v.final===true };
+            o.workRun.notionReceipt = { state: 'pending', delivery: 'not_sent', pageId: target.pageId, url: target.url, expectedDigest: hash(normalized(expected)),expectedRawDigest:hash(expected),expectedCanonicalDigest:canonicalNotionDigest(expected,5),canonicalVersion:5,checkpointKey:taskStepKey('worker','save_notion_draft',JSON.stringify(v)),titleProjection,final:v.final===true };
           });
           const record = async (receipt: NonNullable<WorkRun['notionReceipt']>) => this.store.mutate(d => {
             const o = d.chatOperations?.find(o => o.id === opId && o.workspaceId === s.workspaceId && o.userId === s.userId && o.conversationId === cid);

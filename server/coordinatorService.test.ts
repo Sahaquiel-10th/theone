@@ -3234,12 +3234,12 @@ test('an old verified receipt is not fresh proof when an explicit recheck finds 
  assert.match(detail.conversation.messages.at(-1)!.content,/未能完整核对|没能完整核对/);assert.doesNotMatch(detail.conversation.messages.at(-1)!.content,/已保存到 Notion · 已回读核对|任务已完成/);assert.match(detail.conversation.messages.at(-1)!.content,/打开 Notion 原文/);
 });
 
-async function lateSaveFixture(options:{partial?:boolean;fromMain?:boolean;article?:string}={}){
+async function lateSaveFixture(options:{partial?:boolean;fromMain?:boolean;article?:string;articleRequest?:string}={}){
  const f=fixture(),article=options.article??'# 合成方案\n\n第一段：青色42。\n\n'+('保留原始段落与换行，不要再生成。\n'.repeat(520))+'\n原文结尾。';
  let taskId:string,sourceId:string;
  if(options.fromMain){
   const inline=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no recall')},{modelCall:async()=>answer(article)});
-  const r=await inline.dispatch(a,input('operation_inline_article_001','只回答，按合成主题写文章。'),key);
+  const r=await inline.dispatch(a,input('operation_inline_article_001',options.articleRequest??'只回答，按合成主题写文章。'),key);
   taskId=r.conversation.id;sourceId=(await f.store.read()).chatOperations!.find(op=>op.operationId==='operation_inline_article_001')!.id;
  }else{
   f.setWorker(async()=>answer(JSON.stringify({outcome:'completed',content:article,summary:'合成正文已写好。'})));
@@ -3383,6 +3383,86 @@ for(const destination of ['chat','notion'] as const)test(`the actual multi-negat
  await service.state(a);await service.task(a,result.taskId!);await service.resume(a,key);await service.dispatch(a,args,key);await service.resume(a,key);
  assert.equal(writes,1,'refreshing, resuming and restoring the same operation cannot create another page');assert.equal(workerCalls,0);assert.equal(routerCalls,2);
  await assert.rejects(()=>service.task(b,result.taskId!),/不存在/);assert.equal((await f.store.read()).powerAccounts[1].balanceMicros,100e6);
+});
+
+async function querySelectedSaveFixture(article='# ONE-QA-LATE-1029-B\n\n青色42\n只保存这一份。'){
+ const marker='ONE-QA-LATE-1029-B',f=await lateSaveFixture({fromMain:true,article,articleRequest:`只回答以下合成原文，标题为 ${marker}，不执行任何任务。`});
+ const unrelated=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no retrieval')},{modelCall:async()=>answer('今天是2026年10月29日。')});
+ await unrelated.dispatch(a,input('operation_query_save_unrelated','只回答今天日期。'),key);
+ const source=(await f.store.read()).chatOperations!.find(op=>op.id===f.sourceId)!,messageId=source.assistantMessageId!;
+ let writes=0,workerCalls=0,title='',body='';
+ const documents=new NotionDocuments(f.store,{
+  readDocument:async(workspace:string,id:string)=>{assert.equal(workspace,'wa');assert.ok(['a'.repeat(32),f.pageId].includes(id));return {title,text:body||'保存目录'};},
+  callDocumentTool:async(workspace:string,connection:string,grant:string,user:string,name:string,args:any,before?:()=>Promise<void>)=>{
+   assert.deepEqual([workspace,connection,grant,user,name],['wa','late-notion','late-grant','a','notion-create-pages']);await before?.();writes++;title=args.pages[0].properties.title;body=args.pages[0].content;return {pages:[{id:f.pageId}]};
+  }
+ } as unknown as NotionMcpService);
+ const service=(route:(messages:ModelToolMessage[])=>ReturnType<typeof answer>|Promise<ReturnType<typeof answer>>)=>new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('save-only never retrieves knowledge')},{contextMode:'adaptive',notionDocuments:documents,modelCall:async(model,messages)=>{
+  if(model.id!=='router'){workerCalls++;assert.fail('save-only never calls a worker model');}return route(messages);
+ }});
+ return {...f,marker,messageId,service,counts:()=>({writes,workerCalls,title,body})};
+}
+
+test('a complete unique keyword lookup repairs the actual delegate → invalid read → query → delegate sequence without an extra messageId read',async()=>{
+ const f=await querySelectedSaveFixture(),request=`把刚才主对话里标题为 ${f.marker} 的这篇现有原文保存到 Notion，不改写、不重新生成、不查知识库、不联网、不动其他旧任务。这是独立合成验收，只保存这一份。`;let calls=0;
+ const delegate=(instruction:string)=>({taskId:null,title:'保存合成原文',instruction,executorId:'general',featureIds:[]});
+ const service=f.service(messages=>{
+  calls++;let name='delegate_task',args:unknown=delegate(request);
+  if(calls===2){assert.match(messages.at(-1)!.content!,/TOOL_INPUT_REPAIR/);assert.match(messages.at(-1)!.content!,/多份已有回复/);name='read_context';args={};}
+  if(calls===3){assert.match(messages.at(-1)!.content!,/query 字符串/);name='read_context';args={query:f.marker};}
+  if(calls===4){const read=JSON.parse(messages.at(-1)!.content!);assert.equal(read.status,'used');assert.equal(read.hasMore,false);assert.equal(read.items.length,3);assert.deepEqual(read.items.map((item:any)=>item.role),['user','assistant','user']);assert.ok(read.items.every((item:any)=>item.truncated===false));assert.equal(read.items[1].id,f.messageId);args=delegate(`${request} 原文消息：${read.items[1].id}；用户消息：${read.items[0].id}。`);}
+  assert.ok(calls<=4);return {...answer(''),toolCalls:[{id:`query-repair-${calls}`,type:'function',function:{name,arguments:JSON.stringify(args)}}]};
+ });
+ const args={...input('operation_live_query_save_repair',request),outputDestination:'chat' as const},result=await service.dispatch(a,args,key);assert.ok(result.taskId);await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='completed');
+ const run=(await f.store.read()).chatOperations!.find(op=>op.conversationId===result.taskId&&op.workRun)!.workRun!;
+ assert.deepEqual(run.workflow!.spec.steps.map(step=>step.id),['save_existing']);assert.equal(run.notionArticleSource!.messageId,f.messageId);assert.equal(run.notionArticleSource!.conversationId,f.taskId);assert.equal(run.notionReceipt?.state,'verified');assert.equal(run.notionReceipt?.expectedRawDigest,createHash('sha256').update(f.article).digest('hex'));
+ assert.deepEqual(f.counts(),{writes:1,workerCalls:0,title:f.marker,body:'青色42\n只保存这一份。'});assert.equal(calls,4);
+ await service.dispatch(a,args,key);await service.state(a);await service.resume(a,key);assert.equal(f.counts().writes,1);assert.equal(calls,4);await assert.rejects(()=>service.task(b,result.taskId!),/不存在/);
+});
+
+for(const scenario of ['ambiguous','paged','truncated','ineligible','foreign-provenance','no-match'] as const)test(`keyword source selection refuses ${scenario} results instead of guessing an article`,async()=>{
+ const article=scenario==='truncated'?'# ONE-QA-LATE-1029-B\n\n'+'完整原文仍需分段读取。'.repeat(300):undefined,f=await querySelectedSaveFixture(article);let calls=0;
+ await f.store.mutate(db=>{
+  const main=db.conversations.find(conversation=>conversation.id===f.taskId)!,source=db.chatOperations!.find(operation=>operation.id===f.sourceId)!;
+  if(scenario==='ambiguous'){const original=main.messages.find(message=>message.id===f.messageId)!;main.messages.push({...original,id:'ambiguous-query-assistant',content:`${f.marker} 的另一份完整回复。`});}
+  if(scenario==='paged')main.messages.unshift(...Array.from({length:7},(_,index)=>({id:`older-query-${index}`,role:'user' as const,content:`${f.marker} 的较早合成问题${index}`,createdAt:'2026-10-28T00:00:00Z'})));
+  if(scenario==='ineligible')source.status='failed';
+  if(scenario==='foreign-provenance'){source.workspaceId='wb';source.userId='b';}
+ });
+ const query=scenario==='no-match'?'ABSENT-SOURCE-ONLY':f.marker;
+ const service=f.service(messages=>{
+  calls++;
+  if(calls===2){const read=JSON.parse(messages.at(-1)!.content!);if(scenario==='paged'){assert.equal(read.hasMore,true);assert.equal(read.items.filter((item:any)=>item.role==='assistant').length,1);}if(scenario==='truncated')assert.equal(read.items.find((item:any)=>item.role==='assistant').truncated,true);if(scenario==='ambiguous')assert.equal(read.items.filter((item:any)=>item.role==='assistant').length,2);}
+  if(calls===3){assert.match(messages.at(-1)!.content!,/TOOL_INPUT_REPAIR/);return answer('需要确认保存哪一篇完整原文？');}
+  return {...answer(''),toolCalls:[{id:`query-block-${calls}`,type:'function',function:calls===1?{name:'read_context',arguments:JSON.stringify({query})}:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'保存原文',instruction:'把这篇现有原文保存到 Notion，不重写。',executorId:'general',featureIds:[]})}}]};
+ });
+ const result=await service.dispatch(a,{...input(`operation_query_block_${scenario}`,`把刚才标题为 ${f.marker} 的原文保存到 Notion，不重写。`),outputDestination:'chat'},key);assert.equal(result.taskId,undefined);assert.equal(calls,3);assert.equal(f.counts().writes,0);assert.equal(f.counts().workerCalls,0);assert.equal((await f.store.read()).chatOperations!.filter(operation=>operation.workRun).length,0);
+});
+
+for(const nextRead of ['no-match','ambiguous','truncated','other-task','foreign-task'] as const)test(`a later ${nextRead} history lookup clears an earlier exact article selection`,async()=>{
+ const f=await querySelectedSaveFixture();let calls=0;
+ await f.store.mutate(db=>{const main=db.conversations.find(conversation=>conversation.id===f.taskId)!;main.messages.push({id:'lookup-c-first',role:'assistant',content:nextRead==='truncated'?'OTHER-LOOKUP-C\n'+'长回复。'.repeat(600):'OTHER-LOOKUP-C 第一条普通回复。',createdAt:'2026-10-29T00:00:00Z'});if(nextRead==='ambiguous')main.messages.push({id:'lookup-c-second',role:'assistant',content:'OTHER-LOOKUP-C 第二条普通回复。',createdAt:'2026-10-29T00:00:01Z'});if(nextRead==='other-task'||nextRead==='foreign-task')db.conversations.push({...structuredClone(main),...(nextRead==='foreign-task'?b:a),id:'lookup-other-task',coordinatorMain:false,messages:[{id:'other-task-reply',role:'assistant',content:'OTHER-TASK-PRIVATE-MARKER',createdAt:'2026-10-29T00:00:02Z'}]});});
+ const service=f.service(messages=>{
+  calls++;
+  if(calls===2){const result=JSON.parse(messages.at(-1)!.content!);assert.equal(result.hasMore,false);assert.equal(result.items.filter((item:any)=>item.role==='assistant').length,1);assert.equal(result.items.find((item:any)=>item.role==='assistant').id,f.messageId);}
+  if(calls===3&&nextRead==='foreign-task'){assert.equal(JSON.parse(messages.at(-1)!.content!).status,'not_found');assert.doesNotMatch(messages.at(-1)!.content!,/OTHER-TASK-PRIVATE-MARKER/);}
+  if(calls===3&&nextRead==='other-task')assert.equal(JSON.parse(messages.at(-1)!.content!).status,'used');
+  if(calls===4){assert.match(messages.at(-1)!.content!,/TOOL_INPUT_REPAIR/);return answer('需要确认保存哪篇完整原文？');}
+  const selection=calls===1?{query:f.marker}:calls===2?nextRead==='other-task'||nextRead==='foreign-task'?{query:'',taskId:'lookup-other-task'}:{query:nextRead==='no-match'?'NO-SUCH-ARTICLE':'OTHER-LOOKUP-C'}:undefined;
+  return {...answer(''),toolCalls:[{id:`replace-query-${calls}`,type:'function',function:selection?{name:'read_context',arguments:JSON.stringify(selection)}:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'保存现有原文',instruction:'把这篇现有原文保存到 Notion，不重写。',executorId:'general',featureIds:[]})}}]};
+ });
+ const result=await service.dispatch(a,{...input(`operation_replace_query_${nextRead}`,`把刚才标题为 ${f.marker} 的原文保存到 Notion，不重写。`),outputDestination:'chat'},key);assert.equal(result.taskId,undefined);assert.equal(calls,4);assert.equal(f.counts().writes,0);assert.equal(f.counts().workerCalls,0);
+});
+
+for(const selection of ['query','message-id'] as const)test(`an article changed between ${selection} reading and handoff is rejected before any save`,async()=>{
+ const f=await querySelectedSaveFixture();let calls=0;
+ const service=f.service(async messages=>{
+  calls++;
+  if(calls===1)return {...answer(''),toolCalls:[{id:'select-before-change',type:'function',function:{name:'read_context',arguments:JSON.stringify(selection==='query'?{query:f.marker}:{query:'',messageId:f.messageId})}}]};
+  if(calls===2){await f.store.mutate(db=>{db.conversations.find(conversation=>conversation.id===f.taskId)!.messages.find(message=>message.id===f.messageId)!.content+='\n读取之后发生的新修改。';});return {...answer(''),toolCalls:[{id:'save-after-change',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'保存指定原文',instruction:'把这篇现有原文保存到 Notion，不重写。',executorId:'general',featureIds:[]})}}]};}
+  assert.equal(calls,3);assert.match(messages.at(-1)!.content!,/刚才读取的原文已变化/);return answer('需要重新核对哪篇完整原文？');
+ });
+ const result=await service.dispatch(a,{...input(`operation_query_changed_${selection}`,`把刚才标题为 ${f.marker} 的原文保存到 Notion，不重写。`),outputDestination:'chat'},key);assert.equal(result.taskId,undefined);assert.equal(calls,3);assert.equal(f.counts().writes,0);assert.equal(f.counts().workerCalls,0);assert.equal((await f.store.read()).chatOperations!.filter(operation=>operation.workRun).length,0);
 });
 
 test('current selected delivery features are retained rather than swallowed by a save-only shortcut',async()=>{

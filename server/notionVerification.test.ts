@@ -84,9 +84,9 @@ test('legacy formatting recovery requires exact owned create arguments and their
   assert.equal(f.writes(),0);
  }
 });
-test('new v4 receipts do not use the permissive legacy whitespace path for literal code',async()=>{
+test('new v5 receipts do not use the permissive legacy whitespace path for literal code',async()=>{
  const f=fixture(),body='```\nx \n\n```';f.mcp.readDocument=async()=>({text:'```\nx\n```'});await f.failWrite({title:'代码',content:body,final:true});
- assert.equal(f.job.notionReceipt!.canonicalVersion,4);assert.equal(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(body));f.advance(10);assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'scheduled');assert.equal(f.job.notionReceipt!.state,'uncertain');
+ assert.equal(f.job.notionReceipt!.canonicalVersion,5);assert.equal(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(body));f.advance(10);assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'scheduled');assert.equal(f.job.notionReceipt!.state,'uncertain');
 });
 test('manual v2 or v3 create recovery reproves the original body before upgrading to v4 and persists the exact selection before a failed read',async()=>{
  for(const status of ['failed','completed'] as const)for(const version of [2,3] as const){
@@ -113,11 +113,11 @@ test('v2 and v3 updates without original complete create proof keep their own di
  await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));assert.equal(f.job.notionReceipt!.canonicalVersion,version);assert.equal(f.job.notionReceipt!.expectedCanonicalDigest,oldDigest);assert.equal(f.job.notionReceipt!.state,'uncertain');assert.equal(f.job.steps[0].state,'started');assert.equal(f.writes(),0);
  }
 });
-test('a new aligned table save verifies a plain-delimiter readback immediately under v4 without a second write',async()=>{
+test('a new aligned table save verifies a plain-delimiter readback immediately under v5 without a second write',async()=>{
  const f=fixture(),expected='**预算**\n|项目|费用|备注|\n|---|---|---:|\n|场地|-100|+200:结余|',actual='<b>预算</b>\n|项目|费用|备注|\n| --- | --- | --- |\n|场地|-100|+200:结余|';
  f.mcp.readDocument=async()=>({text:actual});const tool=f.docs.tool(scope,'op','task',f.job,async()=>{}).structured!;
  const result=await tool.run(tool.validate({title:'预算',content:expected,final:true})) as {state:string};
- assert.equal(result.state,'verified');assert.equal(f.writes(),1);assert.equal(f.job.notionReceipt!.state,'verified');assert.equal(f.job.notionReceipt!.canonicalVersion,4);assert.equal(f.job.notionReceipt!.verification,undefined);assert.notEqual(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(expected,3));
+ assert.equal(result.state,'verified');assert.equal(f.writes(),1);assert.equal(f.job.notionReceipt!.state,'verified');assert.equal(f.job.notionReceipt!.canonicalVersion,5);assert.equal(f.job.notionReceipt!.verification,undefined);assert.notEqual(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(expected,3));
 });
 test('manual reading a stopped, archived, cancelled or completed job never enrolls a completion selection',async()=>{
  for(const mode of ['stopped','archived','cancelled','completed'] as const){

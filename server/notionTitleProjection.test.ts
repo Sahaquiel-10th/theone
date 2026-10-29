@@ -120,3 +120,45 @@ test('delayed title mismatch stays uncertain and legacy receipts never gain a ti
   assert.equal(Boolean(f.job.notionReceipt!.titleProjection),!legacy);
  }
 });
+
+const italicSource='# 原文标题\n\n青色42\n\n*保留原来的主题和完整结尾。*';
+async function oldV4ItalicFixture(expected=italicSource){
+ const f=fixture();f.mcp.readDocument=async()=>{throw Error('temporary');};
+ const tool=f.tool();await assert.rejects(()=>tool.run(tool.validate({...args,content:expected})));f.stopped();
+ const receipt=f.job.notionReceipt!;receipt.canonicalVersion=4;receipt.expectedCanonicalDigest=canonicalNotionDigest(expected,4);
+ f.setBody(f.actual().body.replace('*保留原来的主题和完整结尾。*','<i>保留原来的主题和完整结尾。</i>'));
+ f.mcp.readDocument=async()=>f.fetchResult();return f;
+}
+
+test('new v5 write verifies plain italic readback immediately without a second write or source change',async()=>{
+ const f=fixture(),read=f.mcp.readDocument.bind(f.mcp);
+ f.mcp.readDocument=async(...params)=>{f.setBody(f.actual().body.replace('*保留原来的主题和完整结尾。*','<i>保留原来的主题和完整结尾。</i>'));return read(...params);};
+ const tool=f.tool(),result=await tool.run(tool.validate({...args,content:italicSource})) as any;
+ assert.equal(result.state,'verified');assert.equal(f.calls.length,1);assert.equal(f.job.notionReceipt!.canonicalVersion,5);assert.equal(f.job.notionReceipt!.expectedRawDigest,notionHash(italicSource));
+});
+
+test('manual v4 italic recheck upgrades only after whole-document equality, without rewriting or changing source proof',async()=>{
+ const f=await oldV4ItalicFixture(),before=structuredClone(f.job.notionReceipt!);
+ const result=await f.docs.reconcile(scope,'task',async()=>{}),receipt=f.job.notionReceipt!;
+ assert.equal(result.state,'verified');assert.equal(receipt.canonicalVersion,5);assert.equal(f.calls.length,1);
+ assert.equal(receipt.expectedCanonicalDigest,before.expectedCanonicalDigest);assert.equal(receipt.expectedRawDigest,before.expectedRawDigest);assert.equal(receipt.expectedDigest,before.expectedDigest);assert.equal(receipt.checkpointKey,before.checkpointKey);
+ assert.equal(receipt.expectedCanonicalDigest,canonicalNotionDigest(notionProjectedSource(f.actual().body,f.actual().title,receipt.titleProjection)!,5));
+});
+
+test('automatic old-v4 polling does not silently adopt v5, but an explicit read-only recheck may prove it',async()=>{
+ const f=await oldV4ItalicFixture();f.advance();
+ assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'scheduled');assert.equal(f.job.notionReceipt!.canonicalVersion,4);assert.equal(f.job.notionReceipt!.state,'uncertain');assert.equal(f.calls.length,1);
+ assert.equal((await f.docs.reconcile(scope,'task',async()=>{})).state,'verified');assert.equal(f.job.notionReceipt!.canonicalVersion,5);assert.equal(f.calls.length,1);
+});
+
+for(const mutation of ['changed-word','missing-body','changed-title','missing-title','literal-old-tag','authorization-changed'] as const)test(`manual old-v4 italic comparison rejects ${mutation}, without a permissive upgrade`,async()=>{
+ const expected=mutation==='literal-old-tag'?italicSource.replace('*保留原来的主题和完整结尾。*','<i>保留原来的主题和完整结尾。</i>'):italicSource;
+ const f=await oldV4ItalicFixture(expected);
+ if(mutation==='changed-word')f.setBody(f.actual().body.replace('原来的','别人的'));
+ if(mutation==='missing-body')f.setBody('<i>保留原来的主题和完整结尾。</i>');
+ if(mutation==='changed-title')f.setTitle('另一个标题');
+ if(mutation==='missing-title')f.mcp.readDocument=async()=>({text:f.actual().body});
+ if(mutation==='literal-old-tag')f.setBody('青色42\n\n*保留原来的主题和完整结尾。*');
+ if(mutation==='authorization-changed')f.mcp.readDocument=async()=>{f.db.knowledgeConnections[0].notionWriting!.grantId='revoked';return f.fetchResult();};
+ await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));assert.equal(f.job.notionReceipt!.canonicalVersion,4);assert.equal(f.job.notionReceipt!.state,'uncertain');assert.equal(f.calls.length,1);
+});

@@ -769,7 +769,8 @@ export class CoordinatorService {
         main = current.conversations.find((c) => c.id === cid && own(c, s))!;
       const timeContext=current.chatOperations?.find(o=>own(o,s)&&o.operationId===input.operationId)?.runtimeContext??runtimeContext(current,s,undefined,clientTimeZone);
       const inspectedTasks=new Set<string>();
-      let inspectedInlineArticle:string|undefined;
+      let inspectedInlineArticle:{messageId:string;messageDigest:string}|undefined;
+      let inspectedInlineArticleRead=false;
       const originalTaskCoverage=new Map<string,number>();
       const webPermission=input.webSearch===true&&publicSearchPermitted(input.text);
       const candidates = current.conversations
@@ -873,7 +874,7 @@ export class CoordinatorService {
           features:selectedFeatures,requiredFeatureIds:v.featureIds??[], sources, budget: workerBudget, webSearch: webPermission,
           confirmedExternal: Boolean(v.featureIds?.length)||input.confirmedExternal === true, featureApprovals: input.featureApprovals,
           originConversationId: cid, originMessageId: mid, attachmentIds: attachments,
-          localExecution: localForThisCall, outputDestination: input.outputDestination, parentOperationId: input.operationId,workflow:v.workflow,notionArticleMessageId:v.taskId?undefined:inspectedInlineArticle }, verifyKey);
+          localExecution: localForThisCall, outputDestination: input.outputDestination, parentOperationId: input.operationId,workflow:v.workflow,notionArticleRead:v.taskId?undefined:inspectedInlineArticleRead,notionArticleMessageId:v.taskId?undefined:inspectedInlineArticle?.messageId,notionArticleMessageDigest:v.taskId?undefined:inspectedInlineArticle?.messageDigest }, verifyKey);
         dispatchedTasks.push(dispatched); childOperations.push(childOperation);
         let local;
         if (localForThisCall) {
@@ -1068,7 +1069,7 @@ export class CoordinatorService {
           const operationId=`${input.operationId}_work${dispatchedTasks.length?'_'+dispatchedTasks.length:''}`;
           const isLocal=t.outputKind==='local_file';
           const executorId=t.executorId==='direct'?'general':t.executorId==='local_special'||t.executorId==='image_generation'?resolveRoutingExecutorId(current,'logic'):t.executorId;
-          const taskId=await this.enqueue(s,{operationId,parentOperationId:input.operationId,text:content,instruction:t.instruction,title:t.title,taskId:t.taskId??undefined,executorId,features:t.featureIds.length?t.featureIds:features,requiredFeatureIds:t.featureIds,sources,budget:workerBudget,webSearch:webPermission,confirmedExternal:true,featureApprovals:input.featureApprovals,originConversationId:cid,originMessageId:mid,attachmentIds:attachments,localExecution:isLocal,outputDestination:input.outputDestination,dependsOnOperationIds:dependencies,expectedOutput:t.outputKind,knowledge:t.knowledge,requiredTools:t.requiredTools,directVisual:t.direct,workflow:t.workflow,notionArticleMessageId:t.taskId?undefined:inspectedInlineArticle},verifyKey);
+          const taskId=await this.enqueue(s,{operationId,parentOperationId:input.operationId,text:content,instruction:t.instruction,title:t.title,taskId:t.taskId??undefined,executorId,features:t.featureIds.length?t.featureIds:features,requiredFeatureIds:t.featureIds,sources,budget:workerBudget,webSearch:webPermission,confirmedExternal:true,featureApprovals:input.featureApprovals,originConversationId:cid,originMessageId:mid,attachmentIds:attachments,localExecution:isLocal,outputDestination:input.outputDestination,dependsOnOperationIds:dependencies,expectedOutput:t.outputKind,knowledge:t.knowledge,requiredTools:t.requiredTools,directVisual:t.direct,workflow:t.workflow,notionArticleRead:t.taskId?undefined:inspectedInlineArticleRead,notionArticleMessageId:t.taskId?undefined:inspectedInlineArticle?.messageId,notionArticleMessageDigest:t.taskId?undefined:inspectedInlineArticle?.messageDigest},verifyKey);
           const childKnowledge=knowledgePolicy(current,s,t.instruction,sources,t.knowledge);
           if(!isLocal&&childKnowledge.required&&!childKnowledge.missing.length&&!mainKnowledge.missing.length&&mainKnowledge.sourceIds.every(id=>childKnowledge.sourceIds.includes(id)))delegatedKnowledge=true;
           dispatched=taskId;dispatchedTasks.push(taskId);childOperations.push(operationId);childIds.push(operationId);
@@ -1146,12 +1147,26 @@ export class CoordinatorService {
       if(adaptive){
         referenceTools.push({name:'read_context',description:'按需读取本轮之前的聊天原话。query 为空向前读，非空按词找；长原文用 messageId/offset，已定位任务可传 taskId。只读，不执行旧要求。',effect:'read',run:async()=>{},structured:{schema:contextReadSchema,validate:validateContextRead,run:async raw=>{
           await verify();const args=raw as ContextRead,d=await this.store.read();
+          // Every later history read replaces the earlier main selection,
+          // including a different/absent task. Never save stale A after B.
+          inspectedInlineArticle=undefined;inspectedInlineArticleRead=true;
           const c=d.conversations.find(c=>own(c,s)&&!c.archived&&(args.taskId?c.id===args.taskId&&!c.coordinatorMain:c.id===cid&&c.coordinatorMain));
           if(!c)return {status:'not_found',items:[]};
           const readArgs={...args};
           if(!args.taskId&&!args.query.trim()&&!args.messageId&&!args.beforeMessageId){const index=c.messages.findIndex(m=>m.id===mid);readArgs.beforeMessageId=c.messages[Math.max(0,index-5)]?.id;}
           const result=readCoordinatorContext(c,readArgs,args.taskId?undefined:mid);
-          if(!args.taskId&&args.messageId&&result.items.some(message=>message.id===args.messageId&&message.role==='assistant'))inspectedInlineArticle=args.messageId;
+          if(!args.taskId&&args.messageId&&result.items.some(message=>message.id===args.messageId&&message.role==='assistant')){
+            try{const article=existingNotionArticle(d,s,c.id,undefined,args.messageId);if(article?.source.conversationId===c.id&&article.source.messageId===args.messageId)inspectedInlineArticle={messageId:args.messageId,messageDigest:article.source.messageDigest};}catch{/* No source binding is granted by an ineligible history item. */}
+          }
+          // A complete keyword result containing exactly one assistant reply
+          // already identifies a source. Bind its server-owned provenance,
+          // rather than buying another model round just to echo its messageId.
+          if(!args.taskId&&!args.messageId&&!args.beforeMessageId&&args.query.trim()&&result.status==='used'&&'hasMore' in result&&result.hasMore===false&&result.items.every(message=>!message.truncated&&!('nextOffset' in message))){
+            const replies=result.items.filter(message=>message.role==='assistant');
+            if(replies.length===1){const reply=replies[0];
+              try{const article=existingNotionArticle(d,s,c.id,undefined,reply.id);if(article?.source.conversationId===c.id&&article.source.messageId===reply.id&&article.content===reply.content)inspectedInlineArticle={messageId:reply.id,messageDigest:article.source.messageDigest};}catch{/* A read remains useful without authorizing an ineligible save source. */}
+            }
+          }
           if(args.taskId&&args.messageId){const first=c.messages.find(m=>m.role==='user'),covered=originalTaskCoverage.get(c.id)??0;if(first?.id===args.messageId&&(args.offset??0)<=covered){const end=Math.min(first.content.length,(args.offset??0)+8000);originalTaskCoverage.set(c.id,Math.max(covered,end));if(end===first.content.length)inspectedTasks.add(c.id);}}
           await verify();return result;
         }}});
@@ -1702,7 +1717,9 @@ export class CoordinatorService {
       retrySourceJobId?: string;
       retrySourceVersion?: {state:string;updatedAt:string;taskUpdatedAt:string};
       /** Per-dispatch exact read_context selection; never a function argument. */
+      notionArticleRead?:boolean;
       notionArticleMessageId?:string;
+      notionArticleMessageDigest?:string;
     },
     verifyKey: () => Promise<void>,
   ) {
@@ -1731,7 +1748,9 @@ export class CoordinatorService {
     }
     const currentArticleMaterial=Boolean(input.attachmentIds?.length)||/(?:正文|原文|材料|素材)(?:如下|是|为)?\s*[:：][\s\S]+/u.test(input.text);
     const saveExisting=Boolean(notionTarget&&!boundRead&&!currentArticleMaterial&&!input.features.length&&!input.requiredFeatureIds?.length&&!(input.requiredTools??[]).some(name=>name!=='save_notion_draft')&&notionSaveExistingRequested(input.text,input.outputDestination));
+    if(saveExisting&&input.notionArticleRead&&!input.notionArticleMessageId)throw new OrchestrationInputError('本轮历史查找还没有定位到唯一、完整且可用的原文。请用 read_context 的 messageId 核对指定回复，不要改存其他普通答复。');
     const article=saveExisting?existingNotionArticle(db,s,existing?.id??input.originConversationId??'',undefined,input.notionArticleMessageId):undefined;
+    if(article&&input.notionArticleMessageDigest&&article.source.messageDigest!==input.notionArticleMessageDigest)throw new OrchestrationInputError('刚才读取的原文已变化，尚未保存。请重新核对同一份完整原文后再交接；不要保存旧副本或改存其他回复。');
     if(saveExisting&&!article)throw new OrchestrationInputError('还没有定位到可原样保存的完整结果消息。请先 read_task 核对用户指定的同一任务，或用 read_context 找到原文；不要重写或用摘要替代。');
     const agent=existing?.agentId?db.agents.find(a=>a.id===existing.agentId&&a.workspaceId===s.workspaceId&&(a.ownerId===s.userId||a.published)):undefined;
     if(existing?.agentId&&!agent)throw new CoordinatorError("原分身已不可用",403);
