@@ -11,6 +11,7 @@ import {parseNotionPageLink} from '../src/notionPageLink.js';
 import {freshDocumentReadRequested} from './executionIntent.js';
 import {taskStepKey} from './taskSteps.js';
 import {notionHash as hash,legacyNotionNormalized as normalized,canonicalNotionDigest} from './notionCanonical.js';
+import {projectNotionLeadingTitle,notionProjectedSource,type NotionTitleProjection} from './notionTitleProjection.js';
 
 const readOnlyRequest=(text:string)=>freshDocumentReadRequested(text)&&/只读|(?:不|不要)(?:修改|保存|写入)/.test(text);
 
@@ -62,10 +63,27 @@ export function notionBody(value: unknown): string {
   if (!body.trim() || body.length > 60000) throw new NotionDocumentError('页面正文无法完整读取，请检查页面权限或缩小范围');
   return body;
 }
+/** Only actual fetch properties are title evidence. Never use the requested
+ * title, ancestry metadata, or a heading from the body as a substitute. */
+export function notionFetchedTitle(value:unknown):string|undefined{
+ const v=resultData(value),titles:string[]=[];
+ if(typeof v?.title==='string')titles.push(v.title);
+ if(typeof v?.properties?.title==='string')titles.push(v.properties.title);
+ const raw=typeof v?.text==='string'?v.text:typeof v?.content==='string'?v.content:'';
+  // A user can put properties-looking markup in the body. Only the official
+  // metadata preceding its content wrapper is evidence of the page title.
+  const contentStart=raw.indexOf('<content>'),metadata=contentStart<0?'':raw.slice(0,contentStart);
+  const sections=[...metadata.matchAll(/<properties>([\s\S]*?)<\/properties>/g)];
+ if(sections.length>1)return;
+ if(sections.length===1){
+  try{const properties=JSON.parse(sections[0][1]);if(typeof properties?.title!=='string')return;titles.push(properties.title);}catch{return;}
+ }
+ if(titles.length&&titles.every(title=>title===titles[0]))return titles[0];
+}
 type Receipt=NonNullable<WorkRun['notionReceipt']>;
 type VerificationResult={operationId:string;conversationId:string;state:'verified'|'scheduled'|'exhausted'|'blocked'};
 type VerificationOptions={now?:()=>number;delays?:number[];deadlineMs?:number;leaseMs?:number};
-const sameReceipt=(a:Receipt,b:Receipt)=>['pageId','asyncTaskId','expectedDigest','expectedCanonicalDigest','canonicalVersion','checkpointKey','final'].every(key=>a[key as keyof Receipt]===b[key as keyof Receipt]);
+const sameReceipt=(a:Receipt,b:Receipt)=>['pageId','asyncTaskId','expectedDigest','expectedCanonicalDigest','canonicalVersion','checkpointKey','final'].every(key=>a[key as keyof Receipt]===b[key as keyof Receipt])&&(['version','title','prefix'] as const).every(key=>a.titleProjection?.[key]===b.titleProjection?.[key]);
 const mayHaveWritten=(receipt?:Receipt)=>Boolean(receipt&&(receipt.state==='verified'||receipt.delivery==='unknown'||receipt.state==='uncertain'&&!['not_sent','rejected'].includes(receipt.delivery??'')));
 function quotedReplacement(request: string) {
   // Only an unambiguous, explicitly quoted replacement in the real user turn.
@@ -187,7 +205,7 @@ export class NotionDocuments {
     });
     if(!claimed)return;
     if('blocked' in claimed)return {operationId:opId,conversationId:claimed.conversationId,state:'exhausted'};
-    const snapshot=claimed.receipt;let pageId=snapshot.pageId,body:string|undefined,reason:'read_failed'|'mismatch'|'incomplete'|'authorization'|'stale'|'no_page'='read_failed';
+    const snapshot=claimed.receipt;let pageId=snapshot.pageId,body:string|undefined,sourceBody:string|undefined,reason:'read_failed'|'mismatch'|'incomplete'|'authorization'|'stale'|'no_page'='read_failed';
     const assertSnapshot=(db:Database)=>{
       const op=db.chatOperations?.find(o=>o.id===opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId&&o.conversationId===claimed.conversationId),run=op?.workRun,r=run?.notionReceipt;
       if(!op||!run||!r||r.verification?.version!==claimed.version||r.verification.leaseId!==leaseId||!sameReceipt(r,snapshot)||run.state==='running'||!manual&&['cancelled','interrupted'].includes(run.state)||(db.chatOperations??[]).some(other=>other.id!==op.id&&other.workspaceId===s.workspaceId&&other.userId===s.userId&&other.conversationId===op.conversationId&&mayHaveWritten(other.workRun?.notionReceipt)&&(other.createdAt??'')>(op.createdAt??'')))throw new NotionVerificationChanged();
@@ -196,7 +214,7 @@ export class NotionDocuments {
     try{
       await verify();assertSnapshot(await this.store.read());
       if(!pageId&&snapshot.asyncTaskId){const result=resultData(await this.mcp.callDocumentTool(s.workspaceId,claimed.target.connectionId,claimed.target.grantId,s.userId,'notion-get-async-task',{task_id:snapshot.asyncTaskId}));if(result?.status==='succeeded'){const value=result.result??result;pageId=notionPageId(value?.pages?.[0]?.id||value?.page?.id||value?.id||value?.url);}else if(result?.status==='failed')reason='no_page';}
-      if(pageId){await verify();assertSnapshot(await this.store.read());body=notionBody(await this.mcp.readDocument(s.workspaceId,pageId));reason='mismatch';}
+      if(pageId){await verify();assertSnapshot(await this.store.read());const fetched=await this.mcp.readDocument(s.workspaceId,pageId);body=notionBody(fetched);sourceBody=notionProjectedSource(body,notionFetchedTitle(fetched),snapshot.titleProjection);reason='mismatch';}
       await verify();assertSnapshot(await this.store.read());
     }catch(error){
       if(error instanceof NotionVerificationChanged)reason='stale';
@@ -205,7 +223,7 @@ export class NotionDocuments {
       // Recheck Key and exact authorization even after a transport failure.
       await verify();try{this.assertTarget(await this.store.read(),s,claimed.target);}catch{reason='authorization';}
     }
-    const matched=body!==undefined&&(snapshot.canonicalVersion===2||snapshot.canonicalVersion===3||snapshot.canonicalVersion===4?Boolean(snapshot.expectedCanonicalDigest)&&canonicalNotionDigest(body,snapshot.canonicalVersion)===snapshot.expectedCanonicalDigest:hash(normalized(body))===snapshot.expectedDigest);
+    const matched=sourceBody!==undefined&&(snapshot.canonicalVersion===2||snapshot.canonicalVersion===3||snapshot.canonicalVersion===4?Boolean(snapshot.expectedCanonicalDigest)&&canonicalNotionDigest(sourceBody,snapshot.canonicalVersion)===snapshot.expectedCanonicalDigest:hash(normalized(sourceBody))===snapshot.expectedDigest);
     return this.store.mutate(db=>{
       featureMember(db,s);const op=db.chatOperations?.find(o=>o.id===opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId&&o.conversationId===claimed.conversationId),run=op?.workRun,r=run?.notionReceipt,v=r?.verification;
       if(!op||!run||!r||!v||v.version!==claimed.version||v.leaseId!==leaseId||!sameReceipt(r,snapshot)||run.state==='running'||!manual&&['cancelled','interrupted'].includes(run.state))return {operationId:opId,conversationId:claimed.conversationId,state:'blocked' as const};
@@ -234,8 +252,9 @@ export class NotionDocuments {
     const readOnly=readOnlyRequest(originalRequest);
     const refs = [];
     for (const id of readOnly?[]:target.referenceIds) {const body=notionBody(await this.mcp.readDocument(s.workspaceId, id));refs.push({ id, content: options.fullReferences?body:body.slice(0,12000) });}
-    const current = target.pageId && !readOnly ? notionBody(await this.mcp.readDocument(s.workspaceId, target.pageId)) : undefined;
-    return { references: refs, currentDocument: current, pageId: target.pageId, readOnly,
+    const fetchedCurrent=target.pageId&&!readOnly?await this.mcp.readDocument(s.workspaceId,target.pageId):undefined;
+    const current=fetchedCurrent?notionBody(fetchedCurrent):undefined;
+    return { references: refs, currentDocument: current,...(fetchedCurrent?{pageTitle:notionFetchedTitle(fetchedCurrent)}:{}),pageId: target.pageId, readOnly,
       ...(!readOnly?{writingPolicy:'完整文章先组织好整稿再保存，不把一段中间稿当交付。修订整篇时 old_str 可使用本轮完整原文、new_str 写完整修订稿；局部修改仅用于用户明确指定的局部要求。每次保存已回读核对后可继续修改同页；只有已完成本轮全部写作要求的最后一次保存才传 final:true，中间稿不传。'}:{}),
       ...(sameTitleCheckRequested(originalRequest)?{creationPolicy:'save_notion_draft 会先读取已选父页面的完整子页面列表核对同名；内容一致则回读并复用，不新建。目录不完整或同名内容不同会停止，不覆盖。以工具返回的 duplicateCheck 为准。'}:{}),
       location: `https://www.notion.so/${target.pageId || target.parentId}`,
@@ -246,13 +265,13 @@ export class NotionDocuments {
     const read=async()=>{
       await verify();this.assertTarget(await this.store.read(),s,target);
       if(!target.pageId)throw new NotionDocumentError('这件事还没有绑定可读取的文章');
-      const content=notionBody(await this.mcp.readDocument(s.workspaceId,target.pageId));
+      const fetched=await this.mcp.readDocument(s.workspaceId,target.pageId),content=notionBody(fetched),title=notionFetchedTitle(fetched);
       await verify();this.assertTarget(await this.store.read(),s,target);
-      return {status:'read',pageId:target.pageId,url:`https://www.notion.so/${target.pageId}`,content,complete:true};
+      return {status:'read',pageId:target.pageId,url:`https://www.notion.so/${target.pageId}`,...(title!==undefined?{title}:{}),content,complete:true};
     };
     return {name:'read_notion_document',label:'读取这篇 Notion 原文',effect:'read',description:'实际回读当前任务唯一绑定的 Notion 文章，返回完整正文与文章自身入口。无须提供页面编号，不读取其他页面，也不修改或保存。以本次工具真实返回的正文核对标题和结尾，不使用历史聊天冒充本次读取。',run:async()=>{throw new NotionDocumentError('读取参数无效');},structured:{schema:{type:'object',additionalProperties:false,properties:{}},validate:value=>{if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length)throw new NotionDocumentError('读取范围已绑定，不接受其他页面或参数');return {};},run:read}};
   }
-  tool(s: WorkScope, opId: string, cid: string, job: WorkRun, verify: () => Promise<void>, current?: string, originalRequest = ''): OrchestrationTool {
+  tool(s: WorkScope, opId: string, cid: string, job: WorkRun, verify: () => Promise<void>, current?: string, originalRequest = '',options:{projectLeadingTitle?:boolean}={}): OrchestrationTool {
     const target = job.notionTarget!;
     let currentBody=current;
     let validateSave:(value:unknown)=>unknown;
@@ -283,13 +302,16 @@ export class NotionDocuments {
           )))throw new NotionDocumentError('上次 Notion 保存还没确认，请先核对原页面；没有重复写入。');
           if (target.pageId && notionBody(await this.mcp.readDocument(s.workspaceId, target.pageId)) !== currentBody) throw new NotionDocumentError('Notion 文档已被修改，请重新读取后再继续；本轮没有覆盖原文');
           const expected = target.pageId ? currentBody!.replace(v.old_str, v.new_str) : v.content;
+          const projected=!target.pageId&&options.projectLeadingTitle?projectNotionLeadingTitle(expected):undefined;
+          const titleProjection:NotionTitleProjection|undefined=projected?{version:1,title:projected.title,prefix:projected.prefix}:undefined;
+          const createTitle=projected?.title??v.title,createBody=projected?.content??v.content;
           // Persist before sending. Duplicate calls, disconnects and restarts
           // cannot turn a possibly-applied write into an automatic retry.
           await this.store.mutate(d => {
             this.assertTarget(d, s, target);
             const o = d.chatOperations?.find(o => o.id === opId && o.workspaceId === s.workspaceId && o.userId === s.userId && o.conversationId === cid);
             if (o?.workRun?.state !== 'running' || o.workRun.notionReceipt&&o.workRun.notionReceipt.state!=='verified') throw new NotionDocumentError('本轮保存已经提交或任务已停止，请查看原回执，不会重复写入');
-            o.workRun.notionReceipt = { state: 'pending', delivery: 'not_sent', pageId: target.pageId, url: target.url, expectedDigest: hash(normalized(expected)),expectedRawDigest:hash(expected),expectedCanonicalDigest:canonicalNotionDigest(expected,4),canonicalVersion:4,checkpointKey:taskStepKey('worker','save_notion_draft',JSON.stringify(v)),final:v.final===true };
+            o.workRun.notionReceipt = { state: 'pending', delivery: 'not_sent', pageId: target.pageId, url: target.url, expectedDigest: hash(normalized(expected)),expectedRawDigest:hash(expected),expectedCanonicalDigest:canonicalNotionDigest(expected,4),canonicalVersion:4,checkpointKey:taskStepKey('worker','save_notion_draft',JSON.stringify(v)),titleProjection,final:v.final===true };
           });
           const record = async (receipt: NonNullable<WorkRun['notionReceipt']>) => this.store.mutate(d => {
             const o = d.chatOperations?.find(o => o.id === opId && o.workspaceId === s.workspaceId && o.userId === s.userId && o.conversationId === cid);
@@ -301,7 +323,7 @@ export class NotionDocuments {
             job.notionReceipt = { ...o.workRun.notionReceipt };
           });
           let pageId = target.pageId;
-          const checkKey=!pageId&&sameTitleCheckRequested(originalRequest)?JSON.stringify([s.workspaceId,s.userId,target.parentId,v.title.trim()]):undefined;
+          const checkKey=!pageId&&sameTitleCheckRequested(originalRequest)?JSON.stringify([s.workspaceId,s.userId,target.parentId,createTitle.trim()]):undefined;
           let ownsCheck=false,duplicateCheck:string|undefined;
           let failureCode: NonNullable<WorkRun['notionReceipt']>['failureCode'] = 'write_unconfirmed';
           try {
@@ -313,14 +335,14 @@ export class NotionDocuments {
               try{children=childPages(await this.mcp.readDocument(s.workspaceId,target.parentId));}
               catch(error){throw error instanceof NotionPreflightError?error:new NotionPreflightError('保存位置暂时没读到，先不新建；稍后可以继续核对。');}
               await verify();this.assertTarget(await this.store.read(),s,target);
-              const matches=children.filter(child=>child.title===v.title.trim());
+              const matches=children.filter(child=>child.title===createTitle.trim());
               if(matches.length>1)throw new NotionPreflightError('这里已有多篇同名便笺，先不新建或覆盖。请选定要继续的那一篇。');
               if(matches.length){
-                let actual:string;
-                try{actual=notionBody(await this.mcp.readDocument(s.workspaceId,matches[0].id));}
+                let actual:string,comparison:string|undefined;
+                try{const fetched=await this.mcp.readDocument(s.workspaceId,matches[0].id);actual=notionBody(fetched);comparison=notionProjectedSource(actual,notionFetchedTitle(fetched),titleProjection);}
                 catch{throw new NotionPreflightError('找到了同名便笺，但正文还没完整读到；先不新建或覆盖。');}
                 await verify();this.assertTarget(await this.store.read(),s,target);
-                if(canonicalNotionDigest(actual)!==canonicalNotionDigest(expected))throw new NotionPreflightError('这里已有同名便笺，但内容不同。原文没动，也没有重复新建；可以换个标题另存。');
+                if(comparison===undefined||canonicalNotionDigest(comparison)!==canonicalNotionDigest(expected))throw new NotionPreflightError('这里已有同名便笺，但内容不同。原文没动，也没有重复新建；可以换个标题另存。');
                 pageId=matches[0].id;const url=`https://www.notion.so/${pageId}`;
                 const fresh=await this.store.read();this.assertTarget(fresh,s,target);
                 if(fresh.chatOperations?.find(o=>o.id===opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId)?.workRun?.state!=='running')throw new NotionPreflightError('这轮已经停下，没有新建或修改文档。');
@@ -330,7 +352,7 @@ export class NotionDocuments {
               duplicateCheck='no_same_title_in_parent';
             }
             let response = resultData(await this.mcp.callDocumentTool(s.workspaceId, target.connectionId, target.grantId, s.userId,
-              pageId ? 'notion-update-page' : 'notion-create-pages', pageId ? { page_id: pageId, command: 'update_content', content_updates: [{ old_str: v.old_str, new_str: v.new_str }], allow_async: false } : { parent: { page_id: target.parentId }, pages: [{ properties: { title: v.title }, content: v.content }], allow_async: false }, async () => {
+              pageId ? 'notion-update-page' : 'notion-create-pages', pageId ? { page_id: pageId, command: 'update_content', content_updates: [{ old_str: v.old_str, new_str: v.new_str }], allow_async: false } : { parent: { page_id: target.parentId }, pages: [{ properties: { title: createTitle }, content: createBody }], allow_async: false }, async () => {
                 await verify(); this.assertTarget(await this.store.read(), s, target);
                 await this.store.mutate(d => {
                   this.assertTarget(d, s, target);
@@ -358,9 +380,9 @@ export class NotionDocuments {
             // Retain the created page even if readback/cancellation fails.
             await record({ state: 'pending', pageId, url });
             failureCode = 'readback_failed';
-            const actual = notionBody(await this.mcp.readDocument(s.workspaceId, pageId));
+            const fetched=await this.mcp.readDocument(s.workspaceId,pageId),actual=notionBody(fetched),comparison=notionProjectedSource(actual,notionFetchedTitle(fetched),titleProjection);
             failureCode = 'readback_mismatch';
-            if (canonicalNotionDigest(actual)!==canonicalNotionDigest(expected)) throw new Error('readback mismatch');
+            if (comparison===undefined||canonicalNotionDigest(comparison)!==canonicalNotionDigest(expected)) throw new Error('readback mismatch');
             await record({ state: 'verified', pageId, url, digest: hash(actual), failureCode: undefined, delivery: undefined, diagnostic: undefined });
             currentBody=actual;
             await verify();

@@ -2370,7 +2370,7 @@ export class CoordinatorService {
       for(const step of completedSteps(steps))if(step.tool==='knowledge_search')datedDraft?.observe(step.output);
       if (notionContext?.readOnly) tools.push(this.deps.notionDocuments!.readTool(s,job,verify));
       if (notionContext&&!notionContext.readOnly) {
-        const save=this.deps.notionDocuments!.tool(s, id, cid, job, verify, notionContext.currentDocument, c.messages[start].content);
+        const save=this.deps.notionDocuments!.tool(s, id, cid, job, verify, notionContext.currentDocument, c.messages[start].content,{projectLeadingTitle:Boolean(job.workflow)});
         if(requiredKnowledge&&save.structured){
           const structured=save.structured,ready=()=>completedSteps(steps).some(step=>step.tool==='knowledge_search')||Boolean(job.workflow?.spec.steps.some((step,index)=>step.kind==='tool'&&step.tool==='knowledge_search'&&job.workflow!.steps[index].state==='completed'&&steps.some(saved=>saved.key===job.workflow!.steps[index].checkpointKey&&saved.scopeId===id&&saved.state==='completed')));
           save.cacheable=false; // A rejected prerequisite must not become a cached no-op after a successful read.

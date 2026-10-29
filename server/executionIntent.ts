@@ -76,7 +76,11 @@ export function notionDestinationRequested(text:string,selected?:'chat'|'notion'
  * This is not evidence that an earlier creative task was completed. */
 export function notionSaveExistingRequested(text:string,selected?:'chat'|'notion'):boolean {
   if(!notionDestinationRequested(text,selected))return false;
-  const request=currentRequest(text),positive=request.replace(/(?:不要|不用|不必|无需|别)[^，,。；;\n]{0,80}/gu,'');
+  // Remove only explicitly declined actions, not the rest of their clause.
+  // Bare “不改写/不重新生成” preserves the existing article just as “不要”
+  // does; “不要重写但生成封面” still contains positive extra work and must
+  // not take the save-only path. Double negatives remain conservative.
+  const request=currentRequest(text),positive=request.replace(/(?<!不能|不得|并非|不是)(?:不要|不用|不必|不需要|无需|禁止|别|不)(?:再|重新|再次|另行)?(?:重写|改写|修改|润色|扩写|续写|完善|补齐|撰写|创作|写(?:一|个|篇|成)?|生成|制作|画(?:图|一|个|张|封面)?|导出|做成|查找|检索|搜索|查|发送|发布|分享|上传|下载|产出)/gu,'');
   const bareSave=/^(?:请|帮我|直接|就)?\s*(?:保存(?:到|进)?|存到|存入|写入)\s*notion(?:草稿)?(?:吧)?[。！!\s]*(?:(?:并|后)?(?:回读|核对)(?:正文|原文)?)?[。！？!?\s]*$/iu.test(positive.trim());
   return /(?:保存|存入|存到|写入|写到|写进)/u.test(positive)
     &&(bareSave||/(?:这(?:篇|份|段)|上述|上面|刚才|已经写|已写|现成|现有|原文|本文)/u.test(positive))

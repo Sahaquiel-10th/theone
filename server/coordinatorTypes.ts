@@ -32,6 +32,8 @@ export type WorkRun = {
   notionReceipt?: { state: 'pending' | 'verified' | 'uncertain'; pageId?: string; url?: string; asyncTaskId?: string; expectedDigest?: string; digest?: string;
     /** Versioned, server-owned evidence of the exact write being checked. */
     checkpointKey?:string; canonicalVersion?:2|3|4; expectedCanonicalDigest?:string; expectedRawDigest?:string;
+    /** Explicit authored-H1/page-title boundary; source digests stay unchanged. */
+    titleProjection?:import('./notionTitleProjection.js').NotionTitleProjection;
     /** Final intent is retained while readback is pending; it is not proof by itself. */
     final?:boolean;
     /** Durable read-only follow-up, never a queued model/write retry. Old receipts are not implicitly enrolled. */

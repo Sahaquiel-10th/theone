@@ -25,6 +25,14 @@ test('late Notion saving has the same human authority as the picker, not quoted 
  for(const text of ['把这篇文章保存到Notion，然后生成封面图片。','保存这篇到Notion，另外导出Word。','把这篇原文存到Notion，另查找今天新闻。'])assert.equal(notionSaveExistingRequested(text,'notion'),false,text);
 });
 
+test('save-only intent removes bounded explicitly negated work, including bare 不, without hiding positive extra work',()=>{
+ const live='把刚才主对话里标题为 ONE-QA-LATE-1029-A 的这篇现有原文保存到 Notion，不改写、不重新生成、不查知识库、不联网、不动其他旧任务。这是独立合成验收，只保存这一份。';
+ for(const selected of ['chat','notion'] as const){
+  for(const text of [live,'把这篇原文保存到Notion，不重写。','把这篇原文保存到Notion，不改写、不重新生成。','保存这篇到Notion，不需要重新生成，不搜索、不检索、不查找资料。','把这篇文章保存到Notion，不用重写也不用重新生成。','把这篇原文保存到Notion，不修改、不润色、不扩写、不续写、不导出、不分享。'])assert.equal(notionSaveExistingRequested(text,selected),true,text);
+  for(const text of ['把这篇原文保存到Notion，不要重写但生成封面。','把这篇原文保存到Notion，不改写但导出Word。','把这篇原文保存到Notion，不重新生成文章，但制作封面。','把这篇原文保存到Notion，不搜索但查找今天新闻。','把这篇原文保存到Notion，不重写也要生成图片。','把这篇原文保存到Notion，不需要修改但分享链接。','把这篇原文保存到Notion，不改写，按原文生成网页。','把这篇原文保存到Notion，不得不改写。','把这篇原文保存到Notion，不能不重写。'])assert.equal(notionSaveExistingRequested(text,selected),false,text);
+ }
+});
+
 test('a current unquoted Notion write request is distinct from discussion, payload and retrieval',()=>{
  for(const text of ['请在 Notion 新建一篇测试便笺。','帮我把这篇短文保存到 Notion，保存后回读。','请写入Notion草稿。','把合成内容写到 Notion。','Save this note to Notion.'])assert.equal(notionWriteRequested(text),true,text);
  for(const text of ['只在当前已选的 Notion 草稿保存页面下面新建一篇普通测试便笺。','在已授权的 Notion 目录新建便笺。'])assert.equal(notionWriteRequested(text),true,text);
