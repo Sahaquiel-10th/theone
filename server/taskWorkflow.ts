@@ -73,7 +73,7 @@ export function createWorkflowRun(spec:WorkflowSpec,owner:WorkflowBinding,revisi
  if(!Number.isSafeInteger(revision)||revision<1)throw invalid();
  return {version:1,id:runId(resolved,revision),revision,binding:resolved,spec:validated,steps:validated.steps.map(step=>({id:step.id,state:'queued'})),sequence:0,phase:'queued'};
 }
-function phaseOf(spec:WorkflowSpec,steps:WorkflowStepState[]):WorkflowPhase{
+export function workflowPhase(spec:WorkflowSpec,steps:WorkflowStepState[]):WorkflowPhase{
  const required=steps.filter((_,index)=>spec.steps[index].required!==false);
  if(steps.some(step=>step.state==='running'))return 'running';
  if(required.some(step=>step.state==='failed'))return 'failed';
@@ -93,7 +93,7 @@ function assertRun(raw:WorkflowRun,owner:WorkflowBinding):WorkflowRun{
   if(v.state==='completed'&&!v.checkpointKey||v.state==='skipped'&&spec.steps[index].required!==false||v.waitingFor!==undefined&&v.state!=='waiting')throw invalid();
   return structuredClone(v) as WorkflowStepState;
  });
- if(run.phase!==phaseOf(spec,steps)||steps.some((step,index)=>step.state==='completed'&&spec.steps[index].inputs.some(id=>steps.find(input=>input.id===id)?.state!=='completed')))throw invalid();
+ if(run.phase!==workflowPhase(spec,steps)||steps.some((step,index)=>step.state==='completed'&&spec.steps[index].inputs.some(id=>steps.find(input=>input.id===id)?.state!=='completed')))throw invalid();
  return {version:1,id:String(run.id),revision:Number(run.revision),binding:bound,spec,steps,sequence:Number(run.sequence),phase:run.phase as WorkflowPhase};
 }
 const unsafeText=/(?:\b(?:Bearer|authorization|api[_ -]?key|password|secret|credentials?|MCP|HTTP|JSON|ECONN\w*|ETIMEDOUT|stack|traceback)\b|https?:\/\/|feature_\d+|knowledge_search|web_search|read_notion_document|[{}<>])/i;
@@ -117,7 +117,7 @@ export async function runTaskWorkflow(input:WorkflowRunner):Promise<WorkflowRun>
  let current=assertRun(input.run,input.binding);
  const verify=async()=>{try{await input.verify();}catch{throw new TaskWorkflowError('WORKFLOW_VERIFY_FAILED','任务状态或授权已经变化，先核对后再继续。');}};
  const commit=async(index:number,next:WorkflowStepState)=>{
-  await verify();const expected=current.sequence,candidate=structuredClone(current);candidate.steps[index]=next;candidate.sequence=expected+1;candidate.phase=phaseOf(candidate.spec,candidate.steps);
+  await verify();const expected=current.sequence,candidate=structuredClone(current);candidate.steps[index]=next;candidate.sequence=expected+1;candidate.phase=workflowPhase(candidate.spec,candidate.steps);
   let saved:boolean;try{saved=await input.persist(structuredClone(candidate),expected);}catch{throw new TaskWorkflowError('WORKFLOW_PERSIST_FAILED','这一步的进度尚未确认保存；先核对原结果，不会重复执行。');}
   if(saved!==true)throw new TaskWorkflowError('WORKFLOW_CHANGED','任务已有新进展，请读取最新状态；这次没有重复执行。');
   current=candidate;

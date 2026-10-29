@@ -3403,21 +3403,34 @@ async function querySelectedSaveFixture(article='# ONE-QA-LATE-1029-B\n\n青色4
  return {...f,marker,messageId,service,counts:()=>({writes,workerCalls,title,body})};
 }
 
-test('a complete unique keyword lookup repairs the actual delegate → invalid read → query → delegate sequence without an extra messageId read',async()=>{
+test('a complete unique keyword lookup accepts the actual delegate → omitted-query read → query → delegate sequence with one fewer repair',async()=>{
  const f=await querySelectedSaveFixture(),request=`把刚才主对话里标题为 ${f.marker} 的这篇现有原文保存到 Notion，不改写、不重新生成、不查知识库、不联网、不动其他旧任务。这是独立合成验收，只保存这一份。`;let calls=0;
  const delegate=(instruction:string)=>({taskId:null,title:'保存合成原文',instruction,executorId:'general',featureIds:[]});
  const service=f.service(messages=>{
   calls++;let name='delegate_task',args:unknown=delegate(request);
   if(calls===2){assert.match(messages.at(-1)!.content!,/TOOL_INPUT_REPAIR/);assert.match(messages.at(-1)!.content!,/多份已有回复/);name='read_context';args={};}
-  if(calls===3){assert.match(messages.at(-1)!.content!,/query 字符串/);name='read_context';args={query:f.marker};}
+  if(calls===3){const read=JSON.parse(messages.at(-1)!.content!);assert.equal(read.status,'no_match');assert.deepEqual(read.items,[]);assert.doesNotMatch(messages.at(-1)!.content!,/TOOL_INPUT_REPAIR/);name='read_context';args={query:f.marker};}
   if(calls===4){const read=JSON.parse(messages.at(-1)!.content!);assert.equal(read.status,'used');assert.equal(read.hasMore,false);assert.equal(read.items.length,3);assert.deepEqual(read.items.map((item:any)=>item.role),['user','assistant','user']);assert.ok(read.items.every((item:any)=>item.truncated===false));assert.equal(read.items[1].id,f.messageId);args=delegate(`${request} 原文消息：${read.items[1].id}；用户消息：${read.items[0].id}。`);}
   assert.ok(calls<=4);return {...answer(''),toolCalls:[{id:`query-repair-${calls}`,type:'function',function:{name,arguments:JSON.stringify(args)}}]};
  });
  const args={...input('operation_live_query_save_repair',request),outputDestination:'chat' as const},result=await service.dispatch(a,args,key);assert.ok(result.taskId);await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='completed');
  const run=(await f.store.read()).chatOperations!.find(op=>op.conversationId===result.taskId&&op.workRun)!.workRun!;
+ const db=await f.store.read(),operation=db.chatOperations!.find(op=>op.operationId===args.operationId)!,trace=db.contextTraces.find(trace=>trace.requestId===operation.requestId)!.executionSteps!;assert.equal(trace.filter(step=>step.status==='rejected').length,1,'only the initial unselected delegation needs repair; omitted query is a successful scoped history read');assert.equal(trace.filter(step=>step.tool==='read_context'&&step.status==='returned').length,2);
  assert.deepEqual(run.workflow!.spec.steps.map(step=>step.id),['save_existing']);assert.equal(run.notionArticleSource!.messageId,f.messageId);assert.equal(run.notionArticleSource!.conversationId,f.taskId);assert.equal(run.notionReceipt?.state,'verified');assert.equal(run.notionReceipt?.expectedRawDigest,createHash('sha256').update(f.article).digest('hex'));
  assert.deepEqual(f.counts(),{writes:1,workerCalls:0,title:f.marker,body:'青色42\n只保存这一份。'});assert.equal(calls,4);
  await service.dispatch(a,args,key);await service.state(a);await service.resume(a,key);assert.equal(f.counts().writes,1);assert.equal(calls,4);await assert.rejects(()=>service.task(b,result.taskId!),/不存在/);
+});
+
+test('an omitted-query history window never auto-selects its sole complete assistant reply as an article',async()=>{
+ const f=await querySelectedSaveFixture();let calls=0;
+ await f.store.mutate(db=>{const main=db.conversations.find(conversation=>conversation.id===f.taskId)!;main.messages.splice(2,0,...Array.from({length:4},(_,index)=>({id:`queryless-filler-${index}`,role:'user' as const,content:`普通合成补充${index}`,createdAt:'2026-10-29T00:00:00Z'})));});
+ const service=f.service(messages=>{
+  calls++;
+  if(calls===2){const read=JSON.parse(messages.at(-1)!.content!);assert.equal(read.status,'used');assert.equal(read.hasMore,false);assert.equal(read.items.filter((item:any)=>item.role==='assistant').length,1);assert.equal(read.items.find((item:any)=>item.role==='assistant').id,f.messageId);assert.ok(read.items.every((item:any)=>item.truncated===false));}
+  if(calls===3){assert.match(messages.at(-1)!.content!,/TOOL_INPUT_REPAIR/);return answer('需要确认保存哪篇原文？');}
+  return {...answer(''),toolCalls:[{id:`queryless-source-${calls}`,type:'function',function:calls===1?{name:'read_context',arguments:'{}'}:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'保存原文',instruction:'把这篇现有原文保存到 Notion，不重写。',executorId:'general',featureIds:[]})}}]};
+ });
+ const result=await service.dispatch(a,{...input('operation_queryless_not_selected',`把刚才标题为 ${f.marker} 的原文保存到 Notion，不重写。`),outputDestination:'chat'},key);assert.equal(result.taskId,undefined);assert.equal(calls,3);assert.equal(f.counts().writes,0);assert.equal(f.counts().workerCalls,0);
 });
 
 for(const scenario of ['ambiguous','paged','truncated','ineligible','foreign-provenance','no-match'] as const)test(`keyword source selection refuses ${scenario} results instead of guessing an article`,async()=>{
@@ -3490,6 +3503,41 @@ test('source provenance still verifies after JSON persistence reorders its objec
 test('a bare save-to-Notion follow-up on the exact task reuses its existing body with no rewrite',async()=>{
  const f=await lateSaveFixture();await f.service.direct(a,f.taskId,{operationId:'operation_bare_late_save',text:'保存到Notion。',outputDestination:'chat'},key);await f.service.resume(a,key);
  await waitFor(async()=>(await f.service.task(a,f.taskId)).jobs.at(-1)!.state==='completed');assert.equal(f.counts().body,f.expectedBody);assert.equal(f.counts().writes,1);assert.equal(f.counts().workerCalls,0);
+});
+
+for(const alreadyCompleted of [false,true])for(const missingDigest of [false,true])for(const missingLink of [false,true])test(`manual exact readback synchronizes a real save-only workflow and checkpoint; completed job=${alreadyCompleted}, old missing digest=${missingDigest}, old missing link=${missingLink}`,async()=>{
+ const f=await lateSaveFixture({fromMain:true}),accepted=await f.service.dispatch(a,{...input('operation_workflow_consistency_seed','把这篇现有原文保存到 Notion，不重写。'),outputDestination:'chat'},key);await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,accepted.taskId!)).jobs[0].state==='completed');await f.service.state(a);
+ let operationId='';
+ await f.store.mutate(db=>{const op=db.chatOperations!.find(op=>op.conversationId===accepted.taskId&&op.workRun)!,run=op.workRun!,workflow=run.workflow!,task=db.conversations.find(task=>task.id===accepted.taskId)!;operationId=op.id;
+  op.status=alreadyCompleted?'completed':'failed';run.state=alreadyCompleted?'completed':'failed';run.resultOutcome=alreadyCompleted?'completed':'partial';run.failureCode=alreadyCompleted?undefined:'task_execution_failed';workflow.steps[0]={id:'save_existing',state:'failed',summary:'旧保存核对失败。'};workflow.phase='failed';workflow.sequence++;
+  const cp=run.steps!.find(step=>step.tool===`workflow:${workflow.id}:save_existing`)!;cp.state='failed';(cp.output as any).outcome='failed';if(missingDigest)delete (cp.output as any).expectedBodyDigest;if(missingLink)delete (cp.output as any).notionCheckpointKey;
+  task.workPaused=!alreadyCompleted;task.workPauseReason=alreadyCompleted?undefined:'partial';
+ });
+ const before=await f.store.read(),beforeMain=before.conversations.find(task=>task.id===f.taskId)!.messages.length,beforeTask=before.conversations.find(task=>task.id===accepted.taskId)!.messages.length,counts=f.counts();
+ assert.equal((await f.service.task(a,accepted.taskId!)).jobs[0].workflow!.phase,'failed');
+ await f.service.reconcileNotionResults(a,key);assert.equal((await f.service.task(a,accepted.taskId!)).jobs[0].workflow!.phase,'failed','ordinary polling does not silently repair old task history');
+ await assert.rejects(()=>f.service.verifyNotionResult(b,accepted.taskId!,key),/不存在/);await f.service.verifyNotionResult(a,accepted.taskId!,key);
+ const db=await f.store.read(),run=db.chatOperations!.find(op=>op.id===operationId)!.workRun!,detail=await f.service.task(a,accepted.taskId!);
+ assert.equal(run.state,'completed');assert.equal(run.resultOutcome,'completed');assert.equal(run.workflow!.phase,'completed');assert.equal(run.workflow!.steps[0].state,'completed');assert.equal(detail.jobs[0].workflow!.phase,'completed');assert.deepEqual(detail.jobs[0].workflow!.steps.map(step=>step.state),['completed']);
+ const cp=run.steps!.find(step=>step.tool===`workflow:${run.workflow!.id}:save_existing`)!;assert.equal(cp.state,'completed');assert.equal((cp.output as any).outcome,'completed');assert.equal((cp.output as any).expectedBodyDigest,run.notionReceipt!.expectedDigest);assert.equal((cp.output as any).notionCheckpointKey,run.notionReceipt!.checkpointKey);assert.deepEqual(f.counts(),counts,'read-only finalization performs no model, knowledge or write');
+ if(alreadyCompleted){assert.equal(db.conversations.find(task=>task.id===accepted.taskId)!.messages.length,beforeTask,'consistency-only repair adds no duplicate success reply');assert.equal(db.conversations.find(task=>task.id===f.taskId)!.messages.length,beforeMain);}
+ const afterMain=db.conversations.find(task=>task.id===f.taskId)!.messages.length,afterTask=detail.conversation.messages.length;await f.service.verifyNotionResult(a,accepted.taskId!,key);await f.service.reconcileNotionResults(a,key);assert.equal((await f.service.task(a,accepted.taskId!)).conversation.messages.length,afterTask);assert.equal((await f.store.read()).conversations.find(task=>task.id===f.taskId)!.messages.length,afterMain);assert.deepEqual(f.counts(),counts);
+});
+
+test('manual readback repairs only the saved stage, corrects an old false whole-task success, and never starts its unfinished model stage',async()=>{
+ const f=fixture(),parentId='a'.repeat(32),pageId='c'.repeat(32),body='已完成的合成方案正文。';let writes=0,models=0,savedBody='';
+ await f.store.mutate(db=>db.knowledgeConnections.push({id:'manual-wf-notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'fixture',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'manual-wf-grant',userId:'a',authorizedAt:'now',parentId}}));
+ const documents=new NotionDocuments(f.store,{readDocument:async()=>({text:savedBody||'保存目录'}),callDocumentTool:async(_w:string,_c:string,_g:string,_u:string,_n:string,args:any,before?:()=>Promise<void>)=>{await before?.();writes++;savedBody=args.pages[0].content;return {pages:[{id:pageId}]};}} as unknown as NotionMcpService);
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge')},{contextMode:'adaptive',notionDocuments:documents,modelCall:async model=>{
+  if(model.id==='router')return {...answer(''),toolCalls:[{id:'manual-wf-plan',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'多阶段保存验收',instruction:'写成方案并保存到Notion，再分析落地步骤，不查询资料。',executorId:'general',featureIds:[],workflow:{version:1,steps:[{id:'draft',title:'写方案',kind:'model',instruction:'写完整方案。',inputs:[]},{id:'save',title:'保存方案',kind:'notion',instruction:'保存现有方案。',inputs:['draft']},{id:'followup',title:'分析落地',kind:'model',instruction:'分析下一步。',inputs:['save']}]}})}}]};
+  models++;return answer(JSON.stringify(models===1?{outcome:'completed',content:body,summary:'方案完成。'}:{outcome:'failed',content:'后续分析尚未完成。',summary:'后续分析尚未完成。'}));
+ }});
+ const accepted=await service.dispatch(a,{...input('operation_manual_multistage','写成方案并保存到Notion，再分析落地步骤，不查询资料。'),outputDestination:'chat'},key);await service.resume(a,key);await waitFor(async()=>(await service.task(a,accepted.taskId!)).jobs[0].state==='failed');assert.equal(writes,1);assert.equal(models,2);await service.state(a);
+ await f.store.mutate(db=>{const op=db.chatOperations!.find(op=>op.conversationId===accepted.taskId&&op.workRun)!,run=op.workRun!;op.status='completed';run.state='completed';run.resultOutcome='completed';run.failureCode=undefined;run.workflow!.steps[1]={id:'save',state:'failed',summary:'旧保存核对失败。'};run.workflow!.phase='failed';const cp=run.steps!.find(cp=>cp.tool===`workflow:${run.workflow!.id}:save`)!;cp.state='failed';(cp.output as any).outcome='failed';});
+ const before=await f.store.read(),old=before.chatOperations!.find(op=>op.conversationId===accepted.taskId&&op.workRun)!.workRun!,followup=structuredClone(old.workflow!.steps[2]);
+ await service.verifyNotionResult(a,accepted.taskId!,key);
+ const db=await f.store.read(),run=db.chatOperations!.find(op=>op.conversationId===accepted.taskId&&op.workRun)!.workRun!,detail=await service.task(a,accepted.taskId!);
+ assert.equal(run.workflow!.steps[1].state,'completed');assert.deepEqual(run.workflow!.steps[2],followup);assert.equal(run.workflow!.phase,'failed');assert.equal(run.state,'failed');assert.equal(run.resultOutcome,'partial');assert.equal(detail.jobs[0].workflow!.steps[1].state,'completed');assert.match(detail.conversation.messages.at(-1)!.content,/还有其他步骤未完成/);assert.equal(writes,1);assert.equal(models,2);assert.equal(detail.conversation.workPaused,true);
 });
 
 for(const batch of [false,true])test(`a missing scoped Notion destination is corrected before any wrong task is queued; batch=${batch}`,async()=>{

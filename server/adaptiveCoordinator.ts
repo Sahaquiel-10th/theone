@@ -52,11 +52,13 @@ export function initialCoordinatorToolNames(input:{text:string;available:string[
  return input.available.filter(name=>selected.has(name));
 }
 export type ContextRead={query:string;taskId?:string;messageId?:string;beforeMessageId?:string;offset?:number};
-export const contextReadSchema={type:'object',additionalProperties:false,properties:{query:{type:'string',maxLength:160},taskId:{type:'string',maxLength:160},messageId:{type:'string',maxLength:160},beforeMessageId:{type:'string',maxLength:160},offset:{type:'integer',minimum:0,maximum:1000000}},required:['query']};
+export const contextReadSchema={type:'object',additionalProperties:false,properties:{query:{type:'string',maxLength:160,default:''},taskId:{type:'string',maxLength:160},messageId:{type:'string',maxLength:160},beforeMessageId:{type:'string',maxLength:160},offset:{type:'integer',minimum:0,maximum:1000000}}};
 export function validateContextRead(value:unknown):ContextRead{
- const v=value as ContextRead;
- if(!v||typeof v!=='object'||Array.isArray(v)||Object.keys(v).some(k=>!['query','taskId','messageId','beforeMessageId','offset'].includes(k))||typeof v.query!=='string'||v.query.length>160||['taskId','messageId','beforeMessageId'].some(k=>v[k as keyof ContextRead]!==undefined&&(typeof v[k as keyof ContextRead]!=='string'||!(v[k as keyof ContextRead] as string).length||(v[k as keyof ContextRead] as string).length>160))||v.offset!==undefined&&(!Number.isInteger(v.offset)||v.offset<0||v.offset>1000000)||v.messageId&&v.beforeMessageId||v.offset!==undefined&&!v.messageId)throw new OrchestrationInputError('read_context 需要 query 字符串；全文分段用 messageId、offset，向前翻页用 beforeMessageId，不混用。');
- return v;
+ const v=value as Partial<ContextRead>;
+ if(!v||typeof v!=='object'||Array.isArray(v)||![Object.prototype,null].includes(Object.getPrototypeOf(v))||Reflect.ownKeys(v).some(k=>typeof k!=='string'||!['query','taskId','messageId','beforeMessageId','offset'].includes(k)))throw new OrchestrationInputError('read_context 只接受普通对象；query 可省略或填写字符串，不能加入额外字段。');
+ const query=Object.hasOwn(v,'query')?v.query:'';
+ if(typeof query!=='string'||query.length>160||['taskId','messageId','beforeMessageId'].some(k=>v[k as keyof ContextRead]!==undefined&&(typeof v[k as keyof ContextRead]!=='string'||!(v[k as keyof ContextRead] as string).length||(v[k as keyof ContextRead] as string).length>160))||v.offset!==undefined&&(!Number.isInteger(v.offset)||v.offset<0||v.offset>1000000)||v.messageId&&v.beforeMessageId||v.offset!==undefined&&!v.messageId)throw new OrchestrationInputError('read_context 的 query 可省略或填写字符串；全文分段用 messageId、offset，向前翻页用 beforeMessageId，不混用。');
+ return {...v,query};
 }
 /** Caller passes only a freshly authorized conversation and an immutable request
  * boundary. No global database search or text-as-instruction promotion. */

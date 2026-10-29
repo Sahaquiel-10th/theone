@@ -86,7 +86,7 @@ import {taskContinuation,actionableTaskSupplement,supersedeQueuedSupplements,sup
 import {selectedNotionVerification} from './notionVerificationSelection.js';
 import {createWorkflowRun,workflowSpecSchema,validateWorkflowSpec,workflowProgress,type WorkflowSpec} from './taskWorkflow.js';
 import {resolveTaskWorkflow,WorkflowPlanningError} from './workflowPlanning.js';
-import {executeWorkflowStages} from './workflowExecution.js';
+import {executeWorkflowStages,recoverVerifiedNotionWorkflow} from './workflowExecution.js';
 
 export type WorkScope = { workspaceId: string; userId: string };
 export type DispatchInput = {
@@ -377,7 +377,10 @@ export class CoordinatorService {
       const automatic=op.status==='pending'&&job?.failureCode==='notion_verification_pending';
       const receipt=job?.notionReceipt;
       const selected=selectedNotionVerification(op)||manual?.operationId===op.id&&['failed','completed'].includes(op.status)&&receipt?.state==='verified'&&receipt.expectedDigest===manual.expectedDigest&&receipt.digest===manual.digest&&receipt.checkpointKey===manual.checkpointKey;
-      if(!own(op,s)||!job||!task||job.state!=='failed'||!automatic&&!selected||task.workPauseReason==='user_stopped'||notionVerificationActive(job)||['scheduled','checking'].includes(receipt?.verification?.state??''))continue;
+      // Only this fresh explicit readback may repair an old completed-job /
+      // failed-workflow split. Ordinary polling never scans or rewrites it.
+      const completedWorkflowRepair=Boolean(manual?.operationId===op.id&&job?.state==='completed'&&job.workflow&&job.workflow.phase!=='completed');
+      if(!own(op,s)||!job||!task||job.state!=='failed'&&!completedWorkflowRepair||!automatic&&!selected||task.workPauseReason==='user_stopped'||notionVerificationActive(job)||['scheduled','checking'].includes(receipt?.verification?.state??''))continue;
       if(!receipt||receipt.state!=='verified'&&receipt.verification?.state!=='exhausted')continue;
       const required=[...(job.contract?.requiredTools??[]),...(job.contract?.requiredFeatureIds??[]).map(id=>{const index=job.skills.findIndex(skill=>skill.id===id);return index<0?'unavailable_required_feature':`feature_${index}`;})];
       let authorizationChanged=false;
@@ -390,10 +393,13 @@ export class CoordinatorService {
         job.state='queued';job.failureCode=undefined;job.error=undefined;job.userReport=saveConfirmed?'保存已经核对，正在继续剩余步骤。':'保存核对暂未完成，正在整理已有成果。';
         task.workPaused=false;task.workPauseReason=undefined;op.updatedAt=at();continue;
       }
-      const completed=saveConfirmed&&!authorizationChanged?verifiedNotionCompletion(receipt,job.steps??[],required,{scopeId:op.id}):undefined;
+      const workflowProof=job.workflow&&saveConfirmed&&!authorizationChanged?recoverVerifiedNotionWorkflow(job,{...s,operationId:op.id}):undefined;
+      if(workflowProof?.changed){job.workflow=workflowProof.workflow;job.steps=workflowProof.steps;op.updatedAt=at();}
+      const completed=saveConfirmed&&!authorizationChanged&&(!job.workflow||workflowProof?.complete)?verifiedNotionCompletion(receipt,job.steps??[],required,{scopeId:op.id}):undefined;
+      if(completedWorkflowRepair&&completed){job.notionVerificationSelection=undefined;continue;}
       // Explicit legacy reconciliation confirms only its selected save. An
       // unfinished/cancelled old job must not be promoted or silently resumed.
-      if(selected&&saveConfirmed&&!completed){job.notionVerificationSelection=undefined;continue;}
+      if(selected&&saveConfirmed&&!completed&&!completedWorkflowRepair){job.notionVerificationSelection=undefined;continue;}
       const authorizationBlocked=authorizationChanged||receipt.verification?.lastReason==='authorization';
       const result=completed?parseTaskOutcome(completed):{outcome:'partial' as const,summary:authorizationBlocked?'Notion 连接或保存授权已变化，需要先恢复原连接。':saveConfirmed?'Notion 保存已核对，其余步骤还没有全部完成。':'Notion 保存仍未完整核对，原稿和要求都保留着。',content:authorizationBlocked?'Notion 连接或保存授权已变化，暂时不能继续核对原稿。请先恢复原连接，再核对保存结果；不会重发保存请求。':saveConfirmed?'Notion 里的内容已核对保存，但这件事还有其他步骤未完成。可以接着处理未完成的部分；不会重复新建原稿。':'内容已经交给 Notion，但这轮仍没能完整核对保存结果。请先打开原稿确认内容，再告诉我接着处理哪一部分；不会重复创建或覆盖。'};
       const mid=uid('msg');

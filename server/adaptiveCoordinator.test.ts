@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {CoordinatorService} from './coordinatorService.js';
 import {dispatchFixture,evalScope,evalAnswer} from '../scripts/eval/dispatchFixture.js';
-import {readCoordinatorContext,recentCoordinatorMessages,validateContextRead,initialCoordinatorToolNames,requiresCoordinatorDelivery} from './adaptiveCoordinator.js';
+import {readCoordinatorContext,recentCoordinatorMessages,validateContextRead,initialCoordinatorToolNames,requiresCoordinatorDelivery,contextReadSchema} from './adaptiveCoordinator.js';
 import {inputProfile} from './oneContext.js';
 import {mkdtemp,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -182,6 +182,17 @@ test('context paging is explicit and recent window never truncates the current f
  for(const value of [{query:'',offset:-1},{query:'',messageId:'x',beforeMessageId:'y'},{query:'',workspaceId:'foreign-workspace'}])assert.throws(()=>validateContextRead(value));
  assert.ok(!initialCoordinatorToolNames({text:'天气',available:['web_search','generate_image']}).includes('generate_image'));
 });
+test('an omitted context query normalizes to the same empty-query read without mutating caller arguments',async()=>{
+ const raw={},normalized=validateContextRead(raw);assert.deepEqual(normalized,{query:''});assert.deepEqual(raw,{});assert.equal(contextReadSchema.properties.query.default,'');assert.equal('required' in contextReadSchema,false);
+ assert.deepEqual(validateContextRead({messageId:'source',offset:8000}),{messageId:'source',offset:8000,query:''});assert.deepEqual(validateContextRead({taskId:'own-task'}),{taskId:'own-task',query:''});
+ const f=dispatchFixture(),main=(await f.store.read()).conversations.find(conversation=>conversation.coordinatorMain)!;
+ assert.deepEqual(readCoordinatorContext(main,normalized),readCoordinatorContext(main,{query:''}));
+ assert.deepEqual(readCoordinatorContext(main,validateContextRead({messageId:main.messages[0].id,offset:1})),readCoordinatorContext(main,{query:'',messageId:main.messages[0].id,offset:1}));
+});
+test('optional context query still rejects non-JSON records, unknown fields and explicitly invalid query values',()=>{
+ for(const raw of [null,undefined,[],1,'',true,new Date(),new Map(),Object.create({query:'inherited'}),{query:null},{query:undefined},{query:1},{query:false},{query:[]},{query:{}},{query:'x'.repeat(161)},{unknown:true},{workspaceId:'foreign'},{[Symbol('query')]:''},{offset:0},{messageId:'a',beforeMessageId:'b'},{messageId:'a',offset:-1},{taskId:'a',offset:1}])assert.throws(()=>validateContextRead(raw));
+ assert.equal(validateContextRead({query:'x'.repeat(160)}).query.length,160);
+});
 test('a clipped original task cannot be continued until its remaining original text is read',async()=>{
  const f=dispatchFixture();await f.store.mutate(d=>{d.conversations.find(c=>c.id==='old-task-0')!.messages[0].content='合成原要求'.repeat(1700)+'最后限制：不得覆盖已有文件，人数42，预算900。';});let calls=0;
  const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',modelCall:async(_m,messages)=>{
@@ -194,10 +205,10 @@ test('a clipped original task cannot be continued until its remaining original t
  }});
  const result=await service.dispatch(evalScope,{operationId:'long_bound_adaptive_20261023',boundTaskId:'old-task-0',text:'继续原任务。'},key);assert.equal(result.taskId,'old-task-0');assert.equal(calls,4);
 });
-test('empty history lookup starts before the initial window and revoked Key blocks the read',async()=>{
+for(const args of [{query:''},{}])test(`empty history lookup starts before the initial window and revoked Key blocks the read; omitted=${!('query' in args)}`,async()=>{
  const f=dispatchFixture();let calls=0;
  const service=new CoordinatorService(f.store,knowledge,{contextMode:'adaptive',modelCall:async(_m,messages)=>{
-  calls++;if(calls===1)return call('read_context',{query:''});
+  calls++;if(calls===1)return call('read_context',args);
   const result=JSON.parse(messages.at(-1)!.content!);assert.equal(result.items.at(-1).id,'history-18');return evalAnswer('已读取更早的对话。');
  }});
  await service.dispatch(evalScope,{operationId:'older_window_adaptive_20261023',text:'看看更早的对话，只回答。'},key);
