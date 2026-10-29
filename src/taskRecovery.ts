@@ -2,9 +2,9 @@ export type NotionVerificationView = {state:'scheduled'|'checking'|'exhausted';v
 /** Public display fields only: never expose a server verification lease. */
 export type NotionReceiptView = {state:string;url?:string;error?:string;delivery?:string;verification?:NotionVerificationView};
 export const notionVerificationActive=(receipt?:NotionReceiptView)=>Boolean(receipt&&receipt.state!=='verified'&&!['not_sent','rejected'].includes(receipt.delivery??'')&&['scheduled','checking'].includes(receipt.verification?.state??''));
-export function notionVerificationPresentation(receipt:NotionReceiptView){
+export function notionVerificationPresentation(receipt:NotionReceiptView,reviewWorkflow=false){
  const verification=receipt.verification,active=notionVerificationActive(receipt);
- if(receipt.state==='verified')return {active:false,canVerify:false,message:'Notion 保存结果已回读核对。'};
+ if(receipt.state==='verified')return {active:false,canVerify:reviewWorkflow,message:reviewWorkflow?'Notion 内容已核对，任务步骤仍需核对；不会重新写入。':'Notion 保存结果已回读核对。'};
  if(receipt.delivery==='not_sent')return {active:false,canVerify:false,message:'这次保存还没有发出。请先检查 Notion 的连接和权限，再告诉我继续；不会自动重发保存请求。'};
  if(receipt.delivery==='rejected')return {active:false,canVerify:false,message:'Notion 没有接受这次保存。请先检查连接和权限，再告诉我继续；不会自动重发保存请求。'};
  if(active)return {active,canVerify:false,message:verification?.state==='checking'
@@ -28,6 +28,14 @@ export function notionReceiptForReview<T extends {notionReceipt?: NotionReceiptV
   const receipts=jobs.filter(job=>job.notionReceipt);
   return receipts.filter(job=>job.notionReceipt!.state!=='verified'&&!['not_sent','rejected'].includes(job.notionReceipt!.delivery??'')).at(-1)
     ??receipts.filter(job=>job.notionReceipt!.state!=='verified').at(-1)??receipts.at(-1);
+}
+
+/** A terminal job can retain an old workflow projection after readback. This
+ * exposes only the existing read-only endpoint; the server still proves every
+ * checkpoint before repairing progress, and never starts another step. */
+export function notionWorkflowNeedsReview(jobs:{state:string;notionReceipt?:NotionReceiptView;workflow?:{phase:string}}[]){
+ const job=notionReceiptForReview(jobs);
+ return Boolean(job&&['completed','failed'].includes(job.state)&&job.notionReceipt?.state==='verified'&&job.workflow&&job.workflow.phase!=='completed');
 }
 
 /** Only offer a first start for the saved latest handoff, never for an

@@ -1,6 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {taskRecovery,notionReceiptForReview,unstartedLocalInput,notionVerificationActive,notionVerificationPresentation,type NotionReceiptView} from './taskRecovery';
+import {taskRecovery,notionReceiptForReview,notionWorkflowNeedsReview,unstartedLocalInput,notionVerificationActive,notionVerificationPresentation,type NotionReceiptView} from './taskRecovery';
+
+test('only a terminal verified save with unresolved workflow exposes read-only progress repair',()=>{
+ const saved={state:'completed',notionReceipt:{state:'verified',url:'https://www.notion.so/original'},workflow:{phase:'failed'}};
+ assert.equal(notionWorkflowNeedsReview([saved]),true);
+ assert.equal(notionWorkflowNeedsReview([{...saved,state:'failed'}]),true);
+ for(const state of ['queued','running','prepared','cancelled','interrupted'])assert.equal(notionWorkflowNeedsReview([{...saved,state}]),false);
+ assert.equal(notionWorkflowNeedsReview([{...saved,workflow:{phase:'completed'}}]),false);
+ assert.equal(notionWorkflowNeedsReview([{...saved,workflow:undefined}]),false);
+ assert.equal(notionWorkflowNeedsReview([{...saved,notionReceipt:{state:'uncertain'}}]),false);
+ assert.equal(notionWorkflowNeedsReview([{state:'failed',notionReceipt:{state:'uncertain',url:'https://www.notion.so/earlier'}},saved]),false,'an earlier unresolved write retains priority');
+ assert.equal(notionWorkflowNeedsReview([]),false);
+ assert.equal(notionVerificationPresentation(saved.notionReceipt).canVerify,false);
+ assert.equal(notionVerificationPresentation(saved.notionReceipt,true).canVerify,true);
+});
 
 test('a saved local handoff has a first-start entry, never a blind replay of an existing execution',()=>{
  const messages=[{id:'input',role:'user'},{id:'result',role:'assistant'}];

@@ -12,7 +12,7 @@ const {NotionReceiptNotice}=await import('./DocumentDestination');
 css.deregister();
 let calls=0;
 const api=(async()=>{calls++;throw Error('Rendering must not submit any operation.');}) as typeof Api;
-const render=(receipt:NotionReceiptView)=>renderToStaticMarkup(createElement(NotionReceiptNotice,{api,taskId:'owned-task',receipt,onRefresh:async()=>{}}));
+const render=(receipt:NotionReceiptView,reviewWorkflow=false)=>renderToStaticMarkup(createElement(NotionReceiptNotice,{api,taskId:'owned-task',receipt,reviewWorkflow,onRefresh:async()=>{}}));
 
 test('automatic Notion verification renders live progress without a write, continue or manual readback button',()=>{
  for(const state of ['scheduled','checking'] as const){
@@ -36,6 +36,14 @@ test('exhausted readback offers only a safe read action while authorization or u
 
 test('verified receipt removes the pending notice even if old checking metadata survives',()=>{
  assert.equal(render({state:'verified',verification:{state:'checking',version:9,attempt:2}}),'');
+ assert.equal(calls,0);
+});
+
+test('a verified save with terminal workflow divergence keeps a read-only progress-check entry without submitting on render',()=>{
+ const html=render({state:'verified',url:'https://www.notion.so/original'},true);
+ assert.match(html,/Notion 内容已核对，任务步骤仍需核对/);
+ assert.match(html,/核对任务进度（不重写）/);
+ assert.doesNotMatch(html,/开始处理|重新处理|继续处理|aria-busy="true"/);
  assert.equal(calls,0);
 });
 

@@ -47,7 +47,7 @@ import {ExecutionReconcileStop} from './ExecutionReconcileStop';
 import {TaskTransferRail, dismissibleReceiptIds, visibleTransfers, transferSettled, type Transfer} from './TaskTransferRail';
 import {taskCategory,taskUiOutcome,taskEntrySelection} from './taskAttention';
 import {taskRetryScope} from './taskRetryScope';
-import {notionReceiptForReview,unstartedLocalInput} from './taskRecovery';
+import {notionReceiptForReview,notionWorkflowNeedsReview,unstartedLocalInput} from './taskRecovery';
 import {taskConversationView} from './taskConversationView';
 import {friendlyExecutionProgress,readCapturedNotices} from './friendlyTaskStatus';
 import {internalTaskId} from './taskLink';
@@ -1068,7 +1068,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         if(recovery.kind==='review_image'&&!(typeof price==='number'&&(price>0||price===0&&recovery.welcomeStep==='page'))){setError('这次图片价格还没确认，请稍后刷新任务再试。');return;}
         if(confirm(`${actionLabel} · ${title}\n本轮范围：${latest.slice(0,480)}\n${recovery.welcomeStep?`只补未完成的步骤，最多使用 ${price!.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力，按实际用量结算；已保存的说明和图片会复用。`:recovery.kind==='review_image'?`这次新生成一张图片，使用 ${price!.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力；已有结果和历史都会保留。`:canAdjustBudget?`本次继续最多使用 ${retryBudget} 电力，不含以前已用的电力，按实际用量结算。将沿用原附件和功能，只补未完成部分。`:'沿用原上限开始处理最新要求，不重复已有成果。'}`))void coordinator.retryTask(id,canAdjustBudget?retryBudget:undefined,lastJob?.id).then(()=>refresh()).catch(e=>setError(e.message));
       }}>{retrying?'正在恢复…':actionLabel}</button>:null}
-      {recovery?.kind==='review_notion'?<NotionReceiptNotice api={api} taskId={id} receipt={notionReceiptForReview(detail?.jobs||[])?.notionReceipt} onRefresh={()=>coordinator.load(id,true)} />:null}
+      {recovery?.kind==='review_notion'?<NotionReceiptNotice api={api} taskId={id} receipt={notionReceiptForReview(detail?.jobs||[])?.notionReceipt} reviewWorkflow={notionWorkflowNeedsReview(detail?.jobs||[])} onRefresh={()=>coordinator.load(id,true)} />:null}
 {localNeedsAction?<><p>{local.status==='cancelled'?'这轮已经停下，不会自己再启动。':'这轮本机操作还没完成。'}先看看操作记录；想接着做，可以回到这件事补一句要求，ONE 会先核对已有结果。</p><button type="button" onClick={()=>{setSelectedExecutionId(local.id);setExpandedExecutionId(local.id);setRevealExecutionId(local.id);void loadLatestExecution(id,local.id);}}>查看本轮操作</button><button type="button" onClick={()=>prepareTaskReview(id)}>核对后继续这件事</button></>:null}
       {!detail?<button type="button" onClick={()=>void coordinator.load(id).catch(e=>setError(e.message))}>查看恢复方式</button>:null}
     </section>;
@@ -2208,7 +2208,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         onDraftChange={(id,text)=>setThingDrafts(previous=>({...previous,[id]:text}))}
         onExecuteDraft={thingDestination === 'notion' ? undefined : (id,text,source)=>executeDraft(text,source,id)}
         sendLabel={thingDestination === 'notion' ? '写到 Notion' : thingDestination === 'local' ? '本机执行' : '发送'}
-        destinationPicker={!demo.enabled ? <><NotionReceiptNotice key={thingId} api={api} taskId={thingId} receipt={notionReceiptForReview(coordinator.details[thingId]?.jobs||[])?.notionReceipt} onRefresh={()=>coordinator.load(thingId,true)} /><DocumentDestinationPicker api={api} value={thingDestination} onChange={destination=>setThingDestinations(old=>({...old,[thingId]:destination}))} localDisabled={taskStatusUnavailable || executionBusy || preparingExecution} localDisabledHint={preparingExecution?'正在准备本机执行，请稍候':executionBusy?'本机任务结束后可保存':taskStatusUnavailable?'暂未确认本机连接，可到设置检查':undefined} onLocalSettings={()=>{setAccountSection('device');openSurface('account');}} onSettings={() => openSurface('knowledge')} /></> : undefined}
+        destinationPicker={!demo.enabled ? <><NotionReceiptNotice key={thingId} api={api} taskId={thingId} receipt={notionReceiptForReview(coordinator.details[thingId]?.jobs||[])?.notionReceipt} reviewWorkflow={notionWorkflowNeedsReview(coordinator.details[thingId]?.jobs||[])} onRefresh={()=>coordinator.load(thingId,true)} /><DocumentDestinationPicker api={api} value={thingDestination} onChange={destination=>setThingDestinations(old=>({...old,[thingId]:destination}))} localDisabled={taskStatusUnavailable || executionBusy || preparingExecution} localDisabledHint={preparingExecution?'正在准备本机执行，请稍候':executionBusy?'本机任务结束后可保存':taskStatusUnavailable?'暂未确认本机连接，可到设置检查':undefined} onLocalSettings={()=>{setAccountSection('device');openSurface('account');}} onSettings={() => openSurface('knowledge')} /></> : undefined}
         onSelect={id=>void selectThing(id)} onSend={continueThing}
         onWorkbench={id=>{if(preview.enabled)closeWorkLayer();else void openConversation(conversations.find(item=>item.id===id)!);setResultLampOpen(false);}}
         onRemove={coordinator.enabled?removeCoordinatorTask:undefined}
