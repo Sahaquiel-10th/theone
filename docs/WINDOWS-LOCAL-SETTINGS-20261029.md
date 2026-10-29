@@ -1,4 +1,4 @@
-# Windows 本机工作设置修复（0.4.28）
+# Windows 本机工作设置修复（0.4.28 / 0.4.29）
 
 ## 现场与根因
 
@@ -28,3 +28,11 @@ Windows 实现只读目录查询与显式原生目录选择；GET 不弹窗，�
 本地 Windows 0.4.28 签名清单和双端制品已校验；保留的基清单与当前公开清单一致。网站 CI、生产部署和 Windows 包线上发布分别核对，不凭提交推送判断已上线。
 
 Windows 真机待办：更新后确认实际驻留 0.4.28；选择含中文的目录；查询与取消更换保留原目录；检查工具显示内置文件工具；新任务只在所选目录创建并回读一份隔离文件；再次任务和重连不重复要求选择。没有设备时不勾选上述验收，也不在真实用户资料上重跑任务。
+
+## 上线复验与中文目录补修
+
+0.4.28 已发布，网站配套提交 235f715 全部 CI（包括 Windows Server 2025 原生 Go/socket 测试）及生产部署通过；服务器 current 确认为该提交，active、本地/公网健康均为 ok。公开清单与本地签名清单一致；Windows EXE SHA-256 为 19682131da211da5147a914b7c91acf731b2f3fd0ab9afbd6afadf8d41f6d93b；Mac 0.4.27 原字节保留。
+
+最后只读复审发现原生选择器的 PowerShell stdout 没有指定 UTF-8，而 Go 按 UTF-8 使用路径；非 UTF-8 系统编码下中文路径可能损坏。参考 [Microsoft Console.OutputEncoding](https://learn.microsoft.com/en-us/dotnet/api/system.console.outputencoding?view=netframework-4.8.1)。这不是已复现刘爽电脑的编码故障，但属于应修复的兼容性缺口。
+
+另发 Windows 0.4.29，显式使用无 BOM UTF-8 stdout；Windows CI 通过真实 powershell.exe 回传真实中文/空格目录，验证字节、完整路径及目录可用性，不弹 GUI。最终真机复测以 0.4.29 为准，原生选择窗口仍待用户取回设备后验收。不得覆盖已公开的 0.4.28 同名制品。

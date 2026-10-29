@@ -1476,7 +1476,7 @@ func saveWorkspace(deviceID, workspace string) error {
 
 func chooseWorkspace() (string, error) {
 	script := `Add-Type -AssemblyName System.Windows.Forms; $owner = New-Object System.Windows.Forms.Form; $owner.TopMost = $true; $owner.ShowInTaskbar = $false; $owner.WindowState = 'Minimized'; $owner.Show(); $dialog = New-Object System.Windows.Forms.FolderBrowserDialog; $dialog.Description = '选择 ONE 工作文件夹。ONE 默认在这里读取和按要求创建、修改文件，以后可以在设置里更换。不代表全盘授权。'; $dialog.ShowNewFolderButton = $true; $result = $dialog.ShowDialog($owner); $owner.Close(); if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($dialog.SelectedPath) }`
-	output, err := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-STA", "-Command", script).Output()
+	output, err := workspacePickerOutput(script)
 	selected := strings.TrimSpace(string(output))
 	if err != nil || selected == "" {
 		return "", errors.New("没有选择本地文件夹")
@@ -1485,6 +1485,13 @@ func chooseWorkspace() (string, error) {
 		return "", errors.New("选择的本地文件夹不可用")
 	}
 	return selected, nil
+}
+
+func workspacePickerOutput(script string) ([]byte, error) {
+	// Windows PowerShell otherwise writes paths using the console's legacy code
+	// page. Go treats the returned path as UTF-8, so require UTF-8 without a BOM.
+	script = `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ` + script
+	return exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-STA", "-Command", script).Output()
 }
 
 func approve(title, message string) bool {

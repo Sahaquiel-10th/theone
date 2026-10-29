@@ -16,9 +16,30 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 )
+
+func TestWindowsPowerShellWorkFolderOutputPreservesChinesePath(t *testing.T) {
+	selected := filepath.Join(t.TempDir(), "中文 工作文件夹")
+	if err := os.Mkdir(selected, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Exercise the exact process/encoding boundary used by the native picker,
+	// without opening a GUI or granting a work-folder authorization.
+	literal := strings.ReplaceAll(selected, "'", "''")
+	output, err := workspacePickerOutput(`[Console]::Out.Write('` + literal + `')`)
+	if err != nil {
+		t.Fatal("real Windows PowerShell failed to return a folder", err)
+	}
+	if !utf8.Valid(output) || string(output) != selected {
+		t.Fatalf("PowerShell changed the UTF-8 work-folder path: got %q, want %q", output, selected)
+	}
+	if !directoryExists(strings.TrimSpace(string(output))) {
+		t.Fatal("PowerShell output no longer resolves to the selected Chinese folder")
+	}
+}
 
 // This runs the Windows socket loop with a substituted folder picker. The real
 // native dialog still needs Windows device acceptance after the runtime ships.
