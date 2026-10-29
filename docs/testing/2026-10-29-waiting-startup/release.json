@@ -1,0 +1,63 @@
+{
+  "checkedAt": "2026-10-29T00:20:29.609935+00:00",
+  "sourceCommit": "b7a963b953571864105c35f12e1b6ed947fb0018",
+  "run": "https://github.com/Sahaquiel-10th/theone/actions/runs/40791282760",
+  "html": {
+    "status": 200,
+    "cacheControl": "no-cache"
+  },
+  "health": {
+    "status": 200,
+    "contentType": "application/json; charset=utf-8"
+  },
+  "assets": [
+    {
+      "path": "/assets/index-DDlAsCq7.js",
+      "sha256": "cc72aa71c4e2ecfa6f001eb5f284d74c4228cbc0e924d95ef8edd9de9315ce22",
+      "bytes": 1332828,
+      "httpStatus": 200,
+      "liveSha256": "cc72aa71c4e2ecfa6f001eb5f284d74c4228cbc0e924d95ef8edd9de9315ce22",
+      "matchesLocal": true,
+      "cacheControl": "public, max-age=31536000, immutable"
+    },
+    {
+      "path": "/assets/index--7qnN1k5.css",
+      "sha256": "47506e76a7f59748172c26d63f0b23ca0e397f5a9128b20d7235968d7bb538f1",
+      "bytes": 564574,
+      "httpStatus": 200,
+      "liveSha256": "47506e76a7f59748172c26d63f0b23ca0e397f5a9128b20d7235968d7bb538f1",
+      "matchesLocal": true,
+      "cacheControl": "public, max-age=31536000, immutable"
+    }
+  ],
+  "workflow": {
+    "status": "completed",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "name": "verify-macos-runtime",
+        "conclusion": "success",
+        "startedAt": "2026-10-29T00:11:30Z",
+        "completedAt": "2026-10-29T00:13:04Z"
+      },
+      {
+        "name": "verify-windows-runtime",
+        "conclusion": "success",
+        "startedAt": "2026-10-29T00:01:28Z",
+        "completedAt": "2026-10-29T00:02:11Z"
+      },
+      {
+        "name": "verify",
+        "conclusion": "success",
+        "startedAt": "2026-10-29T00:01:28Z",
+        "completedAt": "2026-10-29T00:03:26Z"
+      },
+      {
+        "name": "deploy",
+        "conclusion": "success",
+        "startedAt": "2026-10-29T00:13:06Z",
+        "completedAt": "2026-10-29T00:19:09Z"
+      }
+    ]
+  }
+}
