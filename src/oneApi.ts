@@ -14,6 +14,16 @@ export function apiForUser(userId: string, workspaceId = expectedWorkspaceId) {
   const revision = identityRevision;
   return <T>(path: string, options: RequestInit = {}) => api<T>(path, options, userId, workspaceId, revision);
 }
+/** Downloads follow the same account-generation boundary as JSON requests. */
+export async function authenticatedBlob(path: string): Promise<Blob> {
+  const owner = expectedUserId, workspace = expectedWorkspaceId, revision = identityRevision;
+  const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-ONE-User': owner, 'X-ONE-Workspace': workspace } });
+  if (owner !== expectedUserId || workspace !== expectedWorkspaceId || revision !== identityRevision) throw new ApiError('账号已切换，请重新选择附件', undefined, 409, 'SESSION_CHANGED');
+  if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new ApiError(payload.error ?? '附件下载未完成', undefined, response.status, payload.code); }
+  const blob = await response.blob();
+  if (owner !== expectedUserId || workspace !== expectedWorkspaceId || revision !== identityRevision) throw new ApiError('账号已切换，下载已取消', undefined, 409, 'SESSION_CHANGED');
+  return blob;
+}
 export async function api<T>(path: string, options: RequestInit = {}, ownerId?: string, workspaceId = expectedWorkspaceId, revision = identityRevision): Promise<T> {
   const identity = ownerId ?? expectedUserId;
   // Bind the request to the component that created it, including continuations

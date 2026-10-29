@@ -1,0 +1,12 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ONE 教学工具包 · 隔离体验</title></head><body><div id="root"></div><script type="module">
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {TeachingWorkspace} from '/src/TeachingWorkspace.tsx';
+import {TeachingPublicPage} from '/src/TeachingPublicPage.tsx';
+import {api,expectUser} from '/src/oneApi.ts';
+import '/src/styles.css';
+expectUser('qa-teacher','qa-workspace');
+const params=new URLSearchParams(location.search);
+document.documentElement.dataset.appearance=params.get('appearance')||'paper';
+createRoot(document.getElementById('root')).render(params.get('student')?React.createElement(TeachingPublicPage,{slug:params.get('student')}):React.createElement('main',{style:{maxWidth:1300,margin:'24px auto',padding:'0 24px'}},React.createElement(TeachingWorkspace,{api,initialStage:params.get('stage')||'after'})));
+</script></body></html>

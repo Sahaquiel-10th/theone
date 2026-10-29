@@ -62,6 +62,9 @@ import { availablePowerMicros, creditPower, MICROS_PER_POWER, powerAccount } fro
 import {installAdminPowerControls} from './adminPowerControls.js';
 import { runBilledModel, resolveBillingReview } from "./modelBilling.js";
 import { connectorRegistry, connectorService, notionMcpService, yinxiangService, flowusMcpService, flomoMcpService, feishuService, oneKeyPresence, runtimeUpdateCatalog } from "./runtime.js";
+import { installTeachingRoutes } from './teachingRoutes.js';
+import { installTeachingFileRoutes } from './teachingFiles.js';
+import { installTeachingAiRoutes } from './teachingAiRoutes.js';
 import { installFeishuRoutes } from "./feishuRoutes.js";
 import { connectorRoutes } from "./connectorRoutes.js";
 import { AuthorizationSessionError, AuthorizationSessions } from "./connectors/authorizationSessions.js";
@@ -227,6 +230,9 @@ async function persistGeneratedImage(params: { imageUrl?: string; workspaceId: s
 }
 
 const keyAuth = [auth(jwtSecret), requireOneKeySession] as const;
+installTeachingRoutes(app, keyAuth, store, { verifyKey: confirmKeyBeforeModel });
+installTeachingFileRoutes(app, keyAuth, store, uploadDir, attachmentService);
+installTeachingAiRoutes(app, keyAuth, store, { verifyKey: confirmKeyBeforeModel });
 installVisitorRoutes(app,store,jwtSecret);
 installPublicSharingRoutes(app, keyAuth, store, knowledgeService, attachmentService,jwtSecret,{directory:uploadDir});
 installWelcomeGuideRoutes(app,keyAuth,store);

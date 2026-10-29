@@ -74,6 +74,7 @@ import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { MessageMarkdown, ImagePreview, hasInlineImage } from "./MessageMarkdown";
 import { PublicSharingPage, SharingPanel } from "./PublicSharing";
+import { TeachingPublicPage } from './TeachingPublicPage';
 import "katex/dist/katex.min.css";
 import {
   Archive,
@@ -3539,6 +3540,7 @@ function App() {
 }
 
 const sharedSlug = /^\/s\/([A-Za-z0-9_-]{24})\/?$/.exec(window.location.pathname)?.[1];
+const teachingSlug = /^\/learn\/([A-Za-z0-9_-]{20,100})\/?$/.exec(window.location.pathname)?.[1];
 const appRoot = import.meta.hot?.data.appRoot ?? createRoot(document.getElementById("root")!);
 if(import.meta.hot)import.meta.hot.data.appRoot=appRoot;
-appRoot.render(sharedSlug ? <PublicSharingPage slug={sharedSlug}/> : <App />);
+appRoot.render(teachingSlug ? <TeachingPublicPage slug={teachingSlug}/> : sharedSlug ? <PublicSharingPage slug={sharedSlug}/> : <App />);

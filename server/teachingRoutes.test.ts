@@ -1,0 +1,104 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import express from 'express';
+import type { Database } from './types.js';
+import type { Store } from './db.js';
+import { installTeachingRoutes } from './teachingRoutes.js';
+
+test('HTTP teacher and student flow keeps ownership, identities, answers, grades and publication revocation isolated', async t => {
+  let db = { users: [{ id: 'teacher-a', enabled: true }, { id: 'teacher-b', enabled: true }], workspaces: [{ id: 'wa', status: 'active' }, { id: 'wb', status: 'active' }], workspaceMembers: [{ workspaceId: 'wa', userId: 'teacher-a', role: 'owner' }, { workspaceId: 'wb', userId: 'teacher-b', role: 'owner' }, { workspaceId: 'wa', userId: 'teacher-b', role: 'owner' }], attachments: [] } as unknown as Database;
+  const store: Store = { read: async () => db, mutate: async fn => { const before = structuredClone(db); try { return fn(db); } catch (error) { db = before; throw error; } } };
+  const app = express(); app.use(express.json());
+  let keyChecks = 0;
+  installTeachingRoutes(app, [(req, res, next) => {
+    if (req.get('X-Key') !== 'present') { res.status(428).json({ error: '请插入 ONE Key' }); return; }
+    req.user = { id: req.get('X-User') ?? 'teacher-a' } as any; req.workspaceId = req.get('X-Workspace') ?? 'wa'; next();
+  }], store, { verifyKey: async () => { keyChecks++; } });
+  const server = app.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = `http://127.0.0.1:${(server.address() as any).port}/api/teaching`, owner = { 'X-Key': 'present', 'Content-Type': 'application/json' };
+  const request = async (url: string, method = 'GET', body?: unknown, headers: Record<string, string> = owner) => {
+    const response = await fetch(base + url, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { status: response.status, body: await response.json(), cacheControl: response.headers.get('Cache-Control') };
+  };
+  assert.equal((await request('/courses', 'GET', undefined, {})).status, 428);
+  let result = await request('/courses', 'POST', { title: '通用教学', materialText: 'PRIVATE_MATERIAL', workspaceId: 'wb', userId: 'teacher-b' });
+  assert.equal(result.status, 201); let course = result.body.course;
+  const cid = course.id;
+  assert.equal(course.workspaceId, 'wa'); assert.equal(course.userId, 'teacher-a');
+  assert.equal((await request(`/courses/${cid}`, 'GET', undefined, { ...owner, 'X-User': 'teacher-b' })).status, 404);
+  assert.equal((await request(`/courses/${cid}`, 'GET', undefined, { ...owner, 'X-User': 'teacher-b', 'X-Workspace': 'wb' })).status, 404);
+  assert.equal((await request(`/courses/${cid}`, 'GET', undefined, { ...owner, 'X-Workspace': 'wb' })).status, 403);
+  result = await request(`/courses/${cid}/activities`, 'POST', { revision: course.revision, stage: 'after', kind: 'quiz', title: '单元测验', status: 'published', questions: [{ id: 'q1', type: 'single', prompt: '选正确项', options: ['one', 'two'], answer: 'two', points: 10 }] });
+  assert.equal(result.status, 201); course = result.body.course; const activity = result.body.activity;
+  result = await request(`/courses/${cid}/activities`, 'POST', { revision: course.revision, stage: 'during', kind: 'scenario', title: '情境决策', status: 'published', referenceText: 'PRIVATE_SCENE_REFERENCE', scenes: [{ id: 'scene1', title: '现场观察', content: '看见两条路', choices: ['观察', '行动'], reflection: 'PRIVATE_SCENE_REVIEW' }] });
+  assert.equal(result.status, 201); course = result.body.course; const scenario = result.body.activity;
+  const manual = await request(`/courses/${cid}/submissions`, 'POST', { activityId: activity.id, operationId: 'teacher_no_ref_001', participantName: '教师代交学生', text: '未填写学号的导入作业' });
+  assert.equal(manual.status, 201); assert.equal(manual.body.submission.participantRef, '');
+  assert.equal((await request(`/courses/${cid}/submissions`, 'POST', { activityId: activity.id, operationId: 'teacher_no_name_001', text: '仍须填写姓名' })).status, 400);
+  assert.equal((await request(`/courses/${cid}`, 'PATCH', { revision: 1, title: '覆盖' })).status, 409);
+  result = await request(`/courses/${cid}/publish`, 'POST', { revision: course.revision, confirmed: true }); assert.equal(result.status, 200); course = result.body.course;
+  const slug = course.slug, pub = `/public/${slug}`;
+  const metadata = await request(pub, 'GET', undefined, {});
+  assert.equal(metadata.cacheControl, 'no-store');
+  assert.equal(metadata.status, 200); assert.doesNotMatch(JSON.stringify(metadata.body), /PRIVATE_MATERIAL|PRIVATE_SCENE_REVIEW|PRIVATE_SCENE_REFERENCE|workspaceId|userId|tokenHash|"answer":|materialAttachmentIds|sourceAttachmentIds/);
+  assert.equal((await request(pub + '/sessions', 'POST', { participantName: '一', participantRef: '1', consent: false }, { 'Content-Type': 'application/json' })).status, 400);
+  const guest = async (name: string) => request(pub + '/sessions', 'POST', { participantName: name, consent: true }, { 'Content-Type': 'application/json' });
+  assert.equal((await guest('')).status, 400);
+  const first = await guest('一'), second = await guest('二'); assert.equal(first.status, 201); assert.equal(second.status, 201);
+  assert.equal(first.body.participantRef, ''); assert.equal(second.body.participantRef, '');
+  const h1 = { 'Content-Type': 'application/json', Authorization: `Bearer ${first.body.token}` }, h2 = { ...h1, Authorization: `Bearer ${second.body.token}` };
+  assert.equal((await request(pub + '/session', 'GET', undefined, h1)).body.session.participantName, '一');
+  assert.equal((await request(pub + '/submissions', 'GET', undefined, owner)).status, 401);
+  const payload = { activityId: activity.id, operationId: 'submit_http_001', answers: { q1: 'one' }, participantName: 'SPOOFED', participantRef: 'SPOOFED', grade: { total: 100, status: 'published' } };
+  result = await request(pub + '/submissions', 'POST', payload, h1); assert.equal(result.status, 201); const sid = result.body.submission.id;
+  assert.equal(result.body.submission.participantName, '一'); assert.equal(result.body.submission.participantRef, ''); assert.equal(result.body.submission.operationId, 'submit_http_001'); assert.equal(result.body.submission.grade, undefined);
+  assert.equal((await request(pub + '/submissions', 'POST', payload, h1)).status, 200);
+  assert.equal((await request(pub + '/submissions', 'POST', { ...payload, answers: { q1: 'two' } }, h1)).status, 409);
+  assert.equal((await request(pub + '/submissions', 'GET', undefined, h2)).body.submissions.length, 0);
+  assert.equal((await request(pub + '/submissions', 'GET', undefined, h1)).body.submissions.length, 1);
+  const stored = db.users[0].teaching!.submissions.find(s => s.id === sid)!;
+  stored.grade = { criteria: [{ criterionId: 'q1', score: 0, comment: '', evidence: '' }], total: 0, source: 'rules', status: 'suggested', needsReview: true, feedback: 'PRIVATE_SUGGESTION' };
+  assert.doesNotMatch(JSON.stringify((await request(pub + '/submissions', 'GET', undefined, h1)).body), /PRIVATE_SUGGESTION|activitySnapshot|payloadHash|workspaceId|userId/);
+  assert.equal((await request(`/courses/${cid}/submissions/${sid}/review`, 'PATCH', { grade: { criteria: [{ criterionId: 'q1', score: 12 }], total: 12 } })).status, 400);
+  assert.equal((await request(`/courses/${cid}/submissions/${sid}/review`, 'PATCH', { grade: { criteria: [{ criterionId: 'q1', score: 5, comment: '已核对', evidence: '答案' }], total: 5, feedback: '教师反馈' } })).status, 200);
+  assert.equal((await request(pub + '/submissions', 'GET', undefined, h1)).body.submissions[0].grade.total, 5);
+  result = await request(pub + '/submissions', 'POST', { activityId: scenario.id, operationId: 'scenario_http_001', answers: { scene1: '观察' } }, h1);
+  assert.equal(result.status, 201); assert.deepEqual(result.body.submission.learningReview, [{ title: '现场观察', reflection: 'PRIVATE_SCENE_REVIEW' }]);
+  assert.doesNotMatch(JSON.stringify(result.body), /PRIVATE_SCENE_REFERENCE|referenceText|sourceAttachmentIds|activitySnapshot/);
+  assert.equal((await request(pub + '/submissions', 'GET', undefined, h2)).body.submissions.length, 0);
+  const ownScenario = (await request(pub + '/submissions', 'GET', undefined, h1)).body.submissions.find((s: any) => s.activityId === scenario.id);
+  assert.deepEqual(ownScenario.learningReview, [{ title: '现场观察', reflection: 'PRIVATE_SCENE_REVIEW' }]);
+  assert.equal((await request(`/courses/${cid}/submissions`, 'GET', undefined, { ...owner, 'X-User': 'teacher-b' })).status, 404);
+  result = await request(`/courses/${cid}/close`, 'POST', { revision: course.revision }); assert.equal(result.status, 200); course = result.body.course;
+  assert.equal((await request(pub, 'GET', undefined, {})).status, 410);
+  assert.equal((await request(pub + '/submissions', 'POST', { ...payload, operationId: 'submit_http_002' }, h1)).status, 410);
+  result = await request(`/courses/${cid}/publish`, 'POST', { revision: course.revision, confirmed: true }); assert.equal(result.status, 200); course = result.body.course;
+  assert.notEqual(course.slug, slug); assert.equal((await request(`/public/${course.slug}/session`, 'GET', undefined, h1)).status, 401);
+  db.users[1].role = 'admin'; db.workspaceMembers.find(m => m.workspaceId === 'wa' && m.userId === 'teacher-b')!.role = 'member';
+  assert.equal((await request('/courses', 'POST', { title: '成员越权', budgetMicros: 1000000 }, { ...owner, 'X-User': 'teacher-b' })).status, 403);
+  assert.equal((await request('/courses', 'GET', undefined, { ...owner, 'X-User': 'teacher-b' })).status, 403);
+  db.workspaceMembers.find(m => m.workspaceId === 'wa' && m.userId === 'teacher-a')!.role = 'member';
+  assert.equal((await request(`/public/${course.slug}`, 'GET', undefined, {})).status, 403);
+  assert.ok(keyChecks >= 8);
+});
+
+test('classroom storage endpoints allow 100 new participants and submissions in one minute', async t => {
+  const { createTeachingCourse, createTeachingActivity, publishTeachingCourse } = await import('./teaching.js');
+  const scope = { workspaceId: 'class-ws', userId: 'class-teacher' };
+  const db = { users: [{ id: scope.userId, enabled: true }], workspaces: [{ id: scope.workspaceId, status: 'active' }], workspaceMembers: [{ ...scope, role: 'owner' }], attachments: [] } as unknown as Database;
+  const course = createTeachingCourse(db, scope, { title: '百人课堂' });
+  const { activity } = createTeachingActivity(db, scope, course.id, { revision: course.revision, stage: 'before', kind: 'inquiry', title: '课前想了解什么', status: 'published' });
+  publishTeachingCourse(db, scope, course.id, { revision: course.revision, confirmed: true });
+  const store: Store = { read: async () => db, mutate: async fn => fn(db) }, app = express(); app.use(express.json()); installTeachingRoutes(app, [], store);
+  const server = app.listen(0, '127.0.0.1'); await once(server, 'listening'); t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = `http://127.0.0.1:${(server.address() as any).port}/api/teaching/public/${course.slug}`;
+  for (let index = 0; index < 100; index++) {
+    const session = await fetch(base + '/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ participantName: `学生${index}`, participantRef: String(index), consent: true }) });
+    assert.equal(session.status, 201); const { token } = await session.json();
+    const submission = await fetch(base + '/submissions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ activityId: activity.id, operationId: `class_submit_${index}`, text: '我想了解本课程的应用' }) });
+    assert.equal(submission.status, 201);
+  }
+  assert.equal(db.users[0].teaching!.sessions.length, 100); assert.equal(db.users[0].teaching!.submissions.length, 100);
+});
