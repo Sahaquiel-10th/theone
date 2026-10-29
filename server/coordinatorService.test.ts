@@ -3377,3 +3377,41 @@ test('a bare save-to-Notion follow-up on the exact task reuses its existing body
  const f=await lateSaveFixture();await f.service.direct(a,f.taskId,{operationId:'operation_bare_late_save',text:'保存到Notion。',outputDestination:'chat'},key);await f.service.resume(a,key);
  await waitFor(async()=>(await f.service.task(a,f.taskId)).jobs.at(-1)!.state==='completed');assert.equal(f.counts().body,f.article);assert.equal(f.counts().writes,1);assert.equal(f.counts().workerCalls,0);
 });
+
+for(const batch of [false,true])test(`a missing scoped Notion destination is corrected before any wrong task is queued; batch=${batch}`,async()=>{
+ const f=await lateSaveFixture();let routes=0,body='',writes=0;
+ const documents=new NotionDocuments(f.store,{readDocument:async()=>({text:body||'保存目录'}),callDocumentTool:async(_w:string,_c:string,_g:string,_u:string,_n:string,args:any,before?:()=>Promise<void>)=>{await before?.();writes++;body=args.pages[0].content;return {pages:[{id:f.pageId}]};}} as unknown as NotionMcpService);
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no new source read')},{notionDocuments:documents,modelCall:async(model,messages)=>{
+  assert.equal(model.id,'router','the existing article must never go through a writing model');
+  if(messages.at(-1)?.role==='tool'&&routes===2)return answer('按这篇现有原文保存。');
+  routes++;
+  if(routes===2){assert.match(messages.at(-1)!.content!,batch?/整批计划遗漏/:/交接漏掉/);assert.equal((await f.store.read()).chatOperations!.filter(op=>op.workRun).length,1,'the first invalid handoff must not create any task');}
+  const task={taskId:f.taskId,title:'保存合成文章',instruction:routes===1?'继续处理这篇现有原文，不重写，不查知识库。':'把这篇现有原文保存到 Notion并回读，不重写、不查知识库。',executorId:'general',featureIds:[]};
+  return {...answer(''),toolCalls:[{id:`route-${routes}`,type:'function',function:{name:batch?'delegate_tasks':'delegate_task',arguments:JSON.stringify(batch?{tasks:[{...task,outputKind:'text',dependsOn:[]}]}:task)}}]};
+ }});
+ const r=await service.dispatch(a,{...input(`operation_missing_target_${batch}`,'把这篇现有原文保存到Notion。'),boundTaskId:f.taskId,outputDestination:'chat'},key);assert.equal(r.taskId,f.taskId);assert.equal(routes,2);
+ await service.resume(a,key);await waitFor(async()=>(await service.task(a,f.taskId)).jobs.at(-1)!.state==='completed');
+ assert.equal(writes,1);assert.equal(body,f.article);const jobs=(await f.store.read()).chatOperations!.filter(op=>op.workRun);assert.equal(jobs.length,2);assert.ok(jobs.at(-1)!.workRun!.notionTarget);
+});
+
+test('a pure Notion permission question sees exact ready facts but does not dispatch or write despite a leftover picker',async()=>{
+ const f=await lateSaveFixture();let calls=0;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('permission facts need no source read')},{notionDocuments:new NotionDocuments(f.store,{} as NotionMcpService),modelCall:async(_model,messages)=>{
+  calls++;const facts=messages.find(m=>m.role==='system'&&m.content?.startsWith('Notion 保存能力'))!.content!;assert.match(facts,/"status":"ready"/);assert.match(facts,/不是执行授权/);assert.doesNotMatch(facts,/late-grant|late-notion|aaaaaaaaaaaaaaaa/);return answer('已授权保存到Notion，并且选好了保存位置；这轮只回答，没有执行保存。');
+ }});
+ const r=await service.dispatch(a,{...input('operation_notion_ready_question','Notion有没有写入权限？'),outputDestination:'notion'},key);assert.equal(r.taskId,undefined);assert.equal(calls,1);assert.equal((await f.store.read()).chatOperations!.filter(op=>op.workRun).length,1);assert.equal(f.counts().writes,0);
+});
+
+test('a new article requested with Notion still drafts once then saves once, without a save-only context instruction',async()=>{
+ const f=fixture(),parentId='a'.repeat(32),pageId='d'.repeat(32),article='# 全新合成文章\n\n这份正文是在本轮新写的，不是旧稿。';let drafts=0,writes=0,body='';
+ await f.store.mutate(d=>d.knowledgeConnections.push({id:'fresh-notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'fixture',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'fresh-grant',userId:'a',authorizedAt:'now',parentId}}));
+ const documents=new NotionDocuments(f.store,{readDocument:async()=>({text:body||'保存目录'}),callDocumentTool:async(_w:string,_c:string,_g:string,_u:string,_n:string,args:any,before?:()=>Promise<void>)=>{await before?.();writes++;body=args.pages[0].content;return {pages:[{id:pageId}]};}} as unknown as NotionMcpService);
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no research requested')},{contextMode:'adaptive',notionDocuments:documents,modelCall:async(model,messages)=>{
+  if(model.id==='router'){
+   const facts=messages.find(m=>m.role==='system'&&m.content?.startsWith('Notion 保存能力'))!.content!;assert.match(facts,/新写或续改按本轮目标生成或修改正文/);assert.doesNotMatch(facts,/只保存与核对|不重写文章/);
+   return {...answer(''),toolCalls:[{id:'new-article',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'全新合成文章',instruction:'请写一篇新合成文章并保存到Notion，不查知识库。',executorId:'general',featureIds:[]})}}]};
+  }
+  drafts++;return answer(JSON.stringify({outcome:'completed',content:article,summary:'新正文已完成。'}));
+ }});
+ const r=await service.dispatch(a,{...input('operation_new_article_not_save_only','请写一篇新文章并保存到Notion，不查知识库。'),outputDestination:'chat'},key);assert.ok(r.taskId);await service.resume(a,key);await waitFor(async()=>(await service.task(a,r.taskId!)).jobs[0].state==='completed');assert.equal(drafts,1);assert.equal(writes,1);assert.equal(body,article);
+});

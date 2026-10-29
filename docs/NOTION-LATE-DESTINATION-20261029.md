@@ -50,7 +50,9 @@
 
 ## 发布证据
 
-本地完整检查：`npm test` 共 1,733 项，1,732 通过、0 失败、1 既有跳过（110 MB PPT 隔离上传）；`npm run build`（含 TypeScript）与 `git diff --check` 通过。保留已有构建包体大小警告，无新增构建错误。
+最终本地完整检查：`npm test` 共 1,737 项，1,736 通过、0 失败、1 既有跳过（110 MB PPT 隔离上传）；`npm run build`（含 TypeScript）与 `git diff --check` 通过。保留已有构建包体大小警告，无新增构建错误。
+
+追加防漏验收：用户明确要求 Notion、模型首次交接漏目标时，single/batch 均先拒绝错误交接，不创建错误任务，纠正后全文保存一次、零写作模型。纯权限询问可看到真实 `ready` 事实而不执行；新写文章与现稿保存的上下文分开，不能用“只保存”规则阻断新写。
 
 前端修改前完整备份（独立 worktree 中实施）：`/tmp/one-late-notion-20261029.DCpxok/frontend-b7a963b-before.tar`。
 
