@@ -113,6 +113,24 @@ test('partial or truncated model body is preserved but cannot satisfy its depend
  const result=await f.execute({callModel:async()=>({...answer('已经生成的前半部分'),finishReason:'length'}),saveNotion:async()=>assert.fail('partial manuscript saved as final')});
  assert.equal(result.outcome,'partial');assert.equal(result.content,'已经生成的前半部分');assert.equal(result.run.steps[0].state,'failed');assert.equal(result.run.steps[1].state,'waiting');
 });
+test('a manuscript stage does not count its later Notion save as unfinished writing',async()=>{
+ const f=fixture(plan(step('write',[],{instruction:'撰写完整专栏。'}),step('save',['write'],{kind:'notion',title:'保存到 Notion'})));
+ const body='完整专栏正文。\n\n所有用户要求均已展开，唯一自然结尾。';let models=0,writes=0;
+ const result=await f.execute({goal:'把用户提供的观点写成完整专栏并保存到 Notion。',callModel:async(s,messages)=>{
+  models++;assert.equal(s.id,'write');const handoff=JSON.parse(messages[1].content!);
+  assert.equal(handoff.currentStep.completionScope,'current_step');assert.equal(handoff.currentStep.kind,'model');
+  assert.deepEqual(handoff.deferredSteps,[{id:'save',title:'保存到 Notion',kind:'notion'}]);
+  assert.match(messages[0].content!,/本步骤已完整产出可用正文即返回 completed/);assert.match(messages[0].content!,/不宣称已经保存/);
+  return answer(body);
+ },saveNotion:async(_s,content)=>{writes++;assert.equal(content,body);return f.makeProof(content);}});
+ assert.equal(result.outcome,'completed');assert.deepEqual(result.run.steps.map(s=>s.state),['completed','completed']);assert.equal(models,1);assert.equal(writes,1);
+ await f.execute({callModel:async()=>assert.fail('completed manuscript regenerated'),saveNotion:async()=>assert.fail('verified save repeated')});assert.equal(models,1);assert.equal(writes,1);
+});
+test('stage guidance never promotes an explicitly partial manuscript to a completed save input',async()=>{
+ const f=fixture(plan(step('write'),step('save',['write'],{kind:'notion'})));
+ const result=await f.execute({callModel:async()=>answer('正文只有一半；还缺后面的论证。','partial'),saveNotion:async()=>assert.fail('partial prose saved as complete')});
+ assert.equal(result.outcome,'partial');assert.equal(result.run.steps[0].state,'failed');assert.equal(result.run.steps[1].waitingFor,'inputs');assert.equal(f.saves,0);
+});
 
 test('delayed verified receipt recovers the exact actual save checkpoint without any model/write retry',async()=>{
  const f=fixture(plan(step('write'),step('save',['write'],{kind:'notion'})));let models=0,writes=0,body='';
@@ -122,6 +140,73 @@ test('delayed verified receipt recovers the exact actual save checkpoint without
  const second=await f.execute({callModel:async()=>assert.fail('extra model call during verification'),saveNotion:async()=>assert.fail('write retried during verification')});
  assert.equal(second.outcome,'completed');assert.equal(second.waiting,false);assert.equal(models,1);assert.equal(writes,1);assert.match(second.content,/唯一自然结尾/);assert.match(second.content,/已回读核对/);
  const third=await f.execute({callModel:async()=>assert.fail('third model call'),saveNotion:async()=>assert.fail('third write')});assert.equal(third.outcome,'completed');
+});
+function existingArticle(content='现有文章第一段。\n\n第二段保留全部数字42与自然结尾。'):WorkflowContextInput{
+ return {...owner,id:'existing_article',kind:'artifact',ref:'original_message',originOperationId:'original_operation',content,complete:true};
+}
+const existingSave=()=>step('save_existing',[],{kind:'notion',title:'保存现有正文到 Notion'});
+test('explicitly selected existing message is saved exactly with no model, knowledge or feature calls',async()=>{
+ const body='{"outcome":"partial","content":"这就是用户要原样保存的 JSON 文档"}\n\n原消息尾部不能丢。',artifact=existingArticle(body),original=structuredClone(artifact),f=fixture(plan(existingSave()));let writes=0;
+ const result=await f.execute({initialArtifact:artifact,callModel:async()=>assert.fail('existing article regenerated'),tools:[{name:'knowledge_search',run:async()=>assert.fail('unnecessary private recall')}],saveNotion:async(_s,content)=>{writes++;assert.equal(content,body);return f.makeProof(content);}});
+ assert.equal(result.outcome,'completed');assert.equal(writes,1);assert.equal(f.modelCalls,0);assert.deepEqual(artifact,original);
+ const saved=f.steps.find(cp=>cp.tool.endsWith(':save_existing'))!.output as any;
+ assert.deepEqual(saved.sourceArtifact,{id:'existing_article',ref:'original_message',originOperationId:'original_operation',bodyDigest:notionHash(body)});
+ await f.execute({initialArtifact:artifact,callModel:async()=>assert.fail('completed save bought a model'),saveNotion:async()=>assert.fail('completed existing save repeated')});assert.equal(writes,1);
+});
+test('existing-message delayed readback resumes the same durable save without regeneration or a second write',async()=>{
+ const artifact=existingArticle(),f=fixture(plan(existingSave()));let writes=0;
+ const first=await f.execute({initialArtifact:artifact,callModel:async()=>assert.fail('unexpected model call'),saveNotion:async(_s,content)=>{writes++;return f.makeProof(content,{verified:false});}});
+ assert.equal(first.waiting,true);assert.equal(first.run.steps[0].waitingFor,'result');
+ await f.makeProof(artifact.content);
+ const second=await f.execute({initialArtifact:structuredClone(artifact),callModel:async()=>assert.fail('recovery model call'),saveNotion:async()=>assert.fail('delayed verification rewrote the message')});
+ assert.equal(second.outcome,'completed');assert.equal(writes,1);assert.match(second.content,/已回读核对/);
+});
+test('SQL JSON key reordering preserves exact workflow/source evidence during read-only recovery',async()=>{
+ const artifact=existingArticle(),f=fixture(plan(existingSave()));let writes=0;
+ await f.execute({initialArtifact:artifact,saveNotion:async(_s,content)=>{writes++;return f.makeProof(content,{verified:false});}});
+ const cp=f.steps.find(saved=>saved.tool.endsWith(':save_existing'))!,value=cp.output as any;
+ value.workflow=Object.fromEntries(Object.entries(value.workflow).reverse());value.sourceArtifact=Object.fromEntries(Object.entries(value.sourceArtifact).reverse());
+ await f.makeProof(artifact.content);
+ const result=await f.execute({initialArtifact:artifact,callModel:async()=>assert.fail('JSON reorder bought a model'),saveNotion:async()=>assert.fail('JSON reorder replayed a save')});
+ assert.equal(result.outcome,'completed');assert.equal(writes,1);
+});
+test('persisted workflow/source evidence rejects absent, additional and changed fields regardless of key order',async()=>{
+ for(const field of ['workflow','sourceArtifact'] as const)for(const mutation of ['missing','extra','changed','absent'] as const){
+  const artifact=existingArticle(),f=fixture(plan(existingSave()));await f.execute({initialArtifact:artifact});
+  const value=f.steps.find(saved=>saved.tool.endsWith(':save_existing'))!.output as any;
+  value[field]=Object.fromEntries(Object.entries(value[field]).reverse());const key=Object.keys(value[field])[0];
+  if(mutation==='missing')delete value[field][key];else if(mutation==='extra')value[field].unexpected='untrusted';else if(mutation==='changed')value[field][key]='different';else delete value[field];
+  await assert.rejects(()=>f.execute({initialArtifact:artifact,callModel:async()=>assert.fail('invalid evidence bought a model'),saveNotion:async()=>assert.fail('invalid evidence replayed a save')}),`${field}:${mutation}`);
+ }
+});
+test('existing message scope, exact provenance and raw body remain immutable across resume events',async()=>{
+ for(const field of ['workspaceId','userId','operationId','id','ref','originOperationId','content'] as const){
+  const artifact=existingArticle(),f=fixture(plan(existingSave()));let writes=0;
+  await f.execute({initialArtifact:artifact,saveNotion:async(_s,content)=>{writes++;return f.makeProof(content,{verified:false});}});
+  const changed={...artifact,[field]:field==='content'?artifact.content+'\n':`changed_${field}`};
+  await assert.rejects(()=>f.execute({initialArtifact:changed,callModel:async()=>assert.fail('mutated original led to regeneration'),saveNotion:async()=>assert.fail('mutated original led to rewrite')}));assert.equal(writes,1,field);
+ }
+});
+test('missing, incomplete or unscoped existing body cannot silently authorize save-only work',async()=>{
+ for(const change of [{workspaceId:'another_workspace'},{userId:'another_user'},{operationId:'another_operation'},{complete:false},{truncated:true},{kind:'knowledge'},{originOperationId:''},{ref:''},{content:' '}]){
+  const f=fixture(plan(existingSave()));await assert.rejects(()=>f.execute({initialArtifact:{...existingArticle(),...change} as WorkflowContextInput,saveNotion:async()=>assert.fail('invalid article saved')}));assert.equal(f.steps.length,0);
+ }
+ const f=fixture(plan(existingSave()));const result=await f.execute({saveNotion:async()=>assert.fail('missing article saved')});assert.equal(result.outcome,'needs_input');assert.equal(f.saves,0);
+ const extra=fixture(plan(step('draft'),step('save',['draft'],{kind:'notion'})));await assert.rejects(()=>extra.execute({initialArtifact:existingArticle(),callModel:async()=>assert.fail('server artifact attached to creative workflow')}));
+});
+test('revoked write authorization stops an existing-message save before an external call',async()=>{
+ const f=fixture(plan(existingSave()));let checks=0;
+ await assert.rejects(()=>f.execute({initialArtifact:existingArticle(),verify:async()=>{checks++;throw new Error('write grant revoked');},callModel:async()=>assert.fail('grant failure bought model'),saveNotion:async()=>assert.fail('revoked write grant ignored')}));
+ assert.ok(checks>0);assert.equal(f.steps.length,0);assert.equal(f.saves,0);
+ const afterRead=fixture(plan(existingSave()));let freshChecks=0;
+ await assert.rejects(()=>afterRead.execute({initialArtifact:existingArticle(),verify:async()=>{if(++freshChecks>=5)throw new Error('grant revoked after the existing message was read');},saveNotion:async()=>assert.fail('write occurred after grant revocation')}));
+ assert.ok(freshChecks>=5);assert.equal(afterRead.saves,0);
+});
+test('simultaneous save-existing events issue a single external write through workflow CAS',async()=>{
+ const f=fixture(plan(existingSave())),old=f.run,artifact=existingArticle();let writes=0;
+ const saveNotion:WorkflowExecutionInput['saveNotion']=async(_s,body)=>{writes++;return f.makeProof(body);};
+ const results=await Promise.allSettled([f.execute({run:old,initialArtifact:artifact,saveNotion}),f.execute({run:old,initialArtifact:artifact,saveNotion})]);
+ assert.equal(writes,1);assert.equal(results.filter(result=>result.status==='fulfilled').length,1);
 });
 
 test('save throw after real write is unknown, but a subsequent exact read-only proof can finish it',async()=>{

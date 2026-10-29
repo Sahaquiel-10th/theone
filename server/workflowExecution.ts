@@ -11,6 +11,10 @@ export type WorkflowExecutionInput={
  binding:WorkflowBinding;run:WorkflowRun;goal:string;modelSystemPrompt:string;
  modelPromptForStep?:(step:WorkflowStep)=>string;
  history:WorkflowHistoryMessage[];inputs:WorkflowContextInput[];
+ /** Exact server-bound existing message, reauthorized by verify before a
+  * write. Completeness means the message was read in full, not that an older
+  * creative task was completed. Only the canonical save-only plan accepts it. */
+ initialArtifact?:WorkflowContextInput;
  checkpoints:TaskStepStore;tools:OrchestrationTool[];featureTools:Record<string,string>;
  verify:()=>Promise<void>;persist:(next:WorkflowRun,expectedSequence:number)=>Promise<boolean>;
  callModel:(step:WorkflowStep,messages:ModelToolMessage[])=>Promise<ToolChatResult>;
@@ -18,10 +22,17 @@ export type WorkflowExecutionInput={
  receipt:()=>Promise<WorkRun['notionReceipt']>;
 };
 export type WorkflowExecutionResult={run:WorkflowRun;content:string;summary:string;outcome:'completed'|'partial'|'needs_input'|'failed';waiting:boolean};
-type StoredOutput={workflow:{version:1;runId:string;revision:number;stepId:string};outcome:'completed'|'partial'|'needs_input'|'failed'|'waiting';result?:unknown;notionCheckpointKey?:string;priorNotionCheckpointKey?:string;expectedBodyDigest?:string};
+type StoredOutput={workflow:{version:1;runId:string;revision:number;stepId:string};outcome:'completed'|'partial'|'needs_input'|'failed'|'waiting';result?:unknown;notionCheckpointKey?:string;priorNotionCheckpointKey?:string;expectedBodyDigest?:string;sourceArtifact?:{id:string;ref:string;originOperationId:string;bodyDigest:string}};
 type Classification={state:WorkflowStepResult['state'];outcome:StoredOutput['outcome'];summary:string;body?:string};
 export class WorkflowExecutionError extends Error{constructor(){super('这一步的原结果或授权范围无法确认，先核对已有内容；不会重复执行。');this.name='WorkflowExecutionError';}}
 const object=(value:unknown):Record<string,unknown>|undefined=>value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:undefined;
+/** SQL JSON storage may reorder object keys. Evidence equality is exact by
+ * field/value, not serialization order; missing or extra fields still fail. */
+const sameEvidence=(value:unknown,expected:Record<string,string|number>|undefined)=>{
+ if(expected===undefined)return value===undefined;
+ const actual=object(value),keys=Object.keys(expected);
+ return Boolean(actual&&Object.keys(actual).length===keys.length&&keys.every(key=>Object.hasOwn(actual,key)&&actual[key]===expected[key]));
+};
 const unsafePrompt=/(?:\b(?:Bearer|authorization|api[_ -]?key|password|secret|credentials?|HTTP|JSON|ECONN\w*|ETIMEDOUT|stack|traceback)\b|[{}<>])/i;
 const safeQuestion=(value:unknown,fallback:string)=>typeof value==='string'&&value.trim()&&value.length<=2000&&!unsafePrompt.test(value)?value.trim():fallback;
 const bodyOf=(value:unknown):string=>{
@@ -53,13 +64,19 @@ function classify(step:WorkflowStep,value:unknown):Classification{
  * authorization, provider access, billing and Notion replacement ownership. */
 export async function executeWorkflowStages(input:WorkflowExecutionInput):Promise<WorkflowExecutionResult>{
  const {binding,checkpoints}=input;
+ const initialArtifact=input.initialArtifact?structuredClone(input.initialArtifact):undefined;
+ if(initialArtifact&&(
+  initialArtifact.workspaceId!==binding.workspaceId||initialArtifact.userId!==binding.userId||initialArtifact.operationId!==binding.operationId||initialArtifact.kind!=='artifact'||initialArtifact.complete!==true||initialArtifact.truncated===true||typeof initialArtifact.content!=='string'||!initialArtifact.content.trim()||typeof initialArtifact.id!=='string'||!initialArtifact.id.trim()||typeof initialArtifact.ref!=='string'||!initialArtifact.ref.trim()||typeof initialArtifact.originOperationId!=='string'||!initialArtifact.originOperationId.trim()
+  ||input.run.spec.steps.length!==1||input.run.spec.steps[0].id!=='save_existing'||input.run.spec.steps[0].kind!=='notion'||input.run.spec.steps[0].inputs.length!==0
+ ))throw new WorkflowExecutionError();
+ const sourceArtifact=initialArtifact?{id:initialArtifact.id,ref:initialArtifact.ref!,originOperationId:initialArtifact.originOperationId!,bodyDigest:notionHash(initialArtifact.content)}:undefined;
  const marker=(step:WorkflowStep)=>({version:1 as const,runId:input.run.id,revision:input.run.revision,stepId:step.id});
  const name=(step:WorkflowStep)=>`workflow:${input.run.id}:${step.id}`;
  const key=(step:WorkflowStep)=>taskStepKey(checkpoints.namespace,name(step),JSON.stringify({revision:input.run.revision,instruction:step.instruction,inputs:step.inputs}));
  const stored=(step:WorkflowStep)=>{
   const found=checkpoints.steps.find(cp=>cp.key===key(step));
   if(found&&(found.namespace!==checkpoints.namespace||found.scopeId!==binding.operationId||found.tool!==name(step)))throw new WorkflowExecutionError();
-  if(found?.output){const meta=object(found.output)?.workflow;if(JSON.stringify(meta)!==JSON.stringify(marker(step)))throw new WorkflowExecutionError();}
+  if(found?.output){const v=object(found.output);if(!sameEvidence(v?.workflow,marker(step))||!sameEvidence(v?.sourceArtifact,sourceArtifact))throw new WorkflowExecutionError();}
   return found;
  };
  const output=(checkpoint:TaskStep):StoredOutput=>{
@@ -87,7 +104,7 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
   }
   return [{...binding,id:`checkpoint_${cp.key}`,kind:'tool_result',content:typeof result==='string'?result:JSON.stringify(result??null),ref:cp.key,complete:v?.status!=='partial'&&v?.complete!==false&&output(cp).outcome==='completed'}];
  };
- const context=(step:WorkflowStep,refs:readonly string[])=>buildWorkflowStepContext({scope:binding,modelSystemPrompt:input.modelPromptForStep?.(step)??input.modelSystemPrompt,goal:input.goal,constraints:[],step:{id:step.id,instruction:step.instruction,historyMessageIds:(step.historyCount?input.history.slice(-step.historyCount):[]).map(message=>message.id)},history:input.history,inputs:[...input.inputs,...refs.flatMap(checkpointInputs)],tools:[]});
+ const context=(step:WorkflowStep,refs:readonly string[])=>buildWorkflowStepContext({scope:binding,modelSystemPrompt:input.modelPromptForStep?.(step)??input.modelSystemPrompt,goal:input.goal,constraints:[],step:{id:step.id,kind:step.kind,instruction:step.instruction,historyMessageIds:(step.historyCount?input.history.slice(-step.historyCount):[]).map(message=>message.id)},deferredSteps:input.run.spec.steps.slice(input.run.spec.steps.findIndex(candidate=>candidate.id===step.id)+1).map(({id,title,kind})=>({id,title,kind})),history:input.history,inputs:[...input.inputs,...refs.flatMap(checkpointInputs)],tools:[]});
  // Validate all caller-wrapped references, including unselected history, before
  // the first billable or external call. A wrong scope never degrades to empty.
  context(input.run.spec.steps[0],[]);
@@ -101,7 +118,7 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
  const save=async(step:WorkflowStep,state:TaskStep['state'],value:StoredOutput)=>{
   await input.verify();const previous=stored(step);
   const tool=step.kind==='feature'?input.tools.find(tool=>tool.name===input.featureTools[step.featureId!]):undefined;
-  const checkpoint:TaskStep={key:key(step),namespace:checkpoints.namespace,tool:name(step),label:step.title,effect:step.kind==='notion'?'external_write':step.kind==='model'?'model':tool?.effect??'read',state,scopeId:binding.operationId,updatedAt:previous?.updatedAt??new Date().toISOString(),output:value};
+  const checkpoint:TaskStep={key:key(step),namespace:checkpoints.namespace,tool:name(step),label:step.title,effect:step.kind==='notion'?'external_write':step.kind==='model'?'model':tool?.effect??'read',state,scopeId:binding.operationId,updatedAt:previous?.updatedAt??new Date().toISOString(),output:{...value,...(sourceArtifact?{sourceArtifact}: {})}};
   await checkpoints.save(checkpoint);
  };
  const result=(step:WorkflowStep,value:Classification):WorkflowStepResult=>value.state==='completed'?{state:'completed',checkpointKey:key(step),summary:value.summary}:{state:value.state as 'failed'|'needs_input'|'waiting',summary:value.summary};
@@ -146,7 +163,7 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
   }
   if(step.kind==='notion'){
    const source=[...input.run.spec.steps].reverse().find(source=>step.inputs.includes(source.id)&&['model','feature'].includes(source.kind)&&refs.some(ref=>ref===key(source)));
-   const sourceValue=source?output(proof(key(source))):undefined,body=sourceValue?bodyOf(sourceValue.result):'';
+   const sourceValue=source?output(proof(key(source))):undefined,body=initialArtifact?.content??(sourceValue?bodyOf(sourceValue.result):'');
    if(!body.trim())return saveResult(step,undefined,{state:'needs_input',outcome:'needs_input',summary:'还没有可以保存的完整正文，先补齐内容再保存。'});
    const expectedBodyDigest=notionHash(legacyNotionNormalized(body));
    await save(step,'started',{workflow:marker(step),outcome:'waiting',expectedBodyDigest,...(priorReceipt?.checkpointKey?{priorNotionCheckpointKey:priorReceipt.checkpointKey}:{})});

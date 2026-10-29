@@ -1,9 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {discussionOnly,freshDocumentReadRequested,notionWriteRequested,coordinatorTaskIntent,existingTaskActionRequested} from './executionIntent';
+import {discussionOnly,freshDocumentReadRequested,notionWriteRequested,notionWriteDeclined,notionDestinationRequested,notionSaveExistingRequested,coordinatorTaskIntent,existingTaskActionRequested} from './executionIntent';
 test('current explicit discussion restrictions do not inherit an old execution request', () => {
   for (const text of ['只回答，不执行。','问问结果，不执行、不重跑。','本轮只讨论，不执行。','先只讨论方案，等我确认。','不执行','不执行  。','不执行\n','Answer only.']) assert.equal(discussionOnly(text),true,text);
   for (const text of ['开始执行这次回读，不执行之前的修改任务。','标题改成 xxx，执行。','我们讨论完了，开搞。','如果用户说“不执行”，怎么办？','读取已有文件并核对，不执行 Git 命令。','只做只读核对，不执行 之前的写入。']) assert.equal(discussionOnly(text),false,text);
+});
+test('late Notion saving has the same human authority as the picker, not quoted instructions or permissions questions',()=>{
+ for(const selected of ['chat','notion'] as const)for(const text of ['把这篇文章保存到 Notion，不要重写。','帮我看看怎么把这篇内容保存到 notion 呢？']){
+  assert.equal(notionDestinationRequested(text,selected),true,text);assert.equal(notionSaveExistingRequested(text,selected),true,text);
+ }
+ for(const text of ['只回答，Notion 有写入权限吗？','Notion 有没有保存权限？','教我如何配置 Notion，不执行。','先讨论，不要保存到 Notion。','不要保存到 Notion。']){
+  assert.equal(notionWriteDeclined(text),true,text);assert.equal(notionDestinationRequested(text,'notion'),false,text);assert.equal(notionSaveExistingRequested(text,'notion'),false,text);
+ }
+ for(const text of ['把“帮我看看怎么把这篇保存到Notion”翻译成英语。','正文如下：帮我看看怎么把这篇保存到Notion。','如果把这篇存到Notion会怎么样？','教我怎么保存到Notion。'])assert.equal(notionDestinationRequested(text,'chat'),false,text);
+ for(const text of ['如果把这篇存到Notion会怎么样？','教我怎么保存这篇到Notion。','有没有办法把这篇存到Notion？'])assert.equal(notionDestinationRequested(text,'notion'),false,text);
+ for(const text of ['别存到Notion，先留在对话。','先别存Notion，把这篇文章只发给我看看。','只读这篇Notion文章，不做修改。'])assert.equal(notionDestinationRequested(text,'notion'),false,text);
+ assert.equal(notionWriteDeclined('把这篇文章保存到Notion。正文如下：不要保存到Notion。'),false);
+ assert.equal(notionSaveExistingRequested('把这篇文章修改后保存到Notion。','notion'),false);
+ assert.equal(notionSaveExistingRequested('根据原文写一篇文章保存到Notion。','notion'),false);
+ assert.equal(notionDestinationRequested('不要新建任务，把这篇保存到Notion。','chat'),true);
+ assert.equal(notionDestinationRequested('不要新建页面，更新原Notion文章。','notion'),true);
+ assert.equal(notionDestinationRequested('有没有写入权限？有的话把这篇保存到Notion。','chat'),true);
+ assert.equal(notionSaveExistingRequested('保存到Notion。','chat'),true);
+ for(const text of ['把这篇文章保存到Notion，然后生成封面图片。','保存这篇到Notion，另外导出Word。','把这篇原文存到Notion，另查找今天新闻。'])assert.equal(notionSaveExistingRequested(text,'notion'),false,text);
 });
 
 test('a current unquoted Notion write request is distinct from discussion, payload and retrieval',()=>{

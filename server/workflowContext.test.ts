@@ -25,6 +25,18 @@ test('history is explicitly selected, ordered and limited to twenty, never impli
  assert.equal(data(buildWorkflowStepContext(fixture({history,step:{id:'s',instruction:'当前要求',historyMessageIds:history.slice(0,20).map(m=>m.id)}}))).history.length,20);
  for(const ids of [history.map(m=>m.id),['h1','h1'],['missing']])assert.throws(()=>buildWorkflowStepContext(fixture({history,step:{id:'s',instruction:'当前要求',historyMessageIds:ids}})),WorkflowContextError);
 });
+test('step completion is scoped to its own deliverable while later saving remains a runner responsibility',()=>{
+ const built=buildWorkflowStepContext(fixture({step:{id:'write',kind:'model',instruction:'撰写完整专栏。'},deferredSteps:[{id:'save',title:'保存到 Notion',kind:'notion'}]}));
+ const goal=JSON.parse(built.messages[1].content!);
+ assert.equal(goal.goal,'完成同一篇说明文章并保存，不另建任务。');
+ assert.deepEqual(goal.currentStep,{id:'write',instruction:'撰写完整专栏。',kind:'model',completionScope:'current_step'});
+ assert.deepEqual(goal.deferredSteps,[{id:'save',title:'保存到 Notion',kind:'notion'}]);
+ assert.match(built.messages[0].content!,/outcome 只判断当前步骤/);
+ assert.match(built.messages[0].content!,/尚未执行的后续步骤不是本步骤的缺项/);
+ assert.match(built.messages[0].content!,/真正缺料、正文未写完或执行失败仍须如实/);
+ assert.equal(built.tools.length,0,'describing a future save does not grant its tool to the writing model');
+ for(const deferredSteps of [[{id:'write',title:'不能重复当前步骤',kind:'notion' as const}],[{id:'save',title:'保存',kind:'notion' as const},{id:'save',title:'重复',kind:'notion' as const}]])assert.throws(()=>buildWorkflowStepContext(fixture({deferredSteps})),WorkflowContextError);
+});
 test('all reference envelopes reject foreign workspace, user or operation even when history or candidates would not be selected',()=>{
  for(const key of ['workspaceId','userId','operationId'] as const){
   assert.throws(()=>buildWorkflowStepContext(fixture({inputs:[input('foreign','私有正文',{[key]:'other',kind:'knowledge'})],step:{id:'s',instruction:'当前要求',knowledgeLimit:0}})),/不属于当前授权任务/);

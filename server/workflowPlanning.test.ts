@@ -36,6 +36,18 @@ test('a Notion manuscript is model then save even without knowledge, and a revie
  assert.deepEqual(html.steps.map(s=>s.kind),['tool','model','notion','feature']);assert.deepEqual(html.steps[3].inputs,['draft','save']);assert.deepEqual(html.steps[2].inputs,['draft']);assert.deepEqual(html.steps[1].inputs,['source_1']);
  assert.throws(()=>resolveTaskWorkflow(base({notion:true})),reason('notion'));
 });
+test('server-bound existing text has a save-only plan and never asks a model to regenerate it',()=>{
+ const request=base({notion:true,tools:['save_notion_draft'],executorIds:[],existingArtifact:{id:'existing_article'},explicit:plan(step('rewrite'),step('save',{kind:'notion',inputs:['rewrite']}))});
+ const spec=resolveTaskWorkflow(request)!;
+ assert.deepEqual(spec.steps.map(s=>s.kind),['notion']);assert.equal(spec.steps[0].id,'save_existing');assert.deepEqual(spec.steps[0].inputs,[]);assert.match(spec.steps[0].instruction,/原样保存/);assert.doesNotMatch(JSON.stringify(spec),/rewrite|existing_article/,'the server binds the body outside model-authored instructions');
+ assert.throws(()=>resolveTaskWorkflow(base({...request,existingArtifact:undefined,explicit:plan(step('save_existing',{kind:'notion'}))})),reason('notion_input'),'an untrusted input-free save is not authorized by its step name');
+ assert.throws(()=>resolveTaskWorkflow({...request,notion:false}),reason('notion'));
+ assert.throws(()=>resolveTaskWorkflow({...request,tools:[]}),reason('notion'));
+ assert.throws(()=>resolveTaskWorkflow({...request,readOnlyNotion:true}),reason('readonly'));
+ assert.throws(()=>resolveTaskWorkflow({...request,requiredKnowledge:true}),reason('ambiguous'));
+ assert.throws(()=>resolveTaskWorkflow({...request,requiredTools:['web_search']}),reason('ambiguous'));
+ for(const existingArtifact of [{id:''},{id:'../another_message'},{id:'existing_article',content:'cannot inject the body'}])assert.throws(()=>resolveTaskWorkflow({...request,existingArtifact}),reason('scope'));
+});
 test('default planning never guesses multi-feature order or trusts a webpage-looking name for a post-save conversion',()=>{
  for(const values of [
   {features:[{id:'one-visual-html',name:'网页'},{id:'image',name:'作图'}],requiredFeatureIds:['image','one-visual-html']},

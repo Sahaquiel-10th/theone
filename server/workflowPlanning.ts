@@ -4,6 +4,9 @@ export type ResolveTaskWorkflowInput={
  explicit?:WorkflowSpec;requiredKnowledge:boolean;readOnlyNotion:boolean;notion:boolean;
  features:{id:string;name:string}[];requiredFeatureIds:string[];instruction:string;
  tools:string[];executorIds:string[];requiredTools?:string[];
+ /** Server-resolved exact existing message only. Never accepted from the
+  * dispatch schema, and never proof that its original writing task finished. */
+ existingArtifact?:{id:string};
 };
 export type WorkflowPlanningReason='scope'|'feature'|'tool'|'executor'|'required_feature'|'required_tool'|'source_dependency'|'notion'|'notion_input'|'readonly'|'ambiguous'|'public_query';
 /** Private admission error; no task, model or external operation is started by
@@ -31,7 +34,7 @@ function preflight(input:ResolveTaskWorkflowInput,spec:WorkflowSpec){
   if(step.kind==='notion'){
    if(input.readOnlyNotion)fail('readonly','本轮只允许读取 Notion，流程不能保存或修改原文。请去掉写入步骤。');
    if(!input.notion||!availableTools.has('save_notion_draft'))fail('notion','本轮没有可用的 Notion 保存目标或写入能力，尚未执行。请先选好保存位置。');
-   if(!step.inputs.some(id=>spec.steps.some(source=>source.id===id&&['model','feature'].includes(source.kind))))fail('notion_input','保存步骤没有直接取得可用的完整正文，尚未执行。请先生成正文，再把实际成果交给保存步骤。');
+   if(!input.existingArtifact&&!step.inputs.some(id=>spec.steps.some(source=>source.id===id&&['model','feature'].includes(source.kind))))fail('notion_input','保存步骤没有直接取得可用的完整正文，尚未执行。请先生成正文，再把实际成果交给保存步骤。');
   }
  }
  for(const id of input.requiredFeatureIds)if(!spec.steps.some(step=>step.kind==='feature'&&step.featureId===id&&step.required!==false))fail('required_feature','流程遗漏了必须交付的功能，尚未执行。请补齐必需步骤。');
@@ -57,6 +60,14 @@ export function resolveTaskWorkflow(input:ResolveTaskWorkflowInput):WorkflowSpec
  if(!input||typeof input.requiredKnowledge!=='boolean'||typeof input.readOnlyNotion!=='boolean'||typeof input.notion!=='boolean'||typeof input.instruction!=='string'||!input.instruction.trim()||!Array.isArray(input.features)||input.features.some(feature=>!feature||typeof feature.id!=='string'||!feature.id.trim()||typeof feature.name!=='string'||!feature.name.trim())||new Set(input.features.map(feature=>feature.id)).size!==input.features.length||!names(input.requiredFeatureIds)||!names(input.tools)||!names(input.executorIds)||input.requiredTools!==undefined&&!names(input.requiredTools))fail('scope','任务流程的可用能力或完整目标未确认，尚未执行。');
  const featureIds=new Set(input.features.map(feature=>feature.id));
  if(input.requiredFeatureIds.some(id=>!featureIds.has(id)))fail('required_feature','必需功能没有被选中或已经不可用，尚未执行。请重新选择。');
+ if(input.existingArtifact!==undefined){
+  if(!input.existingArtifact||Object.keys(input.existingArtifact).join()!=='id'||typeof input.existingArtifact.id!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_:-]{0,99}$/.test(input.existingArtifact.id))fail('scope','待保存原文尚未绑定，请先明确要保存哪一篇。');
+  if(input.readOnlyNotion)fail('readonly','本轮只允许读取 Notion，不能保存现有正文。');
+  if(input.requiredKnowledge||input.requiredFeatureIds.length||(input.requiredTools??[]).some(name=>name!=='save_notion_draft'))fail('ambiguous','本轮不只是保存现有正文，请先明确额外制作或资料读取的安排。');
+  // The exact body is held by the server-owned attempt, not copied into a
+  // model prompt or the public workflow schema. Saving it requires no model.
+  return preflight(input,validateWorkflowSpec({version:1,steps:[{id:'save_existing',title:'保存现有正文到 Notion',kind:'notion',instruction:'将用户明确选中的现有正文原样保存到本任务已确认的 Notion 目标并回读核对；不重新创作，不据此改变原写作任务的完成情况。',inputs:[],required:true,historyCount:0}]}));
+ }
  if(input.explicit!==undefined)return preflight(input,validateWorkflowSpec(input.explicit));
  if(input.readOnlyNotion&&(input.requiredTools??[]).includes('save_notion_draft'))fail('readonly','本轮只允许读取 Notion，不能同时要求保存或修改原文。');
  if((input.requiredTools??[]).includes('save_notion_draft')&&!input.notion)fail('notion','本轮没有已确认的 Notion 保存目标，尚未执行。');

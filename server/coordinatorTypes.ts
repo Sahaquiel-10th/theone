@@ -22,6 +22,10 @@ export type WorkRun = {
   reviewedAt?: string;
   resultOutcome?: 'completed' | 'failed' | 'partial' | 'needs_input' | 'returned';
   notionTarget?: NonNullable<import('./types.js').Conversation['notionDocument']> & { referenceIds: string[] };
+  /** Server-selected exact existing result, never a model-provided body or ID.
+   * Digests bind both the original message and the body without ONE's known
+   * appended delivery status. An old partial result remains partial. */
+  notionArticleSource?: {conversationId:string;operationId:string;messageId:string;messageDigest:string;digest:string};
   /** Explicit manual read-only authorization to finish only this exact saved
    * attempt after delayed proof; never an authorization to replay its work. */
   notionVerificationSelection?:{operationId:string;expectedDigest:string;pageId?:string;asyncTaskId?:string;checkpointKey?:string;version:number;connectionId:string;grantId:string;parentId:string;requestedAt:string};
