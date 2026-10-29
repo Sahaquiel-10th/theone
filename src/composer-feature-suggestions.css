@@ -1,0 +1,36 @@
+.composer.studio-composer .composer-feature-suggestions {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 110;
+  width: min(680px, 100%);
+  padding: 8px 12px 12px;
+  border: 1px solid var(--fluid-menu-edge, var(--studio-line));
+  border-radius: 18px;
+  background: var(--fluid-menu-fill, var(--studio-surface));
+  color: var(--fluid-ink, var(--studio-ink));
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--fluid-ink, var(--studio-ink)) 9%, transparent);
+}
+.composer-feature-suggestions > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 32px; }
+.composer-feature-suggestions > header > span { color: var(--fluid-muted, var(--studio-muted)); font-size: 11px; line-height: 1.5; }
+.composer-feature-suggestions > header small { margin-left: 8px; font-size: 10px; }
+.composer.studio-composer .composer-feature-suggestions-dismiss { display: grid; place-items: center; flex: none; width: 40px; height: 40px; padding: 0; border: 0; border-radius: 10px; background: transparent; color: var(--fluid-muted, var(--studio-muted)); cursor: pointer; }
+.composer-feature-suggestions > ul { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.composer-feature-suggestions > ul > li { min-width: 0; }
+.composer.studio-composer .composer-feature-suggestion { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 56px; padding: 8px 10px; border: 1px solid var(--fluid-line, var(--studio-line)); border-radius: 12px; background: transparent; color: var(--fluid-ink, var(--studio-ink)); text-align: left; cursor: pointer; font: inherit; }
+.composer-feature-suggestion > span { flex: 1; min-width: 0; }
+.composer-feature-suggestion strong, .composer-feature-suggestion small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.composer-feature-suggestion strong { font-size: 12px; line-height: 1.5; font-weight: 550; }
+.composer-feature-suggestion small { margin-top: 4px; color: var(--fluid-muted, var(--studio-muted)); font-size: 11px; line-height: 1.5; }
+.composer-feature-suggestion > svg { flex: none; }
+.composer.studio-composer .composer-feature-suggestion[aria-pressed=true] { opacity: 1; border-color: color-mix(in srgb, var(--fluid-accent, var(--studio-ink)) 55%, var(--fluid-line, var(--studio-line))); background: color-mix(in srgb, var(--fluid-accent, var(--studio-ink)) 12%, transparent); color: var(--fluid-ink, var(--studio-ink)); cursor: default; }
+.composer.studio-composer .composer-feature-suggestion:disabled:not([aria-pressed=true]) { opacity: .5; cursor: not-allowed; }
+.composer.studio-composer .composer-feature-suggestions button:not(:disabled):hover { background: var(--fluid-selection, var(--studio-paper)); }
+.composer.studio-composer .composer-feature-suggestions button:focus-visible { outline: 2px solid var(--fluid-focus, var(--studio-ink)); outline-offset: 2px; }
+@media (max-width: 760px) {
+  .composer-feature-suggestions > ul { grid-template-columns: 1fr; gap: 4px; }
+  .composer.studio-composer .composer-feature-suggestion { min-height: 48px; }
+  .composer-feature-suggestion > span { display: flex; align-items: baseline; gap: 8px; }
+  .composer-feature-suggestion strong { flex: none; max-width: 45%; }
+  .composer-feature-suggestion small { margin-top: 0; }
+}

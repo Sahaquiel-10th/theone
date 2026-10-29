@@ -62,6 +62,7 @@ import {useWorkspacePreview} from './preview/useWorkspacePreview';
 import {useCoordinator} from './useCoordinator';
 import {executionHandoffOutcome} from './executionHandoff';
 import { useComposerFeatures } from "./ComposerFeatures";
+import { ComposerFeatureSuggestions } from './ComposerFeatureSuggestions';
 import { LocalDeviceSettings } from './LocalDeviceSettings';
 import { DocumentDestinationPicker, NotionWritingSettings, NotionReceiptNotice, type DocumentDestination } from './DocumentDestination';
 import './preview/workspace-preview.css';
@@ -708,6 +709,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [defaultModelId, setDefaultModelId] = useState("");
   const [draftWorkspaceId, setDraftWorkspaceId] = useState("");
   const [content, setContent] = useState("");
+  const [composerFocused,setComposerFocused]=useState(false);
+  const [composerCursor,setComposerCursor]=useState(0);
+  const [composerSuggestionDismiss,setComposerSuggestionDismiss]=useState(0);
   const featurePicker = useComposerFeatures({api,text:content,setText:setContent,selected:featureForNext.map(f=>f.id),onChoose:chooseFeature});
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
@@ -1862,6 +1866,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   function handleComposerKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.defaultPrevented || featurePicker.keyDown(event)) return;
+    if (event.key === 'Escape' && !isComposing && !event.nativeEvent.isComposing) setComposerSuggestionDismiss(value=>value+1);
     if (event.key === "Enter" && !event.shiftKey && !isComposing && !event.nativeEvent.isComposing) {
       event.preventDefault();
       event.currentTarget.form?.requestSubmit();
@@ -2413,7 +2418,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           </div> : null}
         </div>
 
-        <form className="composer studio-composer" data-feature-armed={preview.enabled&&featureForNext.length>0} onSubmit={send}>
+        <form className="composer studio-composer" data-feature-armed={preview.enabled&&featureForNext.length>0} onSubmit={send} onFocusCapture={()=>setComposerFocused(true)} onBlurCapture={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setComposerFocused(false);}} onKeyDown={event=>{if(event.key==='Escape'&&event.target!==featurePicker.input.current&&!featurePicker.isOpen&&!isComposing){setComposerSuggestionDismiss(value=>value+1);featurePicker.input.current?.focus({preventScroll:true});}}}>
           {coordinator.enabled&&coordinator.state.boundTask&&coordinator.state.boundTask!==activeId?taskPauseNotice(coordinator.state.boundTask):null}
           {!models.length ? <div className="chat-error"><span>模型未就绪，请联系管理员。</span><button type="button" onClick={() => void refresh()}>重试</button></div> : null}
           {pendingRequests.length ? <details className="one-pending-answers"><summary>有 {pendingRequests.length} 条消息待确认 · 查看原结果，不重复扣费</summary>{pendingRequests.map(item => <button type="button" key={item.operationId} onClick={() => void recoverAnswer(item.operationId)}>查看 {dateTime(item.createdAt)} 的结果</button>)}</details> : null}
@@ -2439,6 +2444,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             </div>
           ) : null}
           {preview.enabled && composeMode==="chat" ? featurePicker.panel : null}
+          <ComposerFeatureSuggestions api={api} scopeKey={`${user.id}:${user.access?.workspaceId??user.defaultWorkspaceId}`} text={content} cursor={composerCursor} enabled={preview.enabled&&composeMode==='chat'} focused={composerFocused&&view==='chat'&&!workLayer} composing={isComposing} pickerOpen={featurePicker.isOpen} dismissVersion={composerSuggestionDismiss} selected={featureForNext.map(feature=>feature.id)} onChoose={(feature,source)=>{chooseFeature(feature,source);featurePicker.input.current?.focus({preventScroll:true});}} onDismiss={()=>featurePicker.input.current?.focus({preventScroll:true})}/>
           <div className="composer-energy-shell" data-armed={preview.enabled&&featureForNext.length>0}>
             {preview.enabled?<FeatureArmedRim armed={featureForNext.length>0}/>:null}
             {preview.enabled&&featureForNext.length>0?<div className="selected-feature-list" aria-label="下次回复将使用的超能力"><small>下次回复将使用超能力：</small>{featureForNext.map(feature=><button key={feature.id} type="button" className="selected-feature-chip" aria-label={`取消功能：${feature.name}`} onClick={()=>chooseFeature(feature)}><Sparkles size={13}/><span>{feature.name}</span><X size={12}/></button>)}</div>:null}
@@ -2451,7 +2457,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               aria-activedescendant={featurePicker.activeOption}
               aria-label="给 ONE 发消息"
               value={content}
-              onChange={(event) => {setContent(event.target.value);if(preview.enabled&&composeMode==="chat")featurePicker.update(event.target.value,event.target.selectionStart);}}
+              onChange={(event) => {setContent(event.target.value);setComposerCursor(event.target.selectionStart);if(preview.enabled&&composeMode==="chat")featurePicker.update(event.target.value,event.target.selectionStart);}}
+              onSelect={event=>setComposerCursor(event.currentTarget.selectionStart)}
               onCompositionStart={() => setIsComposing(true)}
               onCompositionEnd={() => setIsComposing(false)}
               onKeyDown={handleComposerKeyDown}

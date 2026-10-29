@@ -1,0 +1,20 @@
+{
+  "environment": "isolated in-memory browser fixture",
+  "input": "帮我写方案",
+  "selected": ["方案整理 2", "方案整理 3"],
+  "draftPreserved": true,
+  "focusAfterPointerSelection": "one-studio-input",
+  "mutationsAfterSelections": [],
+  "recommendationsAfterContinuingText": 0,
+  "escapeDismissed": true,
+  "manualPickerSuppressesSuggestions": true,
+  "keyboardSelectionReturnsFocus": "one-studio-input",
+  "enterSubmission": {
+    "method": "POST",
+    "path": "/api/coordinator/messages",
+    "count": 1,
+    "fixtureStatus": 409,
+    "meaning": "Enter reached the existing send handler. The fixture intentionally rejects execution; this is not evidence of a real task or model call."
+  },
+  "systemIme": "Composition guard unit tested and wired; native operating-system IME not exercised."
+}
