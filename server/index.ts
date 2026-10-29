@@ -1008,12 +1008,8 @@ app.post('/api/executions/:id/preview', ...keyAuth, asyncRoute(async (req, res) 
   res.json(await oneKeyPresence.staticPreview({deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, workspaceId: req.workspaceId!, userId: req.user!.id}, String(req.params.id), req.body.action, req.body.path));
 }));
 for (const method of ['get', 'post'] as const) app[method]('/api/me/executor', ...keyAuth, asyncRoute(async (req, res) => {
-  if (!codexGateway.enabled()) {
-    if (method === 'post') throw new Error('统一工程执行尚未开放，现有文件工具仍可用');
-    res.json({ available: false, message: '统一工程执行正在准备，现有文件工具仍可用' }); return;
-  }
   res.status(method === 'post' ? 202 : 200).json(await oneKeyPresence.managedExecutor({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, workspaceId: req.workspaceId!, userId: req.user!.id },
-    runtime => managedExecutorDistribution.release(runtime), method === 'post'));
+    runtime => managedExecutorDistribution.release(runtime), method === 'post', codexGateway.enabled()));
 }));
 app.post("/api/me/local-device", ...keyAuth, asyncRoute(async (req, res) => {
   res.json(await oneKeyPresence.localConfiguration({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, workspaceId: req.workspaceId!, userId: req.user!.id }, true));
@@ -1089,7 +1085,7 @@ attentionService.start();
 installOnboardingProfileRoutes(app,keyAuth,store,{storageAvailable:Boolean(uploadDir),verifyKey:confirmKeyBeforeModel,
   inspectLocal:async req=>{
     const scope={deviceId:req.oneKeyDeviceId!,installationId:req.oneKeyInstallationId,workspaceId:req.workspaceId!,userId:req.user!.id};
-    const [folder,executor]=await Promise.allSettled([oneKeyPresence.localConfiguration(scope,false),codexGateway.enabled()?oneKeyPresence.managedExecutor(scope,runtime=>managedExecutorDistribution.release(runtime),false):Promise.resolve({available:false})]);
+    const [folder,executor]=await Promise.allSettled([oneKeyPresence.localConfiguration(scope,false),oneKeyPresence.managedExecutor(scope,runtime=>managedExecutorDistribution.release(runtime),false,codexGateway.enabled())]);
     return {connected:folder.status==='fulfilled',folderSelected:folder.status==='fulfilled'&&!!folder.value.targetName,executorReady:executor.status==='fulfilled'&&'installedVersion' in executor.value&&!!executor.value.installedVersion,checkedAt:new Date().toISOString()};
   },
   enqueueImage:(scope,input,verify)=>coordinatorService.enqueueOnboardingImage(scope,input,verify),resume:(scope,verify)=>coordinatorService.resume(scope,verify)});

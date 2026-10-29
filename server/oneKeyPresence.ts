@@ -271,9 +271,10 @@ export class OneKeyPresence {
 
   async localConfiguration(scope: { deviceId: string; installationId?: string; workspaceId: string; userId: string }, change: boolean) {
     await this.requireProof({ ...scope, method: change ? "POST" : "GET", path: "/api/me/local-device" });
-    const socket = this.sockets.get(scope.deviceId), state = socket && this.states.get(socket);
-    if (!socket || !state?.authenticated || state.installationId !== scope.installationId || !state.capabilities.has("local_configuration_v1")) throw new OneKeyPresenceError("此启动器尚不支持目录设置，请先升级 ONE");
+    const socket = await this.ownedSocket(scope), state = this.states.get(socket)!;
+    if (!state.capabilities.has("local_configuration_v1")) throw new OneKeyPresenceError("此启动器尚不支持目录设置，请先升级 ONE");
     const db = await this.store.read();
+    if (await this.ownedSocket(scope) !== socket || !state.authenticated) throw new OneKeyPresenceError('本机连接已变更，请重新检查');
     if (change && db.executionTasks.some(t => t.deviceId === scope.deviceId && t.installationId === scope.installationId && !executionTerminal(t.status))) throw new OneKeyPresenceError("本机还有任务在执行，请停止或等结束后更换目录");
     if (change && [...this.pendingLocal.values()].some(p => p.socket === socket && p.configuration && p.change)) throw new OneKeyPresenceError('本机正在设置或准备工具，请完成后再更换目录');
     const requestId = uid("cfg");
@@ -317,9 +318,20 @@ export class OneKeyPresence {
   }
 
   async managedExecutor(scope: { deviceId: string; installationId?: string; workspaceId: string; userId: string },
-    catalog: (runtime: RuntimeIdentity) => { envelope: SignedRuntimeUpdate; version: string; size: number } | undefined, install = false) {
+    catalog: (runtime: RuntimeIdentity) => { envelope: SignedRuntimeUpdate; version: string; size: number } | undefined, install = false, managedEnabled = true) {
     await this.requireProof({ ...scope, method: install ? 'POST' : 'GET', path: '/api/me/executor' });
     const socket = await this.ownedSocket(scope), state = this.states.get(socket)!;
+    // Windows file tools are built into the authenticated launcher, not a Mac
+    // Codex installation. Checking them must not require/download that catalog.
+    if (state.runtime?.platform === 'windows' && state.capabilities.has('local_tools_v1')) {
+      return { available: true, preparing: false, installedSource: 'builtin' as const,
+        installedVersion: state.runtime.version, version: state.runtime.version,
+        message: '内置文件工具随 ONE 启动器提供，可在已授权的工作文件夹内读写文件。' };
+    }
+    if (!managedEnabled) {
+      if (install) throw new OneKeyPresenceError('统一工程执行尚未开放，现有文件工具仍可用');
+      return { available: false, message: '统一工程执行正在准备，现有文件工具仍可用' };
+    }
     if (!state.runtime || state.runtime.platform !== 'macos' || !state.capabilities.has('managed_codex_v1')) {
       if (install) throw new OneKeyPresenceError('请先升级 ONE 启动器，当前版本不支持一键准备执行工具');
       return { available: false, message: '当前启动器尚不支持一键准备；现有文件工具仍可用' };

@@ -3,7 +3,7 @@ export type LocalExecutorState = {
   preparing?: boolean;
   phase?: string;
   installedVersion?: string;
-  installedSource?: 'existing' | 'managed';
+  installedSource?: 'existing' | 'managed' | 'builtin';
   version?: string;
   size?: number;
   message?: string;
@@ -18,6 +18,7 @@ export function localDeviceStatus(executor:LocalExecutorState|undefined,checking
   }
   if(checking)return {state:'checking',title:'正在检查本机状态',description:'请稍候。'};
   if(requestError||executor?.error)return {state:'unconfirmed',title:'本机状态未确认',description:'保持 ONE Key 连接后，重新检查。'};
+  if(executor?.available&&executor.installedSource==='builtin'&&executor.installedVersion)return {state:'ready',title:'内置文件工具已连接',description:'可在已授权的工作文件夹内读取、创建和修改文件；无需另装执行工具。'};
   if(executor?.installedVersion)return {state:'ready',title:'本机执行已就绪',description:'可以按你的要求创建和整理文件。'};
   if(executor?.available)return {state:'setup',title:'需要准备本机执行',description:'点击下方按钮，检查并准备执行工具。'};
   return {state:'unconfirmed',title:'本机连接未确认',description:'连接 ONE Key 后，重新检查。'};

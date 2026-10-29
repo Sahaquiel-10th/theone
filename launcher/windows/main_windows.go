@@ -52,6 +52,7 @@ type socketMessage struct {
 	RequestID   string              `json:"requestId,omitempty"`
 	Tool        string              `json:"tool,omitempty"`
 	Arguments   map[string]any      `json:"arguments,omitempty"`
+	Change      bool                `json:"change,omitempty"`
 	Envelope    signedRuntimeUpdate `json:"envelope,omitempty"`
 }
 
@@ -559,7 +560,7 @@ func connectLauncher(base, credentialPath, deviceID string) (*websocket.Conn, er
 		connection.Close()
 		return nil, err
 	}
-	if err := connection.WriteJSON(socketResponse{Type: "auth_response", ChallengeID: challenge.ChallengeID, Signature: signature, Capabilities: []string{"local_tools_v1", "runtime_update_v1"}, Platform: "windows", Architecture: "amd64", Version: version, UpdateProtocol: 1}); err != nil {
+	if err := connection.WriteJSON(socketResponse{Type: "auth_response", ChallengeID: challenge.ChallengeID, Signature: signature, Capabilities: launcherCapabilities(), Platform: "windows", Architecture: "amd64", Version: version, UpdateProtocol: 1}); err != nil {
 		connection.Close()
 		return nil, errors.New("ONE 在线验证发送失败")
 	}
@@ -585,9 +586,17 @@ func serveProofs(connection *websocket.Conn, credentialPath, deviceID string) (r
 }
 
 func serveProofsWithInstaller(connection *websocket.Conn, credentialPath, deviceID string, install func(runtimeUpdateArtifact, string, func(string)) error) (result error) {
+	return serveProofsWithWorkspaceChooser(connection, credentialPath, deviceID, install, chooseWorkspace)
+}
+
+func serveProofsWithWorkspaceChooser(connection *websocket.Conn, credentialPath, deviceID string, install func(runtimeUpdateArtifact, string, func(string)) error, choose func() (string, error)) (result error) {
 	defer connection.Close()
 	writer := &socketWriter{connection: connection}
 	executor := &localExecutor{commands: make(map[string]*exec.Cmd)}
+	configuration := make(chan struct{}, 1)
+	active := make(chan struct{})
+	var activeOnce sync.Once
+	invalidate := func() { activeOnce.Do(func() { close(active) }) }
 	removed := make(chan struct{})
 	resumed := make(chan struct{})
 	stopMonitor := make(chan struct{})
@@ -599,6 +608,8 @@ func serveProofsWithInstaller(connection *websocket.Conn, credentialPath, device
 			result = update.wait()
 		}
 	}()
+	// Invalidate folder authorization before a potentially slow installer join.
+	defer invalidate()
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
@@ -611,11 +622,13 @@ func serveProofsWithInstaller(connection *websocket.Conn, credentialPath, device
 				now := time.Now().UnixMilli()
 				if now-lastTick > 5000 {
 					close(resumed)
+					invalidate()
 					connection.Close()
 					return
 				}
 				lastTick = now
 				if !fileExists(credentialPath) {
+					invalidate()
 					connection.Close()
 					close(removed)
 					return
@@ -627,6 +640,7 @@ func serveProofsWithInstaller(connection *websocket.Conn, credentialPath, device
 	for {
 		var message socketMessage
 		if err := connection.ReadJSON(&message); err != nil {
+			invalidate()
 			// Join a committed/ongoing file operation even if the transport died.
 			// A reconnect must never start another writer over this installer.
 			if update != nil {
@@ -653,6 +667,38 @@ func serveProofsWithInstaller(connection *websocket.Conn, credentialPath, device
 		case "runtime_recovery_ack":
 			journal, _ := windowsRecoveryJournal(deviceID)
 			_ = acknowledgeRuntimeRecovery(credentialPath, journal, message.RequestID)
+		case "local_configuration":
+			if message.RequestID == "" {
+				continue
+			}
+			if update != nil {
+				_ = writer.json(map[string]any{"type": "local_error", "taskId": "device_settings", "requestId": message.RequestID, "error": "ONE 正在更新，请完成后再设置工作文件夹"})
+				continue
+			}
+			select {
+			case configuration <- struct{}{}:
+			default:
+				_ = writer.json(map[string]any{"type": "local_error", "taskId": "device_settings", "requestId": message.RequestID, "error": "本机正在选择工作文件夹，请先完成电脑上的选择窗口"})
+				continue
+			}
+			// Native folder selection must not block the socket's Key proofs.
+			go func(request socketMessage) {
+				selected, err := executor.configure(deviceID, request.Change, choose, func() error {
+					select {
+					case <-active:
+						return errors.New("本机连接已断开，请重新连接后选择工作文件夹")
+					default:
+					}
+					_, err := loadCredential(credentialPath, deviceID)
+					return err
+				})
+				response := map[string]any{"type": "local_ready", "taskId": "device_settings", "requestId": request.RequestID, "targetName": selected, "output": selected}
+				if err != nil {
+					response["type"], response["error"] = "local_error", err.Error()
+				}
+				<-configuration
+				_ = writer.json(response)
+			}(message)
 		case "local_prepare":
 			root, err := executor.prepare(deviceID)
 			if err != nil {
@@ -671,6 +717,12 @@ func serveProofsWithInstaller(connection *websocket.Conn, credentialPath, device
 			}(message)
 		case "update_install":
 			if message.RequestID == "" || update != nil {
+				continue
+			}
+			// The HTTP request may time out before the native picker closes. Keep
+			// local update and directory writes mutually exclusive after timeout.
+			if len(configuration) > 0 {
+				_ = writer.json(map[string]any{"type": "update_event", "requestId": message.RequestID, "status": "failed", "error": "本机正在选择工作文件夹，请完成电脑上的选择窗口后再更新 ONE"})
 				continue
 			}
 			request := message
@@ -969,6 +1021,27 @@ func (executor *localExecutor) prepare(deviceID string) (string, error) {
 		return "", err
 	}
 	executor.root = selected
+	return selected, nil
+}
+
+func (executor *localExecutor) configure(deviceID string, change bool, choose func() (string, error), authorize func() error) (string, error) {
+	executor.mutex.Lock()
+	defer executor.mutex.Unlock()
+	if err := authorize(); err != nil {
+		return "", err
+	}
+	selected, err := configureWorkFolder(loadSavedWorkspace(deviceID), change, directoryExists, choose, func(path string) error {
+		if err := authorize(); err != nil {
+			return err
+		}
+		return saveWorkspace(deviceID, path)
+	})
+	if err != nil {
+		return "", err
+	}
+	if change {
+		executor.root = selected
+	}
 	return selected, nil
 }
 
@@ -1398,7 +1471,7 @@ func saveWorkspace(deviceID, workspace string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(workspace), 0600)
+	return writeWorkFolderConfig(path, workspace, replaceRuntimeFile)
 }
 
 func chooseWorkspace() (string, error) {

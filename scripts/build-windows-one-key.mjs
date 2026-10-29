@@ -12,7 +12,7 @@ const goBinary = value("--go-bin") || "go";
 const launcherRoot = path.join(root, "launcher/windows");
 const executable = path.join(outputRoot, "ONE.exe");
 const publicKeyPath = path.resolve(root, value("--update-public-key") || "config/runtime-update-public-key.txt");
-const versionPath = path.resolve(root, value("--runtime-version") || "config/runtime-version.txt");
+const versionPath = path.resolve(root, value("--runtime-version") || "config/runtime-version-windows.txt");
 if (!fs.existsSync(publicKeyPath)) throw new Error(`更新发布公钥不存在：${publicKeyPath}`);
 if (!fs.existsSync(versionPath)) throw new Error(`启动器版本文件不存在：${versionPath}`);
 const updatePublicKey = fs.readFileSync(publicKeyPath, "utf8").trim();

@@ -26,4 +26,4 @@ for (const artifact of payload.artifacts) {
   const hash = crypto.createHash("sha256").update(fs.readFileSync(target)).digest("hex");
   if (hash !== artifact.sha256) throw new Error(`更新文件摘要不符：${name}`);
 }
-console.log(`VERIFIED_VERSION=${payload.artifacts[0].version}`);
+for (const artifact of payload.artifacts) console.log(`VERIFIED_${artifact.platform.toUpperCase()}_VERSION=${artifact.version}`);

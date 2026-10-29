@@ -30,6 +30,8 @@ test('managed preparation binds owner, computer, live Key and task/update exclus
   const scope = { deviceId:'key',installationId,workspaceId:'wa',userId:'a' }, envelope={payload:'signed',signature:'signed'};
   const catalog=()=>({envelope,version:'0.160.1',size:100});
   try {
+    assert.equal((await presence.managedExecutor(scope,catalog,false,false)).available,false);
+    await assert.rejects(presence.managedExecutor(scope,catalog,true,false),/尚未开放/);
     assert.equal((await presence.managedExecutor(scope,catalog)).installedVersion,'0.160.1');
     for(const change of [{workspaceId:'wb'},{userId:'b'},{installationId:'b'.repeat(32)}])
       await assert.rejects(presence.managedExecutor({...scope,...change},catalog,true),/不属于|当前这台电脑/);

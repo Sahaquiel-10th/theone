@@ -17,3 +17,14 @@ test('technical executor messages never become the primary readiness label',()=>
   assert.equal(status.state,'unconfirmed');
   assert.doesNotMatch(status.title+status.description,/INTERNAL|工程|渠道/);
 });
+
+test('authenticated Windows built-in file tools are ready without claiming Codex installation',()=>{
+  const builtin={available:true,installedVersion:'0.4.28',installedSource:'builtin' as const};
+  const status=localDeviceStatus(builtin,false,false);
+  assert.equal(status.state,'ready');
+  assert.match(status.title,/内置文件工具/);
+  assert.doesNotMatch(status.description,/Codex/);
+  assert.equal(localDeviceStatus(builtin,true,false).state,'checking');
+  assert.equal(localDeviceStatus(builtin,false,false,'Key disconnected').state,'unconfirmed');
+  assert.equal(localDeviceStatus({...builtin,installedVersion:undefined},false,false).state,'setup');
+});
