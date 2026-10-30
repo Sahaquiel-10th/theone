@@ -1,6 +1,6 @@
 import express, { type Express, type RequestHandler } from "express";
 import type { Store } from "./db.js";
-import { accountInScope, accountProfile, updateAccountProfile, BetaInputError, type AccountScope } from "./betaProfile.js";
+import { accountInScope, accountProfile, publicAccountProfile, updateAccountProfile, BetaInputError, type AccountScope } from "./betaProfile.js";
 import { asyncRoute } from "./middleware.js";
 import { onboardingHandbookOffer, resolvedOnboardingHandbookProfile, startOnboardingHandbook, welcomeDelivery, type OnboardingImageInput } from "./onboardingHandbook.js";
 import { updateJourney, welcomeContext, type LocalWelcomeState } from './onboardingJourney.js';
@@ -22,7 +22,7 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
   const scope = (req: express.Request): AccountScope => ({ userId: req.user!.id, workspaceId: req.workspaceId! });
   router.get("/", asyncRoute(async (req, res) => {
     const db = await store.read(), current = resolvedOnboardingHandbookProfile(db, scope(req));
-    res.json({ profile: current.profile, welcomeContext: welcomeContext(db,scope(req)), welcomeDelivery:welcomeDelivery(db,scope(req)), handbookNotice: current.notice, handbookOffer: onboardingHandbookOffer(db, deps.storageAvailable,scope(req)) });
+    res.json({ profile: publicAccountProfile(current.profile), welcomeContext: welcomeContext(db,scope(req)), welcomeDelivery:welcomeDelivery(db,scope(req)), handbookNotice: current.notice, handbookOffer: onboardingHandbookOffer(db, deps.storageAvailable,scope(req)) });
   }));
   router.post('/onboarding',asyncRoute(async(req,res)=>{
     const s=scope(req),input=req.body??{};
@@ -48,7 +48,7 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
     }
     if(input.action!=='retry_delivery')await store.mutate(db=>{
       const profile=updateJourney(db,s,input,local);
-      if(finishing&&input.action!=='finish'&&profile.onboarding.journey?.stage==='ready')return updateJourney(db,s,{action:'finish',journeyId:input.journeyId,budgetPower:input.budgetPower,choice:input.createGuide===false?'without_image':undefined},local);
+      if(finishing&&input.action!=='finish'&&profile.onboarding.journey?.stage==='ready'&&profile.onboarding.journey.experience!==5)return updateJourney(db,s,{action:'finish',journeyId:input.journeyId,budgetPower:input.budgetPower,choice:input.createGuide===false?'without_image':undefined},local);
       return profile;
     });
     let notice:string|undefined;
@@ -64,7 +64,7 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
       }
     }
     const db=await store.read(),current=resolvedOnboardingHandbookProfile(db,s);
-    res.json({profile:current.profile,welcomeContext:welcomeContext(db,s),welcomeDelivery:welcomeDelivery(db,s),handbookOffer:onboardingHandbookOffer(db,deps.storageAvailable,s),handbookNotice:notice||current.notice});
+    res.json({profile:publicAccountProfile(current.profile),welcomeContext:welcomeContext(db,s),welcomeDelivery:welcomeDelivery(db,s),handbookOffer:onboardingHandbookOffer(db,deps.storageAvailable,s),handbookNotice:notice||current.notice});
   }));
   router.patch("/", asyncRoute(async (req, res) => {
     const s = scope(req), body = req.body ?? {};
@@ -97,7 +97,7 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
       }
     }
     const db = await store.read(), current = resolvedOnboardingHandbookProfile(db, s);
-    res.json({ profile: current.profile, handbookNotice: handbookNotice || current.notice, handbookOffer: onboardingHandbookOffer(db, deps.storageAvailable,s) });
+    res.json({ profile: publicAccountProfile(current.profile), handbookNotice: handbookNotice || current.notice, handbookOffer: onboardingHandbookOffer(db, deps.storageAvailable,s) });
   }));
   app.use("/api/me/profile", router);
 }

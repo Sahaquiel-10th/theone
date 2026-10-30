@@ -4,12 +4,18 @@ import {welcomeContext,type OnboardingJourney} from './onboardingJourney.js';
 import {onboardingPurposes} from '../src/onboardingPurposes.js';
 import {renderVisualPage,renderVisualDiagram,type VisualDocument} from './visualDocument.js';
 import {publicSharingAllowed} from './enterprisePolicy.js';
+import type {PracticeGuideFacts} from './practiceWelcomeGuide.js';
 
-export type WelcomeGuideFacts={version:1;nickname:string;purposes:string[];platforms:string[];localReady:boolean;features:{name:string;description:string}[];manual?:VisualDocument;avatarAllowed?:boolean;avatars?:string[];sponsored?:boolean};
+export type WelcomeGuideFacts={version:1;nickname:string;purposes:string[];platforms:string[];localReady:boolean;features:{name:string;description:string}[];manual?:VisualDocument;avatarAllowed?:boolean;avatars?:string[];sponsored?:boolean;practice?:PracticeGuideFacts};
 export function welcomeGuideFacts(db:Database,scope:AccountScope,journey?:OnboardingJourney):WelcomeGuideFacts {
   const p=accountProfile(db,scope),j=journey??p.onboarding.journey,c=welcomeContext(db,scope);
   const avatarAllowed=Array.isArray(db.publications)&&publicSharingAllowed(db,scope.workspaceId);
+  // A completed practice is a server-verified historical receipt. Retain its
+  // metadata after a connector is disconnected; no knowledge body is exported.
+  const practiced=j?.experience===5&&p.onboarding.practice?.journeyId===j.id&&p.onboarding.practice.completedAt?p.onboarding.practice:undefined;
+  const practice:PracticeGuideFacts|undefined=practiced?{sourceTitle:practiced.source.title,platform:practiced.source.platform,sample:practiced.source.sample,goal:practiced.goal,topic:practiced.topic,firstPrompt:practiced.prompt,webPrompt:practiced.webPrompt,hasWeb:!!practiced.web&&!practiced.skipWeb,firstTaskId:practiced.first.taskId}:undefined;
   return {version:1,nickname:p.displayName||'你',purposes:onboardingPurposes.filter(x=>j?.purposeIds?.includes(x.id)).map(x=>x.title),platforms:c.platforms,avatarAllowed,
+    ...(practice?{practice}:{}),
     avatars:avatarAllowed?db.publications!.filter(x=>x.workspaceId===scope.workspaceId&&x.userId===scope.userId&&x.status==='active'&&Date.parse(x.expiresAt)>Date.now()).slice(0,3).map(x=>x.name):[],
     localReady:j?.localChoice==='checked'&&!!j.local?.connected&&!!j.local.folderSelected&&!!j.local.executorReady,
     features:[...c.features.filter(f=>j?.featureIds.includes(f.id)),...c.features.filter(f=>!j?.featureIds.includes(f.id))].slice(0,60).map(({name,description})=>({name,description}))};
@@ -25,5 +31,5 @@ export function guideExamples(f:WelcomeGuideFacts){return [
 export function guideDocument(f:WelcomeGuideFacts):VisualDocument {
   return f.manual??{version:1,title:`${f.nickname==='你'?'你':f.nickname}的 ONE 使用说明`,intro:f.purposes.length?`把${f.purposes.join('、')}里那些费劲的小事，交给 ONE 帮忙。`:'从理清想法到拿到成果，选一件你今天正好需要的小事。',scenes:guideExamples(f).map((c,i)=>({id:`scene${i}`,title:c.title,situation:c.title,feature:c.text.slice(0,159),advantage:i===1?'不用在资料和聊天窗口之间来回找。':i===2?'各做各的，不用守着一个任务等。':i===3?'成果留在方便你继续使用的地方。':'不必先挑模型或学会一串操作。',benefit:i===0?'把模糊想法变成清楚的下一步。':i===1?'回答有依据，回头找得到。':i===2?'几件事分开做，结果不混在一起。':'做完的东西，能接着用。',evidence:i===1&&f.platforms.length?'打开回答里的来源，核对是不是你要的内容。':i===3&&f.localReady?'检查文件位置和内容后，再交付给别人。':'打开任务里的实际结果，看看是否符合要求。',steps:[c.example,'查看实际结果；需要调整就接着补一句。'],prompt:c.example,capabilityIds:[]}))};
 }
-export function renderWelcomeGuide(f:WelcomeGuideFacts,image:string,posterUrl?:string){return renderVisualPage({...guideDocument(f),presentation:'newspaper'},image,posterUrl,{avatarAllowed:f.avatarAllowed,avatars:f.avatars,platforms:f.platforms,sponsored:f.sponsored});}
+export function renderWelcomeGuide(f:WelcomeGuideFacts,image:string,posterUrl?:string){return renderVisualPage({...guideDocument(f),presentation:'newspaper'},image,posterUrl,{avatarAllowed:f.avatarAllowed,avatars:f.avatars,platforms:f.platforms,sponsored:f.sponsored,practice:f.practice});}
 export function renderWelcomePoster(f:WelcomeGuideFacts,_image:string){return renderVisualDiagram({...guideDocument(f),presentation:'newspaper'});}

@@ -20,6 +20,7 @@ import type { NotionDocuments } from './notionDocuments.js';
 import type {ScopedPublicSearch} from './webSearch.js';
 import {classifyCoordinatorFailure} from './coordinatorFailures.js';
 import {coordinatorRecoveryCopy,parseCoordinatorFailure} from '../src/coordinatorRecovery.js';
+import {installOnboardingPracticeRoutes} from './onboardingPractice.js';
 export function installCoordinatorRoutes(
   app: Express,
   keyAuth: readonly RequestHandler[],
@@ -278,5 +279,6 @@ export function installCoordinatorRoutes(
   settings.use(errors);
   app.use("/api/coordinator", router);
   app.use("/api/admin/executors", settings);
+  installOnboardingPracticeRoutes(app,keyAuth,store,knowledge,service,verifyKey);
   return service;
 }

@@ -1,9 +1,10 @@
 import { AdminModel, AuditLog, ModelConfig, ModelUsageRecord, PublicModel, PublicUser, User } from "./types.js";
 import { effectiveModel } from "./modelPricing.js";
+import {publicAccountProfile} from './betaProfile.js';
 
 export function publicUser(user: User): PublicUser {
   const { passwordHash, featureCredentials, visitorAuthVersion, featureBudgetPolicies, contextPreferences, attentionStates, teaching, ...safe } = user;
-  return safe;
+  return {...safe,...(safe.profile?{profile:publicAccountProfile(safe.profile)}:{})};
 }
 
 export function publicModel(model: ModelConfig): PublicModel {

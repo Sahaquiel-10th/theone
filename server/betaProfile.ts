@@ -34,6 +34,7 @@ export type AccountProfile = {
     handbook?: OnboardingHandbook;
     journey?: import('./onboardingJourney.js').OnboardingJourney;
     journeyHistory?: import('./onboardingJourney.js').OnboardingJourney[];
+    practice?: import('./onboardingPractice.js').OnboardingPractice;
   };
   updatedAt: string;
 };
@@ -66,6 +67,12 @@ export function accountProfile(db: Database, scope: AccountScope): AccountProfil
   return { workspaceId: scope.workspaceId, displayName: "", onboarding: { knowledgeChoice: "pending" }, updatedAt: user.createdAt };
 }
 
+/** Practice metadata contains private source/goal information. It is available
+ * only through the current owner's dedicated, live-verified practice API. */
+export function publicAccountProfile(profile:AccountProfile):AccountProfile{
+  const safe=structuredClone(profile);delete safe.onboarding.practice;return safe;
+}
+
 export function onboardingStep(profile: AccountProfile): "name" | "knowledge" | "ready" | "complete" {
   if (profile.onboarding.completedAt) return "complete";
   if (!profile.displayName || !profile.onboarding.nameSetAt) return "name";
@@ -78,6 +85,7 @@ export function completeOnboardingOnChat(db: Database, scope: AccountScope, time
   const user = accountInScope(db, scope);
   const profile = accountProfile(db, scope);
   if (profile.onboarding.completedAt) return;
+  if (profile.onboarding.journey?.experience === 5 && profile.onboarding.journey.stage !== 'complete') return;
   profile.onboarding.completedAt = timestamp;
   profile.updatedAt = timestamp;
   user.profile = profile;

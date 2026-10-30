@@ -24,3 +24,13 @@ test('features are selected for storytelling without granting purchase or execut
  const html=renderToStaticMarkup(createElement(StoryOnboarding,{...props,profile:p,context:{platforms:['Notion'],features:[{id:'write',name:'方案提纲',description:'理清思路'}]}}));
  assert.match(html,/你主要想用 ONE 做什么/);assert.match(html,/写作与表达/);assert.match(html,/整理文件与表格/);assert.match(html,/开始使用 ONE/);assert.doesNotMatch(html,/方案提纲|漫画|故事|礼物|选最多 3 个/);
 });
+test('experience five explains direct use before searching and never begins a paid practice from render',()=>{
+ let calls=0;const p={...profile,onboarding:{...profile.onboarding,journey:{...profile.onboarding.journey!,experience:5 as const}}};
+ const html=renderToStaticMarkup(createElement(StoryOnboarding,{...props,profile:p,onAction:async()=>{calls++;}}));
+ assert.match(html,/AI 已经在这里，直接用/);assert.match(html,/逐个平台注册、配置和切换/);assert.match(html,/选填/);assert.equal(calls,0);
+});
+test('new goal choice is a two-option concrete task, without upfront device setup or automatic generation',()=>{
+ const p={...profile,onboarding:{...profile.onboarding,journey:{...profile.onboarding.journey!,experience:5 as const,stage:'features' as const}}};
+ const html=renderToStaticMarkup(createElement(StoryOnboarding,{...props,profile:p}));
+ assert.match(html,/写一篇文章/);assert.match(html,/做一份方案/);assert.match(html,/确认具体资料和要求后才会开始处理/);assert.doesNotMatch(html,/检测本机|整理文件与表格|正在保存设置/);
+});

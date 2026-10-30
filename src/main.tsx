@@ -23,7 +23,10 @@ import {FeatureNav} from './FeatureNav';
 import {ThingsPanel} from './ThingsPanel';
 import {TaskReadAllButton} from './TaskReadAllButton';
 import {StoryOnboarding} from './StoryOnboarding';
+import {PracticeResume} from './PracticeResume';
 import {onboardingEffectPreview} from './onboardingPreviewBoundary';
+import {canReceiveGuideDraft,guideDraftText} from './guideDraft';
+import './practice-onboarding.css';
 import {WelcomeGuideCard} from './WelcomeGuideCard';
 import {AttachmentActions} from './AttachmentActions';
 import {SavedWelcomeGuides} from './SavedWelcomeGuides';
@@ -634,7 +637,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     acceptWelcome(result);
     if(result.profile.onboarding.journey?.stage==='complete'&&(input.action==='finish'||input.step==='features')) {
       const returnToChat=storyRequested.current;storyRequested.current=false;
-      setStoryOpen(false);setStoryHidden(true);if(returnToChat){setComposeNew(true);openSurface('chat');}
+      setStoryOpen(false);setStoryHidden(true);if(returnToChat){if(result.profile.onboarding.journey?.experience!==5)setComposeNew(true);openSurface('chat');}
       const guide=result.profile.onboarding.handbook;
       setHandbookNotice(result.welcomeDelivery?'':result.handbookNotice||'');setDismissedDelivery('');
       setStoryTaskId(guide?.status==='queued'?guide.taskId||'':'');
@@ -649,7 +652,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     if(guideEffectPreview)return;
     if(storyLaunchPending.current)return;
     storyLaunchPending.current=true;setStoryLaunching(true);
-    try{await saveStory({action:'begin',launchId:crypto.randomUUID(),experience:4});if(storyRequested.current){setComposeNew(true);if(!preview.enabled)openSurface('chat');}}
+    try{await saveStory({action:'begin',launchId:crypto.randomUUID(),experience:5});if(storyRequested.current&&!preview.enabled)openSurface('chat');}
     catch(error){if(storyRequested.current)setStoryLaunchError(error instanceof Error?error.message:'引导暂时没打开，可以重新试一次。');}
     finally{storyLaunchPending.current=false;setStoryLaunching(false);}
   }
@@ -818,6 +821,26 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const currentDraftRef = useRef({ content, attachments: pendingAttachments });
   const coordinatorFailedDraft = useRef<{text:string;files:AttachmentSummary[];features:FeatureChoice[]}|null>(null);
   currentDraftRef.current = { content, attachments: pendingAttachments };
+  useEffect(()=>{
+    const receive=(event:Event)=>{
+      const draft=event as CustomEvent<unknown>,text=guideDraftText(draft.detail);
+      if(!text){event.preventDefault();return;}
+      const target=(draft.detail as {taskId?:string}).taskId;
+      if(target){
+        if(thingDrafts[target]?.trim()){event.preventDefault();return;}
+        setThingDrafts(old=>({...old,[target]:text}));openSurface('things',target);
+        requestAnimationFrame(()=>document.querySelector<HTMLTextAreaElement>('.things-thread textarea')?.focus());return;
+      }
+      if(!canReceiveGuideDraft({text:currentDraftRef.current.content,attachments:currentDraftRef.current.attachments.length,features:selectedFeaturesRef.current.length,mode:composeMode})||(!preview.enabled&&!canReceiveGuideDraft({text:draftsRef.current.new?.content??'',attachments:draftsRef.current.new?.attachments.length??0,features:0,mode:'chat'}))){
+        event.preventDefault();return;
+      }
+      // A guide only prepares a new chat draft. Sending remains an explicit action.
+      beginNewTask();setContent(text);setOutputDestination('chat');setComposeMode('chat');openSurface('chat');
+      requestAnimationFrame(()=>document.getElementById('one-studio-input')?.focus());
+    };
+    window.addEventListener('one-welcome-guide-draft',receive);
+    return()=>window.removeEventListener('one-welcome-guide-draft',receive);
+  });
   const viewedConversationRef = useRef("");
   viewedConversationRef.current = view === "chat" ? activeId : "";
 
@@ -2130,6 +2153,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     </>;}
 
   function renderGuideDelivery(){return <>
+        {view==='chat'&&workLayer!=='guide'&&storyHidden&&profile.onboarding.journey?.experience===5&&profile.onboarding.journey.stage==='ready'?<PracticeResume key={profile.onboarding.journey.id} request={api} refreshKey={coordinator.state.tasks.map(task=>`${task.id}:${task.status}`).join('|')} onResume={()=>void startStory()} onOpenTask={id=>openSurface('things',id)}/>:null}
         {delivery&&delivery.operationId!==dismissedDelivery&&view==='chat'&&(storyHidden||profile.onboarding.journey?.stage==='complete')?<WelcomeDelivery delivery={delivery} busy={deliveryBusy} error={deliveryError} onOpen={id=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(id)}`).then(result=>openConversation(result.conversation)).catch(e=>setDeliveryError(e.message))} onCheck={()=>void checkWelcome()} onRetry={()=>void retryWelcome()} onDismiss={dismissWelcome}/>:null}
         {!delivery&&handbookNotice && view==='chat' ? <p className="one-onboarding-handbook-notice" role="status">{handbookNotice}{storyTaskId?<button type="button" onClick={()=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(storyTaskId)}`).then(result=>openConversation(result.conversation)).catch(e=>setError(e.message))}>查看任务 ↗</button>:null}<button type="button" onClick={()=>setHandbookNotice('')} aria-label="收起说明">知道了</button></p> : null}
     </>;}
@@ -2137,7 +2161,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   function renderStory(){
     if(storyLaunching)return <section className="story-launch-status" role="status"><h3>正在打开引导</h3><p>你的对话和草稿会留在这里。</p></section>;
     if(storyLaunchError)return <section className="story-launch-status" role="alert"><h3>引导暂时没打开</h3><p>{storyLaunchError}</p><button type="button" className="primary" onClick={()=>void startStory()}>重新打开引导</button></section>;
-    return <StoryOnboarding effectPreview={guideEffectPreview} profile={profile} context={welcomeContext} offer={handbookOffer} onBegin={startStory} onAction={saveStory} onKnowledge={()=>{storyRequested.current=false;openSurface('knowledge');}} onDevice={()=>{storyRequested.current=false;setAccountSection('device');openSurface('account');}} onDismiss={dismissStory}/>;
+    return <StoryOnboarding effectPreview={guideEffectPreview} profile={profile} context={welcomeContext} offer={handbookOffer} request={api} onRefresh={()=>coordinator.refresh()} onOpenTask={id=>{storyRequested.current=false;setStoryHidden(true);setStoryOpen(false);openSurface('things',id);}} onContinueChat={()=>{dismissStory();openSurface('chat');requestAnimationFrame(()=>document.getElementById('one-studio-input')?.focus());}} onBegin={startStory} onAction={saveStory} onKnowledge={()=>{storyRequested.current=false;openSurface('knowledge');}} onDevice={()=>{storyRequested.current=false;setAccountSection('device');openSurface('account');}} onDismiss={dismissStory}/>;
   }
 
   function renderRuntimeNotices(){return <>
@@ -2377,7 +2401,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
       <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 指挥台" onPointerDownCapture={()=>{if(fluidEnabled)focusFluid('main');}} onFocusCapture={()=>{if(fluidEnabled)focusFluid('main');}}>
         {!fluidEnabled?renderAttentionInbox():null}
-        {view==='chat'&&workLayer!=='guide'&&!guideEffectPreview&&(!fluidEnabled||!fluidHasDialogue)&&profileLoaded&&!storyHidden&&(storyOpen||profile.onboarding.journey?.stage&&profile.onboarding.journey.stage!=='complete'||!hasSubmittedChat&&!conversations.length&&!profile.onboarding.completedAt&&user.access?.kind!=='company')?<StoryOnboarding profile={profile} context={welcomeContext} offer={handbookOffer} onBegin={startStory} onAction={saveStory} onKnowledge={()=>{storyRequested.current=false;openSurface('knowledge');}} onDevice={()=>{storyRequested.current=false;setAccountSection('device');openSurface('account');}} onDismiss={()=>{storyRequested.current=false;setStoryHidden(true);setStoryOpen(false);}}/>:null}
+        {view==='chat'&&workLayer!=='guide'&&!guideEffectPreview&&(!fluidEnabled||!fluidHasDialogue)&&profileLoaded&&!storyHidden&&(storyOpen||profile.onboarding.journey?.stage&&profile.onboarding.journey.stage!=='complete'||!hasSubmittedChat&&!conversations.length&&!profile.onboarding.completedAt&&user.access?.kind!=='company')?renderStory():null}
         {!fluidEnabled?renderGuideDelivery():null}
         {!fluidEnabled||!fluidHasDialogue?<div className="studio-presence">
           {!fluidEnabled||!fluidDesktop?<OneHeroEye mood={heroMood} label={view==='features'?'收起功能，回到 ONE':'打开功能'} onActivate={()=>openSurface(view==='features'?'chat':'features')}/>:null}
@@ -3559,4 +3583,6 @@ const sharedSlug = /^\/s\/([A-Za-z0-9_-]{24})\/?$/.exec(window.location.pathname
 const teachingSlug = /^\/learn\/([A-Za-z0-9_-]{20,100})\/?$/.exec(window.location.pathname)?.[1];
 const appRoot = import.meta.hot?.data.appRoot ?? createRoot(document.getElementById("root")!);
 if(import.meta.hot)import.meta.hot.data.appRoot=appRoot;
-appRoot.render(teachingSlug ? <TeachingPublicPage slug={teachingSlug}/> : sharedSlug ? <PublicSharingPage slug={sharedSlug}/> : <App />);
+const practicePreview=import.meta.env.DEV&&['localhost','127.0.0.1','[::1]'].includes(window.location.hostname)&&new URLSearchParams(window.location.search).get('onboardingPracticePreview')==='1';
+const PracticePreview=import.meta.env.DEV?React.lazy(()=>import('./PracticeOnboardingPreview')):()=>null;
+appRoot.render(practicePreview?<React.Suspense fallback={<div className="boot">正在打开本地体验…</div>}><PracticePreview/></React.Suspense>:teachingSlug ? <TeachingPublicPage slug={teachingSlug}/> : sharedSlug ? <PublicSharingPage slug={sharedSlug}/> : <App />);
