@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Database, ModelConfig } from "./types.js";
 import type { Store } from "./db.js";
-import { affordableDocumentOutput, modelReservationMicros, reconcileInterruptedBilling, resolveBillingReview, runBilledModel, settleBillingRecord } from "./modelBilling.js";
+import { affordableDocumentOutput, modelReservationMicros, reconcileInterruptedBilling, resolveBillingReview, runBilledModel, settleBillingRecord,ModelBillingError } from "./modelBilling.js";
 import { publicUsageRecord } from "./serializers.js";
 
 test('document allowance fits existing budget headroom instead of reserving an unaffordable maximum',()=>{
@@ -228,6 +228,21 @@ test("a transient DB failure while releasing a failed call leaves a reviewable h
   resolveBillingReview(f.db(), { ...scope(row.id), action: "waive" });
   assert.equal(f.db().powerAccounts[0].reservedMicros, 0);
   assert.equal(f.db().powerAccounts[0].balanceMicros, 1_000_000);
+});
+
+test('settlement storage failure has a reviewed code and preserves the bill without leaking result or storage details',async()=>{
+ const f=fixture(),mutate=f.store.mutate.bind(f.store);let writes=0,calls=0;
+ f.store.mutate=async<T>(change:(db:Database)=>T):Promise<T>=>{
+  if(++writes===2)throw Error('database password=SECRET');
+  return mutate(change);
+ };
+ await assert.rejects(()=>runBilledModel(f.store,f.params,async()=>{calls++;return {content:'PRIVATE generated result',usage};}),error=>error instanceof ModelBillingError&&error.code==='BILLING_SETTLEMENT_FAILED'&&!JSON.stringify(error).includes('SECRET'));
+ assert.equal(calls,1);const row=f.db().modelUsageRecords[0];
+ assert.equal(row.status,'needs_review');assert.equal(row.reviewReason,'settlement_storage_failed');
+ assert.ok(row.reservedMicros!>0);assert.equal(row.chargedMicros,0);
+ assert.equal(f.db().powerLedger.length,0);assert.equal(f.db().powerAccounts[0].balanceMicros,1_000_000);
+ assert.equal(f.db().powerAccounts[1].balanceMicros,1_000_000);
+ assert.doesNotMatch(JSON.stringify(f.db()),/SECRET|PRIVATE generated result/);
 });
 
 test("a provider overrun returns the answer, caps retail and records full modeled cost", async () => {

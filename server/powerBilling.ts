@@ -4,6 +4,9 @@ import { uid } from "./security.js";
 import { billingAccountUserId } from "./enterprisePolicy.js";
 
 export const MICROS_PER_POWER = 1_000_000;
+export class PowerAvailabilityError extends Error {
+  constructor(message:string,readonly code:'POWER_INSUFFICIENT'|'POWER_ACCOUNT_MISSING'){super(message);}
+}
 
 function micros(value: number) {
   if (!Number.isFinite(value) || value <= 0) return 0;
@@ -68,9 +71,9 @@ export function reservePower(db: Database, params: {
   workspaceId: string; userId: string; amountMicros: number; holdId?: string;
 }) {
   const account = powerAccount(db, params.workspaceId, params.userId);
-  if (!account) throw new Error("电力账户不存在");
+  if (!account) throw new PowerAvailabilityError("电力账户不存在",'POWER_ACCOUNT_MISSING');
   if (!Number.isSafeInteger(params.amountMicros) || params.amountMicros < 0) throw new Error("预占电力必须是非负整数");
-  if (availablePowerMicros(db, params.workspaceId, params.userId) < params.amountMicros) throw new Error(db.settings?.membershipOnlyRollout ? "额度不足，请升级会员或等待下月额度更新" : "电力不足，请先充值");
+  if (availablePowerMicros(db, params.workspaceId, params.userId) < params.amountMicros) throw new PowerAvailabilityError(db.settings?.membershipOnlyRollout ? "额度不足，请升级会员或等待下月额度更新" : "电力不足，请先充值",'POWER_INSUFFICIENT');
   if(params.holdId) {
     const holds=account.powerHolds??=[];
     if(holds.some(h=>h.id===params.holdId))throw new Error("请求已预占");

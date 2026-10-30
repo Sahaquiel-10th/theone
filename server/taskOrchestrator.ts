@@ -1,4 +1,4 @@
-import type { ModelToolDefinition, ModelToolMessage, ToolChatResult, ToolModelOptions } from "./modelGateway.js";
+import type { ModelFinishReason, ModelToolDefinition, ModelToolMessage, ToolChatResult, ToolModelOptions } from "./modelGateway.js";
 import {ModelRequestError} from './modelGateway.js';
 import type { ExecutionTraceStep } from "./types.js";
 import { taskToolDescriptions } from "./aiTaskPresets.js";
@@ -12,8 +12,39 @@ export class OrchestrationToolError extends Error {
 }
 /** Reviewed parameter feedback only. Never wrap provider/auth errors in this class. */
 export class OrchestrationInputError extends Error { readonly code='TOOL_INPUT_REPAIR'; }
+export type OrchestrationPartial = {kind:'body'|'tool_preamble';content:string;finishReason?:ModelFinishReason};
+export type OrchestrationFailureProgress = {partial?:OrchestrationPartial;completedTools:string[]};
+type ResponseFailureCode='task_empty_response'|'task_invalid_response'|'task_response_filtered'|'task_tool_instruction_incomplete';
+/** Readable text is private result material, never an enumerable diagnostic field. */
+export class OrchestrationResponseError extends Error {
+  declare readonly partial?:OrchestrationPartial;
+  constructor(readonly code:ResponseFailureCode,message:string,partial?:OrchestrationPartial,readonly finishReason?:ModelFinishReason){
+    super(message);this.name='OrchestrationResponseError';
+    if(partial)Object.defineProperty(this,'partial',{value:Object.freeze({...partial}),enumerable:false});
+  }
+}
+// Keep the original provider/auth/billing exception identity. Even unknown raw
+// errors acquire no content, tool arguments or messages when logged/serialized.
+const failureProgress=new WeakMap<object,OrchestrationFailureProgress>();
+export function orchestrationFailureProgress(error:unknown):OrchestrationFailureProgress|undefined{
+  const saved=error&&typeof error==='object'?failureProgress.get(error):undefined;
+  return saved?{...(saved.partial?{partial:{...saved.partial}}:{}),completedTools:[...saved.completedTools]}:undefined;
+}
+function retainFailureProgress(error:unknown,progress:OrchestrationFailureProgress){
+  if(!error||typeof error!=='object')return;
+  failureProgress.delete(error);
+  if(progress.partial||progress.completedTools.length)failureProgress.set(error,progress);
+}
+function validModelResult(value:unknown):value is ToolChatResult{
+  if(!value||typeof value!=='object')return false;
+  const result=value as ToolChatResult;
+  return typeof result.content==='string'&&Array.isArray(result.toolCalls)
+    &&(result.finishReason===undefined||['stop','length','filtered','tool_calls','unknown'].includes(result.finishReason))
+    &&result.toolCalls.every(call=>call&&typeof call==='object'&&typeof call.id==='string'&&call.type==='function'&&call.function&&typeof call.function==='object'&&typeof call.function.name==='string'&&typeof call.function.arguments==='string');
+}
 /** Stable diagnostics for known local failures; never persist arbitrary exception text. */
 export function orchestrationFailureCode(error:unknown){
+  if(error instanceof OrchestrationResponseError)return error.code;
   if(error instanceof ModelRequestError)return `model_http_${Number.isInteger(error.status)?error.status:'unknown'}`;
   const codes:Record<string,string>={
     '已达到调度步骤上限，未完成任务；请缩小问题范围':'task_step_limit',
@@ -31,6 +62,7 @@ export type OrchestrationTool = { name: string; description?: string; label?:str
   /** Opt-in for mutable external documents; artifacts retain delivery reuse. */
   checkpointReuse?:'arguments';checkpointScope?:string;
   structured?: { schema: Record<string, unknown>; validate: (input: unknown) => unknown; effect?: (validatedInput: unknown) => TaskStep['effect']; run: (input: unknown) => Promise<unknown> } };
+export type OrchestrationResult={content:string;messages:ModelToolMessage[];trace:ExecutionTraceStep[];finishReason?:ModelFinishReason;requiredMissing:string[]};
 
 /** Sequential, bounded read-only execution. Handlers own scope and fresh authorization. */
 export async function runTaskOrchestrator(input: {
@@ -55,7 +87,7 @@ export async function runTaskOrchestrator(input: {
   onTrace?: (steps: ExecutionTraceStep[]) => void;
   onStage?: (stage: 'model' | 'tool' | 'tool_returned', tool?: string) => void;
   call: (messages: ModelToolMessage[], tools: ModelToolDefinition[], options?: ToolModelOptions) => Promise<ToolChatResult>;
-}) {
+}):Promise<OrchestrationResult> {
   if (!["workspace", "published_web", "published_api"].includes(input.entryPoint)) throw new Error("执行入口无效");
   if(input.maxToolCallsPerTurn!==undefined&&(!Number.isInteger(input.maxToolCallsPerTurn)||input.maxToolCallsPerTurn<1||input.maxToolCallsPerTurn>4))throw new Error('工具调用上限配置无效');
   // Reject miswiring before a model call can incur any charge. Descriptions and
@@ -80,6 +112,19 @@ export async function runTaskOrchestrator(input: {
   const repair=(step:number)=>{if(!corrections||step>=baseSteps+planning+2)return false;corrections--;steps=Math.min(baseSteps+planning+2,Math.max(steps,step+2));return true;};
   const cache = new Map<string, unknown>();
   const invalidCalls=new Set<string>();
+  const readableBodies:{content:string;kind:OrchestrationPartial['kind']}[]=[];
+  let lastReadableFinish:ModelFinishReason|undefined;
+  const partial=():OrchestrationPartial|undefined=>readableBodies.length?{
+    // Mixed text remains available, but an unverified tool preamble must never
+    // become continuation-ready manuscript or evidence that an effect happened.
+    kind:readableBodies.some(body=>body.kind==='tool_preamble')?'tool_preamble':'body',
+    content:readableBodies.map(body=>body.content).join('\n\n'),finishReason:lastReadableFinish,
+  }:undefined;
+  const responseFailure=(code:ResponseFailureCode,message:string,finishReason?:ModelFinishReason)=>{
+    const readable=code==='task_response_filtered'?undefined:partial();
+    const error=new OrchestrationResponseError(code,message,readable,finishReason);
+    retainFailureProgress(error,{partial:readable,completedTools:[...satisfied]});return error;
+  };
   for (let step = 1; step <= steps; step++) {
     await input.beforeStep();
     const active=input.entryPoint==='workspace'&&input.activeTools?input.activeTools():input.tools;
@@ -88,11 +133,22 @@ export async function runTaskOrchestrator(input: {
     input.onStage?.('model');
     // Keep schemas needed to interpret native history, without allowing any
     // new execution in the final answer-only turn.
-    const result = await input.call(messages, step === steps ? [] : tools,
-      step === steps && tools.length ? {finalSummaryTools: tools} : undefined);
-    if (result.toolCalls.length && (result.finishReason === "length" || result.finishReason === "filtered")) throw new Error("模型工具指令未完整返回，已停止执行；本次已产生的用量可在账单中查看");
+    let result:ToolChatResult;
+    try{
+      result=await input.call(messages, step === steps ? [] : tools,
+        step === steps && tools.length ? {finalSummaryTools: tools} : undefined);
+    }catch(error){retainFailureProgress(error,{partial:partial(),completedTools:[...satisfied]});throw error;}
+    if(!validModelResult(result))throw responseFailure('task_invalid_response','模型返回的响应格式无效，尚未执行本轮工具');
+    if(result.finishReason==='filtered')throw responseFailure('task_response_filtered','模型本轮内容未通过安全检查，未展示或执行',result.finishReason);
+    if(result.content.trim()){
+      readableBodies.push({content:result.content,kind:result.toolCalls.length?'tool_preamble':'body'});lastReadableFinish=result.finishReason;
+    }
+    if(result.toolCalls.length&&result.finishReason==='length')throw responseFailure('task_tool_instruction_incomplete','模型工具指令未完整返回，已停止执行；本次已产生的用量可在账单中查看',result.finishReason);
     if (!result.toolCalls.length) {
-      if (!result.content.trim()) throw new Error("调度模型没有返回结果");
+      if (!result.content.trim()) throw responseFailure('task_empty_response','调度模型没有返回结果',result.finishReason);
+      // An output limit ends this attempt. Preserve every returned body byte;
+      // never spend another repair turn or execute incomplete instructions.
+      if(result.finishReason==='length')return {content:result.content,messages,trace,finishReason:result.finishReason,requiredMissing:missing()};
       const action=input.actionRequired?.(result.content);
       if(action&&repair(step)){messages.push({role:'assistant',content:result.content},{role:'system',content:action});continue;}
       if(action)return {content:'这件事还没能开始，我把你的要求留着了。可以说“继续刚才那件事”，我会先核对进展，再安排没做的部分。',messages,trace,finishReason:result.finishReason,requiredMissing:missing()};

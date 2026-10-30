@@ -14,6 +14,6 @@ test('background refresh preserves friendly scoped feedback until the next expli
   assert.match(submit, /submissionError\.current = ""/);
   assert.match(submit, /不会自动重复|沿用|chatSubmission/);
   assert.match(submit,/setFailureReply\(null\)/);
-  assert.match(submit,/receipt.status==='completed'/);
-  assert.match(submit,/input.localExecution\)throw e/,'local handoff cleanup must still receive a failed request');
+  assert.match(submit,/recoverCoordinatorSubmission/,'submission uses the behavior-tested receipt recovery state machine');
+  assert.doesNotMatch(submit,/input.localExecution\)throw e/,'a confirmed local pending receipt is not a failed handoff');
 });

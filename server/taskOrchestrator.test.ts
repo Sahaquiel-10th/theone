@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runTaskOrchestrator, OrchestrationToolError,OrchestrationInputError,orchestrationFailureCode } from "./taskOrchestrator.js";
+import { runTaskOrchestrator, OrchestrationToolError,OrchestrationInputError,OrchestrationResponseError,orchestrationFailureCode,orchestrationFailureProgress } from "./taskOrchestrator.js";
+import {ModelRequestError} from './modelGateway.js';
+import type {TaskStep} from './taskSteps.js';
+import {inspect} from 'node:util';
 test('known orchestration failures have bounded diagnostic codes and unknown secrets are never copied',()=>{
  assert.equal(orchestrationFailureCode(new Error('已达到调度步骤上限，未完成任务；请缩小问题范围')),'task_step_limit');
  assert.equal(orchestrationFailureCode(new Error('本批任务超过已授权预算，已停止新的调用')),'task_budget_limit');
@@ -109,4 +112,87 @@ test("truncated answers stay visible but truncated tool instructions never execu
   let invoked = false;
   await assert.rejects(runTaskOrchestrator({ entryPoint: "workspace", messages: [], maxSteps: 2, tools: [{ name: "knowledge_search", run: async () => { invoked = true; return {}; } }], beforeStep: async () => {}, call: async () => ({ content: "", toolCalls: [call("a")], finishReason: "length" }) }), /未完整返回/);
   assert.equal(invoked, false);
+});
+
+test('a readable length answer keeps every returned byte and never buys a repair or required-tool call',async()=>{
+ const body='  已经写出的正文\n'.repeat(2400)+'末尾原样保留  ';
+ let calls=0,runs=0;
+ const result=await runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:4,maxCorrections:2,requiredTools:['knowledge_search'],actionRequired:()=>{throw Error('length must not enter repair');},tools:[{name:'knowledge_search',run:async()=>{runs++;return{};}}],beforeStep:async()=>{},call:async()=>{calls++;return{content:body,toolCalls:[],finishReason:'length'};}});
+ assert.equal(result.content,body);assert.equal(result.finishReason,'length');assert.deepEqual(result.requiredMissing,['knowledge_search']);assert.equal(calls,1);assert.equal(runs,0);
+});
+
+test('incomplete tool arguments never execute while their separate readable body is retained privately',async()=>{
+ const body='实际已经返回的正文\n'+ '长正文'.repeat(16000),argument='{"query":"DO_NOT_COPY_TOOL_ARGUMENT';let runs=0,calls=0;
+ const traces:unknown[]=[];
+ await assert.rejects(runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:3,maxCorrections:2,tools:[{name:'knowledge_search',run:async()=>{runs++;return{};}}],beforeStep:async()=>{},onTrace:trace=>traces.push(trace),call:async()=>{calls++;return{content:body,toolCalls:[{id:'cut',type:'function',function:{name:'knowledge_search',arguments:argument}}],finishReason:'length'};}}),error=>{
+  assert.ok(error instanceof OrchestrationResponseError);assert.equal(error.code,'task_tool_instruction_incomplete');assert.equal(error.partial?.content,body);assert.equal(error.partial?.finishReason,'length');
+  assert.deepEqual(orchestrationFailureProgress(error),{partial:{kind:'tool_preamble',content:body,finishReason:'length'},completedTools:[]});
+  assert.deepEqual(Object.keys(error.partial!),['kind','content','finishReason']);assert.doesNotMatch(JSON.stringify(error),/实际已经返回|DO_NOT_COPY_TOOL_ARGUMENT|长正文/);assert.doesNotMatch(inspect(error),/实际已经返回|DO_NOT_COPY_TOOL_ARGUMENT|长正文/);assert.doesNotMatch(error.message,/DO_NOT_COPY_TOOL_ARGUMENT/);return true;
+ });
+ assert.equal(calls,1);assert.equal(runs,0);assert.deepEqual(traces,[]);
+});
+
+test('filtered bodies are neither returned nor retained, even alongside a complete-looking tool call',async()=>{
+ for(const withTool of [false,true]){
+  let calls=0,runs=0;
+  await assert.rejects(runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:3,tools:[{name:'knowledge_search',run:async()=>{runs++;return{};}}],beforeStep:async()=>{},call:async()=>{calls++;return{content:'FILTERED_BODY_MUST_NOT_ESCAPE',toolCalls:withTool?[call('filtered','FILTERED_ARGUMENT')]:[],finishReason:'filtered'};}}),error=>{
+   assert.ok(error instanceof OrchestrationResponseError);assert.equal(orchestrationFailureCode(error),'task_response_filtered');assert.equal(error.partial,undefined);assert.equal(orchestrationFailureProgress(error),undefined);assert.doesNotMatch(JSON.stringify(error),/FILTERED_BODY|FILTERED_ARGUMENT/);return true;
+  });
+  assert.equal(calls,1);assert.equal(runs,0);
+ }
+});
+
+test('empty and malformed model responses are distinct and cannot execute any tool',async()=>{
+ const malformed=[null,{}, {content:null,toolCalls:[]},{content:'body',toolCalls:null},{content:'body',toolCalls:[{id:'bad',type:'function',function:{name:'knowledge_search',arguments:{query:'no'}}}]},{content:'body',toolCalls:[],finishReason:'invalid'}];
+ for(const [result,code] of [[{content:' \n ',toolCalls:[]},'task_empty_response'],[{content:'',toolCalls:[],finishReason:'length'},'task_empty_response'],...malformed.map(result=>[result,'task_invalid_response'])] as const){
+  let runs=0,calls=0;
+  await assert.rejects(runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:3,tools:[{name:'knowledge_search',run:async()=>{runs++;return{};}}],beforeStep:async()=>{},call:async()=>{calls++;return result as never;}}),error=>{
+   assert.ok(error instanceof OrchestrationResponseError);assert.equal(orchestrationFailureCode(error),code);assert.equal(error.partial,undefined);return true;
+  });
+  assert.equal(calls,1);assert.equal(runs,0);
+ }
+});
+
+test('a later model failure preserves completed tool checkpoints and readable text without changing error identity or logging text',async()=>{
+ for(const error of [new ModelRequestError(503,'暂时无法连接'),new Error('unknown_transport api_key=SECRET')]){
+  let calls=0,runs=0;const steps:TaskStep[]=[];
+  const traces:unknown[]=[];
+  await assert.rejects(runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:3,checkpoints:{namespace:'worker',steps,save:async step=>{const index=steps.findIndex(s=>s.key===step.key);if(index<0)steps.push(step);else steps[index]=step;}},tools:[{name:'knowledge_search',label:'已授权资料读取',run:async()=>{runs++;return{status:'used',chunks:['真实工具结果']};}}],beforeStep:async()=>{},onTrace:trace=>traces.push(trace),call:async()=>{calls++;if(calls===1)return{content:'已经返回的独立正文',toolCalls:[call('read','当前资料')],finishReason:'tool_calls'};throw error;}}),actual=>{
+   assert.equal(actual,error);assert.deepEqual(orchestrationFailureProgress(actual),{partial:{kind:'tool_preamble',content:'已经返回的独立正文',finishReason:'tool_calls'},completedTools:['knowledge_search']});
+   assert.doesNotMatch(JSON.stringify(actual),/独立正文|真实工具结果|当前资料/);assert.doesNotMatch(inspect(actual),/独立正文|真实工具结果|当前资料/);return true;
+  });
+  assert.equal(calls,2);assert.equal(runs,1);assert.equal(steps.length,1);assert.equal(steps[0].state,'completed');assert.deepEqual(steps[0].output,{status:'used',chunks:['真实工具结果']});
+  assert.doesNotMatch(JSON.stringify(traces),/SECRET|unknown_transport/);
+  const detached=orchestrationFailureProgress(error)!;detached.partial!.content='changed';detached.completedTools.push('forged');assert.equal(orchestrationFailureProgress(error)!.partial!.content,'已经返回的独立正文');assert.deepEqual(orchestrationFailureProgress(error)!.completedTools,['knowledge_search']);
+ }
+});
+
+test('a reused error in another isolated run cannot retain the previous run private body or completed tools',async()=>{
+ const error=new ModelRequestError(503,'暂时无法连接');let calls=0;
+ await assert.rejects(runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:3,tools:[{name:'knowledge_search',run:async()=>({status:'used'})}],beforeStep:async()=>{},call:async()=>{calls++;if(calls===1)return{content:'FIRST_OWNER_BODY',toolCalls:[call('one')],finishReason:'tool_calls'};throw error;}}));
+ assert.equal(orchestrationFailureProgress(error)?.partial?.content,'FIRST_OWNER_BODY');
+ await assert.rejects(runTaskOrchestrator({entryPoint:'workspace',messages:[{role:'user',content:'SECOND_OWNER_INPUT'}],maxSteps:1,tools:[],beforeStep:async()=>{},call:async()=>{throw error;}}),actual=>actual===error);
+ assert.equal(orchestrationFailureProgress(error),undefined);
+});
+
+test('a length tool preamble cannot be mistaken for a delivered or continuation-ready body',async()=>{
+ let runs=0;
+ await assert.rejects(runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:2,tools:[{name:'save_notion_draft',run:async()=>{runs++;return{};}}],beforeStep:async()=>{},call:async()=>({content:'已经保存到 Notion，原页面更新好了。',finishReason:'length',toolCalls:[{id:'unfinished-write',type:'function',function:{name:'save_notion_draft',arguments:'{"body":"未完整'}}]})}),error=>{
+  const partial=orchestrationFailureProgress(error)?.partial;
+  assert.ok(partial);assert.equal(partial.kind,'tool_preamble');assert.equal(partial.content,'已经保存到 Notion，原页面更新好了。');return true;
+ });
+ assert.equal(runs,0);
+});
+
+test('pure prose is a body while mixed prose and tool preambles retain their unverified label',async()=>{
+ for(const mixed of [false,true]){
+  let calls=0;const error=new ModelRequestError(503,'connection unavailable');
+  await assert.rejects(runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:3,requiredTools:['oneHtml'],tools:[{name:'knowledge_search',run:async()=>({status:'used'})}],beforeStep:async()=>{},call:async()=>{
+   calls++;if(calls===1)return mixed?{content:'我已经保存所有成果。',toolCalls:[call('read')],finishReason:'tool_calls'}:{content:'可读的正文第一段',toolCalls:[],finishReason:'stop'};
+   if(calls===2)return{content:'可读的正文第二段',toolCalls:[],finishReason:'stop'};
+   throw error;
+  }}),actual=>actual===error);
+  const partial=orchestrationFailureProgress(error)?.partial;
+  assert.equal(partial?.kind,mixed?'tool_preamble':'body');assert.match(partial!.content,/可读的正文第二段/);assert.equal(calls,3);
+ }
 });

@@ -278,7 +278,12 @@ test('reviewed orchestration failures leave an owned durable next step, never an
   const f=dispatchFixture();let calls=0;
   const service=new CoordinatorService(f.store,knowledge,{contextMode,modelCall:async()=>{calls++;throw Error(reason);}});
   const result=await service.dispatch(evalScope,{operationId:`reviewed_failure_${contextMode}_${reason.length}_20261023`,text:'做一份合成报告。'},key);
-  const db=await f.store.read();assert.equal(calls,1);assert.equal(result.taskId,undefined);assert.equal(db.chatOperations![0].status,'completed');assert.match(result.message.content,/原话|原要求/);assert.match(result.message.content,/核对|继续/);assert.ok(db.contextTraces.some(t=>t.userId===evalScope.userId&&t.workspaceId===evalScope.workspaceId));assert.equal(db.chatOperations!.filter(o=>o.workRun).length,0);
+  const db=await f.store.read();assert.equal(calls,1);assert.equal(result.taskId,undefined);assert.equal(db.chatOperations![0].status,'completed');
+  assert.equal(result.failure?.code,reason.startsWith('已达到')?'step_limit':'tool_incomplete');
+  assert.match(result.message.content,/步骤上限|指令只写了一半/);assert.match(result.message.content,/请|重新说明/);
+  assert.doesNotMatch(result.message.content,/看看刚才那件事|继续刚才那件事/);
+  assert.ok(db.messages.some(message=>message.role==='user'&&message.content==='做一份合成报告。'),'the original request is actually stored, not merely promised by copy');
+  assert.ok(db.contextTraces.some(t=>t.userId===evalScope.userId&&t.workspaceId===evalScope.workspaceId));assert.equal(db.chatOperations!.filter(o=>o.workRun).length,0);
  }
 });
 test('text-only continuation keeps the no-overwrite restriction without inventing a file prerequisite',async()=>{

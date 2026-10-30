@@ -3,11 +3,13 @@ import type { api as Api } from "./oneApi";
 import { ApiError } from "./oneApi";
 import { approveFeaturePrices } from './FeatureBudgetSettings';
 import { coordinatorMessage } from './coordinatorMessage';
-import {coordinatorRecoveryCopy} from './coordinatorRecovery';
+import {coordinatorRecoveryCopy,parseCoordinatorFailure} from './coordinatorRecovery';
 import {chatSubmission,forgetChatSubmission} from './chatSubmission';
 import {receiptMayBeMissing} from './responseProgressState';
 import {applyReviewedReceipts} from './taskTransferLifecycle';
-import {mergeCoordinatorMessages, mergeCoordinatorLinks, mergeCoordinatorReceipt, seedCoordinatorReceipt, coordinatorHistoryCursor, type CoordinatorReceipt} from './coordinatorHistory';
+import {mergeCoordinatorMessages, mergeCoordinatorLinks, mergeCoordinatorReceipt, seedCoordinatorReceipt, coordinatorHistoryCursor, coordinatorReceiptFailure, isCoordinatorReceipt, type CoordinatorReceipt} from './coordinatorHistory';
+import {invalidCoordinatorReceipt,recoverCoordinatorSubmission} from './coordinatorSubmissionRecovery';
+import {coordinatorDrafts,coordinatorSubmissionPayload,saveCoordinatorDraft,forgetCoordinatorDraft,markCoordinatorDraft} from './coordinatorDrafts';
 import {coordinatorPendingKey,coordinatorRequest, createCoordinatorRefreshQueue, forgetStoredCoordinatorOperation} from './coordinatorTransport';
 import {useCoordinatorScopedState} from './coordinatorScopedState';
 import {coordinatorDetailReadIsCurrent,coordinatorDetailRefreshPlan,coordinatorDetailVersion,type CoordinatorDetailVersion} from './coordinatorDetailRefresh';
@@ -126,6 +128,8 @@ export function useCoordinator(
     submissionError = useRef(""),
     resumeKey = useRef("");
   const settledReceipts=useMemo(()=>new Map<string,CoordinatorReceipt>(),[scope]);
+  const receivedReceipts=useMemo(()=>new Map<string,CoordinatorReceipt>(),[scope]);
+  const missingReceipts=useMemo(()=>new Set<string>(),[scope]);
   const directReceipts=useMemo(()=>({current:new Map<string,string>()}),[scope]);
   const receiptReads=useMemo(()=>new Map<string,Promise<void>>(),[scope]);
   const detailReads=useMemo(()=>new Map<string,Promise<Detail>>(),[scope]);
@@ -172,13 +176,19 @@ export function useCoordinator(
   const viewTask=useCallback((id:string|null)=>viewCoordinatorTask(id,{isCurrent,load,select:taskId=>{viewedTask.current=taskId;}}),[isCurrent,load,viewedTask]);
   const acceptReceipt=useCallback((operation:string,status:CoordinatorReceipt)=>{
     if(!isCurrent())return;
-    if(status.conversation&&(status.conversation.userId!==userId||workspaceId&&status.conversation.workspaceId!==workspaceId))return;
+    if(!isCoordinatorReceipt(status))throw invalidCoordinatorReceipt();
+    if(status.conversation&&(status.conversation.userId!==userId||workspaceId&&status.conversation.workspaceId!==workspaceId))throw invalidCoordinatorReceipt();
+    if(receivedReceipts.get(operation)?.status==='completed'&&status.status!=='completed')return;
+    missingReceipts.delete(operation);
     if(status.status==='pending'){
       if(settledReceipts.has(operation)||pendingRef.current&&pendingRef.current!==operation)return;
+      receivedReceipts.set(operation,status);
       setCurrentPending(operation);
-      setProgress(old=>status.progress||old||{phase:'正在等待处理结果',startedAt:snapshotRef.current?.conversation?.messages.at(-1)?.createdAt||new Date().toISOString()});
+      setProgress(old=>status.progress||{phase:'正在等待处理结果',startedAt:old?.startedAt||snapshotRef.current?.conversation?.messages.at(-1)?.createdAt||new Date().toISOString()});
+      setFailureReply(old=>old?.scope===userId&&old.operationId===operation?null:old);
       return;
     }
+    receivedReceipts.set(operation,status);
     settledReceipts.set(operation,{...status,...(status.conversation?{conversation:{...status.conversation,messages:status.conversation.messages.slice(-40)}}:{})});
     if(settledReceipts.size>100)settledReceipts.delete(settledReceipts.keys().next().value!);
     if(sending.current===operation)sending.current=null;
@@ -186,6 +196,10 @@ export function useCoordinator(
     setSettlement({operationId:operation,status:status.status,taskId:status.taskId,taskIds:status.taskIds});
     forgetStoredCoordinatorOperation(localStorage,pendingKey(userId),operation);
     forgetChatSubmission(submissionScope,operation);
+    const businessFailure=parseCoordinatorFailure(status.failure);
+    const needsReview=businessFailure?.outcome==='partial'||businessFailure?.outcome==='unknown';
+    if(status.status==='completed'&&!businessFailure)forgetCoordinatorDraft(userId,workspaceId,operation);
+    else markCoordinatorDraft(userId,workspaceId,operation,needsReview?'review':'failed');
     setSnapshot(old=>{
       if(old?.clientScope===userId)return mergeCoordinatorReceipt(old,operation,status);
       // A recovered server receipt is enough to show its saved answer while the
@@ -196,11 +210,14 @@ export function useCoordinator(
       return old;
     });
     if(status.status!=='completed'){
-      setOutgoing(old=>old?.id===operation?{...old,failed:true}:old);
-      setFailureReply({scope:userId,operationId:operation,text:coordinatorRecoveryCopy(status.error??'',status.status==='interrupted')});
+      setOutgoing(old=>old?.id===operation?{...old,failed:!needsReview}:old);
+      setFailureReply({scope:userId,operationId:operation,text:coordinatorRecoveryCopy(coordinatorReceiptFailure(status),status.status==='interrupted'&&(!businessFailure||businessFailure.code==='stopped'))});
       submissionError.current='';setError('');
-    }else setFailureReply(old=>old?.scope===userId&&old.operationId===operation?null:old);
-  },[isCurrent,setCurrentPending,settledReceipts,userId,workspaceId,pendingKey,submissionScope,setSnapshot,setSettlement,setProgress,setOutgoing,setFailureReply,setError]);
+    }else{
+      if(businessFailure)setOutgoing(old=>old?.id===operation?{...old,failed:!needsReview}:old);
+      setFailureReply(old=>old?.scope===userId&&old.operationId===operation?null:old);
+    }
+  },[isCurrent,setCurrentPending,settledReceipts,receivedReceipts,missingReceipts,userId,workspaceId,pendingKey,submissionScope,setSnapshot,setSettlement,setProgress,setOutgoing,setFailureReply,setError]);
   const readReceipt=useCallback((operation:string,serverOperation?:string)=>{
     const existing=receiptReads.get(operation);
     if(existing)return existing;
@@ -213,9 +230,11 @@ export function useCoordinator(
         if(e instanceof ApiError&&e.status===404){
           if(!receiptMayBeMissing(sending.current===operation,serverOperation,operation)||pendingRef.current&&pendingRef.current!==operation)return;
           forgetStoredCoordinatorOperation(localStorage,pendingKey(userId),operation);
+          missingReceipts.add(operation);receivedReceipts.delete(operation);
+          markCoordinatorDraft(userId,workspaceId,operation,'missing');
           if(pendingRef.current===operation){setCurrentPending(null);setProgress(null);}
           setOutgoing(old=>old?.id===operation?{...old,failed:true}:old);
-          setFailureReply({scope:userId,operationId:operation,text:coordinatorRecoveryCopy('暂未找到接收记录')});
+          setFailureReply({scope:userId,operationId:operation,text:coordinatorRecoveryCopy({code:'receipt_not_found',stage:'receipt',outcome:'not_started'})});
           submissionError.current='';setError('');
           return;
         }
@@ -225,7 +244,7 @@ export function useCoordinator(
     receiptReads.set(operation,request);
     void request.finally(()=>{if(receiptReads.get(operation)===request)receiptReads.delete(operation);}).catch(()=>{});
     return request;
-  },[acceptReceipt,api,isCurrent,receiptReads,setCurrentPending,userId,pendingKey,setProgress,setOutgoing,setFailureReply,setError]);
+  },[acceptReceipt,api,isCurrent,receiptReads,missingReceipts,receivedReceipts,setCurrentPending,userId,workspaceId,pendingKey,setProgress,setOutgoing,setFailureReply,setError]);
   const performRefresh = useCallback(
     async (nextPage = 1) => {
       if (!enabled || !isCurrent()) return;
@@ -306,6 +325,15 @@ export function useCoordinator(
     pageRef.current=1;resumeKey.current='';submissionError.current='';
     setSnapshot(null);setReady(false);setDetails({});setSelected(null);setBound(null);setPending(null);setProgress(null);
     setOutgoing(null);setFailureReply(null);setSettlement(null);setError('');setHistoryError('');setLoadingHistory(false);setPage(1);
+    let persisted:string|null=null;try{persisted=localStorage.getItem(pendingKey(userId));}catch{}
+    const drafts=coordinatorDrafts(userId,workspaceId),draft=drafts.find(item=>item.operationId===persisted)??drafts.at(-1);
+    if(draft){
+      setOutgoing({id:draft.operationId,text:draft.text,priorIds:[],failed:draft.state==='failed'||draft.state==='missing'});
+      if(draft.state==='pending'){
+        setCurrentPending(draft.operationId);
+        setProgress({phase:'正在核对上次提交',startedAt:draft.createdAt});
+      }else if(draft.state==='missing')setFailureReply({scope:userId,operationId:draft.operationId,text:coordinatorRecoveryCopy({code:'receipt_not_found',stage:'receipt',outcome:'not_started'})});
+    }
   },[scope]);
   useEffect(() => {
     live.current = true;
@@ -357,9 +385,13 @@ export function useCoordinator(
     submissionError.current = "";
     setFailureReply(null);
     setError("");
+    saveCoordinatorDraft(userId,workspaceId,input);
     try {
-      input={...input,operationId:await chatSubmission(submissionScope,{...input,operationId:undefined})};
+      const provisional=input.operationId,payload=coordinatorSubmissionPayload(input);
+      input={...payload,operationId:await chatSubmission(submissionScope,payload)};
       if(!isCurrent())throw new ApiError('登录账号已切换，旧页面的操作已取消',undefined,409,'SESSION_CHANGED');
+      saveCoordinatorDraft(userId,workspaceId,input);
+      if(provisional!==input.operationId)forgetCoordinatorDraft(userId,workspaceId,provisional);
       sending.current=input.operationId;
       setCurrentPending(input.operationId);
       setOutgoing(old=>old?{...old,id:input.operationId}:old);
@@ -375,22 +407,18 @@ export function useCoordinator(
       return input.operationId;
     } catch (e) {
       if(!isCurrent()||e instanceof ApiError&&e.code==='SESSION_CHANGED')throw e;
-      if(settledReceipts.get(input.operationId)?.status==='completed')return input.operationId;
-      await refresh();
+      await recoverCoordinatorSubmission({
+        isCurrent,known:()=>receivedReceipts.get(input.operationId),refresh,
+        read:()=>coordinatorRequest<CoordinatorReceipt>(api,`/api/coordinator/messages/${encodeURIComponent(input.operationId)}`),
+        accept:receipt=>acceptReceipt(input.operationId,receipt),error:e,
+        unknown:failure=>{
+          if(missingReceipts.has(input.operationId))return;
+          setProgress(old=>({...old,phase:'正在核对上次提交',startedAt:old?.startedAt??new Date().toISOString()}));
+          setFailureReply({scope:userId,operationId:input.operationId,text:`${coordinatorRecoveryCopy(failure)}\n\n提交编号：${input.operationId}。如果持续无法核对，请把这个编号交给管理员检查，不必反复发送。`});
+        },
+      });
       if(!isCurrent())throw e;
-      // A response may be lost after the server saved the reply. Reconcile the
-      // same receipt before adding a fallback; never send the request again.
-      try {
-        const receipt=await coordinatorRequest<CoordinatorReceipt>(api,`/api/coordinator/messages/${encodeURIComponent(input.operationId)}`);
-        if(!isCurrent())throw e;
-        acceptReceipt(input.operationId,receipt);
-        if(receipt.status==='completed'){setFailureReply(null);submissionError.current='';setError('');return input.operationId;}
-        if(receipt.status==='pending'){submissionError.current='';setError('');if(input.localExecution)throw e;return input.operationId;}
-      } catch {if(!isCurrent())throw e;}
-      setOutgoing(old=>old?.id===input.operationId?{...old,failed:true}:old);
-      setFailureReply({scope:userId,operationId:input.operationId,text:coordinatorRecoveryCopy(e instanceof Error?e.message:'')});
       submissionError.current='';setError('');
-      if(input.localExecution)throw e;
       return input.operationId;
     } finally {
       if(isCurrent()&&sending.current===input.operationId)sending.current = null;
@@ -536,6 +564,7 @@ export function useCoordinator(
     tasks,
     dialogue: [...(snapshot?.conversation?.messages ?? []).map((m) => ({
       ...coordinatorMessage(m),
+      ...(outgoing?.failed&&m.role==='user'&&m.id===[...(snapshot?.conversation?.messages??[])].reverse().find(message=>message.role==='user'&&!outgoing.priorIds.includes(message.id!)&&message.content===outgoing.text)?.id?{status:'failed' as const}:{}),
       taskId: snapshot?.links?.find((l) => l.messageId === m.id)?.taskId,
       taskIds: [...new Set(snapshot?.links?.filter(l => l.messageId === m.id).map(l => l.taskId) ?? [])],
     })), ...(outgoing && !snapshot?.conversation?.messages.some(m=>m.role==='user'&&!outgoing.priorIds.includes(m.id!)&&m.content===outgoing.text) ? [{id:`outgoing_${outgoing.id}`,role:'user' as const,text:outgoing.text,status:outgoing.failed?'failed' as const:undefined,featureName:outgoing.failed?'发送状态待确认 · 原话保留':'发送中'}] : []),...(failureReply?.scope===userId?[{id:`feedback_${failureReply.operationId}`,role:'assistant' as const,text:failureReply.text}]:[])],
@@ -586,8 +615,8 @@ export function useCoordinator(
     settlement,
     clearError: () => {setError("");setHistoryError('');},
     progress,
-    stop: async () => {const id=localPending||snapshotRef.current?.pendingOperationId;if(!id)return;await api(`/api/coordinator/messages/${encodeURIComponent(id)}/stop`,{method:'POST',body:'{}'});await refresh();},
-    stopTask: async (id:string) => {await api(`/api/coordinator/tasks/${encodeURIComponent(id)}/stop`,{method:'POST',body:'{}'});await refresh();},
+    stop: async () => {const id=pendingRef.current||snapshotRef.current?.pendingOperationId;if(!id)return;let receipt=await coordinatorRequest<CoordinatorReceipt>(api,`/api/coordinator/messages/${encodeURIComponent(id)}/stop`,{method:'POST',body:'{}'});if(receipt?.status==='completed'&&!isCoordinatorReceipt(receipt))receipt=await coordinatorRequest<CoordinatorReceipt>(api,`/api/coordinator/messages/${encodeURIComponent(id)}`);acceptReceipt(id,receipt);await refresh();},
+    stopTask: async (id:string) => {await coordinatorRequest(api,`/api/coordinator/tasks/${encodeURIComponent(id)}/stop`,{method:'POST',body:'{}'});await refresh();},
     snapshot,
     details,
     page,

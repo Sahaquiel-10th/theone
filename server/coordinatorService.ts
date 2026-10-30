@@ -12,7 +12,8 @@ import {routingCapabilities} from './capabilityCatalog.js';
 import {resolveDispatchCapabilities,callableCapabilities} from './dispatchCapabilities.js';
 import {runtimeContext,runtimeContextText,datedKnowledgeQuery,temporalKnowledgeResult,requestedRuntimeFacts,knowledgeRecallOptions} from './runtimeContext.js';
 import {explicitlyNeedsPublicSearch,publicSearchOutcome,reviewedPublicQuery,publicSearchPermitted} from './publicSearch.js';
-import {coordinatorRecoveryCopy,dispatchCommitment} from '../src/coordinatorRecovery.js';
+import {coordinatorRecoveryCopy,dispatchCommitment,parseCoordinatorFailure,type CoordinatorFailure,type CoordinatorFailureStage} from '../src/coordinatorRecovery.js';
+import {classifyCoordinatorFailure} from './coordinatorFailures.js';
 import {discoverCapabilities,discoverySchema,validateDiscoveryQuery,initialCapabilityContext,mandatoryOfficeTools,type DiscoveryQuery} from './capabilityDiscovery.js';
 import {validateFixedWorkflowInvocation,sameFixedWorkflowInvocation,onboardingArtifactStages} from './fixedWorkflows.js';
 import type {
@@ -37,11 +38,12 @@ import { executableFeatureTools } from "./featureToolExecution.js";
 import { featureMultiplier, requireFeatureApproval, type FeatureApproval } from './featurePricing.js';
 import {
   runTaskOrchestrator,
+  orchestrationFailureProgress,
   orchestrationFailureCode,
   OrchestrationInputError,
   type OrchestrationTool,
 } from "./taskOrchestrator.js";
-import { callModel, callModelWithTools, ModelRequestError, type ModelToolMessage } from "./modelGateway.js";
+import { callModel, callModelWithTools, ModelRequestError, type ModelToolMessage,type ModelFinishReason } from "./modelGateway.js";
 import { featureImageBytes } from "./featureImage.js";
 import { saveFeatureArtifact,visualArtifactSaver,officeArtifactContext } from "./featureArtifacts.js";
 import {ownedArtifactResults} from './artifactLinks.js';
@@ -51,6 +53,7 @@ import {
   beginChatOperation,
   completeChatOperation,
   failChatOperation,
+  failChatOperationInMutation,
   getChatOperationResult,
   type ChatOperation,
 } from "./chatOperations.js";
@@ -115,6 +118,7 @@ type Deps = FeatureRunDependencies & {
 const at = () => new Date().toISOString();
 const own = (item: { workspaceId: string; userId: string }, s: WorkScope) =>
   item.workspaceId === s.workspaceId && item.userId === s.userId;
+const failureFeedback=(failure:CoordinatorFailure,requestId:string)=>coordinatorRecoveryCopy(failure)+(['internal_error','storage_unavailable','billing_unavailable','model_auth','model_request_rejected'].includes(failure.code)?`\n\n请求编号：${requestId}`:'');
 const notionVerificationActive=(job:WorkRun|undefined)=>job?.notionReceipt?.state!=='verified'&&!['not_sent','rejected'].includes(job?.notionReceipt?.delivery??'')&&['scheduled','checking'].includes(job?.notionReceipt?.verification?.state??'');
 function publicNotionReceipt(receipt:WorkRun['notionReceipt']){
   if(!receipt)return undefined;
@@ -142,9 +146,9 @@ function existingNotionArticle(db:Database,s:WorkScope,conversationId:string,sou
   const conversation=db.conversations.find(c=>own(c,s)&&c.id===conversationId&&!c.archived);
   if(!conversation)throw new CoordinatorError('原文章不属于当前账号或已不可用，尚未保存。',403);
   const operations=(db.chatOperations??[]).filter(op=>own(op,s)&&op.conversationId===conversationId);
-  const eligible=operations.filter(op=>
+  const eligible=operations.filter(op=>!op.failure&&(
     op.workRun?.resultMessageId&&['completed','failed'].includes(op.workRun.state)&&['completed','partial','returned'].includes(op.workRun.resultOutcome??'')
-    ||!op.workRun&&op.status==='completed'&&op.assistantMessageId&&!op.dispatchedTaskId&&!op.dispatchedTaskIds?.length);
+    ||!op.workRun&&op.status==='completed'&&op.assistantMessageId&&!op.dispatchedTaskId&&!op.dispatchedTaskIds?.length));
   const selected=conversation.coordinatorMain?(selectedMessageId?eligible.filter(op=>op.assistantMessageId===selectedMessageId):eligible):eligible;
   if(!source&&conversation.coordinatorMain&&selected.length>1)throw new OrchestrationInputError('主对话中有多份已有回复，不能猜哪一份是要保存的文章。请先用 read_context 的 messageId 读取那条原文，再交接保存；不要复制最近的普通答复或用摘要代替。');
   const operation=source?operations.find(op=>op.id===source.operationId):selected.at(-1);
@@ -302,7 +306,7 @@ export class CoordinatorService {
       const op=d.chatOperations?.find(o=>own(o,s)&&o.operationId===operationId&&o.requestId.startsWith('coord_'));
       if(!op)throw new CoordinatorError('消息不存在',404);
       if(op.status!=='pending')return {status:op.status};
-      op.status='interrupted';op.updatedAt=at();
+      op.status='interrupted';op.failure={code:'stopped',stage:'planning',outcome:'unknown'};op.updatedAt=at();
       return {status:'interrupted', taskId:op.dispatchedTaskId, message:'已停止后续回复和分派；已经交出的任务需在任务区单独停止，已产生的用量仍保留。'};
     });
   }
@@ -539,6 +543,7 @@ export class CoordinatorService {
           id: o.id,
           operationId: o.operationId,
           state: o.workRun!.state,
+          failure:parseCoordinatorFailure(o.failure),
           verificationPending:selectedNotionVerification(o)||o.status==='pending'&&o.workRun!.failureCode==='notion_verification_pending',
           budget:o.workRun!.budget,
           kind:o.workRun!.kind,
@@ -744,6 +749,10 @@ export class CoordinatorService {
       imageTask: string | undefined,
       trace: ExecutionTraceStep[] = [],
       sections: ContextTraceSection[] = [];
+    let failureStage:CoordinatorFailureStage='accepting';
+    let responseFailure:CoordinatorFailure|undefined;
+    let limitedRoutingResponse:string|undefined;
+    let routingFiltered=false;
     const progressKey=this.progressKey(s,input.operationId);
     this.progress.set(progressKey,{phase:'正在理解你的要求',startedAt:at()});
     try {
@@ -771,6 +780,7 @@ export class CoordinatorService {
         });
       });
       onAccepted?.();
+      failureStage='planning';
       const current = await this.store.read(),
         main = current.conversations.find((c) => c.id === cid && own(c, s))!;
       const timeContext=current.chatOperations?.find(o=>own(o,s)&&o.operationId===input.operationId)?.runtimeContext??runtimeContext(current,s,undefined,clientTimeZone);
@@ -1228,11 +1238,12 @@ export class CoordinatorService {
         beforeStep: verify,
         onTrace: (t) => (trace = t),
         onStage: (stage,name)=>{
+          failureStage=stage==='model'?'model':stage==='tool'?'tool':'planning';
           const item=this.progress.get(progressKey);if(!item)return;
           const labels:Record<string,string>={knowledge_search:'正在查找已授权知识库',web_search:'正在查找公开资料',search_tasks:'正在定位相关任务',read_task:'正在核对任务上下文',delegate_task:'正在安排任务',delegate_tasks:'正在安排任务',execute_local_task:'正在交给本机执行',generate_image:'正在安排绘图'};
           item.phase=stage==='model'?'正在等待模型回答':stage==='tool_returned'?'已取得工具反馈，正在整理回答':labels[name||'']||'正在调用已授权工具';
         },
-        call: (messages, offeredTools, callOptions) => {
+        call: async (messages, offeredTools, callOptions) => {
           const tools = localClarification ? [] : offeredTools.filter(t=>!(dispatchedTasks.length>=4&&['delegate_task','delegate_tasks','execute_local_task','generate_image'].includes(t.function.name)));
           const requiredLocalTool = !adaptive && input.localExecution && !dispatchedTasks.length
             ? ['execute_local_task', 'delegate_task'].find(name=>tools.some(t=>t.function.name===name)) : undefined;
@@ -1243,7 +1254,8 @@ export class CoordinatorService {
           const requiredPublicTool = !publicSearchAttempted&&input.webSearch&&publicSearchAllowed&&explicitlyNeedsPublicSearch(input.text)
             &&!mainKnowledge.required&&!needsTaskContext(input.text)&&(!/天气|附近|周边/.test(input.text)||Boolean(timeContext.city))
             &&tools.some(t=>t.function.name==='web_search')?'web_search':undefined;
-          return runBilledModel(
+          failureStage='billing';
+          const response=await runBilledModel(
             this.store,
             {
               ...s,
@@ -1267,8 +1279,9 @@ export class CoordinatorService {
                   throw new CoordinatorError("本轮设置的调度上限不足，尚未开始下一次调用；账户余额不受此提示影响。",402);
               },
             },
-            (m) =>
-              (this.deps.modelCall ?? callModelWithTools)(
+            async (m) => {
+              failureStage='model';
+              const response=await (this.deps.modelCall ?? callModelWithTools)(
                 m,
                 messages,
                 tools,
@@ -1280,15 +1293,22 @@ export class CoordinatorService {
                 requiredLocalTool ? { requiredTool: requiredLocalTool } : requiredPublicTool?{requiredTool:requiredPublicTool}:!adaptive && !dispatchedTasks.length && tools.some(t => t.function.name === "delegate_task") &&
                 (features.length > 0 || attachments.length > 0 || freshDocumentRead || (Boolean(input.boundTaskId) && !tools.some(t => ['read_task','search_tasks','execute_local_task'].includes(t.function.name))))
                   ? { requiredTool: "delegate_task" } : callOptions??{},
-              ),
+              );
+              failureStage='billing';
+              return response;
+            },
           );
+          failureStage='planning';
+          if(response.finishReason==='length'&&!response.toolCalls.length&&response.content.trim())limitedRoutingResponse=response.content;
+          if(response.finishReason==='filtered'){routingFiltered=true;limitedRoutingResponse=undefined;}
+          return response;
         },
       });
-      if (
-        result.finishReason === "length" ||
-        result.finishReason === "filtered"
-      )
+      if (result.finishReason === 'length' || result.finishReason === 'filtered') {
+        responseFailure={code:result.finishReason==='filtered'?'model_filtered':'model_incomplete',stage:'model',outcome:result.finishReason==='length'&&result.content.trim()?'partial':'not_started'};
+        failureStage='model';
         throw new CoordinatorError("调度回答未完整返回");
+      }
       if (
         localRequested && !localAccepted && !localClarification
       ) throw new CoordinatorError("本机执行尚未开始：调度没有实际分派任务。你的原始要求已保留，请明确对应事情后再执行；不会自动重跑。", 409);
@@ -1310,6 +1330,7 @@ export class CoordinatorService {
         :mainKnowledge.missing.length?`${mainKnowledge.missing.join('、')}还没有连好，这次没能查询。先连接好它，再继续查这件事就行。`
         :'这次还没查全你要找的资料，不能当作没有找到。原问题还在，可以接着查。';
       if(adaptive&&input.webSearch&&publicSearchAllowed&&explicitlyNeedsPublicSearch(input.text)&&!publicSearchAttempted&&!coordinatorNeedsInput(result.content))result.content='这次还没有实际查到最新公开资料，不能把天气或新闻当成刚核实的结果。原问题已保留，可以继续查询；若仍查不到，我会说明卡在哪里。';
+      failureStage='saving';
       return await this.finishDispatch(
         s,
         scope.operationId,
@@ -1342,24 +1363,35 @@ export class CoordinatorService {
           // merely membership. A revoked source must suppress even a question.
           await verifyClarification();
           return await this.finishDispatch(s,scope.operationId,cid,requestId,content,`还没开始操作电脑。${localClarification}`,config.model.id,trace,undefined,sections,capturedResults,assertClarificationState);
-        } catch(verificationError) { error = verificationError; trace = []; }
+        } catch(verificationError) { error = verificationError; trace = [];responseFailure=undefined;limitedRoutingResponse=undefined;routingFiltered=true; }
       }
+      const progress=orchestrationFailureProgress(error);
+      const partial=!routingFiltered ? (progress?.partial?.kind==='body'?progress.partial.content.trim():undefined) || limitedRoutingResponse?.trim() : undefined;
+      // A cut tool instruction is not a cut user-facing answer. Only readable
+      // body material may expose the UI's "continue writing" affordance.
+      const partialFinishReason=partial?(progress?.partial?.kind==='body'?progress.partial.finishReason:limitedRoutingResponse?'length' as const:undefined):undefined;
+      const failure=responseFailure ?? classifyCoordinatorFailure(error,{stage:failureStage,outcome:partial?'partial':dispatched||imageTask||progress?.completedTools.length?'unknown':'not_started'});
       // A worker was already committed. Never turn a lost final acknowledgement
       // into a fresh submission that could duplicate the user's task.
       if (dispatched || imageTask) {
         const paused=dispatched&&(await this.store.read()).conversations.some(c=>own(c,s)&&c.id===dispatched&&c.workPaused);
+        let childPartial:string|undefined;
+        if(partial&&verifyRouting){try{await verifyRouting();childPartial=partial;}catch{/* A durable task acknowledgement never grants access to revoked source text. */}}
         return this.finishDispatch(
           s,
           scope.operationId,
           cid,
           requestId,
           content,
-          imageTask && !dispatched ? '画图的要求记好了。有结果或需要你补充时，会在这里告诉你。' : localRequested ? '电脑操作的要求记好了，还不能确认是否已经开始。有结果或卡住时，会在这里告诉你。' : paused ? '补充记下了，不过这件事还暂停着。打开这件事，确认继续就行。' : '要求记好了。有结果或需要你补充时，会在这里告诉你。',
+          (imageTask && !dispatched ? '画图的要求记好了。有结果或需要你补充时，会在这里告诉你。' : localRequested ? '电脑操作的要求记好了，还不能确认是否已经开始。有结果或卡住时，会在这里告诉你。' : paused ? '补充记下了，不过这件事还暂停着。打开这件事，确认继续就行。' : '要求记好了。有结果或需要你补充时，会在这里告诉你。') + (childPartial?`\n\n【已返回的部分说明 · 任务进展以记录为准】\n${childPartial}`:''),
           config.model.id,
           trace,
           dispatched??imageTask,
           sections,
           capturedResults,
+          childPartial?assertRouting:undefined,
+          {...failure,outcome:'unknown'},
+          childPartial?partialFinishReason:undefined,
         );
       }
       // A routing reply can finish while the requested work has not started.
@@ -1367,30 +1399,30 @@ export class CoordinatorService {
       // Re-check Key, membership, source grants and cancellation before writing.
       const routingFailure=orchestrationFailureCode(error);
       const reason=error instanceof CoordinatorError||error instanceof FeatureConfigError||error instanceof ModelRequestError||error instanceof OrchestrationInputError||routingFailure&&error instanceof Error?error.message:'';
-      if(verifyRouting&&(routingFailure||error instanceof OrchestrationInputError||error instanceof FeatureConfigError&&/功能未开放|发布版本/.test(reason)||error instanceof ModelRequestError||/图片生成尚未配置|执行器已停用或尚未发布|本轮设置的调度上限/.test(reason)||adaptive&&/未完成分派|本机执行尚未开始|执行能力不可用/.test(reason))){
+      if(verifyRouting&&(partial||responseFailure||routingFailure||error instanceof OrchestrationInputError||error instanceof FeatureConfigError&&/功能未开放|发布版本/.test(reason)||error instanceof ModelRequestError||/图片生成尚未配置|执行器已停用或尚未发布|本轮设置的调度上限/.test(reason)||adaptive&&/未完成分派|本机执行尚未开始|执行能力不可用/.test(reason))){
         try {
         await verifyRouting();
-        const feedback=coordinatorRecoveryCopy(error instanceof ModelRequestError?'模型回复中断':reason||'回复中断');
-        return await this.finishDispatch(s,scope.operationId,cid,requestId,content,feedback,config.model.id,trace,undefined,[...sections,{key:'current_input',title:'本轮未开始的原因',content:JSON.stringify({code:routingFailure??(error instanceof OrchestrationInputError?'TOOL_INPUT_REPAIR':error instanceof ModelRequestError?'MODEL_UNAVAILABLE':'DISPATCH_NOT_STARTED')})}],capturedResults,assertRouting);
-        }catch(verificationError){await failChatOperation(this.store,scope);throw verificationError;}
+        const feedback=failureFeedback(failure,requestId)+(partial?`\n\n【已返回的部分内容 · 尚未完成】\n${partial}`:'');
+        return await this.finishDispatch(s,scope.operationId,cid,requestId,content,feedback,config.model.id,trace,undefined,[...sections,{key:'current_input',title:'本轮处理结果',content:JSON.stringify(failure)}],capturedResults,assertRouting,failure,partialFinishReason);
+        }catch(verificationError){await failChatOperation(this.store,scope,{failure:classifyCoordinatorFailure(verificationError,{stage:'saving',outcome:'unknown'})});throw verificationError;}
       }
       // Failed routing is still a real, possibly billed attempt. Keep the same
       // owner's diagnostic record even when no worker was created. Never store
       // raw gateway/transport exceptions, which can contain credentials.
       await this.store.mutate((d) => {
+        failChatOperationInMutation(d,scope,{failure});
         if (d.contextTraces.some(t => own(t, s) && t.requestId === requestId)) return;
         appendOwnerContextTrace(d, {
           id: uid("ctx"), ...s, conversationId: cid, assistantMessageId: "",
           modelId: config.model.id, requestId, query: content,
-          responsePreview: error instanceof CoordinatorError || error instanceof FeatureConfigError || error instanceof ModelRequestError ? error.message.slice(0, 500) : "本次未完成分派，可能已有模型用量；不会自动重试",
+          responsePreview: failureFeedback(failure,requestId),
           sections, executionSteps: trace, createdAt: at(),
         });
       });
-      await failChatOperation(this.store, scope);
       throw error instanceof CoordinatorError || error instanceof FeatureConfigError || error instanceof ModelRequestError
         ? error
         : new CoordinatorError(
-            "本次未完成分派，可能已有模型用量；不会自动重试",
+            coordinatorRecoveryCopy(failure),
           );
     } finally {this.progress.delete(progressKey);}
   }
@@ -1407,6 +1439,8 @@ export class CoordinatorService {
     sections: ContextTraceSection[] = [],
     resultCaptures: TaskResultCapture[] = [],
     beforeSave?: (db: Database) => void,
+    failure?:CoordinatorFailure,
+    finishReason?:ModelFinishReason,
   ) {
     await this.store.mutate((d) => {
       const operation=d.chatOperations?.find(o=>own(o,s)&&o.operationId===operationId);
@@ -1440,6 +1474,7 @@ export class CoordinatorService {
         attachments: returned.flatMap(result => result.attachments.filter(file => file.welcomeGuide || file.visualDocument)),
         modelId,
         requestId,
+        finishReason,
         createdAt: at(),
       });
       completeChatOperation(
@@ -1447,6 +1482,7 @@ export class CoordinatorService {
         { ...s, operationId },
         { conversationId: cid, assistantMessageId: mid },
       );
+      if(operation&&failure)operation.failure=structuredClone(failure);
       if(resultIds.length)markTaskResultsReported(d,s,{ids:resultIds,assistantMessageId:mid,mainConversationId:cid,captures});
       appendOwnerContextTrace(d, {
         id: uid("ctx"),
@@ -1565,7 +1601,7 @@ export class CoordinatorService {
         // reached billing. Admission-only failures can still use the same gift.
         operation.workRun.welcomeSponsored=!!job.welcomeSponsored&&!d.modelUsageRecords.some(r=>own(r,s)&&r.sponsorship?.operationId===job.welcomeOperationId&&(r.sponsorship?.stage??'image')==='image');
         task.workPaused=false;task.workPauseReason=undefined;task.updatedAt=at();
-      });}catch(error){await failChatOperation(this.store,{...s,operationId});throw error;}
+      });}catch(error){await failChatOperation(this.store,{...s,operationId},{failure:classifyCoordinatorFailure(error,{stage:'saving',outcome:'not_started'})});throw error;}
       return {taskId,status:'queued'};
     }
     if(recovery.kind==='resume'){
@@ -1650,7 +1686,7 @@ export class CoordinatorService {
       });
       return taskId;
     } catch (error) {
-      await failChatOperation(this.store, { ...s, operationId: input.operationId });
+      await failChatOperation(this.store, { ...s, operationId: input.operationId },{failure:classifyCoordinatorFailure(error,{stage:'saving',outcome:'unknown'})});
       throw error;
     }
   }
@@ -1689,7 +1725,7 @@ export class CoordinatorService {
         op.workRun.welcomeManual={...plan,model:{...plan.model,apiKey:''}};
       }
       return cid;
-    });}catch(error){await failChatOperation(this.store,{...s,operationId:input.operationId});throw error;}
+    });}catch(error){await failChatOperation(this.store,{...s,operationId:input.operationId},{failure:classifyCoordinatorFailure(error,{stage:'saving',outcome:'not_started'})});throw error;}
   }
   private async enqueue(
     s: WorkScope,
@@ -2050,7 +2086,7 @@ export class CoordinatorService {
       await failChatOperation(this.store, {
         ...s,
         operationId: input.operationId,
-      });
+      },{failure:classifyCoordinatorFailure(error,{stage:'saving',outcome:'not_started'})});
       throw error;
     }
   }
@@ -2132,8 +2168,12 @@ export class CoordinatorService {
     verifyKey: () => Promise<void>,
   ) {
     const generatedArtifactIds:string[]=[];
-    let limitedResponse: { content: string; modelId: string; requestId: string; toolCalls: number } | undefined;
+    let limitedResponse: { content: string; modelId: string; requestId: string; toolCalls: number; finishReason?:ModelFinishReason } | undefined;
     let filteredResponse = false;
+    let responseFailure:CoordinatorFailure|undefined;
+    const featurePartials=new Map<number,{content:string;finishReason?:ModelFinishReason;failure:CoordinatorFailure}>();
+    const featureFailures=new Map<number,CoordinatorFailure>();
+    let failureStage:CoordinatorFailureStage='accepting';
     let trace: ExecutionTraceStep[] = [],
       sections: ContextTraceSection[] = [];
     const featureTraces=new Map<number,ExecutionTraceStep[]>();
@@ -2171,6 +2211,7 @@ export class CoordinatorService {
         if(job.notionArticleSource&&!existingNotionArticle(fresh,s,job.notionArticleSource.conversationId,job.notionArticleSource))throw new CoordinatorError('原文章暂时无法完整读取，尚未保存。',409);
       };
       await verify();
+      failureStage='planning';
       const steps=job.steps??(job.steps=[]);
       const reusedArtifacts=(output:unknown)=>{if(!output||typeof output!=='object')return;const v=output as {file?:{id?:string};files?:{id?:string}[];attachmentId?:string};for(const fileId of [v.file?.id,v.attachmentId,...(Array.isArray(v.files)?v.files.map(f=>f.id):[])])if(fileId&&!generatedArtifactIds.includes(fileId))generatedArtifactIds.push(fileId);};
       const checkpoint=(namespace:string):TaskStepStore=>({namespace,steps,onReuse:reusedArtifacts,save:async step=>{
@@ -2427,7 +2468,10 @@ export class CoordinatorService {
           const price={id:skill.id,name:skill.values.name,releaseId:skill.releaseId,version:skill.version,multiplier:featureMultiplier(skill.values)};
           tools.push({name:`feature_${index}`,label:skill.values.name,effect:'model',tolerateFailure:true,description:`使用功能「${skill.values.name}」（${price.multiplier} 倍）：${skill.values.description}。仅在本轮确实需要时调用。query 必须包含具体目标及相关上下文；本功能实际用量按此倍率计费。`,run:async query=>{
             await verify();
+            try{
             const current=await this.store.read();requireFeatureApproval(current,s,[price],job.featureApprovals);
+            const priorPartial=featurePartials.get(index);
+            if(priorPartial)return {feature:skill.values.name,usageMultiplier:price.multiplier,status:'partial',content:priorPartial.content,finishReason:priorPartial.finishReason,failure:priorPartial.failure};
             const selected=current.models.find(model=>model.id===(skill.values.modelId||m.id)&&model.enabled&&model.apiKey);
             if(!selected||selected.kind!==(skill.values.experience?.mode==='image'?'image':'chat'))throw new CoordinatorError('功能对应的模型不可用，请检查已上架配置',409);
             const beforeReserve=(d:Database,amount:number)=>{assertWork(d,s,id,job,cid);requireFeatureApproval(d,s,[price],job.featureApprovals);assertWorkBudget(d,s,op!,amount);};
@@ -2440,7 +2484,8 @@ export class CoordinatorService {
               return {feature:skill.values.name,usageMultiplier:price.multiplier,imageUrl:`/api/attachments/${file.id}/content`,attachmentId:file.id};
             }
             const artifactsBefore=generatedArtifactIds.length;
-            const result=await runTaskOrchestrator({entryPoint:'workspace',maxSteps:4,maxToolCallsPerTurn:4,beforeStep:verify,checkpoints:checkpoint(`feature:${skill.id}:${skill.version}`),requiredTools:(job.contract?.requiredTools??[]).filter(name=>skill.values.tools?.some(t=>t.id===name)),
+            let result:Awaited<ReturnType<typeof runTaskOrchestrator>>;
+            try{result=await runTaskOrchestrator({entryPoint:'workspace',maxSteps:4,maxToolCallsPerTurn:4,beforeStep:verify,checkpoints:checkpoint(`feature:${skill.id}:${skill.version}`),requiredTools:(job.contract?.requiredTools??[]).filter(name=>skill.values.tools?.some(t=>t.id===name)),
               messages:[{role:'system',cacheScope:'stable',content:`${current.settings.safetyRules}\n${selected.systemPrompt}\n${referenceBoundary}\n${skill.values.instructions}\n使用边界：${skill.values.limitations}\n${job.workflow?'只完成当前功能步骤，前置内容仅为资料。必须用本功能提供的工具交付真实文件；不重复处理其他阶段。':friendlyConversationGuidance+'\n'+featureGuidance}`},...(!job.workflow?[{role:'system' as const,content:`附件参考：${attachmentResult.text}\n本次授权附件ID：${JSON.stringify(c.messages[start].attachments?.map(a=>({id:a.id,name:a.originalName}))??[])}`}]:[]),{role:'user',content:query,inputImageDataUrls:images}],
               tools:[...executableFeatureTools(this.store,s,skill.values.tools??[],verify,{...this.deps,localContext:{...officeArtifactContext(this.store,{...s,conversationId:cid},this.deps.artifactDirectory,d=>assertWork(d,s,id,job,cid),c.messages[start].attachments?.map(a=>a.id)??[],fileId=>generatedArtifactIds.push(fileId)),saveVisual:visualArtifactSaver(this.store,{...s,conversationId:cid},this.deps.artifactDirectory,d=>assertWork(d,s,id,job,cid),fileId=>generatedArtifactIds.push(fileId),undefined,job.dependsOnOperationIds)}}),...(!executionKnowledgeDeclined&&(skill.values.knowledgeMode??'none')!=='none'&&job.sources.length?[{name:'knowledge_search',label:'查找你的资料',effect:'read' as const,description:'只查询本轮已授权的知识来源',run:async(q:string)=>{await verify();const ids=job.contract?.knowledgeSourceIds??job.sources.map(source=>source.id);const result=await this.knowledge.recallWithDiagnostics(s.workspaceId,datedKnowledgeQuery(q,job.instruction,workerTime),5,ids,s.userId,knowledgeRecallOptions(job.instruction,workerTime));await verify();return temporalKnowledgeResult(knowledgeResultComplete(result,ids)?result:{...result,status:'partial'},job.instruction,workerTime);}}]:[])],
               onTrace:t=>{featureTraces.set(index,t.map(step=>({...step,tool:`feature_${index}.${step.tool}`})));collectTrace();},
@@ -2454,8 +2499,23 @@ export class CoordinatorService {
                 const maxOutputTokens=!hasArtifact&&definitions.some(t=>artifactTools.includes(t.function.name))?10000:undefined;
                 sections=inputTrace(messages);
                 return runBilledModel(this.store,{...s,conversationId:cid,model:selected,featurePrice:price,requestId:op!.requestId,activity:'task_feature',maxOutputTokens,input:{messages,tools:callOptions?.finalSummaryTools??definitions,taskVersion:skill.version},beforeReserve},model=>(this.deps.modelCall??callModelWithTools)(model,messages,definitions,op!.requestId,{...callOptions,maxOutputTokens}));}});
+            }catch(error){
+              await verify();
+              const readable=orchestrationFailureProgress(error)?.partial;
+              if(!readable||readable.kind!=='body'||!readable.content.trim())throw error;
+              const failure=classifyCoordinatorFailure(error,{stage:'model',outcome:'partial'});
+              featureFailures.set(index,failure);
+              featurePartials.set(index,{...readable,failure});
+              return {feature:skill.values.name,usageMultiplier:price.multiplier,status:'partial',content:readable.content,finishReason:readable.finishReason,failure};
+            }
             await verify();
-            if(result.finishReason==='length'||result.finishReason==='filtered')throw new CoordinatorError(`${skill.values.name}回答未完整返回，本轮用量已保留，不会自动重跑`);
+            if(result.finishReason==='length'){
+              const failure:CoordinatorFailure={code:'model_incomplete',stage:'model',outcome:'partial'};
+              featureFailures.set(index,failure);
+              featurePartials.set(index,{content:result.content,finishReason:result.finishReason,failure});
+              return {feature:skill.values.name,usageMultiplier:price.multiplier,status:'partial',content:result.content,finishReason:result.finishReason,failure};
+            }
+            if(result.finishReason==='filtered')throw new CoordinatorError(`${skill.values.name}回答未完整返回，本轮用量已保留，不会自动重跑`);
             if(skill.values.tools?.some(t=>['oneHtml','oneFlowchart','oneSlides','oneWorkbook','oneDocument'].includes(t.id))&&generatedArtifactIds.length===artifactsBefore&&!completedSteps(steps).some(step=>step.namespace===`feature:${skill.id}:${skill.version}`&&['oneHtml','oneFlowchart','oneSlides','oneWorkbook','oneDocument'].includes(step.tool)))throw new CoordinatorError('说明文件还没有生成，请查看本轮反馈后重试。');
             const outcome=parseTaskOutcome(result.content);
             const saved=await this.store.read();assertWork(saved,s,id,job,cid);
@@ -2464,6 +2524,7 @@ export class CoordinatorService {
             }));
             const artifacts=ownedArtifactResults(saved,s,cid,[...featureFileIds]);
             return {feature:skill.values.name,usageMultiplier:price.multiplier,content:result.content,artifacts,finishReason:result.finishReason,...(result.requiredMissing.length||['partial','failed','needs_input'].includes(outcome.outcome)?{status:'failed',missing:result.requiredMissing}:{})};
+            }catch(error){await verify();featureFailures.set(index,classifyCoordinatorFailure(error,{stage:'tool',outcome:'failed'}));throw error;}
           }});
           return;
         }
@@ -2605,6 +2666,7 @@ export class CoordinatorService {
         completeAfterTools:()=>datedDraft?.missing?datedDraft.result():job.notionTarget&&!notionContext?.readOnly&&!job.skills.length?verifiedNotionCompletion(job.notionReceipt,steps,requiredForRound(),{scopeId:id}):undefined,
         maxSteps: job.values.maxSteps,
         beforeStep: verify,
+        onStage:stage=>{failureStage=stage==='model'?'model':stage==='tool'?'tool':'planning';},
         onTrace: (t) => {workerTrace=t;collectTrace();},
         call: async (messages, tools, callOptions) => {
           sections = inputTrace(messages);
@@ -2631,6 +2693,7 @@ export class CoordinatorService {
             if(completed)return {content:completed,toolCalls:[],finishReason:'stop'};
             throw new CoordinatorError('本批任务超过已授权预算，已停止新的调用',402);
           }
+          failureStage='billing';
           const response = await runBilledModel(
             this.store,
             {
@@ -2646,20 +2709,25 @@ export class CoordinatorService {
                 assertWorkBudget(d,s,op!,amount);
               },
             },
-            (m) =>
-              (this.deps.modelCall ?? callModelWithTools)(
+            async (m) => {
+              failureStage='model';
+              const response=await (this.deps.modelCall ?? callModelWithTools)(
                 m,
                 messages,
                 tools,
                 op!.requestId,
                 { ...callOptions, maxOutputTokens },
-              ),
+              );
+              failureStage='billing';
+              return response;
+            },
           );
+          failureStage='planning';
           // Preserve actual user-facing text even when the orchestrator rejects
           // an incomplete tool instruction before returning a final answer.
           // Provider reasoning blocks and raw payloads never enter this receipt.
-          if (response.finishReason === 'length') limitedResponse = {
-            content: response.content, modelId: m.id, requestId: op!.requestId, toolCalls: response.toolCalls.length,
+          if (response.finishReason === 'length'&&!response.toolCalls.length) limitedResponse = {
+            content: response.content, modelId: m.id, requestId: op!.requestId, toolCalls: response.toolCalls.length,finishReason:response.finishReason,
           };
           if (response.finishReason === 'filtered') { filteredResponse = true; limitedResponse = undefined; }
           workerNeedsInput=!response.toolCalls.length&&parseTaskOutcome(response.content).outcome==='needs_input';
@@ -2670,7 +2738,7 @@ export class CoordinatorService {
         result.finishReason === "length" ||
         result.finishReason === "filtered"
       )
-        throw new CoordinatorError("任务成果未完整返回");
+        {failureStage='model';responseFailure={code:result.finishReason==='filtered'?'model_filtered':'model_incomplete',stage:'model',outcome:result.finishReason==='length'&&result.content.trim()?'partial':'failed'};throw new CoordinatorError(result.finishReason==='filtered'?'模型输出被过滤':'任务成果未完整返回');}
       await verify();
       if(datedDraft?.missing)result.content=datedDraft.result();
       const parsedOutcome=parseTaskOutcome(result.content);
@@ -2702,6 +2770,16 @@ export class CoordinatorService {
         const body=datedDraft?.missing||/\b(?:HTTP|MCP|API)\b|execution_\w+|feature_\d|工具未授权|参数无效|执行器|回执/.test(parsedOutcome.content)?'':parsedOutcome.content;
         result.content=JSON.stringify({...parsedOutcome,content:[job.userReport,body].filter(Boolean).join('\n\n'),summary:job.userReport});
       }
+      if(featurePartials.size){
+        const partials=[...featurePartials.values()];
+        responseFailure=partials[0].failure;
+        const current=parseTaskOutcome(result.content);
+        result.content=JSON.stringify({outcome:'partial',summary:coordinatorRecoveryCopy(responseFailure),content:[current.content,...partials.map(part=>`【已返回的部分内容 · 尚未完成】\n${part.content}`)].filter(Boolean).join('\n\n')});
+        result.finishReason=partials[0].finishReason;
+      }else if(featureFailures.size&&['failed','partial','needs_input'].includes(parseTaskOutcome(result.content).outcome)){
+        responseFailure={...[...featureFailures.values()][0],outcome:parseTaskOutcome(result.content).outcome==='partial'?'partial':'failed'};
+      }
+      failureStage='saving';
       await this.store.mutate((d) => {
         assertWork(d, s, id, job, cid);
         const target = taskOf(d, s, cid),
@@ -2732,6 +2810,7 @@ export class CoordinatorService {
           { conversationId: cid, assistantMessageId: mid },
         );
         o.workRun!.state = "completed";
+        if(responseFailure)o.failure=structuredClone(responseFailure);
         o.workRun!.userReport=job.userReport;
         o.workRun!.failureCode=job.failureCode;
         const outcome=parseTaskOutcome(result.content);
@@ -2767,6 +2846,13 @@ export class CoordinatorService {
       await this.resume(s, verifyKey);
     } catch (error) {
       if (!op) return;
+      const progress=orchestrationFailureProgress(error)?.partial;
+      const partial=progress?.kind==='body'?progress:undefined;
+      if(partial?.content.trim()&&!filteredResponse)limitedResponse={content:partial.content,modelId:op.workRun!.modelId,requestId:op.requestId,toolCalls:limitedResponse?.toolCalls??0,finishReason:partial.finishReason};
+      if(featurePartials.size&&!filteredResponse){
+        const partials=[...featurePartials.values()];
+        limitedResponse={content:[limitedResponse?.content,...partials.map(part=>part.content)].filter(Boolean).join('\n\n'),modelId:op.workRun!.modelId,requestId:op.requestId,toolCalls:0,finishReason:partials[0].finishReason};
+      }
       // A nested tool may have persisted an artifact before its caller failed.
       // Use the durable receipt, not only this runner's original in-memory copy.
       const durable=(await this.store.read()).chatOperations?.find(o=>o.id===id&&own(o,s))?.workRun;
@@ -2819,16 +2905,11 @@ export class CoordinatorService {
           catch (authorizationError) { partialAuthorized = false;savedPartsAuthorized=false; partialAuthorizationError = authorizationError; }
         }
         o.status = "failed";
+        o.failure=partialAuthorizationError?classifyCoordinatorFailure(partialAuthorizationError,{stage:failureStage,outcome:'unknown'}):responseFailure??classifyCoordinatorFailure(error,{stage:failureStage,outcome:savedPartsAuthorized||limitedResponse?.content.trim()&&partialAuthorized?'partial':'failed'});
         o.workRun.state = "failed";
         o.workRun.unread = true;
         o.workRun.userReport=op!.workRun!.userReport||(op!.workRun!.contract?'这次没能做完，原来的要求还在。可以接着处理；如果有已经保存的成果，会先核对再继续。':undefined);
-        const authorizationReason = partialAuthorizationError instanceof CoordinatorError || partialAuthorizationError instanceof FeatureConfigError ? partialAuthorizationError.message : '本机连接或任务授权不可用';
-        o.workRun.error = partialAuthorizationError ? `授权或连接已变化，晚到的部分文字没有保存。${authorizationReason}。任务已暂停，不会自动重跑。`
-          : filteredResponse ? '本轮输出被模型过滤，过滤内容没有保存或展示。任务已暂停，不会自动重跑。'
-          : limitedResponse ? `上游输出达到本轮限额，任务未完成。${limitedResponse.content.trim() ? '已保留执行 AI 返回的部分文字，完整性与成果仍需核对。' : '未返回可保留的正文。'}${limitedResponse.toolCalls ? '截断的工具指令没有执行。' : ''}不会自动重跑。`
-          : error instanceof ChatImageGatewayError ? (error.httpStatus===429 ? '图片服务现在有点忙，这轮还没拿到图片。稍后点“重新生成图片”就行，原要求还在。' : error.code==='authorization'||error.code==='configuration'||error.code==='model_unavailable' ? '图片服务暂时没接通，需要我们检查配置。你不用重新授权电脑文件夹；修好后可以直接重新生成。' : error.code==='timeout'||error.code==='connection' ? '这次没等到图片服务的完整回应，是否已生成还需要核对。先查看结果；确认要再做一张时，点“重新生成图片”。' : '图片服务没有交回可用的图片。这轮没有完成；原要求还在，可以查看记录，或确认后重新生成。')
-          : error instanceof ModelRequestError ? `${error.message}。原话和附件都还在，可在下方重新处理。` : error instanceof NotionDocumentError || error instanceof CoordinatorError || error instanceof FeatureConfigError ? error.message :
-          "本轮未完成，请检查授权、模型和电力；可能已有实际用量，不会自动重跑。";
+        o.workRun.error = error instanceof ChatImageGatewayError ? (error.httpStatus===429 ? '图片服务现在有点忙，这轮还没拿到图片。稍后点“重新生成图片”就行，原要求还在。' : error.code==='authorization'||error.code==='configuration'||error.code==='model_unavailable' ? '图片服务暂时没接通，需要我们检查配置。你不用重新授权电脑文件夹；修好后可以直接重新生成。' : error.code==='timeout'||error.code==='connection' ? '这次没等到图片服务的完整回应，是否已生成还需要核对。先查看结果；确认要再做一张时，点“重新生成图片”。' : '图片服务没有交回可用的图片。这轮没有完成；原要求还在，可以查看记录，或确认后重新生成。') : o.workRun.kind==='image'&&error instanceof CoordinatorError ? error.message : failureFeedback(o.failure,o.requestId);
         if(error instanceof ChatImageGatewayError)o.workRun.failureCode=`image_${['authorization','configuration','model_unavailable','quota','tool_or_parameter','timeout','connection','invalid_response','incomplete','image_count','invalid_image','oversized_response','duplicate_completion','upstream_unknown'].includes(error.code)?error.code:'unknown'}${error.httpStatus?`_${error.httpStatus}`:''}`;
         else o.workRun.failureCode=error instanceof OneKeyPresenceError?'task_key_required':(error instanceof CoordinatorError||error instanceof FeatureConfigError)&&error.status===402?'task_budget_required':(error instanceof CoordinatorError||error instanceof FeatureConfigError)&&[403,428].includes(error.status)?'task_authorization_required':orchestrationFailureCode(error)??'task_execution_failed';
         o.updatedAt = at();
@@ -2839,13 +2920,14 @@ export class CoordinatorService {
         if(c&&savedPartsAuthorized&&!filteredResponse){
           const files=d.attachments.filter(f=>own(f,s)&&f.conversationId===c.id&&generatedArtifactIds.includes(f.id)&&f.status==='ready');
           const parts=completedSteps(o.workRun.steps??[]).filter(step=>step.namespace==='worker'&&step.tool.startsWith('feature_')).flatMap(step=>{const content=(step.output as {content?:string})?.content;return content?[parseTaskOutcome(content).content]:[];});
-          const mid=uid('msg');saveMessage(d,s,c,{id:mid,role:'assistant',content:[o.workRun.userReport,...parts].filter(Boolean).join('\n\n'),attachments:files.length?files.map(publicAttachmentSummary):undefined,createdAt:at()});o.workRun.resultMessageId=mid;o.workRun.resultOutcome='partial';
+          const readable=partialAuthorized&&limitedResponse?.content.trim()?`【已返回的部分内容 · 尚未完成】\n${parseTaskOutcome(limitedResponse.content).content}`:undefined;
+          const mid=uid('msg');saveMessage(d,s,c,{id:mid,role:'assistant',content:[o.workRun.userReport,...parts,readable].filter(Boolean).join('\n\n'),attachments:files.length?files.map(publicAttachmentSummary):undefined,finishReason:limitedResponse?.finishReason,createdAt:at()});o.workRun.resultMessageId=mid;o.workRun.resultOutcome='partial';
         }
         if (c && !savedPartsAuthorized && limitedResponse?.content.trim() && partialAuthorized && !filteredResponse) {
           const partial = parseTaskOutcome(limitedResponse.content).content;
           const mid = uid('msg');
-          saveMessage(d, s, c, { id: mid, role: 'assistant', content: `【本轮未完成 · 上游输出达到限额】\n以下是执行 AI 已返回的部分文字，尚未验证完整性，不代表任务已完成。\n\n${partial}`,
-            modelId: limitedResponse.modelId, requestId: limitedResponse.requestId, finishReason: 'length', createdAt: at() });
+          saveMessage(d, s, c, { id: mid, role: 'assistant', content: `${coordinatorRecoveryCopy(o.failure!)}\n\n【已返回的部分内容 · 尚未完成】\n${partial}`,
+            modelId: limitedResponse.modelId, requestId: limitedResponse.requestId, finishReason: limitedResponse.finishReason, createdAt: at() });
           o.workRun.resultMessageId = mid;
           o.workRun.resultOutcome = 'partial';
         }

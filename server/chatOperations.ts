@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Store } from "./db.js";
 import type { Conversation, Database, Message } from "./types.js";
 import {canResumeWorkflowAfterRestart} from './workflowRecovery.js';
+import {parseCoordinatorFailure,type CoordinatorFailure} from '../src/coordinatorRecovery.js';
 
 /** Durable submission records. Ordinary chat keeps compact tombstones;
  * private queued work additionally stores its immutable execution configuration. */
@@ -19,11 +20,13 @@ export type ChatOperation = {
   payloadHash: string; requestId: string; status: "pending" | "completed" | "failed" | "interrupted";
   conversationId?: string; assistantMessageId?: string; knowledgeWarning?: string;
   retryable?: boolean; createdAt: string; updatedAt: string;
+  /** Code-owned failure facts, independent of transport/reply completion. */
+  failure?: CoordinatorFailure;
   featureRun?: { inputPrompt?: string; retryOf?: string; price?: import('./featurePricing.js').FeaturePrice; options?:Record<string,string|number|boolean>; actionId?:string; featureId: string; name: string; version: number; releaseId: string; budget: number; sources: { id: string; binding: string }[]; credentials?: import('./featureCredentials.js').CredentialBinding[] };
 };
 export type ChatOperationScope = { workspaceId: string; userId: string; operationId: string };
 type ChatOperationDatabase = Database & { chatOperations?: ChatOperation[] };
-export type ChatOperationResult = { conversation: Conversation; message: Message; knowledgeWarning?: string };
+export type ChatOperationResult = { conversation: Conversation; message: Message; knowledgeWarning?: string; failure?: CoordinatorFailure };
 
 export class ChatOperationError extends Error {
   constructor(
@@ -156,7 +159,7 @@ export function getChatOperationResult(db: ChatOperationDatabase, scope: ChatOpe
   const index = conversation?.messages.findIndex(item => item.id === operation.assistantMessageId && item.role === "assistant") ?? -1;
   if (!conversation || index < 0) throw new ChatOperationError("CHAT_RESULT_UNAVAILABLE", "这次消息的原对话或结果已不可用，不会重新调用模型", 409, operationDetails(operation));
   const messages = structuredClone(conversation.messages.slice(0, index + 1));
-  return { conversation: { ...structuredClone(conversation), messages, updatedAt: messages[index].createdAt }, message: messages[index], knowledgeWarning: operation.knowledgeWarning };
+  return { conversation: { ...structuredClone(conversation), messages, updatedAt: messages[index].createdAt }, message: messages[index], knowledgeWarning: operation.knowledgeWarning, failure: parseCoordinatorFailure(operation.failure) };
 }
 
 /**
@@ -164,16 +167,17 @@ export function getChatOperationResult(db: ChatOperationDatabase, scope: ChatOpe
  * attachment release. The conversation lock must not be released before cleanup.
  * retryable=true only when no uncertain/successful model usage occurred.
  */
-export function failChatOperationInMutation(db: ChatOperationDatabase, scope: ChatOperationScope, options: { retryable?: boolean } = {}) {
+export function failChatOperationInMutation(db: ChatOperationDatabase, scope: ChatOperationScope, options: { retryable?: boolean; failure?: CoordinatorFailure } = {}) {
   const operation = scopedOperationRecord(db, scope);
   if (operation.status !== "pending") return;
   operation.status = "failed";
   operation.retryable = options.retryable === true;
+  if(options.failure)operation.failure=structuredClone(options.failure);
   operation.updatedAt = new Date().toISOString();
 }
 
 /** For failures with no message/attachment mutations to undo. */
-export async function failChatOperation(store: Store, scope: ChatOperationScope, options: { retryable?: boolean } = {}) {
+export async function failChatOperation(store: Store, scope: ChatOperationScope, options: { retryable?: boolean; failure?: CoordinatorFailure } = {}) {
   await store.mutate(db => failChatOperationInMutation(db, scope, options));
 }
 
@@ -206,6 +210,7 @@ export function reconcileInterruptedChatOperations(db: ChatOperationDatabase) {
     }
     if (operation.workRun) { operation.workRun.state='interrupted'; operation.workRun.unread=true; operation.workRun.error='服务重启，本轮结果未确认；不会自动重跑。'; const c=db.conversations.find(c=>c.id===operation.conversationId&&c.workspaceId===operation.workspaceId&&c.userId===operation.userId);if(c)c.workPaused=true; }
     operation.status = "interrupted";
+    operation.failure ??= {code:'transport_unknown',stage:'receipt',outcome:'unknown'};
     operation.retryable = false;
     operation.updatedAt = timestamp;
   }

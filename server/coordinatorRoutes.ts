@@ -18,6 +18,8 @@ import {TaskResultInboxError} from './taskResultInbox.js';
 import {ImageTaskConfigurationError} from './imageTaskConfiguration.js';
 import type { NotionDocuments } from './notionDocuments.js';
 import type {ScopedPublicSearch} from './webSearch.js';
+import {classifyCoordinatorFailure} from './coordinatorFailures.js';
+import {coordinatorRecoveryCopy,parseCoordinatorFailure} from '../src/coordinatorRecovery.js';
 export function installCoordinatorRoutes(
   app: Express,
   keyAuth: readonly RequestHandler[],
@@ -76,12 +78,16 @@ export function installCoordinatorRoutes(
           o.requestId.startsWith("coord_"),
       );
       if (!operation) throw new CoordinatorError("消息不存在", 404);
+      const failure = parseCoordinatorFailure(operation.failure) ?? (operation.status === 'failed'
+        ? classifyCoordinatorFailure(new CoordinatorError(db.contextTraces.find(t => t.workspaceId === s.workspaceId && t.userId === s.userId && t.requestId === operation.requestId)?.responsePreview.slice(0, 500) ?? '调度未完成'), {stage:'receipt',outcome:'unknown'})
+        : operation.status === 'interrupted' ? {code:'stopped' as const,stage:'receipt' as const,outcome:'unknown' as const} : undefined);
       if (operation.status !== "completed")
         return res.json({
           status: operation.status,
           operationId: operation.operationId,
           requestId: operation.requestId,
-          error: operation.status === "failed" ? db.contextTraces.find(t => t.workspaceId === s.workspaceId && t.userId === s.userId && t.requestId === operation.requestId)?.responsePreview.slice(0, 500) : undefined,
+          error: operation.status === "failed" && failure ? coordinatorRecoveryCopy(failure) : undefined,
+          failure,
           taskId: operation.dispatchedTaskId,
           taskIds:operation.dispatchedTaskIds,
           progress: operation.status==='pending' ? service.currentProgress(s,operation.operationId) : undefined,
@@ -242,23 +248,31 @@ export function installCoordinatorRoutes(
       res.json({ id: record.id });
     }),
   );
-  const errors = (
+  const errors = async (
     e: unknown,
-    _req: express.Request,
+    req: express.Request,
     res: express.Response,
     next: express.NextFunction,
   ) => {
     if (res.headersSent) {
       return;
     }
-    if(e instanceof ImageTaskConfigurationError){res.status(428).json({error:e.message});return;}
+    // A dispatch may already have recorded a more precise stage than this
+    // HTTP boundary. Only the exact authenticated owner's operation is read.
+    const persisted=req.workspaceId&&req.user&&typeof req.body?.operationId==='string'
+      ? await store.read().then(db=>parseCoordinatorFailure(db.chatOperations?.find(o=>o.workspaceId===req.workspaceId&&o.userId===req.user!.id&&o.operationId===req.body.operationId&&o.requestId.startsWith('coord_'))?.failure)).catch(()=>undefined)
+      : undefined;
+    const failure=persisted??classifyCoordinatorFailure(e,{stage:req.method==='GET'?'receipt':'accepting',outcome:req.method==='GET'?'unknown':'not_started'});
+    const adminValidation=req.baseUrl==='/api/admin/executors'&&(e instanceof CoordinatorError||e instanceof ChatOperationError||e instanceof FeatureConfigError||e instanceof TaskResultInboxError||e instanceof ImageTaskConfigurationError);
+    const body={error:adminValidation?e.message:coordinatorRecoveryCopy(failure),failure};
+    if(e instanceof ImageTaskConfigurationError){res.status(428).json(body);return;}
     if (e instanceof CoordinatorError || e instanceof ChatOperationError || e instanceof FeatureConfigError || e instanceof TaskResultInboxError) {
-      res.status(e.status).json({ error: e.message });
+      res.status(e.status).json(body);
       return;
     }
     res
       .status(400)
-      .json({ error: "配置或执行未完成，请查看任务和用量；不要重复提交。" });
+      .json(body);
   };
   router.use(errors);
   settings.use(errors);

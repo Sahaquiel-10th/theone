@@ -370,7 +370,7 @@ test('legacy drawing routes to actual images; an unavailable image blocks the wh
   const reply=await service.dispatch(a,input('operation_real_draw_001','画奥特曼大战孙悟空'),key);await service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.some(o=>o.workRun?.state==='completed'));assert.equal(worker,0);assert.ok((await f.store.read()).conversations.find(c=>c.id===reply.taskIds[0])!.messages.some(m=>m.imageUrl));
   await f.store.mutate(d=>{d.settings.aiTasks!.image_generation!.published!.modelId='missing';});const before=(await f.store.read()).chatOperations!.filter(o=>o.workRun).length;
   const denied=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{artifactDirectory:f.directory,modelCall:async()=>({...answer(''),toolCalls:[{id:'bad-batch',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'表',instruction:'战力表',executorId:'general',outputKind:'text',featureIds:[],dependsOn:[]},{taskId:null,title:'图',instruction:'图片',executorId:'image_generation',outputKind:'image',featureIds:[],dependsOn:[]}]})}}]})});
-  const blocked=await denied.dispatch(a,input('operation_no_image_batch','图和表都做'),key);assert.match(blocked.message.content,/还没接上|没能开始|中断/);assert.equal(blocked.taskIds.length,0);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,before);
+  const blocked=await denied.dispatch(a,input('operation_no_image_batch','图和表都做'),key);assert.equal(blocked.failure?.code,'feature_unavailable');assert.equal(blocked.failure?.outcome,'not_started');assert.equal(blocked.taskIds.length,0);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,before);
  }finally{rmSync(f.directory,{recursive:true,force:true});}
 });
 
@@ -481,9 +481,9 @@ test('truncated task output is not a completed result; own trace preserves actua
  const r=await f.service.dispatch(a,input('operation_truncate_1','UI'),key);await f.service.resume(a,key);
  await waitFor(async()=>(await f.service.task(a,r.taskId!)).jobs[0].state==='failed');
  const task=await f.service.task(a,r.taskId!),partial=task.conversation.messages.filter(m=>m.role==='assistant');
- assert.equal(partial.length,1);assert.match(partial[0].content,/不完整成果/);assert.match(partial[0].content,/本轮未完成/);
+ assert.equal(partial.length,1);assert.match(partial[0].content,/不完整成果/);assert.match(partial[0].content,/尚未完成/);
  assert.equal(partial[0].finishReason,'length');assert.equal(task.jobs[0].resultMessageId,partial[0].id);
- assert.equal(task.conversation.workPaused,true);assert.match(task.jobs[0].error!,/上游输出达到本轮限额/);
+ assert.equal(task.conversation.workPaused,true);assert.equal(task.jobs[0].failure?.code,'model_incomplete');assert.equal(task.jobs[0].failure?.outcome,'partial');
  const db=await f.store.read(),trace=db.contextTraces.find(t=>t.conversationId===r.taskId)!;
  assert.equal(trace.workspaceId,a.workspaceId);assert.match(JSON.stringify(trace.sections),/本轮交接|用户原话/);
  assert.equal(db.contextTraces.filter(t=>t.workspaceId===b.workspaceId).length,0);
@@ -1580,8 +1580,8 @@ test('a pending local clarification rechecks Key and exact knowledge bindings th
   const gate=new Promise<ToolChatResult>(resolve=>{release=resolve;});
   const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{modelCall:async()=>step++===0?{...answer(''),toolCalls:[{id:'ask-sensitive',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({clarificationQuestion:`${marker}：你指的是哪个项目？`})}}]}:gate});
   const operationId=`operation_clarify_revoke_${change.replace('-','_')}`;
-  const pending=service.dispatch(a,{...input(operationId,'改那个项目，开工'),sourceIds:['clarify-source'],localExecution:true},async()=>{if(!keyValid)throw new Error('本机授权已失效');},undefined,async()=>{runs++;return{id:'bad',status:'running'};});
-  const rejected=assert.rejects(pending,/知识授权已变化|未完成分派|本机授权/);
+  const pending=service.dispatch(a,{...input(operationId,'改那个项目，开工'),sourceIds:['clarify-source'],localExecution:true},async()=>{if(!keyValid)throw new OneKeyPresenceError('本机授权已失效');},undefined,async()=>{runs++;return{id:'bad',status:'running'};});
+  const rejected=assert.rejects(pending);
   await waitFor(async()=>step===2);
   if(change==='key')keyValid=false;
   else if(change==='after-read'){
@@ -1591,6 +1591,7 @@ test('a pending local clarification rechecks Key and exact knowledge bindings th
   release(answer('这句确认可以发出。'));await rejected;
   const db=await f.store.read();assert.equal(runs,0);assert.equal((db.executionTasks??[]).length,0);assert.equal(db.chatOperations!.filter(o=>o.workRun).length,0);
   assert.equal(db.chatOperations!.find(o=>o.operationId===operationId)!.status,'failed','failed authorization must not leave a pending operation');
+  assert.equal(db.chatOperations!.find(o=>o.operationId===operationId)!.failure?.code,change==='key'?'key_required':'source_authorization');
   assert.equal(db.messages.filter(m=>m.role==='assistant').length,0);assert.doesNotMatch(JSON.stringify([...db.messages,...db.contextTraces]),new RegExp(marker));
  }
 });
@@ -1700,7 +1701,7 @@ test("failed core routing preserves only its owner's safe diagnostic receipt", a
   assert.equal(traces.length, 1);
   assert.equal(traces[0].workspaceId, a.workspaceId);
   assert.equal(traces[0].userId, a.userId);
-  assert.match(traces[0].responsePreview, /未完成分派/);
+  assert.deepEqual(operation.failure,{code:'internal_error',stage:'model',outcome:'not_started'});
   assert.doesNotMatch(JSON.stringify(traces), /api_key|SECRET/);
   assert.equal(db.contextTraces.filter(t => t.workspaceId === b.workspaceId).length, 0);
 });
@@ -1739,9 +1740,96 @@ test('friendly provider feedback is durable, but revocation immediately before s
   const verify=async()=>{if(revoke&&threw){armed=true;threw=false;}};
   const request=input(`operation_provider_feedback_${revoke}`,'只整理合成测试资料');
   if(revoke){await assert.rejects(()=>f.service.dispatch(a,request,verify),/账号或空间不可用/);const db=await read();assert.equal(db.chatOperations!.find(o=>o.operationId===request.operationId)!.status,'failed');assert.equal(db.messages.filter(m=>m.role==='assistant').length,0);}
-  else{const reply=await f.service.dispatch(a,request,verify);assert.match(reply.message.content,/中断.*核对/);assert.equal(reply.taskIds.length,0);await f.service.dispatch(a,request,verify);}
+  else{const reply=await f.service.dispatch(a,request,verify);assert.deepEqual(reply.failure,{code:'model_unavailable',stage:'model',outcome:'not_started'});assert.equal(reply.taskIds.length,0);await f.service.dispatch(a,request,verify);}
   assert.equal(calls,1);
  }
+});
+for(const [status,code] of [[400,'model_request_rejected'],[401,'model_auth'],[403,'model_auth'],[408,'model_timeout'],[429,'model_rate_limited'],[500,'model_unavailable'],[502,'model_unavailable'],[503,'model_unavailable'],[504,'model_timeout']] as const)test(`coordinator preserves reviewed model ${status} failure independently of a completed reply`,async()=>{
+ const f=fixture();let calls=0;f.setRoute(()=>{calls++;throw new ModelRequestError(status,'PRIVATE_PROVIDER_BODY_SECRET');});
+ const request=input(`operation_model_code_${status}`,'只讨论这份合成资料，不执行');
+ const reply=await f.service.dispatch(a,request,key),db=await f.store.read(),op=db.chatOperations!.find(o=>o.operationId===request.operationId)!;
+ assert.equal(op.status,'completed');assert.deepEqual(reply.failure,{code,stage:'model',outcome:'not_started'});assert.deepEqual(op.failure,reply.failure);
+ assert.equal(reply.taskIds.length,0);assert.doesNotMatch(JSON.stringify(db),/PRIVATE_PROVIDER_BODY_SECRET|这次回复中断了，我还不能确认/);
+ await f.service.dispatch(a,request,key);assert.equal(calls,1);assert.equal(db.modelUsageRecords.length,1);
+ await assert.rejects(()=>f.service.task(b,reply.conversation.id));
+});
+test('wallet admission, late Key loss and billing/storage failures keep distinct durable facts without another call',async()=>{
+ for(const mode of ['wallet','key','billing','saving'] as const){
+  const f=fixture();let calls=0,failAfter=0,modelReturned=false;
+  if(mode==='wallet')await f.store.mutate(d=>{d.powerAccounts.find(p=>p.workspaceId===a.workspaceId&&p.userId===a.userId)!.balanceMicros=0;});
+  const mutate=f.store.mutate.bind(f.store);f.store.mutate=async fn=>{if(failAfter&&!--failAfter)throw Error('PRIVATE_STORAGE_EXCEPTION_SECRET');return mutate(fn);};
+  f.setRoute(()=>{calls++;modelReturned=true;if(mode==='key')throw new ModelRequestError(503,'service unavailable');if(mode==='billing')failAfter=1;if(mode==='saving')failAfter=2;return answer('PRIVATE_UNCOMMITTED_GENERATION_SECRET');});
+  const verify=async()=>{if(mode==='key'&&modelReturned)throw new OneKeyPresenceError('ONE Key 合成断开');};
+  const request=input(`operation_admission_${mode}`,'只回答合成问题，不执行');
+  await assert.rejects(()=>f.service.dispatch(a,request,verify));
+  const db=await f.store.read(),op=db.chatOperations!.find(o=>o.operationId===request.operationId)!;
+  assert.equal(op.status,'failed');assert.equal(op.failure?.code,({wallet:'power_insufficient',key:'key_required',billing:'billing_unavailable',saving:'storage_unavailable'} as const)[mode]);
+  assert.equal(calls,mode==='wallet'?0:1);assert.equal(db.chatOperations!.filter(o=>o.workRun).length,0);
+  assert.equal(db.powerAccounts.find(p=>p.workspaceId===b.workspaceId)!.balanceMicros,100e6);
+  assert.doesNotMatch(JSON.stringify(db),/PRIVATE_STORAGE_EXCEPTION_SECRET|PRIVATE_UNCOMMITTED_GENERATION_SECRET/);
+  if(mode==='billing')assert.equal(db.modelUsageRecords[0].reviewReason,'settlement_storage_failed');
+  if(mode==='saving')assert.equal(db.modelUsageRecords[0].status,'success');
+ }
+});
+test('main routing retains the whole readable limited body and never stores filtered text or incomplete tool preambles',async()=>{
+ for(const mode of ['body','filtered','tool'] as const){
+  const f=fixture(),body='合成正文'.repeat(2400);let calls=0;
+  f.setRoute(()=>{calls++;return {...answer(mode==='body'?body:'PRIVATE_FILTERED_OR_PREAMBLE_SECRET'),finishReason:mode==='filtered'?'filtered':'length',toolCalls:mode==='tool'?[{id:'not-executed',type:'function',function:{name:'delegate_task',arguments:'{"title":"PRIVATE_TOOL_ARGUMENT_SECRET"'}}]:[]};});
+  const result=await f.service.dispatch(a,input(`operation_partial_main_${mode}`,'只回答合成问题，不执行'),key),db=await f.store.read();
+  assert.equal(result.failure?.code,({body:'model_incomplete',filtered:'model_filtered',tool:'tool_incomplete'} as const)[mode]);
+  assert.equal(result.failure?.outcome,mode==='body'?'partial':'not_started');assert.equal(calls,1);assert.equal(result.taskIds.length,0);
+  if(mode==='body'){assert.ok(result.message.content.includes(body));assert.equal(result.message.finishReason,'length');assert.match(result.message.content,/尚未完成/);}
+  else assert.equal(result.message.finishReason,undefined,'tool/filter failures must not offer body continuation');
+  assert.doesNotMatch(JSON.stringify(db),/PRIVATE_FILTERED_OR_PREAMBLE_SECRET|PRIVATE_TOOL_ARGUMENT_SECRET/);
+ }
+});
+for(const mode of ['empty','step_limit','tool_limit'] as const)test(`main routing returns a durable ${mode} category without dispatching work`,async()=>{
+ const f=fixture();let calls=0;
+ f.setRoute(()=>{calls++;return {...answer(''),toolCalls:mode==='empty'?[]:Array.from({length:mode==='tool_limit'?5:1},(_,i)=>({id:`read-${i}`,type:'function' as const,function:{name:'search_tasks',arguments:JSON.stringify({query:'合成任务'})}}))};});
+ const result=await f.service.dispatch(a,input(`operation_bound_failure_${mode}`,'只查找合成任务，不执行'),key);
+ assert.equal(result.failure?.code,mode==='empty'?'model_empty':mode);assert.equal(result.failure?.outcome,'not_started');assert.equal(result.taskIds.length,0);assert.ok(calls<=4);
+});
+for(const laterFailure of [false,true])test(`nested feature partial body survives its failed checkpoint and later coordinator failure=${laterFailure}`,async()=>{
+ const f=fixture(),body='功能返回的合成正文'.repeat(1600);
+ await f.store.mutate(d=>{
+  const values={name:'合成写作功能',author:'ONE',description:'写作合成材料',instructions:'SYNTHETIC_PARTIAL_FEATURE',limitations:'合成测试',integration:'question_answer' as const,modelId:'special',knowledgeMode:'none' as const,usageMultiplier:.6};
+  const version={version:1,values,evidence:'synthetic',approvedBy:'a',approvedAt:'now'};
+  d.settings.officialFeatures=[{id:'partial-feature',revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:'partial-release',version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}}];
+ });
+ let parentCalls=0,featureCalls=0;
+ f.setWorker(async messages=>{
+  if(messages[0].content?.includes('SYNTHETIC_PARTIAL_FEATURE')){featureCalls++;return {...answer(body),finishReason:'length'};}
+  if(++parentCalls===1)return {...answer(''),toolCalls:[{id:'partial-feature-call',type:'function',function:{name:'feature_0',arguments:JSON.stringify({query:'只整理合成正文'})}}]};
+  if(laterFailure)throw new ModelRequestError(503,'PRIVATE_FEATURE_SUMMARY_EXCEPTION');
+  if(parentCalls===2)return {...answer(''),toolCalls:[{id:'rephrased-partial-feature-call',type:'function',function:{name:'feature_0',arguments:JSON.stringify({query:'换个说法，继续整理同一合成正文'})}}]};
+  return answer('这一步还没写完');
+ });
+ const result=await f.service.dispatch(a,{...input(`operation_nested_partial_${laterFailure}`,'整理一份合成说明'),featureIds:['partial-feature'],confirmedExternal:true},key);
+ await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,result.taskId!)).jobs[0].state==='failed');
+ const task=await f.service.task(a,result.taskId!),db=await f.store.read(),job=db.chatOperations!.find(o=>o.workRun&&o.conversationId===result.taskId)!;
+ assert.ok(task.conversation.messages.at(-1)!.content.includes(body));assert.equal(task.jobs[0].failure?.outcome,'partial');
+ assert.ok(job.workRun!.steps!.some(step=>step.state==='failed'&&step.namespace==='worker'&&(step.output as any)?.status==='partial'&&(step.output as any)?.content===body));
+ assert.equal(featureCalls,1);await f.service.resume(a,key);assert.equal(featureCalls,1);
+ assert.doesNotMatch(JSON.stringify(db),/PRIVATE_FEATURE_SUMMARY_EXCEPTION/);await assert.rejects(()=>f.service.task(b,result.taskId!));
+});
+for(const mode of [503,401,'empty'] as const)test(`a nested feature ${mode} without text retains its concrete failure instead of a generic missing-step result`,async()=>{
+ const f=fixture();let featureCalls=0,parentCalls=0;
+ await f.store.mutate(d=>{
+  const values={name:'合成功能',author:'ONE',description:'处理合成材料',instructions:'SYNTHETIC_FAILED_FEATURE',limitations:'合成测试',integration:'question_answer' as const,modelId:'special',knowledgeMode:'none' as const,usageMultiplier:.6};
+  const version={version:1,values,evidence:'synthetic',approvedBy:'a',approvedAt:'now'};
+  d.settings.officialFeatures=[{id:'failed-feature',revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:'failed-release',version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}}];
+ });
+ f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('任务已安排'):{...answer(''),toolCalls:[{id:'dispatch-failed-feature',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'合成任务',instruction:'处理合成材料',executorId:'general',featureIds:['failed-feature']})}}]});
+ f.setWorker(async messages=>{
+  if(messages[0].content?.includes('SYNTHETIC_FAILED_FEATURE')){featureCalls++;if(mode==='empty')return answer('');throw new ModelRequestError(mode,'PRIVATE_NESTED_FAILURE_SECRET');}
+  if(++parentCalls===1)return {...answer(''),toolCalls:[{id:'failed-feature-call',type:'function',function:{name:'feature_0',arguments:JSON.stringify({query:'处理这份合成材料'})}}]};
+  return answer(JSON.stringify({outcome:'failed',content:'此步骤尚未完成',summary:'未完成'}));
+ });
+ const reply=await f.service.dispatch(a,input(`operation_nested_failure_${mode}`,'整理合成材料'),key);await f.service.resume(a,key);
+ await waitFor(async()=>(await f.service.task(a,reply.taskId!)).jobs[0].state==='failed');
+ const detail=await f.service.task(a,reply.taskId!),db=await f.store.read();
+ assert.equal(detail.jobs[0].failure?.code,mode===503?'model_unavailable':mode===401?'model_auth':'model_empty');assert.equal(detail.jobs[0].failure?.outcome,'failed');
+ assert.equal(featureCalls,1);await f.service.resume(a,key);assert.equal(featureCalls,1);assert.doesNotMatch(JSON.stringify(db),/PRIVATE_NESTED_FAILURE_SECRET/);await assert.rejects(()=>f.service.task(b,reply.taskId!));
 });
 test('a real clarification is not forced into execution; unavailable card is repaired or returned with a next step',async()=>{
  const question=fixture();question.setRoute(()=>answer('这张图想用什么风格？'));
@@ -1776,7 +1864,7 @@ test('implicit routing is wallet-backed instead of a hidden .5 cap; explicit rou
  assert.equal(reply.taskIds.length,0);assert.equal(calls,1);
  let db=await f.store.read();assert.equal(db.modelUsageRecords[0].chargedMicros,600000);assert.equal(db.powerLedger.length,1);assert.equal(db.powerAccounts[1].balanceMicros,100e6);
  const denied=await f.service.dispatch(a,{operationId:'route-explicit-cap-001',text:'只回答，不执行',routeBudget:.001},key);
- assert.match(denied.message.content,/不是账户没电/);assert.equal(denied.taskIds.length,0);assert.equal(calls,1);db=await f.store.read();assert.equal(db.modelUsageRecords.length,1);
+ assert.equal(denied.failure?.code,'budget_exceeded');assert.equal(denied.taskIds.length,0);assert.equal(calls,1);db=await f.store.read();assert.equal(db.modelUsageRecords.length,1);
 });
 async function waitFor(check: () => Promise<boolean>) {
   for (let n = 0; n < 100; n++) {
@@ -1788,7 +1876,7 @@ async function waitFor(check: () => Promise<boolean>) {
 /** A reviewed failure can now be a durable ONE reply instead of a thrown UI
  * error. Both paths must prove no dispatch, and a returned reply has a next step. */
 async function assertRoutingBlocked(promise:ReturnType<CoordinatorService['dispatch']>,expected?:RegExp){
- await promise.then(result=>{assert.equal(result.taskIds.length,0);assert.equal(result.taskId,undefined);assert.match(result.message.content,/没能开始|未完成|还没|没就位|上限|预算/);assert.match(result.message.content,/继续|调整|稍后/);},error=>{if(expected)assert.match(String(error),expected);});
+ await promise.then(result=>{assert.equal(result.taskIds.length,0);assert.equal(result.taskId,undefined);if(result.failure)assert.equal(result.failure.outcome,'not_started');assert.doesNotMatch(result.message.content,/这次回复中断了，我还不能确认事情做到哪一步/);},error=>{if(expected)assert.match(String(error),expected);});
 }
 const input = (operationId: string, text: string) => ({
   operationId,
@@ -1861,6 +1949,8 @@ test("HTTP routes require trusted Key/admin gates and isolate task and operation
     });
     assert.equal(created.status, 200);
     const profile = (await created.json()) as { id: string };
+    const invalidAdmin=await request(`/api/admin/executors/${profile.id}`,'a','POST',{revision:1,action:'draft',values:{...executorDefaults(),name:''}});
+    assert.equal(invalidAdmin.status,400);assert.match((await invalidAdmin.json()).error,/执行器名称/);
     assert.equal(
       (await request(`/api/admin/executors/${profile.id}`, "b")).status,
       403,
@@ -1908,6 +1998,14 @@ test("HTTP routes require trusted Key/admin gates and isolate task and operation
     }
     const json = JSON.stringify(await receipt.json());
     assert.doesNotMatch(json, /fixture-only|modelPrompt|credentials/);
+    f.setRoute(()=>{throw Error('PRIVATE_UNREVIEWED_HTTP_EXCEPTION');});
+    await assert.rejects(()=>f.service.dispatch(a,input('operation_http_failed_fact','只讨论合成材料，不执行'),key));
+    await f.store.mutate(d=>{d.contextTraces=[];});
+    const failed=await request('/api/coordinator/messages/operation_http_failed_fact');
+    assert.equal(failed.status,200);const failedBody=await failed.json();
+    assert.deepEqual(failedBody.failure,{code:'internal_error',stage:'model',outcome:'not_started'});
+    assert.doesNotMatch(JSON.stringify(failedBody),/PRIVATE_UNREVIEWED_HTTP_EXCEPTION/);
+    assert.equal((await request('/api/coordinator/messages/operation_http_failed_fact','b')).status,404);
     assert.equal(
       (
         await request("/api/coordinator/resume", "a", "POST", {
@@ -2560,23 +2658,22 @@ test('a GPT chat credential powers a real image task while fixed picture pricing
   } finally { release?.();rmSync(f.directory,{recursive:true,force:true}); }
 });
 
-test('truncated tool instructions preserve only returned text as partial and never execute the tool or claim completion', async()=>{
+test('truncated tool instructions never turn an unverified model preamble into a partial deliverable', async()=>{
   const f=fixture();await f.store.mutate(d=>d.knowledgeConnections.push({id:'source-partial',workspaceId:a.workspaceId,provider:'getnote',status:'connected',clientId:'fixture',encryptedApiKey:'fixture-encrypted',createdAt:'now',updatedAt:'now'}));
   f.setWorker(async()=>({...answer('已经返回的真实短文片段'),finishReason:'length',toolCalls:[{id:'incomplete-read',type:'function',function:{name:'knowledge_search',arguments:JSON.stringify({query:'不能执行的截断指令'})}}]}));
   const reply=await f.service.dispatch(a,input('operation_partial_tool_1','UI 写一段短文'),key);
   await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,reply.taskId!)).jobs[0].state==='failed');
   const detail=await f.service.task(a,reply.taskId!),db=await f.store.read(),job=db.chatOperations!.find(o=>o.conversationId===reply.taskId&&o.workRun)!;
   assert.equal(f.recalls.length,0);assert.ok(f.calls.find(c=>c.modelId==='worker')!.tools.some(t=>t.function.name==='knowledge_search'));
-  assert.equal(job.workRun!.resultOutcome,'partial');assert.match(job.workRun!.error!,/截断的工具指令没有执行/);
-  assert.equal(detail.conversation.messages.filter(m=>m.role==='assistant').length,1);
-  assert.match(detail.conversation.messages.at(-1)!.content,/已经返回的真实短文片段/);
-  assert.equal(detail.conversation.messages.at(-1)!.finishReason,'length');
+  assert.equal(job.workRun!.resultOutcome,undefined);assert.equal(job.failure?.code,'tool_incomplete');assert.equal(job.failure?.outcome,'failed');
+  assert.equal(detail.conversation.messages.filter(m=>m.role==='assistant').length,0);
+  assert.doesNotMatch(JSON.stringify([...db.messages,...db.contextTraces]),/已经返回的真实短文片段|不能执行的截断指令/);
   assert.equal(db.modelUsageRecords.find(u=>u.requestId===job.requestId)!.finishReason,'length');
   await assert.rejects(()=>f.service.task(b,reply.taskId!));
   await f.service.report(a,[job.id],key);await f.service.report(a,[job.id],key);
   const main=(await f.service.state(a)).conversation!;
   assert.equal(main.messages.filter(m=>m.id===`report_${job.id}`).length,1);
-  assert.match(main.messages.at(-1)!.content,/部分结果|部分文字/);assert.doesNotMatch(main.messages.at(-1)!.content,/已完成/);
+  assert.doesNotMatch(main.messages.at(-1)!.content,/已经返回的真实短文片段|已完成/);
 });
 
 test('filtered responses and length responses without text do not create fabricated partial messages', async()=>{
@@ -2588,7 +2685,7 @@ test('filtered responses and length responses without text do not create fabrica
     const detail=await f.service.task(a,reply.taskId!),db=await f.store.read();
     assert.equal(detail.conversation.messages.filter(m=>m.role==='assistant').length,0);
     assert.equal(detail.jobs[0].resultMessageId,undefined);assert.equal(db.chatOperations!.find(o=>o.conversationId===reply.taskId&&o.workRun)!.workRun!.resultOutcome,undefined);
-    assert.match(detail.jobs[0].error!,filtered?/过滤内容没有保存或展示/:/未返回可保留的正文/);
+    assert.equal(detail.jobs[0].failure?.code,filtered?'model_filtered':'tool_incomplete');
     assert.doesNotMatch(JSON.stringify([...db.messages,...db.contextTraces]),new RegExp(marker));
   }
 });
@@ -2627,7 +2724,7 @@ test('revoked knowledge access suppresses in-flight partial text, including revo
     release({...answer(marker),finishReason:'length'});
     await waitFor(async()=>(await f.service.task(a,reply.taskId!)).jobs[0].state==='failed');
     const detail=await f.service.task(a,reply.taskId!),db=await f.store.read(),job=db.chatOperations!.find(o=>o.conversationId===reply.taskId&&o.workRun)!;
-    assert.equal(detail.conversation.workPaused,true);assert.match(detail.jobs[0].error!,/知识授权已变化/);
+    assert.equal(detail.conversation.workPaused,true);assert.equal(detail.jobs[0].failure?.code,'source_authorization');
     assert.equal(detail.jobs[0].resultMessageId,undefined);assert.equal(job.workRun!.resultOutcome,undefined);
     assert.equal(detail.conversation.messages.filter(m=>m.role==='assistant').length,0);
     assert.doesNotMatch(JSON.stringify([...db.messages,...db.contextTraces]),new RegExp(marker));
@@ -2637,14 +2734,14 @@ test('revoked knowledge access suppresses in-flight partial text, including revo
 
 test('a lost Key proof suppresses late length text while keeping a failed authorization receipt and actual billed usage',async()=>{
   const f=fixture(),marker='KEY_REVOKED_PARTIAL_NOT_SAVED';let connected=true,release!:(result:ToolChatResult)=>void;
-  const liveKey=async()=>{if(!connected)throw new Error('Key transport disconnected');};
+  const liveKey=async()=>{if(!connected)throw new OneKeyPresenceError('Key transport disconnected');};
   f.setWorker(async()=>new Promise(resolve=>{release=resolve;}));
   const reply=await f.service.dispatch(a,input('operation_partial_key_revoke','UI 写一个短文'),liveKey);
   await f.service.resume(a,liveKey);await waitFor(async()=>Boolean(release));
   connected=false;release({...answer(marker),finishReason:'length'});
   await waitFor(async()=>(await f.service.task(a,reply.taskId!)).jobs[0].state==='failed');
   const detail=await f.service.task(a,reply.taskId!),db=await f.store.read();
-  assert.equal(detail.conversation.workPaused,true);assert.match(detail.jobs[0].error!,/授权或连接已变化/);
+  assert.equal(detail.conversation.workPaused,true);assert.equal(detail.jobs[0].failure?.code,'key_required');
   assert.equal(detail.jobs[0].resultMessageId,undefined);assert.equal(detail.conversation.messages.filter(m=>m.role==='assistant').length,0);
   assert.doesNotMatch(JSON.stringify([...db.messages,...db.contextTraces]),new RegExp(marker));
   assert.ok(db.modelUsageRecords.some(row=>row.activity==='task_worker'&&row.finishReason==='length'&&row.status==='success'));
@@ -3285,6 +3382,14 @@ test('inline main-chat article can be saved on the next turn without dispatching
  assert.ok(r.taskId);assert.notEqual(r.taskId,f.taskId);await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,r.taskId!)).jobs[0].state==='completed');
  assert.equal(f.counts().body,f.expectedBody);assert.equal(f.counts().workerCalls,0);assert.equal(f.counts().writes,1);
  const job=(await f.store.read()).chatOperations!.find(op=>op.conversationId===r.taskId&&op.workRun)!;assert.equal(job.workRun!.notionArticleSource?.conversationId,f.taskId);
+});
+test('a completed failure explanation is never selected as an existing article for an original-preserving Notion save',async()=>{
+ const f=await lateSaveFixture({fromMain:true});
+ await f.store.mutate(d=>{const source=d.chatOperations!.find(op=>op.id===f.sourceId)!;source.failure={code:'model_unavailable',stage:'model',outcome:'not_started'};});
+ const reply=await f.service.dispatch(a,{...input('operation_do_not_save_failure_copy','把这篇文章原样保存到 Notion，不重写。'),outputDestination:'chat'},key);
+ assert.equal(reply.taskIds.length,0);assert.equal(f.counts().writes,0);assert.equal(f.counts().workerCalls,0);
+ const db=await f.store.read();assert.equal(db.chatOperations!.filter(op=>op.workRun).length,0);
+ assert.equal(db.conversations.find(c=>c.id===f.taskId)!.messages.find(m=>m.id===db.chatOperations!.find(op=>op.id===f.sourceId)!.assistantMessageId)!.content,f.article);
 });
 
 test('a changed existing article is rejected before writing, rather than silently saving a stale copy',async()=>{

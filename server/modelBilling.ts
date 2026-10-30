@@ -19,6 +19,11 @@ export class BillingReviewRequiredError extends Error {
   readonly code = "BILLING_REVIEW_REQUIRED";
   constructor() { super("有一笔模型用量等待管理员核对，电力已暂时预留，请联系管理员后继续使用"); }
 }
+/** A reviewed error code, without raw storage/provider exception text. */
+export class ModelBillingError extends Error {
+  readonly code='BILLING_SETTLEMENT_FAILED';
+  constructor(){super('本次模型用量结算未完成，需要管理员核对');}
+}
 
 function validTokens(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0; }
 function validUsage(value?: ModelUsage): value is ModelUsage {
@@ -214,7 +219,7 @@ export async function runBilledModel<T extends { usage?: ModelUsage; finishReaso
       uncertain.reviewReason = "settlement_storage_failed";
       uncertain.durationMs = Date.now() - startedAt;
     }).catch(() => undefined);
-    throw error;
+    throw new ModelBillingError();
   }
   return result;
 }

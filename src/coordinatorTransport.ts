@@ -17,7 +17,7 @@ export async function coordinatorRequest<T>(api: Request, path: string, options:
       api<T>(path, {...options, signal: controller.signal}),
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
-          reject(new ApiError('进度暂时没连上，正在重新查看；不用重发。', undefined, undefined, 'COORDINATOR_READ_TIMEOUT', false));
+          reject(new ApiError('进度暂时没连上，正在重新查看；不用重发。', undefined, undefined, 'COORDINATOR_READ_TIMEOUT', false,{code:'transport_unknown',stage:'receipt',outcome:'unknown'}));
           controller.abort();
         }, timeoutMs);
       }),

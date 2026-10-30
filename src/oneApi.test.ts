@@ -1,6 +1,7 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { api, apiForUser, ApiError, announceSessionChange, expectUser, SESSION_EVENT, SESSION_STORAGE_KEY } from "./oneApi";
+import {recoverCoordinatorSubmission} from './coordinatorSubmissionRecovery';
 
 function browserFor(t: TestContext, fetcher: typeof fetch) {
   const events: Event[] = [];
@@ -130,6 +131,59 @@ test("non-JSON gateway timeout remains ambiguous rather than authorizing a new p
     assert.match(error.message, /查看这条消息的处理结果/);
     return true;
   });
+});
+
+test('a successful non-JSON reply is an invalid receipt, never an empty terminal result',async t=>{
+  browserFor(t,async()=>new Response('<html>proxy</html>',{status:200}));
+  expectUser('user-a');
+  await assert.rejects(api('/api/coordinator/messages/original'),error=>{
+    assert.ok(error instanceof ApiError);assert.equal(error.code,'INVALID_RESPONSE');
+    assert.deepEqual(error.failure,{code:'invalid_receipt',stage:'receipt',outcome:'unknown'});return true;
+  });
+});
+
+test('HTTP failures safely project structured failure fields without retaining arbitrary diagnostics',async t=>{
+  const responses=[json({error:'failed',failure:{code:'model_timeout',stage:'model',outcome:'not_started',apiKey:'SECRET'}},503),json({error:'failed',failure:{code:'unreviewed-secret',stage:'model',outcome:'failed'}},500),new Response(null,{status:204})];
+  browserFor(t,async()=>responses.shift()!);expectUser('user-a');
+  await assert.rejects(api('/api/coordinator/messages'),error=>{assert.ok(error instanceof ApiError);assert.deepEqual(error.failure,{code:'model_timeout',stage:'model',outcome:'not_started'});assert.ok(!JSON.stringify(error).includes('SECRET'));return true;});
+  await assert.rejects(api('/api/coordinator/messages'),error=>error instanceof ApiError&&error.failure===undefined);
+  assert.deepEqual(await api('/api/any'),{});
+});
+
+test('successful receipt failure metadata also drops non-allowlisted diagnostics',async t=>{
+  browserFor(t,async()=>json({status:'failed',failure:{code:'model_timeout',stage:'model',outcome:'not_started',apiKey:'SECRET'}}));expectUser('user-a');
+  const receipt=await api<{failure:unknown}>('/api/coordinator/messages/original');
+  assert.deepEqual(receipt.failure,{code:'model_timeout',stage:'model',outcome:'not_started'});assert.ok(!JSON.stringify(receipt).includes('SECRET'));
+});
+
+test('reviewed pre-router auth HTTP responses retain Key and account causes through receipt recovery',async t=>{
+  const cases=[
+    {status:401,body:{error:'未登录或登录已过期'},code:'account_unavailable'},
+    {status:401,body:{error:'账号不可用'},code:'account_unavailable'},
+    {status:403,body:{error:'Workspace 不存在或无权访问'},code:'account_unavailable'},
+    ...['ONE_KEY_REQUIRED','ONE_KEY_LOGIN_REQUIRED','ONE_KEY_UPGRADE_REQUIRED'].map(code=>({status:428,body:{code,error:'provider api_key=SECRET_SENTINEL'},code:'key_required'})),
+    {status:403,body:{code:'ONE_KEY_LOGIN_REQUIRED',error:'普通用户请插入 ONE Key 使用'},code:'key_required'},
+  ];
+  let current=cases[0];browserFor(t,async()=>json(current.body,current.status,{'x-request-id':'owned-auth-request'}));expectUser('user-a');
+  for(const sample of cases){
+    current=sample;
+    await assert.rejects(api('/api/coordinator/messages/original'),error=>{
+      assert.ok(error instanceof ApiError);assert.deepEqual(error.failure,{code:sample.code,stage:'accepting',outcome:'unknown'});
+      assert.equal(error.requestId,'owned-auth-request');assert.doesNotMatch(error.message,/SECRET_SENTINEL|provider api_key/);return true;
+    });
+    let cause:unknown;
+    await recoverCoordinatorSubmission({isCurrent:()=>true,known:()=>undefined,refresh:async()=>{},read:()=>api('/api/coordinator/messages/original'),accept:()=>assert.fail('auth errors must not settle a receipt'),unknown:failure=>{cause=failure;},error:new TypeError('Failed to fetch')});
+    assert.deepEqual(cause,{code:sample.code,stage:'receipt',outcome:'unknown'});
+  }
+});
+
+test('unreviewed 401/403 errors and arbitrary ONE_KEY prefixes do not guess auth classifications',async t=>{
+  const responses=[
+    json({error:'provider access denied'},403),json({error:'权限不足'},403),json({error:'upstream unauthorized'},401),
+    json({code:'ONE_KEY_PROVIDER_AUTH_ERROR',error:'not an app enum'},428),json({code:'ONE_KEY_REQUIRED',error:'wrong HTTP status'},500),
+  ];
+  browserFor(t,async()=>responses.shift()!);expectUser('user-a');
+  for(let index=0;index<5;index++)await assert.rejects(api('/api/coordinator/messages/original'),error=>error instanceof ApiError&&error.failure===undefined);
 });
 
 test("session announcements contain an opaque revision and tolerate disabled storage", t => {

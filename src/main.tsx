@@ -162,6 +162,7 @@ import { buildTaskActivityRows, getSettledTaskTransitions, selectConversationExe
 import { OneCompanionEye as OneHeroEye } from "./OneCompanionEye";
 import { api, apiForUser, ApiError, expectUser, announceSessionChange, SESSION_EVENT, SESSION_STORAGE_KEY } from "./oneApi";
 import { chatSubmission, forgetChatSubmission, pendingChatSubmissions } from "./chatSubmission";
+import {coordinatorDrafts} from './coordinatorDrafts';
 import { ProfileNameEditor, BetaFeedbackControls, type AccountProfile, type ProfilePatch } from "./Onboarding";
 import type { OnboardingHandbookOffer,WelcomeDelivery as Delivery } from '../server/onboardingHandbook';
 import {WelcomeDelivery,followWelcomeDelivery} from './WelcomeDelivery';
@@ -1716,7 +1717,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         const submissionId=crypto.randomUUID();
         if(localExecution&&executionPreparationRef.current){executionPreparationRef.current.operationId=submissionId;executionPreparationRef.current.coordinator=true;}
         const operationId = await coordinator.submit({operationId:submissionId,text,localExecution,outputDestination:localExecution?undefined:outputDestination==='notion'?'notion':'chat',modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),featureApprovals,confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
-        coordinatorFailedDraft.current=null;
         if (localExecution && !executionPreparationRef.current?.cancelled) setAwaitingExecutionOperationId(operationId);
         return true;
       }catch(err){setError(err instanceof Error?err.message:'暂时无法确认，请检查状态；不会重复执行');if(localExecution)throw err;}return false;
@@ -2387,11 +2387,27 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
 {preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation renderAssistantActions={message=><BetaFeedbackControls messageId={message.id} requestId={message.requestId} leading={<button type="button" title="复制回答" onClick={()=>void copyMarkdown(message.text)}><Copy size={14}/>复制</button>} onSave={async input=>(await api<{feedback:import('./Onboarding').OwnBetaFeedback}>('/api/me/feedback',{method:'POST',body:JSON.stringify(input)})).feedback}/>} onContinue={()=>{if(currentDraftRef.current.content.trim()){setError('输入框还有草稿，请先保留或发送它，再继续生成。');return;}if(confirm('继续生成会产生新的额度消耗，是否继续？'))void sendMessage('请接着上一条未完成的回答继续，从中断处接上，不要重复前文。');}} hasEarlierHistory={coordinator.hasEarlierHistory} loadingHistory={coordinator.loadingHistory} onLoadHistory={coordinator.enabled?coordinator.loadHistory:undefined} visible={view==='chat'||view==='features'||view==='account'} messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} completed={coordinator.settlement?.status==='completed'&&!coordinator.error} progress={coordinator.enabled?coordinator.progress:null} onStop={coordinator.enabled?coordinator.stop:undefined} onRestore={text=>{
           if(currentDraftRef.current.content.trim()){setError('输入框已有新草稿，先保留或发送它，再恢复原话。');return;}
-          setContent(text);const failed=coordinatorFailedDraft.current;
-          if(failed?.text===text){
-            setPendingAttachments(old=>[...new Map([...old,...failed.files].map(file=>[file.id,file])).values()]);
-            setFeatureForNext(old=>[...new Map([...old,...failed.features].map(feature=>[feature.id,feature])).values()]);
-          }
+          const draft=coordinatorDrafts(user.id,user.access?.workspaceId??user.defaultWorkspaceId).filter(item=>item.text===text).at(-1);
+          void (async()=>{
+            if(draft){
+              if(draft.state==='review')throw new Error('这件事已有部分进展或结果待核对，请打开原任务继续，避免从头重做。');
+              // These references are not permissions: read every attachment and
+              // feature through the current account before putting it back.
+              const [files,features]=await Promise.all([
+                Promise.all((draft.attachmentIds??[]).map(async id=>{const {attachment}=await api<{attachment:AttachmentSummary}>(`/api/attachments/${encodeURIComponent(id)}`);if(!attachment||attachment.id!==id||attachment.status&&attachment.status!=='ready')throw new Error('原附件暂时不能使用，原话仍保留；请检查附件状态后再恢复。');return attachment;})),
+                Promise.all((draft.featureIds??[]).map(async id=>{const feature=await api<FeatureChoice>(`/api/features/${encodeURIComponent(id)}`);if(!feature||typeof feature.name!=='string')throw new Error('原功能暂时不能使用，原话仍保留；请重新检查功能。');return{...feature,id};})),
+              ]);
+              if(draft.boundTaskId)await coordinator.load(draft.boundTaskId,true);
+              if(currentDraftRef.current.content.trim())throw new Error('输入框已有新草稿，原话仍保留，请先处理当前草稿。');
+              setContent(text);setPendingAttachments(files);setFeatureForNext(features);
+              if(draft.modelId)setDraftModelId(draft.modelId);
+              setWebSearch(Boolean(draft.webSearch));setOutputDestination(draft.localExecution?'local':draft.outputDestination??'chat');
+              coordinator.dispatch({type:'bind',taskId:draft.boundTaskId??null});
+            }else{
+              setContent(text);const failed=coordinatorFailedDraft.current;
+              if(failed?.text===text){setPendingAttachments(failed.files);setFeatureForNext(failed.features);}
+            }
+          })().catch(error=>setError(error instanceof Error?error.message:'原话仍保留，附件或功能暂时无法恢复，请检查连接。'));
         }} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)}/>:null}
         {coordinator.removedTask?<p role="status">任务已删除，历史保留。<button type="button" onClick={()=>void coordinator.restoreTask().then(()=>refresh()).catch(e=>setError(e.message))}>恢复任务（不会自动重跑）</button></p>:null}
 {!fluidEnabled ? coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} departureAnchor={()=>document.querySelector<HTMLElement>('[data-task-dispatch-anchor]') || document.querySelector<HTMLElement>('.studio-presence')} returnAnchor={()=>document.querySelector<HTMLElement>('[data-task-return-anchor]') || document.querySelector<HTMLElement>('.coordinator-message.assistant:last-of-type')} recentReportedReceiptIds={coordinator.snapshot?.recentReportedReceiptIds} onReadAll={readAllTaskMessages} onOpenAll={()=>openSurface('things')} onDismiss={task=>coordinator.acknowledge(task.taskId,dismissibleReceiptIds(uniqueTransfers,task.taskId))} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null : null}

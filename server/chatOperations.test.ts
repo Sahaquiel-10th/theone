@@ -210,6 +210,19 @@ test("an after-completion HTTP failure never overwrites the durable successful r
   assert.equal((await beginChatOperation(f.store, start)).kind, "completed");
   assert.equal(f.db().chatOperations[0].status, "completed");
 });
+test('structured failures survive restart and project only reviewed fields for the exact owner',async()=>{
+ const f=fixture();await beginChatOperation(f.store,start);
+ const failure={code:'model_timeout' as const,stage:'model' as const,outcome:'not_started' as const};
+ await failChatOperation(f.store,scope,{failure});
+ const restarted=fixture(JSON.parse(JSON.stringify(f.db())));
+ assert.deepEqual(restarted.db().chatOperations[0].failure,failure);
+ await assert.rejects(()=>beginChatOperation(restarted.store,start),code('CHAT_OPERATION_FAILED'));
+ const done=fixture();await beginChatOperation(done.store,start);await finish(done);
+ done.db().chatOperations[0].failure={...failure,privateMessage:'DO_NOT_RETURN_PRIVATE_FAILURE'} as typeof failure;
+ assert.deepEqual(getChatOperationResult(done.db(),scope).failure,failure);
+ assert.doesNotMatch(JSON.stringify(getChatOperationResult(done.db(),scope)),/DO_NOT_RETURN_PRIVATE_FAILURE/);
+ assert.throws(()=>getChatOperationResult(done.db(),{...scope,userId:'b',workspaceId:'wb'}),code('CHAT_OPERATION_NOT_FOUND'));
+});
 
 test("failed result transaction rolls back both response and completion; retry remains safely blocked", async () => {
   const f = fixture(); await beginChatOperation(f.store, start);
