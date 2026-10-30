@@ -63,3 +63,11 @@ test('a blocked round sends clarification to its exact task rather than an unrel
   assert.match(html,new RegExp('task='+view.practice!.first.taskId));
   assert.doesNotMatch(html,/回主对话补充要求/);
 });
+
+test('paused and unaccepted work never claims that processing is still underway',()=>{
+ const view=practicePreviewView('failure');
+ const html=render(view);assert.match(html,/这一步先停在这里/);assert.doesNotMatch(html,/任务在旁边独立处理/);
+ view.practice!.first.taskId='';assert.match(render(view),/原要求已保留/);
+ const web=practicePreviewView('web');web.practice!.web!.state='failed';
+ assert.match(render(web),/这一步先停在这里/);assert.doesNotMatch(render(web),/正在把同一份成果做成网页/);
+});
