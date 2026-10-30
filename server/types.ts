@@ -1,6 +1,6 @@
 export type Role = "admin" | "user";
 
-export type User = { contextPreferences?:import('./runtimeContext.js').ContextPreferences[]; attentionStates?:import('./attention.js').AttentionState[]; featureBudgetPolicies?: import('./featurePricing.js').FeatureBudgetPolicy[]; id: string; username: string; passwordHash: string; role: Role; defaultWorkspaceId: string; profile?: import("./betaProfile.js").AccountProfile; preferredModelId?: string; enabled: boolean; createdAt: string; featureCredentials?: import("./featureCredentials.js").FeatureCredential[]; registrationOrigin?:'visitor'; visitorAuthVersion?:number;analyticsExcluded?:boolean };
+export type User = { teaching?:import('./teachingTypes.js').TeachingState; contextPreferences?:import('./runtimeContext.js').ContextPreferences[]; attentionStates?:import('./attention.js').AttentionState[]; featureBudgetPolicies?: import('./featurePricing.js').FeatureBudgetPolicy[]; id: string; username: string; passwordHash: string; role: Role; defaultWorkspaceId: string; profile?: import("./betaProfile.js").AccountProfile; preferredModelId?: string; enabled: boolean; createdAt: string; featureCredentials?: import("./featureCredentials.js").FeatureCredential[]; registrationOrigin?:'visitor'; visitorAuthVersion?:number;analyticsExcluded?:boolean };
 export type Workspace = { id: string; name: string; slug: string; kind?: "personal" | "company"; revision?: number; status: "active" | "suspended"; company?: { agreementRef: string; billing: "bank_transfer"; allowPublicSharing: boolean }; createdAt: string; updatedAt: string };
 export type WorkspaceMember = { id: string; workspaceId: string; userId: string; role: "owner" | "member"; status?: "active" | "disabled"; permissions?: { knowledgeConnectionIds: string[]; featureIds: string[]; powerLimitMicros?: number }; createdAt: string };
 export type ConversationFolder = { id: string; workspaceId: string; userId: string; name: string; createdAt: string };
@@ -241,6 +241,6 @@ export type Database = {
   agents: Agent[]; attachments: Attachment[]; executionTasks: ExecutionTask[]; executionEvents: ExecutionEvent[]; settings: SystemSettings;
 };
 
-export type PublicUser = Omit<User, "passwordHash" | "featureCredentials" | "visitorAuthVersion" | "featureBudgetPolicies" | "contextPreferences" | "attentionStates">;
+export type PublicUser = Omit<User, "passwordHash" | "featureCredentials" | "visitorAuthVersion" | "featureBudgetPolicies" | "contextPreferences" | "attentionStates" | "teaching">;
 export type PublicModel = Pick<ModelConfig, "id" | "name" | "kind" | "isDefault">;
 export type AdminModel = Omit<ModelConfig, "apiKey" | "encryptedApiKey"> & { hasApiKey: boolean };
