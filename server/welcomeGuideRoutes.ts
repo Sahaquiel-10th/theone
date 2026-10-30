@@ -62,7 +62,7 @@ export function installWelcomeGuideRoutes(app:Express,keyAuth:readonly RequestHa
     else res.json({html:renderWelcomeGuide(f.welcomeGuide!,image),name:`${f.welcomeGuide!.nickname}的 ONE 使用说明.html`,shared:!!f.welcomeShare&&Date.parse(f.welcomeShare.expiresAt)>Date.now()});
   }));
   app.post('/api/welcome-pages/:id/share',...keyAuth,asyncRoute(async(req,res)=>{
-    if(req.body?.confirm!==true)throw new BetaInputError('请先确认分享整份说明，包括称呼、图片、用途、平台和文中提到的分身名称。');
+    if(req.body?.confirm!==true)throw new BetaInputError('请先确认分享整份说明，包括称呼、图片、用途、平台、资料标题、示例要求和文中提到的分身名称。');
     const s={userId:req.user!.id,workspaceId:req.workspaceId!},token=randomBytes(24).toString('hex'),expiresAt=new Date(Date.now()+7*86400000).toISOString();
     await store.mutate(db=>{const f=fileInScope(db,s,String(req.params.id));if(!f.welcomeGuide)throw new BetaInputError('这份文件暂不支持公开分享',403);sharable(db,s);f.welcomeShare={hash:digest(token),expiresAt};});
     res.setHeader('Cache-Control','no-store');res.json({url:`/welcome/${token}`,expiresAt});

@@ -55,7 +55,7 @@ export function handbookGuide(db:Database,scope:AccountScope){
 }
 export function usesWelcomeManual(db:Database,scope:AccountScope){
   const p=accountProfile(db,scope),j=p.onboarding.journeyHistory?.find(j=>j.handbook?.operationId===p.onboarding.handbook?.operationId)??p.onboarding.journey;
-  return j?.experience===4;
+  return j?.experience===4||j?.experience===5;
 }
 /** Only a public price leaves this resolver; credentials/model prompts do not. */
 export function onboardingHandbookOffer(db: Database, storageAvailable: boolean, scope?:AccountScope): OnboardingHandbookOffer {
@@ -64,7 +64,7 @@ export function onboardingHandbookOffer(db: Database, storageAvailable: boolean,
     // Image publication has no separate enable switch; unlike the coordinator,
     // a valid published configuration is available without `enabled: true`.
     if (config.values.enabled === false) return { available: false };
-    const pricePower = config.billingModel.imagePowerPerCall!+(scope&&accountProfile(db,scope).onboarding.journey?.experience===4?welcomeManualConfig(db,handbookGuide(db,scope)).reservation/1e6:0);
+    const pricePower = config.billingModel.imagePowerPerCall!+(scope&&usesWelcomeManual(db,scope)?welcomeManualConfig(db,handbookGuide(db,scope)).reservation/1e6:0);
     const firstGift=scope?!accountProfile(db,scope).onboarding.welcomeGiftOperationId:undefined;
     return { available: pricePower <= .5&&(!firstGift||config.billingModel.costImagePowerPerCall!<=.5), pricePower, ...(scope?{firstGift}:{}) };
   } catch { return { available: false }; }

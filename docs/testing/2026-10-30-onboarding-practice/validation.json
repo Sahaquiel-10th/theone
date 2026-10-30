@@ -1,0 +1,36 @@
+{
+  "checkedAt": "2026-10-30T00:33:40.129Z",
+  "formalBase": "921a9192d7ba7dfd1cc66954da5cff2ea7c12d66",
+  "tests": {
+    "total": 2016,
+    "pass": 2015,
+    "skip": 1,
+    "fail": 0
+  },
+  "typecheck": "passed",
+  "build": "passed",
+  "diffCheck": "passed",
+  "browser": {
+    "desktop": [
+      1280,
+      720
+    ],
+    "mobile": [
+      390,
+      844
+    ],
+    "data": "synthetic",
+    "modelCalls": 0,
+    "productionBilling": false
+  },
+  "assets": [
+    {
+      "path": "/assets/index-BUxvMvNa.js",
+      "sha256": "f83e9c4a98aa6c8a8f3e5bfea330ca137e0c7d5a6336ce71ed21922b892ce1f8"
+    },
+    {
+      "path": "/assets/index-CFEKyu6g.css",
+      "sha256": "c8ddbcf84556d368d6edc42058adca583a0907c271bf5a9b7b54044cf275f8b0"
+    }
+  ]
+}

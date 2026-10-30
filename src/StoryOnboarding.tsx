@@ -1,10 +1,13 @@
-import {lazy,Suspense,useEffect,useRef,useState} from 'react';
+import {lazy,Suspense,useEffect,useId,useRef,useState} from 'react';
 import {ArrowLeft,ArrowUpRight,BookOpen,Check,Monitor,Sparkles,X} from 'lucide-react';
 import type {AccountProfile} from '../server/betaProfile';
 import type {JourneyInput,WelcomeContext} from '../server/onboardingJourney';
 import type {OnboardingHandbookOffer} from '../server/onboardingHandbook';
 import {onboardingPurposes,type OnboardingPurpose} from './onboardingPurposes';
 import {confirmAction} from './ConfirmAction';
+import {PracticeOnboarding} from './PracticeOnboarding';
+import {OneEye} from './OneEye';
+import {api as defaultApi} from './oneApi';
 
 export const welcomeBenefits=[
   {title:'用自己的资料找答案',description:'需要时查找已连接的资料，保留引用。'},
@@ -13,16 +16,67 @@ export const welcomeBenefits=[
   {title:'在电脑上交付',description:'本机就绪并选好工作区后，可以创建文件。'}
 ];
 const StoryOnboardingPreview=lazy(()=>import('./StoryOnboardingPreview'));
-type StoryOnboardingProps={
+export type StoryOnboardingProps={
   profile:AccountProfile;context?:WelcomeContext;offer?:OnboardingHandbookOffer;
   onBegin:()=>Promise<unknown>;onAction:(input:JourneyInput)=>Promise<unknown>;
   onKnowledge:()=>void;onDevice:()=>void;onDismiss:()=>void;
   /** Only the explicitly synthetic localhost fixture may enable this. */
   effectPreview?:boolean;
+  request?:typeof defaultApi;
+  api?:typeof defaultApi;
+  onOpenTask?:(id:string)=>void;
+  onContinueChat?:()=>void;
+  onRefresh?:()=>unknown|Promise<unknown>;
 };
 export function StoryOnboarding(props:StoryOnboardingProps) {
   if(props.effectPreview)return <Suspense fallback={<section className="guide-preview-loading" role="status">正在打开引导…</section>}><StoryOnboardingPreview initialName={props.profile.displayName} onDismiss={props.onDismiss}/></Suspense>;
+  if(!props.profile.onboarding.journey||props.profile.onboarding.journey.experience===5)return <PracticeStoryOnboarding {...props}/>;
   return <RealStoryOnboarding {...props}/>;
+}
+
+/** New experiences prove one work loop. Existing journeys keep their original contract. */
+function PracticeStoryOnboarding({profile,context,offer,onBegin,onAction,onKnowledge,onDismiss,onContinueChat,onOpenTask,onRefresh,request,api}:StoryOnboardingProps){
+  const j=profile.onboarding.journey,stage=j?.stage??'name';
+  const [name,setName]=useState(profile.displayName),[goal,setGoal]=useState<'article'|'plan'>(j?.practiceGoal??'article'),[busy,setBusy]=useState(false),[error,setError]=useState('');
+  const started=useRef(false),finishing=useRef(false),confirmation=useRef<AbortController|undefined>(undefined),id=useId().replace(/:/g,'');
+  useEffect(()=>()=>confirmation.current?.abort(),[]);
+  useEffect(()=>{if(j||started.current)return;started.current=true;setBusy(true);void onBegin().catch(e=>setError(e instanceof Error?e.message:'体验暂时没打开，可以再试一次。')).finally(()=>setBusy(false));},[j,onBegin]);
+  useEffect(()=>{setName(profile.displayName);setGoal(j?.practiceGoal??'article');setError('');},[j?.id]);
+  async function save(input:JourneyInput){setBusy(true);setError('');try{return await onAction({...input,journeyId:j?.id});}finally{setBusy(false);}}
+  async function act(input:JourneyInput){if(busy)return;try{await save(input);}catch(e){setError(e instanceof Error?e.message:'这一步没保存好，可以再试一次。');}}
+  async function finish(){
+    if(finishing.current)return;finishing.current=true;
+    const controller=new AbortController();confirmation.current=controller;
+    try{
+      const price=offer?.pricePower,available=offer?.available===true&&typeof price==='number'&&price>0&&price<=.5;
+      let createGuide=available;
+      if(available&&!offer?.firstGift)createGuide=await confirmAction({title:'再保留一份个人使用指南？',message:`整理指南并配图，最多使用 ${price} 电力，按实际用量结算。`,details:['这次做好的文章或方案、网页都会保留。','也可以完成体验，不再制作指南。'],confirmLabel:'制作指南',cancelLabel:'直接完成体验'},controller.signal);
+      if(controller.signal.aborted)return;
+      await save({action:'finish',createGuide,choice:createGuide?undefined:'without_image',budgetPower:createGuide&&!offer?.firstGift?price:undefined});
+    }finally{finishing.current=false;if(confirmation.current===controller)confirmation.current=undefined;}
+  }
+  if(stage==='complete')return null;
+  if(stage==='ready'&&j)return <PracticeOnboarding key={j.id} journeyId={j.id} request={request??api??defaultApi} defaultGoal={j.practiceGoal??goal} defaultSample={j.knowledgeChoice==='skipped'} onKnowledge={onKnowledge} onDismiss={onDismiss} onContinueChat={onContinueChat} onOpenTask={onOpenTask} onRefresh={onRefresh} onFinish={finish} onSkip={()=>save({action:'finish',skipPractice:true,choice:'without_image',createGuide:false})}/>;
+  const connected=!!context?.platforms.length;
+  return <section className="practice-onboarding practice-setup" aria-labelledby={`practice-setup-${id}`} aria-busy={busy}>
+    <header className="practice-top"><span><OneEye decorative size="sm" mood="attentive"/><strong>和 ONE 做成一件事</strong></span><button type="button" className="practice-icon" aria-label="收起体验，稍后继续" onClick={onDismiss}><X size={18}/></button></header>
+    <div className="practice-copy"><span className="practice-eyebrow">{stage==='name'?'01 / 04 · 直接开始':'02 / 04 · 用你的资料'}</span>
+      <h2 id={`practice-setup-${id}`}>{stage==='name'?'AI 已经在这里，直接用。':stage==='knowledge'?'让你存过的资料，也来帮忙。':'先做一份你用得上的成果。'}</h2>
+      <p>{stage==='name'?'不用逐个平台注册、配置和切换。接下来，拿一份资料做成文章或方案，再变成网页。':stage==='knowledge'?'接上常用的笔记或云空间。下一步先找到一份熟悉的资料，确认后再用它。':'还是同一份资料，选一个你能判断好坏的结果。'}</p>
+    </div>
+    {stage==='name'?<form onSubmit={e=>{e.preventDefault();void act({action:'step',step:'name',choice:name.trim()?'provided':'skipped',...(name.trim()?{displayName:name}: {})});}}>
+      <label htmlFor={`practice-name-${id}`}>怎么称呼你？（选填）<input id={`practice-name-${id}`} autoComplete="nickname" maxLength={40} value={name} placeholder="比如，小张" disabled={busy||!j} onChange={e=>setName(e.target.value)}/></label>
+      <div className="practice-actions"><button type="submit" className="practice-primary" disabled={busy||!j}>{busy?'在保存…':'好，开始看看'}<ArrowUpRight size={16}/></button>{name.trim()?<button type="button" className="practice-text" disabled={busy||!j} onClick={()=>void act({action:'step',step:'name',choice:'skipped'})}>先不填称呼</button>:null}</div>
+    </form>:stage==='knowledge'?<>
+      <div className="practice-task-status"><BookOpen size={20}/><div><strong>{connected?'已有资料来源，可以直接选':'还没连接，也可以先体验'}</strong><small>{connected?context!.platforms.join('、'):'示例会明确标记，不会当成你的私人资料。'}</small></div></div>
+      <div className="practice-actions"><button type="button" className="practice-primary" disabled={busy||!j} onClick={()=>connected?void act({action:'step',step:'knowledge',choice:'connected'}):onKnowledge()}>{connected?'用已连接的资料':'连接我的资料'}<ArrowUpRight size={16}/></button><button type="button" className="practice-text" disabled={busy||!j} onClick={()=>void act({action:'step',step:'knowledge',choice:'skipped'})}>先用示例体验</button>{connected?<button type="button" className="practice-text" onClick={onKnowledge}>管理连接</button>:null}</div>
+    </>:<>
+      <div className="practice-goals" aria-label="选择这次体验的目标">{([{id:'article',title:'写一篇文章',note:'把资料里的想法讲清楚'},{id:'plan',title:'做一份方案',note:'把资料变成可执行的步骤'}] as const).map(item=><button type="button" key={item.id} aria-pressed={goal===item.id} onClick={()=>setGoal(item.id)} disabled={busy}><span><strong>{item.title}</strong><small>{item.note}</small></span>{goal===item.id?<Check size={17}/>:null}</button>)}</div>
+      <div className="practice-actions"><button type="button" className="practice-primary" disabled={busy||!j} onClick={()=>void act({action:'step',step:'features',choice:'practice',goal})}>{busy?'在保存…':'选资料，开始做'}<ArrowUpRight size={16}/></button></div><p className="practice-note">现在只是选择目标，确认具体资料和要求后才会开始处理。</p>
+    </>}
+    {error?<div className="practice-error" role="alert"><p>{error}</p>{!j?<button type="button" className="practice-text" disabled={busy} onClick={()=>{started.current=false;void onBegin().catch(e=>setError(e.message));}}>重新打开体验</button>:null}</div>:null}
+    <footer className="practice-bottom"><button type="button" className="practice-text" onClick={onContinueChat??onDismiss}>先聊聊，稍后继续<ArrowLeft size={14}/></button></footer>
+  </section>;
 }
 function RealStoryOnboarding({profile,context,offer,onBegin,onAction,onKnowledge,onDevice,onDismiss}:StoryOnboardingProps) {
   const j=profile.onboarding.journey,stage=j?.stage??'name';

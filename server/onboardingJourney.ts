@@ -4,6 +4,7 @@ import { canReadKnowledge } from './enterprisePolicy.js';
 import { availableFeature } from './featureRuns.js';
 import { uid } from './security.js';
 import {onboardingPurposes,type OnboardingPurpose} from '../src/onboardingPurposes.js';
+import {practiceView} from './onboardingPractice.js';
 
 export type JourneyStage = 'name' | 'knowledge' | 'device' | 'features' | 'ready' | 'complete';
 export type LocalWelcomeState = { connected: boolean; folderSelected: boolean; executorReady: boolean; checkedAt: string };
@@ -14,7 +15,8 @@ export type OnboardingJourney = {
   localChoice?: 'checked' | 'skipped'; local?: LocalWelcomeState;
   featureIds: string[]; events: { step: JourneyStage; choice: string; at: string }[];
   purposeIds?:OnboardingPurpose[];
-  experience?:3|4;
+  experience?:3|4|5;
+  practiceGoal?:'article'|'plan';
   handbook?: import('./betaProfile.js').OnboardingHandbook;
 };
 export type WelcomeContext = { platforms: string[]; features: { id: string; name: string; description: string }[] };
@@ -32,7 +34,7 @@ export function welcomeContext(db: Database, scope: AccountScope): WelcomeContex
   }
   return {platforms,features:features.slice(0,60)};
 }
-export type JourneyInput = { action?:unknown; launchId?:unknown; journeyId?:unknown; operationId?:unknown; step?:unknown; choice?:unknown; displayName?:unknown; featureIds?:unknown; purposeIds?:unknown; experience?:unknown; createGuide?:unknown; budgetPower?:unknown };
+export type JourneyInput = { action?:unknown; launchId?:unknown; journeyId?:unknown; operationId?:unknown; step?:unknown; choice?:unknown; displayName?:unknown; featureIds?:unknown; purposeIds?:unknown; experience?:unknown; createGuide?:unknown; budgetPower?:unknown;goal?:unknown;skipPractice?:unknown };
 export function matchWelcomeFeatures(db:Database,scope:AccountScope,ids:OnboardingPurpose[]) {
   const words=onboardingPurposes.filter(p=>ids.includes(p.id)).flatMap(p=>[...p.words]);
   return welcomeContext(db,scope).features.map((f,index)=>({id:f.id,index,score:words.filter(w=>(f.name+' '+f.description).toLowerCase().includes(w.toLowerCase())).length})).filter(f=>f.score>0).sort((a,b)=>b.score-a.score||a.index-b.index).slice(0,3).map(f=>f.id);
@@ -53,7 +55,7 @@ export function updateJourney(db:Database,scope:AccountScope,input:JourneyInput,
       else throw new BetaInputError('上一份使用说明还在交接，稍后再开始引导。',409);
     }
     if(current)profile.onboarding.journeyHistory=[...(profile.onboarding.journeyHistory??[]),{...current,handbook:profile.onboarding.handbook}];
-    profile.onboarding.journey={id:uid('journey'),launchId:input.launchId as string,version:2,experience:input.experience===4?4:input.experience===3?3:undefined,stage:'name',startedAt:time,featureIds:[],events:[]};
+    profile.onboarding.journey={id:uid('journey'),launchId:input.launchId as string,version:2,experience:input.experience===5?5:input.experience===4?4:input.experience===3?3:undefined,stage:'name',startedAt:time,featureIds:[],events:[]};
   } else {
     const j=profile.onboarding.journey;
     if(!j||input.journeyId!==j.id)throw new BetaInputError('这次引导已经变化，请重新打开。',409);
@@ -61,6 +63,15 @@ export function updateJourney(db:Database,scope:AccountScope,input:JourneyInput,
     if(input.action==='finish') {
       if(j.stage==='complete')return profile;
       if(j.stage!=='ready')throw new BetaInputError('先完成或跳过前面的步骤。',409);
+      if(j.experience===5){
+        const practice=profile.onboarding.practice;
+        if(input.skipPractice===true){
+          if(input.choice!=='without_image')throw new BetaInputError('跳过实战时不自动制作指南。',409);
+          const active=practice?.journeyId===j.id&&db.chatOperations?.some(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.workRun?.onboardingPractice?.id===practice.id&&['queued','running','prepared'].includes(o.workRun.state));
+          if(active)throw new BetaInputError('实战任务仍在进行，请先查看或停止；也可以暂时收起引导。',409);
+          j.events.push({step:'ready',choice:'skipped_practice',at:time});
+        }else if(practice?.journeyId!==j.id||!practiceView(db,scope).practice?.completedAt)throw new BetaInputError('先完成这次真实实战，或明确选择跳过。',409);
+      }
       const withoutImage=input.choice==='without_image';
       const firstGift=!profile.onboarding.welcomeGiftOperationId;
       if(!withoutImage&&!firstGift&&(typeof input.budgetPower!=='number'||!Number.isFinite(input.budgetPower)||input.budgetPower<=0||input.budgetPower>.5))throw new BetaInputError('再次生成需要先确认这份说明的电力。');
@@ -85,11 +96,16 @@ export function updateJourney(db:Database,scope:AccountScope,input:JourneyInput,
       } else if(j.stage==='knowledge') {
         if(!['connected','skipped'].includes(String(input.choice)))throw new BetaInputError('请选择连接或跳过。');
         if(input.choice==='connected'&&!welcomeContext(db,scope).platforms.length)throw new BetaInputError('还没连接成功，也可以先跳过。');
-        j.knowledgeChoice=input.choice as 'connected'|'skipped';j.knowledgePlatforms=welcomeContext(db,scope).platforms;profile.onboarding.knowledgeChoice=j.knowledgeChoice;profile.onboarding.knowledgeStepAt=time;j.stage='device';
+        j.knowledgeChoice=input.choice as 'connected'|'skipped';j.knowledgePlatforms=welcomeContext(db,scope).platforms;profile.onboarding.knowledgeChoice=j.knowledgeChoice;profile.onboarding.knowledgeStepAt=time;j.stage=j.experience===5?'features':'device';
       } else if(j.stage==='device') {
         if(!['checked','skipped'].includes(String(input.choice)))throw new BetaInputError('请检测本机或跳过。');
         j.localChoice=input.choice as 'checked'|'skipped';j.local=input.choice==='checked'?local:undefined;j.stage='features';
       } else if(j.stage==='features') {
+        if(j.experience===5){
+          if(input.choice!=='practice'||!['article','plan'].includes(String(input.goal)))throw new BetaInputError('请选择写短文或做行动方案。');
+          j.practiceGoal=input.goal as 'article'|'plan';j.purposeIds=[input.goal==='article'?'writing':'work'];j.featureIds=matchWelcomeFeatures(db,scope,j.purposeIds);j.stage='ready';
+          j.events.push({step:'features',choice:'practice',at:time});profile.updatedAt=time;user.profile=profile;return structuredClone(profile);
+        }
         if(input.choice==='purposes'){
           if(!Array.isArray(input.purposeIds)||input.purposeIds.length>2||input.purposeIds.some(id=>!onboardingPurposes.some(p=>p.id===id)))throw new BetaInputError('选一两个用途就好，也可以先跳过。');
           j.purposeIds=[...new Set(input.purposeIds)] as OnboardingPurpose[];

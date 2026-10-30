@@ -1,7 +1,7 @@
 import type {VisualDocument} from './visualDocument.js';
 import {newspaperArt} from './newspaperArt.js';
 const e=(s:string)=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
-export type NewspaperContext={avatarAllowed?:boolean;avatars?:string[];platforms?:string[];sponsored?:boolean};
+export type NewspaperContext={avatarAllowed?:boolean;avatars?:string[];platforms?:string[];sponsored?:boolean;practice?:import('./practiceWelcomeGuide.js').PracticeGuideFacts};
 export const newspaperRuntime=`{
  const paper=document.querySelector('.one-newspaper');
  if(paper){
