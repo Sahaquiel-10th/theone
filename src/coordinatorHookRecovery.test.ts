@@ -7,7 +7,7 @@ import {ApiError} from './oneApi';
 import {coordinatorRecoveryCopy,parseCoordinatorFailure} from './coordinatorRecovery';
 import {coordinatorRequest,forgetStoredCoordinatorOperation} from './coordinatorTransport';
 import {mergeCoordinatorReceipt,seedCoordinatorReceipt,isCoordinatorReceipt,coordinatorReceiptFailure,type CoordinatorReceipt} from './coordinatorHistory';
-import {invalidCoordinatorReceipt,recoverCoordinatorSubmission} from './coordinatorSubmissionRecovery';
+import {invalidCoordinatorReceipt,recoverCoordinatorSubmission,unacceptedCoordinatorFailure} from './coordinatorSubmissionRecovery';
 import {chatSubmission,forgetChatSubmission,pendingChatSubmissions} from './chatSubmission';
 import {coordinatorDrafts,coordinatorSubmissionPayload,saveCoordinatorDraft,forgetCoordinatorDraft,markCoordinatorDraft} from './coordinatorDrafts';
 import type {CoordinatorSubmission} from './useCoordinator';
@@ -22,6 +22,10 @@ function closure(name:string,end:string,exported:string){
 }
 const makeAccept=closure('const acceptReceipt=','const readReceipt=','acceptReceipt');
 const makeSubmit=closure('async function submit','async function direct','submit');
+const stateStart=source.indexOf('const state: PreviewState =');
+const stateCode=ts.transpileModule(source.slice(stateStart,source.indexOf('\n  return {',stateStart)),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
+const makeState=new Function('context',`with(context){${stateCode};return state;}`);
+const makeRestore=closure('useEffect(()=>{\n    pendingRef.current=null;','useEffect(() => {\n    live.current = true;','undefined');
 function fixture(t:TestContext){
   const stored=new Map<string,string>(),storage={getItem:(key:string)=>stored.get(key)??null,setItem:(key:string,value:string)=>{stored.set(key,value);},removeItem:(key:string)=>{stored.delete(key);}};
   const previous=Object.getOwnPropertyDescriptor(globalThis,'sessionStorage');Object.defineProperty(globalThis,'sessionStorage',{configurable:true,value:storage});
@@ -29,7 +33,7 @@ function fixture(t:TestContext){
   const userId=randomUUID(),workspaceId='workspace';const state:Record<string,any>={outgoing:null,progress:null,failure:null,settlement:null,snapshot:null};
   const setter=(key:string)=>(action:any)=>{state[key]=typeof action==='function'?action(state[key]):action;if(key==='snapshot')context.snapshotRef.current=state[key];};
   let postResult:unknown=new TypeError('Failed to fetch'),readResult:unknown=new TypeError('Failed to fetch'),postCount=0,readCount=0;let afterRefresh:(()=>void)|undefined;
-  const context:Record<string,any>={ApiError,coordinatorRecoveryCopy,parseCoordinatorFailure,coordinatorRequest,forgetStoredCoordinatorOperation,mergeCoordinatorReceipt,seedCoordinatorReceipt,isCoordinatorReceipt,coordinatorReceiptFailure,invalidCoordinatorReceipt,recoverCoordinatorSubmission,chatSubmission,forgetChatSubmission,coordinatorSubmissionPayload,saveCoordinatorDraft,forgetCoordinatorDraft,markCoordinatorDraft,
+  const context:Record<string,any>={ApiError,coordinatorRecoveryCopy,parseCoordinatorFailure,coordinatorRequest,forgetStoredCoordinatorOperation,mergeCoordinatorReceipt,seedCoordinatorReceipt,isCoordinatorReceipt,coordinatorReceiptFailure,invalidCoordinatorReceipt,recoverCoordinatorSubmission,unacceptedCoordinatorFailure,chatSubmission,forgetChatSubmission,coordinatorSubmissionPayload,saveCoordinatorDraft,forgetCoordinatorDraft,markCoordinatorDraft,
     userId,workspaceId,submissionScope:`coordinator:${userId}:workspace`,scope:{},sending:{current:null},pendingRef:{current:null},snapshotRef:{current:null},submissionError:{current:''},settledReceipts:new Map(),receivedReceipts:new Map(),missingReceipts:new Set(),localStorage:storage,pendingKey:()=>`pending:${userId}`,isCurrent:()=>true,useCallback:(fn:unknown)=>fn,
     setOutgoing:setter('outgoing'),setProgress:setter('progress'),setFailureReply:setter('failure'),setSettlement:setter('settlement'),setSnapshot:setter('snapshot'),setError:setter('error'),setCurrentPending:(value:string|null)=>{context.pendingRef.current=value;},
     refresh:async()=>{afterRefresh?.();},api:async(_path:string,options?:RequestInit)=>{const result=options?.method==='POST'?(postCount++,postResult):(readCount++,readResult);if(result instanceof Error)throw result;return result;},
@@ -75,4 +79,27 @@ test('completed business failure keeps original references but review-only outco
 test('a restart-interrupted receipt retains transport uncertainty rather than claiming a user stop',async t=>{
   const f=fixture(t);f.read={status:'interrupted',failure:{code:'transport_unknown',stage:'receipt',outcome:'unknown'}};
   await f.submit(f.input);assert.equal(f.state.settlement.status,'interrupted');assert.doesNotMatch(f.state.failure.text,/嗯，回复停下来了/);assert.equal(coordinatorDrafts(f.context.userId,f.context.workspaceId)[0].state,'review');
+});
+
+for(const status of [400,403,409,428])test(`a confirmed ${status} pre-acceptance rejection retains its reason and draft without a GET that can replace it`,async t=>{
+ const f=fixture(t);f.post=new ApiError('本轮附件暂不支持，请先保留附件再继续。 · 编号 req-safe', 'req-safe',status,'LOCAL_REJECTED',false,{code:'submission_invalid',stage:'accepting',outcome:'not_started'},false);
+ f.read=new ApiError('消息不存在',undefined,404);const operation=await f.submit({...f.input,outputDestination:'local'});
+ assert.equal(f.writes,1);assert.equal(f.reads,0);assert.equal(f.context.pendingRef.current,null);assert.match(f.state.failure.text,/本轮附件暂不支持.*req-safe/);
+ const draft=coordinatorDrafts(f.context.userId,f.context.workspaceId)[0];assert.equal(draft.state,'failed');assert.equal(draft.outputDestination,'local');assert.deepEqual(draft.attachmentIds,f.input.attachmentIds);
+ assert.notEqual(await chatSubmission(f.context.submissionScope,coordinatorSubmissionPayload(f.input)),operation);
+});
+test('a completion observed before an explicit rejected response always wins',async t=>{
+ const f=fixture(t);f.context.api=async()=>{f.context.acceptReceipt(f.context.pendingRef.current,f.completed());throw new ApiError('rejected',undefined,409,'REJECTED',false,{code:'submission_invalid',stage:'accepting',outcome:'not_started'},false);};
+ await f.submit(f.input);assert.equal(f.state.settlement.status,'completed');assert.equal(f.state.failure,null);assert.equal(f.context.pendingRef.current,null);
+});
+
+test('a confirmed pre-acceptance rejection labels the preserved user bubble not-started, including after safe draft restoration',async t=>{
+ const f=fixture(t);f.post=new ApiError('尚未开始',undefined,428,'REJECTED',false,{code:'local_attachments_unsupported',stage:'accepting',outcome:'not_started'},false);
+ await f.submit(f.input);
+ const state=()=>makeState({...f.context,tasks:[],snapshot:f.state.snapshot,outgoing:f.state.outgoing,failureReply:f.state.failure,localPending:null,selected:null,bound:null});
+ assert.equal(state().dialogue[0].featureName,'尚未开始 · 原话保留');
+ const noop=()=>{};
+ makeRestore({...f.context,coordinatorDrafts,useEffect:(effect:()=>void)=>effect(),detailsRef:{current:{}},selectedRef:{current:null},pageRef:{current:1},resumeKey:{current:''},setReady:noop,setDetails:noop,setSelected:noop,setBound:noop,setPending:noop,setHistoryError:noop,setLoadingHistory:noop,setPage:noop});
+ assert.equal(state().dialogue[0].featureName,'尚未开始 · 原话保留');
+ f.state.outgoing={...f.state.outgoing,notStarted:undefined};assert.equal(state().dialogue[0].featureName,'发送状态待确认 · 原话保留');
 });

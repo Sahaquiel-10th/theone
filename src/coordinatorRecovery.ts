@@ -5,6 +5,8 @@ export const coordinatorFailureCodes = [
   'feature_unavailable','model_unconfigured','power_insufficient','budget_exceeded','billing_unavailable',
   'key_required','source_authorization','source_unavailable','notion_authorization','notion_unconfirmed',
   'local_unavailable','account_unavailable','submission_invalid','conversation_busy','task_not_found','queue_full',
+  'local_device_offline','local_folder_missing','local_folder_denied','local_folder_unavailable','local_executor_unready',
+  'local_busy','local_attachments_unsupported','local_tool_unavailable','local_readiness_unknown','local_tool_invalid',
   'dispatch_not_started','storage_unavailable','transport_unknown','invalid_receipt','receipt_not_found','stopped','internal_error',
 ] as const;
 export type CoordinatorFailureCode = typeof coordinatorFailureCodes[number];
@@ -47,12 +49,22 @@ const failureCopy:Record<CoordinatorFailureCode,string>={
   notion_authorization:'Notion 的连接或授权需要确认。请到“设置 → 知识连接”检查 Notion；已经写入的内容不会自动重写。',
   notion_unconfirmed:'Notion 的保存结果还没确认。先打开原页面核对，也可以在任务里点“核对保存结果”；不会重新写入。',
   local_unavailable:'这一步还没接上你的电脑。请到“设置 → 本机执行”检查连接和工作文件夹，准备好后再处理这一步。',
+  local_device_offline:'这会儿没连上当前电脑，本机操作还没开始。工作文件夹不用重选；请确认 ONE Key 插着，再双击盘里的 ONE 恢复连接。',
+  local_folder_missing:'还没选过工作文件夹。本机第一次开工时会弹出选择窗口，请选一个具体文件夹就好；之后会沿用它。',
+  local_folder_denied:'电脑还连着，但这次没获准访问原工作文件夹。请允许 ONE 访问该文件夹，再检查状态；不用重装执行工具。',
+  local_folder_unavailable:'原工作文件夹这次没能打开。请恢复原文件夹或在本机设置中明确更换位置；不用重新配置模型。',
+  local_executor_unready:'工作文件夹的选择会保留，执行工具还没准备好。请到“设置 → 本机执行”准备工具，完成后再处理这一步。',
+  local_busy:'电脑这边还有操作没结束或没确认，先不同时改文件。请在任务里核对上一轮的进展或停止结果；不用重选工作文件夹。',
+  local_attachments_unsupported:'本机执行目前还不能直接接收这次新上传的附件，尚未开始操作电脑。文字和附件会保留；可以先选“对话中”生成可下载文件，或把资料放进已授权文件夹后再交给我。',
+  local_tool_unavailable:'本机操作入口这轮没有开放，还没开始改文件。请启用本机执行功能或使用“本机执行”按钮；不用重新选择工作文件夹。',
+  local_readiness_unknown:'这次没核对到电脑的完整状态，还不能开始操作。请到“设置 → 本机执行”重新检查状态；先别重选已经保存的工作文件夹。',
+  local_tool_invalid:'我没把本机这一步安排对，电脑还没开始操作。要求已经保留；可以重新发送这一步，若仍卡住请联系管理员，不用反复配置文件夹。',
   account_unavailable:'当前账号或工作区暂时不可用，这一步还不能继续。请重新登录；如果还是这样，请联系管理员检查账号和工作区。',
   submission_invalid:'这条要求没能正确提交。请刷新页面，确认文字、附件和所选功能，再发送一次。',
   conversation_busy:'前一条要求还在处理中。先等它返回，或点“停止回复”结束等待，再发送新的要求。',
   task_not_found:'这件任务暂时找不到了。请到任务列表确认它是否还在；需要新做一件事时，直接说明新的要求就好。',
   queue_full:'手头待处理的任务有点多，暂时接不下新的一件。请先完成或停止一些任务，再把这条要求交给我。',
-  dispatch_not_started:'这次停在任务安排这一步，还没有确认新的任务开始。请明确要做的一件事，并选好需要的功能后再发送。',
+  dispatch_not_started:'我这轮没把任务交出去，还没有新的任务开始。不是让你重新配置电脑；可以重新发送要做的这一步，若仍卡住请联系管理员核对。',
   storage_unavailable:'这一步卡在保存结果上了，先别重复生成或写入。请刷新查看已有结果；若还没有，请联系管理员核对这次记录。',
   transport_unknown:'连接刚才晃了一下，还没核对到这次的处理结果。请检查网络，恢复后回到这里查看；先别重复提交，免得做两遍。',
   invalid_receipt:'进度消息这次没传完整，还不能据此判断任务失败。请刷新查看结果；已有任务先别重发，如果一直如此，请联系管理员检查连接。',
@@ -73,7 +85,9 @@ function legacyFailure(reason:string):CoordinatorFailure {
   if(/Notion/i.test(reason))return f(/授权|权限|连接.*(?:失效|过期)|重新连接/.test(reason)?'notion_authorization':'notion_unconfirmed','saving');
   if(/知识授权/.test(reason))return f('source_authorization','tool');
   if(/知识来源|知识库|得到大脑|得到笔记|知识读取|资料来源/.test(reason))return f('source_unavailable','tool');
-  if(/本机(?:执行)?(?:未连接|尚未连接|连接(?:已)?(?:断开|中断|失效|不可用))|本机执行尚未开始|启动器(?:尚不支持|未连接|连接.*(?:断|失效))|(?:本机|电脑).{0,16}(?:工作区|文件夹|目录).{0,20}(?:未选择|未设置|未授权|不可用)|请先选择.{0,16}(?:本机工作区|ONE.{0,4}工作.{0,4}文件夹)/.test(reason))return f('local_unavailable','tool');
+  if(reason.startsWith('本机执行尚未开始：调度没有实际分派任务'))return f('dispatch_not_started','planning');
+  if(reason==='本机任务请使用 execute_local_task；仍需本机连接和目录授权。')return f('local_tool_invalid','planning');
+  if(/^(?:本机执行未连接|本机连接已断开)/.test(reason))return f('local_device_offline','tool');
   if(/暂未找到接收记录/.test(reason))return f('receipt_not_found','receipt');
   if(/模型回复中断|模型.*(?:连接|超时)|无法连接模型/.test(reason))return f('model_unavailable','model');
   if(/Failed to fetch|NetworkError|进度暂时没连上|服务响应超时|连接暂时不可用/i.test(reason))return f('transport_unknown','receipt');

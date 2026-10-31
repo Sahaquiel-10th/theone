@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { products, trialCatalog } from '../server/memberships';
 import { featureMention, withoutFeatureMention, monthlyAllowanceComparison, purchaseAction, purchaseTiming, transferStateLabel } from './noviceUx';
-import { localDeviceStatus } from './localDeviceStatus';
+import {localReadinessStatus} from './localDeviceReadiness';
 const plans=products(trialCatalog),standard=plans.find(p=>p.id==='standard-monthly')!,premium=plans.find(p=>p.id==='premium-monthly')!;
 
 test('purchase action distinguishes opening, renewal, upgrade and queued lower tier',()=>{
@@ -70,9 +70,10 @@ test('tool status check is visible and prevents duplicate checks',()=>{
   assert.match(source,/if\(executorRequest.current\)return/);
   assert.match(source,/setChecking\(true\)/);
   assert.match(source,/状态已更新/);
-  assert.match(source,/localDeviceStatus\(/);
-  assert.equal(localDeviceStatus(undefined,false,false).state,'unconfirmed');
-  assert.equal(localDeviceStatus(undefined,false,false).title,'本机连接未确认');
+  assert.match(source,/useLocalDeviceReadiness\(api\)/);
+  assert.match(source,/localReadinessStatus\(readiness.value/);
+  assert.equal(localReadinessStatus(undefined,false).state,'unknown');
+  assert.equal(localReadinessStatus(undefined,false).title,'本机状态尚未确认');
 });
 test('work folder uses everyday labels and puts permission details beside the chooser',()=>{
   const source=readFileSync(new URL('./LocalDeviceSettings.tsx',import.meta.url),'utf8');

@@ -9,7 +9,18 @@ import {FeatureConfigError} from './officialFeatures.js';
 import {ChatOperationError} from './chatOperations.js';
 import {ModelBillingError,BillingReviewRequiredError} from './modelBilling.js';
 import {PowerAvailabilityError} from './powerBilling.js';
-import {OrchestrationResponseError} from './taskOrchestrator.js';
+import {OrchestrationInputError,OrchestrationResponseError} from './taskOrchestrator.js';
+
+test('local routing mistakes and an unstarted dispatch never claim the computer or folder is disconnected',()=>{
+ for(const [error,code] of [
+  [new OrchestrationInputError('本机任务请使用 execute_local_task；仍需本机连接和目录授权。'),'local_tool_invalid'],
+  [new CoordinatorError('本机执行尚未开始：调度没有实际分派任务。你的原始要求已保留，请明确对应事情后再执行；不会自动重跑。',409),'dispatch_not_started'],
+ ] as const){
+  const failure=classifyCoordinatorFailure(error,{stage:'tool',outcome:'not_started'});
+  assert.equal(failure.code,code);
+  assert.doesNotMatch(coordinatorRecoveryCopy(failure),/没接上你的电脑|检查连接和工作文件夹|重新选择.*文件夹/);
+ }
+});
 
 test('all provider failure statuses stay model problems and never expose provider diagnostics',()=>{
  for(const status of [400,401,403,408,429,500,502,503,504]){

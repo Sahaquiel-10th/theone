@@ -86,6 +86,8 @@ export class OneKeyPresenceError extends Error {
   constructor(message: string, readonly code = "ONE_KEY_REQUIRED") { super(message); }
 }
 
+type LocalReadOnlyProbeOptions={signal?:AbortSignal;timeoutMs?:number};
+
 export class OneKeyPresence {
   private sockets = new Map<string, WebSocket>();
   private states = new WeakMap<WebSocket, SocketState>();
@@ -137,7 +139,8 @@ export class OneKeyPresence {
     this.pingTimer.unref();
   }
 
-  async requireProof(params: { deviceId: string; installationId?: string; userId: string; workspaceId: string; method: string; path: string }) {
+  async requireProof(params: { deviceId: string; installationId?: string; userId: string; workspaceId: string; method: string; path: string }, options?:LocalReadOnlyProbeOptions) {
+    options?.signal?.throwIfAborted();
     if (!validInstallationId(params.installationId)) throw new OneKeyPresenceError("请更新 ONE Key 启动器，再从 U 盘双击 ONE 图标登录", "ONE_KEY_UPGRADE_REQUIRED");
     const db = await this.store.read();
     const company = companyWorkspace(db, params.workspaceId);
@@ -152,7 +155,11 @@ export class OneKeyPresence {
 
     const challengeId = uid("prf");
     const nonce = crypto.randomBytes(32).toString("base64url");
+    options?.signal?.throwIfAborted();
     await new Promise<void>((resolve, reject) => {
+      const cleanup=()=>{clearTimeout(timeout);this.pending.delete(challengeId);options?.signal?.removeEventListener('abort',abort);};
+      const fail=(error:Error)=>{cleanup();reject(error);};
+      const abort=()=>fail(new OneKeyPresenceError('本机只读检查已结束','LOCAL_READINESS_ABORTED'));
       const timeout = setTimeout(() => {
         this.pending.delete(challengeId);
         // A half-open socket after sleep must not block its replacement until
@@ -163,15 +170,17 @@ export class OneKeyPresence {
           this.remove(socket, 'proof_timeout');
           socket.terminate();
         }
-        reject(new OneKeyPresenceError("ONE Key 未响应，请确认 U 盘仍然插着"));
+        fail(new OneKeyPresenceError("ONE Key 未响应，请确认 U 盘仍然插着"));
       }, proofTimeoutMs);
-      this.pending.set(challengeId, { deviceId: device.id, socket, nonce, resolve, reject, timeout });
+      this.pending.set(challengeId, { deviceId: device.id, socket, nonce, resolve:()=>{cleanup();resolve();}, reject:fail, timeout });
+      options?.signal?.addEventListener('abort',abort,{once:true});
+      if(options?.signal?.aborted){abort();return;}
       socket.send(JSON.stringify({ type: "request_challenge", challengeId, nonce, method: params.method, path: params.path }), (error) => {
         if (!error) return;
         clearTimeout(timeout);
         this.pending.delete(challengeId);
         this.remove(socket, 'socket_error');
-        reject(new OneKeyPresenceError("ONE Key 连接已断开"));
+        fail(new OneKeyPresenceError("ONE Key 连接已断开"));
       });
     });
   }
@@ -180,6 +189,15 @@ export class OneKeyPresence {
     const socket = this.sockets.get(deviceId);
     const state = socket ? this.states.get(socket) : undefined;
     return Boolean(validInstallationId(installationId) && socket && socket.readyState === WebSocket.OPEN && state?.authenticated && state.installationId === installationId);
+  }
+
+  /** Process-local identity for invalidating readiness metadata after socket replacement. */
+  readinessConnectionToken(deviceId:string,installationId?:string):object|undefined {
+    return this.isConnected(deviceId,installationId)?this.sockets.get(deviceId):undefined;
+  }
+  readinessBusy(deviceId:string,installationId?:string):boolean {
+    const socket=this.readinessConnectionToken(deviceId,installationId) as WebSocket|undefined;
+    return !!socket&&(this.updateInProgress(this.states.get(socket))||[...this.pendingLocal.values()].some(p=>p.socket===socket&&p.configuration&&p.change));
   }
 
   supportsLocalAgent(deviceId: string, installationId?: string) {
@@ -269,8 +287,9 @@ export class OneKeyPresence {
     return this.localRequest(deviceId, taskId, requestId, { type: "local_prepare", taskId, requestId }, 120_000, installationId);
   }
 
-  async localConfiguration(scope: { deviceId: string; installationId?: string; workspaceId: string; userId: string }, change: boolean) {
-    await this.requireProof({ ...scope, method: change ? "POST" : "GET", path: "/api/me/local-device" });
+  async localConfiguration(scope: { deviceId: string; installationId?: string; workspaceId: string; userId: string }, change: boolean, options?:LocalReadOnlyProbeOptions) {
+    if(change&&options)throw new Error('只读探测不能更换工作文件夹');
+    await this.requireProof({ ...scope, method: change ? "POST" : "GET", path: "/api/me/local-device" },options);
     const socket = await this.ownedSocket(scope), state = this.states.get(socket)!;
     if (!state.capabilities.has("local_configuration_v1")) throw new OneKeyPresenceError("此启动器尚不支持目录设置，请先升级 ONE");
     const db = await this.store.read();
@@ -278,13 +297,22 @@ export class OneKeyPresence {
     if (change && db.executionTasks.some(t => t.deviceId === scope.deviceId && t.installationId === scope.installationId && !executionTerminal(t.status))) throw new OneKeyPresenceError("本机还有任务在执行，请停止或等结束后更换目录");
     if (change && [...this.pendingLocal.values()].some(p => p.socket === socket && p.configuration && p.change)) throw new OneKeyPresenceError('本机正在设置或准备工具，请完成后再更换目录');
     const requestId = uid("cfg");
-    return new Promise<{ targetName?: string; output?: string }>((resolve, reject) => {
-      const timeout = setTimeout(() => { this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError("本机目录设置未返回，请检查电脑上的选择窗口")); }, 120_000);
-      this.pendingLocal.set(requestId, { deviceId: scope.deviceId, socket, taskId: "device_settings", configuration: true, change, workspaceId: scope.workspaceId, userId: scope.userId, resolve, reject, timeout });
-      socket.send(JSON.stringify({ type: "local_configuration", taskId: "device_settings", requestId, change }), error => {
-        if (!error) return;
-        clearTimeout(timeout); this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError("本机连接已断开"));
-      });
+    options?.signal?.throwIfAborted();
+    return this.configurationResult(requestId,{deviceId:scope.deviceId,socket,taskId:'device_settings',configuration:true,change,workspaceId:scope.workspaceId,userId:scope.userId},
+      {type:'local_configuration',taskId:'device_settings',requestId,change},options?.timeoutMs??120_000,'本机目录设置未返回，请检查电脑上的选择窗口',options?.signal);
+  }
+
+  private configurationResult(requestId:string,pending:Omit<PendingLocalRequest,'resolve'|'reject'|'timeout'>,message:Record<string,unknown>,timeoutMs:number,timeoutMessage:string,signal?:AbortSignal){
+    signal?.throwIfAborted();
+    return new Promise<{targetName?:string;output?:string}>((resolve,reject)=>{
+      const cleanup=()=>{clearTimeout(timeout);this.pendingLocal.delete(requestId);signal?.removeEventListener('abort',abort);};
+      const fail=(error:Error)=>{cleanup();reject(error);};
+      const abort=()=>fail(new OneKeyPresenceError('本机只读检查已结束','LOCAL_READINESS_ABORTED'));
+      const timeout=setTimeout(()=>fail(new OneKeyPresenceError(timeoutMessage)),timeoutMs);
+      this.pendingLocal.set(requestId,{...pending,resolve:value=>{cleanup();resolve(value);},reject:fail,timeout});
+      signal?.addEventListener('abort',abort,{once:true});
+      if(signal?.aborted){abort();return;}
+      pending.socket.send(JSON.stringify(message),error=>{if(error)fail(new OneKeyPresenceError('本机连接已断开'));});
     });
   }
 
@@ -318,8 +346,9 @@ export class OneKeyPresence {
   }
 
   async managedExecutor(scope: { deviceId: string; installationId?: string; workspaceId: string; userId: string },
-    catalog: (runtime: RuntimeIdentity) => { envelope: SignedRuntimeUpdate; version: string; size: number } | undefined, install = false, managedEnabled = true) {
-    await this.requireProof({ ...scope, method: install ? 'POST' : 'GET', path: '/api/me/executor' });
+    catalog: (runtime: RuntimeIdentity) => { envelope: SignedRuntimeUpdate; version: string; size: number } | undefined, install = false, managedEnabled = true, options?:LocalReadOnlyProbeOptions) {
+    if(install&&options)throw new Error('只读探测不能准备执行工具');
+    await this.requireProof({ ...scope, method: install ? 'POST' : 'GET', path: '/api/me/executor' },options);
     const socket = await this.ownedSocket(scope), state = this.states.get(socket)!;
     // Windows file tools are built into the authenticated launcher, not a Mac
     // Codex installation. Checking them must not require/download that catalog.
@@ -354,13 +383,9 @@ export class OneKeyPresence {
     if (this.sockets.get(scope.deviceId) !== socket || !state.authenticated) throw new OneKeyPresenceError('本机连接已变更，请重新检查');
     const requestId = uid('prep');
     if (install) state.executorPreparationError = undefined;
-    const response = new Promise<{ targetName?: string; output?: string }>((resolve, reject) => {
-      const timeout = setTimeout(() => { this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError('工具准备尚未返回；请重新检查状态，不会自动执行任务')); }, install ? 540_000 : 60_000);
-      this.pendingLocal.set(requestId, { deviceId: scope.deviceId, socket, taskId: 'device_settings', configuration: true, change: install, preparationPhase: install ? 'checking' : undefined, workspaceId: scope.workspaceId, userId: scope.userId, resolve, reject, timeout });
-      socket.send(JSON.stringify({ type: install ? 'executor_prepare' : 'executor_status', requestId, envelope: install ? release.envelope : undefined }), error => {
-        if (!error) return; clearTimeout(timeout); this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError('本机连接中断，请重新检查工具状态'));
-      });
-    });
+    options?.signal?.throwIfAborted();
+    const response=this.configurationResult(requestId,{deviceId:scope.deviceId,socket,taskId:'device_settings',configuration:true,change:install,preparationPhase:install?'checking':undefined,workspaceId:scope.workspaceId,userId:scope.userId},
+      {type:install?'executor_prepare':'executor_status',requestId,envelope:install?release.envelope:undefined},options?.timeoutMs??(install?540_000:60_000),'工具准备尚未返回；请重新检查状态，不会自动执行任务',options?.signal);
     if (install) {
       // Downloads may outlive an HTTP proxy timeout. Acknowledge dispatch now;
       // status polling checks the actual installed tool, never repeats install.
@@ -370,7 +395,7 @@ export class OneKeyPresence {
     const result = await response;
     // Status contains no executable path or gateway credentials.
     const installedVersion = validRuntimeVersion(result.output) ? result.output : undefined;
-    const installedSource = installedVersion && result.targetName === 'existing' ? 'existing' : installedVersion ? 'managed' : undefined;
+    const installedSource = installedVersion && result.targetName === 'existing' ? 'existing' as const : installedVersion ? 'managed' as const : undefined;
     return { available: true, preparing: false, version: release.version, size: release.size, installedVersion, installedSource,
       error: installedSource === 'existing' || installedVersion === release.version ? undefined : state.executorPreparationError };
   }

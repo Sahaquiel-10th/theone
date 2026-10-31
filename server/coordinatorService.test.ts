@@ -705,6 +705,10 @@ function fixture() {
       },
     },
   );
+  // This fixture represents an authenticated, ready synthetic device. Tests
+  // exercising missing/stale readiness pass their own probe explicitly.
+  const dispatch=service.dispatch.bind(service);
+  service.dispatch=(...args:Parameters<CoordinatorService['dispatch']>)=>{args[6]??=readyLocalProbe;return dispatch(...args);};
   return {
     store,
     service,
@@ -715,6 +719,92 @@ function fixture() {
   };
 }
 const key = async () => {};
+
+const readyLocalProbe=()=>Promise.resolve({checkedAt:new Date().toISOString(),ready:true,connected:true,
+  folder:{state:'ready' as const,targetName:'/QA/selected'},executor:{state:'ready' as const,installedVersion:'0.160.1',installedSource:'managed' as const},reason:'ready' as const});
+
+test('a local destination is not an execution command for explanations or status questions',async()=>{
+ for(const text of ['先解释一下这个方案，不执行。','现在怎么样了？']){
+  const f=fixture();let probes=0,starts=0;
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{contextMode:'adaptive',modelCall:async()=>answer('这条只说明当前情况，不会操作电脑。')});
+  const result=await service.dispatch(a,{...input('operation_local_destination_discuss',text),outputDestination:'local'} as any,key,undefined,async()=>{starts++;return{id:'must-not-start',status:'queued'};},undefined,async()=>{probes++;return readyLocalProbe();});
+  assert.equal(probes,0);assert.equal(starts,0);assert.equal(result.failure,undefined);assert.equal(result.taskIds.length,0);
+ }
+});
+
+test('a ready local destination normalizes an ordinary delegate to the real local entry exactly once',async()=>{
+ const f=fixture();let starts=0,probes=0,calls=0;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{contextMode:'adaptive',modelCall:async(_model,messages)=>{
+  calls++;assert.doesNotMatch(JSON.stringify(messages),/\/QA\/selected/);assert.match(JSON.stringify(messages),/沿用|复用/);assert.match(JSON.stringify(messages),/本机执行状态/);
+  if(messages.at(-1)?.role==='tool')return answer('查看实际任务进展。');
+  return {...answer(''),toolCalls:[{id:'local-through-delegate',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'本机合成说明',instruction:'在已授权文件夹创建说明.md，不覆盖',executorId:'general',featureIds:[]})}}]};
+ }});
+ const request={...input('operation_local_destination_once','创建一份说明文档'),outputDestination:'local'} as any;
+ const run=()=>service.dispatch(a,request,key,undefined,async()=>{starts++;return{id:'synthetic-local-execution',status:'queued'};},undefined,async()=>{probes++;return readyLocalProbe();});
+ const result=await run();assert.equal(result.taskIds.length,1);assert.equal(starts,1);assert.equal(result.failure,undefined);assert.ok(probes>=1);
+ const before=calls;assert.deepEqual((await run()).taskIds,result.taskIds);assert.equal(starts,1);assert.equal(calls,before);
+ await assert.rejects(()=>service.task(b,result.taskId!));
+});
+
+test('an explicit local request without a real handoff reports dispatch failure, not folder failure',async()=>{
+ const f=fixture();let starts=0;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{contextMode:'adaptive',modelCall:async()=>answer('本机设置请先检查一下。')});
+ const result=await service.dispatch(a,{...input('operation_local_no_handoff','创建一份说明文档'),localExecution:true},key,undefined,async()=>{starts++;return{id:'not-started',status:'queued'};},undefined,readyLocalProbe);
+ assert.equal(result.failure?.code,'dispatch_not_started');assert.equal(starts,0);assert.equal(result.taskIds.length,0);
+ assert.doesNotMatch(result.message.content,/没接上你的电脑|检查连接和工作文件夹/);
+});
+
+test('a fresh readiness failure before local invocation closes its prepared handoff without pretending it ran',async()=>{
+ for(const concurrentAcceptance of [false,true]){
+  const f=fixture();let probes=0,starts=0;
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{contextMode:'adaptive',modelCall:async()=>({...answer(''),toolCalls:[{id:'prepare-before-disconnect',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'合成说明',instruction:'仅创建说明.md',executorId:'general',featureIds:[]})}}]})});
+  const result=await service.dispatch(a,{...input(`operation_fresh_disconnect_${concurrentAcceptance}`,'创建说明文档'),outputDestination:'local'},key,undefined,async()=>{starts++;return{id:'must-not-start',status:'queued'};},undefined,async()=>{
+   probes++;
+   if(probes<3)return readyLocalProbe();
+   if(concurrentAcceptance)await f.store.mutate(d=>{const op=d.chatOperations!.find(o=>o.workRun)!;const stamp=new Date().toISOString();(d.executionTasks??=[]).push({...a,id:'concurrent-real-acceptance',conversationId:op.conversationId!,sourceMessageId:op.workRun!.inputMessageId,provider:'codex',status:'running',instruction:'same exact authorized handoff',deviceId:'synthetic-key',createdAt:stamp,updatedAt:stamp});});
+   return {checkedAt:new Date().toISOString(),ready:false,connected:false,folder:{state:'unknown'},executor:{state:'unknown'},reason:'offline'};
+  });
+  assert.equal(starts,0);assert.equal(result.taskIds.length,1);
+  const db=await f.store.read(),job=db.chatOperations!.find(o=>o.workRun)!;
+  if(concurrentAcceptance){assert.equal(job.workRun!.state,'prepared');assert.equal(result.failure?.outcome,'unknown');assert.equal(result.failure?.code,'transport_unknown');assert.equal(db.executionTasks[0].status,'running');}
+  else{assert.equal(job.workRun!.state,'failed');assert.equal(job.workRun!.failureCode,'task_local_not_started');assert.equal(result.failure?.code,'local_device_offline');assert.equal(result.failure?.outcome,'not_started');assert.equal((db.executionTasks??[]).length,0);}
+ }
+});
+
+test('first-time native folder selection is allowed, but a changed Key proof never starts local work',async()=>{
+ for(const changedKey of [false,true]){
+  const f=fixture();let starts=0,probes=0,keyValid=true;
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{contextMode:'adaptive',modelCall:async()=>({...answer(''),toolCalls:[{id:'local-first-folder',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'合成说明',instruction:'仅创建说明.md',executorId:'general',featureIds:[]})}}]})});
+  const run=()=>service.dispatch(a,{...input(`operation_first_folder_${changedKey}`,'创建说明文档'),outputDestination:'local'},async()=>{if(!keyValid)throw new OneKeyPresenceError('synthetic Key changed');},undefined,async()=>{starts++;return{id:'synthetic-native-picker',status:'selecting_target'};},undefined,async()=>{probes++;if(changedKey&&probes===2)keyValid=false;return{checkedAt:new Date().toISOString(),ready:false,connected:true,folder:{state:'unselected'},executor:{state:'ready',installedVersion:'0.160.1',installedSource:'managed'},reason:'folder_unselected'};});
+  if(changedKey){await assert.rejects(run);assert.equal(starts,0);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,0);}
+  else{const result=await run();assert.equal(starts,1);assert.equal(result.taskIds.length,1);assert.equal(result.failure,undefined);}
+ }
+});
+
+test('direct local replies retain a failed dispatch receipt instead of returning only the old task ID',async()=>{
+ const f=fixture(),stamp=new Date().toISOString();await f.store.mutate(d=>d.conversations.push({...a,id:'owned-direct-local',title:'本机说明',modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp}));let starts=0;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{contextMode:'adaptive',modelCall:async()=>answer('本机还没开始。')});
+ const result=await service.direct(a,'owned-direct-local',{...input('operation_direct_local_failed','创建说明文档'),outputDestination:'local'},key,async()=>{starts++;return{id:'not-started',status:'queued'};},readyLocalProbe);
+ assert.equal(result.status,'failed');assert.equal(result.failure?.code,'dispatch_not_started');assert.match(result.message!.content,/没把任务交出去/);assert.equal(starts,0);
+ await assert.rejects(()=>service.direct(b,'owned-direct-local',{...input('operation_direct_local_foreign','创建说明文档'),outputDestination:'local'},key,async()=>{starts++;return{id:'not-started',status:'queued'};},readyLocalProbe));assert.equal(starts,0);
+});
+
+test('HTTP local admission is explicit and a duplicate pending operation is never labelled unaccepted',async t=>{
+ const f=fixture();let starts=0,probes=0,modelCalls=0,release!:(result:ToolChatResult)=>void;
+ const pending=new Promise<ToolChatResult>(resolve=>{release=resolve;});
+ const app=express();app.use(express.json());const auth:express.RequestHandler=(req,res,next)=>{req.user={id:'a',role:'admin'} as any;req.workspaceId='wa';res.locals.requestId='synthetic_request_20261031';next();};
+ installCoordinatorRoutes(app,[auth],[auth],f.store,key,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{modelCall:async()=>{modelCalls++;return pending;},executeLocal:async()=>{starts++;return{id:'must-not-start',status:'queued'};},inspectLocalReadiness:async req=>{assert.equal(req.workspaceId,'wa');assert.equal(req.user!.id,'a');probes++;return {checkedAt:new Date().toISOString(),ready:false,connected:false,folder:{state:'unknown'},executor:{state:'unknown'},reason:'offline'};}});
+ const server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server.once('listening',resolve));t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));const address=server.address() as {port:number},base=`http://127.0.0.1:${address.port}/api/coordinator`;
+ const post=(value:unknown)=>fetch(`${base}/messages`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(value)});
+ const local=await post({...input('operation_http_local_rejected','创建说明文档'),outputDestination:'local'}),body=await local.json();
+ assert.equal(local.status,428);assert.equal(body.accepted,false);assert.equal(body.failure.code,'local_device_offline');assert.equal(body.failure.outcome,'not_started');assert.equal(body.requestId,'synthetic_request_20261031');assert.equal(starts,0);assert.equal(modelCalls,0);assert.equal((await f.store.read()).chatOperations!.length,0);
+ const attached=await post({...input('operation_http_attachment_rejected','把附件图片制作成Excel文件'),outputDestination:'local',attachmentIds:['synthetic-upload']});const attachedBody=await attached.json();assert.equal(attached.status,400);assert.equal(attachedBody.accepted,false);assert.equal(attachedBody.failure.code,'local_attachments_unsupported');assert.doesNotMatch(attachedBody.error,/没连上|404/);assert.equal(probes,1,'unsupported binary transfer must not probe or claim a directory fault');
+ const request=input('operation_http_pending_duplicate','你好');const accepted=await post(request);assert.equal(accepted.status,202);assert.equal((await accepted.json()).status,'pending');
+ const duplicate=await post(request),duplicateBody=await duplicate.json();assert.equal(duplicate.status,409);assert.notEqual(duplicateBody.accepted,false);assert.equal(duplicateBody.failure.outcome,'unknown');assert.equal(modelCalls,1);
+ assert.equal((await(await fetch(`${base}/messages/${request.operationId}`)).json()).status,'pending');
+ release(answer('合成回答'));await waitFor(async()=>(await f.store.read()).chatOperations!.find(o=>o.operationId===request.operationId)!.status==='completed');
+ const restored=await post(request);assert.equal(restored.status,200);assert.equal((await restored.json()).message.content,'合成回答');assert.equal(modelCalls,1);assert.equal(starts,0);
+});
 
 /** Full service-path fixture: only provider/model transports are synthetic.
  * Admission, workflow persistence, Notion ownership/readback, billing and HTML
@@ -1496,7 +1586,7 @@ test('on-demand task reading is private and local completion reporting is persis
 test('an execution click cannot be acknowledged as dispatched without a real local task', async () => {
  const f=fixture(); f.setRoute(()=>answer('已转达并开始执行。'));
  let runs=0;
- await assert.rejects(()=>f.service.dispatch(a,{...input('operation_false_local','修改网页标题'),localExecution:true},key,undefined,async()=>{runs++;return{id:'never',status:'queued'};}),/本机执行尚未开始/);
+ const result=await f.service.dispatch(a,{...input('operation_false_local','修改网页标题'),localExecution:true},key,undefined,async()=>{runs++;return{id:'never',status:'queued'};});assert.equal(result.failure?.code,'dispatch_not_started');
  assert.equal(runs,0);
  assert.equal(f.calls.find(c=>c.modelId==='router')!.requiredTool,'execute_local_task','an explicit execution click requires local routing, even with no feature, attachment or bound task');
  const db=await f.store.read();
@@ -1537,7 +1627,7 @@ test('explicit local execution can ask one controlled clarification without crea
 test('clarification accepts only its own question field and blocks any later delegation in the same request',async()=>{
  const invalid=fixture();let runs=0;
  invalid.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('已开始了。'):{...answer(''),toolCalls:[{id:'mixed-clarification',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({clarificationQuestion:'要改哪个？',taskId:null,title:'猜测任务',instruction:'未经确认的目标',executorId:'general'})}}]});
- await assert.rejects(()=>invalid.service.dispatch(a,{...input('operation_clarify_mixed_01','修改那个文件'),localExecution:true},key,undefined,async()=>{runs++;return{id:'bad',status:'running'};}),/本机执行尚未开始/);
+ const mixed=await invalid.service.dispatch(a,{...input('operation_clarify_mixed_01','修改那个文件'),localExecution:true},key,undefined,async()=>{runs++;return{id:'bad',status:'running'};});assert.equal(mixed.failure?.code,'dispatch_not_started');
  assert.equal(runs,0);assert.equal((await invalid.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
  const guarded=fixture();
  guarded.setRoute(()=>({...answer(''),toolCalls:[
@@ -1554,7 +1644,7 @@ test('cancelling an explicit local clarification rejects a late acknowledgement 
  const gate=new Promise<ToolChatResult>(resolve=>{release=resolve;});
  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{modelCall:async()=>step++===0?{...answer(''),toolCalls:[{id:'ask-before-cancel',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({clarificationQuestion:'你指的是哪个项目？'})}}]}:gate});
  const operationId='operation_clarify_cancel_01';
- const pending=service.dispatch(a,{...input(operationId,'改那个项目，开始'),localExecution:true},key,undefined,async()=>{runs++;return{id:'bad',status:'running'};});
+ const pending=service.dispatch(a,{...input(operationId,'改那个项目，开始'),localExecution:true},key,undefined,async()=>{runs++;return{id:'bad',status:'running'};},undefined,readyLocalProbe);
  const rejected=assert.rejects(pending,/已停止/);
  await waitFor(async()=>step===2);await assert.rejects(()=>service.cancel(b,operationId,key),/不存在/);await service.cancel(a,operationId,key);
  release(answer('你指的是哪个项目？'));await rejected;
@@ -1569,8 +1659,8 @@ test('explicit local routing forces only an enabled local tool and cannot enable
  await f.service.dispatch(a,{...input('operation_local_only_tool_01','创建独立测试文件'),localExecution:true},key,undefined,async()=>{runs++;return{id:'enabled-local',status:'queued'};});
  assert.equal(runs,1);assert.equal(f.calls[0].requiredTool,'execute_local_task');assert.deepEqual(f.calls[0].tools.map(t=>t.function.name),['execute_local_task']);
  const disabled=fixture();await disabled.store.mutate(d=>{d.settings.aiTasks!.coordinator!.published!.tools=[];});disabled.setRoute(()=>answer('没有可用分派工具。'));
- await assert.rejects(()=>disabled.service.dispatch(a,{...input('operation_local_no_tool_01','创建独立测试文件'),localExecution:true},key,undefined,async()=>{runs++;return{id:'disabled',status:'queued'};}),/本机执行尚未开始/);
- assert.equal(runs,1);assert.equal(disabled.calls[0].requiredTool,undefined);assert.deepEqual(disabled.calls[0].tools,[]);
+ await assert.rejects(()=>disabled.service.dispatch(a,{...input('operation_local_no_tool_01','创建独立测试文件'),localExecution:true},key,undefined,async()=>{runs++;return{id:'disabled',status:'queued'};}),error=>(error as {code?:string}).code==='local_tool_unavailable');
+ assert.equal(runs,1);assert.equal(disabled.calls.length,0,'disabled tools reject before any model request');
 });
 
 test('a pending local clarification rechecks Key and exact knowledge bindings through its save transaction',async()=>{
@@ -1580,7 +1670,7 @@ test('a pending local clarification rechecks Key and exact knowledge bindings th
   const gate=new Promise<ToolChatResult>(resolve=>{release=resolve;});
   const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{modelCall:async()=>step++===0?{...answer(''),toolCalls:[{id:'ask-sensitive',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({clarificationQuestion:`${marker}：你指的是哪个项目？`})}}]}:gate});
   const operationId=`operation_clarify_revoke_${change.replace('-','_')}`;
-  const pending=service.dispatch(a,{...input(operationId,'改那个项目，开工'),sourceIds:['clarify-source'],localExecution:true},async()=>{if(!keyValid)throw new OneKeyPresenceError('本机授权已失效');},undefined,async()=>{runs++;return{id:'bad',status:'running'};});
+  const pending=service.dispatch(a,{...input(operationId,'改那个项目，开工'),sourceIds:['clarify-source'],localExecution:true},async()=>{if(!keyValid)throw new OneKeyPresenceError('本机授权已失效');},undefined,async()=>{runs++;return{id:'bad',status:'running'};},undefined,readyLocalProbe);
   const rejected=assert.rejects(pending);
   await waitFor(async()=>step===2);
   if(change==='key')keyValid=false;
@@ -2892,7 +2982,7 @@ test('natural local batch dispatch obeys its tool switch before creating any chi
   });
   route();
   const local=async(cid:string)=>{localCalls++;assert.equal((await f.service.task(a,cid)).jobs[0].state,'prepared');return {id:`accepted-local-${localCalls}`,status:'queued'};};
-  await assert.rejects(()=>f.service.dispatch(a,input('operation_natural_local_off','安排文字和本机文件'),key,undefined,local),/未开启本机操作/);
+  await assert.rejects(()=>f.service.dispatch(a,input('operation_natural_local_off','安排文字和本机文件'),key,undefined,local),error=>(error as {code?:string}).code==='local_tool_unavailable');
   assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,0,'whole-plan authorization precedes the first text child');
   assert.equal(localCalls,0);
   expectedLocalCatalog=true;
@@ -2900,7 +2990,7 @@ test('natural local batch dispatch obeys its tool switch before creating any chi
   assert.equal(accepted.taskIds.length,2);assert.equal(localCalls,1);
   const before=(await f.store.read()).chatOperations!.filter(o=>o.workRun).length;
   expectedLocalCatalog=false;
-  await assert.rejects(()=>f.service.dispatch(a,input('operation_natural_still_off','下一句自然请求不能继承之前按钮权限'),key,undefined,local),/未开启本机操作/);
+  const denied=await f.service.dispatch(a,input('operation_natural_still_off','下一句自然请求不能继承之前按钮权限'),key,undefined,local);assert.equal(denied.failure?.code,'local_tool_invalid');
   assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,before);assert.equal(localCalls,1);
   await f.store.mutate(d=>{const stamp=new Date().toISOString();d.conversations.push({...b,id:'foreign-local-task',title:'别人本机文件',modelId:'worker',executorProfileId:profile.id,archived:false,messages:[],createdAt:stamp,updatedAt:stamp});});
   route([tasks[0],{...tasks[1],taskId:'foreign-local-task'}] as any);expectedLocalCatalog=true;
@@ -2909,7 +2999,7 @@ test('natural local batch dispatch obeys its tool switch before creating any chi
   assert.equal(localCalls,1);
   await f.store.mutate(d=>{d.settings.aiTasks!.coordinator!.published!.tools.push('execute_local_task');});
   expectedLocalCatalog=false;route();
-  await assert.rejects(()=>f.service.dispatch(a,input('operation_batch_no_connection','没有设备回调不能本机处理'),key),/本机执行未连接/);
+  await assert.rejects(()=>f.service.dispatch(a,input('operation_batch_no_connection','请在本机创建文件'),key),error=>(error as {code?:string}).code==='local_tool_unavailable');
   assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,before);
 });
 
@@ -2923,7 +3013,7 @@ test('batch saves all independent tasks before a failed local start and still co
   f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('本机还没确认开始，云端照常处理。'):{...answer(''),toolCalls:[{id:'batch-local-first',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks})}}]});
   f.setWorker(async messages=>{assert.match(messages.at(-1)!.content!,/CLOUD_ONLY/);assert.doesNotMatch(JSON.stringify(messages),/LOCAL_ONLY|SECOND_LOCAL/);return answer('茶暖了，歇一歇。');});
   let calls=0;
-  const accepted=await f.service.dispatch(a,input('operation_local_start_failure','两件本机文件和独立短文'),key,undefined,async()=>{
+  const accepted=await f.service.dispatch(a,input('operation_local_start_failure','创建两件本机文件，另外写一份独立短文'),key,undefined,async()=>{
     calls++;
     assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,3,'every child is durable before local startup');
     throw new Error('fixture-only device startup failure');

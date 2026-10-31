@@ -1,6 +1,8 @@
 import type {CoordinatorSubmission} from './useCoordinator';
+import {parseCoordinatorFailure,type CoordinatorFailure} from './coordinatorRecovery';
 
-export type CoordinatorDraft=CoordinatorSubmission&{createdAt:string;state:'pending'|'failed'|'missing'|'review'};
+type Rejection={failure:CoordinatorFailure;requestId?:string};
+export type CoordinatorDraft=CoordinatorSubmission&{createdAt:string;state:'pending'|'failed'|'missing'|'review';rejection?:Rejection};
 const MAX_AGE=7*24*60*60*1000;
 const storageKey=(userId:string,workspaceId:string)=>`one.coordinator-drafts.v1:${JSON.stringify([userId,workspaceId])}`;
 const memory=new Map<string,CoordinatorDraft[]>();
@@ -20,10 +22,12 @@ function clean(value:unknown,now:number):CoordinatorDraft|undefined {
   if(typeof draft.operationId!=='string'||!draft.operationId||draft.operationId.length>300||typeof draft.text!=='string'||draft.text.length>200000||!Number.isFinite(age)||age<0||age>MAX_AGE||!['pending','failed','missing','review'].includes(draft.state))return;
   if(draft.attachmentIds!==undefined&&!ids(draft.attachmentIds)||draft.featureIds!==undefined&&!ids(draft.featureIds))return;
   if(['modelId','boundTaskId'].some(key=>draft[key as 'modelId']!==undefined&&typeof draft[key as 'modelId']!=='string'))return;
-  if(draft.outputDestination!==undefined&&!['chat','notion'].includes(draft.outputDestination))return;
+  if(draft.outputDestination!==undefined&&!['chat','notion','local'].includes(draft.outputDestination))return;
   if(['localExecution','confirmedExternal','webSearch'].some(key=>draft[key as 'localExecution']!==undefined&&typeof draft[key as 'localExecution']!=='boolean'))return;
   if(draft.featureApprovals!==undefined&&(!Array.isArray(draft.featureApprovals)||draft.featureApprovals.length>100||draft.featureApprovals.some(item=>!item||typeof item.id!=='string'||typeof item.releaseId!=='string'||!Number.isFinite(item.version)||!Number.isFinite(item.multiplier))))return;
-  return{...coordinatorSubmissionPayload(draft),operationId:draft.operationId,createdAt:draft.createdAt,state:draft.state};
+  const failure=parseCoordinatorFailure(draft.rejection?.failure);
+  const rejection=draft.state==='failed'&&failure?.outcome==='not_started'?{failure,...(typeof draft.rejection?.requestId==='string'&&/^[A-Za-z0-9_-]{1,160}$/.test(draft.rejection.requestId)?{requestId:draft.rejection.requestId}:{})}:undefined;
+  return{...coordinatorSubmissionPayload(draft),operationId:draft.operationId,createdAt:draft.createdAt,state:draft.state,...(rejection?{rejection}:{})};
 }
 export function coordinatorDrafts(userId:string,workspaceId:string,now=Date.now()):CoordinatorDraft[] {
   const key=storageKey(userId,workspaceId);let stored:unknown;
@@ -41,7 +45,7 @@ export function saveCoordinatorDraft(userId:string,workspaceId:string,input:Coor
   if(draft)write(userId,workspaceId,[...values.filter(value=>value.operationId!==draft.operationId),draft].slice(-20));
 }
 export function forgetCoordinatorDraft(userId:string,workspaceId:string,operationId:string){write(userId,workspaceId,coordinatorDrafts(userId,workspaceId).filter(draft=>draft.operationId!==operationId));}
-export function markCoordinatorDraft(userId:string,workspaceId:string,operationId:string,state:CoordinatorDraft['state']){
+export function markCoordinatorDraft(userId:string,workspaceId:string,operationId:string,state:CoordinatorDraft['state'],rejection?:Rejection){
   const draft=coordinatorDrafts(userId,workspaceId).find(draft=>draft.operationId===operationId);
-  if(draft)saveCoordinatorDraft(userId,workspaceId,draft,state);
+  if(draft)saveCoordinatorDraft(userId,workspaceId,rejection?{...draft,rejection}:draft,state);
 }

@@ -19,7 +19,7 @@ export function announceSessionChange() {
   try { localStorage.setItem(SESSION_STORAGE_KEY, crypto.randomUUID()); } catch { /* Private-mode storage may be disabled. */ }
 }
 export class ApiError extends Error {
-  constructor(message: string, readonly requestId?: string, readonly status?: number, readonly code?: string, readonly retryable?: boolean, readonly failure?:CoordinatorFailure) { super(message); }
+  constructor(message: string, readonly requestId?: string, readonly status?: number, readonly code?: string, readonly retryable?: boolean, readonly failure?:CoordinatorFailure, readonly accepted?:boolean) { super(message); }
 }
 export function apiForUser(userId: string, workspaceId = expectedWorkspaceId) {
   const revision = identityRevision;
@@ -66,7 +66,7 @@ export async function api<T>(path: string, options: RequestInit = {}, ownerId?: 
     const ownedAuth=reviewedAuthFailure(path,response.status,fields),failure=parseCoordinatorFailure(fields.failure)??ownedAuth;
     const message=ownedAuth?(fields.code==='ONE_KEY_UPGRADE_REQUIRED'?'请更新 ONE Key 启动器，再从 U 盘双击 ONE 登录。':coordinatorRecoveryCopy(ownedAuth))
       :typeof fields.error==='string'?fields.error:(response.status === 504 ? "服务响应超时，请查看这条消息的处理结果" : `请求失败（${response.status}）`);
-    throw new ApiError(requestId ? `${message} · 编号 ${requestId}` : message, requestId, response.status, typeof fields.code==='string'?fields.code:undefined, typeof fields.retryable==='boolean'?fields.retryable:undefined,failure);
+    throw new ApiError(requestId ? `${message} · 编号 ${requestId}` : message, requestId, response.status, typeof fields.code==='string'?fields.code:undefined, typeof fields.retryable==='boolean'?fields.retryable:undefined,failure,typeof fields.accepted==='boolean'?fields.accepted:undefined);
   }
   if(invalidJson)throw new ApiError('服务返回的内容暂时无法核对，正在查看原结果。',response.headers.get('x-request-id')||undefined,response.status,'INVALID_RESPONSE',false,/^\/api\/coordinator\/messages(?:\/[^/?]+)?(?:\?|$)/.test(path)?{code:'invalid_receipt',stage:'receipt',outcome:'unknown'}:undefined);
   if(payload&&typeof payload==='object'&&!Array.isArray(payload)&&'failure' in fields)return{...fields,failure:parseCoordinatorFailure(fields.failure)} as T;

@@ -1,4 +1,12 @@
+import type {Database} from './types.js';
+
 export type PreparationScope = {workspaceId:string;userId:string;operationId:string};
+/** Re-read INSIDE the execution insert transaction: a compiler may have started before admission failed. */
+export function assertPreparedLocalExecutionActive(db:Pick<Database,'chatOperations'>,scope:{workspaceId:string;userId:string;conversationId:string;sourceMessageId:string}){
+ const stopped=db.chatOperations?.find(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.conversationId===scope.conversationId&&o.workRun?.inputMessageId===scope.sourceMessageId
+   &&(o.workRun.state==='cancelled'||o.workRun.failureCode==='task_local_not_started'));
+ if(stopped)throw new Error(stopped.workRun!.state==='cancelled'?'此任务已停止，未开始本机操作。':'此任务的本机准入未通过，未开始本机操作。不会自动重跑。');
+}
 /** Stop-before-start fence, scoped to the authenticated request. */
 export class ExecutionPreparationStops {
  private stops=new Map<string,number>();

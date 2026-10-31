@@ -62,11 +62,14 @@ import {captureFeatureHandoff,FeatureHandoff,FeatureArmedRim,pulseFeatureCompose
 import {featureSelectionTransition} from './featureHandoffMotion';
 import {ResultSignal} from './preview/ResultSignal';
 import {useWorkspacePreview} from './preview/useWorkspacePreview';
-import {useCoordinator} from './useCoordinator';
+import {useCoordinator,type CoordinatorSubmission} from './useCoordinator';
+import {coordinatorRestoredLocalIntent} from './coordinatorRestoredLocalIntent';
 import {executionHandoffOutcome} from './executionHandoff';
 import { useComposerFeatures } from "./ComposerFeatures";
 import { ComposerFeatureSuggestions } from './ComposerFeatureSuggestions';
 import { LocalDeviceSettings } from './LocalDeviceSettings';
+import {useLocalDeviceReadiness} from './useLocalDeviceReadiness';
+import {localReadinessStatus} from './localDeviceReadiness';
 import { DocumentDestinationPicker, NotionWritingSettings, NotionReceiptNotice, type DocumentDestination } from './DocumentDestination';
 import './preview/workspace-preview.css';
 import './task-transfer.css';
@@ -597,6 +600,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const demo = useWorkspacePreview();
   const api = useContext(PrivateApiContext);
   const coordinator = useCoordinator(api,user.id,!demo.enabled,user.access?.workspaceId??user.defaultWorkspaceId);
+  const localDevice=useLocalDeviceReadiness(api);
+  const localDeviceDescription=localReadinessStatus(localDevice.value,localDevice.status==='idle'||localDevice.status==='checking',localDevice.error).description;
   const preview = coordinator.enabled ? coordinator : demo;
   const [profile, setProfile] = useState<AccountProfile>(user.profile || { workspaceId: user.defaultWorkspaceId, displayName: "", onboarding: { knowledgeChoice: "pending" }, updatedAt: user.createdAt });
   const [handbookOffer,setHandbookOffer]=useState<OnboardingHandbookOffer>(),[handbookNotice,setHandbookNotice]=useState('');
@@ -820,6 +825,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   composeKeyRef.current = preview.enabled || composeNew || !activeId ? "new" : activeId;
   const currentDraftRef = useRef({ content, attachments: pendingAttachments });
   const coordinatorFailedDraft = useRef<{text:string;files:AttachmentSummary[];features:FeatureChoice[]}|null>(null);
+  const restoredCoordinatorSubmission=useRef<CoordinatorSubmission|null>(null);
   currentDraftRef.current = { content, attachments: pendingAttachments };
   useEffect(()=>{
     const receive=(event:Event)=>{
@@ -1058,14 +1064,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <button type="button" onClick={()=>void openLinkedTask(blockingLocal.conversationId)}>查看「{blockerTitle}」</button>
           <button type="button" onClick={()=>void loadLatestExecution(blockingLocal.conversationId,blockingLocal.id,true)}>检查本机状态</button>
           <button type="button" disabled={preparingExecution||Boolean(awaitingExecutionOperationId)} onClick={event=>void cancelExecution(event.currentTarget,blockingLocal)}>{blockerActive?'停止原操作':'再次请求停止原操作'}</button>
-        </>:<button type="button" disabled={preparingExecution||executionBusy||taskStatusUnavailable||loadingByConversation[id]} onClick={event=>void executeFromMessage(localInput,event.currentTarget,id)}>{preparingExecution&&preparingConversationId===id?'正在连接本机…':'开始本机任务'}</button>}
+        </>:<button type="button" disabled={preparingExecution||executionBusy||!localDevice.canRequestExecution||loadingByConversation[id]} onClick={event=>void executeFromMessage(localInput,event.currentTarget,id)}>{preparingExecution&&preparingConversationId===id?'正在连接本机…':'开始本机任务'}</button>}
       </section>;
     }
     const localRecovery=localNeedsAction?executionRecovery(local):undefined;
     if(local&&localRecovery)return <section className="task-recovery" role="status">
       <strong>{localRecovery.title}</strong><p>{localRecovery.message}</p>
       <button type="button" onClick={()=>{setSelectedExecutionId(local.id);setExpandedExecutionId(local.id);setRevealExecutionId(local.id);void loadLatestExecution(id,local.id);}}>查看本轮操作</button>
-      {localRecovery.canContinue?<button type="button" disabled={preparingExecution||executionBusy||taskStatusUnavailable} onClick={event=>void sendExecutionMessage(executionResumeInstruction,local,event.currentTarget,true)}>核对后继续这件事</button>:<>
+      {localRecovery.canContinue?<button type="button" disabled={preparingExecution||executionBusy||!localDevice.canRequestExecution} onClick={event=>void sendExecutionMessage(executionResumeInstruction,local,event.currentTarget,true)}>核对后继续这件事</button>:<>
         <button type="button" onClick={()=>void loadLatestExecution(id,local.id,true)}>检查本机状态</button>
         <button type="button" disabled={preparingExecution||Boolean(awaitingExecutionOperationId)} onClick={event=>void cancelExecution(event.currentTarget,local)}>再次请求停止原操作</button>
       </>}
@@ -1109,9 +1115,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const task = conversations.find(conversation => conversation.id === id);
     if (!task) throw new Error('这件事已不可用，请重新打开');
     const destination=thingDestinations[id]||'chat';
-    if (destination === 'local') { await executeDraft(text, document.getElementById('one-things-send')!, id); return; }
     if (coordinator.enabled && models.find(model => model.id === task.modelId)?.kind !== 'image') {
-      await coordinator.direct(id, text, [], destination === 'notion' ? 'notion' : 'chat');
+      await coordinator.direct(id, text, [], destination);
       return;
     }
     if (destination === 'notion') throw new Error('Notion 写入需要启用 ONE 持续对话');
@@ -1740,7 +1745,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         if(localExecution&&executionPreparationRef.current?.cancelled)return false;
         const submissionId=crypto.randomUUID();
         if(localExecution&&executionPreparationRef.current){executionPreparationRef.current.operationId=submissionId;executionPreparationRef.current.coordinator=true;}
-        const operationId = await coordinator.submit({operationId:submissionId,text,localExecution,outputDestination:localExecution?undefined:outputDestination==='notion'?'notion':'chat',modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),featureApprovals,confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
+        const operationId = await coordinator.submit({operationId:submissionId,text,localExecution,outputDestination:localExecution?undefined:outputDestination,modelId:draftModelId,attachmentIds:files.map(f=>f.id),featureIds:features.map(f=>f.id),featureApprovals,confirmedExternal,webSearch:canSearch,boundTaskId:coordinator.state.boundTask||undefined});
+        restoredCoordinatorSubmission.current=null;
         if (localExecution && !executionPreparationRef.current?.cancelled) setAwaitingExecutionOperationId(operationId);
         return true;
       }catch(err){setError(err instanceof Error?err.message:'暂时无法确认，请检查状态；不会重复执行');if(localExecution)throw err;}return false;
@@ -1867,8 +1873,13 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   async function send(event: FormEvent) {
     event.preventDefault();
-    if (composeMode === 'chat' && outputDestination === 'local') {
-      await executeDraft(content, document.getElementById('one-studio-send')!, coordinator.enabled ? undefined : targetConversation?.id); return;
+    // A destination is a preference for an eventual result, not permission to
+    // execute every follow-up question. Only the explicit execute button sets
+    // localExecution (or an exact user-restored retry); the coordinator
+    // classifies ordinary messages server-side.
+    if(restoredCoordinatorSubmission.current&&coordinatorRestoredLocalIntent(restoredCoordinatorSubmission.current,{text:content,outputDestination,modelId:draftModelId,boundTaskId:coordinator.state.boundTask||undefined,attachmentIds:pendingAttachments.map(file=>file.id),featureIds:featureForNext.map(feature=>feature.id),webSearch:canSearch})){
+      if(!localDevice.canRequestExecution){setError(localDeviceDescription);return;}
+      await executeDraft(content,document.getElementById('one-studio-send')!,coordinator.enabled?undefined:targetConversation?.id);return;
     }
     if (outputDestination === 'notion' && !coordinator.enabled) { setError('Notion 写入需要启用 ONE 持续对话，请管理员检查配置'); return; }
     if (preview.enabled) { await sendMessage(content); return; }
@@ -1967,7 +1978,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   async function executeFromMessage(message: Message, source?: HTMLElement | null, conversationId = active?.id) {
-    if (!conversationId || conversationId.startsWith("tmp_") || !message.id || preparingExecution || executionBusy || loadingByConversation[conversationId] || taskStatusUnavailable) return;
+    if (!conversationId || conversationId.startsWith("tmp_") || !message.id || preparingExecution || executionBusy || loadingByConversation[conversationId] || !localDevice.canRequestExecution) return;
     const origin = pointFromElement(source);
     const preparation={cancelled:false,operationId:undefined as string|undefined};executionPreparationRef.current=preparation;
     executionOriginRef.current = origin;
@@ -2000,7 +2011,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   async function executeDraft(rawText: string, source: HTMLElement, conversationId?: string) {
-    if (!rawText.trim() || preparingExecution || executionBusy || taskStatusUnavailable) return;
+    if (!rawText.trim() || preparingExecution || executionBusy || !localDevice.canRequestExecution) return;
     executionOriginRef.current = pointFromElement(source);
     const preparation={cancelled:false,operationId:undefined as string|undefined,coordinator:false};executionPreparationRef.current=preparation;
     if (!conversationId && coordinator.enabled) {
@@ -2033,7 +2044,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   async function sendExecutionMessage(rawText: string, targetTask = executionTask, source?: HTMLElement, preserveDraft = false) {
     const text = rawText.trim();
-    if (!targetTask || !executionCanContinue(targetTask) || !text || executionBusy || preparingExecution || taskStatusUnavailable) return;
+    if (!targetTask || !executionCanContinue(targetTask) || !text || executionBusy || preparingExecution || !localDevice.canRequestExecution) return;
     const originalDraftKey = composeKeyRef.current;
     const preparation={cancelled:false,operationId:crypto.randomUUID()};executionPreparationRef.current=preparation;
     const request=executionContinuationRequest(targetTask,preparation.operationId,text);
@@ -2233,12 +2244,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         onDraftChange={(id,text)=>setThingDrafts(previous=>({...previous,[id]:text}))}
         onExecuteDraft={thingDestination === 'notion' ? undefined : (id,text,source)=>executeDraft(text,source,id)}
         sendLabel={thingDestination === 'notion' ? '写到 Notion' : thingDestination === 'local' ? '本机执行' : '发送'}
-        destinationPicker={!demo.enabled ? <><NotionReceiptNotice key={thingId} api={api} taskId={thingId} receipt={notionReceiptForReview(coordinator.details[thingId]?.jobs||[])?.notionReceipt} reviewWorkflow={notionWorkflowNeedsReview(coordinator.details[thingId]?.jobs||[])} onRefresh={()=>coordinator.load(thingId,true)} /><DocumentDestinationPicker api={api} value={thingDestination} onChange={destination=>setThingDestinations(old=>({...old,[thingId]:destination}))} localDisabled={taskStatusUnavailable || executionBusy || preparingExecution} localDisabledHint={preparingExecution?'正在准备本机执行，请稍候':executionBusy?'本机任务结束后可保存':taskStatusUnavailable?'暂未确认本机连接，可到设置检查':undefined} onLocalSettings={()=>{setAccountSection('device');openSurface('account');}} onSettings={() => openSurface('knowledge')} /></> : undefined}
+        destinationPicker={!demo.enabled ? <><NotionReceiptNotice key={thingId} api={api} taskId={thingId} receipt={notionReceiptForReview(coordinator.details[thingId]?.jobs||[])?.notionReceipt} reviewWorkflow={notionWorkflowNeedsReview(coordinator.details[thingId]?.jobs||[])} onRefresh={()=>coordinator.load(thingId,true)} /><DocumentDestinationPicker api={api} value={thingDestination} onChange={destination=>setThingDestinations(old=>({...old,[thingId]:destination}))} localDisabled={!localDevice.canRequestExecution || executionBusy || preparingExecution} localDisabledHint={preparingExecution?'正在准备本机执行，请稍候':executionBusy?'本机任务结束后可保存':!localDevice.canRequestExecution?localDeviceDescription:undefined} onLocalSettings={()=>{setAccountSection('device');openSurface('account');}} onSettings={() => openSurface('knowledge')} /></> : undefined}
         onSelect={id=>void selectThing(id)} onSend={continueThing}
         onWorkbench={id=>{if(preview.enabled)closeWorkLayer();else void openConversation(conversations.find(item=>item.id===id)!);setResultLampOpen(false);}}
         onRemove={coordinator.enabled?removeCoordinatorTask:undefined}
         taskNotice={workflow?<><TaskWorkflowProgress key={thingId} workflow={workflow}/>{pauseNotice}</>:pauseNotice}
-        executionDisabled={taskStatusUnavailable || preparingExecution || executionBusy || Boolean(loadingByConversation[thingId])}
+        executionDisabled={!localDevice.canRequestExecution || preparingExecution || executionBusy || Boolean(loadingByConversation[thingId])}
         executionPreparing={preparingExecution && preparingConversationId===thingId}
         executionContent={preparingExecution && preparingConversationId===thingId || thingExecutionTask ? <ExecutionDisclosure
           key={thingExecutionTask?.id || "thing-preparing"} task={thingExecutionTask}
@@ -2249,7 +2260,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           onStop={source=>cancelExecution(source,thingExecutionTask)}
           onContinue={source=>void sendExecutionMessage(executionResumeInstruction,thingExecutionTask,source,true)}
           actorRole={user.role} onReconciled={rememberReconciledExecution}
-          continuationDisabled={preparingExecution||executionBusy||taskStatusUnavailable}
+          continuationDisabled={preparingExecution||executionBusy||!localDevice.canRequestExecution}
           onCheck={()=>{if(thingExecutionTask)void loadLatestExecution(thingExecutionTask.conversationId,thingExecutionTask.id,true);}} /> : null}
         hasMore={hasMoreConversations||(coordinator.enabled&&(coordinator.snapshot?.total??0)>coordinator.state.tasks.length)}
         onMore={()=>void loadMoreConversations()} loadingMore={loadingMoreConversations}/>;
@@ -2375,7 +2386,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
                         <MessageSources message={message} />
                         {!demo.enabled && message.id && active && !active.id.startsWith("tmp_") ? <BetaFeedbackControls key={message.id} messageId={message.id} requestId={message.requestId}
                           leading={<button type="button" title="复制回答" onClick={() => copyMarkdown(message.content)}><Copy size={14}/>复制</button>}
-                          moreActions={!message.imageUrl&&!/!\[[^\]]*\]\(/.test(message.content) ? <button type="button" className="execution-trigger" title={taskStatusUnavailable ? "正在确认本机状态" : executionBusy ? "本机正在工作，完成后可执行下一件" : "把这条回答交给本机执行"} disabled={taskStatusUnavailable || preparingExecution || executionBusy || activeLoading} onClick={(event) => executeFromMessage(message, event.currentTarget)}><Zap size={14}/>交给本机执行</button> : undefined}
+                          moreActions={!message.imageUrl&&!/!\[[^\]]*\]\(/.test(message.content) ? <button type="button" className="execution-trigger" title={!localDevice.canRequestExecution ? localDeviceDescription : executionBusy ? "本机正在工作，完成后可执行下一件" : "把这条回答交给本机执行"} disabled={!localDevice.canRequestExecution || preparingExecution || executionBusy || activeLoading} onClick={(event) => executeFromMessage(message, event.currentTarget)}><Zap size={14}/>交给本机执行</button> : undefined}
                           onSave={async input => (await api<{ feedback: import("./Onboarding").OwnBetaFeedback }>("/api/me/feedback", { method: "POST", body: JSON.stringify(input) })).feedback} /> : <div className="message-result-toolbar"><button type="button" onClick={() => copyMarkdown(message.content)}><Copy size={14}/>复制</button></div>}
                       </>
                     ) : (
@@ -2393,7 +2404,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             ))
           ) : <div className="studio-empty">{activeLoading ? "正在打开…" : failedTaskIds.has(activeId) ? "发送失败，草稿已保留。" : "发一条消息。"}</div>}
           {replyPending?<ResponseProgress key={`waiting:${activeId}:${latestTurnStart}`}/>:null}
-          {activePreparing || executionTask ? <ExecutionDisclosure key={executionTask?.id || "preparing"} task={executionTask} events={executionEvents} preparing={activePreparing} expanded={Boolean(executionTask && expandedExecutionId === executionTask.id)} onToggle={() => setExpandedExecutionId(expandedExecutionId === executionTask?.id ? "" : executionTask?.id || "")} onStop={source => cancelExecution(source)} onContinue={source=>void sendExecutionMessage(executionResumeInstruction,executionTask,source,true)} actorRole={user.role} onReconciled={rememberReconciledExecution} continuationDisabled={preparingExecution||executionBusy||taskStatusUnavailable} onCheck={()=>{if(executionTask)void loadLatestExecution(executionTask.conversationId,executionTask.id,true);}} /> : null}
+          {activePreparing || executionTask ? <ExecutionDisclosure key={executionTask?.id || "preparing"} task={executionTask} events={executionEvents} preparing={activePreparing} expanded={Boolean(executionTask && expandedExecutionId === executionTask.id)} onToggle={() => setExpandedExecutionId(expandedExecutionId === executionTask?.id ? "" : executionTask?.id || "")} onStop={source => cancelExecution(source)} onContinue={source=>void sendExecutionMessage(executionResumeInstruction,executionTask,source,true)} actorRole={user.role} onReconciled={rememberReconciledExecution} continuationDisabled={preparingExecution||executionBusy||!localDevice.canRequestExecution} onCheck={()=>{if(executionTask)void loadLatestExecution(executionTask.conversationId,executionTask.id,true);}} /> : null}
         </div>
       </section>
       )}
@@ -2425,6 +2436,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               if(draft.boundTaskId)await coordinator.load(draft.boundTaskId,true);
               if(currentDraftRef.current.content.trim())throw new Error('输入框已有新草稿，原话仍保留，请先处理当前草稿。');
               setContent(text);setPendingAttachments(files);setFeatureForNext(features);
+              restoredCoordinatorSubmission.current=draft.localExecution?draft:null;
               if(draft.modelId)setDraftModelId(draft.modelId);
               setWebSearch(Boolean(draft.webSearch));setOutputDestination(draft.localExecution?'local':draft.outputDestination??'chat');
               coordinator.dispatch({type:'bind',taskId:draft.boundTaskId??null});
@@ -2507,16 +2519,16 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               placeholder={composeMode === "execution" ? "补充要求" : currentModel?.kind === "image" ? "描述你想怎么改" : "告诉我，你想做什么"}
               rows={1}
             />
-            <button id="one-studio-send" className="primary send" type="submit" aria-label={composeMode === "execution" ? "发送并继续执行" : "发送消息"} title={targetLoading ? (preview.enabled ? "ONE 正在回复，可以先编辑下一条" : "这件事正在回复，可以新开一件事") : "发送消息"} disabled={uploadingAttachments || pendingAttachments.some(a => a.status && a.status !== "ready") || (composeMode === "execution" ? taskStatusUnavailable || preparingExecution || executionBusy || !content.trim() || pendingAttachments.length > 0 : !activeModelId || targetLoading || (!content.trim() && !pendingAttachments.length))}>
+            <button id="one-studio-send" className="primary send" type="submit" aria-label={composeMode === "execution" ? "发送并继续执行" : "发送消息"} title={targetLoading ? (preview.enabled ? "ONE 正在回复，可以先编辑下一条" : "这件事正在回复，可以新开一件事") : "发送消息"} disabled={uploadingAttachments || pendingAttachments.some(a => a.status && a.status !== "ready") || (composeMode === "execution" ? !localDevice.canRequestExecution || preparingExecution || executionBusy || !content.trim() || pendingAttachments.length > 0 : !activeModelId || targetLoading || (!content.trim() && !pendingAttachments.length))}>
               {composeMode === "execution" ? <Zap size={18} /> : <ArrowUp size={19} />}
             </button>
-            {composeMode==='chat' && !demo.enabled && outputDestination !== 'notion' && currentModel?.kind==='chat' ? <button type="button" className="composer-execute" aria-label="发送并执行本机任务" title="把当前要求和相关上下文交给本机执行" disabled={!content.trim()||targetLoading||uploadingAttachments||pendingAttachments.length>0||preparingExecution||executionBusy||taskStatusUnavailable} onClick={event=>void executeDraft(content,event.currentTarget,coordinator.enabled?undefined:targetConversation?.id)}><Zap size={16}/><span>本机执行</span></button> : null}
+            {composeMode==='chat' && !demo.enabled && outputDestination !== 'notion' && currentModel?.kind==='chat' ? <button type="button" className="composer-execute" aria-label="发送并执行本机任务" title="把当前要求和相关上下文交给本机执行" disabled={!content.trim()||targetLoading||uploadingAttachments||pendingAttachments.length>0||preparingExecution||executionBusy||!localDevice.canRequestExecution} onClick={event=>void executeDraft(content,event.currentTarget,coordinator.enabled?undefined:targetConversation?.id)}><Zap size={16}/><span>本机执行</span></button> : null}
           </div>
           </div>
           <div className="studio-compose-tools">
             <div className="studio-compose-tools-left">{preview.enabled && composeMode==="chat"?<button type="button" className="composer-add-feature" aria-label="添加下一条使用的功能" aria-expanded={featurePicker.isOpen} onClick={featurePicker.open}><Plus size={16}/><span>功能</span></button>:null}
             {canAttach && capabilities.attachments.enabled && composeMode === "chat" ? <label className="studio-attach" title="添加文件或图片"><Paperclip size={15} /><span>{uploadingAttachments ? "上传中" : "附件"}</span><input aria-label="添加附件" type="file" multiple accept={attachmentAccept} disabled={uploadingAttachments} onChange={event => { void uploadAttachments(event.target.files); event.target.value = ""; }} /></label> : <span />}</div>
-            {!demo.enabled && composeMode === 'chat' && currentModel?.kind === 'chat' ? <DocumentDestinationPicker api={api} value={outputDestination} onChange={setOutputDestination} localDisabled={taskStatusUnavailable || executionBusy || preparingExecution} localDisabledHint={preparingExecution?'正在准备本机执行，请稍候':executionBusy?'本机任务结束后可保存':taskStatusUnavailable?'暂未确认本机连接，可到设置检查':undefined} onLocalSettings={()=>{setAccountSection('device');openSurface('account');}} onSettings={() => openSurface('knowledge')} /> : null}
+            {!demo.enabled && composeMode === 'chat' && currentModel?.kind === 'chat' ? <DocumentDestinationPicker api={api} value={outputDestination} onChange={setOutputDestination} localDisabled={!localDevice.canRequestExecution || executionBusy || preparingExecution} localDisabledHint={preparingExecution?'正在准备本机执行，请稍候':executionBusy?'本机任务结束后可保存':!localDevice.canRequestExecution?localDeviceDescription:undefined} onLocalSettings={()=>{setAccountSection('device');openSurface('account');}} onSettings={() => openSurface('knowledge')} /> : null}
             <span className="studio-keyboard-hint">Enter 发送 · ⇧ Enter 换行</span>
           </div>
           <div className="studio-composer-status">
@@ -2549,7 +2561,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <header className="fluid-panel-heading"><h2>接管任务</h2><button type="button" aria-label="收起本机执行" onClick={()=>toggleFluidPanel('local')}><X size={15}/></button></header>
           <div className="fluid-panel-content" data-fluid-panel-content="local">
           <div className="fluid-runtime-notices">{renderRuntimeNotices()}</div>
-          {fluidLocalTask||preparingExecution||awaitingExecutionOperationId?<ExecutionDisclosure idPrefix="fluid-local" task={fluidLocalTask} events={fluidLocalTask?eventsByTask[fluidLocalTask.id]||[]:[]} preparing={preparingExecution||Boolean(awaitingExecutionOperationId)} expanded={true} onToggle={()=>toggleFluidPanel('local')} onStop={source=>void cancelExecution(source,fluidLocalTask)} onContinue={source=>void sendExecutionMessage(executionResumeInstruction,fluidLocalTask,source,true)} actorRole={user.role} onReconciled={rememberReconciledExecution} continuationDisabled={preparingExecution||executionBusy||taskStatusUnavailable} onCheck={()=>{if(fluidLocalTask)void loadLatestExecution(fluidLocalTask.conversationId,fluidLocalTask.id,true);}}/>:<LocalTaskEmptyState unavailable={taskStatusUnavailable} canExecute={composeMode==='chat'&&!demo.enabled&&outputDestination!=='notion'&&currentModel?.kind==='chat'} onCompose={()=>{focusFluid('main');requestAnimationFrame(()=>featurePicker.input.current?.focus({preventScroll:true}));}} onSettings={()=>{setAccountSection('device');openSurface('account');}} onRetry={()=>void refreshExecutionTasks()}/>}
+          {fluidLocalTask||preparingExecution||awaitingExecutionOperationId?<ExecutionDisclosure idPrefix="fluid-local" task={fluidLocalTask} events={fluidLocalTask?eventsByTask[fluidLocalTask.id]||[]:[]} preparing={preparingExecution||Boolean(awaitingExecutionOperationId)} expanded={true} onToggle={()=>toggleFluidPanel('local')} onStop={source=>void cancelExecution(source,fluidLocalTask)} onContinue={source=>void sendExecutionMessage(executionResumeInstruction,fluidLocalTask,source,true)} actorRole={user.role} onReconciled={rememberReconciledExecution} continuationDisabled={preparingExecution||executionBusy||!localDevice.canRequestExecution} onCheck={()=>{if(fluidLocalTask)void loadLatestExecution(fluidLocalTask.conversationId,fluidLocalTask.id,true);}}/>:<LocalTaskEmptyState unavailable={taskStatusUnavailable} canExecute={localDevice.canRequestExecution&&composeMode==='chat'&&!demo.enabled&&outputDestination!=='notion'&&currentModel?.kind==='chat'} onCompose={()=>{focusFluid('main');requestAnimationFrame(()=>featurePicker.input.current?.focus({preventScroll:true}));}} onSettings={()=>{setAccountSection('device');openSurface('account');}} onRetry={()=>void refreshExecutionTasks()}/>}
           {runningExecutions.length>1?<p className="fluid-queue-note">另有 {runningExecutions.length-1} 个任务等待这台电脑处理</p>:null}
                   </div>
         </section>

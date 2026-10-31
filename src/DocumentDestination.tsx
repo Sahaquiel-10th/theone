@@ -5,6 +5,8 @@ import type { api as Api } from './oneApi';
 import './document-destination.css';
 import {parseNotionPageLink} from './notionPageLink';
 import {notionVerificationPresentation,type NotionReceiptView} from './taskRecovery';
+import {useLocalDeviceReadiness} from './useLocalDeviceReadiness';
+import {localReadinessStatus} from './localDeviceReadiness';
 export type DocumentDestination = 'chat' | 'local' | 'notion';
 export function NotionReceiptNotice({ api, taskId, receipt, reviewWorkflow=false, onRefresh }: { api: typeof Api; taskId: string; receipt?: NotionReceiptView; reviewWorkflow?:boolean; onRefresh: () => Promise<unknown> }) {
   const [busy,setBusy]=useState(false),[notice,setNotice]=useState('');
@@ -21,7 +23,9 @@ const url = (id: string) => id ? `https://www.notion.so/${id}` : '';
 export function DocumentDestinationPicker({ api, value, onChange, localDisabled, localDisabledHint, onSettings, onLocalSettings }: {
   api: typeof Api; value: DocumentDestination; onChange: (value: DocumentDestination) => void; localDisabled: boolean; localDisabledHint?:string; onSettings: () => void; onLocalSettings?:()=>void;
 }) {
-  const [writing, setWriting] = useState<WritingSettings>(), [localReady, setLocalReady] = useState(false), [checking, setChecking] = useState(true);
+  const [writing, setWriting] = useState<WritingSettings>(), [checking, setChecking] = useState(true);
+  const local=useLocalDeviceReadiness(api),localReady=local.canRequestExecution;
+  const localStatus=localReadinessStatus(local.value,local.status==='checking'||local.status==='idle',local.error);
   const [open, setOpen] = useState(false);
   const [above, setAbove] = useState(true);
   const container = useRef<HTMLDivElement>(null);
@@ -36,10 +40,10 @@ export function DocumentDestinationPicker({ api, value, onChange, localDisabled,
   useEffect(() => {
     let alive = true;
     const load = async () => {
-      const [n, l] = await Promise.allSettled([api<WritingSettings>('/api/knowledge/connections/notion/writing'), api<{ installedVersion?: string; preparing?: boolean }>('/api/me/executor')]);
+      const [n] = await Promise.allSettled([api<WritingSettings>('/api/knowledge/connections/notion/writing')]);
       if (!alive) return;
       setWriting(n.status === 'fulfilled' ? n.value : undefined);
-      setLocalReady(l.status === 'fulfilled' && Boolean(l.value.installedVersion) && !l.value.preparing); setChecking(false);
+      setChecking(false);
     };
     void load(); window.addEventListener('focus', load); window.addEventListener('one-writing-settings', load);
     return () => { alive = false; window.removeEventListener('focus', load); window.removeEventListener('one-writing-settings', load); };
@@ -47,7 +51,7 @@ export function DocumentDestinationPicker({ api, value, onChange, localDisabled,
   const invalid = value === 'notion' ? !writing?.ready : value === 'local' ? !localReady || localDisabled : false;
   const options = [
     { id: 'chat' as const, label: '对话中', description: '在这里回复，不保存为文档', Icon: MessageCircle, disabled: false },
-    { id: 'local' as const, label: '本地文件', description: localDisabled&&localDisabledHint ? localDisabledHint : !localReady ? '先到本机设置准备执行工具' : localDisabled ? '本机执行暂不可用' : '保存到已授权的文件夹', Icon: Folder, disabled: !localReady || localDisabled },
+    { id: 'local' as const, label: '本地文件', description: localDisabled&&localDisabledHint ? localDisabledHint : !localReady ? localStatus.description : localDisabled ? '本机执行暂不可用' : local.value?.folder.state==='unselected' ? '第一次处理本地文件时，再选择工作文件夹' : '保存到已授权的文件夹', Icon: Folder, disabled: !localReady || localDisabled },
     ...(writing?.connected ? [{ id: 'notion' as const, label: 'Notion', description: !writing.writeAuthorized ? '需开启草稿写入' : !writing.ready ? '先选一次保存位置' : '新建草稿，续改同一篇', Icon: FileText, disabled: !writing.ready }] : []),
   ];
   const selected = options.find(option => option.id === value);
@@ -56,7 +60,7 @@ export function DocumentDestinationPicker({ api, value, onChange, localDisabled,
     <button ref={trigger} className={`destination-trigger ${value !== 'chat' ? 'is-selected' : ''}`} type="button" aria-label={`输出位置：${selected?.label || 'Notion'}`} aria-expanded={open} onClick={() => { setAbove((trigger.current?.getBoundingClientRect().top || 0) > 300); setOpen(previous => !previous); }}>
       <SelectedIcon size={14} aria-hidden="true" /><span>{selected?.label || 'Notion'}</span><ChevronDown size={12} aria-hidden="true" />
     </button>
-    {!checking && invalid ? <span className="destination-warning" role="status">保存位置不可用，请重新选择</span> : null}
+    {(value==='local'||!checking) && invalid ? <span className="destination-warning" role="status">{value==='local'?(localDisabled&&localDisabledHint?localDisabledHint:localStatus.description):'保存位置不可用，请重新选择'}</span> : null}
     {open ? <div className={`destination-menu ${above ? '' : 'opens-below'}`} aria-label="选择输出位置">
       <p className="destination-menu-title">这条消息的结果放在哪里？</p>
       {options.map(({ id, label, description, Icon, disabled }) => <button type="button" className="destination-option" key={id} disabled={disabled} aria-pressed={value === id} onClick={() => { onChange(id); setOpen(false); trigger.current?.focus(); }}>

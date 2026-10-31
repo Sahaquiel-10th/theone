@@ -142,6 +142,14 @@ test('a successful non-JSON reply is an invalid receipt, never an empty terminal
   });
 });
 
+test('an explicit unaccepted coordinator rejection keeps its receipt boundary without inferring it from status',async t=>{
+ const responses=[json({accepted:false,error:'not delegated',failure:{code:'dispatch_not_started',stage:'planning',outcome:'not_started'}},409),json({accepted:'false',error:'unknown'},409),json({error:'unknown'},428)];
+ browserFor(t,async()=>responses.shift()!);expectUser('user-a');
+ await assert.rejects(api('/api/coordinator/messages'),error=>error instanceof ApiError&&error.accepted===false&&error.failure?.outcome==='not_started');
+ await assert.rejects(api('/api/coordinator/messages'),error=>error instanceof ApiError&&error.accepted===undefined);
+ await assert.rejects(api('/api/coordinator/messages'),error=>error instanceof ApiError&&error.accepted===undefined);
+});
+
 test('HTTP failures safely project structured failure fields without retaining arbitrary diagnostics',async t=>{
   const responses=[json({error:'failed',failure:{code:'model_timeout',stage:'model',outcome:'not_started',apiKey:'SECRET'}},503),json({error:'failed',failure:{code:'unreviewed-secret',stage:'model',outcome:'failed'}},500),new Response(null,{status:204})];
   browserFor(t,async()=>responses.shift()!);expectUser('user-a');

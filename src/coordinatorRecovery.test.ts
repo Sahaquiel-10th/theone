@@ -26,8 +26,8 @@ test('cloud model and capability catalogs are not mistaken for a disconnected lo
  ]){
   const copy=coordinatorRecoveryCopy(reason);assert.doesNotMatch(copy,/没接上你的电脑|本机执行|检查工作区/,reason);
  }
- assert.match(coordinatorRecoveryCopy('本机执行未连接'),/没接上你的电脑.*本机执行/);
- assert.match(coordinatorRecoveryCopy('本机连接已断开'),/没接上你的电脑/);
+ assert.match(coordinatorRecoveryCopy('本机执行未连接'),/没连上当前电脑.*不用重选.*双击/);
+ assert.match(coordinatorRecoveryCopy('本机连接已断开'),/没连上当前电脑/);
 });
 
 test('Notion and knowledge failures keep their own next steps, not a local-folder prescription',()=>{

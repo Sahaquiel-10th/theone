@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {recoverCoordinatorSubmission,invalidCoordinatorReceipt} from './coordinatorSubmissionRecovery';
+import {recoverCoordinatorSubmission,invalidCoordinatorReceipt,unacceptedCoordinatorFailure} from './coordinatorSubmissionRecovery';
 import {isCoordinatorReceipt,type CoordinatorReceipt} from './coordinatorHistory';
 import {ApiError} from './oneApi';
 const reply={id:'reply',role:'assistant' as const,content:'saved result',createdAt:'2026-10-30T00:00:00Z'};
@@ -64,4 +64,10 @@ test('Key and account errors stay explicit while receipt outcome remains unknown
     f.input.unknown=value=>{failure=value;};await recoverCoordinatorSubmission(f.input);
     assert.deepEqual(failure,{code,stage:'receipt',outcome:'unknown'});assert.equal(f.known,undefined);
   }
+});
+
+test('only an explicit reviewed not-started rejection bypasses receipt recovery',()=>{
+ const failure={code:'local_attachments_unsupported' as const,stage:'accepting' as const,outcome:'not_started' as const};
+ assert.deepEqual(unacceptedCoordinatorFailure(new ApiError('rejected',undefined,428,'REJECTED',false,failure,false)),failure);
+ for(const value of [new ApiError('unknown',undefined,428,'REJECTED',false,failure),new ApiError('unknown',undefined,409,'REJECTED',false,{...failure,outcome:'unknown'},false),new ApiError('unknown',undefined,502,'REJECTED',false,failure,false),new ApiError('unknown',undefined,400,'REJECTED',false,undefined,false),new Error('not started')])assert.equal(unacceptedCoordinatorFailure(value),undefined);
 });

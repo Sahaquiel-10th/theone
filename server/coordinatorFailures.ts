@@ -7,6 +7,7 @@ import {FeatureConfigError} from './officialFeatures.js';
 import {ChatOperationError} from './chatOperations.js';
 import {BillingReviewRequiredError,ModelBillingError} from './modelBilling.js';
 import {PowerAvailabilityError} from './powerBilling.js';
+import {CoordinatorLocalError} from './coordinatorLocalPolicy.js';
 
 type FailureContext={stage?:CoordinatorFailureStage;outcome?:CoordinatorFailure['outcome']};
 const orchestrationCodes:Record<string,CoordinatorFailureCode>={
@@ -17,6 +18,7 @@ const orchestrationCodes:Record<string,CoordinatorFailureCode>={
 /** Only reviewed classifications are public; raw messages never enter a receipt. */
 export function classifyCoordinatorFailure(error:unknown,context:FailureContext={}):CoordinatorFailure {
   const make=(code:CoordinatorFailureCode,stage:CoordinatorFailureStage=context.stage??'planning'):CoordinatorFailure=>({code,stage,outcome:context.outcome??'unknown'});
+  if(error instanceof CoordinatorLocalError)return make(error.code,error.code==='dispatch_not_started'||error.code==='local_tool_invalid'?'planning':'tool');
   if(error instanceof ModelRequestError){
     const code=error.status===408||error.status===504?'model_timeout':error.status===401||error.status===403?'model_auth':error.status===429?'model_rate_limited':error.status>=400&&error.status<500?'model_request_rejected':'model_unavailable';
     return make(code,'model');
@@ -44,7 +46,9 @@ export function classifyCoordinatorFailure(error:unknown,context:FailureContext=
     if(/知识授权|来源授权|知识.*绑定.*变化/.test(reason))return make('source_authorization','tool');
     if(/Notion/i.test(reason))return make(/授权|权限|连接.*(?:过期|失效)|重新连接/.test(reason)?'notion_authorization':'notion_unconfirmed','saving');
     if(/知识来源|知识库|知识读取|得到大脑|得到笔记|资料来源/.test(reason))return make('source_unavailable','tool');
-    if(/本机执行尚未开始|本机.*(?:连接|工作区|文件夹)|电脑.*(?:连接|工作区|文件夹)|启动器/.test(reason))return make('local_unavailable','tool');
+    if(reason.startsWith('本机执行尚未开始：调度没有实际分派任务'))return make('dispatch_not_started','planning');
+    if(reason==='本机任务请使用 execute_local_task；仍需本机连接和目录授权。')return make('local_tool_invalid','planning');
+    if(reason==='本机执行未连接')return make('local_device_offline','tool');
     if(/ONE[ _-]*Key/.test(reason))return make('key_required','accepting');
     if(/账号或空间不可用|账号或个人空间不可用|账号或工作区不可用/.test(reason))return make('account_unavailable','accepting');
     if(/没有可用.*模型|执行器模型不可用|模型.*(?:未配置|已停用)|持续对话执行尚未启用|调度已停用/.test(reason))return make('model_unconfigured');

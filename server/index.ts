@@ -79,13 +79,14 @@ import { activateMembershipTrial, activateMembershipOnly } from "./memberships.j
 import { installMembershipRoutes } from "./membershipRoutes.js";
 import { installAdminPaymentRoutes, installPaymentCallback, installPaymentRoutes } from "./paymentRoutes.js";
 import { effectiveModel, publishPricing, cancelScheduledPricing, publicPrices } from "./modelPricing.js";
-import {ExecutionPreparationStops} from './executionPreparation.js';
+import {ExecutionPreparationStops,assertPreparedLocalExecutionActive} from './executionPreparation.js';
 import {workBatchBudget} from './executionBatchBudget.js';
 import {dependencyState,resolveWorkDependency} from './workDependencies.js';
 import { publicPayment } from "./payments.js";
 import { runtimeUpdateWasCompleted } from "./runtimeUpdate.js";
 import { codexGateway, managedExecutorDistribution } from "./runtime.js";
 import { installCodexGatewayRoutes } from "./codexGateway.js";
+import {assertLocalDeviceReadinessScope,createLocalDeviceReadiness,installLocalDeviceReadinessRoute,localDeviceReadinessScope} from './localDeviceReadiness.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
@@ -230,6 +231,14 @@ async function persistGeneratedImage(params: { imageUrl?: string; workspaceId: s
 }
 
 const keyAuth = [auth(jwtSecret), requireOneKeySession] as const;
+const localDeviceReadiness=createLocalDeviceReadiness({
+  authorize:async scope=>{const access=assertLocalDeviceReadinessScope(await store.read(),scope);return{busy:access.busy||oneKeyPresence.readinessBusy(scope.deviceId,scope.installationId)};},
+  connectionToken:scope=>oneKeyPresence.readinessConnectionToken(scope.deviceId,scope.installationId),
+  probeFolder:(scope,signal)=>oneKeyPresence.localConfiguration(scope,false,{signal,timeoutMs:5_000}),
+  probeExecutor:(scope,signal)=>oneKeyPresence.managedExecutor(scope,runtime=>managedExecutorDistribution.release(runtime),false,codexGateway.enabled(),{signal,timeoutMs:5_000}),
+});
+installLocalDeviceReadinessRoute(app,keyAuth,localDeviceReadiness);
+const inspectLocalReadiness=(req:express.Request,options?:{fresh?:boolean})=>localDeviceReadiness.inspect(localDeviceReadinessScope(req),options);
 installTeachingRoutes(app, keyAuth, store, { verifyKey: confirmKeyBeforeModel });
 installTeachingFileRoutes(app, keyAuth, store, uploadDir, attachmentService);
 installTeachingAiRoutes(app, keyAuth, store, { verifyKey: confirmKeyBeforeModel });
@@ -967,7 +976,7 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
     executionPreparationStops.assertActive(preparationScope);
     assertLocalExecutionAvailable(mutable, { workspaceId: scope.workspaceId, userId: scope.userId, deviceId: scope.deviceId!, installationId: scope.installationId });
     if(mutable.chatOperations?.some(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.operationId===requestOperationId&&o.executionCancelled))throw new Error('执行准备已停止');
-    if(prepared&&mutable.chatOperations?.some(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.conversationId===conversationId&&o.workRun?.inputMessageId===sourceMessageId&&o.workRun.state==='cancelled'))throw new Error('此任务已停止，未开始本机操作。');
+    if(prepared)assertPreparedLocalExecutionActive(mutable,{workspaceId:scope.workspaceId,userId:scope.userId,conversationId,sourceMessageId});
     mutable.executionTasks.push(task);
     const c = mutable.conversations.find(c => c.id === conversationId && c.workspaceId === req.workspaceId && c.userId === req.user!.id)!;
     const receipt = { id: uid("msg"), role: "assistant" as const, content: "本机执行已受理，正在连接执行器。结果确认后会在这里保留。", createdAt: timestamp };
@@ -1014,11 +1023,13 @@ app.post('/api/executions/:id/preview', ...keyAuth, asyncRoute(async (req, res) 
   res.json(await oneKeyPresence.staticPreview({deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, workspaceId: req.workspaceId!, userId: req.user!.id}, String(req.params.id), req.body.action, req.body.path));
 }));
 for (const method of ['get', 'post'] as const) app[method]('/api/me/executor', ...keyAuth, asyncRoute(async (req, res) => {
-  res.status(method === 'post' ? 202 : 200).json(await oneKeyPresence.managedExecutor({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, workspaceId: req.workspaceId!, userId: req.user!.id },
-    runtime => managedExecutorDistribution.release(runtime), method === 'post', codexGateway.enabled()));
+  try{res.status(method === 'post' ? 202 : 200).json(await oneKeyPresence.managedExecutor({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, workspaceId: req.workspaceId!, userId: req.user!.id },
+    runtime => managedExecutorDistribution.release(runtime), method === 'post', codexGateway.enabled()));}
+  finally{if(method==='post')localDeviceReadiness.invalidate(localDeviceReadinessScope(req));}
 }));
 app.post("/api/me/local-device", ...keyAuth, asyncRoute(async (req, res) => {
-  res.json(await oneKeyPresence.localConfiguration({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, workspaceId: req.workspaceId!, userId: req.user!.id }, true));
+  try{res.json(await oneKeyPresence.localConfiguration({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, workspaceId: req.workspaceId!, userId: req.user!.id }, true));}
+  finally{localDeviceReadiness.invalidate(localDeviceReadinessScope(req));}
 }));
 
 app.post("/api/executions/:id/messages", ...keyAuth, asyncRoute(async (req, res) => {
@@ -1080,7 +1091,7 @@ installPublicCommerceRoutes(app,keyAuth,admin,store);
 installProductMetricsRoutes(app,admin,store);
 installAiTaskRoutes(app, admin, store);
 installCapabilityRoutes(app,admin,store,{imageStorageAvailable:true});
-const coordinatorService=installCoordinatorRoutes(app,keyAuth,admin,store,confirmKeyBeforeModel,knowledgeService,{cancelLocal:stopLocalPreparation,notionDocuments,artifactDirectory:uploadDir,webSearch:publicWebSearch.search,
+const coordinatorService=installCoordinatorRoutes(app,keyAuth,admin,store,confirmKeyBeforeModel,knowledgeService,{cancelLocal:stopLocalPreparation,inspectLocalReadiness,notionDocuments,artifactDirectory:uploadDir,webSearch:publicWebSearch.search,
   executeLocal: async (req, res, cid, mid, operationId) => { const result = await startLocalExecution(req, res, cid, mid, operationId); return { id: result.task.id, status: result.task.status }; }});
 const attentionService=new AttentionService(store,knowledgeService,{
   connected:(deviceId,installationId)=>oneKeyPresence.isConnected(deviceId,installationId),
@@ -1090,9 +1101,8 @@ installAttentionRoutes(app,keyAuth,store,attentionService,confirmKeyBeforeModel)
 attentionService.start();
 installOnboardingProfileRoutes(app,keyAuth,store,{storageAvailable:Boolean(uploadDir),verifyKey:confirmKeyBeforeModel,
   inspectLocal:async req=>{
-    const scope={deviceId:req.oneKeyDeviceId!,installationId:req.oneKeyInstallationId,workspaceId:req.workspaceId!,userId:req.user!.id};
-    const [folder,executor]=await Promise.allSettled([oneKeyPresence.localConfiguration(scope,false),oneKeyPresence.managedExecutor(scope,runtime=>managedExecutorDistribution.release(runtime),false,codexGateway.enabled())]);
-    return {connected:folder.status==='fulfilled',folderSelected:folder.status==='fulfilled'&&!!folder.value.targetName,executorReady:executor.status==='fulfilled'&&'installedVersion' in executor.value&&!!executor.value.installedVersion,checkedAt:new Date().toISOString()};
+    const snapshot=await inspectLocalReadiness(req,{fresh:true});
+    return {connected:snapshot.connected,folderSelected:snapshot.folder.state==='ready',executorReady:snapshot.executor.state==='ready',checkedAt:snapshot.checkedAt};
   },
   enqueueImage:(scope,input,verify)=>coordinatorService.enqueueOnboardingImage(scope,input,verify),resume:(scope,verify)=>coordinatorService.resume(scope,verify)});
 installOfficialFeaturePilotRoutes(app, admin, store);

@@ -11,6 +11,7 @@ import {
 import {
   ChatOperationError,
   getChatOperationResult,
+  type ChatOperation,
 } from "./chatOperations.js";
 import type { FeatureRunDependencies } from "./featureRuns.js";
 import { FeatureConfigError } from './officialFeatures.js';
@@ -21,6 +22,8 @@ import type {ScopedPublicSearch} from './webSearch.js';
 import {classifyCoordinatorFailure} from './coordinatorFailures.js';
 import {coordinatorRecoveryCopy,parseCoordinatorFailure} from '../src/coordinatorRecovery.js';
 import {installOnboardingPracticeRoutes} from './onboardingPractice.js';
+import type {LocalDeviceReadiness} from '../src/localDeviceReadiness.js';
+import {CoordinatorLocalError} from './coordinatorLocalPolicy.js';
 export function installCoordinatorRoutes(
   app: Express,
   keyAuth: readonly RequestHandler[],
@@ -33,6 +36,7 @@ export function installCoordinatorRoutes(
     cancelLocal?: (req:express.Request,operationId:string)=>Promise<void>;
     webSearch?: ScopedPublicSearch;
     executeLocal?: (req: express.Request, res: express.Response, cid: string, mid: string, operationId: string) => Promise<{ id: string; status: string }>;
+    inspectLocalReadiness?: (req:express.Request,options?:{fresh?:boolean})=>Promise<LocalDeviceReadiness>;
   } = {},
 ) {
   // Trusted deployment flag only. Keep the verified legacy path available for
@@ -115,6 +119,7 @@ export function installCoordinatorRoutes(
           .json({ status: "pending", operationId: req.body.operationId }),
         deps.executeLocal ? (cid, mid, operationId) => deps.executeLocal!(req, res, cid, mid, operationId) : undefined,
         req.get('X-ONE-Time-Zone'),
+        deps.inspectLocalReadiness?options=>deps.inspectLocalReadiness!(req,options):undefined,
       );
       if (!res.headersSent) res.json({ status: "completed", ...result });
       void service.resume(s, verify).catch(() => {});
@@ -156,7 +161,9 @@ export function installCoordinatorRoutes(
         verify = () => verifyKey(req);
       res
         .status(202)
-        .json(await service.direct(s, String(req.params.id), req.body, verify));
+        .json(await service.direct(s, String(req.params.id), req.body, verify,
+          deps.executeLocal?(cid,mid,operationId)=>deps.executeLocal!(req,res,cid,mid,operationId):undefined,
+          deps.inspectLocalReadiness?options=>deps.inspectLocalReadiness!(req,options):undefined));
       void service.resume(s, verify).catch(() => {});
     }),
   );
@@ -260,14 +267,22 @@ export function installCoordinatorRoutes(
     }
     // A dispatch may already have recorded a more precise stage than this
     // HTTP boundary. Only the exact authenticated owner's operation is read.
-    const persisted=req.workspaceId&&req.user&&typeof req.body?.operationId==='string'
-      ? await store.read().then(db=>parseCoordinatorFailure(db.chatOperations?.find(o=>o.workspaceId===req.workspaceId&&o.userId===req.user!.id&&o.operationId===req.body.operationId&&o.requestId.startsWith('coord_'))?.failure)).catch(()=>undefined)
-      : undefined;
-    const failure=persisted??classifyCoordinatorFailure(e,{stage:req.method==='GET'?'receipt':'accepting',outcome:req.method==='GET'?'unknown':'not_started'});
+    let receiptChecked=false,ownedOperation:ChatOperation|undefined;
+    if(req.workspaceId&&req.user&&typeof req.body?.operationId==='string'){
+      try{
+        const database=await store.read();
+        ownedOperation=database.chatOperations?.find(o=>o.workspaceId===req.workspaceId&&o.userId===req.user!.id&&o.operationId===req.body.operationId);
+        receiptChecked=true;
+      }catch{/* A failed receipt lookup is uncertainty, never evidence of no admission. */}
+    }
+    const persisted=parseCoordinatorFailure(ownedOperation?.failure);
+    const failure=persisted??classifyCoordinatorFailure(e,{stage:req.method==='GET'?'receipt':'accepting',outcome:req.method==='GET'||!receiptChecked||ownedOperation?'unknown':'not_started'});
     const adminValidation=req.baseUrl==='/api/admin/executors'&&(e instanceof CoordinatorError||e instanceof ChatOperationError||e instanceof FeatureConfigError||e instanceof TaskResultInboxError||e instanceof ImageTaskConfigurationError);
-    const body={error:adminValidation?e.message:coordinatorRecoveryCopy(failure),failure};
+    const accepted=req.method==='POST'&&(req.path==='/messages'||/^\/tasks\/[^/]+\/messages$/.test(req.path))&&receiptChecked&&!ownedOperation?false:undefined;
+    const body={error:adminValidation?e.message:coordinatorRecoveryCopy(failure),failure,
+      ...(accepted===false?{accepted:false}:{}),requestId:res.locals.requestId};
     if(e instanceof ImageTaskConfigurationError){res.status(428).json(body);return;}
-    if (e instanceof CoordinatorError || e instanceof ChatOperationError || e instanceof FeatureConfigError || e instanceof TaskResultInboxError) {
+    if (e instanceof CoordinatorError || e instanceof CoordinatorLocalError || e instanceof ChatOperationError || e instanceof FeatureConfigError || e instanceof TaskResultInboxError) {
       res.status(e.status).json(body);
       return;
     }

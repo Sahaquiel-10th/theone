@@ -63,3 +63,11 @@ test('terminal replies use a fresh retry ID while partial and uncertain business
   markCoordinatorDraft(user,'workspace',operationId,'review');
   assert.equal(coordinatorDrafts(user,'workspace')[0].state,'review');
 });
+
+test('a rejected local request preserves its safe reason across reload without storing diagnostics or authorizing replay',t=>{
+ const values=storage(t),user=randomUUID(),input={...draft(),outputDestination:'local' as const};saveCoordinatorDraft(user,'workspace',input);
+ markCoordinatorDraft(user,'workspace',input.operationId,'failed',{failure:{code:'local_attachments_unsupported',stage:'accepting',outcome:'not_started'},requestId:'req-reviewed'});
+ const saved=coordinatorDrafts(user,'workspace')[0];assert.equal(saved.outputDestination,'local');assert.equal(saved.state,'failed');assert.equal(saved.rejection?.failure.code,'local_attachments_unsupported');assert.equal(saved.rejection.requestId,'req-reviewed');
+ const fresh=randomUUID();values.set(`one.coordinator-drafts.v1:${JSON.stringify([fresh,'workspace'])}`,JSON.stringify([{...saved,rejection:{...saved.rejection,raw:'SECRET',failure:{...saved.rejection.failure,token:'SECRET'}}}]));
+ const reloaded=coordinatorDrafts(fresh,'workspace')[0];assert.deepEqual(reloaded.rejection,saved.rejection);assert.ok(!JSON.stringify(reloaded).includes('SECRET'));
+});
