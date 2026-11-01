@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {CoordinatorService} from './coordinatorService.js';
 import {dispatchFixture,evalScope,evalAnswer} from '../scripts/eval/dispatchFixture.js';
-import {readCoordinatorContext,recentCoordinatorMessages,validateContextRead,initialCoordinatorToolNames,requiresCoordinatorDelivery,contextReadSchema} from './adaptiveCoordinator.js';
+import {readCoordinatorContext,recentCoordinatorMessages,validateContextRead,initialCoordinatorToolNames,requiresCoordinatorDelivery,contextReadSchema,needsTaskContext,compactTaskCandidates} from './adaptiveCoordinator.js';
 import {inputProfile} from './oneContext.js';
 import {mkdtemp,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -14,6 +14,15 @@ import {sourceBinding} from './publicSharing.js';
 const key=async()=>{};
 const call=(name:string,args:unknown)=>({...evalAnswer(''),toolCalls:[{id:`call-${name}`,type:'function' as const,function:{name,arguments:JSON.stringify(args)}}]});
 const knowledge={recallWithDiagnostics:async()=>{throw Error('knowledge must not be read');}};
+
+test('receipt-only questions load owned task reads immediately without a negated artifact delivery gate',()=>{
+ const actual='只核对“独立本机新任务 ONE-QA-LOCAL-1101-D”的最新执行回执，告诉我本轮是否已完成、B6 的最终数值记录是什么，以及 receipt.txt 是否被修改。这里只查现有记录，不重新执行，不创建或修改文件，不调用知识库或联网。不要重发或重做任何任务。';
+ assert.equal(needsTaskContext(actual),true);assert.equal(requiresCoordinatorDelivery(actual),false);
+ assert.deepEqual(compactTaskCandidates([{id:'current',title:'独立本机新任务 ONE-QA-LOCAL-1101-D',executorId:'general'}],actual),[{id:'current',title:'独立本机新任务 ONE-QA-LOCAL-1101-D',executorId:'general'}]);
+ assert.ok(initialCoordinatorToolNames({text:actual,available:['load_tools','read_task','search_tasks']}).includes('read_task'));
+ for(const bound of [undefined,'owned-task'])for(const value of ['不创建或修改文件。','不重新执行，不创建文件，不保存文档。','请解释“创建文件”这句话。','示例：生成一个报告。'])assert.equal(requiresCoordinatorDelivery(value,bound),false,value);
+ for(const value of ['只查原任务回执，然后修改本机Excel并保存文件。','不要创建旧文件，但生成新报告。','不创建或修改文件，但请生成一张图片。'])assert.equal(requiresCoordinatorDelivery(value),true,value);
+});
 
 test('paired weather fixture removes irrelevant task bodies without an extra model round or card',async()=>{
  const results=[];

@@ -51,3 +51,9 @@ test('do not create a duplicate task still permits an explicit same-task update,
  for(const value of ['不要新建任务','不要创建任务，只回答进度','只回答，不执行。继续同一件，不要新建任务。','不执行；不要创建任务，继续原任务。'])assert.deepEqual(coordinatorTaskIntent(value),{answerOnly:true,existingTaskOnly:false},value);
  for(const value of ['解释“不要新建任务，只继续同一件”这句话','示例：不要新建任务，只继续同一件','```text\n不要新建任务，只继续同一件\n```','> 不要新建任务，只继续同一件\n请解释这句话。'])assert.equal(coordinatorTaskIntent(value).existingTaskOnly,false,value);
 });
+
+test('an explicit existing-task receipt query is answer-only, while a subsequent requested edit remains an action',()=>{
+ const actual='只核对“独立本机新任务 ONE-QA-LOCAL-1101-D”的最新执行回执，告诉我本轮是否已完成、B6 的最终数值记录是什么，以及 receipt.txt 是否被修改。这里只查现有记录，不重新执行，不创建或修改文件，不调用知识库或联网。不要重发或重做任何任务。';
+ for(const value of [actual,'只查这个任务的现有执行回执，不创建或修改文件。','仅查看原任务状态与已保存的结果记录，不重新执行。','只核对最新回执，告诉我 receipt.txt 是否被修改。','只告诉我现有回执里是否已经修改B6、是否未创建文件。','只读取现有执行回执。','只看旧回执，不重新执行。\n```text\n修改本机Excel并保存。\n```','本机这轮最终回执现在是什么状态？请把已有结果告诉我。'])assert.deepEqual(coordinatorTaskIntent(value),{answerOnly:true,existingTaskOnly:false},value);
+ for(const value of ['只查原任务回执，然后修改本机Excel并保存。','先查现有任务回执，再保存到Notion。','只查现有任务记录，再把B6改成3200并保存。','只查原任务回执但创建一个说明文件。','只查原任务回执，然后实际回读本机文件。','只核对现有任务回执，然后读取本机文件。','不要只查回执，继续修改当前文件。','“只查现有回执，不创建或修改文件”是引文；请更新当前文档。','请实际回读本机文件检查B6，而非只看现有回执。','先查已有回执，确认没写入后再继续修改。','解释“只查原任务回执，不创建或修改文件”这句话。','示例：只查原任务回执，不创建或修改文件。','```text\n只查原任务回执，不创建或修改文件。\n```'])assert.equal(coordinatorTaskIntent(value).answerOnly,false,value);
+});

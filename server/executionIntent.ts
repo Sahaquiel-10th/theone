@@ -13,17 +13,38 @@ function currentRequest(text:string){
     .replace(/^\s*>.*$/gm,'')
     .replace(/“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|'[^'\n]*'|`[^`]*`/g,'');
 }
+
+/** Remove declined effects, not their whole clause: “不创建，但保存” still
+ * requests saving. Quoted/pasted instructions never supply an action here. */
+export function coordinatorPositiveRequest(text:string){
+  return currentRequest(text).replace(/(?<!不能|不得|并非|不是)(?:不要|不用|不必|不需要|无需|禁止|别|不)(?:再|重新|再次|另行|实际)?(?:创建|新建|生成|制作|修改|更新|编辑|写入|保存|导出|删除|安装|发送|发布|上传|下载|执行|运行|重跑|重发|重做|继续|回读)(?:(?:或|和|及|、)(?:创建|新建|生成|制作|修改|更新|编辑|写入|保存|导出|删除|安装|发送|发布|上传|下载|执行|运行|重跑|重发|重做|继续|回读))*/gu,'');
+}
+
+/** Read existing task metadata, never fresh files or a later requested edit.
+ * This only removes execution tools; every actual task read remains scoped. */
+export function existingTaskRecordReadRequested(text:string){
+  const request=currentRequest(text);
+  if(!/回执|(?:任务|事情).{0,12}(?:状态|进度|结果|记录)|(?:现有|已有).{0,8}记录/u.test(request))return false;
+  const readOnly=/(?:^|[，,。；;\n])\s*(?:这里|本轮|现在|这次)?\s*(?:请|先)?(?:只|仅)(?:核对|查询|查看|读取|查|读|看|告诉我|回答|说明)/u.test(request)
+    ||/回执[^。；;\n]{0,24}(?:什么状态|是什么|怎么样|是否|[吗么？?])/u.test(request);
+  if(!readOnly)return false;
+  const positive=coordinatorPositiveRequest(text)
+    .replace(/(?:执行|运行|修改|保存|生成|创建)(?:回执|记录|结果|状态|进度|历史|次数)|已(?:保存|创建|生成|修改|写入)的/gu,'')
+    .replace(/(?:是否|有没有|有无)(?:已经|已|曾经|曾|被|未|尚未)?(?:完成|创建|新建|生成|修改|更新|写入|保存|执行|运行)/gu,'');
+  if(/(?:读取|打开|访问|核对|检查)[^，,。；;\n]{0,24}(?:本机|本地|磁盘|文件)|(?:本机|本地|磁盘)[^，,。；;\n]{0,24}(?:读取|打开|访问)/u.test(positive))return false;
+  return !/创建|新建|生成|制作|修改|更新|编辑|改成|改为|做成|写入|保存|导出|删除|安装|发送|发布|上传|下载|执行|运行|重跑|重发|重做|继续|接着|开始|回读|(?:实际|重新|再次)(?:读取|核对)/u.test(positive);
+}
 /** A restriction on creating another task is not a ban on updating the
  * existing one. This classifies intent only; handlers still verify its ID. */
 export function existingTaskActionRequested(text:string,boundTaskId?:string){
   const request=currentRequest(text);
   if(discussionOnly(request)||/先讨论|先不做|先别做|怎么做|如何做|能不能做|是否可以|假设|举例/.test(request))return false;
-  const positive=request.replace(/(?:不要|不用|不必|不需要|别)[^，,。；;\n]{0,60}/g,'');
+  const positive=coordinatorPositiveRequest(text).replace(/(?:不要|不用|不必|不需要|别)[^，,。；;\n]{0,60}/g,'');
   return Boolean(boundTaskId&&/继续|接着|修改|更新|补充|补一句|补齐|完善|重写|删去|删除/.test(positive))
     ||/(?:继续|接着)(?:处理|完成|修改|写|做)?(?:同一(?:件|个)|这(?:件|个)|原(?:来|先)?(?:的)?(?:任务|事情)|已有(?:的)?(?:任务|事情))|(?:修改|更新|修订|编辑|删去|删除|完善|补充)(?:当前|已有|原来|原|这(?:篇|件|个))[^，,。；;\n]{0,12}(?:任务|事情|正文|原文|页面|草稿|文章)/.test(positive);
 }
 export function coordinatorTaskIntent(text:string,boundTaskId?:string){
-  const request=currentRequest(text),onlyAnswer=discussionOnly(request);
+  const request=currentRequest(text),onlyAnswer=discussionOnly(request)||existingTaskRecordReadRequested(text);
   const creationBan=/(?:不要|不用|无需|不必|不需要|禁止|别|不)(?:再|重新)?(?:创建|新建|另建|新开|分派|建)(?:一个|新的|独立)?(?:任务|事情)|(?:don't|do not)\s+create\s+(?:a\s+)?task/i.test(request);
   const existingTaskOnly=!onlyAnswer&&creationBan&&existingTaskActionRequested(request,boundTaskId);
   return {answerOnly:onlyAnswer||creationBan&&!existingTaskOnly,existingTaskOnly};

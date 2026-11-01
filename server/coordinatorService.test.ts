@@ -792,6 +792,94 @@ test('a normal-send local edit with a trailing report reads and modifies the sam
  await service.dispatch(a,request,key,undefined,run,undefined,readyLocalProbe,lifecycleDevice);assert.equal(starts,1);assert.equal(turns,2);assert.equal((await f.store.read()).conversations.filter(c=>!c.coordinatorMain).length,1);
 });
 
+test('the verbatim receipt-only follow-up reads the original local task in its first round without dispatching or billing a worker',async()=>{
+ const taskId='cnv_7c79a8fb127599f4c786',f=fixture(),stamp=new Date().toISOString();let turns=0,starts=0,probes=0;
+ const actual='只核对“独立本机新任务 ONE-QA-LOCAL-1101-D”的最新执行回执，告诉我本轮是否已完成、B6 的最终数值记录是什么，以及 receipt.txt 是否被修改。这里只查现有记录，不重新执行，不创建或修改文件，不调用知识库或联网。不要重发或重做任何任务。';
+ const receipt='本轮已完成：已原地修改 template.xlsx 并回读，B6 最终数值为 3200；receipt.txt 未被修改。';
+ await f.store.mutate(d=>{
+  d.conversations.push({...a,id:taskId,title:'独立本机新任务 ONE-QA-LOCAL-1101-D',modelId:'worker',executorProfileId:'general',messages:[{id:'original-local',role:'user',content:'只修改本次表格 B6，receipt.txt 不动。',createdAt:stamp},{id:'execution_receipt_current',role:'assistant',content:receipt,createdAt:stamp}],archived:false,createdAt:stamp,updatedAt:stamp});
+  d.messages.push({...a,id:'execution_receipt_current',conversationId:taskId,role:'assistant',content:receipt,createdAt:stamp});
+  (d.executionTasks??=[]).push({...a,...lifecycleDevice,id:'existing-completed-edit',conversationId:taskId,sourceMessageId:'original-local',provider:'codex',status:'completed',instruction:'只改原表格 B6',finalResponse:receipt,createdAt:stamp,updatedAt:stamp,terminalReceipt:{id:'existing-terminal',hash:'a'.repeat(64),attemptId:'existing-attempt',round:0,receivedAt:stamp,outcome:'completed',disposition:'accepted'}});
+  for(const [scope,id] of [[b,'foreign-workspace'],[{workspaceId:a.workspaceId,userId:b.userId},'foreign-user']] as const){
+   d.conversations.push({...scope,id,title:'PRIVATE_FOREIGN_TASK',modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp});
+   d.messages.push({...scope,id:`execution_receipt_${id}`,conversationId:id,role:'assistant',content:'PRIVATE_FOREIGN_RECEIPT',createdAt:stamp});
+  }
+ });
+ const original=await f.store.read(),service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('receipt-only never retrieves knowledge')},{contextMode:'adaptive',webSearch:async()=>assert.fail('receipt-only never searches the web'),modelCall:async(model,messages,tools)=>{
+  assert.equal(model.id,'router','no worker model is called');assert.doesNotMatch(JSON.stringify(messages),/PRIVATE_FOREIGN/);
+  assert.ok(tools.every(tool=>['search_tasks','read_task','read_context','load_tools'].includes(tool.function.name)),'only metadata/context tools are offered even with the public-search toggle enabled');
+  if(++turns===1){
+   assert.ok(tools.some(tool=>tool.function.name==='read_task'),'read_task is available before any load_tools round');
+   const catalog=JSON.parse(messages.find(message=>message.content?.startsWith('本轮授权参考：'))!.content!.slice('本轮授权参考：'.length));assert.ok(catalog.tasks.some((task:{id:string})=>task.id===taskId));
+   return{...answer(''),toolCalls:[{id:'read-latest-receipt',type:'function',function:{name:'read_task',arguments:JSON.stringify({taskId})}}]};
+  }
+  assert.equal(turns,2,'no action-repair or canned continuation round');const read=JSON.parse(messages.at(-1)!.content!);assert.equal(read.id,taskId);assert.match(JSON.stringify(read.executionReceipts),/3200.*receipt.txt 未被修改/);
+  return answer(receipt);
+ }});
+ const request={...input('operation_readonly_actual_receipt',actual),webSearch:true,outputDestination:'local' as const};
+ const result=await service.dispatch(a,request,key,undefined,async()=>{starts++;assert.fail('receipt-only must not execute');},undefined,async()=>{probes++;return readyLocalProbe();},lifecycleDevice);
+ assert.equal(result.failure,undefined);assert.equal(result.taskId,undefined);assert.deepEqual(result.taskIds,[]);assert.match(result.message.content,/3200/);assert.match(result.message.content,/receipt.txt 未被修改/);assert.doesNotMatch(result.message.content,/还没能开始|继续刚才/);assert.equal(starts,0);assert.equal(probes,0);assert.equal(turns,2);
+ await service.dispatch(a,request,key,undefined,async()=>assert.fail('receipt replay must not execute'));assert.equal(turns,2);
+ const db=await f.store.read();assert.deepEqual(db.executionTasks,original.executionTasks);assert.deepEqual(db.attachments,original.attachments);assert.equal(db.chatOperations!.filter(operation=>operation.workRun).length,0);assert.equal(db.modelUsageRecords.length,2);assert.ok(db.modelUsageRecords.every(row=>row.modelId==='router'&&row.activity==='coordinator'));
+ assert.deepEqual(db.conversations.find(task=>task.id===taskId),original.conversations.find(task=>task.id===taskId));
+});
+
+test('receipt-only task-detail questions never enqueue or clear an unknown local ending',async()=>{
+ for(const hold of [undefined,'command_unconfirmed'] as const){
+  const f=fixture(),stamp=new Date().toISOString(),taskId='receipt-detail',request='只查这件任务的现有执行回执，不重新执行，不创建或修改文件。';let starts=0,probes=0;
+  await f.store.mutate(d=>{
+   d.conversations.push({...a,id:taskId,title:'回执核对',modelId:'worker',executorProfileId:'general',workPaused:true,messages:[],archived:false,createdAt:stamp,updatedAt:stamp});
+   (d.executionTasks??=[]).push({...a,...lifecycleDevice,id:'existing-detail-local',conversationId:taskId,sourceMessageId:'original',provider:'codex',status:'completed',instruction:'原要求',finalResponse:'已完成原任务',executionSafetyHold:hold,createdAt:stamp,updatedAt:stamp});
+  });
+  const original=(await f.store.read()).executionTasks;
+  for(let n=0;n<2;n++)await f.service.direct(a,taskId,{operationId:'operation_receipt_detail_read',text:request,outputDestination:'local'},key,async()=>{starts++;assert.fail('status cannot start local');},async()=>{probes++;return readyLocalProbe();},lifecycleDevice);
+  const db=await f.store.read();assert.equal(starts,0);assert.equal(probes,0);assert.equal(f.calls.length,0);assert.equal(db.chatOperations!.filter(operation=>operation.workRun).length,0);assert.deepEqual(db.executionTasks,original);assert.equal(db.conversations.find(task=>task.id===taskId)!.messages.length,2,'idempotent read records one question and status answer');
+  if(hold)assert.match(db.conversations.find(task=>task.id===taskId)!.messages.at(-1)!.content,/结束情况还需要核对/);
+  await assert.rejects(()=>f.service.direct(b,taskId,{operationId:'operation_foreign_receipt_detail',text:request},key),/不存在|可用/);assert.equal((await f.store.read()).chatOperations!.length,1);
+ }
+});
+
+test('receipt-only loading cannot restore external search, knowledge or dispatch tools',async()=>{
+ const f=fixture();let turns=0;
+ await f.store.mutate(d=>d.knowledgeConnections.push({id:'connected-but-not-requested',workspaceId:a.workspaceId,provider:'getnote',status:'connected',clientId:'synthetic',createdAt:'now',updatedAt:'now'}));
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge')},{contextMode:'adaptive',webSearch:async()=>assert.fail('no web'),modelCall:async(_model,messages,tools)=>{
+  assert.ok(tools.every(tool=>['search_tasks','read_task','read_context','load_tools'].includes(tool.function.name)));
+  if(++turns===1)return{...answer(''),toolCalls:[{id:'forged-load',type:'function',function:{name:'load_tools',arguments:JSON.stringify({names:['web_search','knowledge_search','delegate_task','execute_local_task']})}}]};
+  assert.equal(turns,2);assert.equal(JSON.parse(messages.at(-1)!.content!).status,'rejected');return answer('这里只核对现有记录，没有重新执行。');
+ }});
+ const result=await service.dispatch(a,{...input('operation_receipt_reject_loader','只查询现有任务回执，不重新执行，不创建或修改文件，不调用知识库或联网。'),webSearch:true},key);
+ assert.equal(result.failure,undefined);assert.equal(result.taskIds.length,0);const db=await f.store.read();assert.equal(db.chatOperations!.filter(operation=>operation.workRun).length,0);assert.equal(db.modelUsageRecords.length,2);assert.ok(db.modelUsageRecords.every(row=>row.modelId==='router'));
+});
+
+test('a question about internet use recorded in an old receipt never requires a fresh public search',async()=>{
+ const f=fixture(),stamp=new Date().toISOString();let turns=0;
+ await f.store.mutate(d=>d.conversations.push({...a,id:'old-network-receipt',title:'旧任务回执',modelId:'worker',messages:[{id:'old-network-answer',role:'assistant',content:'已有回执记录：这轮没有联网搜索。',createdAt:stamp}],archived:false,createdAt:stamp,updatedAt:stamp}));
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge')},{contextMode:'adaptive',webSearch:async()=>assert.fail('the question concerns past activity, not a new search'),modelCall:async(_model,messages,tools)=>{
+  assert.ok(tools.every(tool=>['search_tasks','read_task','read_context','load_tools'].includes(tool.function.name)));
+  if(++turns===1)return{...answer(''),toolCalls:[{id:'read-past-network',type:'function',function:{name:'read_task',arguments:JSON.stringify({taskId:'old-network-receipt'})}}]};
+  assert.equal(turns,2,'no forced-public-search repair round');assert.match(messages.at(-1)!.content!,/这轮没有联网搜索/);return answer('现有回执记载：这轮没有联网搜索。');
+ }});
+ const result=await service.dispatch(a,{...input('operation_receipt_past_network','只查现有回执，告诉我是否联网搜索过。'),webSearch:true},key);
+ assert.equal(result.failure,undefined);assert.match(result.message.content,/没有联网搜索/);assert.deepEqual(result.taskIds,[]);assert.equal(turns,2);const db=await f.store.read();assert.equal(db.modelUsageRecords.length,2);assert.equal(db.chatOperations!.filter(operation=>operation.workRun).length,0);
+});
+
+test('receipt-only routing rejects forged execution and foreign reads while preserving unknown-effect protection',async()=>{
+ const f=fixture(),taskId='receipt-read-current',stamp=new Date().toISOString();let calls=0,starts=0;
+ await f.store.mutate(d=>{
+  d.conversations.push({...a,id:taskId,title:'当前回执',modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp},{...b,id:'receipt-read-foreign',title:'PRIVATE_FOREIGN_TASK',modelId:'worker',messages:[],archived:false,createdAt:stamp,updatedAt:stamp});
+  (d.executionTasks??=[]).push({...a,...lifecycleDevice,id:'unknown-local',conversationId:taskId,sourceMessageId:'original',provider:'codex',status:'completed',instruction:'原要求',executionSafetyHold:'command_unconfirmed',createdAt:stamp,updatedAt:stamp});
+ });
+ const original=await f.store.read(),service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge')},{contextMode:'adaptive',modelCall:async(_model,messages,tools)=>{
+  calls++;assert.doesNotMatch(JSON.stringify(messages),/PRIVATE_FOREIGN_TASK/);assert.ok(!tools.some(tool=>['delegate_task','delegate_tasks','execute_local_task','generate_image'].includes(tool.function.name)));
+  if(calls===1)return{...answer(''),toolCalls:[{id:'forged-write',type:'function',function:{name:'execute_local_task',arguments:JSON.stringify({taskId,title:'不应执行',instruction:'修改表格并保存',executorId:'general'})}}]};
+  if(calls===2){assert.equal(JSON.parse(messages.at(-1)!.content!).status,'rejected');return{...answer(''),toolCalls:[{id:'foreign-read',type:'function',function:{name:'read_task',arguments:JSON.stringify({taskId:'receipt-read-foreign'})}}]};}
+  assert.equal(calls,3);assert.equal(JSON.parse(messages.at(-1)!.content!).status,'not_found');return answer('未能读取其他任务；当前任务的结束情况还需要核对，没有重新执行。');
+ }});
+ const result=await service.dispatch(a,input('operation_receipt_reject_write','只查原任务的现有执行回执，不重新执行，不创建或修改文件。'),key,undefined,async()=>{starts++;assert.fail('never execute');},undefined,readyLocalProbe,lifecycleDevice);
+ assert.equal(result.failure,undefined);assert.equal(starts,0);assert.equal(calls,3);const db=await f.store.read();assert.equal(db.chatOperations!.filter(operation=>operation.workRun).length,0);assert.equal(db.executionTasks.length,1);
+ const {reportedToCoordinatorAt,reportMessageId,reportedRound,...execution}=db.executionTasks[0];assert.deepEqual(execution,original.executionTasks[0],'reporting may acknowledge an old result, but never changes its unknown-effect hold or execution evidence');
+});
+
 test('a rejected read_task ID, multiple IDs or a conflicting bound target never authorizes local continuation',async()=>{
  const taskId='cnv_7c79a8fb127599f4c786',foreignId='cnv_1234567890abcdefabcd',otherId='cnv_abcdef1234567890abcd',sameWorkspaceId='cnv_22222222222222222222',sameUserId='cnv_33333333333333333333';
  const cases:[Record<string,unknown>,boolean][]=[

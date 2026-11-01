@@ -165,3 +165,11 @@
 - 自动回主对话的内容包含已修改/已回读，但 shared `executionExplicitlyUnfinished` 将“未创建备份或临时文件”误判为未创建目标，把真实 completed 显示成 needs_input。最小展示修复只豁免明确正向产物结果后的完整、独立备份/临时文件分句；目标未创建、要求的备份缺失、混合目标列表、回读未完成/无法确认仍拦截。failed/cancelled/unknown 终态不升为成功，真实回执和历史错误汇报不改。
 - state 刷新按真实 receipt 重新推导同 ID notice，保留已落库的旧提示原文；最后只做正常只读结果核对，不重新执行已完成修改。此处等待最终发布/界面复核记录。
 - 展示修复独立5模块92/92通过。中断期间一轮全量的 runtime-update handoff fixture 断言失败后遗留监听连接，没有完整退出，保留失败日志 `/tmp/one-local-result-release-full-20261101.log`；不能记为通过。仅清理该测试进程组，给原 fixture 注册失败路径资源释放，断言/生产超时/权限均未改。原失败项独跑1/1通过；最终全量低并发2169项、2168通过、0失败、1既有skip，构建/类型检查/diff-check通过。最终日志 `/tmp/one-local-result-release-clean-full-20261101.log`、`/tmp/one-local-result-release-clean-build-20261101.log`。
+
+### 上线界面复核与主对话只读回执查询
+
+- `b214ba7e69acee18a74b1be441a6ef8e19da8a42` 已经原发布脚本测试/构建/切换通过；current精确该SHA、服务active，服务器2169项/2168通过/0失败/1跳过。自动收包取消后残留tar经精确命令核对再终止，确认旧进程退出后才备用发布；不并行。公开health正常，HTML引用 `index-DAorgrwQ.js`，JS SHA `ccdcd9d33639c502800df517d5ce0df487daa46c189930a17cce553eaea223bf` 与本地一致。
+- 空草稿后真实reload并打开原D：归入“已结束”，显示“本轮结果已返回”，不再给恢复入口；截图 `output/LOCAL-EXCEL-FINAL-DETAIL-20261101.jpg`。旧错误汇报正文未改；after Excel/receipt摘要再次核对不变。
+- 随后主对话明确只查现有回执、不创建修改文件，却被交付gate误当新任务。trace `ctx_a50a3fa3839f371da374c` 仅load_tools(read_task)，operation completed却被orchestrator兜底成“还没能开始”；不是模型超时，D executionCount仍2，未重写文件。裸“不创建或修改文件”中的效果词未剥离、较长metadata查询未归只答、初始任务上下文未识别回执，共同造成错误修复轮。
+- 最小修复让明确既有任务metadata查询只提供read_task/search_tasks/read_context/load_tools；loader不能恢复写/外搜/知识工具，残留联网偏好不强制一个不可用搜索。首轮提供真实任务定位卡与read工具，关闭此轮无关知识/外搜必需门。只读metadata与先查后改/保存、真实新文件回读分别判定；主对话与详情入口一致，读所有权和unknown-effect保护不变。
+- exact原句service回归读取原D并回答3200/receipt未改，0子任务/本机执行/工作模型费用；直接状态入口、跨owner、伪写tool、loader越界、unknown hold与同operation防重放均通过。定向5模块284/284，独审集中边界通过；最终全量2176项、2175通过、0失败、1既有skip，构建/TypeScript/diff-check通过，日志 `/tmp/one-local-record-release-full-20261101.log`、`/tmp/one-local-record-release-build-20261101.log`。此处等待该只读查询修复最终发布与原样真机复核，文件不再写。
