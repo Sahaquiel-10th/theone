@@ -24,6 +24,10 @@ test('same fully bound scope deduplicates inflight and caches for at most ten se
   const f=fixture({ttlMs:50_000});
   const results=await Promise.all([f.checker.inspect(scope),f.checker.inspect({...scope})]);
   assert.equal(results[0].ready,true);assert.deepEqual(f.calls,[1,1]);
+  assert.equal(results[0].validForMs,10_000);
+  f.advance(2000);assert.equal((await f.checker.inspect(scope)).validForMs,8000);
+  assert.equal((await f.checker.inspect(scope)).platform,'unknown');
+  assert.deepEqual((await f.checker.inspect(scope)).capabilities,{staticPreview:false,taskDirectoryBinding:false});
   results[0].folder.targetName='/mutated';assert.equal((await f.checker.inspect(scope)).folder.targetName,folder.targetName);
   f.advance(10_001);await f.checker.inspect(scope);assert.deepEqual(f.calls,[2,2]);
   await f.checker.inspect(scope,{fresh:true});assert.deepEqual(f.calls,[3,3]);
@@ -32,6 +36,16 @@ test('cache and inflight never cross workspace, user, device or installation bou
   const f=fixture();
   await Promise.all([scope,{...scope,workspaceId:'other'},{...scope,userId:'other'},{...scope,deviceId:'other'},{...scope,installationId:'b'.repeat(32)}].map(s=>f.checker.inspect(s)));
   assert.deepEqual(f.calls,[5,5]);
+});
+test('readiness uses relative cache lifetime starting after a slow probe, not a client/server wall-clock comparison',async()=>{
+  let now=1_800_000_000_000;
+  const token={},checker=createLocalDeviceReadiness({authorize:async()=>({busy:false}),connectionToken:()=>token,
+    now:()=>now,probeFolder:async()=>{now+=4900;return folder;},probeExecutor:async()=>executor,
+    metadata:()=>({platform:'macos',capabilities:{staticPreview:true,taskDirectoryBinding:true}})});
+  const first=await checker.inspect(scope);
+  assert.equal(first.validForMs,5000);assert.equal(first.platform,'macos');assert.equal(first.capabilities?.taskDirectoryBinding,true);
+  now+=1000;const cached=await checker.inspect(scope);
+  assert.equal(cached.validForMs,4000);assert.equal(cached.checkedAt,first.checkedAt);
 });
 test('disconnect, replacement socket, revocation and active work invalidate previous ready',async()=>{
   const f=fixture();assert.equal((await f.checker.inspect(scope)).ready,true);
@@ -53,6 +67,11 @@ test('missing folder, denied folder, unavailable folder and missing executor are
     {folder:async()=>folder,executor:async()=>({available:true}),reason:'executor_unprepared'},
     {folder:async()=>folder,executor:async()=>{throw Error('unexpected token secret=do-not-leak');},reason:'unknown'}];
   for(const c of cases){const f=fixture();f.setFolder(c.folder as any);f.setExecutor(c.executor as any);const result=await f.checker.inspect(scope);assert.equal(result.reason,c.reason);assert.equal(result.ready,false);assert.doesNotMatch(JSON.stringify(result),/secret|do-not-leak/);}
+});
+test('a successful installed-tool probe is not negated by a historical failed update',async()=>{
+ const f=fixture();f.setExecutor(async()=>({...executor,error:'上次更新被取消，原工具保留'}));
+ const result=await f.checker.inspect(scope,{fresh:true});assert.equal(result.ready,true);assert.equal(result.executor.installedVersion,executor.installedVersion);
+ assert.doesNotMatch(JSON.stringify(result),/上次更新/);
 });
 test('scope authorization checks exact owner, membership, active Key and valid computer before cache',()=>{
   const db:any={users:[{id:scope.userId,enabled:true}],workspaces:[{id:scope.workspaceId,status:'active'}],workspaceMembers:[{userId:scope.userId,workspaceId:scope.workspaceId,status:'active'}],oneKeyDevices:[{id:scope.deviceId,userId:scope.userId,workspaceId:scope.workspaceId,status:'active'}],executionTasks:[]};

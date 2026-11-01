@@ -12,6 +12,13 @@ export class OrchestrationToolError extends Error {
 }
 /** Reviewed parameter feedback only. Never wrap provider/auth errors in this class. */
 export class OrchestrationInputError extends Error { readonly code='TOOL_INPUT_REPAIR'; }
+/** Native, reviewed handlers only: this exact artifact attempt has not entered
+ * a saver. Never use this for provider/transport failures or partial saves. */
+export class OrchestrationEffectNotStartedError extends OrchestrationInputError {}
+const nativeEffectProofs=new WeakMap<OrchestrationEffectNotStartedError,object>();
+class OrchestrationArtifactBoundaryError extends Error {}
+/** Code-owned native handler boundary, never model arguments or persisted data. */
+export type OrchestrationInvocation={rejectBeforeEffect:(message:string)=>OrchestrationEffectNotStartedError};
 export type OrchestrationPartial = {kind:'body'|'tool_preamble';content:string;finishReason?:ModelFinishReason};
 export type OrchestrationFailureProgress = {partial?:OrchestrationPartial;completedTools:string[]};
 type ResponseFailureCode='task_empty_response'|'task_invalid_response'|'task_response_filtered'|'task_tool_instruction_incomplete';
@@ -44,6 +51,8 @@ function validModelResult(value:unknown):value is ToolChatResult{
 }
 /** Stable diagnostics for known local failures; never persist arbitrary exception text. */
 export function orchestrationFailureCode(error:unknown){
+  if(error instanceof OrchestrationEffectNotStartedError)return 'task_artifact_input_invalid';
+  if(error instanceof OrchestrationArtifactBoundaryError)return 'task_artifact_effect_unconfirmed';
   if(error instanceof OrchestrationResponseError)return error.code;
   if(error instanceof ModelRequestError)return `model_http_${Number.isInteger(error.status)?error.status:'unknown'}`;
   const codes:Record<string,string>={
@@ -61,7 +70,7 @@ export function orchestrationFailureCode(error:unknown){
 export type OrchestrationTool = { name: string; description?: string; label?:string; effect?:TaskStep['effect']; tolerateFailure?:boolean; cacheable?:boolean; run: (query: string) => Promise<unknown>;
   /** Opt-in for mutable external documents; artifacts retain delivery reuse. */
   checkpointReuse?:'arguments';checkpointScope?:string;
-  structured?: { schema: Record<string, unknown>; validate: (input: unknown) => unknown; effect?: (validatedInput: unknown) => TaskStep['effect']; run: (input: unknown) => Promise<unknown> } };
+  structured?: { schema: Record<string, unknown>; validate: (input: unknown) => unknown; effect?: (validatedInput: unknown) => TaskStep['effect']; run: (input: unknown,invocation?:OrchestrationInvocation) => Promise<unknown> } };
 export type OrchestrationResult={content:string;messages:ModelToolMessage[];trace:ExecutionTraceStep[];finishReason?:ModelFinishReason;requiredMissing:string[]};
 
 /** Sequential, bounded read-only execution. Handlers own scope and fresh authorization. */
@@ -112,6 +121,8 @@ export async function runTaskOrchestrator(input: {
   const repair=(step:number)=>{if(!corrections||step>=baseSteps+planning+2)return false;corrections--;steps=Math.min(baseSteps+planning+2,Math.max(steps,step+2));return true;};
   const cache = new Map<string, unknown>();
   const invalidCalls=new Set<string>();
+  const artifactInputFailures=new Map<string,string>();
+  const unresolvedArtifactInputs=new Map<string,string>();
   const readableBodies:{content:string;kind:OrchestrationPartial['kind']}[]=[];
   let lastReadableFinish:ModelFinishReason|undefined;
   const partial=():OrchestrationPartial|undefined=>readableBodies.length?{
@@ -124,6 +135,12 @@ export async function runTaskOrchestrator(input: {
     const readable=code==='task_response_filtered'?undefined:partial();
     const error=new OrchestrationResponseError(code,message,readable,finishReason);
     retainFailureProgress(error,{partial:readable,completedTools:[...satisfied]});return error;
+  };
+  const rejectUncreatedArtifact=()=>{
+    const message=unresolvedArtifactInputs.values().next().value;
+    if(!message)return;
+    const error=new OrchestrationEffectNotStartedError(message);
+    retainFailureProgress(error,{partial:partial(),completedTools:[...satisfied]});throw error;
   };
   for (let step = 1; step <= steps; step++) {
     await input.beforeStep();
@@ -153,6 +170,7 @@ export async function runTaskOrchestrator(input: {
       if(action&&repair(step)){messages.push({role:'assistant',content:result.content},{role:'system',content:action});continue;}
       if(action)return {content:'这件事还没能开始，我把你的要求留着了。可以说“继续刚才那件事”，我会先核对进展，再安排没做的部分。',messages,trace,finishReason:result.finishReason,requiredMissing:missing()};
       if(missing().length&&step<steps){messages.push({role:'assistant',content:result.content},{role:'system',content:`本任务还有必须实际完成的步骤：${missing().join('、')}。请调用对应工具；已有结果可复用。不可用时如实返回未完成部分，不能只用文字声称已经调用。`});continue;}
+      rejectUncreatedArtifact();
       return { content: result.content, messages, trace, finishReason: result.finishReason,requiredMissing:missing() };
     }
     if (step === steps) throw new Error("已达到调度步骤上限，未完成任务；请缩小问题范围");
@@ -181,11 +199,12 @@ export async function runTaskOrchestrator(input: {
         // validator/provider exceptions can contain credentials or user data.
         if (tool && error instanceof OrchestrationInputError) inputRepair = error.message.slice(0,1000);
       }
-      let output: unknown; let status = "rejected"; const started = Date.now();
+      let output: unknown; let completedEffect:TaskStep['effect']|undefined; let status = "rejected"; const started = Date.now();
       const signature=JSON.stringify([call.function.name,call.function.arguments]);
       if(invalidCalls.has(signature)){
         const requestedTool=/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(call.function.name)?call.function.name:'invalid_name';
         trace.push({step,tool:tool?.name??'unavailable',requestedTool,failureCode:tool?'TOOL_INPUT_REPAIR':'TOOL_NOT_OFFERED',status:'rejected',resultPreview:JSON.stringify({status:'rejected',code:tool?'TOOL_INPUT_REPAIR':'TOOL_NOT_OFFERED'}),durationMs:0});input.onTrace?.(structuredClone(trace));
+        if(artifactInputFailures.has(signature))throw new OrchestrationEffectNotStartedError(artifactInputFailures.get(signature));
         throw new OrchestrationInputError('这一步的功能还没能正确接上，要求已保留；可以稍后继续，不会重复执行已有成果。');
       }
       if (!tool || !query) {
@@ -202,7 +221,7 @@ export async function runTaskOrchestrator(input: {
         status='returned';
         const key = JSON.stringify([tool.name, query]);
         const durableKey=taskStepKey(checkpoints?.namespace??'',tool.name,query);
-        const effect=tool.structured?.effect?.(structuredArgs)??tool.effect??'read';
+        const effect=tool.structured?.effect?.(structuredArgs)??tool.effect??'read';completedEffect=effect;
         if(checkpoints?.steps.some(s=>s.namespace===checkpoints.namespace&&s.tool===tool.name&&s.state==='started'&&['artifact','external_write'].includes(s.effect)))throw new Error('上次保存的结果还没确认，请先查看已有文件；不会重复写入。');
         const previous=(tool.checkpointReuse!=='arguments'?checkpoints?.steps.find(s=>s.namespace===checkpoints.namespace&&sameScope(s,tool)&&s.state==='completed'&&toolSucceeded(s.output)&&s.tool===tool.name&&((effect==='artifact'||effect==='external_write')&&s.effect===effect||checkpoints.namespace==='worker'&&/^feature_\d+$/.test(tool.name))):undefined)??checkpoints?.steps.find(s=>s.key===durableKey&&s.namespace===checkpoints.namespace&&s.tool===tool.name&&sameScope(s,tool));
         if(previous?.state==='started'&&['artifact','external_write'].includes(previous.effect))throw new Error('上次保存的结果还没确认，请先查看已有文件；不会重复写入。');
@@ -216,9 +235,11 @@ export async function runTaskOrchestrator(input: {
           if(checkpoints){if(checkpoints.steps.length>=64&&!previous)throw new Error('这件事的步骤较多，先保留已有结果，请分批继续。');await checkpoints.save(checkpoint);}
           // Handler errors propagate: do not disguise revoked authorization as no matches.
           let handlerReturned=false;
+          const attempt={};
+          const invocation:OrchestrationInvocation={rejectBeforeEffect:message=>{const error=new OrchestrationEffectNotStartedError(message);nativeEffectProofs.set(error,attempt);return error;}};
           try {
             input.onStage?.('tool', tool.name);
-            output = tool.structured ? await tool.structured.run(structuredArgs) : await tool.run(query);
+            output = tool.structured ? await tool.structured.run(structuredArgs,invocation) : await tool.run(query);
             handlerReturned=true;
             input.onStage?.('tool_returned', tool.name);
             if(checkpoints){const encoded=JSON.stringify(output??null);if(encoded.length>200000)throw new Error('这一步结果较大，已停止后续操作，请先查看已有成果。');await checkpoints.save({...checkpoint,state:toolSucceeded(output)?'completed':'failed',output,updatedAt:new Date().toISOString()});}
@@ -227,9 +248,15 @@ export async function runTaskOrchestrator(input: {
             // Re-check cancellation and grants before treating a provider error
             // as a recoverable step. Authorization failures always abort.
             await input.beforeStep();
-            if(checkpoints&&!['artifact','external_write'].includes(checkpoint.effect))await checkpoints.save({...checkpoint,state:'failed',updatedAt:new Date().toISOString()});
-            if(error instanceof OrchestrationInputError&&input.maxCorrections){
-              invalidCalls.add(signature);repair(step);output={status:'rejected',code:error.code,message:error.message};status='rejected';
+            const nativeProof=error instanceof OrchestrationEffectNotStartedError&&nativeEffectProofs.get(error)===attempt;
+            // A nested runner's final input failure describes one child, not
+            // every effect of its parent. Do not release the parent's write
+            // checkpoint or repair/rebuy the whole feature on that evidence.
+            if(error instanceof OrchestrationEffectNotStartedError&&!nativeProof){const progress=orchestrationFailureProgress(error);error=new OrchestrationArtifactBoundaryError('这次功能还有未完成的文件步骤；已有成果会保留，请先核对成果，再处理缺少的文件。');if(progress)retainFailureProgress(error,progress);}
+            const artifactNotStarted=checkpoint.effect==='artifact'&&nativeProof;
+            if(checkpoints&&(!['artifact','external_write'].includes(checkpoint.effect)||artifactNotStarted))await checkpoints.save({...checkpoint,state:'failed',...(artifactNotStarted&&error instanceof Error?{output:{status:'failed',code:'ARTIFACT_NOT_CREATED',message:error.message}}:{}),updatedAt:new Date().toISOString()});
+            if(error instanceof OrchestrationInputError&&(input.maxCorrections||artifactNotStarted)){
+              invalidCalls.add(signature);if(artifactNotStarted){artifactInputFailures.set(signature,error.message);unresolvedArtifactInputs.set(tool.name,error.message);}repair(step);output={status:'rejected',code:error.code,message:error.message,...(artifactNotStarted?{artifactNotCreated:true}:{})};status='rejected';
             }else{
             trace.push({ step, tool: tool.name, status: "failed", query,
               resultPreview: JSON.stringify({ status: "failed", code: error instanceof OrchestrationToolError ? error.code : orchestrationFailureCode(error)??"TOOL_EXECUTION_FAILED" }),
@@ -242,14 +269,14 @@ export async function runTaskOrchestrator(input: {
           if(tool.cacheable!==false&&status!=='rejected')cache.set(key, output); if(status!=='rejected')status = "returned";
         }
       }
-      if(tool&&status!=='rejected'&&toolSucceeded(output)){satisfied.add(tool.name);if(status!=='reused')invalidCalls.clear();}
+      if(tool&&status!=='rejected'&&toolSucceeded(output)){satisfied.add(tool.name);if(completedEffect==='artifact')unresolvedArtifactInputs.delete(tool.name);if(status!=='reused')invalidCalls.clear();}
       const serialized = JSON.stringify(output??null);
       trace.push({ step, tool: tool?.name ?? "unavailable",...(status==='rejected'?{requestedTool:/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(call.function.name)?call.function.name:'invalid_name',failureCode:tool?'TOOL_INPUT_REPAIR' as const:'TOOL_NOT_OFFERED' as const}:{}), status: status as ExecutionTraceStep["status"], query, resultPreview: serialized.length > 12000 ? `${serialized.slice(0, 12000)}…` : serialized, durationMs: Date.now() - started });
       input.onTrace?.(structuredClone(trace));
       messages.push({ role: "tool", tool_call_id: call.id, content: serialized.length > 28000 ? JSON.stringify({ status: "truncated", excerpt: serialized.slice(0, 27000) }) : serialized });
     }
     const receipt=input.entryPoint==='workspace'&&!missing().length?input.completeAfterTools?.():undefined;
-    if(receipt)return {content:receipt,messages,trace,finishReason:'stop' as const,requiredMissing:[]};
+    if(receipt){rejectUncreatedArtifact();return {content:receipt,messages,trace,finishReason:'stop' as const,requiredMissing:[]};}
   }
-  throw new Error("调度未完成");
+  rejectUncreatedArtifact();throw new Error("调度未完成");
 }

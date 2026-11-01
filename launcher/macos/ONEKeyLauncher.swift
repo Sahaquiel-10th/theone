@@ -50,6 +50,13 @@ struct DeviceCredential: Decodable {
     let serverBaseUrl: String
 }
 
+func credentialIdentity(_ credential: DeviceCredential) throws -> KeyCredentialIdentity {
+    guard let bytes = base64UrlDecode(credential.privateKeyRaw) else { throw LauncherError.message("ONE Key 凭证无效") }
+    let key = try Curve25519.Signing.PrivateKey(rawRepresentation: bytes)
+    return KeyCredentialIdentity(deviceId: credential.deviceId, publicKey: key.publicKey.rawRepresentation.base64EncodedString(),
+        serverBaseUrl: credential.serverBaseUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
+}
+
 struct ChallengeRequest: Encodable { let deviceId: String; let installationId: String }
 struct ChallengeResponse: Decodable { let challengeId: String; let nonce: String }
 struct VerifyRequest: Encodable { let signature: String }
@@ -71,6 +78,7 @@ struct SocketMessage: Decodable {
     let arguments: LocalFileArguments?
     let envelope: SignedRuntimeUpdate?
     let gateway: CodexGatewayConfiguration?
+    let taskBinding: ExecutionTaskBinding?
     let previewPath: String?
     let owner: ExecutionOwner?
     let workspaceId: String?
@@ -87,7 +95,7 @@ struct SocketAuthResponse: Encodable {
     let type: String
     let challengeId: String
     let signature: String
-    let capabilities = ["runtime_update_v1", "local_configuration_v1", "local_tools_v1", "codex_exec_v1", "execution_round_v1", "codex_gateway_v1", "managed_codex_v1", "static_preview_v1", "static_preview_status_v1", "execution_terminal_receipt_v1"]
+    let capabilities = ["runtime_update_v1", "local_configuration_v1", "local_tools_v1", "codex_exec_v1", "execution_round_v1", "codex_gateway_v1", "managed_codex_v1", "static_preview_v1", "static_preview_status_v1", "execution_terminal_receipt_v1", "task_directory_binding_v1"]
     let platform = "macos"
     let architecture: String
     let launcherVersion: String
@@ -874,7 +882,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
         } catch { receiptDiagnostic(.acknowledgementRejected) }
     }
 
-    func start(taskId: String, instruction: String, resume: Bool, round: Int, attemptId: String, owner: ExecutionOwner, gateway: CodexGatewayConfiguration? = nil) {
+    func start(taskId: String, instruction: String, resume: Bool, round: Int, attemptId: String, owner: ExecutionOwner, gateway: CodexGatewayConfiguration? = nil, taskBinding: ExecutionTaskBinding? = nil) {
         guard self.owner == owner else { receiptDiagnostic(.acknowledgementRejected); return }
         let identity = ExecutionReceiptIdentity(workspaceId: owner.workspaceId, userId: owner.userId, deviceId: deviceId, installationId: installationId(), attemptId: attemptId, taskId: taskId, round: round)
         do {
@@ -896,7 +904,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
             Task { await send(taskId: taskId, kind: "error", text: "上一轮的本机进程或授权窗口尚未退出，请关闭窗口后再执行；本次未启动，也不会自动重跑。", status: "failed", identity: identity) }
             return
         }
-        Task { await self.run(taskId: taskId, instruction: instruction, resume: resume, gateway: gateway, identity: identity) }
+        Task { await self.run(taskId: taskId, instruction: instruction, resume: resume, gateway: gateway, identity: identity, taskBinding: taskBinding) }
     }
 
     func cancel(taskId: String, attemptId: String, round: Int) {
@@ -975,7 +983,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
             status: stopped ? "cancelled" : status, identity: identity)
     }
 
-    private func run(taskId: String, instruction: String, resume: Bool, gateway: CodexGatewayConfiguration?, identity: ExecutionReceiptIdentity) async {
+    private func run(taskId: String, instruction: String, resume: Bool, gateway: CodexGatewayConfiguration?, identity: ExecutionReceiptIdentity, taskBinding: ExecutionTaskBinding?) async {
         func report(taskId: String, kind: String, text: String? = nil, providerThreadId: String? = nil, targetName: String? = nil, status: String? = nil, error: String? = nil) async {
             await send(taskId: taskId, kind: kind, text: text, providerThreadId: providerThreadId, targetName: targetName, status: status, identity: identity, error: error)
         }
@@ -1001,6 +1009,22 @@ final class CodexExecutionRunner: @unchecked Sendable {
             return
         }
 
+        // A new resident has empty in-memory maps. Restore only this exact
+        // server-owned task; never substitute today's folder or a new thread.
+        if resume && taskBinding == nil {
+            await finishPreparation(identity: identity, text: "原任务的目录与会话绑定尚未确认，本轮不会改用当前目录或新会话重跑。")
+            return
+        }
+        if let taskBinding {
+            do {
+                let restored = try taskBinding.authorizedRoot(defaults: oneDefaults(), workspaceId: owner.workspaceId,
+                    userId: owner.userId, deviceId: deviceId, installationId: installationId(), taskId: taskId, requireThread: resume)
+                synchronized {
+                    projectPaths[taskId] = restored
+                    if let thread = taskBinding.providerThreadId { threadIds[taskId] = thread }
+                }
+            } catch { await finishPreparation(identity: identity, text: error.localizedDescription); return }
+        }
         var projectPath = synchronized { projectPaths[taskId] }
         let configuredPath: String?
         do { configuredPath = try MacWorkFolderConfiguration.configured(defaults: oneDefaults(), deviceId: deviceId) }
@@ -1573,7 +1597,9 @@ func serveProofs(_ transport: LauncherLiveSocket, credentialUrl: URL, deviceId: 
             do {
                 var output = ""
                 if message.type == "preview_start" {
-                    guard let root = oneDefaults().string(forKey: "one.execution.project.\(deviceId)"), let path = message.previewPath else { throw LocalFileFailure.message("请先在设置 → 本机执行中选择 ONE 工作文件夹") }
+                    guard let binding = message.taskBinding, let path = message.previewPath else { throw LocalFileFailure.message("原任务目录绑定尚未确认，未打开其他文件夹；请重新连接后再试。") }
+                    let root = try binding.authorizedRoot(defaults: oneDefaults(), workspaceId: execution.owner.workspaceId,
+                        userId: execution.owner.userId, deviceId: deviceId, installationId: installationId(), taskId: taskId)
                     output = try await previews.start(taskId, root: root, entry: path, present: {
                         transport.active && (try? signNonce(Data("one-static-preview".utf8).base64EncodedString(), credentialUrl: credentialUrl, deviceId: deviceId)) != nil
                     })
@@ -1646,9 +1672,9 @@ func serveProofs(_ transport: LauncherLiveSocket, credentialUrl: URL, deviceId: 
                 }
             }
         } else if message.type == "execution_start", let taskId = message.taskId, let instruction = message.instruction, let round = message.round, let attemptId = message.attemptId, let owner = message.owner {
-            execution.start(taskId: taskId, instruction: instruction, resume: false, round: round, attemptId: attemptId, owner: owner, gateway: message.gateway)
+            execution.start(taskId: taskId, instruction: instruction, resume: false, round: round, attemptId: attemptId, owner: owner, gateway: message.gateway, taskBinding: message.taskBinding)
         } else if message.type == "execution_continue", let taskId = message.taskId, let instruction = message.instruction, let round = message.round, let attemptId = message.attemptId, let owner = message.owner {
-            execution.start(taskId: taskId, instruction: instruction, resume: true, round: round, attemptId: attemptId, owner: owner, gateway: message.gateway)
+            execution.start(taskId: taskId, instruction: instruction, resume: true, round: round, attemptId: attemptId, owner: owner, gateway: message.gateway, taskBinding: message.taskBinding)
         } else if message.type == "execution_cancel", let taskId = message.taskId, let attemptId = message.attemptId, let round = message.round {
             execution.cancel(taskId: taskId, attemptId: attemptId, round: round)
         } else if message.type == "execution_cancel", let taskId = message.taskId, message.attemptId == nil {
@@ -1770,6 +1796,8 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
     private let initialCredentialUrl: URL?
     private var credentialUrl: URL?
     private var credential: DeviceCredential?
+    private var keyMountIdentity: KeyMountIdentity?
+    private var keyCredentialIdentity: KeyCredentialIdentity?
     private var base = ""
     private var socket: URLSessionWebSocketTask?
     private var liveTransport: LauncherLiveSocket?
@@ -1939,8 +1967,16 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         nextVolumeScan = .distantPast
         guard let volume = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL else { return }
         let boundVolume = (credentialUrl ?? initialCredentialUrl)?.deletingLastPathComponent().deletingLastPathComponent()
-        guard boundVolume?.standardizedFileURL == volume.standardizedFileURL else { return }
-        let candidate = volume.appendingPathComponent(".one/credential.json")
+        let candidate: URL
+        if let pin = keyMountIdentity {
+            guard mountedKeyVolume(volume).uuid?.caseInsensitiveCompare(pin.volumeUUID) == .orderedSame else { return }
+            let mounted = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: [.volumeUUIDStringKey], options: [.skipHiddenVolumes]) ?? []
+            guard let matched = matchingPinnedKeyCredential(pin, volumes: mounted.map(mountedKeyVolume), readIdentity: { try credentialIdentity(loadCredential($0, expectedDeviceId: pin.credential.deviceId)) }), matched.deletingLastPathComponent().deletingLastPathComponent().standardizedFileURL == volume.standardizedFileURL else { return }
+            candidate = matched
+        } else {
+            guard boundVolume?.standardizedFileURL == volume.standardizedFileURL else { return }
+            candidate = volume.appendingPathComponent(".one/credential.json")
+        }
         let wantedDeviceId = credential?.deviceId ?? expectedDeviceId
         guard let mountedCredential = try? loadCredential(candidate), wantedDeviceId == nil || mountedCredential.deviceId == wantedDeviceId else { return }
         credentialUrl = candidate
@@ -1953,7 +1989,7 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
               let credentialUrl,
               credentialUrl.path.hasPrefix(volume.path + "/") else { return }
         // Drop the stale mount path immediately. The resident loop will wait
-        // for the same device to reappear and then rescan all mounted volumes.
+        // for the same pinned identity to reappear; never read other Keys.
         socket?.cancel(with: .goingAway, reason: nil)
         self.credentialUrl = nil
         self.credential = nil
@@ -1998,10 +2034,24 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
         while !stopping, generation == sessionGeneration {
         do {
             let wantedDeviceId = credential?.deviceId ?? expectedDeviceId
+            if keyCredentialIdentity == nil, let wantedDeviceId,
+               let saved = savedKeyMountIdentity(defaults: oneDefaults(), deviceId: wantedDeviceId, installationId: installationId()) {
+                keyMountIdentity = saved; keyCredentialIdentity = saved.credential
+            }
             let portable = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent(".one/credential.json")
             let candidates = keyCredentialCandidates(current: credentialUrl, original: initialCredentialUrl, portable: portable)
-            let direct = candidates.first { (try? loadCredential($0, expectedDeviceId: wantedDeviceId)) != nil }
-            guard let foundUrl = direct ?? findCredentialUrl(expectedDeviceId: wantedDeviceId, preferred: credentialUrl ?? initialCredentialUrl) else {
+            let direct = candidates.first {
+                guard let found = try? loadCredential($0, expectedDeviceId: wantedDeviceId), let identity = try? credentialIdentity(found) else { return false }
+                return keyCredentialIdentity == nil || identity == keyCredentialIdentity
+            }
+            var remounted: URL?
+            if direct == nil, let pin = keyMountIdentity, !credentialAccessBlocked, Date() >= nextVolumeScan {
+                nextVolumeScan = Date().addingTimeInterval(10)
+                let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: [.volumeUUIDStringKey], options: [.skipHiddenVolumes]) ?? []
+                remounted = matchingPinnedKeyCredential(pin, volumes: volumes.map(mountedKeyVolume), readIdentity: { try credentialIdentity(loadCredential($0, expectedDeviceId: pin.credential.deviceId)) })
+            }
+            let initialDiscovery = keyCredentialIdentity == nil ? findCredentialUrl(expectedDeviceId: wantedDeviceId, preferred: credentialUrl ?? initialCredentialUrl) : nil
+            guard let foundUrl = direct ?? remounted ?? initialDiscovery else {
                 if credentialAccessBlocked { throw LauncherError.message(credentialAccessMessage) }
                 if residentMode {
                     ready = false
@@ -2012,6 +2062,13 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 throw LauncherError.message("没有找到 ONE Key，请插入后重试")
             }
             let foundCredential = try loadCredential(foundUrl)
+            let identity = try credentialIdentity(foundCredential)
+            guard keyCredentialIdentity == nil || keyCredentialIdentity == identity else { throw LauncherError.message("当前挂载的 ONE Key 身份不匹配，未连接其他 Key。") }
+            keyCredentialIdentity = identity
+            if keyMountIdentity == nil,
+               let uuid = mountedKeyVolume(foundUrl.deletingLastPathComponent().deletingLastPathComponent()).uuid {
+                keyMountIdentity = KeyMountIdentity(volumeUUID: uuid, credential: identity)
+            }
             let recovery = try recoverMacRuntimeOnMount(credential: foundUrl, deviceId: foundCredential.deviceId)
             let foundBase = foundCredential.serverBaseUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             credentialUrl = foundUrl
@@ -2023,6 +2080,9 @@ final class ONEKeyAppDelegate: NSObject, NSApplicationDelegate {
                 connectedSocket.cancel(with: .goingAway, reason: nil)
                 return
             }
+            // Persist only public continuity metadata after the Key has proved
+            // its identity to the server. It cannot authorize local operations.
+            if let pin = keyMountIdentity { saveKeyMountIdentity(pin, defaults: oneDefaults(), installationId: installationId()) }
 
             socket = connectedSocket
             let transport = LauncherLiveSocket(task: connectedSocket, generation: generation)

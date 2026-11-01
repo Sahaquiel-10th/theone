@@ -10,6 +10,14 @@ import {ChatOperationError} from './chatOperations.js';
 import {ModelBillingError,BillingReviewRequiredError} from './modelBilling.js';
 import {PowerAvailabilityError} from './powerBilling.js';
 import {OrchestrationInputError,OrchestrationResponseError} from './taskOrchestrator.js';
+import {LocalExecutionNotStartedError} from './localExecutionAdmission.js';
+
+test('a proven local refusal retains only its reviewed cause, never raw fields or a generic routing failure',()=>{
+ const failure=classifyCoordinatorFailure(new LocalExecutionNotStartedError({code:'power_insufficient',stage:'billing',outcome:'not_started',secret:'never-echo'} as any),{stage:'receipt',outcome:'unknown'});
+ assert.deepEqual(failure,{code:'power_insufficient',stage:'billing',outcome:'not_started'});
+ assert.doesNotMatch(JSON.stringify(failure)+coordinatorRecoveryCopy(failure),/secret|never-echo/);
+ assert.equal(classifyCoordinatorFailure(Object.assign(new Error('power_insufficient'),{failure})).code,'internal_error','untyped message/object lookalikes do not attest admission');
+});
 
 test('local routing mistakes and an unstarted dispatch never claim the computer or folder is disconnected',()=>{
  for(const [error,code] of [

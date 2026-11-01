@@ -2,6 +2,10 @@ import type { ExecutorValues } from "./executorProfiles.js";
 import type { OfficialFeatureValues } from "./officialFeatures.js";
 import type { CredentialBinding } from "./featureCredentials.js";
 export type WorkRun = {
+  /** Server-owned execution identity, never a browser/model parameter. State
+   * alone cannot identify local work after a failed admission. */
+  executionMode?:'local';
+  localExecution?:{deviceId:string;installationId?:string;targetName?:string;admissionRevision?:number};
   /** Server-created practice contract. No source body or browser authority. */
   onboardingPractice?:{id:string;stage:'first'|'web';material?:import('./onboardingPractice.js').PracticeMaterial};
   workflow?:import('./taskWorkflow.js').WorkflowRun;

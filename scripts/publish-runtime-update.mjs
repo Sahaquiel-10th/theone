@@ -2,24 +2,28 @@ import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { publishWindowsRuntimeUpdate } from "./runtime-windows-release.mjs";
+import { publishMacRuntimeUpdate, publishWindowsRuntimeUpdate } from "./runtime-windows-release.mjs";
 
 const args = process.argv.slice(2);
 const value = name => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : ""; };
 const required = name => { const result = value(name); if (!result) throw new Error(`${name} 不能为空`); return path.resolve(result); };
-if (args.includes("--windows-only")) {
-  if (value("--mac-app")) throw new Error("--windows-only 不接受 --mac-app；Mac 包从已签名基清单原样保留");
-  publishWindowsRuntimeUpdate({
+const windowsOnly = args.includes("--windows-only"), macOnly = args.includes("--mac-only");
+if (windowsOnly && macOnly) throw new Error("--windows-only 和 --mac-only 不能同时使用");
+if (windowsOnly || macOnly) {
+  if (windowsOnly && value("--mac-app")) throw new Error("--windows-only 不接受 --mac-app；Mac 包从已签名基清单原样保留");
+  if (macOnly && value("--windows-exe")) throw new Error("--mac-only 不接受 --windows-exe；Windows 包从已签名基清单原样保留");
+  const publish = macOnly ? publishMacRuntimeUpdate : publishWindowsRuntimeUpdate;
+  publish({
     baseManifest: required("--base-manifest"),
     publicKey: path.resolve(value("--public-key") || "config/runtime-update-public-key.txt"),
     privateKey: required("--private-key"),
-    windowsExe: required("--windows-exe"),
+    ...(macOnly ? { macApp: required("--mac-app") } : { windowsExe: required("--windows-exe") }),
     output: required("--output"),
     origin: value("--origin") || "https://theone.aiarrival.cn",
     version: value("--version")
   });
 } else {
-  if (value("--base-manifest")) throw new Error("--base-manifest 仅用于显式 --windows-only 发布");
+  if (value("--base-manifest")) throw new Error("--base-manifest 仅用于显式 --windows-only 或 --mac-only 发布");
   const privateKeyPath = required("--private-key");
   const macApp = required("--mac-app");
   const windowsExe = required("--windows-exe");

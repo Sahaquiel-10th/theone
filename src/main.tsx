@@ -69,7 +69,7 @@ import { useComposerFeatures } from "./ComposerFeatures";
 import { ComposerFeatureSuggestions } from './ComposerFeatureSuggestions';
 import { LocalDeviceSettings } from './LocalDeviceSettings';
 import {useLocalDeviceReadiness} from './useLocalDeviceReadiness';
-import {localReadinessStatus} from './localDeviceReadiness';
+import {localReadinessStatus,type LocalDeviceReadiness} from './localDeviceReadiness';
 import { DocumentDestinationPicker, NotionWritingSettings, NotionReceiptNotice, type DocumentDestination } from './DocumentDestination';
 import './preview/workspace-preview.css';
 import './task-transfer.css';
@@ -545,12 +545,13 @@ function Login({ onDone }: { onDone: (user: User) => void }) {
   );
 }
 
-function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onStop, onContinue, onCheck, onReconciled, actorRole = 'user', continuationDisabled = false, idPrefix = "one" }: {
+function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onStop, onContinue, onCheck, onReconciled, actorRole = 'user', continuationDisabled = false, recoveryDisabled = false, localReadiness, idPrefix = "one" }: {
   idPrefix?: string;
   task: ExecutionTask | null; events: ExecutionEvent[]; preparing: boolean; expanded: boolean;
   onToggle: () => void; onStop: (source: HTMLElement) => void;
   onContinue?: (source: HTMLElement) => void; onCheck?: () => void;
   continuationDisabled?: boolean;
+  recoveryDisabled?: boolean; localReadiness?:LocalDeviceReadiness;
   actorRole?: Role; onReconciled?: (task: ExecutionTask, events: ExecutionEvent[]) => void;
 }) {
   const [trace, setTrace] = useState("");
@@ -567,14 +568,14 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
         <span><strong>{executionNeedsReview(task) ? '这轮有个问题，结果需要核对' : executionStatusLabel(task, preparing)}</strong><small>{preparing ? "正在连接这台电脑…" : recovery?.title || (task?.status === "completed" ? "看看做了什么" : latestStep || "看看正在做什么")}</small></span>
         <span className="execution-expand-label">{expanded ? "收起" : "展开"}</span><ChevronDown size={15} />
       </button>
-      {busy || task?.resultDeliveryPending || task?.requiresExecutionCheck ? <button className="execution-stop" type="button" disabled={!busy&&continuationDisabled} onClick={event => onStop(event.currentTarget)}><Square size={10} />{busy?'停止本机执行':'再次请求停止原操作'}</button> : null}
+      {busy || task?.resultDeliveryPending || task?.requiresExecutionCheck ? <button className="execution-stop" type="button" disabled={recoveryDisabled} onClick={event => onStop(event.currentTarget)}><Square size={10} />{busy?'停止本机执行':'再次请求停止原操作'}</button> : null}
     </div>
     <div className="execution-disclosure-grid" data-open={expanded}>
       <div className="execution-disclosure-clip" inert={!expanded} aria-hidden={!expanded}>
         <div id={`${idPrefix}-execution-content`} className="execution-disclosure-body">
           {task?.targetName ? <p className="execution-current-step">工作文件夹：{task.targetName}（可在设置 → 本机执行中更换）</p> : null}
-          {task && !busy && task.targetName ? <StaticPreviewPanel key={task.id} taskId={task.id} request={(action, path) => api(`/api/executions/${encodeURIComponent(task.id)}/preview`, {method: 'POST', body: JSON.stringify({action, path})})}/> : null}
-          {!busy && recovery ? <div className="execution-problem" role="status"><p>{recovery.message}</p>{recovery.canContinue && onContinue ? <button type="button" disabled={continuationDisabled} onClick={event=>onContinue(event.currentTarget)}>核对后继续这件事</button> : onCheck ? <button type="button" onClick={onCheck}>检查本机状态</button> : null}{task?<ExecutionReconcileStop actorRole={actorRole} task={task} disabled={continuationDisabled} onReconcile={async request=>{const result=await api<{task:ExecutionTask;events:ExecutionEvent[]}>(request.path,{method:'POST',body:JSON.stringify(request.body)});onReconciled?.(result.task,result.events);}}/>:null}{task?.finalResponse?<MessageMarkdown>{task.finalResponse}</MessageMarkdown>:null}</div> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><MessageMarkdown>{task.finalResponse}</MessageMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接这台电脑…" : task?.status === "completed" ? "这轮操作已结束，结果保留在对应任务里。" : latestStep || "正在等这台电脑的反馈…"}</p>}
+          {task && !busy && task.targetName ? <StaticPreviewPanel key={task.id} taskId={task.id} readiness={localReadiness} request={(action, path) => api(`/api/executions/${encodeURIComponent(task.id)}/preview`, {method: 'POST', body: JSON.stringify({action, path})})}/> : null}
+          {!busy && recovery ? <div className="execution-problem" role="status"><p>{recovery.message}</p>{recovery.canContinue && onContinue ? <button type="button" disabled={continuationDisabled} onClick={event=>onContinue(event.currentTarget)}>核对后继续这件事</button> : onCheck ? <button type="button" onClick={onCheck}>检查本机状态</button> : null}{task?<ExecutionReconcileStop actorRole={actorRole} task={task} disabled={recoveryDisabled} onReconcile={async request=>{const result=await api<{task:ExecutionTask;events:ExecutionEvent[]}>(request.path,{method:'POST',body:JSON.stringify(request.body)});onReconciled?.(result.task,result.events);}}/>:null}{task?.finalResponse?<MessageMarkdown>{task.finalResponse}</MessageMarkdown>:null}</div> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><MessageMarkdown>{task.finalResponse}</MessageMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接这台电脑…" : task?.status === "completed" ? "这轮操作已结束，结果保留在对应任务里。" : latestStep || "正在等这台电脑的反馈…"}</p>}
           {steps.length > 0 ? <details className="execution-step-history"><summary>过程记录 · {steps.length} 条</summary><ol>{steps.slice(-30).map(event => <li key={event.id} className={event.kind}>{event.text}</li>)}</ol>{steps.length > 30 ? <small>最近 30 条</small> : null}</details> : null}
           {task ? <details className="execution-step-history" onToggle={async event => {
             if (!event.currentTarget.open || trace) return;
@@ -866,7 +867,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const currentRunningExecution = runningExecutions.find(task => task.conversationId === activeId);
   const executionShortcut = currentRunningExecution || executionTask;
   const executionBusy = runningExecutions.length > 0;
-  const activeExecutionMode = executionMode;
+  // A confirmed active execution owns the material state. A save preference,
+  // preparation or a stale animation callback cannot pretend work has begun.
+  const activeExecutionMode = executionBusy;
   const targetLoading = preview.enabled ? Boolean(preview.state.pending) || Boolean(loadingByConversation[activeLoadingKey]) : !composeNew && activeLoading;
   const studioIdle = view === "chat" && !activeId && (!preview.enabled || previewHome);
   const taskScroll = useFollowLatest<HTMLElement>(activeId, workspaceContentMounted && view === 'chat' && Boolean(active));
@@ -1063,7 +1066,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         {blockingLocal?<>
           <button type="button" onClick={()=>void openLinkedTask(blockingLocal.conversationId)}>查看「{blockerTitle}」</button>
           <button type="button" onClick={()=>void loadLatestExecution(blockingLocal.conversationId,blockingLocal.id,true)}>检查本机状态</button>
-          <button type="button" disabled={preparingExecution||Boolean(awaitingExecutionOperationId)} onClick={event=>void cancelExecution(event.currentTarget,blockingLocal)}>{blockerActive?'停止原操作':'再次请求停止原操作'}</button>
+          <button type="button" onClick={event=>void cancelExecution(event.currentTarget,blockingLocal)}>{blockerActive?'停止原操作':'再次请求停止原操作'}</button>
         </>:<button type="button" disabled={preparingExecution||executionBusy||!localDevice.canRequestExecution||loadingByConversation[id]} onClick={event=>void executeFromMessage(localInput,event.currentTarget,id)}>{preparingExecution&&preparingConversationId===id?'正在连接本机…':'开始本机任务'}</button>}
       </section>;
     }
@@ -1073,7 +1076,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       <button type="button" onClick={()=>{setSelectedExecutionId(local.id);setExpandedExecutionId(local.id);setRevealExecutionId(local.id);void loadLatestExecution(id,local.id);}}>查看本轮操作</button>
       {localRecovery.canContinue?<button type="button" disabled={preparingExecution||executionBusy||!localDevice.canRequestExecution} onClick={event=>void sendExecutionMessage(executionResumeInstruction,local,event.currentTarget,true)}>核对后继续这件事</button>:<>
         <button type="button" onClick={()=>void loadLatestExecution(id,local.id,true)}>检查本机状态</button>
-        <button type="button" disabled={preparingExecution||Boolean(awaitingExecutionOperationId)} onClick={event=>void cancelExecution(event.currentTarget,local)}>再次请求停止原操作</button>
+        <button type="button" onClick={event=>void cancelExecution(event.currentTarget,local)}>再次请求停止原操作</button>
       </>}
     </section>;
     if(!(task?.paused||conversation?.workPaused||!task?.running&&(task?.reconciling||task?.state==='reconciling')||localNeedsAction||lastJob?.dependencyBlocked))return task?.running&&lastJob?.progress?.completed.length?<section className="task-recovery task-progress-notice" role="status"><strong>正在处理</strong><p>已完成 {lastJob.progress.completed.length} 项{lastJob.progress.pending.length?`，还有 ${lastJob.progress.pending.length} 项待处理`:'，正在整理结果'}。</p><details><summary>查看处理进度</summary><p>已完成：{lastJob.progress.completed.join('、')}</p>{lastJob.progress.pending.length?<p>待处理：{lastJob.progress.pending.join('、')}</p>:null}</details></section>:null;
@@ -1388,6 +1391,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   function transitionExecutionMode(next: boolean, source?: HTMLElement | TransitionPoint | null) {
+    // The fluid surface already owns its material transitions; do not put a
+    // second full-screen circle over the still-usable conversation.
+    if(fluidEnabled){setExecutionMode(next);return;}
     delete document.documentElement.dataset.oneTransition;
     document.documentElement.dataset.oneExecutionTransition = next ? 'enter' : 'exit';
     const point = source instanceof HTMLElement ? pointFromElement(source) : source || executionOriginRef.current;
@@ -2081,15 +2087,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     }
   }
 
-  async function cancelExecution(source?: HTMLElement | null, task = executionTask) {
+  async function cancelExecution(source?: HTMLElement | null, task:ExecutionTask|null = null) {
     const preparation=executionPreparationRef.current;
-    if((preparingExecution||awaitingExecutionOperationId)&&preparation){
+    if(!task&&(preparingExecution||awaitingExecutionOperationId)&&preparation){
       preparation.cancelled=true;if(preparation.operationId)stoppedPreparationIdsRef.current.add(preparation.coordinator?`local_${preparation.operationId}`:preparation.operationId);setAwaitingExecutionOperationId('');transitionExecutionMode(false,pointFromElement(source));
       try{if(preparation.operationId){if(preparation.coordinator)await api(`/api/coordinator/messages/${encodeURIComponent(preparation.operationId)}/stop`,{method:'POST'});else await api(`/api/executions/preparation/${encodeURIComponent(preparation.operationId)}/cancel`,{method:'POST'});}setNotice('已请求停止，原始要求保留；已产生的修改不会自动撤销。');}
       catch(err){setError(err instanceof Error?err.message:'停止未确认，请检查任务状态');}
       return;
     }
-    if (!task || !isExecutionRunning(task) && !task.resultDeliveryPending) return;
+    if (!task || !isExecutionRunning(task) && !task.resultDeliveryPending && !task.requiresExecutionCheck) return;
     const request=executionCancellationRequest(task);
     if(!request){setError('本机操作的轮次暂时无法确认，请先检查本机状态。');return;}
     stoppedExecutionIdsRef.current.add(task.id);
@@ -2257,10 +2263,11 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           preparing={preparingExecution && preparingConversationId===thingId}
           expanded={Boolean(thingExecutionTask && expandedExecutionId===thingExecutionTask.id)}
           onToggle={()=>setExpandedExecutionId(expandedExecutionId===thingExecutionTask?.id ? "" : thingExecutionTask?.id || "")}
-          onStop={source=>cancelExecution(source,thingExecutionTask)}
+          onStop={source=>cancelExecution(source,preparingExecution&&preparingConversationId===thingId?null:thingExecutionTask)}
           onContinue={source=>void sendExecutionMessage(executionResumeInstruction,thingExecutionTask,source,true)}
           actorRole={user.role} onReconciled={rememberReconciledExecution}
           continuationDisabled={preparingExecution||executionBusy||!localDevice.canRequestExecution}
+          localReadiness={localDevice.status==='confirmed'?localDevice.value:undefined}
           onCheck={()=>{if(thingExecutionTask)void loadLatestExecution(thingExecutionTask.conversationId,thingExecutionTask.id,true);}} /> : null}
         hasMore={hasMoreConversations||(coordinator.enabled&&(coordinator.snapshot?.total??0)>coordinator.state.tasks.length)}
         onMore={()=>void loadMoreConversations()} loadingMore={loadingMoreConversations}/>;
@@ -2295,7 +2302,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {user.access?.role === "company_admin" ? <button type="button" aria-current={view === "company" ? "page" : undefined} onClick={() => openSurface("company")}>公司管理</button> : null}
         </nav>
         <div className="one-chrome-actions">
-          {preparingExecution||awaitingExecutionOperationId||executionBusy?<button type="button" className="one-chrome-button" onClick={event=>void cancelExecution(event.currentTarget,currentRunningExecution||runningExecutions[0]||executionTask)}><Square size={12}/>停止执行</button>:null}
+          {preparingExecution||awaitingExecutionOperationId||executionBusy?<button type="button" className="one-chrome-button" onClick={event=>void cancelExecution(event.currentTarget,preparingExecution||awaitingExecutionOperationId?null:currentRunningExecution||runningExecutions[0]||executionTask)}><Square size={12}/>停止执行</button>:null}
           <button className="one-chrome-button knowledge" type="button" title="知识来源" onClick={() => openSurface("knowledge")}>
             <span className={`connection-dot ${[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "connected" : "disconnected"}`} />
             <span>{[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "知识已连接" : "连接知识"}</span>
@@ -2404,7 +2411,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             ))
           ) : <div className="studio-empty">{activeLoading ? "正在打开…" : failedTaskIds.has(activeId) ? "发送失败，草稿已保留。" : "发一条消息。"}</div>}
           {replyPending?<ResponseProgress key={`waiting:${activeId}:${latestTurnStart}`}/>:null}
-          {activePreparing || executionTask ? <ExecutionDisclosure key={executionTask?.id || "preparing"} task={executionTask} events={executionEvents} preparing={activePreparing} expanded={Boolean(executionTask && expandedExecutionId === executionTask.id)} onToggle={() => setExpandedExecutionId(expandedExecutionId === executionTask?.id ? "" : executionTask?.id || "")} onStop={source => cancelExecution(source)} onContinue={source=>void sendExecutionMessage(executionResumeInstruction,executionTask,source,true)} actorRole={user.role} onReconciled={rememberReconciledExecution} continuationDisabled={preparingExecution||executionBusy||!localDevice.canRequestExecution} onCheck={()=>{if(executionTask)void loadLatestExecution(executionTask.conversationId,executionTask.id,true);}} /> : null}
+          {activePreparing || executionTask ? <ExecutionDisclosure key={executionTask?.id || "preparing"} task={executionTask} events={executionEvents} preparing={activePreparing} expanded={Boolean(executionTask && expandedExecutionId === executionTask.id)} onToggle={() => setExpandedExecutionId(expandedExecutionId === executionTask?.id ? "" : executionTask?.id || "")} onStop={source => cancelExecution(source,activePreparing?null:executionTask)} onContinue={source=>void sendExecutionMessage(executionResumeInstruction,executionTask,source,true)} actorRole={user.role} onReconciled={rememberReconciledExecution} localReadiness={localDevice.status==='confirmed'?localDevice.value:undefined} continuationDisabled={preparingExecution||executionBusy||!localDevice.canRequestExecution} onCheck={()=>{if(executionTask)void loadLatestExecution(executionTask.conversationId,executionTask.id,true);}} /> : null}
         </div>
       </section>
       )}
@@ -2561,7 +2568,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <header className="fluid-panel-heading"><h2>接管任务</h2><button type="button" aria-label="收起本机执行" onClick={()=>toggleFluidPanel('local')}><X size={15}/></button></header>
           <div className="fluid-panel-content" data-fluid-panel-content="local">
           <div className="fluid-runtime-notices">{renderRuntimeNotices()}</div>
-          {fluidLocalTask||preparingExecution||awaitingExecutionOperationId?<ExecutionDisclosure idPrefix="fluid-local" task={fluidLocalTask} events={fluidLocalTask?eventsByTask[fluidLocalTask.id]||[]:[]} preparing={preparingExecution||Boolean(awaitingExecutionOperationId)} expanded={true} onToggle={()=>toggleFluidPanel('local')} onStop={source=>void cancelExecution(source,fluidLocalTask)} onContinue={source=>void sendExecutionMessage(executionResumeInstruction,fluidLocalTask,source,true)} actorRole={user.role} onReconciled={rememberReconciledExecution} continuationDisabled={preparingExecution||executionBusy||!localDevice.canRequestExecution} onCheck={()=>{if(fluidLocalTask)void loadLatestExecution(fluidLocalTask.conversationId,fluidLocalTask.id,true);}}/>:<LocalTaskEmptyState unavailable={taskStatusUnavailable} canExecute={localDevice.canRequestExecution&&composeMode==='chat'&&!demo.enabled&&outputDestination!=='notion'&&currentModel?.kind==='chat'} onCompose={()=>{focusFluid('main');requestAnimationFrame(()=>featurePicker.input.current?.focus({preventScroll:true}));}} onSettings={()=>{setAccountSection('device');openSurface('account');}} onRetry={()=>void refreshExecutionTasks()}/>}
+          {fluidLocalTask||preparingExecution||awaitingExecutionOperationId?<ExecutionDisclosure idPrefix="fluid-local" task={fluidLocalTask} events={fluidLocalTask?eventsByTask[fluidLocalTask.id]||[]:[]} preparing={preparingExecution||Boolean(awaitingExecutionOperationId)} expanded={true} onToggle={()=>toggleFluidPanel('local')} onStop={source=>void cancelExecution(source,preparingExecution||awaitingExecutionOperationId?null:fluidLocalTask)} onContinue={source=>void sendExecutionMessage(executionResumeInstruction,fluidLocalTask,source,true)} actorRole={user.role} onReconciled={rememberReconciledExecution} localReadiness={localDevice.status==='confirmed'?localDevice.value:undefined} continuationDisabled={preparingExecution||executionBusy||!localDevice.canRequestExecution} onCheck={()=>{if(fluidLocalTask)void loadLatestExecution(fluidLocalTask.conversationId,fluidLocalTask.id,true);}}/>:<LocalTaskEmptyState unavailable={taskStatusUnavailable} canExecute={localDevice.canRequestExecution&&composeMode==='chat'&&!demo.enabled&&outputDestination!=='notion'&&currentModel?.kind==='chat'} onCompose={()=>{focusFluid('main');requestAnimationFrame(()=>featurePicker.input.current?.focus({preventScroll:true}));}} onSettings={()=>{setAccountSection('device');openSurface('account');}} onRetry={()=>void refreshExecutionTasks()}/>}
           {runningExecutions.length>1?<p className="fluid-queue-note">另有 {runningExecutions.length-1} 个任务等待这台电脑处理</p>:null}
                   </div>
         </section>

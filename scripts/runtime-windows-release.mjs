@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const versionPattern = /^(0|[1-9]\d*)(?:\.(0|[1-9]\d*)){1,3}$/;
@@ -57,7 +59,7 @@ function readArtifact(file, expected) {
   const size = fs.statSync(file).size;
   if (size <= 0 || size > 512 * 1024 * 1024 || (expected && size !== expected.size)) fail("制品大小不符");
   const bytes = fs.readFileSync(file);
-  if (expected && hash(bytes) !== expected.sha256) fail("保留的 Mac 制品摘要不符");
+  if (expected && hash(bytes) !== expected.sha256) fail(`保留的 ${expected.platform === "macos" ? "Mac" : "Windows"} 制品摘要不符`);
   return bytes;
 }
 
@@ -69,9 +71,35 @@ function verifyWindowsExecutable(bytes) {
     || bytes.readUInt16LE(offset + 24) !== 0x020b) fail("Windows 更新制品不是 x64 PE32+ 程序");
 }
 
-// Keep the trusted Mac entry and ZIP bytes intact. This path needs no Mac build
-// tools and produces the same two-artifact envelope accepted by the installer.
-export function publishWindowsRuntimeUpdate(options) {
+function readMacArchive(app) {
+  if (!["ONE.app", "ONE for Mac.app"].includes(path.basename(app))) fail("Mac 更新应用必须命名为 ONE.app 或 ONE for Mac.app");
+  if (!fs.lstatSync(app).isDirectory()) fail("Mac 更新制品必须是应用目录");
+  const inspect = directory => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (entry.name.startsWith("._")) fail("Mac 制品包含 AppleDouble 元数据，拒绝发布");
+      if (entry.isDirectory()) inspect(path.join(directory, entry.name));
+    }
+  };
+  inspect(app);
+  execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", app], { stdio: "inherit" });
+  const commandLineLipo = "/Library/Developer/CommandLineTools/usr/bin/lipo";
+  const lipo = fs.existsSync(commandLineLipo) ? commandLineLipo : "/usr/bin/lipo";
+  const architectures = execFileSync(lipo, ["-archs", path.join(app, "Contents/MacOS/ONE")], { encoding: "utf8" }).trim().split(/\s+/);
+  if (!architectures.includes("arm64") || !architectures.includes("x86_64")) fail("Mac 更新制品不是 Universal 版本");
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), "one-mac-runtime-release-"));
+  try {
+    const archive = path.join(staging, "runtime.zip");
+    execFileSync("/usr/bin/ditto", ["-c", "-k", "--keepParent", "--norsrc", "--noextattr", app, archive], { stdio: "inherit" });
+    return readArtifact(archive);
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
+}
+
+// Only the requested platform is replaced. The other trusted artifact object
+// and its verified file bytes stay intact in the two-artifact envelope.
+function publishSinglePlatformUpdate(options, platform) {
+  const label = platform === "macos" ? "Mac" : "Windows";
   if (!validVersion(options.version)) fail("--version 必须是纯数字版本，例如 0.4.28");
   const origin = new URL(options.origin);
   if (origin.protocol !== "https:" || origin.username || origin.password || origin.search || origin.hash || origin.pathname !== "/") fail("--origin 必须是没有路径、账号或参数的 HTTPS 站点地址");
@@ -82,34 +110,38 @@ export function publishWindowsRuntimeUpdate(options) {
   if (publicRaw.length !== 32 || publicRaw.toString("base64url") !== publicText) fail("发布公钥格式无效");
   const fingerprint = hash(publicRaw);
   const base = verifyBaseManifest(options.baseManifest, publicRaw);
-  const mac = base.artifacts.find(artifact => artifact.platform === "macos");
-  const previousWindows = base.artifacts.find(artifact => artifact.platform === "windows");
-  if (!newerVersion(options.version, previousWindows.version)) fail("Windows 发布版本必须严格高于基清单版本");
-  const metadata = JSON.parse(fs.readFileSync(path.join(path.dirname(options.windowsExe), "runtime-update.json"), "utf8"));
-  if (metadata.platform !== "windows" || metadata.version !== options.version || metadata.updateProtocol !== 1
-    || metadata.publicKeySha256 !== fingerprint) fail("Windows 制品版本、更新协议或发布公钥指纹不一致");
-  const macName = artifactName(mac);
-  const macBytes = readArtifact(path.join(path.dirname(options.baseManifest), macName), mac);
-  const windowsBytes = readArtifact(options.windowsExe);
-  verifyWindowsExecutable(windowsBytes);
+  const previous = base.artifacts.find(artifact => artifact.platform === platform);
+  const preserved = base.artifacts.find(artifact => artifact.platform !== platform);
+  if (!newerVersion(options.version, previous.version)) fail(`${label} 发布版本必须严格高于基清单版本`);
+  const source = platform === "macos" ? options.macApp : options.windowsExe;
+  const metadata = JSON.parse(fs.readFileSync(path.join(path.dirname(source), "runtime-update.json"), "utf8"));
+  if (metadata.platform !== platform || metadata.version !== options.version || metadata.updateProtocol !== 1
+    || metadata.publicKeySha256 !== fingerprint) fail(`${label} 制品版本、更新协议或发布公钥指纹不一致`);
+  const preservedName = artifactName(preserved);
+  const preservedBytes = readArtifact(path.join(path.dirname(options.baseManifest), preservedName), preserved);
+  const replacementBytes = platform === "macos" ? readMacArchive(source) : readArtifact(source);
+  if (platform === "windows") verifyWindowsExecutable(replacementBytes);
   let privateKey;
   try { privateKey = crypto.createPrivateKey(fs.readFileSync(options.privateKey)); }
   catch { fail("发布私钥无法读取或格式无效"); }
   if (privateKey.asymmetricKeyType !== "ed25519") fail("发布私钥必须是 Ed25519");
   const signingPublic = crypto.createPublicKey(privateKey).export({ format: "der", type: "spki" }).subarray(-32);
   if (hash(signingPublic) !== fingerprint) fail("发布私钥与可信公钥不匹配");
-  const windowsName = `one-windows-${options.version}.exe`;
-  const windows = {
-    platform: "windows", architecture: "amd64", version: options.version,
-    url: new URL(`/runtime-updates/${windowsName}`, origin).toString(),
-    sha256: hash(windowsBytes), size: windowsBytes.length
+  const replacementName = `one-${platform}-${options.version}.${platform === "macos" ? "zip" : "exe"}`;
+  const replacement = {
+    platform, architecture: platform === "macos" ? "universal" : "amd64", version: options.version,
+    url: new URL(`/runtime-updates/${replacementName}`, origin).toString(),
+    sha256: hash(replacementBytes), size: replacementBytes.length
   };
-  const payload = { schemaVersion: 1, channel: "stable", releasedAt: new Date().toISOString(), artifacts: base.artifacts.map(artifact => artifact.platform === "windows" ? windows : artifact) };
+  const payload = { schemaVersion: 1, channel: "stable", releasedAt: new Date().toISOString(), artifacts: base.artifacts.map(artifact => artifact.platform === platform ? replacement : artifact) };
   const payloadBytes = Buffer.from(JSON.stringify(payload));
   const envelope = { payload: payloadBytes.toString("base64url"), signature: crypto.sign(null, payloadBytes, privateKey).toString("base64url") };
   fs.mkdirSync(options.output, { recursive: true });
-  fs.writeFileSync(path.join(options.output, macName), macBytes, { flag: "wx", mode: 0o644 });
-  fs.writeFileSync(path.join(options.output, windowsName), windowsBytes, { flag: "wx", mode: 0o644 });
+  fs.writeFileSync(path.join(options.output, preservedName), preservedBytes, { flag: "wx", mode: 0o644 });
+  fs.writeFileSync(path.join(options.output, replacementName), replacementBytes, { flag: "wx", mode: 0o644 });
   fs.writeFileSync(path.join(options.output, "stable.json"), `${JSON.stringify(envelope, null, 2)}\n`, { flag: "wx", mode: 0o644 });
-  console.log(`已生成 Windows ${options.version} 签名更新目录：${options.output}；保留 Mac ${mac.version}`);
+  console.log(`已生成 ${label} ${options.version} 签名更新目录：${options.output}；保留 ${preserved.platform === "macos" ? "Mac" : "Windows"} ${preserved.version}`);
 }
+
+export function publishWindowsRuntimeUpdate(options) { publishSinglePlatformUpdate(options, "windows"); }
+export function publishMacRuntimeUpdate(options) { publishSinglePlatformUpdate(options, "macos"); }

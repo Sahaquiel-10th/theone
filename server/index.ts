@@ -52,6 +52,11 @@ import { encryptCredential, knowledgeCredentialContext } from "./knowledge/crede
 import { GetNoteProviderError, getNoteProvider } from "./knowledge/getnoteProvider.js";
 import { KnowledgeService } from "./knowledge/knowledgeService.js";
 import { selectConversationAttachments, publicAttachmentSummary, detachConversationAttachments } from "./conversationAttachments.js";
+import {localExecutionMaterials} from './localExecutionMaterials.js';
+import {assertLocalAdmission,assertLocalAdmissionRevision,assertLocalDirectoryUnchanged,LocalExecutionNotStartedError} from './localExecutionAdmission.js';
+import {CoordinatorLocalError} from './coordinatorLocalPolicy.js';
+import {coordinatorRecoveryCopy} from '../src/coordinatorRecovery.js';
+import {classifyCoordinatorFailure} from './coordinatorFailures.js';
 import { prepareAttachmentContext, fullDocumentIntent } from "./attachmentRetrieval.js";
 import { beginChatOperation, bindChatOperationConversation, completeChatOperation, failChatOperationInMutation, getChatOperationResult, ChatOperationError } from "./chatOperations.js";
 import { completeOnboardingOnChat, BetaInputError } from "./betaProfile.js";
@@ -232,6 +237,7 @@ async function persistGeneratedImage(params: { imageUrl?: string; workspaceId: s
 
 const keyAuth = [auth(jwtSecret), requireOneKeySession] as const;
 const localDeviceReadiness=createLocalDeviceReadiness({
+  metadata:scope=>oneKeyPresence.readinessMetadata(scope.deviceId,scope.installationId),
   authorize:async scope=>{const access=assertLocalDeviceReadinessScope(await store.read(),scope);return{busy:access.busy||oneKeyPresence.readinessBusy(scope.deviceId,scope.installationId)};},
   connectionToken:scope=>oneKeyPresence.readinessConnectionToken(scope.deviceId,scope.installationId),
   probeFolder:(scope,signal)=>oneKeyPresence.localConfiguration(scope,false,{signal,timeoutMs:5_000}),
@@ -913,13 +919,39 @@ async function stopLocalPreparation(req:express.Request,operationId:string){
 app.post('/api/executions/preparation/:operationId/cancel',...keyAuth,asyncRoute(async(req,res)=>{await stopLocalPreparation(req,String(req.params.operationId));res.status(202).json({ok:true});}));
 async function startLocalExecution(req: express.Request, res: express.Response, conversationId: string, sourceMessageId: string, operationId?: string,
   inputPolicy: "compiled" | "direct_input" = "compiled") {
+  const id=operationId??uid('execution');
+  try{return await startLocalExecutionAttempt(req,res,conversationId,sourceMessageId,id,inputPolicy);}
+  catch(error){
+    // An invocation is not proof of launcher delivery. Conversely, a pending
+    // concurrent compiler or any accepted local row must never become retryable.
+    try{
+      const db=await store.read(),own=(x:{workspaceId:string;userId:string})=>x.workspaceId===req.workspaceId&&x.userId===req.user!.id;
+      const task=db.executionTasks.some(t=>own(t)&&(t.dispatchOperationId===id||t.conversationId===conversationId&&t.sourceMessageId===sourceMessageId));
+      const operation=db.chatOperations?.find(o=>own(o)&&o.operationId===id);
+      if(!task&&(!operation||operation.status==='failed'&&operation.requestId===res.locals.requestId))throw new LocalExecutionNotStartedError(classifyCoordinatorFailure(error,{stage:'accepting',outcome:'not_started'}));
+    }catch(proofError){if(proofError instanceof LocalExecutionNotStartedError)throw proofError;}
+    throw error;
+  }
+}
+async function startLocalExecutionAttempt(req: express.Request, res: express.Response, conversationId: string, sourceMessageId: string, operationId?: string,
+  inputPolicy: "compiled" | "direct_input" = "compiled") {
   if (operationId !== undefined && (typeof operationId !== 'string' || !/^[A-Za-z0-9_-]{16,100}$/.test(operationId))) throw new Error("执行编号无效");
-  if (!req.oneKeyDeviceId || !oneKeyPresence.isConnected(req.oneKeyDeviceId, req.oneKeyInstallationId)) throw new Error("本机执行未连接，请插入 ONE Key 并双击 ONE 图标");
+  if (!req.oneKeyDeviceId || !oneKeyPresence.isConnected(req.oneKeyDeviceId, req.oneKeyInstallationId)) throw new CoordinatorLocalError('local_device_offline');
   const db = await store.read();
   const conversation = db.conversations.find((item) => item.id === conversationId && item.workspaceId === req.workspaceId && item.userId === req.user!.id);
   if (!conversation) throw new Error("对话不存在");
   const preparedOperation=db.chatOperations?.find(o=>o.workspaceId===req.workspaceId&&o.userId===req.user!.id&&o.conversationId===conversationId&&o.workRun?.inputMessageId===sourceMessageId);
   const prepared=preparedOperation?.workRun;
+  const admissionRevision=prepared?.localExecution?.admissionRevision;
+  const admissionScope={workspaceId:req.workspaceId!,userId:req.user!.id,deviceId:req.oneKeyDeviceId,installationId:req.oneKeyInstallationId,conversationId,sourceMessageId};
+  const replay=operationId&&db.executionTasks.find(t=>t.dispatchOperationId===operationId&&t.workspaceId===req.workspaceId&&t.userId===req.user!.id);
+  if(replay){
+    if(replay.deviceId!==req.oneKeyDeviceId||replay.installationId!==req.oneKeyInstallationId||replay.conversationId!==conversationId||replay.sourceMessageId!==sourceMessageId)throw new CoordinatorLocalError('local_binding_changed',409);
+    return{task:publicExecutionForRequest(req,replay),events:taskEvents(db,replay)};
+  }
+  const initialReadiness=await localDeviceReadiness.inspect(admissionScope,{fresh:true});
+  assertLocalAdmission(db,admissionScope,initialReadiness);
+  assertPreparedLocalExecutionActive(db,admissionScope);
   const batchBudget=workBatchBudget(db,{workspaceId:req.workspaceId!,userId:req.user!.id},preparedOperation);
   if(dependencyState(db,{workspaceId:req.workspaceId!,userId:req.user!.id},prepared?.dependsOnOperationIds)!=='ready')throw new Error('这一步还在等前面的结果。请先把前面卡住的任务接着做好，再开始本机操作。');
   const model = db.models.find((item) => item.id === conversation.modelId && item.enabled && item.kind === "chat");
@@ -931,6 +963,7 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
     payload: { kind: "local_execution", conversationId, sourceMessageId, deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId },
     beforeClaim: d => {
       executionPreparationStops.assertActive(preparationScope);
+      assertLocalAdmissionRevision(d,admissionScope,admissionRevision);
       assertLocalExecutionAvailable(d, { workspaceId: req.workspaceId!, userId: req.user!.id, deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId });
       if (d.executionTasks.some(t => t.workspaceId === req.workspaceId && t.userId === req.user!.id && t.deviceId === req.oneKeyDeviceId && t.installationId === req.oneKeyInstallationId && ['queued','selecting_target','running'].includes(t.status)))
         throw new Error("本机还有任务正在执行。当前要求已保留，请等本轮结束后再执行；不会同时修改文件。");
@@ -950,6 +983,8 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
   const compilerTask = resolveAiTask(db.settings, db.models, "execution_compile", model);
   const compilerMessages = buildExecutionCompilerMessages(prefix, sourceMessageId, compilerTask.replacesPrompt ? "按系统任务指令整理以下对话。" : undefined,
     executionHandoffs(db, prefix, req.workspaceId!, req.user!.id));
+  const material=await localExecutionMaterials(db,admissionScope);
+  if(material)compilerMessages.push(material);
   if(prepared)compilerMessages.unshift({role:'system',content:`本次仅执行这件任务已经保存的交接：${prepared.instruction}。原话中的其他任务只作背景，不得重复执行。前置任务成果：${JSON.stringify((prepared.dependsOnOperationIds??[]).map(id=>{const o=resolveWorkDependency(db,{workspaceId:req.workspaceId!,userId:req.user!.id},id);const c=db.conversations.find(c=>c.id===o?.conversationId&&c.workspaceId===req.workspaceId&&c.userId===req.user!.id);return {taskId:c?.id,title:c?.title,content:c?.messages.find(m=>m.id===o?.workRun?.resultMessageId)?.content.slice(0,6000)};}))}`,createdAt:now()});
   await confirmKeyBeforeModel(req);
   const compiled = await runBilledModel(store, {
@@ -970,13 +1005,20 @@ async function startLocalExecution(req: express.Request, res: express.Response, 
   const task: ExecutionTask = {
     id: uid("ext"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id,
     sourceMessageId, dispatchOperationId: requestOperationId, provider: executionProvider, status: "queued", instruction, deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId,
-    createdAt: timestamp, updatedAt: timestamp, batchBudget
+    createdAt: timestamp, updatedAt: timestamp, batchBudget,targetName:initialReadiness.folder.state==='ready'?initialReadiness.folder.targetName:undefined
   };
+  // A slow compiler must not launch after the directory, device state or the
+  // original prepared admission changed. This applies to historical buttons too.
+  const finalSnapshot=await store.read();
+  const finalReadiness=await localDeviceReadiness.inspect(admissionScope,{fresh:true});
+  assertLocalAdmission(finalSnapshot,admissionScope,finalReadiness);
+  assertLocalDirectoryUnchanged(initialReadiness,finalReadiness);
   await store.mutate((mutable) => {
     executionPreparationStops.assertActive(preparationScope);
     assertLocalExecutionAvailable(mutable, { workspaceId: scope.workspaceId, userId: scope.userId, deviceId: scope.deviceId!, installationId: scope.installationId });
     if(mutable.chatOperations?.some(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.operationId===requestOperationId&&o.executionCancelled))throw new Error('执行准备已停止');
     if(prepared)assertPreparedLocalExecutionActive(mutable,{workspaceId:scope.workspaceId,userId:scope.userId,conversationId,sourceMessageId});
+    assertLocalAdmissionRevision(mutable,admissionScope,admissionRevision);
     mutable.executionTasks.push(task);
     const c = mutable.conversations.find(c => c.id === conversationId && c.workspaceId === req.workspaceId && c.userId === req.user!.id)!;
     const receipt = { id: uid("msg"), role: "assistant" as const, content: "本机执行已受理，正在连接执行器。结果确认后会在这里保留。", createdAt: timestamp };
@@ -1036,6 +1078,12 @@ app.post("/api/executions/:id/messages", ...keyAuth, asyncRoute(async (req, res)
   const content = requiredString(req.body.content, "执行消息").slice(0, 12_000);
   const preparationScope={workspaceId:req.workspaceId!,userId:req.user!.id,operationId:req.body.operationId??uid('execution')};
   if(!/^[A-Za-z0-9_-]{16,128}$/.test(preparationScope.operationId))throw new Error('执行编号无效');
+  const deviceScope=localDeviceReadinessScope(req);
+  const current=await store.read(),original=current.executionTasks.find(t=>t.id===req.params.id&&t.workspaceId===req.workspaceId&&t.userId===req.user!.id&&t.deviceId===req.oneKeyDeviceId&&t.installationId===req.oneKeyInstallationId);
+  if(!original)throw new CoordinatorLocalError('local_binding_changed',409);
+  const readiness=await localDeviceReadiness.inspect(deviceScope,{fresh:true});
+  if(!readiness.ready)throw new CoordinatorLocalError(readiness.reason==='busy'?'local_busy':!readiness.connected?'local_device_offline':'local_readiness_unknown');
+  if(!original.targetName||readiness.folder.targetName!==original.targetName)throw new CoordinatorLocalError('local_binding_changed',409);
   const task = await store.mutate((database) => {
     executionPreparationStops.assertActive(preparationScope);
     const target = database.executionTasks.find((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id && item.deviceId === req.oneKeyDeviceId && Boolean(item.installationId) && item.installationId === req.oneKeyInstallationId);
@@ -1280,6 +1328,13 @@ if (runtimeUpdateDirectory) {
 }
 
 app.use((err: Error, req: Request, res: Response, _next: unknown) => {
+  if(err instanceof CoordinatorLocalError||err instanceof LocalExecutionNotStartedError){
+    const failure=err instanceof LocalExecutionNotStartedError?err.failure:{code:err.code,stage:'accepting' as const,outcome:'not_started' as const};
+    const status=err instanceof CoordinatorLocalError?err.status:409;
+    console.error(JSON.stringify({event:'request_failed',requestId:res.locals.requestId,workspaceId:req.workspaceId,userId:req.user?.id,method:req.method,path:req.path,status,error:failure.code}));
+    if(!res.headersSent)res.status(status).json({error:coordinatorRecoveryCopy(failure),code:failure.code,failure,requestId:res.locals.requestId});
+    return;
+  }
   const uploadTooLarge = err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE"; const uploadTooMany = err instanceof multer.MulterError && err.code === "LIMIT_FILE_COUNT";
   const message = uploadTooLarge ? `单个附件不能超过 ${Math.round(attachmentMaxBytes / 1024 / 1024)}MB` : uploadTooMany ? `每次最多上传 ${attachmentMaxFiles} 个附件` : err.message || "请求处理失败";
   const status = err instanceof ChatOperationError || err instanceof BetaInputError || err instanceof GetNoteProviderError ? err.status : uploadTooLarge ? 413 : /电力不足/.test(message) ? 402 : /核对/.test(message) ? 409 : /ONE Key/.test(message) ? 428 : /超时|无法连接/.test(message) ? 504 : 400;

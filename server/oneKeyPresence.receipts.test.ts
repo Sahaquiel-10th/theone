@@ -262,7 +262,8 @@ test('a held terminal remains stoppable but diagnostics cannot release unknown s
 });
 
 test('an old browser stop round cannot mutate or signal a newer resumed attempt', async t => {
-  const f = await setup(t), connection = await f.connect(), first = await f.issue(connection);
+  const f = await setup(t), connection = await f.connect(true,true,['task_directory_binding_v1']), first = await f.issue(connection);
+  first.providerThreadId='thread-original';first.receiptHash=terminalReceiptHash(first);
   connection.socket.send(JSON.stringify(first));
   await waitUntil(() => connection.frames.some(frame => frame.type === 'execution_terminal_ack'), 'missing original terminal');
   const resumed = f.db.executionTasks[0];
@@ -270,6 +271,7 @@ test('an old browser stop round cannot mutate or signal a newer resumed attempt'
     transportInterruption:undefined,finalResponse:undefined,lastError:undefined});
   await f.presence.continueExecution(owner.deviceId, resumed.id, 'new round only', installationId);
   await waitUntil(() => connection.frames.some(frame => frame.type === 'execution_continue'), 'missing resumed attempt');
+  assert.deepEqual(connection.frames.find(frame=>frame.type==='execution_continue').taskBinding,{...owner,taskId:resumed.id,targetName:'/authorized/test',providerThreadId:'thread-original'});
   const before = JSON.stringify(f.db), cancellations = connection.frames.filter(frame => frame.type === 'execution_cancel').length;
   await assert.rejects(() => f.presence.cancelExecution(owner.deviceId, resumed.id, installationId, 0), /已进入新一轮/);
   await new Promise(resolve => setTimeout(resolve, 30));

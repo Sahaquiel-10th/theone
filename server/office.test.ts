@@ -14,6 +14,108 @@ import {officeArtifactContext} from './featureArtifacts.js';
 import {installOfficeRoutes} from './officeRoutes.js';
 import type {Database} from './types.js';
 import type {Store} from './db.js';
+import {runTaskOrchestrator,OrchestrationEffectNotStartedError,orchestrationFailureCode} from './taskOrchestrator.js';
+import type {TaskStep} from './taskSteps.js';
+import {taskRecovery} from '../src/taskRecovery.js';
+
+function officeCheckpoint(){const steps:TaskStep[]=[];return{namespace:'feature:native-office:1',steps,save:async(step:TaskStep)=>{const index=steps.findIndex(s=>s.key===step.key);if(index<0)steps.push(step);else steps[index]=step;}};}
+const nativeCall=(name:string,payload:unknown,operation='create')=>({id:'native-office-call',type:'function' as const,function:{name,arguments:JSON.stringify({operation,dataJson:JSON.stringify(payload)})}});
+
+test('native workbook validation fails before saving and corrected arguments can finish without a false unknown write',async()=>{
+ const checkpoints=officeCheckpoint();let turns=0,saves=0;
+ const tool=officeTool('oneWorkbook','合成表格',async()=>{},{saveOffice:async file=>{saves++;return{id:'saved-workbook',name:file.name};}});
+ const invalid={title:'合成预算',sheets:[{name:'预算',headers:[],rows:[[1]]}]};
+ const valid={title:'合成预算',sheets:[{name:'预算',headers:['人数'],rows:[[4]]}]};
+ const result=await runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[tool],maxSteps:4,beforeStep:async()=>{},checkpoints,call:async messages=>{
+  turns++;
+  if(turns===1)return{content:'',toolCalls:[nativeCall('oneWorkbook',invalid)]};
+  if(turns===2){assert.match(JSON.stringify(messages),/列名|1–40/);assert.equal(checkpoints.steps[0].state,'failed');assert.equal(saves,0);return{content:'',toolCalls:[nativeCall('oneWorkbook',valid)]};}
+  return{content:'表格已经生成。',toolCalls:[]};
+ }});
+ assert.equal(saves,1);assert.equal(result.content,'表格已经生成。');assert.deepEqual(checkpoints.steps.map(s=>s.state),['failed','completed']);assert.equal(checkpoints.steps.some(s=>s.state==='started'),false);
+});
+
+test('unrepaired native input has a specific no-artifact failure and permits retry without releasing another unknown effect',async()=>{
+ const checkpoints=officeCheckpoint();let turns=0,saves=0;
+ const tool=officeTool('oneWorkbook','合成表格',async()=>{},{saveOffice:async()=>{saves++;throw Error('must not save');}});
+ await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[tool],maxSteps:3,beforeStep:async()=>{},checkpoints,call:async()=>++turns===1?{content:'',toolCalls:[nativeCall('oneWorkbook',{title:'无效',sheets:[{name:'预算',headers:['甲','乙'],rows:[[1]]}]})]}:{content:'目前还没有生成这份表格。',toolCalls:[]}}),error=>{assert.ok(error instanceof OrchestrationEffectNotStartedError);assert.equal(orchestrationFailureCode(error),'task_artifact_input_invalid');assert.match(error.message,/单元格数量.*列名.*null/);return true;});
+ assert.equal(saves,0);assert.equal(checkpoints.steps[0].state,'failed');
+ assert.equal(taskRecovery([{id:'current',state:'failed',steps:checkpoints.steps}]).kind,'retry');
+ const unknown={...checkpoints.steps[0],key:'other-real-save',tool:'oneDocument',state:'started' as const};
+ assert.equal(taskRecovery([{id:'current',state:'failed',steps:[unknown,...checkpoints.steps]}]).kind,'none','another real uncertain save stays protected');
+});
+
+test('a successful inspect cannot turn a rejected workbook creation into a delivered artifact',async()=>{
+ const workbook=await createWorkbook({title:'已有模板',sheets:[{name:'表1',headers:['值'],rows:[[42]]}]});
+ for(const trustedReceipt of [false,true]){
+  const checkpoints=officeCheckpoint();let turns=0,saves=0;
+  const tool=officeTool('oneWorkbook','合成表格',async()=>{},{readOffice:async()=>workbook.bytes,saveOffice:async()=>{saves++;throw Error('must not save');}});
+  await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[tool],maxSteps:4,beforeStep:async()=>{},checkpoints,...(trustedReceipt?{completeAfterTools:()=>turns===2?'表格已经生成。':undefined}:{}),call:async()=>{
+   turns++;
+   if(turns===1)return{content:'',toolCalls:[nativeCall('oneWorkbook',{title:'无效',sheets:[{name:'预算',headers:[],rows:[[1]]}]})]};
+   if(turns===2)return{content:'',toolCalls:[nativeCall('oneWorkbook',{attachmentId:'selected-template'},'inspect')]};
+   return{content:'表格已经生成。',toolCalls:[]};
+  }}),error=>error instanceof OrchestrationEffectNotStartedError);
+  assert.equal(saves,0);assert.deepEqual(checkpoints.steps.map(s=>[s.effect,s.state]),[['artifact','failed'],['read','completed']]);
+ }
+});
+
+test('Office reader failures retain their identity and never enter a paid argument-repair round',async()=>{
+ for(const [id,operation,payload,reader] of [
+  ['oneWorkbook','inspect',{attachmentId:'selected'},'readOffice'],
+  ['oneWorkbook','fill',{attachmentId:'selected',title:'合成表格',updates:[]},'readOffice'],
+  ['oneWorkbook','reconcile',{leftId:'selected',rightId:'right'},'readTable'],
+  ['oneWorkbook','analyze',{attachmentId:'selected'},'readTable'],
+  ['oneSlides','inspect',{attachmentId:'selected'},'readSlides'],
+  ['oneSlides','revise',{attachmentId:'selected',changes:[]},'readSlides'],
+ ] as const){
+  const denied=new Error('附件不属于当前访客或尚未就绪');let turns=0,reads=0,saves=0;
+  const tool=officeTool(id,'合成读取',async()=>{},{[reader]:async()=>{reads++;throw denied;},saveOffice:async()=>{saves++;throw Error('must not save');}});
+  await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[tool],maxSteps:4,maxCorrections:2,beforeStep:async()=>{},call:async()=>{turns++;return{content:'',toolCalls:[nativeCall(id,payload,operation)]};}}),error=>error===denied);
+  assert.equal(turns,1);assert.equal(reads,1);assert.equal(saves,0);
+ }
+});
+
+test('pure Office payload validation fails before any reader and permits a bounded corrected call',async()=>{
+ const workbook=await createWorkbook({title:'模板',sheets:[{name:'登记',headers:['客户'],rows:[['原始']]}]});
+ for(const [id,operation,valid] of [
+  ['oneWorkbook','fill',{attachmentId:'selected',title:'已填',updates:[{sheet:'登记',cell:'A2',value:'合成'}]}],
+  ['oneWorkbook','reconcile',{leftId:'selected',rightId:'right',title:'对账',leftKeys:['客户'],rightKeys:['客户'],leftAmount:'金额',rightAmount:'金额',tolerance:0,trim:false}],
+  ['oneWorkbook','analyze',{attachmentId:'selected',title:'分析',groupBy:'客户',valueColumn:'金额',aggregation:'sum',chartType:'bar'}],
+  ['oneSlides','revise',{attachmentId:'selected',changes:[{page:1,slide:{title:'已改',layout:'cover'}}]}],
+ ] as const){
+  const checkpoints=officeCheckpoint();let turns=0,reads=0,saves=0;
+  const tool=officeTool(id,'合成处理',async()=>{},{readOffice:async()=>{reads++;return workbook.bytes;},readTable:async()=>{reads++;return '客户,金额\n甲,1';},readSlides:async()=>{reads++;return structuredClone(officeDemo);},saveOffice:async file=>{saves++;return{id:`saved-${saves}`,name:file.name};}});
+  await runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[tool],maxSteps:4,beforeStep:async()=>{},checkpoints,call:async()=>{
+   turns++;if(turns===1)return{content:'',toolCalls:[nativeCall(id,{...valid,extra:true},operation)]};
+   if(turns===2){assert.equal(reads,0);assert.equal(saves,0);assert.equal(checkpoints.steps[0].state,'failed');return{content:'',toolCalls:[nativeCall(id,valid,operation)]};}
+   return{content:'文件已生成。',toolCalls:[]};
+  }});
+  assert.equal(checkpoints.steps.some(s=>s.state==='started'),false);assert.ok(saves>=1);
+ }
+});
+
+test('a partial multi-file native delivery stays unknown through a nested artifact wrapper',async()=>{
+ const checkpoints=officeCheckpoint();let saves=0;
+ const native=officeTool('oneSlides','合成演示',async()=>{},{saveOffice:async file=>{if(++saves===1)return{id:'first-file',name:file.name};throw Error('second save acknowledgement lost');}});
+ const wrapper={name:'oneHtml',effect:'artifact' as const,run:async()=>runTaskOrchestrator({entryPoint:'workspace' as const,messages:[],tools:[native],maxSteps:2,beforeStep:async()=>{},call:async()=>({content:'',toolCalls:[nativeCall('oneSlides',officeDemo)]})})};
+ await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[wrapper],maxSteps:3,maxCorrections:2,beforeStep:async()=>{},checkpoints,call:async()=>({content:'',toolCalls:[{id:'wrapper',type:'function',function:{name:wrapper.name,arguments:'{"query":"合成演示"}'}}]})}),/second save acknowledgement lost/);
+ assert.equal(saves,2);assert.equal(checkpoints.steps[0].state,'started');
+});
+
+test('inspect is a read, while a failed saver or a partial multi-file delivery remains unknown',async()=>{
+ const workbook=await createWorkbook({title:'只读模板',sheets:[{name:'表1',headers:['值'],rows:[[42]]}]});
+ const read=officeTool('oneWorkbook','读取模板',async()=>{},{readOffice:async()=>workbook.bytes});const reads=officeCheckpoint();let readTurn=0;
+ await runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[read],maxSteps:2,beforeStep:async()=>{},checkpoints:reads,call:async()=>++readTurn===1?{content:'',toolCalls:[nativeCall('oneWorkbook',{attachmentId:'selected-template'},'inspect')]}:{content:'读取完成。',toolCalls:[]}});
+ assert.equal(reads.steps[0].effect,'read');assert.equal(reads.steps[0].state,'completed');
+ for(const multiFile of [false,true]){
+  const checkpoint=officeCheckpoint();let saves=0;
+  const tool=officeTool(multiFile?'oneSlides':'oneWorkbook','合成保存',async()=>{},{saveOffice:async file=>{saves++;if(multiFile&&saves===1)return{id:'first-delivered',name:file.name};throw new Error('private storage receipt missing secret=never-echo');}});
+  await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[tool],maxSteps:2,beforeStep:async()=>{},checkpoints:checkpoint,call:async()=>({content:'',toolCalls:[nativeCall(tool.name,multiFile?officeDemo:{title:'保存未知',sheets:[{name:'表1',headers:['值'],rows:[[1]]}]})]})}),error=>!(error instanceof OrchestrationEffectNotStartedError));
+  assert.equal(checkpoint.steps[0].state,'started');assert.equal(saves,multiFile?2:1);
+  assert.equal(taskRecovery([{id:'current',state:'failed',steps:checkpoint.steps}]).kind,'none');
+ }
+});
 test('workbook tool advertises the actually implemented ROUNDUP function to execution models',()=>{
  const tool=officeTool('oneWorkbook','创建预算表',async()=>{},{});
  assert.match(tool.description!,/ROUNDUP\(120\/\(50-15\),0\)/);

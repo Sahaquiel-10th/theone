@@ -19,6 +19,8 @@ export type ModelConfig = {
 };
 
 export type Message = {
+  /** A durable failed submission, not a task-acceptance receipt or model answer. */
+  rejectedSubmission?: {operationId:string;failure:import('../src/coordinatorRecovery.js').CoordinatorFailure;requestId?:string};
   finishReason?: import("./modelGateway.js").ModelFinishReason;
   id?: string; role: "user" | "assistant" | "system"; content: string; imageUrl?: string;
   attachments?: AttachmentSummary[]; sources?: SearchSource[]; inputImageDataUrls?: string[]; createdAt: string; modelId?: string;
@@ -26,6 +28,7 @@ export type Message = {
 };
 
 export type MessageRecord = Required<Pick<Message, "id" | "role" | "content" | "createdAt">> & {
+  rejectedSubmission?: Message['rejectedSubmission'];
   finishReason?: Message["finishReason"];
   workspaceId: string; userId: string; conversationId: string; modelId?: string; imageUrl?: string;
   attachmentIds?: string[]; sources?: SearchSource[]; tokenCount?: number;

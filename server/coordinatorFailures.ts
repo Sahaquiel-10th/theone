@@ -8,16 +8,22 @@ import {ChatOperationError} from './chatOperations.js';
 import {BillingReviewRequiredError,ModelBillingError} from './modelBilling.js';
 import {PowerAvailabilityError} from './powerBilling.js';
 import {CoordinatorLocalError} from './coordinatorLocalPolicy.js';
+import {LocalExecutionNotStartedError} from './localExecutionAdmission.js';
+import {parseCoordinatorFailure} from '../src/coordinatorRecovery.js';
 
 type FailureContext={stage?:CoordinatorFailureStage;outcome?:CoordinatorFailure['outcome']};
 const orchestrationCodes:Record<string,CoordinatorFailureCode>={
   task_step_limit:'step_limit',task_tool_call_limit:'tool_limit',task_empty_response:'model_empty',
-  task_invalid_response:'model_invalid_response',task_response_filtered:'model_filtered',
-  task_tool_instruction_incomplete:'tool_incomplete',task_result_limit:'step_limit',task_budget_limit:'budget_exceeded',
+  task_invalid_response:'model_invalid_response',task_response_filtered:'model_filtered',task_artifact_input_invalid:'artifact_input_invalid',
+  task_tool_instruction_incomplete:'tool_incomplete',task_artifact_effect_unconfirmed:'tool_incomplete',task_result_limit:'step_limit',task_budget_limit:'budget_exceeded',
 };
 /** Only reviewed classifications are public; raw messages never enter a receipt. */
 export function classifyCoordinatorFailure(error:unknown,context:FailureContext={}):CoordinatorFailure {
   const make=(code:CoordinatorFailureCode,stage:CoordinatorFailureStage=context.stage??'planning'):CoordinatorFailure=>({code,stage,outcome:context.outcome??'unknown'});
+  if(error instanceof LocalExecutionNotStartedError){
+    const safe=parseCoordinatorFailure(error.failure);
+    if(safe)return{...safe,outcome:'not_started'};
+  }
   if(error instanceof CoordinatorLocalError)return make(error.code,error.code==='dispatch_not_started'||error.code==='local_tool_invalid'?'planning':'tool');
   if(error instanceof ModelRequestError){
     const code=error.status===408||error.status===504?'model_timeout':error.status===401||error.status===403?'model_auth':error.status===429?'model_rate_limited':error.status>=400&&error.status<500?'model_request_rejected':'model_unavailable';

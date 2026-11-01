@@ -7,7 +7,7 @@ import { availableFeature, featureMember, type FeatureScope } from './featureRun
 import { FeatureConfigError, featureValues } from './officialFeatures.js';
 import { executableFeatureTools } from './featureToolExecution.js';
 import { isLocalFeatureTool } from './featureTools.js';
-import { runTaskOrchestrator, OrchestrationToolError, type OrchestrationTool } from './taskOrchestrator.js';
+import { runTaskOrchestrator, OrchestrationToolError, type OrchestrationTool, type OrchestrationInvocation } from './taskOrchestrator.js';
 import type { ModelToolMessage, ModelToolDefinition, ToolModelOptions, ToolChatResult } from './modelGateway.js';
 import { createVisualArtifact } from './visualTools.js';
 import { tableWorkbook } from './skillTables.js';
@@ -129,7 +129,7 @@ export function createPublicAvatarFeatureTools(store: Store, publication: Avatar
             saveVisual: (doc, format) => createVisualArtifact(doc, format, (name, bytes, mimeType) => save({ name, bytes, mimeType, kind: 'document' })),
             saveTable: (rows, name) => save({ name, bytes: tableWorkbook(rows), mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', kind: 'spreadsheet' }),
             saveOffice: file => save({ name: file.name, bytes: file.bytes, mimeType: file.mime, kind: file.mime.endsWith('spreadsheetml.sheet') ? 'spreadsheet' : 'document' })
-          } }).map(tool => ({ ...tool, name: `public_${tool.name}`, ...(tool.structured ? { structured: { ...tool.structured, run: async (input: unknown) => { const result = await tool.structured!.run(input); if (toolSucceeded(result)) successfulToolCalls++; return guestResult(result); } } } : {}) }));
+          } }).map(tool => ({ ...tool, name: `public_${tool.name}`, ...(tool.structured ? { structured: { ...tool.structured, run: async (input: unknown,invocation?:OrchestrationInvocation) => { const result = await tool.structured!.run(input,invocation); if (toolSucceeded(result)) successfulToolCalls++; return guestResult(result); } } } : {}) }));
           const args = raw as { request: string; tool?: string; input?: unknown };
           if (args.tool !== undefined) {
             const tool = tools.find(t => t.name === `public_${args.tool}`);

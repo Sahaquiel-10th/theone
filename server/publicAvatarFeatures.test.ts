@@ -6,7 +6,8 @@ import { createWorkbook } from './officeWorkbook.js';
 import type { Database } from './types.js';
 import type { Store } from './db.js';
 import { availablePublicAvatarFeatures, validateAvatarFeatureGrants, createPublicAvatarFeatureTools, type PublicAvatarFeatureDependencies } from './publicAvatarFeatures.js';
-import { OrchestrationToolError } from './taskOrchestrator.js';
+import { OrchestrationToolError, runTaskOrchestrator } from './taskOrchestrator.js';
+import type { TaskStep } from './taskSteps.js';
 
 const scope = { workspaceId: 'owner-space', userId: 'owner' };
 function fixture(toolIds = ['oneFinance']) {
@@ -222,4 +223,46 @@ test('revocation during a guest input read and oversized reader output stop befo
   const g = fixture(['oneTable']); addGuestInput(g, 'large', '大表.csv', 1); g.deps.readTable = async () => 'x'.repeat(120001);
   await assert.rejects(invoke(g, { request: '整理表格', tool: 'oneTable', input: { operation: 'clean', dataJson: '{"attachmentId":"large"}' } }), /超过 120000 字/);
   assert.equal(g.saved.length, 0);
+});
+
+test('a guest workbook read revoked mid-call aborts the nested model without buying an argument-repair turn', async () => {
+  for (const mode of ['other-guest', 'other-workspace'] as const) {
+    const f = fixture(['oneWorkbook']); addGuestInput(f, 'template', '模板.xlsx', 100);
+    let calls = 0, reads = 0;
+    f.deps.bill = async () => {
+      calls++;
+      return { content: '', toolCalls: [{ id: 'guest-fill', type: 'function', function: { name: 'public_oneWorkbook', arguments: JSON.stringify({ operation: 'fill', dataJson: JSON.stringify({ attachmentId: 'template', title: '已填模板', updates: [{ sheet: '登记', cell: 'A2', value: '合成内容' }] }) }) } }], finishReason: 'tool_calls' };
+    };
+    f.deps.readOffice = async () => {
+      reads++;
+      if (mode === 'other-guest') f.db.attachments[0].userId = 'different-guest';
+      else f.db.attachments[0].workspaceId = 'different-workspace';
+      return Buffer.from('synthetic');
+    };
+    await assert.rejects(invoke(f, { request: '填写我选择的模板' }), /不属于当前访客/);
+    assert.equal(calls, 1); assert.equal(reads, 1); assert.equal(f.saved.length, 0);
+  }
+});
+
+test('a nested guest feature never turns prior saving or a lost save acknowledgement into a whole-feature no-write proof', async () => {
+  for (const loseAcknowledgement of [false, true]) {
+    const f = fixture(['oneWorkbook', 'oneDocument']); let nestedCalls = 0, outerCalls = 0;
+    if (loseAcknowledgement) f.deps.saveArtifact = async file => { f.saved.push(file); throw Error('save acknowledgement lost'); };
+    f.deps.bill = async () => {
+      nestedCalls++;
+      const name = nestedCalls === 1 ? 'public_oneWorkbook' : 'public_oneDocument';
+      const payload = nestedCalls === 1 ? { title: '先交付表格', sheets: [{ name: '预算', headers: ['值'], rows: [[1]] }] } : { title: '不完整文档', sections: [] };
+      return nestedCalls <= 2 ? { content: '', toolCalls: [{ id: `native-${nestedCalls}`, type: 'function', function: { name, arguments: JSON.stringify({ operation: 'create', dataJson: JSON.stringify(payload) }) } }], finishReason: 'tool_calls' } : { content: '有一份文档还没生成。', toolCalls: [], finishReason: 'stop' };
+    };
+    const tool = createPublicAvatarFeatureTools(f.store, f.p, f.run, f.deps)[0], steps: TaskStep[] = [];
+    const checkpoints = { namespace: 'guest-outer', steps, save: async (step: TaskStep) => { const index = steps.findIndex(s => s.key === step.key); if (index < 0) steps.push(step); else steps[index] = step; } };
+    const execute = () => runTaskOrchestrator({ entryPoint: 'published_web', messages: [], tools: [tool], maxSteps: 3, maxCorrections: 2, checkpoints, beforeStep: async () => {}, call: async () => ++outerCalls % 2 ? { content: '', toolCalls: [{ id: 'feature-call', type: 'function', function: { name: tool.name, arguments: JSON.stringify({ request: '制作表格和文档' }) } }] } : { content: '请先查看已经生成的成果。', toolCalls: [] } });
+    await execute().catch(() => {});
+    assert.equal(f.saved.length, 1); assert.equal(steps[0].effect, 'artifact'); assert.equal(steps[0].state, 'started');
+    assert.equal(outerCalls, 2); assert.equal(nestedCalls, loseAcknowledgement ? 1 : 3);
+    assert.doesNotMatch(JSON.stringify(steps[0].output) ?? '', /ARTIFACT_NOT_CREATED/);
+    outerCalls = 0;
+    await assert.rejects(execute, /不会重复写入/);
+    assert.equal(f.saved.length, 1);
+  }
 });

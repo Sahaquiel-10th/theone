@@ -1,6 +1,7 @@
 import { canReadKnowledge } from "./enterprisePolicy.js";
 import type { Store } from "./db.js";
-import { executionReceipts } from "./executionService.js";
+import { executionReceipts, executionDeliveryPending, executionTerminal } from "./executionService.js";
+import {executionNeedsReview} from '../src/executionReview.js';
 import { localExecutionCapabilityGuidance } from './localDocumentPolicy.js';
 import { pendingTaskResults, unreviewedTaskResults, appendTaskResultReport, acknowledgeTaskResults, acknowledgeAllTaskResults, markTaskResultsReported, taskResultIdsReportedInMessage, taskResultConversationContext, captureTaskResults, capturedTaskResultsForReport, taskResultReportContent, taskReportReplyPending, taskResultIsLatestAttempt, visibleTaskResultReceipts, initializeTaskResultReporting, type TaskResultCapture } from './taskResultInbox.js';
 import { taskRecovery } from '../src/taskRecovery.js';
@@ -93,8 +94,10 @@ import {resolveTaskWorkflow,WorkflowPlanningError} from './workflowPlanning.js';
 import {executeWorkflowStages,recoverVerifiedNotionWorkflow} from './workflowExecution.js';
 import {CoordinatorLocalError,localActionRequested,naturalLocalActionRequested,localReadinessCanStart,localReadinessFailure} from './coordinatorLocalPolicy.js';
 import {parseLocalDeviceReadiness,type LocalDeviceReadiness} from '../src/localDeviceReadiness.js';
+import {LocalExecutionNotStartedError} from './localExecutionAdmission.js';
 
 export type WorkScope = { workspaceId: string; userId: string };
+export type LocalDispatchDevice = {deviceId:string;installationId?:string};
 export type DispatchInput = {
   outputDestination?: 'chat' | 'notion' | 'local';
   featureApprovals?: FeatureApproval[];
@@ -121,6 +124,32 @@ type Deps = FeatureRunDependencies & {
 const at = () => new Date().toISOString();
 const own = (item: { workspaceId: string; userId: string }, s: WorkScope) =>
   item.workspaceId === s.workspaceId && item.userId === s.userId;
+const localWork=(run:WorkRun|undefined)=>Boolean(run&&(run.executionMode==='local'||run.localExecution||run.state==='prepared'||run.expectedOutput==='local_file'||run.failureCode==='task_local_not_started'));
+function assertLocalBinding(binding:WorkRun['localExecution'],device:LocalDispatchDevice|undefined,readiness?:LocalDeviceReadiness){
+  if(!binding||!device||binding.deviceId!==device.deviceId||!binding.installationId||binding.installationId!==device.installationId)
+    throw new CoordinatorLocalError('local_binding_changed',409);
+  if(readiness&&binding.targetName&&readiness.folder.targetName!==binding.targetName)
+    throw new CoordinatorLocalError('local_binding_changed',409);
+}
+function localTaskStatus(db:Database,s:WorkScope,taskId:string,latest:WorkRun|undefined){
+  const executions=(db.executionTasks??[]).filter(t=>own(t,s)&&t.conversationId===taskId);
+  const active=executions.find(t=>executionDeliveryPending(t)||!executionTerminal(t.status));
+  const execution=active??executions.filter(t=>t.sourceMessageId===latest?.inputMessageId).sort((a,b)=>b.createdAt.localeCompare(a.createdAt))[0];
+  if(execution){
+    if(executionDeliveryPending(execution))return execution.status==='cancelled'
+      ?'停止请求已经发出，正在等原电脑确认结束。先保持原 ONE Key 连接，不需要重新执行。'
+      :'原电脑这一轮的结束情况还需要核对。已有内容会保留，确认前不会重复改文件。';
+    if(execution.status==='running')return '这件事正在原电脑上处理，有结果或卡住时会在这里告诉你。';
+    if(execution.status==='queued'||execution.status==='selecting_target')return '本机要求已经接到，正在连接原工作文件夹和执行工具；还不能说已经完成。';
+    if(execution.status==='cancelled')return '这轮本机操作已经停止，已有文件保留。要继续时先核对原结果，再从这件事的本机入口继续。';
+    if(execution.status==='failed'||executionNeedsReview(execution))return '这轮本机操作已经返回，但还有部分没做好。已有文件和反馈都在，请先核对卡住的步骤，再继续未完成部分。';
+    return '本机这一轮已返回结果，可以查看原任务中的文件与反馈；有新的修改要求直接补充。';
+  }
+  if(localWork(latest))return latest?.failureCode==='task_local_not_started'
+    ?'这轮还没有启动本机操作，原要求和工作文件夹绑定保留。恢复原设备连接后，可以重新处理这一轮。'
+    :'本机交接已经保留，还没有收到实际执行回执；先核对任务里的本机步骤，不会把它当成已完成。';
+  return undefined;
+}
 const failureFeedback=(failure:CoordinatorFailure,requestId:string)=>coordinatorRecoveryCopy(failure)+(['internal_error','storage_unavailable','billing_unavailable','model_auth','model_request_rejected'].includes(failure.code)?`\n\n请求编号：${requestId}`:'');
 const notionVerificationActive=(job:WorkRun|undefined)=>job?.notionReceipt?.state!=='verified'&&!['not_sent','rejected'].includes(job?.notionReceipt?.delivery??'')&&['scheduled','checking'].includes(job?.notionReceipt?.verification?.state??'');
 function publicNotionReceipt(receipt:WorkRun['notionReceipt']){
@@ -297,6 +326,7 @@ function assertWork(
 /** Single-process modular-monolith runner. Persistent operations own the queue;
  * process memory only caps concurrent calls, never owns a user's task data. */
 export class CoordinatorService {
+  private localRetries=new Map<string,Promise<{taskId:string;status:string;message?:string}>>();
   private active = new Set<string>();
   private notionChecks=new Map<string,Promise<void>>();
   private progress = new Map<string, {phase: string; startedAt: string}>();
@@ -534,9 +564,12 @@ export class CoordinatorService {
     const db = await this.store.read(),
       c = taskOf(db, s, id);
     const awaitingSupplement=c.workPaused&&taskContinuation(db,s,c).canResume;
+    const jobs=(db.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===id&&o.workRun),latest=jobs.at(-1)?.workRun;
+    const localRecord=(db.executionTasks??[]).some(t=>own(t,s)&&t.conversationId===id&&t.sourceMessageId===latest?.inputMessageId);
+    const localReview=localWork(latest)&&latest?.state!=='prepared'&&!(latest?.state==='failed'&&latest.failureCode==='task_local_not_started'&&latest.localExecution&&!localRecord);
     return {
       conversation: c,
-      recovery: awaitingSupplement
+      recovery: localReview?{kind:'review_local' as const,message:localTaskStatus(db,s,id,latest)??'请先核对原本机执行的回执和文件，不会自动重新启动。'}:awaitingSupplement
         ?{kind:'none' as const,message:'把缺少的材料直接发给我，或告诉我继续，就会在这件任务接着处理，不用另外点开始。'}
         :taskRecovery((db.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === id && o.workRun).map(o => ({ id: o.id, ...o.workRun!,verificationPending:selectedNotionVerification(o)||o.status==='pending'&&o.workRun!.failureCode==='notion_verification_pending' }))),
       jobs: (db.chatOperations ?? [])
@@ -667,6 +700,7 @@ export class CoordinatorService {
     executeLocal?: (conversationId: string, sourceMessageId: string, operationId: string) => Promise<{ id: string; status: string }>,
     clientTimeZone?:string,
     inspectLocalReadiness?: (options?:{fresh?:boolean})=>Promise<LocalDeviceReadiness>,
+    localDevice?:LocalDispatchDevice,
   ) {
     const attachments = ids(input.attachmentIds, 5);
     if (input.outputDestination !== undefined && !['chat', 'notion','local'].includes(input.outputDestination)) throw new CoordinatorError('保存位置无效', 400);
@@ -721,7 +755,6 @@ export class CoordinatorService {
     const checkLocal=async(fresh=false)=>{
       if(!requestedLocalAction&&!localActionRequested(content,input.boundTaskId))throw new CoordinatorLocalError('local_tool_invalid',409);
       if(!localToolAuthorized)throw new CoordinatorLocalError('local_tool_unavailable');
-      if(attachments.length)throw new CoordinatorLocalError('local_attachments_unsupported',400);
       await verifyKey();
       // This callback closes over the authenticated request's exact device and
       // installation. Never consume browser-submitted readiness or folder paths.
@@ -886,7 +919,8 @@ export class CoordinatorService {
           if(operation?.workRun&&(d.executionTasks??[]).some(task=>own(task,s)&&task.conversationId===taskId&&task.sourceMessageId===operation.workRun!.inputMessageId)){
             alreadyAccepted=true;return;
           }
-          // This path is entered only before executeLocal has been called.
+          // This path is entered before invoking the executor, or after the
+          // actual entry point has proven that its exact operation never sent.
           // Keep the failed handoff/history, but never leave a runnable prepared
           // child behind a known failed device admission.
           if(operation?.workRun?.state!=='prepared')return;
@@ -934,7 +968,7 @@ export class CoordinatorService {
           &&!selectedFeatures.some(id=>availableFeature(fresh,s,id).version.values.experience?.mode==='image')
           &&/文章|专栏|文稿|正文|文档|报告|便笺|草稿|原文|方案|写|保存|整理/.test([v.title,v.instruction,v.taskId?fresh.conversations.find(c=>own(c,s)&&c.id===v.taskId)?.title:''].join('\n'));
         if(humanNotionWrite&&writingHandoff&&!notionWriteRequested(v.instruction))throw new OrchestrationInputError('用户本轮明确要求保存到 Notion，但这条写作任务的交接漏掉了保存目标；尚未入队。请保留对应任务的 Notion 保存与核对要求，现成文章只交接保存、不重写；不要给无关图片、本机或其它任务追加 Notion 写入。');
-        if(adaptive&&requiresHtmlArtifact(input.text)&&!selectedFeatures.some(id=>availableFeature(fresh,s,id).version.values.tools?.some(t=>t.id==='oneHtml')))throw new OrchestrationInputError('用户要的是可打开的HTML成果，不是Word文件或主对话正文。先 discover_capabilities 查找网页能力，将提供 oneHtml 的真实功能编号填入 featureIds/capabilityIds；不可用时说明尚未开始。');
+        if(adaptive&&!localForThisCall&&requiresHtmlArtifact(input.text)&&!selectedFeatures.some(id=>availableFeature(fresh,s,id).version.values.tools?.some(t=>t.id==='oneHtml')))throw new OrchestrationInputError('用户要的是可打开的HTML成果，不是Word文件或主对话正文。先 discover_capabilities 查找网页能力，将提供 oneHtml 的真实功能编号填入 featureIds/capabilityIds；不可用时说明尚未开始。');
         if ((v.outputKind==='image'||isImageInstruction(v.title)) && !selectedFeatures.some(id => availableFeature(fresh, s, id).version.values.experience?.mode === 'image')) {
           const taskId = await queueImage(v.instruction, v.title);
           return { taskId, status: 'queued', message: '已交给实际图片生成能力，拿到图片后才算完成。' };
@@ -946,14 +980,23 @@ export class CoordinatorService {
           features:selectedFeatures,requiredFeatureIds:v.featureIds??[], sources, budget: workerBudget, webSearch: webPermission,
           confirmedExternal: Boolean(v.featureIds?.length)||input.confirmedExternal === true, featureApprovals: input.featureApprovals,
           originConversationId: cid, originMessageId: mid, attachmentIds: attachments,
-          localExecution: localForThisCall, outputDestination: documentDestination, parentOperationId: input.operationId,workflow:localForThisCall?undefined:v.workflow,notionArticleRead:v.taskId?undefined:inspectedInlineArticleRead,notionArticleMessageId:v.taskId?undefined:inspectedInlineArticle?.messageId,notionArticleMessageDigest:v.taskId?undefined:inspectedInlineArticle?.messageDigest }, verifyKey);
+          localExecution: localForThisCall, localExecutionBinding:localForThisCall&&localDevice?{...localDevice,targetName:localReadiness?.folder.targetName}:undefined,outputDestination: documentDestination, parentOperationId: input.operationId,workflow:localForThisCall?undefined:v.workflow,notionArticleRead:v.taskId?undefined:inspectedInlineArticleRead,notionArticleMessageId:v.taskId?undefined:inspectedInlineArticle?.messageId,notionArticleMessageDigest:v.taskId?undefined:inspectedInlineArticle?.messageDigest }, verifyKey);
         dispatchedTasks.push(dispatched); childOperations.push(childOperation);
         let local;
         if (localForThisCall) {
-          try{await verify();await checkLocal(true);}
+          try{
+            await verify();await checkLocal(true);
+            const prepared=(await this.store.read()).chatOperations!.find(o=>own(o,s)&&o.operationId===childOperation)?.workRun;
+            if(prepared?.localExecution)assertLocalBinding(prepared.localExecution,localDevice,localReadiness);
+          }
           catch(error){await failUnstartedLocal(dispatched,childOperation,error);throw error;}
           const saved = await this.store.read(), job = saved.chatOperations!.find(o => own(o, s) && o.operationId === childOperation)!;
-          local = await executeLocal!(dispatched, job.workRun!.inputMessageId, dispatchedTasks.length === 1 ? `local_${input.operationId}` : `local_${childOperation}`);
+          try{
+            local = await executeLocal!(dispatched, job.workRun!.inputMessageId, dispatchedTasks.length === 1 ? `local_${input.operationId}` : `local_${childOperation}`);
+          }catch(error){
+            if(error instanceof LocalExecutionNotStartedError)await failUnstartedLocal(dispatched,childOperation,error);
+            throw error;
+          }
           localAccepted = Boolean(local?.id) || localAccepted;
         }
         await this.store.mutate(d => {
@@ -1097,9 +1140,11 @@ export class CoordinatorService {
           const feature=availableFeature(fresh,s,record.id);
           return feature.version.values.tools?.some(tool=>tool.id===t.direct!.tool)?record.id:undefined;
         }:undefined))};
+        if(plan.tasks.some(t=>t.dependsOn.length&&(t.outputKind==='local_file'||t.dependsOn.some(index=>plan.tasks[index]?.outputKind==='local_file'))))
+          throw new CoordinatorLocalError('local_workflow_unsupported',409);
         if(existingTaskOnly&&plan.tasks.some(t=>!t.taskId||!inspectedTasks.has(t.taskId)||input.boundTaskId&&t.taskId!==input.boundTaskId||t.outputKind==='image'&&!t.featureIds.length))throw new OrchestrationInputError('本轮只能继续已用 read_task 核对的指定原任务，全部使用原 taskId；不能换任务、夹带新任务或独立图片任务。本批尚未创建任务。');
         if(adaptive&&plan.tasks.some(t=>t.taskId&&!inspectedTasks.has(t.taskId)))throw new OrchestrationInputError('继续已有任务前，请先 read_task 核对原目标、限制与结果。本批尚未创建任务。');
-        if(adaptive&&requiresHtmlArtifact(input.text)&&!plan.tasks.some(t=>t.outputKind==='text'&&t.featureIds.some(id=>availableFeature(fresh,s,id).version.values.tools?.some(tool=>tool.id==='oneHtml'))))throw new OrchestrationInputError('本批遗漏必需的可打开HTML成果。请查找提供 oneHtml 的网页功能并加入对应任务；不能改成交付Word或只回正文。本批尚未创建任务。');
+        if(adaptive&&requiresHtmlArtifact(input.text)&&!plan.tasks.some(t=>t.outputKind==='local_file'||t.outputKind==='text'&&t.featureIds.some(id=>availableFeature(fresh,s,id).version.values.tools?.some(tool=>tool.id==='oneHtml'))))throw new OrchestrationInputError('本批遗漏必需的可打开HTML成果。请查找提供 oneHtml 的网页功能并加入对应任务；不能改成交付Word或只回正文。本批尚未创建任务。');
         if(localClarification)throw new CoordinatorError('正在等待你补充确认，本轮不会继续分派或操作电脑',409);
         if(answerOnly)throw new CoordinatorError('本轮只允许回答');
         if(input.outputDestination!=='notion'&&notionWriteRequested(content)&&notionDestinationRequested(content,documentDestination)&&!plan.tasks.some(task=>task.outputKind==='text'&&notionWriteRequested(task.instruction)))throw new OrchestrationInputError('用户本轮明确要求保存到 Notion，但整批计划遗漏了对应的保存任务；本批尚未入队。请补齐正确文本任务的 Notion 保存与核对要求，已有正文直接保存，不重写；其它独立任务不要附加 Notion 目标。');
@@ -1142,7 +1187,7 @@ export class CoordinatorService {
           const isLocal=t.outputKind==='local_file';
           if(isLocal)localRequested=true;
           const executorId=t.executorId==='direct'?'general':t.executorId==='local_special'||t.executorId==='image_generation'?resolveRoutingExecutorId(current,'logic'):t.executorId;
-          const taskId=await this.enqueue(s,{operationId,parentOperationId:input.operationId,text:content,instruction:t.instruction,title:t.title,taskId:t.taskId??undefined,executorId,features:t.featureIds.length?t.featureIds:features,requiredFeatureIds:t.featureIds,sources,budget:workerBudget,webSearch:webPermission,confirmedExternal:true,featureApprovals:input.featureApprovals,originConversationId:cid,originMessageId:mid,attachmentIds:attachments,localExecution:isLocal,outputDestination:documentDestination,dependsOnOperationIds:dependencies,expectedOutput:t.outputKind,knowledge:t.knowledge,requiredTools:t.requiredTools,directVisual:t.direct,workflow:t.workflow,notionArticleRead:t.taskId?undefined:inspectedInlineArticleRead,notionArticleMessageId:t.taskId?undefined:inspectedInlineArticle?.messageId,notionArticleMessageDigest:t.taskId?undefined:inspectedInlineArticle?.messageDigest},verifyKey);
+          const taskId=await this.enqueue(s,{operationId,parentOperationId:input.operationId,text:content,instruction:t.instruction,title:t.title,taskId:t.taskId??undefined,executorId,features:t.featureIds.length?t.featureIds:features,requiredFeatureIds:t.featureIds,sources,budget:workerBudget,webSearch:webPermission,confirmedExternal:true,featureApprovals:input.featureApprovals,originConversationId:cid,originMessageId:mid,attachmentIds:attachments,localExecution:isLocal,localExecutionBinding:isLocal&&localDevice?{...localDevice,targetName:localReadiness?.folder.targetName}:undefined,outputDestination:documentDestination,dependsOnOperationIds:dependencies,expectedOutput:t.outputKind,knowledge:t.knowledge,requiredTools:t.requiredTools,directVisual:t.direct,workflow:isLocal?undefined:t.workflow,notionArticleRead:t.taskId?undefined:inspectedInlineArticleRead,notionArticleMessageId:t.taskId?undefined:inspectedInlineArticle?.messageId,notionArticleMessageDigest:t.taskId?undefined:inspectedInlineArticle?.messageDigest},verifyKey);
           const childKnowledge=knowledgePolicy(current,s,t.instruction,sources,t.knowledge);
           if(!isLocal&&childKnowledge.required&&!childKnowledge.missing.length&&!mainKnowledge.missing.length&&mainKnowledge.sourceIds.every(id=>childKnowledge.sourceIds.includes(id)))delegatedKnowledge=true;
           dispatched=taskId;dispatchedTasks.push(taskId);childOperations.push(operationId);childIds.push(operationId);
@@ -1157,7 +1202,7 @@ export class CoordinatorService {
         let attemptedLocal=false;
         for(const start of localStarts){
           await verify();const saved=await this.store.read();const reply=replies[start.reply];
-          if(start.hasDependencies||attemptedLocal||(saved.executionTasks??[]).some(x=>own(x,s)&&['queued','selecting_target','running'].includes(x.status))){
+          if(start.hasDependencies||attemptedLocal){
             reply.message='本机要求已保存。前面的事情结束后，可以在任务里开始。';continue;
           }
           const job=saved.chatOperations!.find(o=>own(o,s)&&o.operationId===start.operationId)!;
@@ -1166,11 +1211,12 @@ export class CoordinatorService {
           let invoked=false;
           try{
             await checkLocal(true);
+            if(job.workRun.localExecution)assertLocalBinding(job.workRun.localExecution,localDevice,localReadiness);
             invoked=true;
             const execution=await executeLocal!(start.taskId,job.workRun.inputMessageId,`local_${start.operationId}`);
             localAccepted=Boolean(execution.id)||localAccepted;reply.status=execution.status;
           }catch(error){
-            if(!invoked){const failure=await failUnstartedLocal(start.taskId,start.operationId,error);reply.status='failed';reply.message=failureFeedback(failure,job.requestId);continue;}
+            if(!invoked||error instanceof LocalExecutionNotStartedError){const failure=await failUnstartedLocal(start.taskId,start.operationId,error);reply.status=failure.outcome==='unknown'?'prepared':'failed';reply.message=failureFeedback(failure,job.requestId);continue;}
             // The executor may already have accepted a write. Keep its receipt
             // authoritative; never label this as a safe automatic retry.
             reply.message='本机这边还没确认开始。要求已保存，打开任务查看进展；其他独立任务照常处理。';
@@ -1472,11 +1518,22 @@ export class CoordinatorService {
       // Failed routing is still a real, possibly billed attempt. Keep the same
       // owner's diagnostic record even when no worker was created. Never store
       // raw gateway/transport exceptions, which can contain credentials.
+      let mayPersistFailureReply=false;
+      if(verifyRouting){try{await verifyRouting();mayPersistFailureReply=true;}catch{/* Cancellation/Key/source revocation still prevents a late reply. */}}
       await this.store.mutate((d) => {
+        let authorizedReply=false;
+        if(mayPersistFailureReply&&assertRouting){try{assertRouting(d);authorizedReply=true;}catch{/* Check the same authorization inside the commit. */}}
         failChatOperationInMutation(d,scope,{failure});
+        const operation=d.chatOperations?.find(o=>own(o,s)&&o.operationId===scope.operationId&&o.conversationId===cid);
+        const conversation=d.conversations.find(c=>own(c,s)&&c.id===cid&&c.coordinatorMain);
+        if(authorizedReply&&operation&&conversation&&!operation.assistantMessageId){
+          const id='msg_failed_'+createHash('sha256').update(JSON.stringify([s.workspaceId,s.userId,scope.operationId])).digest('hex').slice(0,40);
+          if(!conversation.messages.some(m=>m.id===id))saveMessage(d,s,conversation,{id,role:'assistant',content:failureFeedback(failure,requestId),createdAt:at()});
+          operation.assistantMessageId=id;
+        }
         if (d.contextTraces.some(t => own(t, s) && t.requestId === requestId)) return;
         appendOwnerContextTrace(d, {
-          id: uid("ctx"), ...s, conversationId: cid, assistantMessageId: "",
+          id: uid("ctx"), ...s, conversationId: cid, assistantMessageId: operation?.assistantMessageId??"",
           modelId: config.model.id, requestId, query: content,
           responsePreview: failureFeedback(failure,requestId),
           sections, executionSteps: trace, createdAt: at(),
@@ -1582,6 +1639,7 @@ export class CoordinatorService {
     verifyKey: () => Promise<void>,
     executeLocal?: (conversationId:string,sourceMessageId:string,operationId:string)=>Promise<{id:string;status:string}>,
     inspectLocalReadiness?: (options?:{fresh?:boolean})=>Promise<LocalDeviceReadiness>,
+    localDevice?:LocalDispatchDevice,
   ) {
     await verifyKey();
     const db = await this.store.read(),
@@ -1591,15 +1649,15 @@ export class CoordinatorService {
       if(claim.kind!=='completed')await this.store.mutate(d=>{
         featureMember(d,s);const task=taskOf(d,s,taskId),latest=(d.chatOperations??[]).filter(op=>own(op,s)&&op.conversationId===taskId&&op.workRun).at(-1)?.workRun;
         const paused=task.workPaused===true;
-        const state=latest?.state==='running'?'还在处理最新要求，有结果会在这里告诉你。':paused&&task.workPauseReason==='user_stopped'?'这件事已经按你的要求停下，没有重新开工。':paused&&latest?.resultOutcome==='needs_input'?'这件事还在等补充资料；把缺的内容发来，就能继续处理。':paused?'这件事还有部分没做完，已有成果和原要求都保留着；需要先核对卡住的步骤。':latest?.state==='queued'?'最新要求正在排队，前一轮处理完就会接着做。':'最新一轮已经返回结果，可以查看上面的内容；有修改要求直接补充就行。';
+        const state=localTaskStatus(d,s,taskId,latest)??(latest?.state==='running'?'还在处理最新要求，有结果会在这里告诉你。':paused&&task.workPauseReason==='user_stopped'?'这件事已经按你的要求停下，没有重新开工。':paused&&latest?.resultOutcome==='needs_input'?'这件事还在等补充资料；把缺的内容发来，就能继续处理。':paused?'这件事还有部分没做完，已有成果和原要求都保留着；需要先核对卡住的步骤。':latest?.state==='queued'?'最新要求正在排队，前一轮处理完就会接着做。':'最新一轮已经返回结果，可以查看上面的内容；有修改要求直接补充就行。');
         saveMessage(d,s,task,{id:uid('msg'),role:'user',content:input.text,createdAt:at()});
         const id=uid('msg');saveMessage(d,s,task,{id,role:'assistant',content:state,createdAt:at()});
         completeChatOperation(d,{...s,operationId:input.operationId},{conversationId:taskId,assistantMessageId:id});
       });
       return {taskId};
     }
-    if(input.outputDestination==='local'&&localActionRequested(input.text,taskId)){
-      const result=await this.dispatch(s,{...input,boundTaskId:taskId},verifyKey,undefined,executeLocal,undefined,inspectLocalReadiness);
+    if(input.outputDestination==='local'&&localActionRequested(input.text,taskId)||naturalLocalActionRequested(input.text,taskId)){
+      const result=await this.dispatch(s,{...input,boundTaskId:taskId,outputDestination:'local'},verifyKey,undefined,executeLocal,undefined,inspectLocalReadiness,localDevice);
       return {taskId:result.taskId??taskId,status:result.failure?'failed' as const:'accepted' as const,
         failure:result.failure,message:result.message,operationId:input.operationId};
     }
@@ -1625,11 +1683,82 @@ export class CoordinatorService {
       ),
     };
   }
-  async retryLatest(s:WorkScope,taskId:string,sourceJobId:string,featureApprovals:FeatureApproval[]|undefined,verifyKey:()=>Promise<void>,requestedBudget?:number) {
+  private async retryLocal(s:WorkScope,taskId:string,source:ChatOperation,verifyKey:()=>Promise<void>,requestedBudget:number|undefined,
+    executeLocal:((conversationId:string,sourceMessageId:string,operationId:string)=>Promise<{id:string;status:string}>)|undefined,
+    inspect:((options?:{fresh?:boolean})=>Promise<LocalDeviceReadiness>)|undefined,device:LocalDispatchDevice|undefined){
+    const run=source.workRun!;
+    assertLocalBinding(run.localExecution,device);
+    if(requestedBudget!==undefined&&requestedBudget!==run.budget)throw new CoordinatorError('本机恢复沿用原预算；需要调整额度时，请先核对原任务，再提出新的明确要求。',409);
+    const check=(d:Database)=>{
+      featureMember(d,s);const task=taskOf(d,s,taskId);
+      const latest=(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===taskId&&o.workRun).at(-1);
+      if(latest?.id!==source.id)throw new CoordinatorError('任务已有新的要求，请刷新后处理最新一轮。',409);
+      assertLocalBinding(latest.workRun!.localExecution,device);
+      if(task.workPauseReason==='user_stopped'||['cancelled','interrupted'].includes(latest.workRun!.state))throw new CoordinatorError('本轮已停止，请先核对原结果，再明确提出继续要求。',409);
+      assertSources(d,s,run.sources);verifyCredentialBindings(d,s,run.credentials);
+      for(const skill of run.skills)availableFeature(d,s,skill.id,skill.releaseId);
+      const executions=(d.executionTasks??[]).filter(t=>own(t,s)&&t.conversationId===taskId&&t.sourceMessageId===run.inputMessageId);
+      if(executions.some(t=>t.deviceId!==device?.deviceId||t.installationId!==device?.installationId))throw new CoordinatorLocalError('local_binding_changed',409);
+      return{task,operation:latest,execution:executions.sort((a,b)=>b.createdAt.localeCompare(a.createdAt))[0]};
+    };
+    await verifyKey();let current=check(await this.store.read());
+    if(current.execution)return{taskId,status:current.execution.status,message:'原本机执行已经受理，请查看同一轮结果；没有重复启动。'};
+    if(run.state!=='failed'||run.failureCode!=='task_local_not_started'||run.notionReceipt||run.steps?.some(step=>step.state==='started'||step.state==='completed'))
+      throw new CoordinatorLocalError('local_execution_unconfirmed',409);
+    if(!executeLocal)throw new CoordinatorLocalError('local_tool_unavailable');
+    const configuration=await this.store.read(),routing=resolveAiTask(configuration.settings,configuration.models,'coordinator',modelOf(configuration));
+    if(routing.values.enabled!==true||!routing.values.tools.some(tool=>tool==='execute_local_task'||tool==='delegate_task'))throw new CoordinatorLocalError('local_tool_unavailable');
+    const probe=async()=>{
+      await verifyKey();
+      const snapshot=inspect?parseLocalDeviceReadiness(await inspect({fresh:true})):undefined;
+      if(!localReadinessCanStart(snapshot))throw new CoordinatorLocalError(localReadinessFailure(snapshot));
+      assertLocalBinding(run.localExecution,device,snapshot);await verifyKey();return snapshot!;
+    };
+    await probe();
+    await this.store.mutate(d=>{
+      const fresh=check(d);
+      if(fresh.execution)throw new CoordinatorError('原本机执行已经受理，请查看同一轮进展。',409);
+      if(fresh.operation.workRun!.state!=='failed'||fresh.operation.workRun!.failureCode!=='task_local_not_started')throw new CoordinatorError('本机恢复已经受理，请查看原任务。',409);
+      const job=fresh.operation.workRun!;job.state='prepared';job.error=undefined;job.failureCode=undefined;job.resultOutcome=undefined;job.unread=false;
+      job.localExecution={...job.localExecution!,admissionRevision:(job.localExecution?.admissionRevision??0)+1};
+      fresh.operation.failure=undefined;fresh.operation.updatedAt=at();fresh.task.workPaused=false;fresh.task.workPauseReason=undefined;fresh.task.updatedAt=at();
+    });
+    let invoked=false;
+    try{
+      await probe();current=check(await this.store.read());
+      if(current.execution)return{taskId,status:current.execution.status};
+      invoked=true;
+      const execution=await executeLocal(taskId,run.inputMessageId,`local_retry_${createHash('sha256').update(source.id).digest('hex')}_${current.operation.workRun!.localExecution!.admissionRevision}`);
+      return{taskId,status:execution.status};
+    }catch(error){
+      // Only the real entry point can attest a post-callback refusal. Unknown
+      // exceptions remain protected, and a real matching execution always wins.
+      let alreadyAccepted=false;
+      if(!invoked||error instanceof LocalExecutionNotStartedError)await this.store.mutate(d=>{
+        const fresh=check(d);if(fresh.execution){alreadyAccepted=true;return;}if(fresh.operation.workRun!.state!=='prepared')return;
+        const failure=classifyCoordinatorFailure(error,{stage:'tool',outcome:'not_started'}),job=fresh.operation.workRun!;
+        job.state='failed';job.failureCode='task_local_not_started';job.resultOutcome='failed';job.error=failureFeedback(failure,fresh.operation.requestId);job.unread=true;
+        fresh.operation.failure=failure;fresh.operation.updatedAt=at();fresh.task.workPaused=true;fresh.task.workPauseReason='failed';fresh.task.updatedAt=at();
+      });
+      if(alreadyAccepted)throw new CoordinatorLocalError('local_execution_unconfirmed',409);
+      throw error;
+    }
+  }
+  async retryLatest(s:WorkScope,taskId:string,sourceJobId:string,featureApprovals:FeatureApproval[]|undefined,verifyKey:()=>Promise<void>,requestedBudget?:number,
+    executeLocal?: (conversationId:string,sourceMessageId:string,operationId:string)=>Promise<{id:string;status:string}>,
+    inspectLocalReadiness?: (options?:{fresh?:boolean})=>Promise<LocalDeviceReadiness>,localDevice?:LocalDispatchDevice) {
     await verifyKey();
     const db=await this.store.read(),c=taskOf(db,s,taskId);
     const source=db.chatOperations?.find(o=>own(o,s)&&o.conversationId===taskId&&o.id===sourceJobId&&o.workRun);
     if(!source)throw new CoordinatorError('原要求不可用，请重新打开任务',404);
+    if(localWork(source.workRun)){
+      assertLocalBinding(source.workRun!.localExecution,localDevice);
+      const retryKey=JSON.stringify([s.workspaceId,s.userId,source.id]);
+      const pending=this.localRetries.get(retryKey);if(pending)return pending;
+      const work=this.retryLocal(s,taskId,source,verifyKey,requestedBudget,executeLocal,inspectLocalReadiness,localDevice);
+      this.localRetries.set(retryKey,work);
+      try{return await work;}finally{if(this.localRetries.get(retryKey)===work)this.localRetries.delete(retryKey);}
+    }
     if(requestedBudget!==undefined&&typeof requestedBudget!=='number')throw new CoordinatorError('电力上限应为 0.001–10',400);
     const recoveryBudget=budget(requestedBudget,source.workRun!.budget);
     if(requestedBudget!==undefined&&source.workRun!.kind==='image')throw new CoordinatorError('图片恢复仍按原确认的价格和额度处理',400);
@@ -1846,6 +1975,7 @@ export class CoordinatorService {
       originMessageId?: string;
       attachmentIds?: string[];
       localExecution?: boolean;
+      localExecutionBinding?:WorkRun['localExecution'];
       outputDestination?: 'chat' | 'notion';
       parentOperationId?: string;
       dependsOnOperationIds?:string[];
@@ -1870,6 +2000,13 @@ export class CoordinatorService {
     const db = await this.store.read();
     featureMember(db, s);
     const existing = input.taskId ? taskOf(db, s, input.taskId) : undefined;
+    if(input.localExecution&&existing){
+      const previous=(db.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===existing.id&&o.workRun?.localExecution).at(-1)?.workRun!.localExecution;
+      if(previous){
+        assertLocalBinding(previous,input.localExecutionBinding);
+        if(previous.targetName&&previous.targetName!==input.localExecutionBinding?.targetName)throw new CoordinatorLocalError('local_binding_changed',409);
+      }
+    }
     const continuation=existing?taskContinuation(db,s,existing):undefined;
     const supplement=actionableTaskSupplement(input.text)&&continuation?.canAcceptSupplement===true;
     const supplementSource=supplement?supplementKnowledgeRequest(input.text):'';
@@ -1998,6 +2135,7 @@ export class CoordinatorService {
     const plainContinue=Boolean(supplement&&plainTaskContinuation(input.text));
     const originalPendingGoal=plainContinue?continuation?.prior?.workRun?.instruction.split('\n本轮用户明确要求：')[0]:undefined;
     const effectiveInstruction=originalPendingGoal?`${originalPendingGoal}\n本轮用户明确要求：${input.text}。只继续未完成部分，已完成成果不重做。`:[input.instruction,supplementSource].filter(Boolean).join('\n');
+    const executionInstruction=input.localExecution?`本轮确定为本机交付：必须在本任务绑定的已授权工作文件夹完成实际目标文件，不能以云端下载链接或聊天正文冒充已写到本机。沿用已选目录，不另问默认保存路径；不扩大文件权限，不覆盖无关文件。下列交接中的“无需保存本机”等相反表述不改变用户已选择的本机目标。\n\n${effectiveInstruction}`:effectiveInstruction;
     let policy=knowledgeDeclined?{required:false,sourceIds:[],requested:[],missing:[],declined:true}:knowledgePolicy(db,s,effectiveInstruction,sourceIds,supplementSource?undefined:input.knowledge);
     if(input.onboardingPractice?.material)policy={required:true,sourceIds,requested:[],missing:[],declined:false};
     const priorKnowledge=supplement?continuation?.prior?.workRun?.contract?.knowledgeSourceIds:undefined;
@@ -2181,6 +2319,8 @@ export class CoordinatorService {
         }
         op.conversationId = c.id;
         op.workRun = {
+          executionMode:input.localExecution?'local':undefined,
+          localExecution:input.localExecution&&input.localExecutionBinding?{...input.localExecutionBinding,admissionRevision:1}:undefined,
           workflow:workflowSpec?createWorkflowRun(workflowSpec,{...s,operationId:op.id}):undefined,
           workflowModels:workflowSpec?workflowModels:undefined,
           runtimeContext:restore?.runtimeContext??(plainContinue?continuation?.prior?.workRun?.runtimeContext:undefined)??db.chatOperations?.find(o=>own(o,s)&&o.operationId===input.parentOperationId)?.runtimeContext??runtimeContext(db,s,op.createdAt),
@@ -2200,7 +2340,7 @@ export class CoordinatorService {
           values: config.values,
           modelId: config.model.id,
           modelPrompt: config.model.systemPrompt,
-          instruction: effectiveInstruction,
+          instruction: executionInstruction,
           inputMessageId: mid,
           originConversationId: input.originConversationId,
           originMessageId: input.originMessageId,

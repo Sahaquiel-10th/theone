@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {coordinatorRecoveryCopy,dispatchCommitment,coordinatorFailureCodes,parseCoordinatorFailure,type CoordinatorFailure} from './coordinatorRecovery.js';
+test('a proven failed artifact attempt does not claim there is an unknown file to check or discard other results',()=>{
+ const copy=coordinatorRecoveryCopy({code:'artifact_input_invalid',stage:'tool',outcome:'failed'});
+ assert.match(copy,/尚未进入保存/);assert.match(copy,/列名|行列|公式/);assert.match(copy,/其他已有成果仍保留/);assert.doesNotMatch(copy,/核对已有文件|重新选择.*功能|全部.*没有文件/);
+});
 test('promised action needs a receipt, but clarification and ordinary conversation do not',()=>{
  for(const text of ['我会把漫画做成四格，并把网页和漫画放在同一件任务里处理。','我来画一张图。','已经安排好了。'])assert.equal(dispatchCommitment(text),true,text);
  for(const text of ['你能给张照片吗？','如果你愿意，我来制作。','下次我会安排。','你好呀。','文章如下：今天开始了新的一天。','我来整理如下：\n1. 先说明目标。\n2. 再确认下一步。','工具还没就位，我会先核对。'])assert.equal(dispatchCommitment(text),false,text);
@@ -69,4 +73,12 @@ test('generic internal failures still identify the phase instead of recommending
   const copy=coordinatorRecoveryCopy({code:'internal_error',stage,outcome:'unknown'});
   assert.match(copy,new RegExp(label));assert.match(copy,/请求编号/);
  }
+});
+test('local binding, unconfirmed handoff and unsupported workflow keep distinct safe next steps',()=>{
+ const binding=coordinatorRecoveryCopy({code:'local_binding_changed',stage:'tool',outcome:'not_started'});
+ assert.match(binding,/原来的 Key.*电脑.*工作文件夹.*恢复原设备与原目录/);assert.doesNotMatch(binding,/重新配置|新建目录/);
+ const unknown=coordinatorRecoveryCopy({code:'local_execution_unconfirmed',stage:'receipt',outcome:'unknown'});
+ assert.match(unknown,/已经交出.*原回执.*不要重复/);assert.doesNotMatch(unknown,/尚未开始|重选/);
+ const workflow=coordinatorRecoveryCopy({code:'local_workflow_unsupported',stage:'planning',outcome:'not_started'});
+ assert.match(workflow,/计划尚未开始.*合并成一件本机任务.*分阶段/);assert.doesNotMatch(workflow,/缺连接|没连上/);
 });

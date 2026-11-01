@@ -8,7 +8,9 @@ export type LocalReadinessSnapshot={status:'idle'|'checking'|'confirmed'|'error'
 /** One component-scoped API function already binds user, workspace and login
  * generation. Never share a ready result across those function identities. */
 export function createLocalDeviceReadinessResource(api:typeof Api,options:{now?:()=>number}={}) {
- const now=options.now??Date.now;
+ // Monotonic local time cannot jump when the OS clock is corrected. Never
+ // subtract a server timestamp from a browser clock to grant/deny readiness.
+ const now=options.now??(()=>performance.now());
  let snapshot:LocalReadinessSnapshot={status:'idle',updatedAt:0},generation=0;
  let inflight:Promise<void>|undefined,timer:ReturnType<typeof setTimeout>|undefined;
  const subscribers=new Set<()=>void>();
@@ -28,10 +30,12 @@ export function createLocalDeviceReadinessResource(api:typeof Api,options:{now?:
    try{
     const raw=await api<unknown>(`/api/me/local-device/readiness${force?'?fresh=1':''}`,{signal:AbortSignal.timeout(15_000)});
     const value=parseLocalDeviceReadiness(raw);
-    if(!value||now()-Date.parse(value.checkedAt)>=LOCAL_READINESS_TTL_MS)throw new Error('本机状态这次没核对完整，请重新检查。');
-    // Server and browser both cache, but their windows must not stack into
-    // twenty seconds. Expiry remains anchored to the server's actual probe.
-    if(revision===generation)publish({status:'confirmed',value,updatedAt:Math.min(now(),Date.parse(value.checkedAt))});
+    const remaining=value?.validForMs??0;
+    if(!value||remaining<=0)throw new Error('本机状态这次没核对完整，请重新检查。');
+    // The server starts validity after its probe finishes. Do not subtract
+    // that probe's latency again; only use its remaining relative duration.
+    // This is presentation, never execution authority (server rechecks fresh).
+    if(revision===generation)publish({status:'confirmed',value,updatedAt:now()-(LOCAL_READINESS_TTL_MS-remaining)});
    }catch(error){
     if(revision===generation)publish({status:'error',error:error instanceof Error?error.message:'本机连接暂时无法确认，请重新检查。',updatedAt:now()});
    }

@@ -5,11 +5,11 @@ import {WebSocket} from 'ws';
 
 const scope = {workspaceId: 'w', userId: 'u', deviceId: 'd', installationId: 'a'.repeat(32)};
 function fixture() {
-  const db = {oneKeyDevices: [{id:'d',workspaceId:'w',userId:'u',status:'active'}], executionTasks:[{id:'t', ...scope, status:'completed'}]};
+  const db = {oneKeyDevices: [{id:'d',workspaceId:'w',userId:'u',status:'active'}], executionTasks:[{id:'t', ...scope, status:'completed',targetName:'/authorized/original-task'}]};
   const presence = new OneKeyPresence({read:async()=>db} as any);
   const socket = {readyState:WebSocket.OPEN, send(_payload: string, callback: (error?: Error)=>void) {callback(new Error('test transport stopped'));}};
   (presence as any).sockets.set('d', socket);
-  (presence as any).states.set(socket, {authenticated:true,installationId:scope.installationId,capabilities:new Set(['static_preview_v1','static_preview_status_v1'])});
+  (presence as any).states.set(socket, {authenticated:true,installationId:scope.installationId,capabilities:new Set(['static_preview_v1','static_preview_status_v1','task_directory_binding_v1'])});
   presence.requireProof = async supplied => { assert.equal(supplied.method,'POST'); assert.match(supplied.path,/preview$/); };
   return {presence,db,socket};
 }
@@ -17,6 +17,17 @@ test('static preview rejects foreign workspace, user, device, installation and t
   const {presence} = fixture();
   for (const action of ['start','stop','status'] as const) for (const changed of [{workspaceId:'other'},{userId:'other'},{deviceId:'other'},{installationId:'b'.repeat(32)}]) await assert.rejects(()=>presence.staticPreview({...scope,...changed},'t',action,'index.html'));
   await assert.rejects(()=>presence.staticPreview(scope,'foreign','start','index.html'));
+});
+test('preview start sends only the exact durable original directory binding; unbound history fails before pending RPC',async()=>{
+  const f=fixture(),valid=`http://127.0.0.1:3000/${'a'.repeat(32)}/index.html`;
+  let frame:any;
+  acknowledge(f,valid);const send=f.socket.send;
+  f.socket.send=(payload,callback)=>{frame=JSON.parse(payload);send(payload,callback);};
+  await f.presence.staticPreview(scope,'t','start','index.html');
+  assert.deepEqual(frame.taskBinding,{...scope,taskId:'t',targetName:'/authorized/original-task'});
+  f.db.executionTasks[0].targetName='';
+  await assert.rejects(()=>f.presence.staticPreview(scope,'t','start','index.html'),/原任务.*绑定/);
+  assert.equal((f.presence as any).pendingLocal.size,0);
 });
 test('preview status confirms only current resident state, including replacement and stopped state', async()=>{
   const f=fixture(), valid=`http://127.0.0.1:3001/${'b'.repeat(32)}/index.html`;

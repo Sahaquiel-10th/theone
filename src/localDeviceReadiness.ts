@@ -3,6 +3,10 @@ export type LocalExecutorReadinessState='ready'|'unprepared'|'busy'|'unavailable
 export type LocalDeviceReadinessReason='ready'|'offline'|'folder_unselected'|'folder_unavailable'|'folder_denied'|'executor_unprepared'|'busy'|'unknown';
 export type LocalDeviceReadiness={
   checkedAt:string;
+  /** Relative server cache remainder; checkedAt is display-only across clocks. */
+  validForMs?:number;
+  platform?:'macos'|'windows'|'unknown';
+  capabilities?:{staticPreview:boolean;taskDirectoryBinding:boolean};
   ready:boolean;
   connected:boolean;
   folder:{state:LocalFolderState;targetName?:string};
@@ -43,6 +47,9 @@ export function parseLocalDeviceReadiness(value:unknown):LocalDeviceReadiness|un
   if(value.executor.installedSource!==undefined){if(typeof value.executor.installedSource!=='string'||!sources.includes(value.executor.installedSource))return;executor.installedSource=value.executor.installedSource as NonNullable<typeof executor.installedSource>;}
   if(executor.state==='ready'&&!executor.installedVersion)return;
   const result:LocalDeviceReadiness={checkedAt:value.checkedAt,ready:value.ready,connected:value.connected,folder,executor,reason:value.reason as LocalDeviceReadinessReason};
+  if(value.validForMs!==undefined){if(typeof value.validForMs!=='number'||!Number.isFinite(value.validForMs)||value.validForMs<0||value.validForMs>10_000)return;result.validForMs=value.validForMs;}
+  if(value.platform!==undefined){if(!['macos','windows','unknown'].includes(value.platform as string))return;result.platform=value.platform as LocalDeviceReadiness['platform'];}
+  if(value.capabilities!==undefined){if(!record(value.capabilities)||typeof value.capabilities.staticPreview!=='boolean'||typeof value.capabilities.taskDirectoryBinding!=='boolean')return;result.capabilities={staticPreview:value.capabilities.staticPreview,taskDirectoryBinding:value.capabilities.taskDirectoryBinding};}
   if(result.reason!==localDeviceReadinessReason(result)||result.ready!==(result.reason==='ready')||!result.connected&&(folder.state!=='unknown'||executor.state!=='unknown'))return;
   return result;
 }

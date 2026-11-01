@@ -29,3 +29,46 @@ func mayScanOtherKeyVolumes(expectedDeviceId: String?, preferred: URL?) -> Bool 
     // volume merely because permission/mount recovery on the first failed.
     preferred == nil && expectedDeviceId == nil
 }
+
+/// A mount path is not Key identity. Only metadata for the pinned volume UUID
+/// may lead to a credential read; a matching device ID alone is insufficient.
+struct KeyCredentialIdentity: Codable, Equatable {
+    let deviceId: String
+    let publicKey: String
+    let serverBaseUrl: String
+}
+struct KeyMountIdentity: Codable {
+    let volumeUUID: String
+    let credential: KeyCredentialIdentity
+}
+struct KeyMountedVolume {
+    let url: URL
+    let uuid: String?
+}
+func matchingPinnedKeyCredential(_ pin: KeyMountIdentity, volumes: [KeyMountedVolume],
+                                readIdentity: (URL) throws -> KeyCredentialIdentity) -> URL? {
+    let candidates = volumes.filter { $0.uuid?.caseInsensitiveCompare(pin.volumeUUID) == .orderedSame }
+    // Duplicate UUIDs may be cloned media. Never pick one arbitrarily.
+    guard !pin.volumeUUID.isEmpty, candidates.count == 1 else { return nil }
+    let candidate = candidates[0].url.appendingPathComponent(".one/credential.json")
+    guard let found = try? readIdentity(candidate), found == pin.credential else { return nil }
+    return candidate
+}
+func mountedKeyVolume(_ url: URL) -> KeyMountedVolume {
+    KeyMountedVolume(url: url, uuid: (try? url.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString)
+}
+private func keyMountIdentityStorageKey(deviceId: String, installationId: String) -> String {
+    "one.key.mount-identity.\(installationId).\(deviceId)"
+}
+func savedKeyMountIdentity(defaults: UserDefaults, deviceId: String, installationId: String) -> KeyMountIdentity? {
+    guard let data = defaults.data(forKey: keyMountIdentityStorageKey(deviceId: deviceId, installationId: installationId)),
+          data.count <= 16_384, let pin = try? JSONDecoder().decode(KeyMountIdentity.self, from: data),
+          pin.credential.deviceId == deviceId, !pin.volumeUUID.isEmpty,
+          !pin.credential.publicKey.isEmpty, !pin.credential.serverBaseUrl.isEmpty else { return nil }
+    return pin
+}
+func saveKeyMountIdentity(_ pin: KeyMountIdentity, defaults: UserDefaults, installationId: String) {
+    guard let data = try? JSONEncoder().encode(pin), data.count <= 16_384 else { return }
+    defaults.set(data, forKey: keyMountIdentityStorageKey(deviceId: pin.credential.deviceId, installationId: installationId))
+    defaults.synchronize()
+}

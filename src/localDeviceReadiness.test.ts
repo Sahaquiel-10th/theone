@@ -24,3 +24,9 @@ test('an explicit execution may ask for the first folder but a probe never treat
   for(const state of ['unprepared','busy','unavailable','unknown'] as const)assert.equal(localDeviceCanRequestExecution({...ready,ready:false,executor:{state}}),false);
   assert.equal(localDeviceCanRequestExecution({...ready,connected:false}),false);
 });
+test('relative freshness and reviewed platform capabilities are strictly parsed without trusting the server clock',()=>{
+  const metadata={validForMs:9000,platform:'windows',capabilities:{staticPreview:false,taskDirectoryBinding:false}};
+  assert.deepEqual(parseLocalDeviceReadiness({...ready,...metadata}),{...ready,...metadata});
+  for(const invalid of [{validForMs:-1},{validForMs:10001},{validForMs:NaN},{platform:'guess'},{capabilities:{staticPreview:'yes',taskDirectoryBinding:false}},{capabilities:{staticPreview:true}}])assert.equal(parseLocalDeviceReadiness({...ready,...invalid}),undefined);
+  assert.deepEqual(parseLocalDeviceReadiness({...ready,capabilities:{staticPreview:false,taskDirectoryBinding:false,privateToken:'never'}})?.capabilities,{staticPreview:false,taskDirectoryBinding:false});
+});

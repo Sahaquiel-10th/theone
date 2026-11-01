@@ -99,6 +99,24 @@ import Foundation
         let relaunched = UserDefaults(suiteName: suite)!
         let restored = try MacWorkFolderConfiguration.resolve(defaults: relaunched, deviceId: "key-a", choose: select)
         precondition(restored == canonicalRoot && selections == 1, "relaunch must preserve the same Key folder")
+        let binding = ExecutionTaskBinding(workspaceId: "workspace-a", userId: "user-a", deviceId: "key-a", installationId: "machine-a", taskId: "task-a", targetName: canonicalRoot, providerThreadId: "thread-a")
+        let restoredTaskRoot = try binding.authorizedRoot(defaults: relaunched, workspaceId: "workspace-a", userId: "user-a", deviceId: "key-a", installationId: "machine-a", taskId: "task-a", requireThread: true)
+        precondition(restoredTaskRoot == canonicalRoot && binding.providerThreadId == "thread-a", "a process restart restores the exact durable root and thread")
+        func rejectedBinding(_ candidate: ExecutionTaskBinding, workspace: String = "workspace-a", user: String = "user-a", device: String = "key-a", installation: String = "machine-a", task: String = "task-a", requireThread: Bool = true) {
+            do { _ = try candidate.authorizedRoot(defaults: relaunched, workspaceId: workspace, userId: user, deviceId: device, installationId: installation, taskId: task, requireThread: requireThread); preconditionFailure("foreign or incomplete task binding accepted") } catch {}
+        }
+        rejectedBinding(binding, workspace: "workspace-b")
+        rejectedBinding(binding, user: "user-b")
+        rejectedBinding(binding, device: "key-b")
+        rejectedBinding(binding, installation: "machine-b")
+        rejectedBinding(binding, task: "task-b")
+        rejectedBinding(ExecutionTaskBinding(workspaceId: "workspace-a", userId: "user-a", deviceId: "key-a", installationId: "machine-a", taskId: "task-a", targetName: canonicalRoot, providerThreadId: nil))
+        let anotherRoot = root.appendingPathComponent("another-authorized-folder")
+        try FileManager.default.createDirectory(at: anotherRoot, withIntermediateDirectories: false)
+        defaults.set(anotherRoot.path, forKey: MacWorkFolderConfiguration.key("key-a")); defaults.synchronize()
+        rejectedBinding(binding, requireThread: false)
+        precondition(defaults.string(forKey: MacWorkFolderConfiguration.key("key-a")) == anotherRoot.path, "old-task preview must neither read the new root nor restore old authorization implicitly")
+        defaults.set(canonicalRoot, forKey: MacWorkFolderConfiguration.key("key-a")); defaults.synchronize()
         let otherKey = try MacWorkFolderConfiguration.configured(defaults: defaults, deviceId: "key-b")
         precondition(otherKey == nil, "another Key must not inherit authorization")
         let cancelled = try MacWorkFolderConfiguration.resolve(defaults: defaults, deviceId: "key-a", change: true, choose: { nil })

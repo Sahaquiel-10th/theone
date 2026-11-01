@@ -3,6 +3,7 @@ import type { api as Api } from "./oneApi";
 import { ApiError } from "./oneApi";
 import { approveFeaturePrices } from './FeatureBudgetSettings';
 import { coordinatorMessage } from './coordinatorMessage';
+import {coordinatorDialogue} from './coordinatorDialogue';
 import {coordinatorRecoveryCopy,parseCoordinatorFailure} from './coordinatorRecovery';
 import {chatSubmission,forgetChatSubmission} from './chatSubmission';
 import {receiptMayBeMissing} from './responseProgressState';
@@ -592,12 +593,7 @@ export function useCoordinator(
   });
   const state: PreviewState = {
     tasks,
-    dialogue: [...(snapshot?.conversation?.messages ?? []).map((m) => ({
-      ...coordinatorMessage(m),
-      ...(outgoing?.failed&&m.role==='user'&&m.id===[...(snapshot?.conversation?.messages??[])].reverse().find(message=>message.role==='user'&&!outgoing.priorIds.includes(message.id!)&&message.content===outgoing.text)?.id?{status:'failed' as const}:{}),
-      taskId: snapshot?.links?.find((l) => l.messageId === m.id)?.taskId,
-      taskIds: [...new Set(snapshot?.links?.filter(l => l.messageId === m.id).map(l => l.taskId) ?? [])],
-    })), ...(outgoing && !snapshot?.conversation?.messages.some(m=>m.role==='user'&&!outgoing.priorIds.includes(m.id!)&&m.content===outgoing.text) ? [{id:`outgoing_${outgoing.id}`,role:'user' as const,text:outgoing.text,status:outgoing.failed?'failed' as const:undefined,featureName:outgoing.failed?outgoing.notStarted?'尚未开始 · 原话保留':'发送状态待确认 · 原话保留':'发送中'}] : []),...(failureReply?.scope===userId?[{id:`feedback_${failureReply.operationId}`,role:'assistant' as const,text:failureReply.text}]:[])],
+    dialogue: coordinatorDialogue({userId,messages:snapshot?.conversation?.messages??[],links:snapshot?.links,drafts:coordinatorDrafts(userId,workspaceId),outgoing,failureReply}),
     pending:
       (localPending&&!settledReceipts.has(localPending)) || (snapshot?.pendingOperationId&&!settledReceipts.has(snapshot.pendingOperationId))
         ? {

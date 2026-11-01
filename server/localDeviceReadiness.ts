@@ -14,6 +14,7 @@ export type LocalDeviceReadinessDependencies={
   connectionToken:(scope:LocalDeviceReadinessScope)=>object|undefined;
   probeFolder:(scope:LocalDeviceReadinessScope,signal:AbortSignal)=>Promise<{targetName?:string}>;
   probeExecutor:(scope:LocalDeviceReadinessScope,signal:AbortSignal)=>Promise<ReadinessExecutorProbe>;
+  metadata?:(scope:LocalDeviceReadinessScope)=>{platform:'macos'|'windows'|'unknown';capabilities:{staticPreview:boolean;taskDirectoryBinding:boolean}};
   now?:()=>number;timeoutMs?:number;ttlMs?:number;
 };
 export function assertLocalDeviceReadinessScope(db:Database,scope:LocalDeviceReadinessScope):{busy:boolean} {
@@ -30,11 +31,11 @@ function failedFolder(error:unknown):LocalDeviceReadiness['folder'] {
 }
 function executorState(value:ReadinessExecutorProbe):LocalDeviceReadiness['executor'] {
   if(value.preparing)return{state:'busy'};
-  if(value.error)return{state:'unknown'};
   if(value.available&&value.installedVersion){
     const parsed=parseLocalDeviceReadiness({checkedAt:new Date(0).toISOString(),connected:true,ready:true,folder:{state:'ready',targetName:'/probe'},executor:{state:'ready',installedVersion:value.installedVersion,installedSource:value.installedSource},reason:'ready'});
     return parsed?.executor??{state:'unknown'};
   }
+  if(value.error)return{state:'unknown'};
   return{state:value.available?'unprepared':'unavailable'};
 }
 /** Shared by owner settings and coordinator. This fact snapshot cannot grant execution authority. */
@@ -44,18 +45,19 @@ export function createLocalDeviceReadiness(deps:LocalDeviceReadinessDependencies
   const inflight=new Map<string,{token:object;generation:{invalidated:boolean};work:Promise<LocalDeviceReadiness>}>();
   const empty=(connected:boolean):LocalDeviceReadiness=>({checkedAt:new Date(now()).toISOString(),connected,ready:false,folder:{state:'unknown'},executor:{state:'unknown'},reason:connected?'unknown':'offline'});
   const copy=(value:LocalDeviceReadiness)=>structuredClone(value);
+  const response=(value:LocalDeviceReadiness,expires=now()+ttl,scope?:LocalDeviceReadinessScope)=>Object.assign(copy(value),{validForMs:Math.max(0,Math.min(10_000,expires-now())),...(scope&&deps.metadata?deps.metadata(scope):{platform:'unknown' as const,capabilities:{staticPreview:false,taskDirectoryBinding:false}})});
   function invalidate(scope:LocalDeviceReadinessScope){const key=JSON.stringify([scope.workspaceId,scope.userId,scope.deviceId,scope.installationId]);cache.delete(key);const pending=inflight.get(key);if(pending)pending.generation.invalidated=true;}
   async function inspect(scope:LocalDeviceReadinessScope,options:{fresh?:boolean}={}):Promise<LocalDeviceReadiness> {
     const key=JSON.stringify([scope.workspaceId,scope.userId,scope.deviceId,scope.installationId]);
     let access:{busy:boolean};
     try{access=await deps.authorize(scope);}catch(error){invalidate(scope);throw error;}
     const token=deps.connectionToken(scope);
-    if(!token){cache.delete(key);return empty(false);}
-    if(access.busy){cache.delete(key);return{...empty(true),executor:{state:'busy'},reason:'busy'};}
+    if(!token){cache.delete(key);return response(empty(false),undefined,scope);}
+    if(access.busy){cache.delete(key);return response({...empty(true),executor:{state:'busy'},reason:'busy'},undefined,scope);}
     const previous=cache.get(key);
-    if(!options.fresh&&previous?.token===token&&previous.expires>now())return copy(previous.value);
+    if(!options.fresh&&previous?.token===token&&previous.expires>now())return response(previous.value,previous.expires,scope);
     cache.delete(key);
-    const pending=inflight.get(key);if(pending?.token===token&&!pending.generation.invalidated)return copy(await pending.work);
+    const pending=inflight.get(key);if(pending?.token===token&&!pending.generation.invalidated){const value=await pending.work;return response(value,cache.get(key)?.expires,scope);}
     const abort=new AbortController(),generation={invalidated:false};
     const work=(async()=>{
       const result=empty(true);
@@ -83,7 +85,7 @@ export function createLocalDeviceReadiness(deps:LocalDeviceReadinessDependencies
       return safe;
     })();
     inflight.set(key,{token,generation,work});
-    try{return copy(await work);}finally{abort.abort();if(inflight.get(key)?.work===work)inflight.delete(key);}
+    try{const value=await work;return response(value,cache.get(key)?.expires,scope);}finally{abort.abort();if(inflight.get(key)?.work===work)inflight.delete(key);}
   }
   return{inspect,invalidate};
 }

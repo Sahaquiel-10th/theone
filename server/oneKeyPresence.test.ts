@@ -177,8 +177,14 @@ test("negotiates local tools and isolates request responses to the authenticated
   const [prepareRaw] = await once(socket, "message");
   const prepare = JSON.parse(prepareRaw.toString());
   assert.equal(prepare.type, "local_prepare");
-  socket.send(JSON.stringify({ type: "local_ready", taskId: "task-a", requestId: prepare.requestId, targetName: "project-a" }));
-  assert.deepEqual(await preparing, { targetName: "project-a", output: "" });
+  const originalFolder='/synthetic/'+('folder-segment/'.repeat(80))+'original';
+  socket.send(JSON.stringify({ type: "local_ready", taskId: "task-a", requestId: prepare.requestId, targetName: originalFolder }));
+  assert.deepEqual(await preparing, { targetName: originalFolder, output: "" },'directory bindings must remain exact, never display-truncated');
+  const malformed=presence.prepareLocalExecution('device-a','task-a',installationId);
+  const rejected=assert.rejects(malformed,/完整目录绑定/);
+  const [malformedRaw]=await once(socket,'message');
+  socket.send(JSON.stringify({type:'local_ready',taskId:'task-a',requestId:JSON.parse(malformedRaw.toString()).requestId,targetName:'/bad\npath'}));
+  await rejected;
 
   const running = presence.executeLocalTool("device-a", "task-a", "read_file", { path: "README.md" }, installationId);
   const [toolRaw] = await once(socket, "message");

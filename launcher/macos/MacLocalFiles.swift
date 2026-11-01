@@ -92,6 +92,42 @@ enum MacWorkFolderConfiguration {
     }
 }
 
+/// Restored only from the authenticated server's exact persisted task. This is
+/// continuity metadata, not permission to open a folder different from the
+/// folder this Key currently has authorized on this installation.
+struct ExecutionTaskBinding: Codable, Equatable {
+    let workspaceId: String
+    let userId: String
+    let deviceId: String
+    let installationId: String
+    let taskId: String
+    let targetName: String
+    let providerThreadId: String?
+
+    func authorizedRoot(defaults: UserDefaults, workspaceId: String, userId: String,
+                        deviceId: String, installationId: String, taskId: String,
+                        requireThread: Bool = false) throws -> String {
+        guard self.workspaceId == workspaceId, self.userId == userId,
+              self.deviceId == deviceId, self.installationId == installationId,
+              self.taskId == taskId else {
+            throw LocalFileFailure.message("原任务不属于当前 Key、工作区或这台电脑，本轮未操作文件。")
+        }
+        guard targetName.hasPrefix("/"), targetName.utf8.count <= 16_384,
+              !targetName.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              let root = try MacWorkFolderConfiguration.configured(defaults: defaults, deviceId: deviceId),
+              targetName == root else {
+            throw LocalFileFailure.message("原任务的工作文件夹与当前授权不一致或暂时不可用。请在设置中明确恢复原文件夹后再继续或预览；不会改用当前文件夹。")
+        }
+        if requireThread {
+            guard let thread = providerThreadId, !thread.isEmpty, thread.utf8.count <= 4096,
+                  !thread.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.contains($0) || CharacterSet.controlCharacters.contains($0) }) else {
+                throw LocalFileFailure.message("原任务的执行会话尚未确认，本轮不会建立新会话重跑。请核对原任务后明确重新开始。")
+            }
+        }
+        return root
+    }
+}
+
 /// No shell: every path component is opened relative to the authorized root.
 /// Symlinks are rejected, not followed. Existing files require exact replacement.
 final class MacLocalFiles {

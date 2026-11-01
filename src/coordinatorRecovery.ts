@@ -1,12 +1,13 @@
 /** Public, reviewed diagnostics only. Never attach raw provider errors or arguments. */
 export const coordinatorFailureCodes = [
   'model_unavailable','model_timeout','model_rate_limited','model_auth','model_request_rejected',
-  'model_empty','model_invalid_response','model_incomplete','model_filtered','tool_incomplete','step_limit','tool_limit','tool_invalid',
+  'model_empty','model_invalid_response','model_incomplete','model_filtered','tool_incomplete','step_limit','tool_limit','tool_invalid','artifact_input_invalid',
   'feature_unavailable','model_unconfigured','power_insufficient','budget_exceeded','billing_unavailable',
   'key_required','source_authorization','source_unavailable','notion_authorization','notion_unconfirmed',
   'local_unavailable','account_unavailable','submission_invalid','conversation_busy','task_not_found','queue_full',
   'local_device_offline','local_folder_missing','local_folder_denied','local_folder_unavailable','local_executor_unready',
   'local_busy','local_attachments_unsupported','local_tool_unavailable','local_readiness_unknown','local_tool_invalid',
+  'local_binding_changed','local_execution_unconfirmed','local_workflow_unsupported',
   'dispatch_not_started','storage_unavailable','transport_unknown','invalid_receipt','receipt_not_found','stopped','internal_error',
 ] as const;
 export type CoordinatorFailureCode = typeof coordinatorFailureCodes[number];
@@ -38,6 +39,7 @@ const failureCopy:Record<CoordinatorFailureCode,string>={
   step_limit:'这轮停在任务安排这一步，已经达到本轮步骤上限。请把接下来要做的一步单独交给我；有任务卡时，先打开看看已有进展。',
   tool_limit:'这轮停在调用功能这一步：模型一次给了过多或重复的指令，新的指令没有执行。请把下一步单独交给我，不用重做已有成果。',
   tool_invalid:'这一步的功能参数没接对，没能执行。请在“功能”里重新选择需要的功能；如果仍然这样，请联系管理员检查配置。',
+  artifact_input_invalid:'这次文件生成还没通过检查，尚未进入保存。请根据反馈补齐列名、行列或受支持的公式，或重新选择正确模板，再只生成这一份文件；其他已有成果仍保留。',
   feature_unavailable:'这个功能还没就位，这一步暂时做不了。请在“功能”里换一个可用功能，或联系管理员检查发布和授权。',
   model_unconfigured:'这一步还没有可用的模型，暂时开不了工。请到设置里选择可用模型；如果没有可选项，请联系管理员配置。',
   power_insufficient:'电力不够接着做这一步了。请到“设置 → 会员与额度”查看可用电力和预留用量，补足后再继续未完成的部分。',
@@ -59,6 +61,9 @@ const failureCopy:Record<CoordinatorFailureCode,string>={
   local_tool_unavailable:'本机操作入口这轮没有开放，还没开始改文件。请启用本机执行功能或使用“本机执行”按钮；不用重新选择工作文件夹。',
   local_readiness_unknown:'这次没核对到电脑的完整状态，还不能开始操作。请到“设置 → 本机执行”重新检查状态；先别重选已经保存的工作文件夹。',
   local_tool_invalid:'我没把本机这一步安排对，电脑还没开始操作。要求已经保留；可以重新发送这一步，若仍卡住请联系管理员，不用反复配置文件夹。',
+  local_binding_changed:'这件事原来的 Key、电脑或工作文件夹和当前连接对不上。请恢复原设备与原目录后核对；我不会悄悄换个位置继续改文件。',
+  local_execution_unconfirmed:'本机要求已经交出去了，但电脑是否收到还没确认。请先核对这一次的原回执，不要重复发送；确认前不会另起一轮改文件。',
+  local_workflow_unsupported:'这次计划里，云端步骤和本机操作还不能自动接着跑，计划尚未开始。可以合并成一件本机任务，或明确分阶段处理；不用重新配置连接和工作文件夹。',
   account_unavailable:'当前账号或工作区暂时不可用，这一步还不能继续。请重新登录；如果还是这样，请联系管理员检查账号和工作区。',
   submission_invalid:'这条要求没能正确提交。请刷新页面，确认文字、附件和所选功能，再发送一次。',
   conversation_busy:'前一条要求还在处理中。先等它返回，或点“停止回复”结束等待，再发送新的要求。',

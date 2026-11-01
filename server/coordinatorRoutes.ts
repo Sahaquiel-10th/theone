@@ -24,6 +24,7 @@ import {coordinatorRecoveryCopy,parseCoordinatorFailure} from '../src/coordinato
 import {installOnboardingPracticeRoutes} from './onboardingPractice.js';
 import type {LocalDeviceReadiness} from '../src/localDeviceReadiness.js';
 import {CoordinatorLocalError} from './coordinatorLocalPolicy.js';
+import {recordCoordinatorRejection} from './coordinatorRejectedHistory.js';
 export function installCoordinatorRoutes(
   app: Express,
   keyAuth: readonly RequestHandler[],
@@ -120,6 +121,7 @@ export function installCoordinatorRoutes(
         deps.executeLocal ? (cid, mid, operationId) => deps.executeLocal!(req, res, cid, mid, operationId) : undefined,
         req.get('X-ONE-Time-Zone'),
         deps.inspectLocalReadiness?options=>deps.inspectLocalReadiness!(req,options):undefined,
+        req.oneKeyDeviceId?{deviceId:req.oneKeyDeviceId,installationId:req.oneKeyInstallationId}:undefined,
       );
       if (!res.headersSent) res.json({ status: "completed", ...result });
       void service.resume(s, verify).catch(() => {});
@@ -147,7 +149,10 @@ export function installCoordinatorRoutes(
   router.post('/tasks/:id/retry',asyncRoute(async(req,res)=>{
     if(req.body?.confirmed!==true||typeof req.body?.sourceJobId!=='string')throw new CoordinatorError('重新处理需确认最新要求',400);
     const verify=()=>verifyKey(req),s=scope(req);
-    res.status(202).json(await service.retryLatest(s,String(req.params.id),req.body.sourceJobId,req.body.featureApprovals,verify,req.body.budget));
+    res.status(202).json(await service.retryLatest(s,String(req.params.id),req.body.sourceJobId,req.body.featureApprovals,verify,req.body.budget,
+      deps.executeLocal?(cid,mid,operationId)=>deps.executeLocal!(req,res,cid,mid,operationId):undefined,
+      deps.inspectLocalReadiness?options=>deps.inspectLocalReadiness!(req,options):undefined,
+      req.oneKeyDeviceId?{deviceId:req.oneKeyDeviceId,installationId:req.oneKeyInstallationId}:undefined));
     void service.resume(s,verify).catch(()=>{});
   }));
   router.post('/tasks/:id/notion/verify', asyncRoute(async(req,res)=>{
@@ -163,7 +168,8 @@ export function installCoordinatorRoutes(
         .status(202)
         .json(await service.direct(s, String(req.params.id), req.body, verify,
           deps.executeLocal?(cid,mid,operationId)=>deps.executeLocal!(req,res,cid,mid,operationId):undefined,
-          deps.inspectLocalReadiness?options=>deps.inspectLocalReadiness!(req,options):undefined));
+          deps.inspectLocalReadiness?options=>deps.inspectLocalReadiness!(req,options):undefined,
+          req.oneKeyDeviceId?{deviceId:req.oneKeyDeviceId,installationId:req.oneKeyInstallationId}:undefined));
       void service.resume(s, verify).catch(() => {});
     }),
   );
@@ -279,8 +285,13 @@ export function installCoordinatorRoutes(
     const failure=persisted??classifyCoordinatorFailure(e,{stage:req.method==='GET'?'receipt':'accepting',outcome:req.method==='GET'||!receiptChecked||ownedOperation?'unknown':'not_started'});
     const adminValidation=req.baseUrl==='/api/admin/executors'&&(e instanceof CoordinatorError||e instanceof ChatOperationError||e instanceof FeatureConfigError||e instanceof TaskResultInboxError||e instanceof ImageTaskConfigurationError);
     const accepted=req.method==='POST'&&(req.path==='/messages'||/^\/tasks\/[^/]+\/messages$/.test(req.path))&&receiptChecked&&!ownedOperation?false:undefined;
+    let historySaved=false;
+    if(accepted===false&&req.path==='/messages'){
+      try{historySaved=await recordCoordinatorRejection(store,scope(req),req.body,failure,res.locals.requestId);}
+      catch{/* Failed history persistence never changes the original controlled refusal. */}
+    }
     const body={error:adminValidation?e.message:coordinatorRecoveryCopy(failure),failure,
-      ...(accepted===false?{accepted:false}:{}),requestId:res.locals.requestId};
+      ...(accepted===false?{accepted:false,...(req.path==='/messages'?{historySaved}:{})}:{}),requestId:res.locals.requestId};
     if(e instanceof ImageTaskConfigurationError){res.status(428).json(body);return;}
     if (e instanceof CoordinatorError || e instanceof CoordinatorLocalError || e instanceof ChatOperationError || e instanceof FeatureConfigError || e instanceof TaskResultInboxError) {
       res.status(e.status).json(body);

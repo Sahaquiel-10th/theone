@@ -6,7 +6,7 @@ import type {LocalDeviceReadiness} from '../src/localDeviceReadiness.js';
 export type CoordinatorLocalFailureCode=Extract<CoordinatorFailureCode,
   'local_device_offline'|'local_folder_missing'|'local_folder_denied'|'local_folder_unavailable'|
   'local_executor_unready'|'local_busy'|'local_attachments_unsupported'|'local_tool_unavailable'|
-  'local_readiness_unknown'|'local_tool_invalid'|'dispatch_not_started'>;
+  'local_readiness_unknown'|'local_tool_invalid'|'local_binding_changed'|'local_execution_unconfirmed'|'local_workflow_unsupported'|'dispatch_not_started'>;
 /** Reviewed metadata only. Never put a path, launcher exception or tool arguments in this error. */
 export class CoordinatorLocalError extends Error {
   constructor(readonly code:CoordinatorLocalFailureCode,readonly status=428){super(code);}

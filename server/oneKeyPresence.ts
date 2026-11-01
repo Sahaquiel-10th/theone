@@ -54,6 +54,12 @@ export type RuntimeUpdateProgress = {
 };
 
 export type LocalToolName = "list_files" | "read_file" | "search_text" | "write_file" | "replace_in_file" | "run_command";
+export type ExecutionTaskBinding={workspaceId:string;userId:string;deviceId:string;installationId:string;taskId:string;targetName:string;providerThreadId?:string};
+export function executionTaskBinding(task:ExecutionTask,requireThread=false):ExecutionTaskBinding{
+  if(!validInstallationId(task.installationId)||!task.targetName||task.targetName.length>4096||/[\x00-\x1f\x7f]/.test(task.targetName)
+    ||requireThread&&!task.providerThreadId||task.providerThreadId&&(task.providerThreadId.length>1024||/[\x00-\x20\x7f]/.test(task.providerThreadId)))throw new OneKeyPresenceError('原任务的目录或会话绑定尚未确认，不会改用当前目录或新会话重跑。请核对原任务后明确重新开始。','LOCAL_TASK_BINDING_REQUIRED');
+  return{workspaceId:task.workspaceId,userId:task.userId,deviceId:task.deviceId,installationId:task.installationId,taskId:task.id,targetName:task.targetName,...(task.providerThreadId?{providerThreadId:task.providerThreadId}:{})};
+}
 
 type SocketState = {
   deviceId: string;
@@ -199,6 +205,10 @@ export class OneKeyPresence {
     const socket=this.readinessConnectionToken(deviceId,installationId) as WebSocket|undefined;
     return !!socket&&(this.updateInProgress(this.states.get(socket))||[...this.pendingLocal.values()].some(p=>p.socket===socket&&p.configuration&&p.change));
   }
+  readinessMetadata(deviceId:string,installationId?:string){
+    const socket=this.readinessConnectionToken(deviceId,installationId) as WebSocket|undefined,state=socket?this.states.get(socket):undefined;
+    return{platform:state?.runtime?.platform??'unknown' as const,capabilities:{staticPreview:!!state?.capabilities.has('static_preview_v1'),taskDirectoryBinding:!!state?.capabilities.has('task_directory_binding_v1')}};
+  }
 
   supportsLocalAgent(deviceId: string, installationId?: string) {
     const socket = this.sockets.get(deviceId);
@@ -324,15 +334,17 @@ export class OneKeyPresence {
     if (!task) throw new OneKeyPresenceError('执行任务不存在或不属于当前电脑');
     if (!executionTerminal(task.status)) throw new OneKeyPresenceError('请等本机任务结束后再打开预览');
     if (!state.capabilities.has('static_preview_v1')) throw new OneKeyPresenceError('请升级 ONE 启动器后使用静态网页预览');
+    if(action==='start'&&!state.capabilities.has('task_directory_binding_v1'))throw new OneKeyPresenceError('请升级 ONE 启动器后预览原任务文件；不会改用当前工作文件夹。','ONE_KEY_UPGRADE_REQUIRED');
     if (action === 'status' && !state.capabilities.has('static_preview_status_v1')) return {status: 'unknown' as const};
     if (action === 'start' && (typeof path !== 'string' || path.length > 500 || path.startsWith('/') || path.includes('\\') || path.includes('\0') || path.split('/').some(p => !p || p.startsWith('.')) || !/\.html?$/i.test(path))) throw new OneKeyPresenceError('请输入授权目录内的 HTML 相对路径');
     if ([...this.pendingLocal.values()].some(p => p.socket === socket && p.configuration && p.change)) throw new OneKeyPresenceError('本机正在更换目录或准备工具');
     if ([...this.pendingLocal.values()].some(p => p.socket === socket && p.previewAction && p.previewAction !== 'status')) throw new OneKeyPresenceError('正在确认预览操作，请稍后再试');
+    const taskBinding=action==='start'?executionTaskBinding(task):undefined;
     const requestId = uid('preview');
     const result = await new Promise<{targetName?: string; output?: string}>((resolve, reject) => {
       const timeout = setTimeout(() => { this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError('预览请求未确认，请重试停止或重新连接')); }, 15_000);
       this.pendingLocal.set(requestId, {deviceId: scope.deviceId, socket, taskId, configuration: true, previewAction: action, workspaceId: scope.workspaceId, userId: scope.userId, resolve, reject, timeout});
-      socket.send(JSON.stringify({type: `preview_${action}`, taskId, requestId, previewPath: path}), error => {
+      socket.send(JSON.stringify({type: `preview_${action}`, taskId, requestId, previewPath: path,taskBinding}), error => {
         if (error) { clearTimeout(timeout); this.pendingLocal.delete(requestId); reject(new OneKeyPresenceError('本机连接已断开')); }
       });
     });
@@ -397,7 +409,8 @@ export class OneKeyPresence {
     const installedVersion = validRuntimeVersion(result.output) ? result.output : undefined;
     const installedSource = installedVersion && result.targetName === 'existing' ? 'existing' as const : installedVersion ? 'managed' as const : undefined;
     return { available: true, preparing: false, version: release.version, size: release.size, installedVersion, installedSource,
-      error: installedSource === 'existing' || installedVersion === release.version ? undefined : state.executorPreparationError };
+      error: installedVersion ? undefined : state.executorPreparationError,
+      preparationWarning:installedVersion&&state.executorPreparationError?'上次执行工具更新未完成；当前已安装工具检查正常。':undefined };
   }
 
   async executeLocalTool(deviceId: string, taskId: string, tool: LocalToolName, args: Record<string, unknown>, installationId?: string) {
@@ -407,16 +420,23 @@ export class OneKeyPresence {
 
   async startExecution(deviceId: string, taskId: string, instruction: string, installationId?: string) {
     const db = await this.store.read();
-    const round = db.executionTasks.find(t => t.id === taskId && t.deviceId === deviceId && t.installationId === installationId)?.reportRound ?? 0;
+    const task=db.executionTasks.find(t=>t.id===taskId&&t.deviceId===deviceId&&t.installationId===installationId);
+    const round = task?.reportRound ?? 0;
+    const taskBinding=task?.targetName?executionTaskBinding(task):undefined;
+    if(taskBinding){const socket=await this.executionSocket(deviceId,taskId,installationId);if(!this.states.get(socket)?.capabilities.has('task_directory_binding_v1'))throw new OneKeyPresenceError('请升级 ONE 启动器后沿用原任务目录。','ONE_KEY_UPGRADE_REQUIRED');}
     const gateway = await this.gatewayConfiguration(taskId, deviceId, installationId);
-    await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_start", taskId, instruction, round, gateway });
+    await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_start", taskId, instruction, round, gateway,taskBinding });
   }
 
   async continueExecution(deviceId: string, taskId: string, instruction: string, installationId?: string) {
     const db = await this.store.read();
-    const round = db.executionTasks.find(t => t.id === taskId && t.deviceId === deviceId && t.installationId === installationId)?.reportRound ?? 0;
+    const task=db.executionTasks.find(t=>t.id===taskId&&t.deviceId===deviceId&&t.installationId===installationId);
+    const socket=await this.executionSocket(deviceId,taskId,installationId);
+    if(!this.states.get(socket)?.capabilities.has('task_directory_binding_v1'))throw new OneKeyPresenceError('请升级 ONE 启动器后继续原任务；不会改用当前目录或新会话。','ONE_KEY_UPGRADE_REQUIRED');
+    if(!task)throw new OneKeyPresenceError('执行任务不存在');
+    const round=task.reportRound??0,taskBinding=executionTaskBinding(task,true);
     const gateway = await this.gatewayConfiguration(taskId, deviceId, installationId);
-    await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_continue", taskId, instruction, round, gateway });
+    await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_continue", taskId, instruction, round, gateway,taskBinding });
   }
 
   async cancelExecution(deviceId: string, taskId: string, installationId?: string, expectedRound?: number) {
@@ -714,7 +734,8 @@ export class OneKeyPresence {
       clearTimeout(pending.timeout);
       if (!device || (pending.configuration ? device.workspaceId !== pending.workspaceId || device.userId !== pending.userId : !task || task.workspaceId !== device.workspaceId || task.userId !== device.userId)) pending.reject(new OneKeyPresenceError("ONE Key 或执行任务已失效"));
       else if (message.type === "local_error" || message.ok === false) pending.reject(new Error(message.error?.slice(0, 2000) || "本机工具执行失败"));
-      else pending.resolve({ targetName: message.targetName?.slice(0, 200), output: message.output?.slice(0, 120_000) ?? "" });
+      else if(message.targetName!==undefined&&(typeof message.targetName!=='string'||message.targetName.length>4096||/[\x00-\x1f\x7f]/.test(message.targetName)))pending.reject(new OneKeyPresenceError('本机未返回有效的完整目录绑定'));
+      else pending.resolve({ targetName: message.targetName, output: message.output?.slice(0, 120_000) ?? "" });
       return;
     }
     if (message.type === "proof_response" && state.authenticated && message.challengeId && message.signature) {
@@ -821,8 +842,9 @@ export class OneKeyPresence {
       // A terminal is immutable until an explicit continuation starts a new round.
       if (executionTerminal(task.status)) return;
       const timestamp = new Date().toISOString();
-      if (message.providerThreadId) task.providerThreadId = message.providerThreadId.slice(0, 200);
-      if (message.targetName) task.targetName = message.targetName.slice(0, 1000);
+      // Continuation metadata is an exact identifier, never a display excerpt.
+      if (typeof message.providerThreadId==='string'&&message.providerThreadId&&message.providerThreadId.length<=1024&&!/[\x00-\x20\x7f]/.test(message.providerThreadId)) task.providerThreadId = message.providerThreadId;
+      if (typeof message.targetName==='string'&&message.targetName&&message.targetName.length<=4096&&!/[\x00-\x1f\x7f]/.test(message.targetName)) task.targetName = message.targetName;
       if (message.status === "selecting_target") task.status = "selecting_target";
       if (message.status === "running") { task.status = "running"; task.startedAt ??= timestamp; task.lastError = undefined; }
       if (kind === "message" && text) task.finalResponse = text;

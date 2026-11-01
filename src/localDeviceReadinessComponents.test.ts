@@ -10,7 +10,7 @@ const css=registerHooks({load(url,context,next){return url.endsWith('.css')?{for
 const {LocalDeviceSettings}=await import('./LocalDeviceSettings');
 const {DocumentDestinationPicker}=await import('./DocumentDestination');
 css.deregister();
-const ready:LocalDeviceReadiness={checkedAt:new Date().toISOString(),ready:true,connected:true,folder:{state:'ready',targetName:'/synthetic/owned-folder'},executor:{state:'ready',installedVersion:'0.4.29'},reason:'ready'};
+const ready:LocalDeviceReadiness={checkedAt:new Date().toISOString(),validForMs:10_000,ready:true,connected:true,folder:{state:'ready',targetName:'/synthetic/owned-folder'},executor:{state:'ready',installedVersion:'0.4.29'},reason:'ready'};
 const picker=(api:typeof Api)=>renderToStaticMarkup(createElement(DocumentDestinationPicker,{api,value:'local',onChange(){throw new Error('Rendering must not change destination.');},localDisabled:false,onSettings(){}}));
 test('real settings and destination components read the same confirmed snapshot without a separate executor readiness guess',async()=>{
  let calls=0;const api=(async(path:string)=>{calls++;assert.match(path,/\/api\/me\/local-device\/readiness/);return ready;}) as typeof Api;

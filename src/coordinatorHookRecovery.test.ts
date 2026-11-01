@@ -11,6 +11,7 @@ import {invalidCoordinatorReceipt,recoverCoordinatorSubmission,unacceptedCoordin
 import {chatSubmission,forgetChatSubmission,pendingChatSubmissions} from './chatSubmission';
 import {coordinatorDrafts,coordinatorSubmissionPayload,saveCoordinatorDraft,forgetCoordinatorDraft,markCoordinatorDraft} from './coordinatorDrafts';
 import type {CoordinatorSubmission} from './useCoordinator';
+import {coordinatorDialogue} from './coordinatorDialogue';
 
 // Execute the hook's actual closure functions with synchronous state setters.
 // This retains its refs, storage, transport and receipt/draft integrations;
@@ -33,7 +34,7 @@ function fixture(t:TestContext){
   const userId=randomUUID(),workspaceId='workspace';const state:Record<string,any>={outgoing:null,progress:null,failure:null,settlement:null,snapshot:null};
   const setter=(key:string)=>(action:any)=>{state[key]=typeof action==='function'?action(state[key]):action;if(key==='snapshot')context.snapshotRef.current=state[key];};
   let postResult:unknown=new TypeError('Failed to fetch'),readResult:unknown=new TypeError('Failed to fetch'),postCount=0,readCount=0;let afterRefresh:(()=>void)|undefined;
-  const context:Record<string,any>={ApiError,coordinatorRecoveryCopy,parseCoordinatorFailure,coordinatorRequest,forgetStoredCoordinatorOperation,mergeCoordinatorReceipt,seedCoordinatorReceipt,isCoordinatorReceipt,coordinatorReceiptFailure,invalidCoordinatorReceipt,recoverCoordinatorSubmission,unacceptedCoordinatorFailure,chatSubmission,forgetChatSubmission,coordinatorSubmissionPayload,saveCoordinatorDraft,forgetCoordinatorDraft,markCoordinatorDraft,
+  const context:Record<string,any>={ApiError,coordinatorRecoveryCopy,parseCoordinatorFailure,coordinatorDialogue,coordinatorDrafts,coordinatorRequest,forgetStoredCoordinatorOperation,mergeCoordinatorReceipt,seedCoordinatorReceipt,isCoordinatorReceipt,coordinatorReceiptFailure,invalidCoordinatorReceipt,recoverCoordinatorSubmission,unacceptedCoordinatorFailure,chatSubmission,forgetChatSubmission,coordinatorSubmissionPayload,saveCoordinatorDraft,forgetCoordinatorDraft,markCoordinatorDraft,
     userId,workspaceId,submissionScope:`coordinator:${userId}:workspace`,scope:{},sending:{current:null},pendingRef:{current:null},snapshotRef:{current:null},submissionError:{current:''},settledReceipts:new Map(),receivedReceipts:new Map(),missingReceipts:new Set(),localStorage:storage,pendingKey:()=>`pending:${userId}`,isCurrent:()=>true,useCallback:(fn:unknown)=>fn,
     setOutgoing:setter('outgoing'),setProgress:setter('progress'),setFailureReply:setter('failure'),setSettlement:setter('settlement'),setSnapshot:setter('snapshot'),setError:setter('error'),setCurrentPending:(value:string|null)=>{context.pendingRef.current=value;},
     refresh:async()=>{afterRefresh?.();},api:async(_path:string,options?:RequestInit)=>{const result=options?.method==='POST'?(postCount++,postResult):(readCount++,readResult);if(result instanceof Error)throw result;return result;},
@@ -101,5 +102,16 @@ test('a confirmed pre-acceptance rejection labels the preserved user bubble not-
  const noop=()=>{};
  makeRestore({...f.context,coordinatorDrafts,useEffect:(effect:()=>void)=>effect(),detailsRef:{current:{}},selectedRef:{current:null},pageRef:{current:1},resumeKey:{current:''},setReady:noop,setDetails:noop,setSelected:noop,setBound:noop,setPending:noop,setHistoryError:noop,setLoadingHistory:noop,setPage:noop});
  assert.equal(state().dialogue[0].featureName,'尚未开始 · 原话保留');
- f.state.outgoing={...f.state.outgoing,notStarted:undefined};assert.equal(state().dialogue[0].featureName,'发送状态待确认 · 原话保留');
+ // Only a genuinely unknown submission uses the uncertain label; this known
+ // rejection remains not-started even if the transient outgoing flag is lost.
+ f.state.outgoing={...f.state.outgoing,id:'unknown-operation',text:'unknown request',notStarted:undefined};assert.equal(state().dialogue.find((message:{id:string})=>message.id==='outgoing_unknown-operation').featureName,'发送状态待确认 · 原话保留');
+});
+test('the actual hook keeps two rejected originals and safe replies when a later request is sent and after restoring scope',async t=>{
+ const f=fixture(t);f.post=new ApiError('请保持 Key 连接',undefined,428,'REJECTED',false,{code:'local_device_offline',stage:'accepting',outcome:'not_started'},false);
+ const first=await f.submit(f.input),second=await f.submit({...f.input,operationId:randomUUID(),text:'different follow-up'});
+ const state=()=>makeState({...f.context,tasks:[],snapshot:f.state.snapshot,outgoing:f.state.outgoing,failureReply:f.state.failure,localPending:null,selected:null,bound:null});
+ assert.deepEqual(state().dialogue.filter((message:{role:string})=>message.role==='user').map((message:{text:string})=>message.text),[f.input.text,'different follow-up']);
+ assert.equal(state().dialogue.filter((message:{role:string})=>message.role==='assistant').length,2);
+ const noop=()=>{};makeRestore({...f.context,useEffect:(effect:()=>void)=>effect(),detailsRef:{current:{}},selectedRef:{current:null},pageRef:{current:1},resumeKey:{current:''},setReady:noop,setDetails:noop,setSelected:noop,setBound:noop,setPending:noop,setHistoryError:noop,setLoadingHistory:noop,setPage:noop});
+ assert.equal(state().dialogue.length,4);assert.equal(coordinatorDrafts(f.context.userId,f.context.workspaceId).length,2);assert.notEqual(first,second);
 });

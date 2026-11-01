@@ -55,7 +55,7 @@ test('managed preparation binds owner, computer, live Key and task/update exclus
     socket.send(JSON.stringify({type:'local_error',taskId:'device_settings',requestId:held.requestId,error:'用户拒绝，原工具保留'}));
     await new Promise(r=>setTimeout(r,10));
     const refused=await presence.managedExecutor(scope,nextCatalog);
-    assert.equal(refused.installedVersion,'0.160.1');assert.match(refused.error!,/用户拒绝/);
+    assert.equal(refused.installedVersion,'0.160.1');assert.equal(refused.error,undefined);assert.match(refused.preparationWarning!,/上次.*未完成/);
     const afterRefusal=count;await presence.managedExecutor(scope,nextCatalog);assert.equal(count,afterRefusal);
     existing=true;
     const reused=await presence.managedExecutor(scope,nextCatalog);

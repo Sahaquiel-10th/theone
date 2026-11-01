@@ -31,6 +31,7 @@ export function restoreConversationMessages(conversation: Pick<Conversation, "id
     .map(message => ({
       id: message.id, role: message.role, content: message.content, imageUrl: message.imageUrl,
       finishReason: message.finishReason,
+      rejectedSubmission: message.rejectedSubmission,
       sources: message.sources, modelId: message.modelId, createdAt: message.createdAt,
       knowledgeDiagnostics: message.knowledgeDiagnostics, attachmentWarning: message.attachmentWarning, requestId: message.requestId,
       attachments: message.attachmentIds?.flatMap(id => {

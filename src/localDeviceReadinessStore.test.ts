@@ -4,7 +4,7 @@ import {createLocalDeviceReadinessResource,localDeviceReadinessResource,LOCAL_RE
 import type {LocalDeviceReadiness} from './localDeviceReadiness';
 import type {api as Api} from './oneApi';
 
-const ready=():LocalDeviceReadiness=>({checkedAt:new Date().toISOString(),ready:true,connected:true,folder:{state:'ready',targetName:'/fixture/owned-folder'},executor:{state:'ready',installedVersion:'0.4.29'},reason:'ready'});
+const ready=():LocalDeviceReadiness=>({checkedAt:new Date().toISOString(),validForMs:10_000,ready:true,connected:true,folder:{state:'ready',targetName:'/fixture/owned-folder'},executor:{state:'ready',installedVersion:'0.4.29'},reason:'ready'});
 test('settings, destination and sending share one scoped probe and a ten second cache',async()=>{
  let calls=0,now=Date.now();const started=now;let finish!:(value:LocalDeviceReadiness)=>void;
  const api=(async()=>{calls++;return new Promise<LocalDeviceReadiness>(resolve=>{finish=resolve;});}) as typeof Api;
@@ -32,9 +32,23 @@ test('changing a setting discards a pre-change inflight result before probing ag
  assert.equal(resource.getSnapshot().value?.ready,false);
 });
 
-test('browser cache expires from the server probe timestamp rather than extending its own ten-second window',async()=>{
+test('browser cache uses the server remaining duration, never a cross-clock timestamp subtraction',async()=>{
  const now=Date.now();let calls=0;
- const api=(async()=>{calls++;return{...ready(),checkedAt:new Date(now-9000).toISOString()};}) as typeof Api;
+ const api=(async()=>{calls++;return{...ready(),checkedAt:new Date(now-9000).toISOString(),validForMs:calls===1?1000:0};}) as typeof Api;
  let clock=now;const resource=createLocalDeviceReadinessResource(api,{now:()=>clock});await resource.refresh();assert.equal(resource.getSnapshot().value?.ready,true);
  clock+=1001;await resource.refresh();assert.equal(calls,2);assert.equal(resource.getSnapshot().value,undefined);assert.equal(resource.getSnapshot().status,'error');
+});
+for(const skew of [-60_000,60_000])test(`a browser clock offset of ${skew}ms cannot reject a fresh ready result`,async()=>{
+ let clock=Date.now()+skew,calls=0;
+ const api=(async()=>{calls++;return ready();}) as typeof Api;
+ const resource=createLocalDeviceReadinessResource(api,{now:()=>clock});await resource.refresh();assert.equal(resource.getSnapshot().value?.ready,true);
+ clock+=9999;await resource.refresh();assert.equal(calls,1);clock++;await resource.refresh();assert.equal(calls,2);assert.equal(resource.getSnapshot().value?.ready,true);
+});
+test('a legacy response without a relative validity cannot revive a stale ready label',async()=>{
+ const api=(async()=>({...ready(),validForMs:undefined})) as typeof Api;const resource=createLocalDeviceReadinessResource(api);await resource.refresh();assert.equal(resource.getSnapshot().status,'error');assert.equal(resource.getSnapshot().value,undefined);
+});
+test('a slow successful probe starts its remaining duration at receipt rather than being expired by its own work',async()=>{
+ let clock=0,calls=0;const api=(async()=>{calls++;clock+=4900;return{...ready(),validForMs:5000};}) as typeof Api;
+ const resource=createLocalDeviceReadinessResource(api,{now:()=>clock});await resource.refresh();assert.equal(resource.getSnapshot().value?.ready,true);
+ clock+=4999;await resource.refresh();assert.equal(calls,1);clock++;await resource.refresh();assert.equal(calls,2);
 });
