@@ -776,6 +776,22 @@ test('read_task accepts a structured taskId or one exact leading ID plus notes a
  }
 });
 
+test('a normal-send local edit with a trailing report reads and modifies the same task once',async()=>{
+ const taskId='cnv_7c79a8fb127599f4c786',f=fixture(),stamp=new Date().toISOString();let turns=0,starts=0;
+ const actual='本机继续刚才的“独立本机新任务 ONE-QA-LOCAL-1101-D”，不要新建另一件任务。只修改已生成的 ONE-QA-LOCAL-1101-D/template.xlsx：把“验收表”工作表 B6 的数值3000改成数值3200，在同一原文件保存，不另存副本。其他单元格内容、标题、公司、类目、备注、粉色表头、边框、合并、行高列宽都不变；receipt.txt 完全不动。只允许核对并修改这个本次验收目录，不读旧任务或其他文件，不联网、不安装、不更换工作目录。改完实际回读核对，并在主对话告诉我结果。';
+ await f.store.mutate(d=>d.conversations.push({...a,id:taskId,title:'独立本机新任务 ONE-QA-LOCAL-1101-D',modelId:'worker',executorProfileId:'general',messages:[{id:'original-local',role:'user',content:'只处理 ONE-QA-LOCAL-1101-D/template.xlsx，保留其他文件。',createdAt:stamp}],archived:false,createdAt:stamp,updatedAt:stamp}));
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('must not retrieve');}},{contextMode:'adaptive',modelCall:async(_model,messages)=>{
+  if(++turns===1)return{...answer(''),toolCalls:[{id:'read-original',type:'function',function:{name:'read_task',arguments:JSON.stringify({taskId})}}]};
+  assert.equal(JSON.parse(messages.at(-1)!.content!).id,taskId);
+  return{...answer(''),toolCalls:[{id:'edit-original',type:'function',function:{name:'execute_local_task',arguments:JSON.stringify({taskId,title:'只改原表格 B6',instruction:actual,executorId:'general',featureIds:[]})}}]};
+ }});
+ const run=async(cid:string)=>{starts++;assert.equal(cid,taskId);const job=(await f.store.read()).chatOperations!.find(o=>o.workRun)?.workRun!;assert.equal(job.executionMode,'local');assert.match(job.instruction,/B6.*3000.*3200/);assert.match(job.instruction,/receipt.txt 完全不动/);return{id:'controlled-same-file-edit',status:'queued'};};
+ const request={...input('operation_local_edit_then_report',actual),outputDestination:'chat' as const};
+ const result=await service.dispatch(a,request,key,undefined,run,undefined,readyLocalProbe,lifecycleDevice);
+ assert.equal(result.failure,undefined);assert.equal(result.taskId,taskId);assert.equal(starts,1);assert.equal(turns,2);
+ await service.dispatch(a,request,key,undefined,run,undefined,readyLocalProbe,lifecycleDevice);assert.equal(starts,1);assert.equal(turns,2);assert.equal((await f.store.read()).conversations.filter(c=>!c.coordinatorMain).length,1);
+});
+
 test('a rejected read_task ID, multiple IDs or a conflicting bound target never authorizes local continuation',async()=>{
  const taskId='cnv_7c79a8fb127599f4c786',foreignId='cnv_1234567890abcdefabcd',otherId='cnv_abcdef1234567890abcd',sameWorkspaceId='cnv_22222222222222222222',sameUserId='cnv_33333333333333333333';
  const cases:[Record<string,unknown>,boolean][]=[
