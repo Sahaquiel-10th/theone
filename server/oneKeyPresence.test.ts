@@ -199,7 +199,7 @@ test("negotiates local tools and isolates request responses to the authenticated
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 });
 
-test("binds runtime update status and dispatch to the authenticated workspace and computer", async () => {
+test("binds runtime update status and dispatch to the authenticated workspace and computer", async t => {
   const pair = crypto.generateKeyPairSync("ed25519");
   const timestamp = new Date().toISOString();
   const device = { id: "device-a", serialNumber: "ONE-A", workspaceId: "workspace-a", userId: "user-a", status: "active", publicKey: pair.publicKey.export({ type: "spki", format: "pem" }).toString(), createdAt: timestamp };
@@ -207,6 +207,13 @@ test("binds runtime update status and dispatch to the authenticated workspace an
   const store = { read: async () => database, mutate: async (change: (value: typeof database) => unknown) => change(database) } as any;
   const presence = new OneKeyPresence(store);
   const server = createServer();
+  const sockets:WebSocket[]=[];
+  t.after(async()=>{
+    // Assertions must not leave a listening fixture (and its heartbeat) alive.
+    for(const socket of sockets){socket.on('error',()=>{});socket.terminate();}
+    try{await presence.close();}
+    finally{if(server.listening)await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));}
+  });
   presence.attach(server);
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -214,6 +221,7 @@ test("binds runtime update status and dispatch to the authenticated workspace an
   if (!address || typeof address === "string") throw new Error("测试服务未启动");
 
   const socket = new WebSocket(`ws://127.0.0.1:${address.port}/api/one-key/launcher?deviceId=device-a&installationId=${installationId}`);
+  sockets.push(socket);
   const [authRaw] = await once(socket, "message");
   const auth = JSON.parse(authRaw.toString());
   socket.send(JSON.stringify({
@@ -274,6 +282,7 @@ test("binds runtime update status and dispatch to the authenticated workspace an
   await assert.rejects(() => presence.runtimeStatus({ ...disconnectedOwner, userId: 'foreign' }), /不属于/);
   await assert.rejects(() => presence.runtimeStatus({ ...disconnectedOwner, installationId: 'b'.repeat(32) }), /当前这台电脑/);
   const reconnected = new WebSocket(`ws://127.0.0.1:${address.port}/api/one-key/launcher?deviceId=device-a&installationId=${installationId}`);
+  sockets.push(reconnected);
   const [reAuthRaw] = await once(reconnected, 'message');
   const reAuth = JSON.parse(reAuthRaw.toString());
   reconnected.send(JSON.stringify({ type: 'auth_response', challengeId: reAuth.challengeId, signature: sign(pair.privateKey, reAuth.nonce),
@@ -296,8 +305,6 @@ test("binds runtime update status and dispatch to the authenticated workspace an
 
   reconnected.close();
   await once(reconnected, "close");
-  await presence.close();
-  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
 });
 
 test('authenticated interrupted-install recovery is checkpointed before acknowledgement and rejects stale receipts', async () => {

@@ -8,6 +8,30 @@ import { acknowledgeTaskResults, acknowledgeAllTaskResults, appendTaskResultRepo
 import { saveExecutionReceipt } from './executionService.js';
 import {latestTaskResults,pendingConversationTaskResults} from './taskResultInbox.js';
 
+test('a fresh state read rederives a completed edit notice without rewriting the terminal receipt or an old report',async()=>{
+ const db=fixture(),task=local(db,'same-file-edit');
+ task.finalResponse='已原地修改 `ONE-QA-LOCAL-1101-D/template.xlsx`：“验收表”B6 从数值 `3000` 改为数值 `3200`。\n- 已实际回读核对 B6 为数值 3200。\n- 工作表 XML 仅 B6 数值发生变化；其他 ZIP 成员内容逐字节一致，其他单元格及格式保持不变。\n- 未创建备份或临时文件；未读取、修改 `receipt.txt`。\n- 未进行可视化测试。';
+ task.terminalReceipt={id:'settled-edit',hash:'a'.repeat(64),attemptId:'original-edit',round:0,receivedAt:timestamp,outcome:'completed',disposition:'accepted'};
+ const receipt=pendingTaskResults(db,a)[0];assert.equal(receipt.outcome,'returned');
+ appendTaskResultReport(db,a);
+ const main=db.conversations.find(c=>c.id==='main-a')!;
+ main.messages.at(-1)!.content='此前展示误判：这轮需要处理；这是保留不改的历史汇报。';
+ const original=structuredClone(db),coordinator=service(db);
+ for(const snapshot of [await coordinator.state(a),await coordinator.state(a)]){
+  assert.equal(snapshot.notices.find(notice=>notice.sourceId===task.id)?.outcome,'returned');
+  assert.equal(snapshot.notices.find(notice=>notice.sourceId===task.id)?.reported,true);
+ }
+ assert.deepEqual(db,original,'refresh must not alter the terminal receipt, saved report, markers or execute the local work again');
+});
+
+test('ancillary file wording never promotes a missing target, failed execution or unknown ending',()=>{
+ for(const [status,hold,expected] of [['completed',undefined,'needs_input'],['failed',undefined,'failed'],['cancelled',undefined,'cancelled'],['completed','command_unconfirmed','interrupted']] as const){
+  const db=fixture(),task=local(db,'unfinished-target');task.status=status;task.executionSafetyHold=hold;
+  task.finalResponse='已修改原文件。未创建备份或临时文件。没有创建目标文档。';
+  const original=structuredClone(task);assert.equal(pendingTaskResults(db,a)[0].outcome,expected);assert.deepEqual(task,original);
+ }
+});
+
 test('unconfirmed stop is reported as waiting for the original computer, never a completed stop',()=>{
  const db=fixture(),task=local(db,'pending-stop');
  task.status='cancelled';task.reportRound=0;

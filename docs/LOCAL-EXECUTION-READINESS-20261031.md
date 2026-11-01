@@ -156,3 +156,12 @@
 - 第二处补丁仅区分明确动作与完成汇报：从请求末尾识别报告段，报告本身不提供执行授权，剩余内容必须有独立动作要求；纯教程/解释、引用、分析/评估/讨论/总结及整轮禁止仍保守拒绝，局部“不要删除，只改当前文件”不被当作整轮禁止。实际原话普通 chat 发送的集成回归先红后绿，精确 read 原任务后本机交接仅一次、同 operation 重放不再派发。原目标/Key/目录/readiness/保存限制均保持。
 - 独立复核关闭两组报告豁免的授权回归：礼貌/时态组合的“请先不要实际执行任何本机操作”，以及分析对象中出现“修改”的元请求。此处只记录修复与回归，最终同一真机文件续改仍须上线后另行验收。
 - 最终检查：全量2163项、2162通过、0失败、1既有skip，生产构建/TypeScript/diff-check通过；6模块定向283/283，独立policy5/5与service7/7。日志 `/tmp/one-local-report-final-full-20261101.log`、`/tmp/one-local-report-final-build-20261101.log`。运行包、模型、价格、授权配置未变。
+
+### 真机同任务原文件修改通过；展示误报单独收口
+
+- `1b5ed566048e4205f4dffc51a8889fbe2d711f80` 已完成三平台 CI 与服务器原发布脚本的复测/构建/切换，current/active/公开 health 正常。源码自动传输取消后确认旧远程进程退出，才使用摘要一致的备用包；未并行发布。
+- 主对话原样恢复窄改要求并普通发送，自动交到原 conversation `cnv_7c79a8fb127599f4c786`，未再选择目录、未点开始。新 execution `ext_5142b6aaaa3b56eee27f` 的 provider=codex、target为原 `/Users/machao/Desktop/test`，2026-11-01T04:52:18.235Z completed，签名 terminalReceipt outcome=completed/disposition=accepted。新输入使用新的本机执行记录/模型线程，不声称旧 execution/thread 复用。
+- 独立 artifact-tool 回读/渲染与第二人 OOXML 对照均通过：2801字节、6 ZIP成员中只有 sheet1.xml 将 B6 numeric3000 改为 numeric3200；其它 XML 字节、全部样式/合并/行高列宽均不变。after SHA `4849809a59e658b03645ab8d9295e8227af53cdb879c9471981e3773d839e126`；receipt SHA 仍 `79d6ac6c82c5e460d260bcc039486eb22a2fe33813a8b5b9405169dab9036cb0`，目录恰原两个文件。没有手工修 Excel；没有原生 Excel 应用验收。前后渲染在 `output/qa-excel-1101/`。
+- 自动回主对话的内容包含已修改/已回读，但 shared `executionExplicitlyUnfinished` 将“未创建备份或临时文件”误判为未创建目标，把真实 completed 显示成 needs_input。最小展示修复只豁免明确正向产物结果后的完整、独立备份/临时文件分句；目标未创建、要求的备份缺失、混合目标列表、回读未完成/无法确认仍拦截。failed/cancelled/unknown 终态不升为成功，真实回执和历史错误汇报不改。
+- state 刷新按真实 receipt 重新推导同 ID notice，保留已落库的旧提示原文；最后只做正常只读结果核对，不重新执行已完成修改。此处等待最终发布/界面复核记录。
+- 展示修复独立5模块92/92通过。中断期间一轮全量的 runtime-update handoff fixture 断言失败后遗留监听连接，没有完整退出，保留失败日志 `/tmp/one-local-result-release-full-20261101.log`；不能记为通过。仅清理该测试进程组，给原 fixture 注册失败路径资源释放，断言/生产超时/权限均未改。原失败项独跑1/1通过；最终全量低并发2169项、2168通过、0失败、1既有skip，构建/类型检查/diff-check通过。最终日志 `/tmp/one-local-result-release-clean-full-20261101.log`、`/tmp/one-local-result-release-clean-build-20261101.log`。
