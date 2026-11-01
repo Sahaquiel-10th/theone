@@ -2018,6 +2018,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   async function executeDraft(rawText: string, source: HTMLElement, conversationId?: string) {
     if (!rawText.trim() || preparingExecution || executionBusy || !localDevice.canRequestExecution) return;
+    // Only the coordinator chat path carries attachment IDs into the local
+    // handoff. Legacy/task continuations cannot silently drop attached files.
+    if(uploadingAttachments||pendingAttachments.some(file=>file.status!=='ready')||pendingAttachments.length>0&&(!coordinator.enabled||composeMode!=='chat'||Boolean(conversationId)))return;
     executionOriginRef.current = pointFromElement(source);
     const preparation={cancelled:false,operationId:undefined as string|undefined,coordinator:false};executionPreparationRef.current=preparation;
     if (!conversationId && coordinator.enabled) {
@@ -2529,7 +2532,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             <button id="one-studio-send" className="primary send" type="submit" aria-label={composeMode === "execution" ? "发送并继续执行" : "发送消息"} title={targetLoading ? (preview.enabled ? "ONE 正在回复，可以先编辑下一条" : "这件事正在回复，可以新开一件事") : "发送消息"} disabled={uploadingAttachments || pendingAttachments.some(a => a.status && a.status !== "ready") || (composeMode === "execution" ? !localDevice.canRequestExecution || preparingExecution || executionBusy || !content.trim() || pendingAttachments.length > 0 : !activeModelId || targetLoading || (!content.trim() && !pendingAttachments.length))}>
               {composeMode === "execution" ? <Zap size={18} /> : <ArrowUp size={19} />}
             </button>
-            {composeMode==='chat' && !demo.enabled && outputDestination !== 'notion' && currentModel?.kind==='chat' ? <button type="button" className="composer-execute" aria-label="发送并执行本机任务" title="把当前要求和相关上下文交给本机执行" disabled={!content.trim()||targetLoading||uploadingAttachments||pendingAttachments.length>0||preparingExecution||executionBusy||!localDevice.canRequestExecution} onClick={event=>void executeDraft(content,event.currentTarget,coordinator.enabled?undefined:targetConversation?.id)}><Zap size={16}/><span>本机执行</span></button> : null}
+            {composeMode==='chat' && !demo.enabled && outputDestination !== 'notion' && currentModel?.kind==='chat' ? <button type="button" className="composer-execute" aria-label="发送并执行本机任务" title="把当前要求和相关上下文交给本机执行" disabled={!content.trim()||targetLoading||uploadingAttachments||pendingAttachments.some(file=>file.status!=='ready')||pendingAttachments.length>0&&!coordinator.enabled||preparingExecution||executionBusy||!localDevice.canRequestExecution} onClick={event=>void executeDraft(content,event.currentTarget,coordinator.enabled?undefined:targetConversation?.id)}><Zap size={16}/><span>本机执行</span></button> : null}
           </div>
           </div>
           <div className="studio-compose-tools">

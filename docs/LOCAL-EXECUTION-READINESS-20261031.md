@@ -122,3 +122,11 @@
 - 纯结构/参数校验可以安全纠正；读取授权、读中撤权及真正保存错误均不进入付费纠参。跨访客、跨 Workspace 的原隔离断言保持。
 - 最终全量 2,154 项：2,153 通过、0 失败、1 项既有跳过；TypeScript、生产构建、diff-check 通过。日志 `/tmp/one-local-all-20261101-release-final.log`、`/tmp/one-local-build-20261101-release-final.log`。独立末轮定向复核 65/65。
 - Mac 0.4.30 已完成 Universal 构建、签名与服务器暂存校验；Windows 0.4.29 对象与制品字节保留。此处仍不是线上切换或真机文件验收证明，后续分别记录。
+
+### 上线与真机首轮
+
+- `1fae20d623ac1d83a196effdccf709132bf646b6` 的 Actions `41256343609` 四项全部 success，同一自动脚本测试/构建/切换完成，未并行手动部署。公开 health 正常，`index-DTN5rcN5.js` 摘要与本地一致。
+- 配套运行时已发布，公网下载清单及两平台制品重新验签/大小/摘要通过。实际 Mac 进程为 ONEPresence-0.4.30，真实新会话中原 `/Users/machao/Desktop/test` 与 Codex 均就绪，无重选目录。
+- 首轮合成图片提交 C 已明确返回 model_timeout/model/not_started：无工具调用、无派生任务、无目标目录，不算本机 XLSX 交付通过。没有重跑原用户任务。
+- 现场另查到附件 ready 后主输入框“本机执行”仍被旧 `length>0` 规则禁用。补丁仅开放可携带 attachmentIds 的协调聊天入口；legacy、旧轮继续及未就绪附件继续禁止，不静默丢附件。实际 closure 回归确认图片/解析文档 ID 随 localExecution:true 传递。
+- 补丁全量默认高并发曾遇隔离服务启动/短时就绪断言超时；限制 test-concurrency=4 后全套 2,157 项、2,156 通过、0 失败、1 既有 skip，构建/类型检查/diff-check 通过。日志 `/tmp/one-local-all-20261101-button-bounded.log` 与对应 build 日志；此前两项超时不冒充通过。
