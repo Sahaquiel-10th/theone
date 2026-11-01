@@ -173,3 +173,11 @@
 - 随后主对话明确只查现有回执、不创建修改文件，却被交付gate误当新任务。trace `ctx_a50a3fa3839f371da374c` 仅load_tools(read_task)，operation completed却被orchestrator兜底成“还没能开始”；不是模型超时，D executionCount仍2，未重写文件。裸“不创建或修改文件”中的效果词未剥离、较长metadata查询未归只答、初始任务上下文未识别回执，共同造成错误修复轮。
 - 最小修复让明确既有任务metadata查询只提供read_task/search_tasks/read_context/load_tools；loader不能恢复写/外搜/知识工具，残留联网偏好不强制一个不可用搜索。首轮提供真实任务定位卡与read工具，关闭此轮无关知识/外搜必需门。只读metadata与先查后改/保存、真实新文件回读分别判定；主对话与详情入口一致，读所有权和unknown-effect保护不变。
 - exact原句service回归读取原D并回答3200/receipt未改，0子任务/本机执行/工作模型费用；直接状态入口、跨owner、伪写tool、loader越界、unknown hold与同operation防重放均通过。定向5模块284/284，独审集中边界通过；最终全量2176项、2175通过、0失败、1既有skip，构建/TypeScript/diff-check通过，日志 `/tmp/one-local-record-release-full-20261101.log`、`/tmp/one-local-record-release-build-20261101.log`。此处等待该只读查询修复最终发布与原样真机复核，文件不再写。
+
+### 最终真机闭环与上线验收通过（2026-11-01）
+
+- 功能版本 `f9d4f3165fe178b4693900d0fdcb81cef2993e98` 已上线。Actions `41305576641` 三项 verify success；源码自动传输取消后，确认旧远程进程全部退出，才使用服务器/本地 SHA-256 同为 `140a6db3d88e6a6475b74072af5d2ea75b9f3d919715c00cd192d0a8c5003aae` 的源码包，单次运行原发布脚本。服务器全量2176项/2175通过/0失败/1既有skip，发布退出码0；current精确该SHA，service active，公开health正常，未并行部署或放宽gates。
+- 在主对话普通发送此前失败的完整原句：“只核对……最新执行回执……B6……receipt.txt……只查现有记录，不重新执行，不创建或修改文件……”；页面实际回答本轮修改已完成、B6数值型3200、receipt未改，并明确纠正旧“还没能开始”提示。截图 `output/LOCAL-EXCEL-FINAL-MAIN-20261101.jpg`。本次通过既有记录回答，trace `ctx_30db668034f4f8b67ec` / request `coord_7c5c358d1ca027615dd1`，2026-11-01T12:33:16.391Z，executionSteps为空；不声称本次真实调用了read_task。
+- 只读数据库核对：上述查询operation completed，原D仍恰好2条execution（创建与成功续改），均completed，没有为“查进度”新增本机执行。独立复核实际目录仍恰两个文件，XLSX/receipt摘要分别仍为 `4849809a59e658b03645ab8d9295e8227af53cdb879c9471981e3773d839e126` / `79d6ac6c82c5e460d260bcc039486eb22a2fe33813a8b5b9405169dab9036cb0`；查询没有改文件。后端版本/回执/执行次数截图 `output/LOCAL-EXCEL-FINAL-READONLY-TRACE-20261101.jpg`。
+- **合成图片→实际本机Codex生成XLSX→独立回读渲染→主对话同任务原文件窄修改→独立内容/格式对照→正确完成状态及主对话回执，已实际通过。** 无需重新选文件夹或进入任务再点开始。没有重跑原业务Excel/旧QA任务，没有调整余额、价格、授权或模型配置。
+- 验收范围为当前Mac真机0.4.30；不代替Windows现场或原生Excel应用验收，不代表原始图片二进制直传已实现。旧C的上游150秒无响应另有证据，内部原因未确定，本次成功不证明上游超时永不再发生。旧错误历史提示保留，当前状态与新回答依据真实结果纠正。
