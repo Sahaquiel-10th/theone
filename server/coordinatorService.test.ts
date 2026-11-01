@@ -756,6 +756,64 @@ test('a natural local follow-up in task detail uses the same dispatch gate even 
  assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).at(-1)!.workRun!.state,'prepared');
 });
 
+test('read_task accepts a structured taskId or one exact leading ID plus notes and continues that local task once',async()=>{
+ const taskId='cnv_7c79a8fb127599f4c786';
+ const notes='仅核对当前任务 ONE-QA-LOCAL-1101-D 的目标、限制、已生成文件和执行结果，不读取其他旧任务或附件。';
+ for(const args of [{taskId},{query:`${taskId}, ${notes}`},{query:`${taskId}，${notes}`},{query:taskId},{query:'ONE-QA-LOCAL-1101-D'}]){
+  const f=fixture(),stamp=new Date().toISOString();let turns=0,starts=0;
+  await f.store.mutate(d=>d.conversations.push({...a,id:taskId,title:'ONE-QA-LOCAL-1101-D',modelId:'worker',executorProfileId:'general',messages:[{id:'original-local',role:'user',content:'只处理当前表格，不覆盖无关文件。',createdAt:stamp}],archived:false,createdAt:stamp,updatedAt:stamp}));
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('must not retrieve');}},{contextMode:'adaptive',modelCall:async(_model,messages,tools)=>{
+   if(++turns===1){assert.ok((tools.find(t=>t.function.name==='read_task')!.function.parameters as any).properties.taskId);return{...answer(''),toolCalls:[{id:'read-current',type:'function',function:{name:'read_task',arguments:JSON.stringify(args)}}]};}
+   assert.equal(JSON.parse(messages.at(-1)!.content!).id,taskId);assert.match(messages.at(-1)!.content!,/不覆盖无关文件/);
+   return{...answer(''),toolCalls:[{id:'continue-current',type:'function',function:{name:'execute_local_task',arguments:JSON.stringify({taskId,title:'继续原表格',instruction:'只在授权目录补齐原表格并回读，不覆盖无关文件。',executorId:'general',featureIds:[]})}}]};
+  }});
+  const request={...input('operation_read_task_local_notes','继续这个任务，在本机补齐原表格并保存 Excel，不要新建任务。'),outputDestination:'local' as const};
+  const run=async(cid:string)=>{starts++;assert.equal(cid,taskId);return{id:'read-then-local',status:'queued'};};
+  const result=await service.dispatch(a,request,key,undefined,run,undefined,readyLocalProbe,lifecycleDevice);
+  assert.equal(result.taskId,taskId);assert.equal(result.failure,undefined);assert.equal(turns,2);assert.equal(starts,1);
+  await service.dispatch(a,request,key,undefined,run,undefined,readyLocalProbe,lifecycleDevice);assert.equal(turns,2);assert.equal(starts,1);
+  assert.equal((await f.store.read()).conversations.filter(c=>!c.coordinatorMain).length,1);
+ }
+});
+
+test('a rejected read_task ID, multiple IDs or a conflicting bound target never authorizes local continuation',async()=>{
+ const taskId='cnv_7c79a8fb127599f4c786',foreignId='cnv_1234567890abcdefabcd',otherId='cnv_abcdef1234567890abcd',sameWorkspaceId='cnv_22222222222222222222',sameUserId='cnv_33333333333333333333';
+ const cases:[Record<string,unknown>,boolean][]=[
+  [{query:`${taskId}, ${foreignId}`},false],
+  [{query:`${taskId}, ${taskId}`},false],
+  [{query:`${foreignId}, 仅核对本任务`},false],
+  [{taskId:foreignId},false],
+  [{taskId:sameWorkspaceId},false],
+  [{query:`${sameUserId}, 仅核对本任务`},false],
+  [{query:'cnv_00000000000000000000, 仅核对本任务'},false],
+  [{query:'cnv_7c79a8fb1275, 仅核对本任务'},false],
+  [{query:`${taskId}x, 仅核对本任务`},false],
+  [{query:`${taskId}_extra, 仅核对本任务`},false],
+  [{query:`请核对 ${taskId}`},false],
+  [{query:`${taskId} 仅核对本任务`},false],
+  [{taskId:otherId},true],
+  [{query:otherId},true],
+  [{query:'同名任务'},false],
+  [{taskId,query:taskId},false],
+  [{taskId:''},false],
+  [{taskId:123},false],
+  [{taskId:[taskId]},false],
+  [{taskId,workspaceId:a.workspaceId},false],
+ ];
+ for(const [args,bound] of cases){
+  const f=fixture(),stamp=new Date().toISOString();let turns=0,starts=0;
+  await f.store.mutate(d=>{for(const [scope,id,title] of [[a,taskId,'当前任务'],[a,otherId,'另一任务'],[b,foreignId,'FOREIGN_TASK_SECRET'],[{workspaceId:a.workspaceId,userId:b.userId},sameWorkspaceId,'FOREIGN_TASK_SECRET_SAME_WORKSPACE'],[{workspaceId:b.workspaceId,userId:a.userId},sameUserId,'FOREIGN_TASK_SECRET_SAME_USER'],[a,'cnv_44444444444444444444','同名任务'],[a,'cnv_55555555555555555555','同名任务']] as const)d.conversations.push({...scope,id,title,modelId:'worker',executorProfileId:'general',messages:[],archived:false,createdAt:stamp,updatedAt:stamp});});
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{throw Error('must not retrieve');}},{contextMode:'adaptive',modelCall:async(_model,messages)=>{
+   turns++;assert.doesNotMatch(JSON.stringify(messages),/FOREIGN_TASK_SECRET/);
+   if(turns===1)return{...answer(''),toolCalls:[{id:'bad-read',type:'function',function:{name:'read_task',arguments:JSON.stringify(args)}}]};
+   if(turns===2){const output=JSON.parse(messages.at(-1)!.content!);assert.ok(['not_found','rejected','ambiguous'].includes(output.status));return{...answer(''),toolCalls:[{id:'must-not-start',type:'function',function:{name:'execute_local_task',arguments:JSON.stringify({taskId,title:'原任务',instruction:'继续原任务，不扩大范围',executorId:'general',featureIds:[]})}}]};}
+   return answer('还没开始操作电脑，请提供准确的任务编号？');
+  }});
+  const result=await service.dispatch(a,{...input('operation_read_task_rejected','继续这个任务，在本机处理，不要新建任务。'),...(bound?{boundTaskId:taskId}:{}),outputDestination:'local'},key,undefined,async()=>{starts++;return{id:'must-not-run',status:'queued'};},undefined,readyLocalProbe,lifecycleDevice);
+  assert.equal(starts,0);assert.equal(result.failure?.code,'dispatch_not_started');assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
+ }
+});
+
 test('local retry retains device and folder, rejects accepted or changed work, and never falls back to cloud',async()=>{
  const f=await localLifecycleFixture();let probes=0,starts=0;
  const result=await f.service.dispatch(a,{...input('operation_local_retry_binding','创建说明文档'),outputDestination:'local'},key,undefined,async()=>{starts++;return{id:'must-not-start',status:'queued'};},undefined,async()=>++probes<3?readyLocalProbe():({checkedAt:new Date().toISOString(),ready:false,connected:false,folder:{state:'unknown'},executor:{state:'unknown'},reason:'offline'}),lifecycleDevice);
@@ -2702,6 +2760,9 @@ test('task lookup accepts unique exact title, rejects unknown IDs without failin
  await f.service.dispatch(a,input('operation_lookup_003','请查看任务'),key);
  assert.match(f.calls.at(-1)!.messages.at(-1)!.content!,/not_found/);
  await f.service.dispatch(a,{...input('operation_lookup_004','请查看任务'),boundTaskId:r.taskId!},key);
+ assert.match(f.calls.at(-1)!.messages.at(-1)!.content!,/not_found/,'a bound task cannot disguise a failed explicit ID lookup as a successful read');
+ query=r.taskId!;
+ await f.service.dispatch(a,{...input('operation_lookup_005','请查看任务'),boundTaskId:r.taskId!},key);
  assert.match(f.calls.at(-1)!.messages.at(-1)!.content!,new RegExp(r.taskId!));
  assert.match(f.calls.at(-1)!.messages.at(-1)!.content!,/实测产物：已保存结果.html/);
  assert.ok(f.calls.at(-1)!.messages.some(m=>m.content?.includes('当前输入框明确绑定的任务与最近成果')));

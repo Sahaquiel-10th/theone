@@ -1103,11 +1103,18 @@ export class CoordinatorService {
         for (const c of found) if (!candidates.some(t => t.id === c.id)) candidates.push({ id: c.id, title: c.title, executorId: c.executorProfileId || 'general', latestInput: c.messages.filter(m => m.role === 'user').at(-1)?.content.slice(0, 500) });
         return found.map(c => ({ id: c.id, title: c.title, updatedAt: c.updatedAt, recent: c.messages.slice(-2).map(m => m.content.slice(0, 500)) }));
       }};
-      const readTool: OrchestrationTool = { name: "read_task", description: config.values.toolDescriptions?.read_task || "用已定位的事情 ID 读取该事情的最近原文和交接，核对目标与限制。", run: async id => {
+      const readTask=async(value:{taskId?:string;query?:string})=>{
         await verify(); const d = await this.store.read();
-        const available=d.conversations.filter(c=>own(c,s)&&!c.coordinatorMain&&!c.archived);
-        const exact=input.boundTaskId?available.find(c=>c.id===input.boundTaskId):available.find(c=>c.id===id);
-        const matches=exact?[exact]:available.filter(c=>c.title===id.trim());
+        const available=d.conversations.filter(c=>own(c,s)&&!c.coordinatorMain&&!c.archived&&(!input.boundTaskId||c.id===input.boundTaskId));
+        const query=(value.taskId??value.query??'').trim();
+        // Only a complete canonical ID at the start plus explicit punctuation
+        // may carry legacy notes. Never extract IDs from prose, choose between
+        // multiple IDs or turn a failed lookup into a read of the bound task.
+        const mentionedIds=query.match(/\bcnv_[A-Za-z0-9_-]+/g)??[];
+        const annotated=value.taskId===undefined?/^(cnv_[0-9a-f]{20})\s*[,，;；:：\n]\s*\S[\s\S]*$/.exec(query):null;
+        const targetId=value.taskId!==undefined?query:annotated?.[1]??query;
+        const exact=mentionedIds.length>1?undefined:available.find(c=>c.id===targetId);
+        const matches=mentionedIds.length>1?[]:exact?[exact]:value.taskId!==undefined||/^cnv_/i.test(query)?[]:available.filter(c=>c.title===query);
         if(matches.length!==1)return {status:matches.length?'ambiguous':'not_found',message:'未定位到唯一可用任务。请用 search_tasks 返回的真实编号定位；不要猜测编号，也不要宣称已开始。',candidates:matches.map(c=>({id:c.id,title:c.title}))};
         const c=matches[0];
         const first=c.messages.find(m=>m.role==='user');
@@ -1115,6 +1122,11 @@ export class CoordinatorService {
         else originalTaskCoverage.set(c.id,Math.max(originalTaskCoverage.get(c.id)??0,8000));
         if(adaptive){return {id:c.id,title:c.title,referenceOnly:true,originalRequest:first?{id:first.id,content:first.content.slice(0,8000),truncated:first.content.length>8000,...(first.content.length>8000?{nextOffset:8000}:{})}:undefined,...readCoordinatorContext(c,{query:''}),executionReceipts:executionReceipts(d,s.workspaceId,s.userId,c.id),handoffs:(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===c.id&&o.workRun).slice(-2).map(o=>isOnboardingImageOperation(d,s,o.operationId)?'欢迎说明的已有结果；不要重新生图。':o.workRun!.instruction)};}
         return { id: c.id, title: c.title, messages: c.messages.slice(-20).map(m => ({ role: m.role, content: m.content.slice(-4000),artifacts:ownedArtifactResults(d,s,c.id,(m.attachments??[]).map(file=>file.id)) })), executionReceipts: executionReceipts(d, s.workspaceId, s.userId, c.id), handoffs: (d.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === c.id && o.workRun).slice(-5).map(o => isOnboardingImageOperation(d,s,o.operationId)?'根据用户设置准备专属欢迎礼物；内部作图要求不向用户复述。':o.workRun!.instruction) };
+      };
+      const readTool:OrchestrationTool={name:'read_task',description:`${config.values.toolDescriptions?.read_task||'读取已定位事情的最近原文和交接，核对目标与限制。'} 优先只传 taskId，填写真实完整编号，不附说明；query 仅兼容完整编号或唯一精确标题。`,run:query=>readTask({query}),structured:{
+        schema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',minLength:1,maxLength:160,description:'已定位事情的真实完整编号，只传编号，不附说明。'},query:{type:'string',minLength:1,maxLength:1000,description:'兼容旧调用：完整编号或唯一精确标题。优先使用 taskId。'}},oneOf:[{required:['taskId']},{required:['query']}]},
+        validate:raw=>{const value=raw as Record<string,unknown>;if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length!==1||!['taskId','query'].includes(Object.keys(value)[0]))throw new OrchestrationInputError('read_task 只接受 taskId 或 query 其中一个字段；请优先只传真实完整 taskId。');const key=Object.keys(value)[0],id=value[key];if(typeof id!=='string'||!id.trim()||id.length>(key==='taskId'?160:1000))throw new OrchestrationInputError('read_task 请提供真实完整 taskId，或用 query 填唯一精确标题；不要猜编号或混合多个任务。');return{[key]:id.trim()};},
+        run:value=>readTask(value as {taskId?:string;query?:string}),
       }};
       const queueImage=async(prompt:string,title?:string,dependsOnOperationIds:string[]=[],deferStart=false)=>{
         await verify();
