@@ -165,3 +165,30 @@ test('v7 compares only exact plain single-line inline code presentations and ret
   ['\\<code>ONE-QA</code>','`ONE-QA`'],['``a ` b``','<code>a ` b</code>'],
  ])assert.notEqual(canonicalNotionDigest(left,7),canonicalNotionDigest(right,7),right);
 });
+
+test('v8 recognizes only non-ASCII UTF-8 URL spelling without changing visible labels, ASCII bytes or older digests',()=>{
+ const source='**重点**与 `ONE-QA`。\n\n参考：https://example.test/reference）';
+ const actual='<b>重点</b>与 <code>ONE-QA</code>。\n\n参考：[https://example.test/reference）](https://example.test/reference%EF%BC%89)';
+ assert.equal(canonicalNotionDigest(source,8),canonicalNotionDigest(actual,8));
+ assert.notEqual(canonicalNotionDigest(source,7),canonicalNotionDigest(actual,7));
+ assert.equal(canonicalNotionDigest('https://example.test/source）',7),'6bf5c2c075bcb3867a53da70ce52c318bf8780c4b04238f72a4e82c2b6d15921');
+ assert.equal(canonicalNotionDigest('[https://example.test/source）](https://example.test/source%EF%BC%89)',7),'3a31a44038c0bf09f1a09d4cb6ffc6c922f569c68fe6e770d2928df32682477f');
+ for(const changed of [
+  actual.replace('%EF%BC%89',''),actual.replace('reference）]','reference]'),
+  actual.replace('%EF%BC%89','%25EF%25BC%2589'),actual.replace('%EF%BC%89','%EF%BC%88'),
+  actual.replace('%EF%BC%89)','%EF%BC%89 "新增标题")'),
+  actual.replace('`ONE-QA`','`ONE-QB`').replace('<code>ONE-QA</code>','<code>ONE-QB</code>'),
+ ])assert.notEqual(canonicalNotionDigest(source,8),canonicalNotionDigest(changed,8),changed);
+ for(const [left,right] of [
+  ['[参考](https://example.test/a/b）)','[参考](https://example.test/a%2Fb%EF%BC%89)'],
+  ['[参考](https://example.test/?a=b&c=）)','[参考](https://example.test/?a=b%26c=%EF%BC%89)'],
+  ['[参考](https://example.test/%29)','[参考](https://example.test/)'],
+  ['[参考](https://example.test/a）#one)','[参考](https://example.test/a%EF%BC%89#two)'],
+  ['[参考](https://example.test/a）)','[参考](https://other.test/a%EF%BC%89)'],
+  ['[参考](https://example.test/A）)','[参考](https://example.test/a%EF%BC%89)'],
+  ['[参考](https://example.test/a\\_b）)','[参考](https://example.test/a_b%EF%BC%89)'],
+  ['[参考](https://例子.test/a）)','[参考](https://%E4%BE%8B%E5%AD%90.test/a%EF%BC%89)'],
+  ['`https://example.test/a）`','<code>https://example.test/a%EF%BC%89</code>'],
+  ['```\nhttps://example.test/a）\n```','```\nhttps://example.test/a%EF%BC%89\n```'],
+ ])assert.notEqual(canonicalNotionDigest(left,8),canonicalNotionDigest(right,8),right);
+});

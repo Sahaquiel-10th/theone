@@ -4,7 +4,7 @@ import {gfm} from 'micromark-extension-gfm';
 import {gfmFromMarkdown} from 'mdast-util-gfm';
 
 export const notionHash=(body:string)=>createHash('sha256').update(body).digest('hex');
-export type NotionCanonicalVersion=2|3|4|5|6|7;
+export type NotionCanonicalVersion=2|3|4|5|6|7|8;
 /** Persisted v1 receipts retain this exact comparison, never silently upgrade. */
 export function legacyNotionNormalized(body:string){
  const literalCode=/`|~~~|^(?: {4}|\t)|<(?:pre|code)\b/im.test(body);
@@ -20,7 +20,8 @@ export function legacyNotionNormalized(body:string){
  * v2-v5 keep their original whole-document code guard. v6 protects exact code
  * regions independently, without interpreting their contents as formatting.
  * v7 additionally recognizes the exact plain single-line inline-code spelling
- * emitted by Notion; all other code retains its original byte proof. */
+ * emitted by Notion; all other code retains its original byte proof. v8 only
+ * folds non-ASCII UTF-8 URL spelling after an unchanged ASCII authority. */
 export function canonicalNotionBody(body:string,version:NotionCanonicalVersion=5){
  if(version>=6){
   const protectedBody=protectNotionCode(body,version);
@@ -102,8 +103,10 @@ function canonicalTextLiterals(body:string,protectedRanges:ProtectedRange[],vers
    // only syntax parentheses whose contents are byte-identical to the parsed
    // target. Escapes, titles and every URL byte remain separately binding.
    if(node.type==='link'&&record.title==null&&typeof record.url==='string'){
-    if(literal?.kind==='link'&&literal.targetRaw===`(${record.url})`)result.targetRaw=record.url;
-    if(literal?.kind==='url'&&raw===record.url)parsedUrls.add(literal);
+    const target=version>=8?notionUtf8Url(record.url):record.url;
+    if(version>=8)result.url=target;
+    if(literal?.kind==='link'&&literal.targetRaw===`(${record.url})`)result.targetRaw=target;
+    if(literal?.kind==='url'&&raw===record.url){result.targetRaw=target;parsedUrls.add(literal);}
    }
   }
   if(node.children){
@@ -126,6 +129,15 @@ function canonicalTextLiterals(body:string,protectedRanges:ProtectedRange[],vers
  };
  const tree=clean(fromMarkdown(body,{extensions:[gfm()],mdastExtensions:[gfmFromMarkdown()]}));
  return {tree,protected:protectedRanges.filter(range=>range.kind==='code'&&!parsedInlineCodes.has(range)||range.kind==='url'&&!parsedUrls.has(range)).map(range=>({kind:range.kind,raw:body.slice(range.start,range.end)}))};
+}
+
+/** Notion may UTF-8 percent-encode a non-ASCII path/query/fragment character.
+ * Keep the authority and every ASCII byte untouched: no decoding, trimming,
+ * case folding, dot-segment resolution, percent rewriting or URL reparsing. */
+function notionUtf8Url(value:string){
+ const match=/^(https?:\/\/[^/?#\s]+)([/?#][^\s]*)?$/.exec(value);
+ if(!match||!match[2]||/[^\x21-\x7e]/.test(match[1])||value.includes('\\'))return value;
+ try{return match[1]+match[2].replace(/[^\x00-\x7f]/gu,char=>encodeURIComponent(char));}catch{return value;}
 }
 
 const plainInlineCode=(value:string)=>Boolean(value)&&value===value.trim()&&!/[\\`*_~\[\]<>&\r\n]/u.test(value);

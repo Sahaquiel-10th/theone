@@ -90,3 +90,18 @@
 - 后续窄修以已验证的显式workflow web步骤证明需求，两处统一；仍独立检查用户web授权、明确禁止、执行器工具配置、适配器与搜索词隐私。D保留原失败记录，不重新发送。修复发布后的新独立真实验收另记。
 - 同链路离线横查发现本轮新召回的私人笔记片段未进入公开搜索的整段私文保护池；合成私段原样作为下一步query时，旧版确实调用搜索适配器1次。现仅将当前已授权fresh/practice及同任务精确完成检查点中的知识正文纳入现有保护池，不增加检索或历史读取，不将原话/交接全文按substring一概禁止。修后私文外发0，正常公开OXO query仍1；本轮不扩展通用schema纠参机制。
 - 两人交叉独审、8项端到端离线控制通过；最终冻结源全量2275项：2274通过、0失败、1既有skip。TypeScript、生产构建、diff-check均通过。日志 `/tmp/one-writing-final-admission-full-20261102.log`、`/tmp/one-writing-final-admission-build-20261102.log`。真实线上新验收仍待发布后确认。
+
+## 8f69118 自动发布
+
+- `8f69118e16658095a273de6fdd01cafbb9e11ae1` 的 CI run `41429523018` 四个job全部success；应用CI明确2275项、2274通过、0失败、1skip。自动deploy日志于 `2026-11-02T10:45:38.2693954Z` 明确输出 `ONE deployed: 8f69118e16658095a273de6fdd01cafbb9e11ae1`，job于北京时间18:45:41成功结束。未取消或并行重部署。
+- 18:46:58公开health `{ok:true}`、首页与JS均200，JS与本地构建逐字节同，仍1463144字节及SHA-256 `8b8dda19b52a9cbdfab49fd7bd7389930859894d2815c46d85ed90c345ff22b7`。纯服务端修复不以未变的JS摘要单独证明服务端SHA，后者以精确deploy日志为证。
+- 新E从普通主对话发送一次，未重发D或旧业务任务；真实执行与正文验收结果另记。自动部署连接耗时期间申请恢复腾讯云终端只为只读核对，实际自动发布已完成，无手动部署。
+
+## E 的精确 URL 序列化差异
+
+- E顺利分派。主对话本轮实际知识与公开资料已取得，再交接新稿和Notion保存；子任务默认三步read/draft/save，前两步完成，保存页 `40ca5015999181c7a897fa79294e4c59` 存在，但v7回读不匹配，3次自动只读核对后exhausted。此轮不是派发或上游失败。
+- 精确本人任务 `cnv_d74443e0105f3ca8dc09`，同次op `cop_fe5284de88287acb37a41a0f44f85b0ceac5889493c0a0707e384872f79d45a4` / request `work_5111a479039382be3191`。唯一已完成model检查点原稿457字符，与同次receipt raw/normalized/v7canonical三摘要全部匹配，实际含标题回读571字符。私有证据仅在服务器0600文件 `/home/ubuntu/000-one-qa-e-comparison-20261102.json`，不进git或fixture。
+- 首处差异是裸URL末尾字面中文 `）` 与显式同label链接目标中的UTF-8 `%EF%BC%89`；完整标题、正文、表格、粗体和行内代码均经整篇对照。未trim标点、改链接或改写文章。新v8只对原样ASCII authority之后的非ASCII URL字符比较UTF-8编码表示；不decode、不整体URL归一，不改ASCII大小写、保留字符、已有百分号编码或标签、标题、代码。
+- root将冻结比较器单文件放到服务器独立0700 probe目录，文件SHA-256 `a90e6b366a67aa39f7392e19fcc6d97ea11175a9b9fb7e89e7f23b68f899c518` 与本地一致；只读比较这份精确原稿/实际回读，v8整篇摘要两边均 `aea2419cc9f5802f34c9849f7ebf7954a630bcec86e41bd7aefd44ce42936357`。这证明同篇比较通过，尚不等于线上旧任务状态已收尾。
+- 旧v2–v7含义不变（1296组合旧摘要对照零变化）；新写入用8。旧回执只允许人工只读核对时，依据同owner/op/checkpoint与唯一原稿raw/normalized/旧canonical三摘要重证，不覆盖旧version或hash，不自动重放写入。两人交叉独审及198项相关测试通过，最终全量和发布待后记。
+- 最终冻结源全量2280项：2279通过、0失败、1既有skip，TypeScript/生产构建/diff-check通过；日志 `/tmp/one-writing-final-v8-full-20261102.log`、`/tmp/one-writing-final-v8-build-20261102.log`。原业务专栏、QA-A保留的精确私有对照在v8下也完整通过，没有把私文纳入fixture。
