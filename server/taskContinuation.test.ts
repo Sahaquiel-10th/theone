@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type {Database,Conversation} from './types.js';
-import {taskContinuation,actionableTaskSupplement,supplementKnowledgeRequest} from './taskContinuation.js';
+import {taskContinuation,actionableTaskSupplement,substantiveTaskSupplement,supplementKnowledgeRequest} from './taskContinuation.js';
 
 const scope={workspaceId:'own',userId:'a'},foreign={workspaceId:'other',userId:'b'};
 function fixture(){
@@ -46,6 +46,10 @@ test('verified and explicitly rejected Notion writes are safe, with exact worksp
 test('new material and explicit continue are actionable; status questions and discussion-only messages cannot resume work',()=>{
   for(const value of ['得到大脑有小小启动器内容，按这个写','继续干','补充素材：今天见了两位客户','人物就用虚构形象'])assert.equal(actionableTaskSupplement(value),true,value);
   for(const value of ['现在怎么了？','完成了吗？','现在执行了吗','只回答，不执行','只讨论，先不执行'])assert.equal(actionableTaskSupplement(value),false,value);
+});
+test('a known failed stage needs substantive clarification, not a bare continuation or acknowledgement',()=>{
+ for(const value of ['继续','继续吧','按原要求继续','好的','嗯','OK'])assert.equal(substantiveTaskSupplement(value),false,value);
+ assert.equal(substantiveTaskSupplement('公开案例我是让你自己想，不是找工具，可以上网搜'),true);
 });
 test('a named material location is a real knowledge request, not a generic keyword guess',()=>{
  assert.match(supplementKnowledgeRequest('得到大脑有小小启动器内容，按这个写'),/从得到大脑查找/);

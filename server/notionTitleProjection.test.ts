@@ -8,6 +8,7 @@ import {NotionDocuments,notionFetchedTitle} from './notionDocuments.js';
 import {notionHash,legacyNotionNormalized,canonicalNotionDigest} from './notionCanonical.js';
 import {projectNotionLeadingTitle,notionProjectedSource} from './notionTitleProjection.js';
 import {taskStepKey} from './taskSteps.js';
+import {createWorkflowRun} from './taskWorkflow.js';
 
 const scope={workspaceId:'wa',userId:'a'},parentId='a'.repeat(32),pageId='b'.repeat(32);
 const source='# ONE-QA-LATE-1029-A\n青色42\n先写好原文，再单独补存。';
@@ -58,7 +59,7 @@ test('workflow create saves authored H1 in page title, verifies original full-so
  assert.deepEqual(f.calls[0].args.pages,[{properties:{title:'ONE-QA-LATE-1029-A'},content:'青色42\n先写好原文，再单独补存。'}]);
  const receipt=f.job.notionReceipt!;
  assert.equal(receipt.expectedDigest,notionHash(legacyNotionNormalized(source)));
- assert.equal(receipt.expectedRawDigest,notionHash(source));assert.equal(receipt.expectedCanonicalDigest,canonicalNotionDigest(source));
+ assert.equal(receipt.expectedRawDigest,notionHash(source));assert.equal(receipt.expectedCanonicalDigest,canonicalNotionDigest(source,6));
  assert.equal(receipt.checkpointKey,taskStepKey('worker','save_notion_draft',JSON.stringify(args)));
  assert.equal(result.currentDocument,f.actual().body);assert.equal(receipt.digest,notionHash(f.actual().body));
  assert.deepEqual(receipt.titleProjection,{version:1,title:'ONE-QA-LATE-1029-A',prefix:'# ONE-QA-LATE-1029-A\n'});
@@ -130,11 +131,95 @@ async function oldV4ItalicFixture(expected=italicSource){
  f.mcp.readDocument=async()=>f.fetchResult();return f;
 }
 
-test('new v5 write verifies plain italic readback immediately without a second write or source change',async()=>{
+test('new v6 write verifies plain italic readback immediately without a second write or source change',async()=>{
  const f=fixture(),read=f.mcp.readDocument.bind(f.mcp);
  f.mcp.readDocument=async(...params)=>{f.setBody(f.actual().body.replace('*保留原来的主题和完整结尾。*','<i>保留原来的主题和完整结尾。</i>'));return read(...params);};
  const tool=f.tool(),result=await tool.run(tool.validate({...args,content:italicSource})) as any;
- assert.equal(result.state,'verified');assert.equal(f.calls.length,1);assert.equal(f.job.notionReceipt!.canonicalVersion,5);assert.equal(f.job.notionReceipt!.expectedRawDigest,notionHash(italicSource));
+ assert.equal(result.state,'verified');assert.equal(f.calls.length,1);assert.equal(f.job.notionReceipt!.canonicalVersion,6);assert.equal(f.job.notionReceipt!.expectedRawDigest,notionHash(italicSource));
+});
+
+test('new v6 writes compare rich formatting beside exact code and retain visible escaped literal stars',async()=>{
+ const source='# 组合专栏\n\n**重点**与 `ONE`。\n\n> 引用原话\n\n|项目|费用|\n|:----|-----:|\n|场地|-100|\n\n\\*\\*字面星号\\*\\*';
+ const f=fixture(),read=f.mcp.readDocument.bind(f.mcp);
+ f.mcp.readDocument=async(...params)=>{f.setBody(f.actual().body.replace('**重点**','<b>重点</b>').replace('> 引用原话','<quote>\n引用原话\n</quote>').replace('|:----|-----:|','| --- | --- |'));return read(...params);};
+ const tool=f.tool(),result=await tool.run(tool.validate({...args,content:source})) as any;
+ assert.equal(result.state,'verified');assert.equal(f.calls.length,1);assert.equal(f.job.notionReceipt!.canonicalVersion,6);assert.equal(f.job.notionReceipt!.expectedRawDigest,notionHash(source));assert.equal(f.job.notionReceipt!.comparison?.kind,'matched');assert.equal(f.job.notionReceipt!.comparison?.comparatorVersion,6);assert.ok(f.actual().body.includes('\\*\\*字面星号\\*\\*'));
+});
+
+for(const [mutation,kind] of [['missing-title','title_missing'],['changed-title','title_changed'],['changed-body','body_mismatch'],['incomplete','incomplete'],['read-failed','read_failed']] as const)test(`readback persists safe ${kind} metadata without title or body text`,async()=>{
+ const f=fixture(),read=f.mcp.readDocument.bind(f.mcp),secret='PRIVATE_COMPARISON_BODY';
+ f.mcp.readDocument=async(...params)=>{
+  if(mutation==='missing-title')return {text:f.actual().body};
+  if(mutation==='changed-title')f.setTitle('PRIVATE_COMPARISON_TITLE');
+  if(mutation==='changed-body')f.setBody(secret);
+  if(mutation==='incomplete')return {text:secret,truncated:true};
+  if(mutation==='read-failed')throw Error(secret);
+  return read(...params);
+ };
+ const tool=f.tool();await assert.rejects(()=>tool.run(tool.validate(args)));
+ const receipt=f.job.notionReceipt!,comparison=receipt.comparison!;
+ assert.equal(receipt.expectedRawDigest,notionHash(source));assert.equal(receipt.expectedLength,source.length);assert.equal(comparison.kind,kind);assert.equal(comparison.version,1);assert.equal(comparison.comparatorVersion,6);assert.equal(typeof comparison.checkedAt,'string');assert.equal(f.calls.length,1);
+ assert.doesNotMatch(JSON.stringify(comparison),/PRIVATE_COMPARISON|青色42|ONE-QA-LATE/);
+ if(['title_missing','title_changed','body_mismatch'].includes(kind)){assert.equal(comparison.actualBodyDigest,notionHash(f.actual().body));assert.equal(comparison.actualBodyLength,f.actual().body.length);}
+ if(kind==='title_missing')assert.equal(comparison.actualTitleDigest,undefined);
+ if(kind==='title_changed')assert.equal(comparison.actualTitleDigest,notionHash('PRIVATE_COMPARISON_TITLE'));
+});
+
+test('manual v6 reproof requires the exact old write source and never changes old digest meaning or repeats a save',async()=>{
+ const original='# 原题\n\n**保留重点**与 `ONE`。\n\n\\*\\*可见字面星号\\*\\*',value={...args,content:original},raw=JSON.stringify(value);
+ for(const mutation of ['none','wrong-raw','wrong-old-canonical','wrong-checkpoint','foreign-trace','changed-code','lost-visible-stars'] as const){
+  const f=fixture();f.mcp.readDocument=async()=>{throw Error('initial unavailable');};const tool=f.tool();await assert.rejects(()=>tool.run(tool.validate(value)));f.stopped();
+  const receipt=f.job.notionReceipt!,key=taskStepKey('worker','save_notion_draft',raw);receipt.canonicalVersion=5;receipt.expectedCanonicalDigest=canonicalNotionDigest(original,5);
+  f.job.steps=[{key:mutation==='wrong-checkpoint'?'other':key,scopeId:'op',namespace:'worker',tool:'save_notion_draft',effect:'external_write',state:'started',label:'保存',updatedAt:'2026-10-29T02:00:00Z'}];
+  f.db.contextTraces.push({...scope,workspaceId:mutation==='foreign-trace'?'wb':scope.workspaceId,conversationId:'task',requestId:'synthetic',executionSteps:[{tool:'save_notion_draft',query:raw}]} as any);
+  if(mutation==='wrong-raw')receipt.expectedRawDigest='0'.repeat(64);
+  if(mutation==='wrong-old-canonical')receipt.expectedCanonicalDigest='0'.repeat(64);
+  f.setBody(f.actual().body.replace('**保留重点**','<b>保留重点</b>'));
+  if(mutation==='changed-code')f.setBody(f.actual().body.replace('`ONE`','`TWO`'));
+  if(mutation==='lost-visible-stars')f.setBody(f.actual().body.replace('\\*\\*可见字面星号\\*\\*','<b>可见字面星号</b>'));
+  f.mcp.readDocument=async()=>f.fetchResult();const prior=structuredClone(receipt);
+  if(mutation==='none'){assert.equal((await f.docs.reconcile(scope,'task',async()=>{})).state,'verified');assert.equal(receipt.comparison?.comparatorVersion,6);assert.equal(receipt.comparison?.kind,'matched');}
+  else{await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));assert.equal(receipt.state,'uncertain');}
+  assert.equal(receipt.canonicalVersion,prior.canonicalVersion);assert.equal(receipt.expectedCanonicalDigest,prior.expectedCanonicalDigest);assert.equal(receipt.expectedRawDigest,prior.expectedRawDigest);assert.equal(receipt.expectedDigest,prior.expectedDigest);assert.equal(f.calls.length,1);
+ }
+});
+
+test('manual v6 reproof can use the exact same-operation completed workflow manuscript but never foreign or altered evidence',async()=>{
+ const original='# 原题\n\n**保留重点**与 `ONE`。',value={...args,content:original};
+ for(const mutation of ['none','workflow-owner','checkpoint-owner','marker-step','changed-source'] as const){
+  const f=fixture();f.mcp.readDocument=async()=>{throw Error('initial unavailable');};const tool=f.tool();await assert.rejects(()=>tool.run(tool.validate(value)));f.stopped();
+  const receipt=f.job.notionReceipt!;receipt.canonicalVersion=5;receipt.expectedCanonicalDigest=canonicalNotionDigest(original,5);
+  const workflow=createWorkflowRun({version:1,steps:[{id:'draft',title:'完整成稿',kind:'model',instruction:'完成整篇',inputs:[]},{id:'save',title:'保存整稿',kind:'notion',instruction:'原样保存',inputs:['draft']}]},{...scope,operationId:'op'});
+  workflow.steps[0]={id:'draft',state:'completed',checkpointKey:'complete-manuscript'};f.job.workflow=workflow;
+  f.job.steps=[{key:receipt.checkpointKey!,scopeId:'op',namespace:'worker',tool:'save_notion_draft',effect:'external_write',state:'started',label:'保存',updatedAt:'now'},
+   {key:'complete-manuscript',scopeId:mutation==='checkpoint-owner'?'foreign':'op',namespace:`workflow:${workflow.id}`,tool:`workflow:${workflow.id}:draft`,effect:'model',state:'completed',label:'成稿',updatedAt:'now',output:{workflow:{version:1,runId:workflow.id,revision:workflow.revision,stepId:mutation==='marker-step'?'other':'draft'},outcome:'completed',result:{outcome:'completed',content:mutation==='changed-source'?original+'额外文字':original,summary:'成稿'}}}];
+  if(mutation==='workflow-owner')workflow.binding.userId='b';
+  f.setBody(f.actual().body.replace('**保留重点**','<b>保留重点</b>'));f.mcp.readDocument=async()=>f.fetchResult();
+  if(mutation==='none'){assert.equal((await f.docs.reconcile(scope,'task',async()=>{})).state,'verified');assert.equal(receipt.comparison?.comparatorVersion,6);}
+  else{await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));assert.equal(receipt.state,'uncertain');}
+  assert.equal(receipt.canonicalVersion,5);assert.equal(receipt.expectedRawDigest,notionHash(original));assert.equal(receipt.expectedCanonicalDigest,canonicalNotionDigest(original,5));assert.equal(f.calls.length,1);
+ }
+});
+
+test('an exact old source does not reinterpret a literal italic tag from the v4 comparison protocol',async()=>{
+ const original='# 原题\n\n<i>原先按字面保留的标签</i>',value={...args,content:original},raw=JSON.stringify(value),f=fixture();
+ f.mcp.readDocument=async()=>{throw Error('initial unavailable');};const tool=f.tool();await assert.rejects(()=>tool.run(tool.validate(value)));f.stopped();
+ const receipt=f.job.notionReceipt!;receipt.canonicalVersion=4;receipt.expectedCanonicalDigest=canonicalNotionDigest(original,4);f.job.steps=[{key:receipt.checkpointKey!,scopeId:'op',namespace:'worker',tool:'save_notion_draft',effect:'external_write',state:'started',label:'保存',updatedAt:'now'}];
+ f.db.contextTraces.push({...scope,conversationId:'task',requestId:'synthetic',executionSteps:[{tool:'save_notion_draft',query:raw}]} as any);f.setBody('*原先按字面保留的标签*');f.mcp.readDocument=async()=>f.fetchResult();
+ await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));assert.equal(receipt.canonicalVersion,4);assert.equal(receipt.expectedCanonicalDigest,canonicalNotionDigest(original,4));assert.equal(receipt.state,'uncertain');assert.equal(f.calls.length,1);
+});
+
+test('delayed reads retain the same safe comparison kinds and never change the original expected source',async()=>{
+ for(const kind of ['title_missing','title_changed','body_mismatch','incomplete','read_failed'] as const){
+  const f=fixture();f.mcp.readDocument=async()=>{throw Error('initial unavailable');};const tool=f.tool();await assert.rejects(()=>tool.run(tool.validate(args)));f.stopped();
+  const expected=structuredClone(f.job.notionReceipt!);
+  f.mcp.readDocument=async()=>{
+   if(kind==='title_missing')return {text:f.actual().body};if(kind==='title_changed')f.setTitle('PRIVATE_CHANGED_TITLE');if(kind==='body_mismatch')f.setBody('PRIVATE_CHANGED_BODY');
+   if(kind==='incomplete')return {text:'PRIVATE_PARTIAL_BODY',truncated:true};if(kind==='read_failed')throw Error('PRIVATE_TRANSPORT_ERROR');return f.fetchResult();
+  };
+  f.advance();assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'scheduled');const receipt=f.job.notionReceipt!;
+  assert.equal(receipt.comparison?.kind,kind);assert.equal(receipt.expectedRawDigest,expected.expectedRawDigest);assert.equal(receipt.expectedDigest,expected.expectedDigest);assert.equal(receipt.expectedCanonicalDigest,expected.expectedCanonicalDigest);assert.equal(receipt.expectedLength,expected.expectedLength);assert.doesNotMatch(JSON.stringify(receipt.comparison),/PRIVATE_|青色42/);assert.equal(f.calls.length,1);
+ }
 });
 
 test('manual v4 italic recheck upgrades only after whole-document equality, without rewriting or changing source proof',async()=>{

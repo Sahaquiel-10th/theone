@@ -113,7 +113,7 @@ test('scheduled and checking receipts offer only automatic readback, never write
   assert.equal(notionVerificationActive(receipt),true);
   const view=notionVerificationPresentation(receipt);assert.equal(view.active,true);assert.equal(view.canVerify,false);
   assert.match(view.message,/核对|读取/);assert.match(view.message,/不会.*写/);assert.doesNotMatch(view.message,/确认继续|重新处理|重新新建|点击/);
-  if(state==='scheduled')assert.match(view.message,/ONE Key 保持连接/);
+  if(state==='scheduled')assert.match(view.message,/ONE Key 保持连接|保持 ONE Key 连接/);
   const recovery=taskRecovery([{id:'save',state:'failed',notionTarget:{},notionReceipt:receipt}]);
   assert.equal(recovery.kind,'reconciling');assert.equal(recovery.sourceJobId,undefined);
   const running=taskRecovery([{id:'save',state:'failed',notionReceipt:receipt},{id:'new-html',state:'running'}]);
@@ -140,6 +140,18 @@ test('exhausted readback remains a read-only review with a concrete next step',(
   assert.equal(view.canVerify,!['authorization','stale','no_page'].includes(lastReason));
   assert.equal(taskRecovery([{id:'save',state:'failed',notionTarget:{},notionReceipt:receipt}]).kind,'review_notion');
  }
+});
+
+test('Notion readback distinguishes title evidence, body differences and unavailable reads without claiming a saved result',()=>{
+ const base:NotionReceiptView={state:'uncertain',delivery:'unknown',url:'https://www.notion.so/original',verification:{state:'exhausted',version:3,attempt:3,lastReason:'mismatch'}};
+ for(const [kind,expected] of [['title_missing',/没有读到标题/],['title_changed',/标题与这次文稿不同/],['body_mismatch',/回读内容与本次文稿还没对上/],['incomplete',/正文还没完整读回来/]] as const){
+  const view=notionVerificationPresentation({...base,comparison:{kind},verification:{...base.verification!,lastReason:kind==='incomplete'?'incomplete':'mismatch'}});
+  assert.match(view.message,expected);assert.match(view.message,/不会自动重试/);assert.match(view.message,/再核对一次.*只读取同一页面/);
+  assert.equal(view.canVerify,true);assert.doesNotMatch(view.message,/已经保存成功|确认继续|重新开始|先核对已有内容/);
+  if(kind==='title_missing')assert.doesNotMatch(view.message,/正文不同|内容不同/);
+ }
+ const rejected=notionVerificationPresentation({...base,delivery:'rejected'});
+ assert.match(rejected.message,/没有接受/);assert.doesNotMatch(rejected.message,/页面已找到|已核对 3 次/);assert.equal(rejected.canVerify,false);
 });
 
 test('verified receipt ignores stale verification metadata and legacy unknown writes remain protected',()=>{

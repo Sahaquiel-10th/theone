@@ -2,6 +2,7 @@ import type {Database,Conversation} from './types.js';
 import type {ChatOperation} from './chatOperations.js';
 import {discussionOnly} from './executionIntent.js';
 import {knowledgeNames} from './taskContract.js';
+import {canContinueKnownFailedWorkflow} from './workflowRecovery.js';
 
 type Scope={workspaceId:string;userId:string};
 const own=(item:Scope,scope:Scope)=>item.workspaceId===scope.workspaceId&&item.userId===scope.userId;
@@ -23,9 +24,10 @@ export function taskContinuation(db:Database,scope:Scope,task:Conversation){
   });
   const stopped=task.workPauseReason==='user_stopped'||prior&&['cancelled','interrupted','prepared'].includes(prior.workRun!.state);
   const protectedFailure=prior&&/^task_(?:(?:key|authorization|budget)_required|budget_limit)$/.test(prior.workRun!.failureCode??'');
-  const incomplete=prior?.workRun!.state==='failed'&&['needs_input','partial'].includes(prior.workRun!.resultOutcome??'');
+  const incomplete=prior?.workRun!.state==='failed'&&(['needs_input','partial'].includes(prior.workRun!.resultOutcome??'')||canContinueKnownFailedWorkflow(prior,task));
   const safe=!localHeld&&!unknownEffect&&!stopped&&!protectedFailure;
   return {jobs,prior,queued:jobs.filter(op=>op.status==='pending'&&op.workRun!.state==='queued'),
+    requiresSubstantiveSupplement:prior?.workRun!.state==='failed'&&prior.workRun.resultOutcome==='failed',
     canResumeQueued:safe&&jobs.some(op=>op.status==='pending'&&op.workRun!.state==='queued'),
     canResume:safe&&Boolean(incomplete)&&task.workPauseReason!=='user_stopped',
     canAcceptSupplement:safe&&Boolean(incomplete||prior?.workRun!.state==='running'),
@@ -47,6 +49,12 @@ export function taskStatusQuestion(value:string){
 }
 export function plainTaskContinuation(value:string){
   return /^(?:ok[～~，,、。!！\s]*|好的?[～~，,、。!！\s]*|那就[，,\s]*)?(?:请)?(?:继续(?:干|做|写|吧|处理|完成)?|接着(?:干|做|写|处理|完成)|按原要求继续)[～~，,、。!！\s]*$/i.test(value.trim());
+}
+
+/** Only the new proven-unwritten failed path requires actual clarification;
+ * normal partial/needs_input continuation keeps its established behavior. */
+export function substantiveTaskSupplement(value:string){
+ return actionableTaskSupplement(value)&&!plainTaskContinuation(value)&&!/^(?:好(?:的|吧)?|嗯|行|可以|收到|明白|ok|okay|yes)[～~，,、。!！\s]*$/i.test(value.trim());
 }
 
 export function supersedeQueuedSupplements(queued:ChatOperation[],timestamp:string){

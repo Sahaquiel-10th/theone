@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createWorkflowRun,type WorkflowBinding,type WorkflowSpec,type WorkflowStep} from './taskWorkflow.js';
-import {executeWorkflowStages,type WorkflowExecutionInput} from './workflowExecution.js';
+import {executeWorkflowStages,recoverVerifiedNotionWorkflow,type WorkflowExecutionInput} from './workflowExecution.js';
 import type {TaskStep,TaskStepStore} from './taskSteps.js';
 import type {WorkRun} from './coordinatorTypes.js';
 import {legacyNotionNormalized,notionHash} from './notionCanonical.js';
@@ -26,6 +26,23 @@ function fixture(spec:WorkflowSpec){
 const references=(messages:Parameters<WorkflowExecutionInput['callModel']>[1])=>{
  const text=messages.at(-1)!.content!;return JSON.parse(text.slice(text.indexOf('\n')+1)) as {inputs:WorkflowContextInput[];history:{id:string;content:string}[]};
 };
+
+test('optional public lookup missing or empty never blocks the required model and one Notion save',async()=>{
+ for(const value of [undefined,{status:'no_match',sources:[]},{status:'unavailable'}]){
+  const f=fixture(plan(step('cases',[],{kind:'tool',tool:'web_search',required:false}),step('draft',['cases']),step('save',['draft'],{kind:'notion'})));let models=0;
+  const result=await f.execute({tools:value?[{name:'web_search',run:async()=>value}]:[],callModel:async(_s,messages)=>{models++;assert.match(JSON.stringify(messages),/可选检索未取得可用结果/);return answer('完整正文，案例明确标注为假设。');}});
+  assert.equal(result.outcome,'completed');assert.equal(result.run.steps[0].state,'skipped');assert.equal(f.saves,1);assert.equal(models,1);
+  await f.execute({callModel:async()=>assert.fail('model repeated'),saveNotion:async()=>assert.fail('write repeated')});assert.equal(f.saves,1);
+ }
+});
+
+test('optional read omission survives delayed Notion proof recovery without another model or save',async()=>{
+ const f=fixture(plan(step('cases',[],{kind:'tool',tool:'web_search',required:false}),step('draft',['cases']),step('save',['draft','cases'],{kind:'notion'})));
+ f.checkpoints.namespace=`workflow:${f.run.id}`;
+ const first=await f.execute({saveNotion:async(_s,body)=>f.makeProof(body,{verified:false})});assert.equal(first.waiting,true);assert.equal(first.run.steps[0].state,'skipped');
+ const draft=f.steps.find(cp=>(cp.output as any)?.workflow?.stepId==='draft')!,body=(draft.output as any).result.content;
+ await f.makeProof(body);const recovered=recoverVerifiedNotionWorkflow({workflow:f.run,steps:f.steps,notionReceipt:f.receipt},owner);assert.ok(recovered);assert.equal(recovered.complete,true);assert.equal(recovered.workflow.phase,'completed');assert.equal(f.modelCalls,1);
+});
 
 test('source → one model → real Notion save is sequential and passes full checkpoints without extra model summary',async()=>{
  const longSource='会议原始材料。'.repeat(8000)+'唯一结尾';

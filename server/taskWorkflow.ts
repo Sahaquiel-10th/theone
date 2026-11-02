@@ -73,6 +73,12 @@ export function createWorkflowRun(spec:WorkflowSpec,owner:WorkflowBinding,revisi
  if(!Number.isSafeInteger(revision)||revision<1)throw invalid();
  return {version:1,id:runId(resolved,revision),revision,binding:resolved,spec:validated,steps:validated.steps.map(step=>({id:step.id,state:'queued'})),sequence:0,phase:'queued'};
 }
+/** A failed prerequisite never becomes optional through an intermediate read.
+ * Only the read's own known omission may be ignored after its inputs settled. */
+export function workflowSkippedOptionalRead(spec:WorkflowSpec,steps:WorkflowStepState[],id:string):boolean{
+ const index=spec.steps.findIndex(step=>step.id===id),step=spec.steps[index],state=steps[index];
+ return Boolean(step&&state?.state==='skipped'&&step.required===false&&step.kind==='tool'&&step.inputs.every(id=>steps.find(saved=>saved.id===id)?.state==='completed'||workflowSkippedOptionalRead(spec,steps,id)));
+}
 export function workflowPhase(spec:WorkflowSpec,steps:WorkflowStepState[]):WorkflowPhase{
  const required=steps.filter((_,index)=>spec.steps[index].required!==false);
  if(steps.some(step=>step.state==='running'))return 'running';
@@ -80,7 +86,7 @@ export function workflowPhase(spec:WorkflowSpec,steps:WorkflowStepState[]):Workf
  if(required.some(step=>step.state==='needs_input'))return 'needs_input';
  if(steps.some(step=>step.state==='waiting'))return 'waiting';
  if(steps.some(step=>step.state==='queued'))return 'queued';
- return steps.every(step=>step.state==='completed')?'completed':'partial';
+ return steps.every(step=>step.state==='completed'||workflowSkippedOptionalRead(spec,steps,step.id))?'completed':'partial';
 }
 function assertRun(raw:WorkflowRun,owner:WorkflowBinding):WorkflowRun{
  const run=record(raw,['version','id','revision','binding','spec','steps','sequence','phase']),bound=binding(run.binding),expected=binding(owner);
@@ -93,7 +99,7 @@ function assertRun(raw:WorkflowRun,owner:WorkflowBinding):WorkflowRun{
   if(v.state==='completed'&&!v.checkpointKey||v.state==='skipped'&&spec.steps[index].required!==false||v.waitingFor!==undefined&&v.state!=='waiting')throw invalid();
   return structuredClone(v) as WorkflowStepState;
  });
- if(run.phase!==workflowPhase(spec,steps)||steps.some((step,index)=>step.state==='completed'&&spec.steps[index].inputs.some(id=>steps.find(input=>input.id===id)?.state!=='completed')))throw invalid();
+ if(run.phase!==workflowPhase(spec,steps)||steps.some((step,index)=>step.state==='completed'&&spec.steps[index].inputs.some(id=>steps.find(saved=>saved.id===id)?.state!=='completed'&&!workflowSkippedOptionalRead(spec,steps,id))))throw invalid();
  return {version:1,id:String(run.id),revision:Number(run.revision),binding:bound,spec,steps,sequence:Number(run.sequence),phase:run.phase as WorkflowPhase};
 }
 const unsafeText=/(?:\b(?:Bearer|authorization|api[_ -]?key|password|secret|credentials?|MCP|HTTP|JSON|ECONN\w*|ETIMEDOUT|stack|traceback)\b|https?:\/\/|feature_\d+|knowledge_search|web_search|read_notion_document|[{}<>])/i;
@@ -127,7 +133,9 @@ export async function runTaskWorkflow(input:WorkflowRunner):Promise<WorkflowRun>
   const step=current.spec.steps[index];let state=current.steps[index];
   if(state.state==='completed'||state.state==='skipped')continue;
   if(state.state==='failed')continue;
-  const inputs=step.inputs.map(id=>current.steps.find(saved=>saved.id===id)!);
+  // Only a known skipped optional READ is a soft input. Failed features,
+  // unconfirmed writes and paid/running attempts retain their hard boundary.
+  const inputs=step.inputs.map(id=>current.steps.find(saved=>saved.id===id)!).filter(saved=>!workflowSkippedOptionalRead(current.spec,current.steps,saved.id));
   if(inputs.some(saved=>saved.state!=='completed'||!saved.checkpointKey)){
    if(step.required===false&&inputs.some(saved=>['failed','skipped'].includes(saved.state))){await commit(index,{id:step.id,state:'skipped',summary:'前面的可选内容没有完成，这一步暂不处理。'});continue;}
    if(state.state==='queued'||state.state==='waiting'&&state.waitingFor==='inputs'){
@@ -159,6 +167,8 @@ export function workflowProgress(run:WorkflowRun):WorkflowProgress{
  const current=assertRun(run,run.binding),status=current.phase;
  const privateRefs=[current.id,...Object.values(current.binding),...current.spec.steps.flatMap(step=>[step.featureId,step.executorId,step.tool]),...current.steps.map(step=>step.checkpointKey)].filter((ref):ref is string=>!!ref);
  const publicSummary=(raw:unknown,fallback:string)=>safeSummary(typeof raw==='string'&&privateRefs.some(ref=>raw.includes(ref))?undefined:raw,fallback);
- const copy:Record<WorkflowProgress['status'],{summary:string;next:string}>={completed:{summary:'这件事的步骤已完成。',next:'可以查看已经交回的成果。'},partial:{summary:'主要内容已完成，部分可选内容没有做成。',next:'已有成果会保留，可再决定是否补上可选部分。'},failed:{summary:'有必需的步骤没完成，已有内容会保留。',next:'先核对卡住的步骤，再继续未完成的部分。'},needs_input:{summary:'还缺完成任务需要的资料。',next:'把需要补充的资料发来，就能接着处理。'},waiting:{summary:'正在等前面的成果或核对原结果。',next:'确认原结果后再接着做，不会重复执行。'},running:{summary:'这件事还在处理中。',next:'有结果或需要补充时会继续告诉你。'},queued:{summary:'步骤已安排，尚有内容等待处理。',next:'前面的成果就绪后，会接着处理。'}};
- return {status,...copy[status],steps:current.steps.map((step,index)=>({title:publicSummary(current.spec.steps[index].title,'处理这一步'),status:step.state,summary:publicSummary(step.summary,step.state==='completed'?'这一步已取得可用成果。':'这一步尚未完成。')}))};
+ const steps=current.steps.map((step,index)=>({title:publicSummary(current.spec.steps[index].title,'处理这一步'),status:step.state,summary:publicSummary(step.summary,step.state==='completed'?'这一步已取得可用成果。':'这一步尚未完成。')}));
+ const blocked=steps.find(step=>step.status==='failed')??steps.find(step=>step.status==='needs_input')??steps.find(step=>step.status==='waiting');
+ const copy:Record<WorkflowProgress['status'],{summary:string;next:string}>={completed:{summary:'这件事的步骤已完成。',next:'可以查看已经交回的成果。'},partial:{summary:'必需内容已完成，部分可选内容暂未取得。',next:'已有成果可以使用；没有查证的资料不会冒充已核实事实。'},failed:{summary:blocked?`卡在“${blocked.title}”：${blocked.summary}`:'这轮有步骤没完成，已暂停。',next:'本轮不会自动重跑。可以直接在主对话补充要求，我会沿用已完成的步骤。'},needs_input:{summary:blocked?`“${blocked.title}”还缺资料：${blocked.summary}`:'还缺完成任务需要的资料。',next:'把缺的资料直接发在主对话，我会接着处理，不用再点开始。'},waiting:{summary:blocked?`正在核对“${blocked.title}”的原结果。`:'正在等前面的成果或核对原结果。',next:'原结果尚未确认，暂不重复执行。'},running:{summary:'这件事还在处理中。',next:'有结果或需要补充时会继续告诉你。'},queued:{summary:'步骤已安排，尚有内容等待处理。',next:'前面的成果就绪后，会接着处理。'}};
+ return {status,...copy[status],steps};
 }

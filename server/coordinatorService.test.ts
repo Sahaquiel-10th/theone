@@ -15,7 +15,7 @@ import {OneKeyPresenceError} from './oneKeyPresence.js';
 import { NotionDocuments } from './notionDocuments.js';
 import { NotionWriteError, type NotionMcpService } from './knowledge/notionMcpService.js';
 import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
-import {runtimeContext} from './runtimeContext.js';
+import {runtimeContext,knowledgeRecallOptions} from './runtimeContext.js';
 import {sourceBinding} from './publicSharing.js';
 import {localExecutionCapabilityGuidance} from './localDocumentPolicy.js';
 import {LocalExecutionNotStartedError} from './localExecutionAdmission.js';
@@ -95,6 +95,19 @@ test('a no-internet request cannot call public search even if the browser enable
     assert.equal(JSON.parse(messages.at(-1)!.content!).status,'rejected');return answer('不联网，只根据你给的内容讨论。');
   }});
   await service.dispatch(a,{...input('operation_no_internet_01','只讨论，不联网'),webSearch:true},key);assert.equal(calls,2);
+});
+
+test('a spoken public lookup grants the same search permission as the switch, while configured tools remain authoritative',async()=>{
+ for(const available of [true,false]){
+  const f=fixture();let searches=0;
+  if(!available)await f.store.mutate(d=>{d.settings.aiTasks!.coordinator!.published!.tools=d.settings.aiTasks!.coordinator!.published!.tools.filter(name=>name!=='web_search');});
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no private search')},{webSearch:async()=>{searches++;return [{title:'公开案例',url:'https://example.com/case',content:'合成公开材料'}];},modelCall:async(_m,messages,tools)=>{
+   assert.equal(tools.some(tool=>tool.function.name==='web_search'),available);
+   if(available&&messages.at(-1)?.role!=='tool')return {...answer(''),toolCalls:[{id:'spoken-search',type:'function',function:{name:'web_search',arguments:JSON.stringify({query:'公开设计案例'})}}]};
+   return answer(available?'已依据本次返回的公开来源回答。':'公开搜索尚未开放，这次没有联网。');
+  }});
+  const result=await service.dispatch(a,{...input(`operation_spoken_web_${available}`,'只回答，上网搜一下公开设计案例。'),webSearch:false},key);assert.equal(searches,available?1:0);assert.equal(result.taskIds.length,0);
+ }
 });
 test('explicit knowledge opt-out removes private retrieval and rejects a forged coordinator call',async()=>{
  const f=fixture();let calls=0;
@@ -1164,13 +1177,14 @@ test('HTTP local admission is explicit and a duplicate pending operation is neve
 /** Full service-path fixture: only provider/model transports are synthetic.
  * Admission, workflow persistence, Notion ownership/readback, billing and HTML
  * file generation are the same implementations used by the live routes. */
-async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean;twoSaves?:boolean;adaptiveDefault?:boolean;legacyChain?:boolean}={}){
+async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean;twoSaves?:boolean;adaptiveDefault?:boolean;legacyChain?:boolean;clarification?:'failed'|'needs_input';supplementText?:string}={}){
  const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-workflow-service-'));
  const parentId='1'.repeat(32),pageId='2'.repeat(32),clock={now:Date.now()+1000};
  const source='ONE-WORKFLOW-SOURCE-青色42：插入入口后先找资料，再写完整方案。';
  const firstBody='ONE-WORKFLOW-DRAFT-青色42\n资料核对后形成完整方案。\n自然结尾。';
  const secondBody='ONE-WORKFLOW-REVISION-橙色17\n沿用同一页修订完整方案。\n第二次自然结尾。';
  const counts={retrieval:0,create:0,update:0,read:0,draft:0,feature:0};
+ const recalls:{query:string;options:unknown}[]=[];
  const calls:{modelId:string;messages:ModelToolMessage[];tools:ModelToolDefinition[]}[]=[];
  let body='',readbackReady=!options.delayed,legacyRound=0;
  await f.store.mutate(d=>{
@@ -1199,10 +1213,11 @@ async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean
    for(const update of args.content_updates){assert.equal(update.old_str,body,'each revision replaces the latest verified full body');body=body.replace(update.old_str,update.new_str);}return {};
   },
  } as unknown as NotionMcpService;
- const service=new CoordinatorService(f.store,{recallWithDiagnostics:async(ws,query,_top,ids,user)=>{
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async(ws,query,_top,ids,user,recallOptions)=>{
+  recalls.push({query,options:structuredClone(recallOptions)});
   counts.retrieval++;assert.equal(ws,a.workspaceId);assert.equal(user,a.userId);assert.deepEqual(ids,['wf-source']);assert.match(query,/青色42|ONE-WORKFLOW/);
   return {status:options.noMatch?'no_match':'used',chunks:options.noMatch?[]:[{id:'wf-source-body',provider:'getnote',title:'入口方案',content:source}],failures:[],coverage:[{connectionId:'wf-source',provider:'getnote',status:options.noMatch?'no_match':'used',attempts:1}]};
- }},{artifactDirectory:directory,contextMode:options.adaptiveDefault?'adaptive':'legacy',notionDocuments:new NotionDocuments(f.store,mcp,{now:()=>clock.now,delays:[5,10]}),reportCall:async()=>assert.fail('workflow does not buy an extra progress-summary model'),modelCall:async(model,messages,tools)=>{
+ }},{artifactDirectory:directory,contextMode:options.adaptiveDefault||options.clarification?'adaptive':'legacy',notionDocuments:new NotionDocuments(f.store,mcp,{now:()=>clock.now,delays:[5,10]}),reportCall:async()=>assert.fail('workflow does not buy an extra progress-summary model'),modelCall:async(model,messages,tools)=>{
   calls.push({modelId:model.id,messages:structuredClone(messages),tools:structuredClone(tools)});
   if(model.id==='router'){
    if(messages.at(-1)?.role==='tool'&&!messages.at(-1)?.content?.includes('"status":"loaded"'))return answer('开始处理。');
@@ -1224,10 +1239,15 @@ async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean
    assert.equal(legacyRound,4);return answer(JSON.stringify({outcome:'completed',content:'完整方案和交互网页已做好。',summary:'完整方案和网页都已完成。'}));
   }
   counts.draft++;assert.deepEqual(tools,[]);assert.ok(JSON.stringify(messages).includes(source),'model receives the actual source body');
+  if(options.clarification){
+   if(counts.draft===1)return answer(JSON.stringify({outcome:options.clarification,content:'案例还没整理出来，请澄清案例要求。',summary:'案例需要澄清'}));
+   assert.ok(JSON.stringify(messages).includes(options.supplementText??'公开案例我是让你自己想'));assert.match(JSON.stringify(messages),/青色42/);
+   return answer(JSON.stringify({outcome:'completed',content:firstBody,summary:'完整方案与明确标注的案例已整理。'}));
+  }
   if(counts.draft>1){assert.ok(options.twoSaves);assert.ok(JSON.stringify(messages).includes(firstBody.split('\n')[0]));}
   return answer(JSON.stringify({outcome:'completed',content:counts.draft===1?firstBody:secondBody,summary:'完整方案已整理。'}));
  }});
- return {...f,service,directory,parentId,pageId,source,firstBody,secondBody,counts,calls,clock,body:()=>body,allowReadback:()=>{readbackReady=true;clock.now+=20;},metrics:()=>({counts:{...counts},executionModelCalls:calls.filter(call=>call.modelId!=='router').length,models:calls.map(call=>({model:call.modelId,messagesBytes:Buffer.byteLength(JSON.stringify(call.messages),'utf8'),toolsBytes:Buffer.byteLength(JSON.stringify(call.tools),'utf8')}))}),cleanup:()=>rmSync(directory,{recursive:true,force:true})};
+ return {...f,service,directory,parentId,pageId,source,firstBody,secondBody,counts,calls,recalls,clock,body:()=>body,allowReadback:()=>{readbackReady=true;clock.now+=20;},metrics:()=>({counts:{...counts},executionModelCalls:calls.filter(call=>call.modelId!=='router').length,models:calls.map(call=>({model:call.modelId,messagesBytes:Buffer.byteLength(JSON.stringify(call.messages),'utf8'),toolsBytes:Buffer.byteLength(JSON.stringify(call.tools),'utf8')}))}),cleanup:()=>rmSync(directory,{recursive:true,force:true})};
 }
 
 for(const delayed of [false,true])test(`workflow service retrieval to model to Notion to real HTML; delayed readback=${delayed}`,async t=>{
@@ -1281,6 +1301,89 @@ test('workflow service adaptive default plans real retrieval, drafting, Notion a
   const db=await f.store.read(),run=db.chatOperations!.find(o=>o.workRun&&o.conversationId===r.taskId)!.workRun!;
   assert.equal(run.state,'completed',JSON.stringify({run,metrics:f.metrics()}));assert.deepEqual(run.workflow!.spec.steps.map(step=>step.kind),['tool','model','notion','feature']);assert.ok(run.workflow!.steps.every(step=>step.state==='completed'));assert.deepEqual([f.counts.retrieval,f.counts.draft,f.counts.create,f.counts.feature],[1,1,1,2]);assert.equal(f.body(),f.firstBody);const file=db.attachments.find(file=>file.conversationId===r.taskId)!;assert.match(readFileSync(file.storagePath,'utf8'),/ONE-WORKFLOW-DRAFT-青色42/);t.diagnostic(JSON.stringify(f.metrics()));
  }finally{f.cleanup();}
+});
+
+for(const outcome of ['failed','needs_input','legacy_missing_web'] as const)test(`a substantive case clarification automatically continues the same ${outcome} workflow, keeps its Notion target and reuses the authorized notes`,async()=>{
+ const legacy=outcome==='legacy_missing_web',f=await workflowServiceFixture(legacy?{adaptiveDefault:true}:{clarification:outcome});
+ try{
+  const r=await f.service.dispatch(a,{...input(`operation_workflow_clarify_${outcome}`,'从得到大脑查找青色42入口方案，写完整方案保存到Notion并做交互网页。'),sourceIds:['wf-source'],featureIds:['oneHtml'],confirmedExternal:true,outputDestination:'notion'},key);assert.ok(r.taskId);
+  if(legacy){
+   // An old persisted planner could require web even though this execution
+   // round cannot offer it. New admission refuses it before any child exists.
+   const {createWorkflowRun}=await import('./taskWorkflow.js');
+   await f.store.mutate(d=>{const job=d.chatOperations!.find(o=>o.conversationId===r.taskId&&o.workRun)!.workRun!,run=job.workflow!,steps=structuredClone(run.spec.steps);steps.splice(1,0,{id:'cases',title:'补案例',kind:'tool',tool:'web_search',instruction:'公开碰一碰产品案例',inputs:[],required:true});steps.find(step=>step.id==='draft')!.inputs.push('cases');job.workflow=createWorkflowRun({version:1,steps},run.binding);});
+  }
+  await f.service.resume(a,key);
+  await waitFor(async()=>(await f.service.task(a,r.taskId!)).jobs[0].state==='failed');
+  const before=await f.store.read(),old=before.chatOperations!.find(o=>o.conversationId===r.taskId&&o.workRun)!,target=structuredClone(old.workRun!.notionTarget),oldInstruction=old.workRun!.instruction;
+  assert.equal(old.workRun!.resultOutcome,legacy?'failed':outcome);assert.equal(old.workRun!.workflow!.steps[0].state,'completed');assert.deepEqual([f.counts.retrieval,f.counts.draft,f.counts.create,f.counts.feature],[1,legacy?0:1,0,0]);assert.equal(before.conversations.find(c=>c.id===r.taskId)!.notionDocument?.pageId,undefined);
+  if(outcome!=='needs_input'){await assert.rejects(()=>f.service.direct(a,r.taskId!,{operationId:`operation_bare_continue_${outcome}`,text:'继续'},key),/裸“继续”/);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.conversationId===r.taskId&&o.workRun).length,1);}
+  if(legacy)await f.store.mutate(d=>{delete d.conversations.find(c=>c.id===r.taskId)!.notionDocument;const job=d.chatOperations!.find(o=>o.id===old.id)!.workRun!;job.sources=job.sources.map(source=>({binding:source.binding,id:source.id}));});
+  const supplement={operationId:`operation_case_supplement_${outcome}`,text:'公开案例我是让你自己想，不是找工具，可以上网搜'};
+  await f.service.direct(a,r.taskId!,supplement,key);
+  const queued=await f.store.read(),jobs=queued.chatOperations!.filter(o=>o.conversationId===r.taskId&&o.workRun),next=jobs.at(-1)!.workRun!;
+  assert.equal(jobs.length,2);assert.equal(queued.conversations.find(c=>c.id===r.taskId)!.workPaused,false);assert.equal(next.state,'queued');assert.equal(next.webSearch,true);assert.deepEqual(next.notionTarget,target);assert.ok(next.instruction.includes(oldInstruction));assert.match(next.instruction,/公开案例我是让你自己想/);assert.deepEqual(next.sources,old.workRun!.sources);assert.equal(next.workflow!.steps[0].state,'completed');
+  await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,r.taskId!)).jobs.at(-1)!.state==='completed');
+  assert.deepEqual([f.counts.retrieval,f.counts.draft,f.counts.create,f.counts.update,f.counts.feature],[1,legacy?1:2,1,0,2]);assert.equal(f.body(),f.firstBody);
+  const done=await f.store.read();assert.equal(done.conversations.filter(c=>!c.coordinatorMain&&c.executorProfileId).length,1);assert.equal(done.chatOperations!.find(o=>o.id===old.id)!.workRun!.state,'failed');assert.equal(done.chatOperations!.filter(o=>o.conversationId===r.taskId&&o.workRun).at(-1)!.workRun!.notionReceipt!.state,'verified');
+  await f.service.direct(a,r.taskId!,supplement,key);await f.service.resume(a,key);assert.deepEqual([f.counts.retrieval,f.counts.draft,f.counts.create,f.counts.feature],[1,legacy?1:2,1,2]);await assert.rejects(()=>f.service.direct(b,r.taskId!,{...supplement,operationId:'operation_foreign_supplement'},key));
+ }finally{f.cleanup();}
+});
+
+for(const name of ['delegate_task','delegate_tasks'] as const)test(`${name} hides unavailable web in its workflow schema and repairs thinking to a model before any child or worker call`,async()=>{
+ const f=fixture();let plans=0,worker=0;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no private search requested')},{modelCall:async(model,messages,tools)=>{
+  if(model.id!=='router'){worker++;assert.deepEqual(tools,[]);return answer(JSON.stringify({outcome:'completed',content:'假设案例：两位用户用碰一碰交换活动入口。',summary:'假设案例已整理。'}));}
+  if(messages.at(-1)?.role==='tool'&&!messages.at(-1)!.content!.includes('rejected'))return answer('开始整理。');
+  plans++;const schema=tools.find(tool=>tool.function.name===name)!.function.parameters as any,workflow=name==='delegate_task'?schema.properties.workflow:schema.properties.tasks.items.properties.workflow;
+  assert.equal(workflow.properties.steps.items.properties.kind.enum.includes('tool'),false);assert.equal(workflow.properties.steps.items.properties.tool,undefined);
+  if(plans===2){assert.match(messages.at(-1)!.content!,/必需读取工具本轮没有开放/);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,0);assert.equal(worker,0);}
+  const task={taskId:null,title:'构思案例',instruction:'自行构思一个明确标为假设的碰一碰产品案例，不查外部资料。',executorId:'general',featureIds:[],workflow:{version:1,steps:[plans===1?{id:'cases',title:'构思案例',kind:'tool',tool:'web_search',instruction:'碰一碰产品案例',inputs:[]}:{id:'cases',title:'构思案例',kind:'model',instruction:'构思案例并明确标为假设，不冒充查证事实。',inputs:[]}]}};
+  return {...answer(''),toolCalls:[{id:`plan-${plans}`,type:'function',function:{name,arguments:JSON.stringify(name==='delegate_task'?task:{tasks:[{...task,outputKind:'text',dependsOn:[]}]})}}]};
+ }});
+ const result=await service.dispatch(a,input(`operation_schema_repair_${name}`,'请自行构思一个碰一碰产品案例，明确标为假设。'),key);assert.ok(result.taskId);assert.equal(plans,2);await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='completed');assert.equal(worker,1);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,1);
+});
+
+test('cross-day clarification keeps the original yesterday anchor, while new material requests never reuse its notes',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:new Date('2026-11-03T01:00:00.000Z')});
+ const originalTime={at:'2026-11-02T00:05:58.745Z',timeZone:'Asia/Shanghai',today:'2026-11-02',yesterday:'2026-11-01'};
+ for(const [index,text] of ['公开案例我是让你自己想，不是找工具，可以上网搜','改用今天那条','换个日期','重新查笔记','换另一份资料补案例','改用2026-11-03的笔记，按这个写'].entries()){
+  const f=await workflowServiceFixture({clarification:'failed',supplementText:text});
+  try{
+   const r=await f.service.dispatch(a,{...input(`operation_day_anchor_${index}`,'从得到大脑查找青色42入口方案，写完整方案保存到Notion并做交互网页。'),sourceIds:['wf-source'],featureIds:['oneHtml'],confirmedExternal:true,outputDestination:'notion'},key);assert.ok(r.taskId);await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,r.taskId!)).jobs[0].state==='failed');
+   await f.store.mutate(d=>{const op=d.chatOperations!.find(o=>o.conversationId===r.taskId&&o.workRun)!;op.createdAt=originalTime.at;op.workRun!.runtimeContext=structuredClone(originalTime);op.workRun!.instruction='从得到大脑查找昨天的青色42产品笔记，写方法论专栏并补案例保存到Notion。';});
+   await f.service.direct(a,r.taskId!,{operationId:`operation_day_anchor_follow_${index}`,text},key);
+   const jobs=(await f.store.read()).chatOperations!.filter(o=>o.conversationId===r.taskId&&o.workRun),next=jobs.at(-1)!.workRun!,read=next.workflow!.spec.steps.find(step=>step.tool==='knowledge_search')!;
+   assert.equal(jobs.at(-1)!.createdAt,'2026-11-03T01:00:00.000Z');if(index===1||index===5)assert.equal(next.runtimeContext!.today,'2026-11-03');else assert.deepEqual(next.runtimeContext,originalTime);assert.match(next.instruction,/昨天的青色42产品笔记/);assert.match(next.instruction,new RegExp(text));
+   if(index===0){assert.equal(knowledgeRecallOptions(next.instruction,next.runtimeContext!).dateRange!.from,'2026-11-01');assert.equal(next.workflow!.steps[0].state,'completed');assert.equal(f.counts.retrieval,1);}
+   else{assert.equal(next.workflow!.steps[0].state,'queued');assert.equal(next.steps!.filter(cp=>cp.effect==='read'&&cp.state==='completed').length,0);assert.ok(read.instruction.includes(text),'fresh read uses the new request, not the old completed query');}
+   if(index===0||index===1||index===5){
+    await f.service.resume(a,key);await waitFor(async()=>['completed','failed'].includes((await f.service.task(a,r.taskId!)).jobs.at(-1)!.state));const latest=(await f.service.task(a,r.taskId!)).jobs.at(-1)!;assert.equal(latest.state,'completed',JSON.stringify({index,latest,recalls:f.recalls,metrics:f.metrics()}));assert.equal(f.counts.create,1);
+    if(index===0)assert.equal(f.counts.retrieval,1,'dated source gate consumes the exact reused notes without another lookup');
+    else{assert.equal(f.counts.retrieval,2);assert.match(f.recalls.at(-1)!.query,/2026-11-03/);assert.equal((f.recalls.at(-1)!.options as any).dateRange.from,'2026-11-03');assert.equal((f.recalls.at(-1)!.options as any).dateRange.to,'2026-11-03');assert.equal((f.recalls.at(-1)!.options as any).dateRange.anchorAt,'2026-11-03T01:00:00.000Z');}
+   }
+  }finally{f.cleanup();}
+ }
+});
+
+test('a changed knowledge account binding cannot reuse old notes or start a failed-workflow continuation',async()=>{
+ const f=await workflowServiceFixture({clarification:'failed'});
+ try{
+  const r=await f.service.dispatch(a,{...input('operation_workflow_source_rotation','从得到大脑查找青色42入口方案，写完整方案保存到Notion并做交互网页。'),sourceIds:['wf-source'],featureIds:['oneHtml'],confirmedExternal:true,outputDestination:'notion'},key);assert.ok(r.taskId);await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,r.taskId!)).jobs[0].state==='failed');
+  await f.store.mutate(d=>{d.knowledgeConnections.find(connection=>connection.id==='wf-source')!.providerUserId='different-account';});
+  await assert.rejects(()=>f.service.direct(a,r.taskId!,{operationId:'operation_workflow_source_rotation_follow',text:'公开案例我是让你自己想，不是找工具，可以上网搜'},key));
+  assert.deepEqual([f.counts.retrieval,f.counts.draft,f.counts.create,f.counts.feature],[1,1,0,0]);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.conversationId===r.taskId&&o.workRun).length,1);
+ }finally{f.cleanup();}
+});
+
+test('an explicitly required public verification cannot be replaced by an optional search or a made-up model case',async()=>{
+ const f=fixture();let workers=0,plans=0;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge fallback')},{modelCall:async(model,messages)=>{
+  if(model.id!=='router'){workers++;return answer('invented case');}
+  if(messages.at(-1)?.role==='tool'){assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,0);return answer('必需的公开检索暂不可用，尚未开始。请恢复公开搜索能力后继续核实。');}
+  plans++;return {...answer(''),toolCalls:[{id:'required-web',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'核实公开案例',instruction:'必须联网搜索核实真实产品案例，不接受假设案例。',executorId:'general',outputKind:'text',featureIds:[],dependsOn:[],requiredTools:['web_search'],workflow:{version:1,steps:[{id:'cases',title:'可选搜索',kind:'tool',tool:'web_search',instruction:'公开产品案例',inputs:[],required:false},{id:'draft',title:'写案例',kind:'model',instruction:'整理案例。',inputs:['cases']}]}}]})}}]};
+ }});
+ const result=await service.dispatch(a,{...input('operation_required_web_not_optional','请联网搜索核实真实产品案例，不接受假设。'),webSearch:true},key);assert.equal(result.taskIds.length,0);assert.equal(plans,1);assert.equal(workers,0);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,0);
 });
 
 test('workflow service dependent task receives the complete parent body beyond 6000 characters with exact provenance',async t=>{
@@ -3472,6 +3575,7 @@ test('supplements arriving during a run merge into one latest sequential continu
  await waitFor(async()=>executions===1);
  await f.service.direct(a,first.taskId!,input('operation_auto_busy_2','补充甲：不要使用真实姓名'),key);
  await f.service.direct(a,first.taskId!,input('operation_auto_busy_3','补充乙：结尾加一个例子'),key);
+ const latestInstruction=(await f.store.read()).chatOperations!.filter(o=>o.conversationId===first.taskId&&o.workRun).at(-1)!.workRun!.instruction;assert.match(latestInstruction,/UI 原稿目标/);assert.match(latestInstruction,/补充甲：不要使用真实姓名/);assert.match(latestInstruction,/补充乙：结尾加一个例子/);
  let detail=await f.service.task(a,first.taskId!);assert.deepEqual(detail.jobs.map(j=>j.state),['running','cancelled','queued']);
  await f.service.resume(a,key);assert.equal(executions,1,'a supplement never interrupts the running round');
  release();await waitFor(async()=>(await f.service.task(a,first.taskId!)).jobs.at(-1)!.state==='completed');
@@ -3651,7 +3755,7 @@ test('bounded mismatching readback remains active between checks and ends once w
  const op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!;
  assert.equal(reads,2);assert.equal(op.workRun!.notionReceipt!.verification!.state,'exhausted');assert.equal(op.workRun!.failureCode,'notion_verification_exhausted');
  const main=(await service.state(a)).conversation!,report=main.messages.find(m=>m.id===op.workRun!.reportMessageId)!;
- assert.match(report.content,/未完整核对/);assert.match(report.content,/打开|核对|确认/);assert.match(report.content,new RegExp(f.pageId));assert.doesNotMatch(report.content,/已完成|已保存到 Notion · 已回读核对/);
+ assert.match(report.content,/尚未确认全文保存一致/);assert.match(report.content,/自动核对已停下.*不会自动重试/);assert.match(report.content,/只读取同一页面.*不会覆盖或重复保存/);assert.match(report.content,new RegExp(f.pageId));assert.doesNotMatch(report.content,/已完成|已保存到 Notion · 已回读核对/);
  await service.reconcileNotionResults(a,key);await service.state(a);assert.equal(reads,2);assert.equal((await service.task(a,f.taskId)).conversation.messages.filter(m=>m.role==='assistant').length,1);
 });
 
@@ -3749,7 +3853,7 @@ test('an explicitly selected legacy check that exhausts gives one new main next-
  await service.reconcileNotionResults(a,key);
  let op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!;
  assert.equal(reads,2);assert.equal(op.workRun!.notionReceipt!.verification!.state,'exhausted');assert.equal(op.workRun!.notionVerificationSelection,undefined);assert.equal(op.workRun!.resultOutcome,'partial');assert.equal(op.workRun!.reportRevision,1);assert.notEqual(op.workRun!.reportMessageId,'old-failure-report');
- const report=(await service.state(a)).conversation!.messages.find(m=>m.id===op.workRun!.reportMessageId)!;assert.match(report.content,/未完整核对/);assert.match(report.content,new RegExp(f.pageId));
+ const report=(await service.state(a)).conversation!.messages.find(m=>m.id===op.workRun!.reportMessageId)!;assert.match(report.content,/尚未确认全文保存一致/);assert.match(report.content,/自动核对已停下.*不会自动重试/);assert.match(report.content,/只读取同一页面.*不会覆盖或重复保存/);assert.match(report.content,new RegExp(f.pageId));
  await service.reconcileNotionResults(a,key);await service.state(a);op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!;assert.equal(op.workRun!.reportRevision,1);assert.equal(reads,2);
 });
 

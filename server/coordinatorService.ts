@@ -7,7 +7,7 @@ import { pendingTaskResults, unreviewedTaskResults, appendTaskResultReport, ackn
 import { taskRecovery } from '../src/taskRecovery.js';
 import {latestTaskResults, pendingConversationTaskResults} from './taskResultInbox.js';
 import {ChatImageGatewayError} from './responsesImageGateway.js';
-import {discussionOnly,freshDocumentReadRequested,notionWriteRequested,notionWriteDeclined,notionDestinationRequested,notionSaveExistingRequested,coordinatorTaskIntent,existingTaskRecordReadRequested} from './executionIntent.js';
+import {discussionOnly,freshDocumentReadRequested,notionWriteRequested,notionWriteDeclined,notionDestinationRequested,notionSaveExistingRequested,coordinatorTaskIntent,existingTaskRecordReadRequested,coordinatorPositiveRequest} from './executionIntent.js';
 import {dispatchPlanSchema,validateDispatchPlan,isImageInstruction,parseTaskOutcome,taskOutcomeGuidance,type PlannedTask} from './dispatchPlan.js';
 import {routingCapabilities} from './capabilityCatalog.js';
 import {resolveDispatchCapabilities,callableCapabilities} from './dispatchCapabilities.js';
@@ -87,10 +87,11 @@ import {readPracticeMaterial,practiceWebReference,reclaimUnstartedPracticeOperat
 import {taskReportPrompt,taskReportFallback,validateTaskReport,type TaskReportFacts} from './taskNarration.js';
 import {adaptiveGuidance,recentCoordinatorMessages,compactTaskCandidates,compactCapabilities,initialCoordinatorToolNames,contextReadSchema,validateContextRead,readCoordinatorContext,requiresCoordinatorDelivery,coordinatorNeedsInput,requiresHtmlArtifact,needsTaskContext,type CoordinatorContextMode,type ContextRead} from './adaptiveCoordinator.js';
 import {datedDraftPrerequisite} from './datedDraftPrerequisite.js';
-import {taskContinuation,actionableTaskSupplement,supersedeQueuedSupplements,supplementKnowledgeRequest,taskStatusQuestion,plainTaskContinuation} from './taskContinuation.js';
+import {taskContinuation,actionableTaskSupplement,substantiveTaskSupplement,supersedeQueuedSupplements,supplementKnowledgeRequest,taskStatusQuestion,plainTaskContinuation} from './taskContinuation.js';
 import {selectedNotionVerification} from './notionVerificationSelection.js';
 import {createWorkflowRun,workflowSpecSchema,validateWorkflowSpec,workflowProgress,type WorkflowSpec} from './taskWorkflow.js';
-import {resolveTaskWorkflow,WorkflowPlanningError} from './workflowPlanning.js';
+import {resolveTaskWorkflow,WorkflowPlanningError,workflowWebSearchPermission,workflowSchemaForTools,workflowKnowledgeReadUnchanged} from './workflowPlanning.js';
+import {reuseCompletedWorkflowReads,workflowSourceBindingsMatch} from './workflowRecovery.js';
 import {executeWorkflowStages,recoverVerifiedNotionWorkflow} from './workflowExecution.js';
 import {CoordinatorLocalError,localActionRequested,naturalLocalActionRequested,localReadinessCanStart,localReadinessFailure} from './coordinatorLocalPolicy.js';
 import {parseLocalDeviceReadiness,type LocalDeviceReadiness} from '../src/localDeviceReadiness.js';
@@ -850,7 +851,7 @@ export class CoordinatorService {
       let inspectedInlineArticle:{messageId:string;messageDigest:string}|undefined;
       let inspectedInlineArticleRead=false;
       const originalTaskCoverage=new Map<string,number>();
-      const webPermission=input.webSearch===true&&publicSearchPermitted(input.text);
+      const webPermission=workflowWebSearchPermission(input.text,false,input.webSearch)&&publicSearchPermitted(input.text);
       const candidates = current.conversations
         .filter(
           (c) =>
@@ -1140,7 +1141,7 @@ export class CoordinatorService {
         if(!deferStart)await this.resume(s,verifyKey);return taskId;
       };
       let delegatedKnowledge=false;
-      const batchTool:OrchestrationTool={name:'delegate_tasks',description:'安排可单独跟进的交付任务，一件任务可以组合多个功能。featureIds 填本任务确定要用的功能，只有可选的不要填。图片使用 image_generation，写作使用 writing，分析使用 logic，本机文件使用 local_special。独立任务同时处理；dependsOn只填写前面任务的数组下标。',run:async()=>{},structured:{schema:dispatchPlanSchema,validate:validateDispatchPlan,run:async value=>{
+      const batchTool:OrchestrationTool={name:'delegate_tasks',description:'安排可单独跟进的交付任务，一件任务可以组合多个功能。featureIds 填本任务确定要用的功能，只有可选的不要填。图片使用 image_generation，写作使用 writing，分析使用 logic，本机文件使用 local_special。独立任务同时处理；dependsOn只填写前面任务的数组下标。',run:async()=>{},structured:{schema:structuredClone(dispatchPlanSchema),validate:validateDispatchPlan,run:async value=>{
         if(adaptive&&(dispatched||imageTask))throw new OrchestrationInputError('本轮已有任务接到，不再创建另一批任务。已有结果和要求保持原样。');
         await verify();
         if((value as {tasks:PlannedTask[]}).tasks.some(t=>t.outputKind==='local_file'||t.executorId==='local_special'||t.capabilityIds?.some(id=>['builtin:codex_execution','builtin:local_agent'].includes(id))))await checkLocal(true);
@@ -1253,13 +1254,13 @@ export class CoordinatorService {
       let publicSearchAttempted=false;
       if(!mainKnowledge.declined&&(authorizedSources.length||mainKnowledge.required))referenceTools.push({name:'knowledge_search',description:config.values.toolDescriptions?.knowledge_search,label:'查找你的资料',effect:'read',run:async query=>{await verify();if(mainKnowledge.missing.length)return {status:'not_connected',message:`${mainKnowledge.missing.join('、')}还没连好，这次没有查询到它。`};const selected=mainKnowledge.required?mainKnowledge.sourceIds:authorizedSources.map(source=>source.id);const result=await this.knowledge.recallWithDiagnostics(s.workspaceId,datedKnowledgeQuery(query,input.text,timeContext),5,selected,s.userId,knowledgeRecallOptions(input.text,timeContext));await verify();privateSearchTexts.push(...result.chunks.map(c=>c.content));return temporalKnowledgeResult(knowledgeResultComplete(result,selected)?result:{...result,status:'partial'},input.text,timeContext);}});
       const publicSearchAllowed=!taskRecordOnly&&webPermission&&(!mainKnowledge.required||explicitlyNeedsPublicSearch(input.text));
-      if(input.webSearch&&this.deps.webSearch&&publicSearchAllowed)referenceTools.push({name:'web_search',description:config.values.toolDescriptions?.web_search,run:async query=>{await verify();try{reviewedPublicQuery(query,privateSearchTexts);}catch{return {status:'rejected',message:'搜索词夹带了个人资料，请只用必要的公开关键词，不得发送私人内容。'};}const result=await publicSearchOutcome(q=>this.deps.webSearch!(q,{...s,conversationId:cid,requestId,modelId:config.model.id,verify,beforeReserve:(fresh,amount)=>{
+      if(this.deps.webSearch&&publicSearchAllowed)referenceTools.push({name:'web_search',description:config.values.toolDescriptions?.web_search,run:async query=>{await verify();try{reviewedPublicQuery(query,privateSearchTexts);}catch{return {status:'rejected',message:'搜索词夹带了个人资料，请只用必要的公开关键词，不得发送私人内容。'};}const result=await publicSearchOutcome(q=>this.deps.webSearch!(q,{...s,conversationId:cid,requestId,modelId:config.model.id,verify,beforeReserve:(fresh,amount)=>{
         featureMember(fresh,s);
         if(!fresh.chatOperations?.some(o=>own(o,s)&&o.operationId===input.operationId&&o.status==='pending'))throw new CoordinatorError('本轮已停止，未开始新的联网查询',409);
         if(fresh.settings.aiTasks?.coordinator?.published?.enabled!==true)throw new CoordinatorError('调度已停用');
         if(routeBudget!==undefined&&spent(fresh,s,requestId)+amount>Math.floor(routeBudget*1e6))throw new CoordinatorError('本轮设置的调度上限不足，尚未开始下一次调用；账户余额不受此提示影响。',402);
       }}),query);publicSearchAttempted=true;await verify();return result;}});
-      const capabilities=routingCapabilities(current,s,{localAvailable:localToolAuthorized&&localReadinessCanStart(localReadiness),imageStorageAvailable:Boolean(this.deps.artifactDirectory),webSearchAvailable:input.webSearch===true&&!!this.deps.webSearch&&publicSearchAllowed&&config.values.tools.includes('web_search')});
+      const capabilities=routingCapabilities(current,s,{localAvailable:localToolAuthorized&&localReadinessCanStart(localReadiness),imageStorageAvailable:Boolean(this.deps.artifactDirectory),webSearchAvailable:!!this.deps.webSearch&&publicSearchAllowed&&config.values.tools.includes('web_search')});
       const discoveryEnabled=capabilityDiscoveryEnabled(config.values);
       const allowedCapabilities=capabilities.filter(card=>card.kind!=='knowledge'||authorizedSources.some(source=>source.id===card.sourceId));
       const visibleCapabilities=discoveryEnabled?initialCapabilityContext(allowedCapabilities,input.text,features):allowedCapabilities;
@@ -1273,7 +1274,7 @@ export class CoordinatorService {
       const referenceNotionCapability=requestedNotionDelivery||/\bnotion\b/i.test(content)||input.outputDestination==='notion'||Boolean(boundContext?.document);
       referenceTools.push({name:'discover_capabilities',label:'查找适合的能力',description:config.values.toolDescriptions?.discover_capabilities||'在当前用户已开放的能力中按用途查找执行 AI、功能和已连接平台。只查目录，不执行、不购买。支持分页；行业是可选标签，也要考虑通用功能。返回真实可用编号与调用说明，不得猜编号。',effect:'read',cacheable:false,run:async()=>{throw new Error('请提供查找条件');},structured:{schema:discoverySchema,validate:validateDiscoveryQuery,run:async raw=>{
         await verify();const fresh=await this.store.read();
-        const cards=routingCapabilities(fresh,s,{localAvailable:localToolAuthorized&&localReadinessCanStart(localReadiness),imageStorageAvailable:Boolean(this.deps.artifactDirectory),webSearchAvailable:input.webSearch===true&&publicSearchAllowed&&!!this.deps.webSearch&&config.values.tools.includes('web_search')})
+        const cards=routingCapabilities(fresh,s,{localAvailable:localToolAuthorized&&localReadinessCanStart(localReadiness),imageStorageAvailable:Boolean(this.deps.artifactDirectory),webSearchAvailable:publicSearchAllowed&&!!this.deps.webSearch&&config.values.tools.includes('web_search')})
           .filter(card=>card.kind!=='knowledge'||authorizedSources.some(source=>source.id===card.sourceId));
         const result=discoverCapabilities(cards,raw as DiscoveryQuery);return {...result,items:adaptive?compactCapabilities(result.items):callableCapabilities(result.items)};
       }}});
@@ -1312,11 +1313,18 @@ export class CoordinatorService {
       const allPending=pendingConversationTaskResults(current,s,{count:50,summaryChars:1200,totalChars:30000});
       const pendingResults=latestTaskResults(allPending).slice(0,6),selectedTasks=new Set(pendingResults.map(r=>r.taskId));
       capturedResults.push(...captureTaskResults(current,s,allPending.filter(r=>selectedTasks.has(r.taskId)).map(r=>r.id)));
+      const roundWorkflowSchema=workflowSchemaForTools([
+        ...(!mainKnowledge.declined&&authorizedSources.length?['knowledge_search']:[]),
+        ...(publicSearchAllowed&&this.deps.webSearch&&config.values.tools.includes('web_search')?['web_search']:[]),
+        ...(current.conversations.some(c=>own(c,s)&&!c.archived&&c.notionDocument?.pageId)?['read_notion_document']:[]),
+      ]);
+      (tool.structured!.schema as {properties:Record<string,unknown>}).properties.workflow=roundWorkflowSchema;
+      (batchTool.structured!.schema as typeof dispatchPlanSchema).properties.tasks.items.properties.workflow=roundWorkflowSchema;
       const messages: ModelToolMessage[] = [
         {
           role: "system",
           cacheScope:'stable',
-          content: `${current.settings.safetyRules}\n${config.model.systemPrompt}\n${referenceBoundary}\n${friendlyConversationGuidance}\n${coordinatorGuidance}\n${taskExecutionGuidance}\n${knowledgeGuidance}\n${webGuidance}${adaptive?'\n'+adaptiveGuidance+'\n多步云端任务在 delegate_task(s) 的 workflow 中编排同一任务内的步骤，而不是为每步另建任务：tool 实际检索 → model 创作 → notion 保存 → feature 制作文件。每步 inputs 引用确实需要的前置成果；默认不读旧历史，需要时才填 historyCount。tool.instruction 必须是可直接检索的具体问题/公开关键词；model/feature.instruction 只写本阶段要求，完整目标写在任务 instruction，勿重复所有提示词。先发现所需能力、确认可用并补齐依赖，再分派；不把保存/等待/简单判定交给额外模型。只对结果真需判断、创作的阶段安排 model；功能自带生成模型时无需再套一个相同 model 阶段。featureId 只能用已选真实编号，executorId 只选已开放执行器。独立图片、本机和新手引导保留既有固定流程。':''}`,
+          content: `${current.settings.safetyRules}\n${config.model.systemPrompt}\n${referenceBoundary}\n${friendlyConversationGuidance}\n${coordinatorGuidance}\n${taskExecutionGuidance}\n${knowledgeGuidance}\n${webGuidance}${adaptive?'\n'+adaptiveGuidance+'\n多步云端任务在 delegate_task(s) 的 workflow 中编排同一任务内的步骤，而不是为每步另建任务：tool 实际检索 → model 创作 → notion 保存 → feature 制作文件。构思、论证、选取和补充案例直接用 model，不找专用功能。允许联网不等于要求联网；未查证的示例明确标为假设，不冒充真实公开案例。只有用户要求实际检索核实时才将公开搜索设为 required；可选检索明确 required:false，其不可用不应挡住必需正文。tool 只能选本轮 workflow schema 列出的真实可用工具；缺少必需检索不得虚构已查证事实。每步 inputs 引用确实需要的前置成果；默认不读旧历史，需要时才填 historyCount。tool.instruction 必须是可直接检索的具体问题/公开关键词；model/feature.instruction 只写本阶段要求，完整目标写在任务 instruction，勿重复所有提示词。先发现所需能力、确认可用并补齐依赖，再分派；不把保存/等待/简单判定交给额外模型。只对结果真需判断、创作的阶段安排 model；功能自带生成模型时无需再套一个相同 model 阶段。featureId 只能用已选真实编号，executorId 只选已开放执行器。独立图片、本机和新手引导保留既有固定流程。':''}`,
         },
         {role:'system',content:`本轮授权参考：${JSON.stringify({tasks:adaptive?compactTaskCandidates(candidates,input.text,input.boundTaskId):candidates,selectedFeatures:features,boundTaskId:input.boundTaskId??null,attachments:main.messages.find(m=>m.id===mid)?.attachments?.map(f=>({name:f.originalName,kind:f.kind})),attachmentsRequireDelegation:attachments.length>0})}`},
         ...(referenceNotionCapability?[{role:'system' as const,content:`Notion 保存能力（服务端本轮核对，不是搜索工具的权限说明）：${JSON.stringify(notionSaving)}。ready 表示当前用户已授权写入且选好保存位置，通过 delegate_task(s) 使用；不要因主对话只提供搜索工具就声称 Notion 只有只读权限。这只是已验证能力状态，不是执行授权；纯权限询问、只读、讨论和否定不分派写入，残留保存选项不能改变本轮原话。${requestedNotionDelivery?(notionSaveExistingRequested(content,documentDestination)?'若写作已完成且本轮只保存：先定位同一任务和现有全文，只保存与核对，不重写文章，不重新查询原素材；主对话原文不唯一时用 read_context 的 messageId 精确定位，不能把最近普通答复冒充文章。':'本轮确实要求写入：新写或续改按本轮目标生成或修改正文，再保存并核对；不要把新写要求误当成仅保存旧稿。'):''}`}]:[]),
@@ -1685,7 +1693,7 @@ export class CoordinatorService {
           executorId: c.executorProfileId || "general",
           features: [],
           budget: budget(input.budget),
-          webSearch: false,
+          webSearch: workflowWebSearchPermission(input.text,(db.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===taskId&&o.workRun).at(-1)?.workRun?.webSearch),
           confirmedExternal: false,
           featureApprovals: input.featureApprovals,
           outputDestination: input.outputDestination==='local'?'chat':input.outputDestination,
@@ -2020,7 +2028,13 @@ export class CoordinatorService {
       }
     }
     const continuation=existing?taskContinuation(db,s,existing):undefined;
+    const previousOperation = existing
+      ? (db.chatOperations ?? []).filter(o => own(o,s) && o.conversationId === existing.id && o.workRun).at(-1)
+      : undefined;
+    const previous=previousOperation?.workRun;
+    if(!input.retrySourceJobId&&continuation?.canAcceptSupplement&&continuation.requiresSubstantiveSupplement&&!substantiveTaskSupplement(input.text))throw new OrchestrationInputError('前轮在写入前已失败，原目标和资料都保留着。裸“继续”或简短确认不会更改必需步骤；请补充实际处理要求，或从原任务恢复已核对的原步骤。尚未创建新一轮执行。');
     const supplement=actionableTaskSupplement(input.text)&&continuation?.canAcceptSupplement===true;
+    input={...input,webSearch:workflowWebSearchPermission(input.text,supplement?previous?.webSearch:false,input.webSearch)};
     const supplementSource=supplement?supplementKnowledgeRequest(input.text):'';
     const namedSupplement=supplement?knowledgePolicy(db,s,[input.text,supplementSource].filter(Boolean).join('\n')):undefined;
     if (input.outputDestination !== undefined && !['chat', 'notion'].includes(input.outputDestination)) throw new CoordinatorError('保存位置无效', 400);
@@ -2031,8 +2045,9 @@ export class CoordinatorService {
     const newNotionWrite=!input.onboardingPractice&&!input.localExecution&&input.expectedOutput!=='image'&&notionDestinationRequested(input.text,input.outputDestination)&&notionWriteRequested(input.instruction);
     const outputDestination=newNotionWrite?'notion':input.outputDestination;
     const declinedNotionWrite=notionWriteDeclined(input.text)||/只在对话|仅在对话/.test(input.text);
-    const continuingNotion=Boolean(supplement&&continuation?.prior?.workRun?.notionTarget&&!declinedNotionWrite);
-    let notionTarget:WorkRun['notionTarget'] = declinedNotionWrite&&!boundRead&&!newNotionWrite||outputDestination === 'chat'&&!boundRead&&!continuingNotion ? undefined : existing?.notionDocument ? { ...existing.notionDocument, referenceIds: writingTarget(db, s).referenceIds } : outputDestination === 'notion' ? writingTarget(db, s) : undefined;
+    const continuingNotion=Boolean(supplement&&previous?.notionTarget&&!declinedNotionWrite);
+    const continuingChatOnly=Boolean(supplement&&previous&&!previous.notionTarget&&!newNotionWrite&&outputDestination!=='notion');
+    let notionTarget:WorkRun['notionTarget'] = declinedNotionWrite&&!boundRead&&!newNotionWrite||continuingChatOnly&&!boundRead||outputDestination === 'chat'&&!boundRead&&!continuingNotion ? undefined : existing?.notionDocument ? { ...existing.notionDocument, referenceIds: writingTarget(db, s).referenceIds } : continuingNotion ? structuredClone(previous!.notionTarget) : outputDestination === 'notion' ? writingTarget(db, s) : undefined;
     if (notionTarget) {
       if (input.localExecution || !this.deps.notionDocuments) throw new CoordinatorError('Notion 写入尚未连接', 428);
       this.deps.notionDocuments.assertTarget(db, s, notionTarget);
@@ -2061,10 +2076,6 @@ export class CoordinatorService {
       const writer = resolveAiTask(db.settings, db.models, 'notion_writer', config.model);
       if(config.values.routingRole!=='writing')config.model = writer.model;
     }
-    const previousOperation = existing
-      ? (db.chatOperations ?? []).filter(o => own(o,s) && o.conversationId === existing.id && o.workRun).at(-1)
-      : undefined;
-    const previous=previousOperation?.workRun;
     const activePractice=db.users.find(u=>u.id===s.userId)?.profile?.onboarding;
     const practiceParent=supplement&&previousOperation?.workRun?.onboardingPractice&&activePractice?.journey?.stage==='ready'
       &&activePractice.practice?.id===previousOperation.workRun.onboardingPractice.id?previousOperation:undefined;
@@ -2145,8 +2156,11 @@ export class CoordinatorService {
     );
     const suppliedMaterial=Boolean(supplement&&!supplementSource&&((input.attachmentIds?.length??0)>0||/(?:素材|材料|正文|原话|原文)(?:如下|是|为)?\s*[:：][\s\S]{12,}/.test(input.text)));
     const plainContinue=Boolean(supplement&&plainTaskContinuation(input.text));
-    const originalPendingGoal=plainContinue?continuation?.prior?.workRun?.instruction.split('\n本轮用户明确要求：')[0]:undefined;
-    const effectiveInstruction=originalPendingGoal?`${originalPendingGoal}\n本轮用户明确要求：${input.text}。只继续未完成部分，已完成成果不重做。`:[input.instruction,supplementSource].filter(Boolean).join('\n');
+    const reuseKnowledge=Boolean(supplement&&previous&&!suppliedMaterial&&!namedSupplement?.requested.length&&(plainContinue||workflowKnowledgeReadUnchanged(input.text))&&workflowSourceBindingsMatch(previous.sources,sources));
+    const supplementTime=supplement?runtimeContext(db,s,undefined,previous?.runtimeContext?.timeZone):undefined;
+    const supplementDate=supplementTime&&!reuseKnowledge?knowledgeRecallOptions(`按资料日期筛选：${coordinatorPositiveRequest(input.text)}`,supplementTime).dateRange:undefined;
+    const originalPendingGoal=supplement?previous?.instruction:undefined;
+    const effectiveInstruction=originalPendingGoal?[supplementDate?`本轮资料日期限定：从 ${supplementDate.from} 到 ${supplementDate.to}，时区 ${supplementDate.timeZone}。以本轮明确日期覆盖前文旧日期要求。`:'',originalPendingGoal,`本轮用户明确要求：${input.text}。只继续未完成部分，已完成成果不重做。`,input.instruction!==input.text&&!originalPendingGoal.includes(input.instruction)?`本轮执行交接：${input.instruction}`:'',supplementSource].filter(Boolean).join('\n'):[input.instruction,supplementSource].filter(Boolean).join('\n');
     const executionInstruction=input.localExecution?`本轮确定为本机交付：必须在本任务绑定的已授权工作文件夹完成实际目标文件，不能以云端下载链接或聊天正文冒充已写到本机。沿用已选目录，不另问默认保存路径；不扩大文件权限，不覆盖无关文件。下列交接中的“无需保存本机”等相反表述不改变用户已选择的本机目标。\n\n${effectiveInstruction}`:effectiveInstruction;
     let policy=knowledgeDeclined?{required:false,sourceIds:[],requested:[],missing:[],declined:true}:knowledgePolicy(db,s,effectiveInstruction,sourceIds,supplementSource?undefined:input.knowledge);
     if(input.onboardingPractice?.material)policy={required:true,sourceIds,requested:[],missing:[],declined:false};
@@ -2169,12 +2183,12 @@ export class CoordinatorService {
     if(input.directVisual){validateVisualDocument(input.directVisual.document);if(notionTarget||input.localExecution||policy.required||!skills.some(f=>f.values.tools?.some(t=>t.id===input.directVisual!.tool)))throw new CoordinatorError('本轮不能直接生成这份说明，请先确认功能与保存范围。');}
     if(restore?.steps?.some(step=>step.state==='completed'||step.state==='started'&&['artifact','external_write'].includes(step.effect))&&(JSON.stringify(restore.skills.map(f=>[f.id,f.releaseId,f.version]))!==JSON.stringify(skills.map(f=>[f.id,f.releaseId,f.version]))||JSON.stringify(restore.sources)!==JSON.stringify(sources)))throw new CoordinatorError('功能或资料授权已经变化，已有成果保留。请先重新确认这件事的范围。');
     if(input.workflow&&(input.localExecution||input.directVisual||input.expectedOutput==='image'||agent))throw new CoordinatorError('这类任务保留原有固定执行流程，不能混入另一份步骤计划。',400);
-    const workflowTools=[...allowedTools].filter(name=>name!=='knowledge_search'||sources.length>0).filter(name=>name!=='web_search'||input.webSearch&&publicSearchPermitted(effectiveInstruction)&&Boolean(this.deps.webSearch));
+    const workflowTools=[...allowedTools].filter(name=>name!=='knowledge_search'||sources.length>0).filter(name=>name!=='web_search'||input.webSearch&&publicSearchPermitted(effectiveInstruction)&&(!policy.required||explicitlyNeedsPublicSearch(effectiveInstruction))&&Boolean(this.deps.webSearch));
     if(boundRead)workflowTools.push('read_notion_document');
     let workflowSpec:WorkflowSpec|undefined;
     try{
       if(article||input.workflow||this.deps.contextMode==='adaptive'&&!input.onboardingPractice&&!input.localExecution&&!input.directVisual&&!agent&&input.expectedOutput!=='image'&&!restore)
-        workflowSpec=resolveTaskWorkflow({existingArtifact:article?{id:'existing_article'}:undefined,explicit:input.workflow,requiredKnowledge:policy.required,readOnlyNotion:boundRead,notion:Boolean(notionTarget),features:skills.map(skill=>({id:skill.id,name:skill.values.name})),requiredFeatureIds,instruction:effectiveInstruction,tools:workflowTools,executorIds:this.profiles(db,s,true).map(p=>p.id),requiredTools});
+        workflowSpec=resolveTaskWorkflow({existingArtifact:article?{id:'existing_article'}:undefined,explicit:input.workflow,requiredKnowledge:policy.required,readOnlyNotion:boundRead,notion:Boolean(notionTarget),features:skills.map(skill=>({id:skill.id,name:skill.values.name})),requiredFeatureIds,instruction:effectiveInstruction,knowledgeQuery:reuseKnowledge?previous?.workflow?.spec.steps.find(step=>step.kind==='tool'&&step.tool==='knowledge_search'&&previous.workflow!.steps.find(saved=>saved.id===step.id)?.state==='completed')?.instruction:undefined,tools:workflowTools,executorIds:this.profiles(db,s,true).map(p=>p.id),requiredTools});
     }catch(error){if(error instanceof WorkflowPlanningError)throw new OrchestrationInputError(error.message);throw error;}
     const workflowModels:NonNullable<WorkRun['workflowModels']>={};
     for(const step of workflowSpec?.steps??[])if(step.kind==='model'){
@@ -2330,13 +2344,15 @@ export class CoordinatorService {
           }
         }
         op.conversationId = c.id;
+        const workflow=workflowSpec?createWorkflowRun(workflowSpec,{...s,operationId:op.id}):undefined;
+        const reusedReads=reuseKnowledge&&workflow&&previous&&JSON.stringify(previous.skills.map(f=>[f.id,f.releaseId,f.version]))===JSON.stringify(skills.map(f=>[f.id,f.releaseId,f.version]))?reuseCompletedWorkflowReads(previous,workflow):[];
         op.workRun = {
           executionMode:input.localExecution?'local':undefined,
           localExecution:input.localExecution&&input.localExecutionBinding?{...input.localExecutionBinding,admissionRevision:1}:undefined,
-          workflow:workflowSpec?createWorkflowRun(workflowSpec,{...s,operationId:op.id}):undefined,
+          workflow,
           workflowModels:workflowSpec?workflowModels:undefined,
-          runtimeContext:restore?.runtimeContext??(plainContinue?continuation?.prior?.workRun?.runtimeContext:undefined)??db.chatOperations?.find(o=>own(o,s)&&o.operationId===input.parentOperationId)?.runtimeContext??runtimeContext(db,s,op.createdAt),
-          steps:notionTarget&&notionRestore?notionRetryCheckpointPlan(notionRestore,{newWrite:newNotionRevision,scopeId:op.id}).steps:restore?.steps?structuredClone(restore.steps.filter(step=>step.tool!=='read_notion_document')):[],
+          runtimeContext:restore?.runtimeContext??(supplementDate?supplementTime:supplement?previous?.runtimeContext:undefined)??db.chatOperations?.find(o=>own(o,s)&&o.operationId===input.parentOperationId)?.runtimeContext??runtimeContext(db,s,op.createdAt),
+          steps:[...(notionTarget&&notionRestore?notionRetryCheckpointPlan(notionRestore,{newWrite:newNotionRevision,scopeId:op.id}).steps:restore?.steps?structuredClone(restore.steps.filter(step=>step.tool!=='read_notion_document')):[]),...reusedReads],
           notionReceipt:notionPlan?.notionReceipt,
           notionArticleSource:article?.source,
           retryOfOperationId:input.retrySourceJobId?db.chatOperations?.find(o=>own(o,s)&&o.id===input.retrySourceJobId)?.operationId:practiceParent?.operationId,
@@ -2723,6 +2739,13 @@ export class CoordinatorService {
       const requiredWorkerTools=(job.contract?.requiredTools??[]).filter(name=>name!=='knowledge_search'||!executionKnowledgeDeclined);
       const requiredKnowledge=requiredWorkerTools.includes('knowledge_search');
       const datedDraft=datedDraftPrerequisite({newDraft:Boolean(job.notionTarget&&!notionContext?.pageId&&!notionContext?.readOnly),requiredKnowledge,hasMaterials:files.length>0||Boolean(notionContext?.references.length)||Boolean(job.dependsOnOperationIds?.length),instruction:job.instruction,originalRequest:c.messages[start].content,time:workerTime});
+      // Imported reads retain exact workflow checkpoints; the adapter below
+      // revalidates them before any model/write. Reusing dated notes must also
+      // satisfy the existing no-placeholder gate without another retrieval.
+      for(const source of job.workflow?.spec.steps.filter(step=>step.kind==='tool'&&step.tool==='knowledge_search')??[]){
+        const state=job.workflow!.steps.find(state=>state.id===source.id),cp=steps.find(cp=>cp.key===state?.checkpointKey&&cp.scopeId===id&&cp.namespace===`workflow:${job.workflow!.id}`&&cp.state==='completed'&&cp.effect==='read');
+        if(state?.state==='completed'&&cp?.output&&typeof cp.output==='object'&&'result' in cp.output)datedDraft?.observe(cp.output.result);
+      }
       for(const step of completedSteps(steps))if(step.tool==='knowledge_search')datedDraft?.observe(step.output);
       if (notionContext?.readOnly) tools.push(this.deps.notionDocuments!.readTool(s,job,verify));
       if (notionContext&&!notionContext.readOnly) {
@@ -3111,7 +3134,7 @@ export class CoordinatorService {
         if(['failed','needs_input','partial'].includes(outcome.outcome)){
           o.workRun!.state='failed';target.workPaused=true;target.workPauseReason=outcome.outcome==='needs_input'?'needs_input':outcome.outcome==='partial'?'partial':'failed';
           const continuation=taskContinuation(d,s,target);
-          if(continuation.canResume&&continuation.queued.some(queued=>actionableTaskSupplement(target.messages.find(message=>message.id===queued.workRun!.inputMessageId)?.content??''))){target.workPaused=false;target.workPauseReason=undefined;}
+          if(continuation.canResume&&continuation.queued.some(queued=>(continuation.requiresSubstantiveSupplement?substantiveTaskSupplement:actionableTaskSupplement)(target.messages.find(message=>message.id===queued.workRun!.inputMessageId)?.content??''))){target.workPaused=false;target.workPauseReason=undefined;}
         }
         const resultMessage=target.messages.find(m=>m.id===mid)!;resultMessage.content=outcome.content+(job.notionTarget&&!datedDraft?.missing?notionDeliveryNote(o.workRun!.notionReceipt,notionContext?.pageId):'');
         const relational=d.messages.find(m=>m.id===mid&&m.conversationId===cid&&own(m,s));if(relational)relational.content=resultMessage.content;

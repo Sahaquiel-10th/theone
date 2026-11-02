@@ -1,6 +1,10 @@
 import {createHash} from 'node:crypto';
+import {fromMarkdown} from 'mdast-util-from-markdown';
+import {gfm} from 'micromark-extension-gfm';
+import {gfmFromMarkdown} from 'mdast-util-gfm';
 
 export const notionHash=(body:string)=>createHash('sha256').update(body).digest('hex');
+export type NotionCanonicalVersion=2|3|4|5|6;
 /** Persisted v1 receipts retain this exact comparison, never silently upgrade. */
 export function legacyNotionNormalized(body:string){
  const literalCode=/`|~~~|^(?: {4}|\t)|<(?:pre|code)\b/im.test(body);
@@ -13,17 +17,33 @@ export function legacyNotionNormalized(body:string){
  * recognizes exact, plain single-line italic serialization. Earlier versions
  * retain their persisted meaning, including literal <i> text under v4.
  * Unknown tags, attributes, cell text, links and order remain byte-sensitive.
- * Code makes the whole document opaque rather than changing literal content. */
-export function canonicalNotionBody(body:string,version:2|3|4|5=5){
+ * v2-v5 keep their original whole-document code guard. v6 protects exact code
+ * regions independently, without interpreting their contents as formatting. */
+export function canonicalNotionBody(body:string,version:NotionCanonicalVersion=5){
+ if(version===6){
+  const protectedBody=protectNotionCode(body);
+  // Unclosed/ambiguous code and user control markers stay entirely opaque.
+  if(!protectedBody)return `v6-raw\n${body}`;
+  const restored=restoreNotionLiterals(canonicalMarkdown(protectedBody.text,6),protectedBody.code);
+  if(!restored)return `v6-raw\n${body}`;
+  return `v6-segments\n${JSON.stringify(canonicalTextLiterals(restored.body,restored.ranges))}`;
+ }
  if(/`|~~~|^(?: {4}|\t)|<(?:pre|code)\b/im.test(body))return `raw\n${body}`;
+ return canonicalMarkdown(body,version);
+}
+function canonicalMarkdown(body:string,version:NotionCanonicalVersion){
+ if(version===6&&(body.match(/<\/?[A-Za-z][^>\n]*>/g)??[]).some(tag=>!/^<\/?(?:b|i|quote)>$|^<br\s*\/?>$/i.test(tag)))return `opaque-markdown\n${body}`;
  // Normalize before bold so a nested <i><b>...</b></i> remains conservative.
  // Edge whitespace, attributes, escapes and Markdown controls are not the
  // proven plain-text serialization and must not acquire equivalent meaning.
- let text=version>=5?body.replace(/(?<!\\)<i>([^<>\n]+)<\/i>/g,(whole,content:string)=>content===content.trim()&&!/[\\*_~\[\]]/.test(content)?`*${content}*`:whole):body;
- text=text.replace(/(?<!\\)<b>([^<>\n]+)<\/b>/g,'**$1**');
+ let text=version===5?body.replace(/(?<!\\)<i>([^<>\n]+)<\/i>/g,(whole,content:string)=>content===content.trim()&&!/[\\*_~\[\]]/.test(content)?`*${content}*`:whole):body;
+ if(version!==6)text=text.replace(/(?<!\\)<b>([^<>\n]+)<\/b>/g,'**$1**');
  text=text.replace(/^<quote>\r?\n?([\s\S]*?)\r?\n?<\/quote>$/gm,(whole,content:string)=>{
   if(/<\/?quote\b/.test(content)||!content.trim())return whole;
-  return content.split(/\r?\n/).map(line=>line.trim()?`> ${line}`:'').join('\n');
+  const quote=content.split(/\r?\n/).map(line=>line.trim()?`> ${line}`:'').join('\n');
+  // The explicit closing wrapper ends a block. Keep that boundary while
+  // parsing v6; a following paragraph/table must not become lazy quote text.
+  return version===6?`\n${quote}\n\n`:quote;
  });
  const lines=text.split('\n');
  text=lines.map((line,index)=>{
@@ -38,6 +58,134 @@ export function canonicalNotionBody(body:string,version:2|3|4|5=5){
   }
   return line;
  }).join('\n');
- return `markdown\n${legacyNotionNormalized(text)}`;
+ // Do not remove paragraph boundaries before Markdown decides whether stars
+ // are active emphasis or visible text. Only the final typed layout may fold
+ // presentation whitespace; code/text values themselves stay protected.
+ return version===6?text.replace(/(?<!\\)<br\s*\/?>/gi,'\n'):`markdown\n${legacyNotionNormalized(text)}`;
 }
-export const canonicalNotionDigest=(body:string,version:2|3|4|5=5)=>notionHash(canonicalNotionBody(body,version));
+
+type LiteralKind='code'|'link'|'url';
+type ProtectedLiteral={kind:LiteralKind;raw:string;targetRaw?:string};
+type ProtectedRange={start:number;end:number;kind:LiteralKind;targetRaw?:string};
+function restoreNotionLiterals(text:string,literals:ProtectedLiteral[]){
+ let body='',at=0;const ranges:ProtectedRange[]=[],used=new Set<number>();
+ for(const match of text.matchAll(/\u0000C(\d+)\u0000/g)){
+  const id=Number(match[1]),literal=literals[id];if(!literal||used.has(id))return;
+  used.add(id);body+=text.slice(at,match.index);const start=body.length;body+=literal.raw;ranges.push({start,end:body.length,kind:literal.kind,targetRaw:literal.targetRaw});at=match.index!+match[0].length;
+ }
+ if(used.size!==literals.length)return;body+=text.slice(at);return {body,ranges};
+}
+type MarkdownNode={type:string;value?:string;position?:{start:{offset?:number};end:{offset?:number}};children?:MarkdownNode[]};
+/** Parse with original paragraph boundaries. Literal punctuation may use its
+ * escaped spelling, but strong/emphasis/table/list structure is never erased.
+ * Raw code and link targets additionally bind syntax the parser would decode. */
+function canonicalTextLiterals(body:string,protectedRanges:ProtectedRange[]){
+ const parsedUrls=new Set<ProtectedRange>();
+ const clean=(node:MarkdownNode):unknown=>{
+  const result:Record<string,unknown>={},record=node as unknown as Record<string,unknown>;
+  for(const key of Object.keys(record).sort())if(key!=='position'&&key!=='children')result[key]=record[key];
+  const start=node.position?.start.offset,end=node.position?.end.offset,raw=start===undefined||end===undefined?undefined:body.slice(start,end);
+  // Only punctuation spellings proved by the Markdown text node are folded.
+  // Entities, unknown escapes and all non-text values retain their spelling.
+  if(node.type==='text'&&raw!==undefined)result.value=raw.replace(/\\([*_])/g,'$1');
+  if(['code','inlineCode','html','image','imageReference'].includes(node.type)&&raw!==undefined)result.raw=raw;
+  if(['link','linkReference','definition'].includes(node.type)&&start!==undefined&&end!==undefined){
+   const literal=protectedRanges.find(range=>range.start<=start&&range.end>=end);
+   result.targetRaw=literal?.targetRaw??raw;
+   // GFM may serialize a bare URL as [the same visible URL](URL). Remove
+   // only syntax parentheses whose contents are byte-identical to the parsed
+   // target. Escapes, titles and every URL byte remain separately binding.
+   if(node.type==='link'&&record.title==null&&typeof record.url==='string'){
+    if(literal?.kind==='link'&&literal.targetRaw===`(${record.url})`)result.targetRaw=record.url;
+    if(literal?.kind==='url'&&raw===record.url)parsedUrls.add(literal);
+   }
+  }
+  if(node.children){
+   const children:unknown[]=[];
+   for(let index=0;index<node.children.length;index++){
+    const opening=node.children[index],text=node.children[index+1],closing=node.children[index+2],tag=opening.type==='html'&&/^<(b|i)>$/.exec(String(opening.value));
+    const start=text?.position?.start.offset,end=text?.position?.end.offset,plain=start===undefined||end===undefined?'':body.slice(start,end);
+    // Exact balanced plain HTML emphasis is a typed node. Synthesizing **/*
+    // here would incorrectly turn real emphasis into visible stars whenever
+    // punctuation makes the generated Markdown delimiter non-flanking.
+    if(tag&&text?.type==='text'&&closing?.type==='html'&&closing.value===`</${tag[1]}>`&&plain&&plain===plain.trim()&&!/[\\*_~\[\]<>\r\n]/u.test(plain)){
+     children.push({type:tag[1]==='b'?'strong':'emphasis',children:[clean(text)]});index+=2;
+    }else children.push(clean(opening));
+   }
+   result.children=children;
+  }
+  return result;
+ };
+ const tree=clean(fromMarkdown(body,{extensions:[gfm()],mdastExtensions:[gfmFromMarkdown()]}));
+ return {tree,protected:protectedRanges.filter(range=>range.kind==='code'||range.kind==='url'&&!parsedUrls.has(range)).map(range=>({kind:range.kind,raw:body.slice(range.start,range.end)}))};
+}
+
+/** Preserve the exact bytes and positions of code and links/URLs; formatting
+ * replacements must never rewrite a link target. User markers are rejected. */
+function protectNotionCode(body:string):{text:string;code:ProtectedLiteral[]}|undefined{
+ if(body.includes('\u0000'))return;
+ const code:ProtectedLiteral[]=[];let text='',index=0;
+ const lineEnd=(at:number)=>{const end=body.indexOf('\n',at);return end<0?body.length:end+1;};
+ const protect=(end:number,kind:LiteralKind='code',targetRaw?:string)=>{text+=`\u0000C${code.length}\u0000`;code.push({kind,raw:body.slice(index,end),targetRaw});index=end;};
+ const escaped=(at:number)=>{let count=0;while(at>0&&body[--at]==='\\')count++;return count%2===1;};
+ while(index<body.length){
+  if(index===0||body[index-1]==='\n'){
+   const end=lineEnd(index),line=body.slice(index,end),fence=/^ {0,3}(`{3,}|~{3,})([^\r\n]*)(?:\r?\n|$)/.exec(line);
+   if(/^ {0,3}\[[^\]\r\n]+\]:/.test(line)){protect(end,'link',line);continue;}
+   if(fence){
+    if(fence[1][0]==='`'&&fence[2].includes('`'))return;
+    const close=new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}[ \\t]*(?:\\r?\\n|$)`);let cursor=end,closed=false;
+    while(cursor<body.length){const next=lineEnd(cursor);if(close.test(body.slice(cursor,next))){protect(next);closed=true;break;}cursor=next;}
+    if(!closed)return;
+    continue;
+   }
+   if(/^(?: {4}|\t)[^\r\n]*\S/.test(line)){
+    let cursor=end;
+    while(cursor<body.length){const next=lineEnd(cursor),nextLine=body.slice(cursor,next);if(!/^(?: {4}|\t)|^\s*$/.test(nextLine))break;cursor=next;}
+    protect(cursor);continue;
+   }
+  }
+  if(body[index]==='['&&!escaped(index)){
+   let cursor=index+1,depth=1;
+   for(;cursor<body.length&&cursor-index<=6000&&!/[\r\n]/.test(body[cursor]);cursor++){
+    if(escaped(cursor))continue;if(body[cursor]==='[')depth++;if(body[cursor]===']'&&!--depth)break;
+   }
+   if(depth===0&&body[cursor+1]==='('){
+    let at=cursor+2,parens=1,quote='';
+    for(;at<body.length&&at-index<=6000&&!/[\r\n]/.test(body[at]);at++){
+     if(escaped(at))continue;const char=body[at];if(quote){if(char===quote)quote='';continue;}
+     if((char==='"'||char==="'")&&/\s/.test(body[at-1])){quote=char;continue;}
+     if(char==='(')parens++;if(char===')'&&!--parens)break;
+    }
+    if(parens!==0)return;protect(at+1,'link',body.slice(cursor+1,at+1));continue;
+   }
+   if(depth===0&&body[cursor+1]==='['){const end=body.indexOf(']',cursor+2);if(end<0||/[\r\n]/.test(body.slice(cursor+2,end)))return;protect(end+1,'link',body.slice(cursor+1,end+1));continue;}
+  }
+  const autoLink=body[index]==='<'?/^<(?:https?:\/\/|mailto:)[^>\r\n]+>/i.exec(body.slice(index)):null;
+  if(autoLink){protect(index+autoLink[0].length,'url');continue;}
+  const url=/[hHmM]/.test(body[index])?/^(?:https?:\/\/|mailto:)[^\s<>]+/i.exec(body.slice(index)):null;
+  if(url){protect(index+url[0].length,'url');continue;}
+  const tag=body[index]==='<'?/^<(pre|code)\b[^>]*>/i.exec(body.slice(index)):null;
+  if(tag&&!escaped(index)){
+   const close=new RegExp(`</${tag[1]}\\s*>`,'i'),tail=body.slice(index+tag[0].length),match=close.exec(tail);
+   if(!match)return;
+   protect(index+tag[0].length+match.index+match[0].length);continue;
+  }
+  if(body[index]==='<'){
+   if(body.startsWith('<!',index)||body.startsWith('<?',index))return;
+   if(/^<\/?[A-Za-z][A-Za-z0-9:-]*(?=[\s/>])/.test(body.slice(index))&&!/^<\/?(?:b|i|quote)>|^<br\s*\/?>/i.test(body.slice(index)))return;
+  }
+  if(body[index]==='`'&&!escaped(index)){
+   let width=1;while(body[index+width]==='`')width++;
+   let cursor=index+width,closed=false;
+   while(cursor<body.length){const next=body.indexOf('`',cursor);if(next<0)break;let length=1;while(body[next+length]==='`')length++;
+    if(length===width){protect(next+length);closed=true;break;}cursor=next+length;
+   }
+   if(!closed)return;
+   continue;
+  }
+  text+=body[index++];
+ }
+ return {text,code};
+}
+export const canonicalNotionDigest=(body:string,version:NotionCanonicalVersion=5)=>notionHash(canonicalNotionBody(body,version));

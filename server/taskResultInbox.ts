@@ -5,6 +5,9 @@ import { executionDeliveryPending, localExecutionResultId } from './executionSer
 import { executionExplicitlyUnfinished } from './executionResultState.js';
 import {artifactResultLinks} from './artifactLinks.js';
 import {selectedNotionVerification} from './notionVerificationSelection.js';
+import {notionVerificationPresentation} from '../src/taskRecovery.js';
+import {workflowProgress} from './taskWorkflow.js';
+import type {WorkRun} from './coordinatorTypes.js';
 
 export type TaskResultScope = { workspaceId: string; userId: string };
 export type TaskResultOutcome = 'completed' | 'returned' | 'failed' | 'partial' | 'needs_input' | 'cancelled' | 'interrupted';
@@ -123,8 +126,25 @@ function resultBrief(outcome: TaskResultOutcome, primary: string | undefined, co
   const materialRequest=materials.length?`请补充：${materials.map(value=>value.replace(/[。；;]$/,'')).join('、')}。`:'';
   const actions=uniqueBriefParts([...lines.filter(line=>nextAction.test(line)&&!taskButtonNavigation.test(line)),...(materialRequest?[materialRequest]:[])],briefSentences(reason));
   let continuation=clip(actions.slice(0,2).join(''),160);
-  if(!continuation&&!/[？?]|(?:请|需要|你可以|把.{0,20}发给)/.test(reason))continuation='先核对已有内容后继续未完成部分就行，不用重发整个任务。';
+  if(!continuation&&!/[？?]|(?:请|需要|你可以|把.{0,20}发给)/.test(reason))continuation='本轮已暂停，还没有安排自动重试。';
   return clip([reason, continuation].filter(Boolean).join(''), 340);
+}
+/** A failed workflow reports its actual blocked stage, never the opening of
+ * an otherwise complete article. Decisions come from persisted owner-scoped
+ * state; free-form prose cannot claim a save or an automatic retry. */
+function structuredCloudBrief(run:WorkRun):string|undefined{
+  if(['completed','cancelled','interrupted'].includes(run.state))return;
+  let progress:ReturnType<typeof workflowProgress>|undefined;
+  try{if(run.workflow)progress=workflowProgress(run.workflow);}catch{/* Legacy invalid progress is not new evidence. */}
+  const completed=progress?.steps.filter(step=>step.status==='completed').map(step=>step.title).slice(-3)??[];
+  const prefix=completed.length?`已完成：${completed.join('、')}。`:'';
+  if(run.notionReceipt&&run.notionReceipt.state!=='verified')return clip(prefix+notionVerificationPresentation(run.notionReceipt).message,340);
+  const blocked=progress?.steps.find(step=>['failed','needs_input','waiting'].includes(step.status));
+  const blockedKind=blocked&&run.workflow?.spec.steps[progress!.steps.indexOf(blocked)]?.kind;
+  if(run.notionReceipt?.state==='verified'&&progress&&progress.status!=='completed'&&(!blocked||blockedKind==='notion'))return clip(prefix+notionVerificationPresentation(run.notionReceipt,true).message,340);
+  if(!blocked)return;
+  const next=blocked.status==='needs_input'?'把缺的资料直接发在主对话，我会接着处理。':'本轮已暂停，还没有安排自动重试。可以直接在主对话补充要求，我会保留已完成的步骤。';
+  return clip(`${prefix}${run.notionReceipt?.state==='verified'?'Notion 保存已核对一致。':''}卡在“${blocked.title}”：${blocked.summary}${next}`,340);
 }
 function authorize(db: Database, scope: TaskResultScope) {
   if (!db.users.some(user => user.id === scope.userId && user.enabled)
@@ -199,7 +219,7 @@ function cloudResult(db: Database, scope: TaskResultScope, operation: ChatOperat
   if (!summary) summary = outcome === 'cancelled' ? '本轮已停止，已产生的修改不会自动撤销。' : '未取得可确认的结果，请查看本轮反馈。';
   const receiptId=run.reportRevision?`${operation.id}_r${run.reportRevision}`:operation.id;
   return { id: receiptId, sourceId: operation.id, source: 'cloud', taskId: task.id, title: clip(task.title, 120),
-    outcome, state: outcome, summary, brief: resultBrief(run.reportRevision?'returned':outcome, run.userReport, result?.content ?? summary, run.error), attemptAt:operation.createdAt, createdAt: run.reportRevisionAt??operation.updatedAt, resultMessageId: run.resultMessageId,
+    outcome, state: outcome, summary, brief: structuredCloudBrief(run)??resultBrief(run.reportRevision?'returned':outcome, run.userReport, result?.content ?? summary, run.error), attemptAt:operation.createdAt, createdAt: run.reportRevisionAt??operation.updatedAt, resultMessageId: run.resultMessageId,
     imageUrl, attachments, notionUrl: run.notionReceipt?.state === 'verified' ? run.notionReceipt.url : run.notionReceipt?.verification?.state==='exhausted'&&/^[a-f0-9]{32}$/i.test(run.notionReceipt.pageId?.replaceAll('-','')??'')?`https://www.notion.so/${run.notionReceipt.pageId!.replaceAll('-','')}`:undefined,
     reported: Boolean(run.reportedToCoordinatorAt || marker(db, scope, receiptId)), reviewed: run.unread !== true };
 }

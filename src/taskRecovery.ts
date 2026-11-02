@@ -1,22 +1,25 @@
 export type NotionVerificationView = {state:'scheduled'|'checking'|'exhausted';version:number;attempt:number;nextCheckAt?:string;deadlineAt?:string;lastReason?:'read_failed'|'mismatch'|'incomplete'|'authorization'|'stale'|'no_page'};
 /** Public display fields only: never expose a server verification lease. */
-export type NotionReceiptView = {state:string;url?:string;error?:string;delivery?:string;verification?:NotionVerificationView};
+export type NotionReceiptView = {state:string;url?:string;error?:string;delivery?:string;verification?:NotionVerificationView;comparison?:{kind:'matched'|'title_missing'|'title_changed'|'body_mismatch'|'incomplete'|'read_failed'}};
 export const notionVerificationActive=(receipt?:NotionReceiptView)=>Boolean(receipt&&receipt.state!=='verified'&&!['not_sent','rejected'].includes(receipt.delivery??'')&&['scheduled','checking'].includes(receipt.verification?.state??''));
 export function notionVerificationPresentation(receipt:NotionReceiptView,reviewWorkflow=false){
  const verification=receipt.verification,active=notionVerificationActive(receipt);
- if(receipt.state==='verified')return {active:false,canVerify:reviewWorkflow,message:reviewWorkflow?'Notion 内容已核对，任务步骤仍需核对；不会重新写入。':'Notion 保存结果已回读核对。'};
+ if(receipt.state==='verified')return {active:false,canVerify:reviewWorkflow,message:reviewWorkflow?'Notion 正文已核对一致，其余任务步骤仍需核对。点“核对任务进度”，我会检查已有结果，不会重新执行或写入。':'Notion 保存结果已回读核对。'};
  if(receipt.delivery==='not_sent')return {active:false,canVerify:false,message:'这次保存还没有发出。请先检查 Notion 的连接和权限，再告诉我继续；不会自动重发保存请求。'};
  if(receipt.delivery==='rejected')return {active:false,canVerify:false,message:'Notion 没有接受这次保存。请先检查连接和权限，再告诉我继续；不会自动重发保存请求。'};
  if(active)return {active,canVerify:false,message:verification?.state==='checking'
-  ?'正在读取 Notion 原页面，核对刚才是否保存成功；不会重复写入。你可以继续聊天。'
-  :'Notion 的保存结果还在核对中。ONE Key 保持连接时会稍后再读原页面，不会重写；你可以继续聊天。'};
+  ?`正在读取 Notion 原页面，${verification.attempt>0?`进行第 ${verification.attempt} 次核对，`:''}确认刚才是否保存完整。不会重复写入，你可以继续聊天。`
+  :'Notion 的保存结果还在核对中。我会自动再读同一页面，核对好后告诉你，不用重新开始。请保持 ONE Key 连接；不会重写。'};
  if(verification?.state==='exhausted'){
-  if(verification.lastReason==='authorization')return {active:false,canVerify:false,message:'Notion 连接或授权需要确认，自动核对已停下。请到“设置 → 知识连接”检查 Notion；原保存请求不会重发。'};
-  if(verification.lastReason==='stale')return {active:false,canVerify:false,message:'保存位置或任务要求已经变化，自动核对已停下。先查看原页面；不会按旧要求重新写入。'};
-  if(verification.lastReason==='no_page'||!receipt.url)return {active:false,canVerify:false,message:'暂时还没拿到这次保存的页面入口，自动核对已停下。请在 Notion 检查原保存位置；不会新建替代文档。'};
-  return {active:false,canVerify:true,message:verification.lastReason==='mismatch'
-   ?'原页面与这次拟保存的内容不同，自动核对已停下。先打开原页面看看；不会覆盖或重复保存。'
-   :'这次还没核对到完整的 Notion 保存结果，自动核对已暂时停下。可以查看原页面，或只读核对一次，不会重写。'};
+  if(verification.lastReason==='authorization')return {active:false,canVerify:false,message:'卡在 Notion 连接或授权，自动核对已停下。请到“设置 → 连接与授权 → Notion”恢复连接，再告诉我继续核对；原保存请求不会重发。'};
+  if(verification.lastReason==='stale')return {active:false,canVerify:false,message:'保存位置或任务要求已经变化，自动核对已停下。请直接告诉我要保留哪一版、存在哪里；我会先核对原页，不会按旧要求重写。'};
+  if(verification.lastReason==='no_page'||!receipt.url)return {active:false,canVerify:false,message:'Notion 还没返回这次保存的页面入口，自动核对已停下，现在不能确认保存成功。请先打开 Notion 的原保存位置查看，再把已有页面链接发给我；不会新建替代文档。'};
+  const difference=receipt.comparison?.kind==='title_missing'?'Notion 页面已找到，但这次没有读到标题，还不能确认保存完整。'
+   :receipt.comparison?.kind==='title_changed'?'Notion 页面已找到，但标题与这次文稿不同。'
+   :verification.lastReason==='mismatch'?'Notion 页面已找到，但回读内容与本次文稿还没对上，尚未确认全文保存一致。'
+   :receipt.comparison?.kind==='incomplete'||verification.lastReason==='incomplete'?'Notion 页面已找到，但正文还没完整读回来，尚未确认全文保存一致。'
+   :'Notion 原页暂时没能读回来，尚未确认保存结果。';
+  return {active:false,canVerify:true,message:`${difference}${verification.attempt>0?`已核对 ${verification.attempt} 次；`:''}自动核对已停下，不会自动重试。点“再核对一次”，我会只读取同一页面，不会覆盖或重复保存。`};
  }
  return {active:false,canVerify:Boolean(receipt.url),message:'Notion 保存结果还没确认。先查看原页面，必要时可以只读核对；不会重写。'};
 }

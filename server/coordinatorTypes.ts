@@ -37,13 +37,16 @@ export type WorkRun = {
   notionVerificationSelection?:{operationId:string;expectedDigest:string;pageId?:string;asyncTaskId?:string;checkpointKey?:string;version:number;connectionId:string;grantId:string;parentId:string;requestedAt:string};
   notionReceipt?: { state: 'pending' | 'verified' | 'uncertain'; pageId?: string; url?: string; asyncTaskId?: string; expectedDigest?: string; digest?: string;
     /** Versioned, server-owned evidence of the exact write being checked. */
-    checkpointKey?:string; canonicalVersion?:2|3|4|5; expectedCanonicalDigest?:string; expectedRawDigest?:string;
+    checkpointKey?:string; canonicalVersion?:import('./notionCanonical.js').NotionCanonicalVersion; expectedCanonicalDigest?:string; expectedRawDigest?:string;expectedLength?:number;
+    /** Comparison metadata only. Neither the authored text nor fetched title/body
+     * belongs in diagnostics; old source/version digests remain immutable. */
+    comparison?:{version:1;kind:'matched'|'title_missing'|'title_changed'|'body_mismatch'|'incomplete'|'read_failed';checkedAt:string;comparatorVersion:1|import('./notionCanonical.js').NotionCanonicalVersion;actualBodyDigest?:string;actualBodyLength?:number;actualSourceDigest?:string;actualSourceLength?:number;actualCanonicalDigest?:string;expectedCanonicalDigest?:string;expectedTitleDigest?:string;actualTitleDigest?:string};
     /** Explicit authored-H1/page-title boundary; source digests stay unchanged. */
     titleProjection?:import('./notionTitleProjection.js').NotionTitleProjection;
     /** Final intent is retained while readback is pending; it is not proof by itself. */
     final?:boolean;
     /** Durable read-only follow-up, never a queued model/write retry. Old receipts are not implicitly enrolled. */
-    verification?:{state:'scheduled'|'checking'|'exhausted';version:number;attempt:number;nextCheckAt:string;deadlineAt:string;leaseId?:string;leaseUntil?:string;lastReason?:'read_failed'|'mismatch'|'incomplete'|'authorization'|'stale'|'no_page'};
+    verification?:{state:'scheduled'|'checking'|'exhausted';version:number;attempt:number;nextCheckAt:string;deadlineAt:string;leaseId?:string;leaseUntil?:string;resumeCheckUsed?:boolean;lastReason?:'read_failed'|'mismatch'|'incomplete'|'authorization'|'stale'|'no_page'};
     error?: string; delivery?: 'not_sent' | 'rejected' | 'unknown'; diagnostic?: {phase: string; reason: string; upstreamCode?: string}; failureCode?: 'preflight_failed' | 'write_unconfirmed' | 'response_unrecognized' | 'async_unconfirmed' | 'readback_failed' | 'readback_mismatch' };
   featurePricingVersion?: 1;
   featureApprovals?: import('./featurePricing.js').FeatureApproval[];

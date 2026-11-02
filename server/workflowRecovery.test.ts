@@ -4,9 +4,17 @@ import type {ChatOperation} from './chatOperations.js';
 import type {Conversation} from './types.js';
 import {taskStepKey,type TaskStep} from './taskSteps.js';
 import {createWorkflowRun,type WorkflowStep} from './taskWorkflow.js';
-import {canResumeWorkflowAfterRestart} from './workflowRecovery.js';
+import {canResumeWorkflowAfterRestart,canContinueKnownFailedWorkflow,reuseCompletedWorkflowReads,workflowSourceBindingsMatch} from './workflowRecovery.js';
+import {taskContinuation} from './taskContinuation.js';
 
 const scope={workspaceId:'ws_a',userId:'usr_a'},step=(id:string,extra:Partial<WorkflowStep>={}):WorkflowStep=>({id,title:'处理当前步骤',kind:'model',instruction:'当前步骤完整指令',inputs:[],...extra});
+
+test('source binding equality ignores SQL object key order but preserves exact IDs, bindings and array order',()=>{
+ const first=[{id:'source_a',binding:'binding_a'},{id:'source_b',binding:'binding_b'}],sql=first.map(source=>({binding:source.binding,id:source.id}));
+ assert.equal(workflowSourceBindingsMatch(sql,first),true);assert.equal(workflowSourceBindingsMatch(sql,[...first].reverse()),false);
+ assert.equal(workflowSourceBindingsMatch(sql,[{id:'source_a',binding:'rotated'},first[1]]),false);assert.equal(workflowSourceBindingsMatch(sql,[first[0]]),false);
+ assert.equal(workflowSourceBindingsMatch([{...sql[0],extra:true},sql[1]] as any,first),false);
+});
 function fixture(values:WorkflowStep[]=[step('draft')]){
  const task:Conversation={...scope,id:'task_a',modelId:'model_a',title:'当前任务',archived:false,messages:[],createdAt:'2026-10-25T01:00:00Z',updatedAt:'2026-10-25T01:00:00Z'};
  const run=createWorkflowRun({version:1,steps:values},{...scope,operationId:'op_a'});
@@ -18,6 +26,31 @@ function fixture(values:WorkflowStep[]=[step('draft')]){
  };
  return {op,task,run,checkpoint,can:()=>canResumeWorkflowAfterRestart(op,task)};
 }
+
+test('a new supplement may continue only an exactly evidenced known failed read/model, never unknown writes or protected failure',()=>{
+ for(const kind of ['tool','model'] as const){
+  const f=fixture([step('stage',{kind,...(kind==='tool'?{tool:'web_search' as const}:{})})]);f.checkpoint('stage','failed','failed');f.run.steps[0]={id:'stage',state:'failed'};f.run.phase='failed';f.op.workRun!.state='failed';f.op.workRun!.resultOutcome='failed';f.op.status='completed';f.task.workPaused=true;f.task.workPauseReason='failed';
+  assert.equal(canContinueKnownFailedWorkflow(f.op,f.task),true);
+  const db={chatOperations:[f.op],executionTasks:[]} as any;assert.equal(taskContinuation(db,scope,f.task).canResume,true);
+  for(const failureCode of ['task_key_required','task_authorization_required','task_budget_required','task_budget_limit']){f.op.workRun!.failureCode=failureCode;assert.equal(taskContinuation(db,scope,f.task).canResume,false);}delete f.op.workRun!.failureCode;
+  f.op.workRun!.steps!.push({key:'unknown',namespace:'worker',tool:'save_notion_draft',effect:'external_write',state:'started',label:'原保存',updatedAt:'now'});assert.equal(canContinueKnownFailedWorkflow(f.op,f.task),false);f.op.workRun!.steps!.pop();
+  for(const effect of ['artifact','external_write'] as const)for(const state of ['completed','failed'] as const){f.op.workRun!.steps!.push({key:'earlier-effect',namespace:'worker',tool:'earlier_effect',effect,state,label:'已有产物或写入',updatedAt:'now'});assert.equal(canContinueKnownFailedWorkflow(f.op,f.task),false);f.op.workRun!.steps!.pop();}
+  f.op.workRun!.notionReceipt={state:'verified'};assert.equal(canContinueKnownFailedWorkflow(f.op,f.task),false);delete f.op.workRun!.notionReceipt;
+  f.op.workRun!.notionReceipt={state:'uncertain',delivery:'unknown'};assert.equal(canContinueKnownFailedWorkflow(f.op,f.task),false);delete f.op.workRun!.notionReceipt;
+  f.task.workPauseReason='user_stopped';assert.equal(canContinueKnownFailedWorkflow(f.op,f.task),false);f.task.workPauseReason='failed';
+  f.run.binding.userId='foreign';assert.equal(canContinueKnownFailedWorkflow(f.op,f.task),false);
+ }
+});
+
+test('exact completed read reuse rebinds owner proof but never imports a write, changed query or foreign result',()=>{
+ const f=fixture([step('source',{kind:'tool',tool:'knowledge_search',instruction:'昨天碰一碰产品笔记'})]),cp=f.checkpoint('source');f.run.steps[0]={id:'source',state:'completed',checkpointKey:cp.key};f.run.phase='completed';
+ const next=()=>createWorkflowRun({version:1,steps:[step('source_1',{kind:'tool',tool:'knowledge_search',instruction:'昨天碰一碰产品笔记'}),step('draft',{inputs:['source_1']})]},{...scope,operationId:'new_op'});
+ const current=next(),imported=reuseCompletedWorkflowReads(f.op.workRun!,current);assert.equal(imported.length,1);assert.equal(imported[0].scopeId,'new_op');assert.equal(current.steps[0].state,'completed');assert.equal(current.phase,'queued');assert.equal(cp.scopeId,'op_a');
+ const changed=next();changed.spec.steps[0].instruction='不同的材料';assert.deepEqual(reuseCompletedWorkflowReads(f.op.workRun!,changed),[]);
+ const foreign=next();foreign.binding.workspaceId='foreign';assert.deepEqual(reuseCompletedWorkflowReads(f.op.workRun!,foreign),[]);
+ for(const tool of ['web_search','read_notion_document'] as const){const fresh=next();fresh.spec.steps[0].tool=tool;assert.deepEqual(reuseCompletedWorkflowReads(f.op.workRun!,fresh),[]);}
+ cp.effect='external_write';assert.deepEqual(reuseCompletedWorkflowReads(f.op.workRun!,next()),[]);
+});
 
 test('unstarted queued workflow is eligible, but this metadata decision never reads or executes anything',()=>{
  const f=fixture();assert.equal(f.can(),true);assert.equal(f.run.sequence,0);assert.equal(f.run.steps[0].state,'queued');assert.equal(f.op.workRun!.state,'running');

@@ -1,12 +1,41 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {resolveTaskWorkflow,WorkflowPlanningError,type ResolveTaskWorkflowInput,type WorkflowPlanningReason} from './workflowPlanning.js';
+import {resolveTaskWorkflow,WorkflowPlanningError,workflowWebSearchPermission,workflowSchemaForTools,workflowKnowledgeReadUnchanged,type ResolveTaskWorkflowInput,type WorkflowPlanningReason} from './workflowPlanning.js';
 import {TaskWorkflowError,type WorkflowSpec,type WorkflowStep} from './taskWorkflow.js';
 
 const base=(values:Partial<ResolveTaskWorkflowInput>={}):ResolveTaskWorkflowInput=>({requiredKnowledge:false,readOnlyNotion:false,notion:false,features:[],requiredFeatureIds:[],instruction:'完成本次用户交代的完整目标，保留约束与自然结尾。',tools:[],executorIds:['writer'],...values});
 const step=(id:string,values:Partial<WorkflowStep>={}):WorkflowStep=>({id,title:'当前步骤',kind:'model',instruction:'当前明确步骤指令。',inputs:[],...values});
 const plan=(...steps:WorkflowStep[]):WorkflowSpec=>({version:1,steps});
 const reason=(expected:WorkflowPlanningReason)=>(error:unknown)=>error instanceof WorkflowPlanningError&&error.reason===expected;
+
+test('the per-round workflow schema advertises only available authorized reads without changing the shared schema',()=>{
+ const source=workflowSchemaForTools(['knowledge_search']).properties.steps.items.properties;
+ assert.deepEqual(source.tool.enum,['knowledge_search']);assert.ok(source.kind.enum.includes('model'));
+ const none=workflowSchemaForTools([]).properties.steps.items.properties;assert.equal(none.kind.enum.includes('tool'),false);assert.equal('tool' in none,false);
+ assert.deepEqual(workflowSchemaForTools(['web_search']).properties.steps.items.properties.tool.enum,['web_search']);
+});
+
+test('thinking uses a model and an unavailable optional public read does not reject the required manuscript',()=>{
+ const explicit=plan(step('cases',{kind:'tool',tool:'web_search',required:false}),step('draft',{inputs:['cases']}));
+ assert.ok(resolveTaskWorkflow(base({explicit})));assert.throws(()=>resolveTaskWorkflow(base({explicit:plan(step('cases',{kind:'tool',tool:'web_search'}))})),reason('tool'));
+ const own=plan(step('source',{kind:'tool',tool:'knowledge_search'}),step('cases',{required:false}),step('draft',{inputs:['source','cases']}));
+ assert.ok(resolveTaskWorkflow(base({requiredKnowledge:true,tools:['knowledge_search'],explicit:own})));
+ assert.throws(()=>resolveTaskWorkflow(base({explicit:plan(step('fake',{kind:'feature',featureId:'think-up-cases',required:false}))})),reason('feature'),'optional does not authorize an invented feature');
+});
+
+test('public-search permission comes from the unquoted human request or prior permission, never a quoted or denied grant',()=>{
+ assert.equal(workflowWebSearchPermission('公开案例我是让你自己想，不是找工具，可以上网搜'),true);
+ for(const request of ['上网搜一下公开案例','联网查资料'])assert.equal(workflowWebSearchPermission(request,false,false),true,request);
+ assert.equal(workflowWebSearchPermission('继续补案例',true),true);
+ assert.equal(workflowWebSearchPermission('继续补案例',true,false),true,'a later composer default does not revoke the same-task grant');
+ for(const text of ['不允许联网，自己构思案例。','不要上网，继续。','不要联网查资料','引用：上网搜一下','解释“联网查资料”这句话','引用：可以上网搜','解释“可以联网搜索”这句话'])assert.equal(workflowWebSearchPermission(text),false,text);
+ assert.equal(workflowWebSearchPermission('不联网',true,true),false);
+});
+
+test('knowledge reuse is limited to writing clarification; new dates, objects and fresh retrieval must read again',()=>{
+ assert.equal(workflowKnowledgeReadUnchanged('公开案例我是让你自己想，不是找工具，可以上网搜'),true);
+ for(const request of ['改用今天那条','换个日期','重新查笔记','换另一份资料补案例','改用2026-11-03的笔记','这次换个主题','继续整理新的要求'])assert.equal(workflowKnowledgeReadUnchanged(request),false,request);
+});
 
 test('a single model or required feature retains the short path and available web is not a search requirement',()=>{
  assert.equal(resolveTaskWorkflow(base({tools:['web_search']})),undefined);

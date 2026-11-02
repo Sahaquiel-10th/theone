@@ -42,13 +42,13 @@ test('a source read after saving but before verification cannot retroactively sa
  f.mcp.readDocument=async()=>({text:f.body()});f.advance(10);await f.docs.reconcileDue(scope,async()=>{});
  assert.equal(f.job.steps![0].updatedAt,'2026-10-25T01:00:00Z');assert.equal(verifiedNotionCompletion(f.job.notionReceipt,f.job.steps!,['knowledge_search','save_notion_draft'],{scopeId:'op'}),undefined);
 });
-test('persistent mismatches exhaust the bounded readonly attempts and an expired deadline never performs a read',async()=>{
+test('persistent mismatches exhaust bounded attempts, while a suspended deadline permits one remaining fresh read',async()=>{
  const f=fixture();f.mcp.readDocument=async()=>({text:'别的正文'});await f.failWrite();
  for(const delay of [10,20,30]){f.advance(delay);await f.docs.reconcileDue(scope,async()=>{});}
  assert.equal(f.job.notionReceipt!.verification!.state,'exhausted');assert.equal(f.job.notionReceipt!.verification!.attempt,3);assert.equal(f.job.notionReceipt!.state,'uncertain');assert.equal(f.writes(),1);assert.equal(f.job.steps![0].state,'started');
  assert.deepEqual(await f.docs.reconcileDue(scope,async()=>{}),[]);
  const g=fixture();g.mcp.readDocument=async()=>{throw Error('temporary');};await g.failWrite();let reads=0;g.mcp.readDocument=async()=>{reads++;return {text:g.body()};};g.advance(1001);
- assert.equal((await g.docs.reconcileDue(scope,async()=>{}))[0].state,'exhausted');assert.equal(reads,0);
+ assert.equal((await g.docs.reconcileDue(scope,async()=>{}))[0].state,'verified');assert.equal(reads,1);assert.equal(g.writes(),1);
 });
 test('an unknown create without a page is never enrolled, searched or repeated; a known-page update can be read back',async()=>{
  const f=fixture();f.mcp.callDocumentTool=async()=>{throw Error('lost create response');};await f.failWrite();assert.equal(f.job.notionReceipt!.pageId,undefined);assert.equal(f.job.notionReceipt!.verification,undefined);assert.deepEqual(await f.docs.reconcileDue(scope,async()=>{}),[]);assert.equal(f.reads(),0);
@@ -73,6 +73,14 @@ test('cancellation, foreign scope, concurrent polls, expired leases and newer re
  f.job.notionReceipt!.expectedDigest='f'.repeat(64);f.job.notionReceipt!.verification!.version++;release();assert.equal((await pending)[0].state,'blocked');assert.equal(f.job.notionReceipt!.state,'uncertain');
  const g=fixture();g.mcp.readDocument=async()=>{throw Error('temporary');};await g.failWrite();g.job.notionReceipt!.verification!.state='checking';g.job.notionReceipt!.verification!.leaseUntil=new Date(g.now()-1).toISOString();g.advance(10);g.mcp.readDocument=async()=>({text:g.body()});assert.equal((await new NotionDocuments(g.store,g.mcp,{now:g.now,delays:[10,20,30]}).reconcileDue(scope,async()=>{}))[0].state,'verified');assert.equal(g.writes(),1);
 });
+
+test('a changed raw-source binding or expected length during readback cannot settle the old write',async()=>{
+ for(const field of ['expectedRawDigest','expectedLength'] as const){
+  const f=fixture();f.mcp.readDocument=async()=>{throw Error('initial unavailable');};await f.failWrite();f.advance(10);
+  f.mcp.readDocument=async()=>{if(field==='expectedRawDigest')f.job.notionReceipt!.expectedRawDigest='0'.repeat(64);else f.job.notionReceipt!.expectedLength=(f.job.notionReceipt!.expectedLength??0)+1;return {text:f.body()};};
+  assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'blocked');assert.equal(f.job.notionReceipt!.state,'uncertain');assert.equal(f.job.steps![0].state,'started');assert.equal(f.writes(),1);
+ }
+});
 test('legacy formatting recovery requires exact owned create arguments and their original digest/checkpoint',async()=>{
  const expected='**标题**\n> 第一段\n>\n> 第二段\n|人|事|\n|---|---|\n|甲|乙|',actual='<b>标题</b>\n<quote>\n第一段\n\n第二段\n</quote>\n|人|事|\n| --- | --- |\n|甲|乙|';
  for(const mode of ['exact','foreign','wrong_key','changed_hash','update'] as const){
@@ -84,9 +92,9 @@ test('legacy formatting recovery requires exact owned create arguments and their
   assert.equal(f.writes(),0);
  }
 });
-test('new v5 receipts do not use the permissive legacy whitespace path for literal code',async()=>{
+test('new v6 receipts do not use the permissive legacy whitespace path for literal code',async()=>{
  const f=fixture(),body='```\nx \n\n```';f.mcp.readDocument=async()=>({text:'```\nx\n```'});await f.failWrite({title:'代码',content:body,final:true});
- assert.equal(f.job.notionReceipt!.canonicalVersion,5);assert.equal(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(body));f.advance(10);assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'scheduled');assert.equal(f.job.notionReceipt!.state,'uncertain');
+ assert.equal(f.job.notionReceipt!.canonicalVersion,6);assert.equal(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(body,6));f.advance(10);assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'scheduled');assert.equal(f.job.notionReceipt!.state,'uncertain');
 });
 test('manual v2 or v3 create recovery reproves the original body before upgrading to v4 and persists the exact selection before a failed read',async()=>{
  for(const status of ['failed','completed'] as const)for(const version of [2,3] as const){
@@ -113,11 +121,33 @@ test('v2 and v3 updates without original complete create proof keep their own di
  await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));assert.equal(f.job.notionReceipt!.canonicalVersion,version);assert.equal(f.job.notionReceipt!.expectedCanonicalDigest,oldDigest);assert.equal(f.job.notionReceipt!.state,'uncertain');assert.equal(f.job.steps[0].state,'started');assert.equal(f.writes(),0);
  }
 });
-test('a new aligned table save verifies a plain-delimiter readback immediately under v5 without a second write',async()=>{
+test('a new aligned table save verifies a plain-delimiter readback immediately under v6 without a second write',async()=>{
  const f=fixture(),expected='**预算**\n|项目|费用|备注|\n|---|---|---:|\n|场地|-100|+200:结余|',actual='<b>预算</b>\n|项目|费用|备注|\n| --- | --- | --- |\n|场地|-100|+200:结余|';
  f.mcp.readDocument=async()=>({text:actual});const tool=f.docs.tool(scope,'op','task',f.job,async()=>{}).structured!;
  const result=await tool.run(tool.validate({title:'预算',content:expected,final:true})) as {state:string};
- assert.equal(result.state,'verified');assert.equal(f.writes(),1);assert.equal(f.job.notionReceipt!.state,'verified');assert.equal(f.job.notionReceipt!.canonicalVersion,5);assert.equal(f.job.notionReceipt!.verification,undefined);assert.notEqual(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(expected,3));
+ assert.equal(result.state,'verified');assert.equal(f.writes(),1);assert.equal(f.job.notionReceipt!.state,'verified');assert.equal(f.job.notionReceipt!.canonicalVersion,6);assert.equal(f.job.notionReceipt!.verification,undefined);assert.notEqual(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(expected,3));
+});
+
+test('deadline recovery is single-use across restart and concurrent polling, and never resets the total read budget',async()=>{
+ const f=fixture();f.mcp.readDocument=async()=>{throw Error('initial read unavailable');};await f.failWrite();
+ const original=structuredClone(f.job.notionReceipt!.verification!);f.advance(1001);let reads=0,release!:()=>void;
+ const gate=new Promise<void>(resolve=>release=resolve);
+ f.mcp.readDocument=async()=>{reads++;await gate;return {text:'实际仍是不同正文'};};
+ await assert.rejects(()=>f.docs.reconcileDue(scope,async()=>{throw Error('Key unavailable');}));assert.equal(reads,0);assert.equal(f.job.notionReceipt!.verification!.attempt,0);
+ const checking=f.docs.reconcileDue(scope,async()=>{});while(!reads)await new Promise(resolve=>setTimeout(resolve,0));
+ const v=f.job.notionReceipt!.verification!;assert.equal(v.resumeCheckUsed,true);assert.equal(v.attempt,1);assert.equal(v.deadlineAt,original.deadlineAt);assert.equal(v.version,original.version);
+ assert.deepEqual(await new NotionDocuments(f.store,f.mcp,{now:f.now,delays:[10,20,30]}).reconcileDue(scope,async()=>{}),[]);release();assert.equal((await checking)[0].state,'exhausted');
+ f.advance(1001);assert.deepEqual(await f.docs.reconcileDue(scope,async()=>{}),[]);assert.equal(reads,1);assert.equal(f.writes(),1);assert.equal(f.job.notionReceipt!.comparison?.kind,'body_mismatch');
+ const g=fixture();g.mcp.readDocument=async()=>{throw Error('initial unavailable');};await g.failWrite();g.job.notionReceipt!.verification!.attempt=3;g.advance(1001);let cappedReads=0;g.mcp.readDocument=async()=>{cappedReads++;return {text:g.body()};};assert.equal((await g.docs.reconcileDue(scope,async()=>{}))[0].state,'exhausted');assert.equal(cappedReads,0);
+});
+
+test('deadline recovery preserves cancellation, archive and exact Notion authorization before any read',async()=>{
+ for(const mutation of ['cancelled','archived','revoked','different-parent'] as const){
+  const f=fixture();f.mcp.readDocument=async()=>{throw Error('initial unavailable');};await f.failWrite();f.advance(1001);let reads=0;
+  f.mcp.readDocument=async()=>{reads++;return {text:f.body()};};
+  if(mutation==='cancelled')f.job.state='cancelled';if(mutation==='archived')f.db.conversations[0].archived=true;if(mutation==='revoked')f.db.knowledgeConnections[0].status='revoked';if(mutation==='different-parent')f.db.knowledgeConnections[0].notionWriting!.parentId='c'.repeat(32);
+  await f.docs.reconcileDue(scope,async()=>{});assert.equal(reads,0);assert.equal(f.writes(),1);assert.equal(f.job.notionReceipt!.state,'uncertain');
+ }
 });
 test('manual reading a stopped, archived, cancelled or completed job never enrolls a completion selection',async()=>{
  for(const mode of ['stopped','archived','cancelled','completed'] as const){

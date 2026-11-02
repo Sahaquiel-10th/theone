@@ -7,6 +7,47 @@ import { CoordinatorService } from './coordinatorService.js';
 import { acknowledgeTaskResults, acknowledgeAllTaskResults, appendTaskResultReport, markTaskResultsReported, pendingTaskResults, unreviewedTaskResults, taskResultIdsReportedInMessage, taskResultConversationContext, captureTaskResults, capturedTaskResultsForReport, initializeTaskResultReporting } from './taskResultInbox.js';
 import { saveExecutionReceipt } from './executionService.js';
 import {latestTaskResults,pendingConversationTaskResults} from './taskResultInbox.js';
+import {createWorkflowRun} from './taskWorkflow.js';
+
+test('a written article with exhausted Notion readback reports the actual stage, retry owner and safe action',()=>{
+ const db=fixture(),{operation}=cloud(db,'article-readback',a,{state:'failed',outcome:'partial',text:'11月1日下午，我在笔记里写下这么一句话。这是正文，不能当作失败原因。'});
+ const run=operation.workRun!;
+ run.userReport='有必需的步骤没完成，已有内容会保留。';
+ run.workflow=createWorkflowRun({version:1,steps:[
+  {id:'notes',title:'读取原始笔记',kind:'tool',tool:'knowledge_search',instruction:'读取',inputs:[]},
+  {id:'article',title:'完成方法论专栏',kind:'model',instruction:'写文章',inputs:['notes']},
+  {id:'save',title:'保存并核对专栏',kind:'notion',instruction:'保存',inputs:['article']}
+ ]},{...a,operationId:operation.id});
+ run.workflow.steps=[{id:'notes',state:'completed',checkpointKey:'notes-proof'},{id:'article',state:'completed',checkpointKey:'article-proof'},{id:'save',state:'failed',summary:'Notion 保存还没核对成功。'}];run.workflow.phase='failed';
+ run.notionReceipt={state:'uncertain',delivery:'unknown',pageId:'a'.repeat(32),url:'https://www.notion.so/'+'a'.repeat(32),verification:{state:'exhausted',version:3,attempt:3,nextCheckAt:timestamp,deadlineAt:timestamp,lastReason:'mismatch'},comparison:{version:1,kind:'body_mismatch',checkedAt:timestamp,comparatorVersion:6}};
+ const receipt=pendingTaskResults(db,a)[0],original=structuredClone(run);
+ assert.match(receipt.brief!,/已完成：读取原始笔记、完成方法论专栏/);
+ assert.match(receipt.brief!,/Notion 页面已找到.*未确认全文保存一致/);
+ assert.match(receipt.brief!,/已核对 3 次.*不会自动重试/);
+ assert.match(receipt.brief!,/再核对一次.*只读取同一页面.*不会覆盖或重复保存/);
+ assert.doesNotMatch(receipt.brief!,/11月1日|有必需的步骤|先核对已有内容|确认继续|重新开始/);
+ assert.equal(receipt.outcome,'partial');assert.deepEqual(run,original,'a better briefing never changes the saved result or marks it complete');
+ appendTaskResultReport(db,a);assert.match(db.conversations.find(c=>c.id==='main-a')!.messages.at(-1)!.content,/Notion 页面已找到/);
+ assert.equal(db.conversations.find(c=>c.id==='main-b')!.messages.length,0);assert.equal(appendTaskResultReport(db,a).results.length,0);
+});
+
+test('a failed required search is identified without quoting the unrelated article or claiming an automatic retry',()=>{
+ const db=fixture(),{operation}=cloud(db,'missing-search',a,{state:'failed',text:'文章开头不可充当失败原因。'}),run=operation.workRun!;
+ run.workflow=createWorkflowRun({version:1,steps:[{id:'cases',title:'核对公开设计案例',kind:'tool',tool:'web_search',instruction:'检索',inputs:[]}]},{...a,operationId:operation.id});
+ run.workflow.steps=[{id:'cases',state:'failed',summary:'公开资料检索未开启，请允许联网检索或改用明确标注的构想案例。'}];run.workflow.phase='failed';
+ const brief=pendingTaskResults(db,a)[0].brief!;
+ assert.match(brief,/卡在“核对公开设计案例”/);assert.match(brief,/公开资料检索未开启/);assert.match(brief,/没有安排自动重试/);
+ assert.doesNotMatch(brief,/文章开头|先核对已有内容|点继续/);
+});
+
+test('verified Notion delivery cannot hide a genuinely failed downstream feature as progress synchronization',()=>{
+ const db=fixture(),{operation}=cloud(db,'saved-but-page-failed',a,{state:'failed',outcome:'partial',text:'已经保存文章。'}),run=operation.workRun!;
+ run.workflow=createWorkflowRun({version:1,steps:[{id:'save',title:'保存文章',kind:'notion',instruction:'保存',inputs:[]},{id:'html',title:'制作互动网页',kind:'feature',featureId:'html',instruction:'制作',inputs:['save']}]},{...a,operationId:operation.id});
+ run.workflow.steps=[{id:'save',state:'completed',checkpointKey:'save-proof'},{id:'html',state:'failed',summary:'网页没有生成成功。'}];run.workflow.phase='failed';run.notionReceipt={state:'verified',url:'https://www.notion.so/original'};
+ const brief=pendingTaskResults(db,a)[0].brief!;
+ assert.match(brief,/Notion 保存已核对一致.*卡在“制作互动网页”.*网页没有生成成功/);
+ assert.doesNotMatch(brief,/还没同步好|同步完成进度|这件事的步骤已完成/);assert.equal(pendingTaskResults(db,a)[0].outcome,'partial');
+});
 
 test('a fresh state read rederives a completed edit notice without rewriting the terminal receipt or an old report',async()=>{
  const db=fixture(),task=local(db,'same-file-edit');
@@ -125,7 +166,8 @@ test('automatic technical failures use a plain next step rather than diagnostics
   await coordinator.state(a);
   const report = db.conversations.find(c => c.id === 'main-a')!.messages[0];
   assert.match(report.content, /连接中断/);
-  assert.match(report.content, /核对已有内容后继续未完成部分/);
+  assert.match(report.content, /本轮已暂停.*没有安排自动重试/);
+  assert.doesNotMatch(report.content, /先核对已有内容后继续未完成部分/);
   assert.doesNotMatch(report.content, /PRIVATE_SECRET|Authorization|Bearer|response\.completed|stream disconnected/);
   assert.equal(pendingTaskResults(db, b).length, 0);
 });

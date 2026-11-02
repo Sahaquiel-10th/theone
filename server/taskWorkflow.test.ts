@@ -7,6 +7,19 @@ const step=(id:string,inputs:string[]=[],extra:Partial<WorkflowStep>={}):Workflo
 const spec=(...steps:WorkflowStep[]):WorkflowSpec=>({version:1,steps});
 const completed=(id:string):WorkflowStepResult=>({state:'completed',checkpointKey:`checkpoint_${id}`,summary:`${id}已有可用成果。`});
 const code=(expected:TaskWorkflowError['code'])=>(error:unknown)=>error instanceof TaskWorkflowError&&error.code===expected;
+
+test('only an explicitly skipped optional read is a soft dependency, not an invented completed result',async()=>{
+ const f=fixture(spec(step('cases',[],{kind:'tool',tool:'web_search',required:false}),step('article',['cases']))),seen:string[]=[];
+ const run=await f.run(async(s,refs)=>{seen.push(s.id);if(s.id==='cases')return {state:'skipped',summary:'可选检索未取得资料。'};assert.deepEqual(refs,[]);return completed(s.id);});
+ assert.deepEqual(seen,['cases','article']);assert.equal(run.steps[0].state,'skipped');assert.equal(run.phase,'completed');assert.equal(workflowProgress(run).status,'completed');
+ await f.run(async()=>assert.fail('completed work repeated'));
+});
+
+test('an optional read cannot wash away an unmet mandatory source through transitive inputs',async()=>{
+ const f=fixture(spec(step('source',[],{kind:'tool',tool:'knowledge_search'}),step('extra',['source'],{kind:'tool',tool:'web_search',required:false}),step('draft',['extra'])));let writes=0;
+ const run=await f.run(async s=>{if(s.id==='source')return {state:'failed',summary:'必需来源不可用'};writes++;return {state:'completed',checkpointKey:'unexpected'};});
+ assert.equal(run.steps[0].state,'failed');assert.equal(run.steps[1].state,'skipped');assert.equal(run.steps[2].state,'waiting');assert.equal(writes,0);assert.equal(run.phase,'failed');
+});
 function fixture(plan:WorkflowSpec){
  let stored=createWorkflowRun(plan,owner);const writes:WorkflowRun[]=[];
  const persist:WorkflowRunner['persist']=async(next,expected)=>{

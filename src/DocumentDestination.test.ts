@@ -26,9 +26,9 @@ test('automatic Notion verification renders live progress without a write, conti
 test('exhausted readback offers only a safe read action while authorization or unknown page requires checking the source',()=>{
  const base={state:'uncertain',url:'https://www.notion.so/original'};
  const exhausted=render({...base,verification:{state:'exhausted',version:3,attempt:3,lastReason:'read_failed'}});
- assert.match(exhausted,/核对保存结果（不重写）/);assert.doesNotMatch(exhausted,/确认启动|开始处理|重新处理/);
+ assert.match(exhausted,/再核对一次（不重写）/);assert.match(exhausted,/不会自动重试/);assert.doesNotMatch(exhausted,/确认启动|开始处理|重新处理/);
  const authorization=render({...base,verification:{state:'exhausted',version:3,attempt:3,lastReason:'authorization'}});
- assert.match(authorization,/知识连接/);assert.doesNotMatch(authorization,/<button/);
+ assert.match(authorization,/连接与授权.*Notion/);assert.doesNotMatch(authorization,/<button/);
  const missing=render({state:'uncertain',verification:{state:'exhausted',version:3,attempt:3,lastReason:'no_page'}});
  assert.match(missing,/原保存位置/);assert.doesNotMatch(missing,/<button/);
  assert.equal(calls,0);
@@ -41,9 +41,9 @@ test('verified receipt removes the pending notice even if old checking metadata 
 
 test('a verified save with terminal workflow divergence keeps a read-only progress-check entry without submitting on render',()=>{
  const html=render({state:'verified',url:'https://www.notion.so/original'},true);
- assert.match(html,/Notion 内容已核对，任务步骤仍需核对/);
+ assert.match(html,/Notion 正文已核对一致，其余任务步骤仍需核对/);
  assert.match(html,/核对任务进度（不重写）/);
- assert.doesNotMatch(html,/开始处理|重新处理|继续处理|aria-busy="true"/);
+ assert.doesNotMatch(html,/开始处理|重新处理|继续处理|同步完成进度|还没同步好|aria-busy="true"/);
  assert.equal(calls,0);
 });
 

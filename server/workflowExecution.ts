@@ -4,8 +4,9 @@ import type {ModelToolMessage,ToolChatResult} from './modelGateway.js';
 import type {OrchestrationTool} from './taskOrchestrator.js';
 import {notionHash,legacyNotionNormalized} from './notionCanonical.js';
 import {taskStepKey,type TaskStep,type TaskStepStore} from './taskSteps.js';
-import {runTaskWorkflow,workflowProgress,workflowPhase,type WorkflowBinding,type WorkflowRun,type WorkflowStep,type WorkflowStepResult} from './taskWorkflow.js';
+import {runTaskWorkflow,workflowProgress,workflowPhase,workflowSkippedOptionalRead,type WorkflowBinding,type WorkflowRun,type WorkflowStep,type WorkflowStepResult} from './taskWorkflow.js';
 import {buildWorkflowStepContext,type WorkflowContextInput,type WorkflowHistoryMessage} from './workflowContext.js';
+import {notionVerificationPresentation} from '../src/taskRecovery.js';
 
 export type WorkflowExecutionInput={
  binding:WorkflowBinding;run:WorkflowRun;goal:string;modelSystemPrompt:string;
@@ -22,7 +23,7 @@ export type WorkflowExecutionInput={
  receipt:()=>Promise<WorkRun['notionReceipt']>;
 };
 export type WorkflowExecutionResult={run:WorkflowRun;content:string;summary:string;outcome:'completed'|'partial'|'needs_input'|'failed';waiting:boolean};
-type StoredOutput={workflow:{version:1;runId:string;revision:number;stepId:string};outcome:'completed'|'partial'|'needs_input'|'failed'|'waiting';result?:unknown;notionCheckpointKey?:string;priorNotionCheckpointKey?:string;expectedBodyDigest?:string;sourceArtifact?:{id:string;ref:string;originOperationId:string;bodyDigest:string}};
+type StoredOutput={workflow:{version:1;runId:string;revision:number;stepId:string};outcome:'completed'|'partial'|'needs_input'|'failed'|'waiting'|'skipped';result?:unknown;notionCheckpointKey?:string;priorNotionCheckpointKey?:string;expectedBodyDigest?:string;sourceArtifact?:{id:string;ref:string;originOperationId:string;bodyDigest:string}};
 type Classification={state:WorkflowStepResult['state'];outcome:StoredOutput['outcome'];summary:string;body?:string};
 export class WorkflowExecutionError extends Error{constructor(){super('这一步的原结果或授权范围无法确认，先核对已有内容；不会重复执行。');this.name='WorkflowExecutionError';}}
 const object=(value:unknown):Record<string,unknown>|undefined=>value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:undefined;
@@ -57,7 +58,8 @@ export function recoverVerifiedNotionWorkflow(job:Pick<WorkRun,'workflow'|'steps
   return {cp,value:value as unknown as StoredOutput};
  };
  const completedCheckpoint=(step:WorkflowStep,saved:ReturnType<typeof checkpoint>)=>{const result=object(saved?.value.result);return Boolean(saved?.cp.state==='completed'&&saved.value.outcome==='completed'&&classify(step,saved.value.result).state==='completed'&&!['length','filtered'].includes(String(result?.finishReason??''))&&(step.kind!=='model'||saved.cp.effect==='model'&&result?.outcome==='completed'&&typeof result.content==='string'&&result.content.trim())&&(step.kind!=='tool'||saved.cp.effect==='read')&&(step.kind!=='notion'||saved.cp.effect==='external_write'));};
- const proven=(step:WorkflowStep,index:number)=>workflow.steps[index].state==='completed'&&workflow.steps[index].checkpointKey===key(step)&&completedCheckpoint(step,checkpoint(step));
+ const omitted=(step:WorkflowStep,index:number)=>{const saved=checkpoint(step);return workflowSkippedOptionalRead(workflow.spec,workflow.steps,step.id)&&saved?.cp.effect==='read'&&saved.cp.state==='failed'&&saved.value.outcome==='skipped';};
+ const proven=(step:WorkflowStep,index:number)=>omitted(step,index)||workflow.steps[index].state==='completed'&&workflow.steps[index].checkpointKey===key(step)&&completedCheckpoint(step,checkpoint(step));
  const candidates=workflow.spec.steps.flatMap((step,index)=>{
   if(step.kind!=='notion'||step.inputs.some(id=>{const at=workflow.spec.steps.findIndex(item=>item.id===id);return at<0||!proven(workflow.spec.steps[at],at);}))return [];
   const saved=checkpoint(step);if(!saved||saved.cp.effect!=='external_write')return [];
@@ -79,7 +81,7 @@ export function recoverVerifiedNotionWorkflow(job:Pick<WorkRun,'workflow'|'steps
   next.steps[index]={id:step.id,state:'completed',checkpointKey:key(step),summary:'文章已保存到 Notion，正文也已回读核对。'};next.sequence++;next.phase=workflowPhase(next.spec,next.steps);
  }
  try{workflowProgress(next);}catch{return undefined;}
- const complete=next.phase==='completed'&&next.spec.steps.every((item,at)=>{const saved=updatedSteps.find(saved=>saved.key===key(item)&&saved.namespace===namespace&&saved.scopeId===binding.operationId&&saved.tool===`workflow:${workflow.id}:${item.id}`),value=object(saved?.output);return next.steps[at].state==='completed'&&next.steps[at].checkpointKey===key(item)&&saved&&value&&completedCheckpoint(item,{cp:saved,value:value as unknown as StoredOutput})&&sameEvidence(value.workflow,{version:1,runId:workflow.id,revision:workflow.revision,stepId:item.id})&&sameEvidence(value.sourceArtifact,expectedSource);});
+ const complete=next.phase==='completed'&&next.spec.steps.every((item,at)=>{if(omitted(item,at))return true;const saved=updatedSteps.find(saved=>saved.key===key(item)&&saved.namespace===namespace&&saved.scopeId===binding.operationId&&saved.tool===`workflow:${workflow.id}:${item.id}`),value=object(saved?.output);return next.steps[at].state==='completed'&&next.steps[at].checkpointKey===key(item)&&saved&&value&&completedCheckpoint(item,{cp:saved,value:value as unknown as StoredOutput})&&sameEvidence(value.workflow,{version:1,runId:workflow.id,revision:workflow.revision,stepId:item.id})&&sameEvidence(value.sourceArtifact,expectedSource);});
  return {workflow:next,steps:updatedSteps,complete,changed};
 }
 const unsafePrompt=/(?:\b(?:Bearer|authorization|api[_ -]?key|password|secret|credentials?|HTTP|JSON|ECONN\w*|ETIMEDOUT|stack|traceback)\b|[{}<>])/i;
@@ -130,7 +132,7 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
  };
  const output=(checkpoint:TaskStep):StoredOutput=>{
   const value=object(checkpoint.output),meta=object(value?.workflow);
-  if(!value||!meta||meta.runId!==input.run.id||meta.revision!==input.run.revision||!['completed','partial','needs_input','failed','waiting'].includes(String(value.outcome)))throw new WorkflowExecutionError();
+  if(!value||!meta||meta.runId!==input.run.id||meta.revision!==input.run.revision||!['completed','partial','needs_input','failed','waiting','skipped'].includes(String(value.outcome)))throw new WorkflowExecutionError();
   return value as unknown as StoredOutput;
  };
  const proof=(checkpointKey:string)=>{
@@ -153,7 +155,7 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
   }
   return [{...binding,id:`checkpoint_${cp.key}`,kind:'tool_result',content:typeof result==='string'?result:JSON.stringify(result??null),ref:cp.key,complete:v?.status!=='partial'&&v?.complete!==false&&output(cp).outcome==='completed'}];
  };
- const context=(step:WorkflowStep,refs:readonly string[])=>buildWorkflowStepContext({scope:binding,modelSystemPrompt:input.modelPromptForStep?.(step)??input.modelSystemPrompt,goal:input.goal,constraints:[],step:{id:step.id,kind:step.kind,instruction:step.instruction,historyMessageIds:(step.historyCount?input.history.slice(-step.historyCount):[]).map(message=>message.id)},deferredSteps:input.run.spec.steps.slice(input.run.spec.steps.findIndex(candidate=>candidate.id===step.id)+1).map(({id,title,kind})=>({id,title,kind})),history:input.history,inputs:[...input.inputs,...refs.flatMap(checkpointInputs)],tools:[]});
+ const context=(step:WorkflowStep,refs:readonly string[])=>buildWorkflowStepContext({scope:binding,modelSystemPrompt:input.modelPromptForStep?.(step)??input.modelSystemPrompt,goal:input.goal,constraints:[],step:{id:step.id,kind:step.kind,instruction:step.instruction,historyMessageIds:(step.historyCount?input.history.slice(-step.historyCount):[]).map(message=>message.id)},deferredSteps:input.run.spec.steps.slice(input.run.spec.steps.findIndex(candidate=>candidate.id===step.id)+1).map(({id,title,kind})=>({id,title,kind})),history:input.history,inputs:[...input.inputs,...refs.flatMap(checkpointInputs),...step.inputs.flatMap(id=>{const source=input.run.spec.steps.find(source=>source.id===id);return source?.kind==='tool'&&source.required===false&&!refs.includes(key(source))?[{...binding,id:`optional_missing_${id}`,kind:'tool_result' as const,content:'此可选检索未取得可用结果。不得把它当作已核实事实；需要示例时可明确标注为假设，不得虚构真实公开案例。',complete:false}]:[];})],tools:[]});
  // Validate all caller-wrapped references, including unselected history, before
  // the first billable or external call. A wrong scope never degrades to empty.
  context(input.run.spec.steps[0],[]);
@@ -162,6 +164,9 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
   await input.verify();
   for(const state of input.run.steps)if(state.state==='completed'){
    const step=input.run.spec.steps.find(step=>step.id===state.id);if(!step||state.checkpointKey!==key(step))throw new WorkflowExecutionError();proof(state.checkpointKey);
+  }
+  for(const state of input.run.steps)if(workflowSkippedOptionalRead(input.run.spec,input.run.steps,state.id)){
+   const step=input.run.spec.steps.find(step=>step.id===state.id)!,cp=stored(step);if(cp?.effect!=='read'||cp.state!=='failed'||output(cp).outcome!=='skipped')throw new WorkflowExecutionError();
   }
  };
  const save=async(step:WorkflowStep,state:TaskStep['state'],value:StoredOutput)=>{
@@ -189,7 +194,7 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
    if(actual&&(linked||receipt!.checkpointKey!==value.priorNotionCheckpointKey&&Date.parse(actual.updatedAt)>=Date.parse(cp.updatedAt))){
     return saveResult(step,{state:'verified',pageId:receipt!.pageId,url:receipt!.url}, {state:'completed',outcome:'completed',summary:'文章已保存到 Notion，正文也已回读核对。'},{notionCheckpointKey:receipt!.checkpointKey,expectedBodyDigest:value.expectedBodyDigest});
    }
-   if(receipt?.verification?.state==='exhausted')return saveResult(step,undefined,{state:'failed',outcome:'failed',summary:'Notion 保存还没核对成功，请先查看原页面，再决定下一步。'},{notionCheckpointKey:linked,expectedBodyDigest:value.expectedBodyDigest,...(value.priorNotionCheckpointKey?{priorNotionCheckpointKey:value.priorNotionCheckpointKey}:{})});
+   if(receipt?.verification?.state==='exhausted')return saveResult(step,undefined,{state:'failed',outcome:'failed',summary:notionVerificationPresentation(receipt).message.slice(0,240)},{notionCheckpointKey:linked,expectedBodyDigest:value.expectedBodyDigest,...(value.priorNotionCheckpointKey?{priorNotionCheckpointKey:value.priorNotionCheckpointKey}:{})});
    return undefined;
   }
   if(cp.state==='completed'&&value.outcome==='completed')return result(step,{state:'completed',outcome:'completed',summary:'已找回这一步的实际成果。'});
@@ -220,13 +225,14 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
    return saveResult(step,value,classification,{expectedBodyDigest,...(receipt?.checkpointKey?{notionCheckpointKey:receipt.checkpointKey}:{}),...(priorReceipt?.checkpointKey?{priorNotionCheckpointKey:priorReceipt.checkpointKey}:{})});
   }
   const tool=input.tools.find(tool=>tool.name===(step.kind==='feature'?input.featureTools[step.featureId!]:step.tool));
-  if(!tool)return saveResult(step,undefined,{state:'failed',outcome:'failed',summary:'这一步需要的能力暂时没有就位，其他独立内容可以继续。'});
+  if(!tool)return saveResult(step,undefined,step.kind==='tool'&&step.required===false?{state:'skipped',outcome:'skipped',summary:'可选检索暂不可用，未执行；继续必需内容，不据此宣称事实已核实。'}:{state:'failed',outcome:'failed',summary:'这一步需要的能力暂时没有就位，其他独立内容可以继续。'});
   if(step.kind==='feature')value=await tool.run(selected.messages.filter(message=>message.role==='user').map(message=>message.content??'').join('\n\n'));
   else if(step.tool==='read_notion_document'){
    if(!tool.structured)return saveResult(step,undefined,{state:'failed',outcome:'failed',summary:'原文读取还没有接好，不能当作已经核对。'});
    value=await tool.structured.run(tool.structured.validate({}));
   }else value=await tool.run(step.instruction);
-  await verify();return saveResult(step,value,classify(step,value));
+  await verify();const classified=classify(step,value);
+  return saveResult(step,value,step.kind==='tool'&&step.required===false&&['failed','needs_input'].includes(classified.state)?{state:'skipped',outcome:'skipped',summary:'可选检索没有取得可用资料，继续必需内容；没有核实的案例不当作真实事实。'}:classified);
  };
  const run=await runTaskWorkflow({binding,run:input.run,persist:input.persist,verify,execute,recover});
  const candidates=run.spec.steps.flatMap(step=>{
