@@ -92,7 +92,7 @@ import {selectedNotionVerification} from './notionVerificationSelection.js';
 import {createWorkflowRun,workflowSpecSchema,validateWorkflowSpec,workflowProgress,type WorkflowSpec} from './taskWorkflow.js';
 import {resolveTaskWorkflow,WorkflowPlanningError,workflowWebSearchPermission,workflowSchemaForTools,workflowKnowledgeReadUnchanged} from './workflowPlanning.js';
 import {reuseCompletedWorkflowReads,workflowSourceBindingsMatch} from './workflowRecovery.js';
-import {executeWorkflowStages,recoverVerifiedNotionWorkflow} from './workflowExecution.js';
+import {executeWorkflowStages,recoverVerifiedNotionWorkflow,verifiedWorkflowNotionCompletion} from './workflowExecution.js';
 import {CoordinatorLocalError,localActionRequested,naturalLocalActionRequested,localReadinessCanStart,localReadinessFailure} from './coordinatorLocalPolicy.js';
 import {parseLocalDeviceReadiness,type LocalDeviceReadiness} from '../src/localDeviceReadiness.js';
 import {LocalExecutionNotStartedError} from './localExecutionAdmission.js';
@@ -433,7 +433,7 @@ export class CoordinatorService {
       }
       const workflowProof=job.workflow&&saveConfirmed&&!authorizationChanged?recoverVerifiedNotionWorkflow(job,{...s,operationId:op.id}):undefined;
       if(workflowProof?.changed){job.workflow=workflowProof.workflow;job.steps=workflowProof.steps;op.updatedAt=at();}
-      const completed=saveConfirmed&&!authorizationChanged&&(!job.workflow||workflowProof?.complete)?verifiedNotionCompletion(receipt,job.steps??[],required,{scopeId:op.id}):undefined;
+      const completed=saveConfirmed&&!authorizationChanged?(job.workflow?workflowProof?.complete?verifiedWorkflowNotionCompletion(job,{...s,operationId:op.id},required):undefined:verifiedNotionCompletion(receipt,job.steps??[],required,{scopeId:op.id})):undefined;
       if(completedWorkflowRepair&&completed){job.notionVerificationSelection=undefined;continue;}
       // Explicit legacy reconciliation confirms only its selected save. An
       // unfinished/cancelled old job must not be promoted or silently resumed.

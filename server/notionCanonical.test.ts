@@ -147,3 +147,21 @@ test('v6 recognizes exact GFM bare URL serialization as an explicit same-label l
  ])assert.notEqual(canonicalNotionDigest(source,6),canonicalNotionDigest(changed,6),changed);
  assert.notEqual(canonicalNotionDigest('https://example.test/<b>x</b>',6),canonicalNotionDigest('[https://example.test/**x**](https://example.test/**x**)',6),'URL markup bytes are never interpreted as presentation');
 });
+
+test('v7 compares only exact plain single-line inline code presentations and retains v6 meaning',()=>{
+ const source='**重点**与 `ONE-QA`。\n\n> 引用\n\n|项目|费用|\n|---|---:|\n|测试|100|';
+ const actual='<b>重点</b>与 <code>ONE-QA</code>。\n\n<quote>\n引用\n</quote>\n\n|项目|费用|\n| --- | --- |\n|测试|100|';
+ assert.equal(canonicalNotionDigest(source,7),canonicalNotionDigest(actual,7));
+ assert.notEqual(canonicalNotionDigest(source,6),canonicalNotionDigest(actual,6),'persisted v6 keeps exact raw code presentation');
+ assert.equal(canonicalNotionDigest(source,6),'c1c7b8a98fb4bab1b436042ca66f6cd6cadf4198ef4c0d255299e4c8c1ff5998');
+ assert.equal(canonicalNotionDigest('`ONE-QA`',6),'c7b7d78e6684f820ddd2d9a5ef1a5f1dc186d0a0ae5d4209d4590b55b79891c2');
+ assert.equal(canonicalNotionDigest('<code>ONE-QA</code>',6),'46d7d4a6e4f5b1ba9c3f72a0543a29b4001f2f760fc669a42a11454782c31f35');
+ for(const [left,right] of [
+  ['`ONE-QA`','<code>ONE-QB</code>'],['`ONE-QA`','ONE-QA'],
+  ['`ONE-QA`','<code class="x">ONE-QA</code>'],['`ONE-QA`','<code> ONE-QA</code>'],['`ONE-QA`','<code>ONE-QA </code>'],
+  ['`ONE-QA`','<code>ONE-\nQA</code>'],['`ONE-QA`','<code>ONE&#45;QA</code>'],
+  ['`a_b`','<code>a\\_b</code>'],['`**ONE**`','<code><b>ONE</b></code>'],
+  ['```\nONE-QA\n```','<code>ONE-QA</code>'],['    ONE-QA','<code>ONE-QA</code>'],
+  ['\\<code>ONE-QA</code>','`ONE-QA`'],['``a ` b``','<code>a ` b</code>'],
+ ])assert.notEqual(canonicalNotionDigest(left,7),canonicalNotionDigest(right,7),right);
+});

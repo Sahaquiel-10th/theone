@@ -102,8 +102,8 @@ function compareNotionBody(receipt:Receipt,body:string,title:string|undefined,no
 }
 /** A new comparison may prove an old write only from its exact persisted
  * source and write checkpoint. It never infers text from the fetched page. */
-function exactV6SourceDigest(db:Database,s:WorkScope,op:ChatOperation,receipt:Receipt):string|undefined{
- if(receipt.canonicalVersion===6||!receipt.expectedDigest||!receipt.checkpointKey||!op.workRun?.steps?.some(step=>step.key===receipt.checkpointKey&&step.scopeId===op.id&&step.namespace==='worker'&&step.tool==='save_notion_draft'&&step.effect==='external_write'))return;
+function exactV7SourceDigest(db:Database,s:WorkScope,op:ChatOperation,receipt:Receipt):string|undefined{
+ if(receipt.canonicalVersion===7||!receipt.expectedDigest||!receipt.checkpointKey||!op.workRun?.steps?.some(step=>step.key===receipt.checkpointKey&&step.scopeId===op.id&&step.namespace==='worker'&&step.tool==='save_notion_draft'&&step.effect==='external_write'))return;
  const candidates:string[]=[];
  const accept=(body:unknown,exactArguments=false)=>{
   if(typeof body!=='string'||!body.trim()||body.length>50000||hash(normalized(body))!==receipt.expectedDigest)return;
@@ -131,7 +131,7 @@ function exactV6SourceDigest(db:Database,s:WorkScope,op:ChatOperation,receipt:Re
    accept(parseTaskOutcome(value.result.content).content);
   }
  }
- const unique=[...new Set(candidates)];return unique.length===1?canonicalNotionDigest(unique[0],6):undefined;
+ const unique=[...new Set(candidates)];return unique.length===1?canonicalNotionDigest(unique[0],7):undefined;
 }
 function quotedReplacement(request: string) {
   // Only an unambiguous, explicitly quoted replacement in the real user turn.
@@ -254,7 +254,7 @@ export class NotionDocuments {
       v.state='checking';v.attempt++;v.leaseId=leaseId;v.leaseUntil=new Date(now+(this.verificationOptions.leaseMs??90_000)).toISOString();
       const task=db.conversations.find(c=>c.id===op.conversationId&&c.workspaceId===s.workspaceId&&c.userId===s.userId);
       if(manual&&['failed','completed'].includes(op.status)&&run.state==='failed'&&task&&!task.archived&&task.workPauseReason!=='user_stopped')run.notionVerificationSelection={operationId:op.id,expectedDigest:r.expectedDigest,pageId:r.pageId,asyncTaskId:r.asyncTaskId,checkpointKey:r.checkpointKey,version:v.version,connectionId:target.connectionId,grantId:target.grantId,parentId:target.parentId,requestedAt:new Date(now).toISOString()};
-      return {receipt:structuredClone(r),target:structuredClone(target),conversationId:op.conversationId!,version:v.version,presentationUpgrade,v6Expected:manual?exactV6SourceDigest(db,s,op,r):undefined};
+      return {receipt:structuredClone(r),target:structuredClone(target),conversationId:op.conversationId!,version:v.version,presentationUpgrade,v7Expected:manual?exactV7SourceDigest(db,s,op,r):undefined};
     });
     if(!claimed)return;
     if('blocked' in claimed)return {operationId:opId,conversationId:claimed.conversationId,state:'exhausted'};
@@ -285,7 +285,7 @@ export class NotionDocuments {
     const presentation=!matchedOriginal&&claimed.presentationUpgrade&&body!==undefined&&snapshot.expectedCanonicalDigest?compareNotionBody(snapshot,body,fetchedTitle,this.now(),{version:5,expectedDigest:snapshot.expectedCanonicalDigest}):undefined;
     const matchedPresentation=presentation?.kind==='matched';
     if(matchedPresentation)comparison=presentation;
-    const reproof=!matchedOriginal&&!matchedPresentation&&body!==undefined&&claimed.v6Expected?compareNotionBody(snapshot,body,fetchedTitle,this.now(),{version:6,expectedDigest:claimed.v6Expected}):undefined;
+    const reproof=!matchedOriginal&&!matchedPresentation&&body!==undefined&&claimed.v7Expected?compareNotionBody(snapshot,body,fetchedTitle,this.now(),{version:7,expectedDigest:claimed.v7Expected}):undefined;
     if(reproof)comparison=reproof;
     const matched=matchedOriginal||matchedPresentation||reproof?.kind==='matched';
     return this.store.mutate(db=>{
@@ -371,7 +371,7 @@ export class NotionDocuments {
           const projected=!target.pageId&&options.projectLeadingTitle?projectNotionLeadingTitle(expected):undefined;
           const titleProjection:NotionTitleProjection|undefined=projected?{version:1,title:projected.title,prefix:projected.prefix}:undefined;
           const createTitle=projected?.title??v.title,createBody=projected?.content??v.content;
-          const expectedReceipt:Receipt={state:'pending',delivery:'not_sent',pageId:target.pageId,url:target.url,expectedDigest:hash(normalized(expected)),expectedRawDigest:hash(expected),expectedLength:expected.length,expectedCanonicalDigest:canonicalNotionDigest(expected,6),canonicalVersion:6,checkpointKey:taskStepKey('worker','save_notion_draft',JSON.stringify(v)),titleProjection,final:v.final===true};
+          const expectedReceipt:Receipt={state:'pending',delivery:'not_sent',pageId:target.pageId,url:target.url,expectedDigest:hash(normalized(expected)),expectedRawDigest:hash(expected),expectedLength:expected.length,expectedCanonicalDigest:canonicalNotionDigest(expected,7),canonicalVersion:7,checkpointKey:taskStepKey('worker','save_notion_draft',JSON.stringify(v)),titleProjection,final:v.final===true};
           // Persist before sending. Duplicate calls, disconnects and restarts
           // cannot turn a possibly-applied write into an automatic retry.
           await this.store.mutate(d => {

@@ -51,3 +51,12 @@
 - 最终源码冻结后：全量2219项，2218通过、0失败、1既有skip；TypeScript/生产构建/diff-check通过。日志 `/tmp/one-workflow-release-full-20261102.log`、`/tmp/one-workflow-release-build-20261102.log`。前端 `index-Cys_kSC3.js` SHA-256 `fc6d7d77e19fef0995ca97bf862bd87ea142ecc8fad637d5118b7745d7347ca2`。
 - 直接口述“上网搜一下/联网查”与开关授权一致，配置不允许时仍0调用；跨天普通澄清保留原任务日期，新明确日期则重新检索，实际query/dateRange以新日期为准，变更来源/对象不复用旧结果。这些是同任务续做的服务回归，不代替线上验收。
 - 比较器使用已有依赖树中的精确版本 mdast-util-from-markdown 2.0.3、mdast-util-gfm 3.1.0、micromark-extension-gfm 3.0.0，并显式列为直接依赖；旧比较协议不变。独审与精确私有case均通过。此处仍待精确版本上线、原页只读重证及新完整任务真实验收，不声称已经上线或所有任务永不失败。
+
+## 首次发布与真实验收发现
+
+- 源码 `620ee9022a08436265140068e078f7a3c9ccb3c6` 的三平台 CI verify 全部通过。自动部署连接/传输耗时后取消；取消日志显示曾进入远端测试，故不能把整段都归因于传输。确认旧进程与该 SHA 工作目录进程均已退出后，使用 SHA-256 `9932a06f658af34d0bc54d064f58e74310a94cae21d937f2e2b5d81fb6063ee2` 的同源码包，单次执行原 `theone-deploy`，未省略原检查。退出0，服务 active、current 精确指向该 SHA，公开健康200及 JS 字节/摘要一致。服务器日志 `/home/ubuntu/one-deploy-620ee90-20261102.log`。
+- 原专栏点击一次只读核对，receipt 已 verified、comparison 使用 v6 matched；原页面最后编辑时间前后仍是 `2026-11-02T00:13:05.319Z`。但旧 workflow 仍未完成：原 save 在异常出口丢失 `notionCheckpointKey`，且旧 completion 只识别平铺工具名，不识别 workflow 内已完成的实际检索。因此 receipt 成功不能直接推断整单成功，继续修严格证明衔接。
+- 新独立 `ONE-QA-WRITING-1102-A` 经主对话一次提交，输出选项为“对话中”，仅口述联网与保存 Notion。实际 notes、official/web、draft 全完成，保存到唯一新页 `40ca5015999181ca8c84fe6f00c399f1`，但3次自动只读核对后仍 mismatch；真实验收不通过，不能以测试绿或页面存在宣称已解决。
+- 精确 QA-A 原稿825字符、回读含标题930字符，raw/legacy-normalized/v6canonical 三项与同次 receipt 全绑定。唯一未识别表示是原稿行内代码反引号与 Notion `<code>ONE-QA</code>`；v6 的全代码字节保护安全但过严。新增 v7，仅比较完全相同的单行纯文本 inline-code typed 节点，保留旧 v6 摘要含义。两篇精确对照 v7 均须通过，QA-A 摘要 `290595ea797332acf6ade4aa211b43c5a31e7f7c99d7975d671884b7029cfc09`。原稿不纳入 git。
+- 后续收尾仅允许同次唯一写入、精确 raw/normalized/原 canonical 摘要、完整 owner/revision/marker 及必需步骤和时序证明；不靠正文相似或页面标题推断成功。独审补查重复 checkpoint 与无关旧读取证明，不能让这些记录把真实失败洗成完成。
+- 后续源码最终冻结后全量2251项，2250通过、0失败、1既有skip，日志 `/tmp/one-writing-v7-final-full-20261102.log`。独审确认重复stage/worker及借旧读取时序的两处证明漏洞已拒绝；v7精确case通过，代码变化/属性/多行/实体等反例仍拒绝。发布及新完整任务最终结果待后记。

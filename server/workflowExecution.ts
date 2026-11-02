@@ -2,7 +2,8 @@ import type {WorkRun} from './coordinatorTypes.js';
 import {parseTaskOutcome,type TaskOutcome} from './dispatchPlan.js';
 import type {ModelToolMessage,ToolChatResult} from './modelGateway.js';
 import type {OrchestrationTool} from './taskOrchestrator.js';
-import {notionHash,legacyNotionNormalized} from './notionCanonical.js';
+import {notionHash,legacyNotionNormalized,canonicalNotionDigest} from './notionCanonical.js';
+import {verifiedNotionCompletion} from './notionCompletion.js';
 import {taskStepKey,type TaskStep,type TaskStepStore} from './taskSteps.js';
 import {runTaskWorkflow,workflowProgress,workflowPhase,workflowSkippedOptionalRead,type WorkflowBinding,type WorkflowRun,type WorkflowStep,type WorkflowStepResult} from './taskWorkflow.js';
 import {buildWorkflowStepContext,type WorkflowContextInput,type WorkflowHistoryMessage} from './workflowContext.js';
@@ -36,7 +37,9 @@ const sameEvidence=(value:unknown,expected:Record<string,string|number>|undefine
 };
 function verifiedNotionCheckpoint(receipt:WorkRun['notionReceipt'],steps:TaskStep[],operationId:string,linkedKey?:string,expectedBodyDigest?:string){
  if(receipt?.state!=='verified'||receipt.verification||!receipt.checkpointKey||linkedKey&&linkedKey!==receipt.checkpointKey||!receipt.pageId||!receipt.digest||!receipt.expectedDigest||expectedBodyDigest&&expectedBodyDigest!==receipt.expectedDigest||receipt.final!==true)return undefined;
- const actual=steps.find(cp=>cp.key===receipt.checkpointKey&&cp.namespace==='worker'&&cp.scopeId===operationId&&cp.tool==='save_notion_draft'&&cp.effect==='external_write'&&cp.state==='completed'),value=object(actual?.output);
+ const matching=steps.filter(cp=>cp.key===receipt.checkpointKey),actual=matching.length===1?matching[0]:undefined;
+ if(!actual||actual.namespace!=='worker'||actual.scopeId!==operationId||actual.tool!=='save_notion_draft'||actual.effect!=='external_write'||actual.state!=='completed')return undefined;
+ const value=object(actual.output);
  return value?.state==='verified'&&value.pageId===receipt.pageId&&value.digest===receipt.digest&&value.expectedDigest===receipt.expectedDigest&&value.final===true?actual:undefined;
 }
 /** Read-only proof repair for the same saved attempt. This never executes a
@@ -50,10 +53,12 @@ export function recoverVerifiedNotionWorkflow(job:Pick<WorkRun,'workflow'|'steps
  const source=job.notionArticleSource;
  const expectedSource=source?{id:'existing_article',ref:source.messageId,originOperationId:source.operationId,bodyDigest:source.digest}:undefined;
  if(source&&(workflow.spec.steps.length!==1||workflow.spec.steps[0].id!=='save_existing'||workflow.spec.steps[0].kind!=='notion'||workflow.spec.steps[0].inputs.length!==0||!/^[a-f0-9]{64}$/i.test(source.digest)||source.digest!==receipt!.expectedRawDigest))return undefined;
- const checkpoint=(step:WorkflowStep)=>{
-  const matches=steps.filter(cp=>cp.key===key(step)&&cp.namespace===namespace&&cp.scopeId===binding.operationId&&cp.tool===`workflow:${workflow.id}:${step.id}`);
+ if(workflow.spec.steps.some(step=>steps.filter(cp=>cp.key===key(step)).length>1))return undefined;
+ const checkpoint=(step:WorkflowStep,records=steps)=>{
+  const matches=records.filter(cp=>cp.key===key(step));
   if(matches.length!==1)return undefined;
   const cp=matches[0],value=object(cp.output);
+  if(cp.namespace!==namespace||cp.scopeId!==binding.operationId||cp.tool!==`workflow:${workflow.id}:${step.id}`)return undefined;
   if(!sameEvidence(value?.workflow,{version:1,runId:workflow.id,revision:workflow.revision,stepId:step.id})||!sameEvidence(value?.sourceArtifact,expectedSource))return undefined;
   return {cp,value:value as unknown as StoredOutput};
  };
@@ -68,21 +73,48 @@ export function recoverVerifiedNotionWorkflow(job:Pick<WorkRun,'workflow'|'steps
   // this one original body; no title lookup or guessed content is involved.
   const canonicalSource=workflow.spec.steps.length===1&&step.id==='save_existing'&&step.inputs.length===0&&source&&/^[a-f0-9]{64}$/i.test(source.digest)&&source.digest===receipt!.expectedRawDigest;
   const uniqueWorkerProof=steps.filter(cp=>cp.namespace==='worker'&&cp.scopeId===binding.operationId&&cp.tool==='save_notion_draft'&&cp.effect==='external_write'&&cp.state==='completed'&&object(cp.output)?.state==='verified').length===1;
-  if(saved.value.notionCheckpointKey!==receipt!.checkpointKey&&!(saved.value.notionCheckpointKey===undefined&&canonicalSource&&uniqueWorkerProof))return [];
+  // A normal workflow could throw after the actual save but before recording
+  // its link. Infer only this one write from the exact selected model body,
+  // never from a fetched page, title similarity or another completed draft.
+  const manuscript=[...workflow.spec.steps].reverse().find(input=>step.inputs.includes(input.id)&&['model','feature'].includes(input.kind));
+  const manuscriptProof=manuscript?.kind==='model'?checkpoint(manuscript):undefined;
+  const body=manuscriptProof?bodyOf(manuscriptProof.value.result):'';
+  const worker=verifiedNotionCheckpoint(receipt,steps,binding.operationId);
+  const version=receipt!.canonicalVersion,canonicalMatches=version===undefined?receipt!.expectedCanonicalDigest===undefined:[2,3,4,5,6,7].includes(version)&&typeof receipt!.expectedCanonicalDigest==='string'&&canonicalNotionDigest(body,version)===receipt!.expectedCanonicalDigest;
+  const ordinarySource=workflow.spec.steps.filter(step=>step.kind==='notion').length===1&&manuscript?.kind==='model'&&manuscriptProof&&completedCheckpoint(manuscript,manuscriptProof)&&Boolean(body.trim())&&saved.value.expectedBodyDigest===receipt!.expectedDigest&&typeof receipt!.expectedRawDigest==='string'&&notionHash(body)===receipt!.expectedRawDigest&&(receipt!.expectedLength===undefined||receipt!.expectedLength===body.length)&&notionHash(legacyNotionNormalized(body))===receipt!.expectedDigest&&canonicalMatches&&saved.value.priorNotionCheckpointKey!==receipt!.checkpointKey&&worker&&Number.isFinite(Date.parse(worker.updatedAt))&&Number.isFinite(Date.parse(saved.cp.updatedAt))&&Date.parse(worker.updatedAt)>=Date.parse(saved.cp.updatedAt);
+  if(saved.value.notionCheckpointKey!==receipt!.checkpointKey&&!(saved.value.notionCheckpointKey===undefined&&uniqueWorkerProof&&(canonicalSource||ordinarySource)))return [];
   if(saved.value.expectedBodyDigest!==receipt!.expectedDigest&&!(saved.value.expectedBodyDigest===undefined&&canonicalSource))return [];
   return [{step,index,...saved}];
  });
  if(candidates.length!==1)return undefined;
  const {step,index,cp,value}=candidates[0],next=structuredClone(workflow),updatedSteps=structuredClone(steps);
- const changed=next.steps[index].state!=='completed'||next.steps[index].checkpointKey!==key(step)||cp.state!=='completed'||value.outcome!=='completed';
+ const changed=next.steps[index].state!=='completed'||next.steps[index].checkpointKey!==key(step)||cp.state!=='completed'||value.outcome!=='completed'||value.notionCheckpointKey!==receipt!.checkpointKey||value.expectedBodyDigest!==receipt!.expectedDigest;
  if(changed){
   const restored=updatedSteps.find(saved=>saved.key===cp.key&&saved.namespace===cp.namespace&&saved.scopeId===cp.scopeId)!;
   restored.state='completed';restored.output={...value,outcome:'completed',result:{state:'verified',pageId:receipt!.pageId,url:receipt!.url},notionCheckpointKey:receipt!.checkpointKey,expectedBodyDigest:receipt!.expectedDigest};
   next.steps[index]={id:step.id,state:'completed',checkpointKey:key(step),summary:'文章已保存到 Notion，正文也已回读核对。'};next.sequence++;next.phase=workflowPhase(next.spec,next.steps);
  }
  try{workflowProgress(next);}catch{return undefined;}
- const complete=next.phase==='completed'&&next.spec.steps.every((item,at)=>{if(omitted(item,at))return true;const saved=updatedSteps.find(saved=>saved.key===key(item)&&saved.namespace===namespace&&saved.scopeId===binding.operationId&&saved.tool===`workflow:${workflow.id}:${item.id}`),value=object(saved?.output);return next.steps[at].state==='completed'&&next.steps[at].checkpointKey===key(item)&&saved&&value&&completedCheckpoint(item,{cp:saved,value:value as unknown as StoredOutput})&&sameEvidence(value.workflow,{version:1,runId:workflow.id,revision:workflow.revision,stepId:item.id})&&sameEvidence(value.sourceArtifact,expectedSource);});
+ const complete=next.phase==='completed'&&!updatedSteps.some(cp=>cp.state==='started')&&next.spec.steps.every((item,at)=>{if(omitted(item,at))return true;const saved=checkpoint(item,updatedSteps);return next.steps[at].state==='completed'&&next.steps[at].checkpointKey===key(item)&&saved&&completedCheckpoint(item,saved);});
  return {workflow:next,steps:updatedSteps,complete,changed};
+}
+
+/** Completion-only in-memory projection. Persisted checkpoint names, bodies
+ * and receipts remain untouched. Required reads/features still need declared
+ * required workflow stages, and the legacy verifier retains effect/timing gates. */
+export function verifiedWorkflowNotionCompletion(job:Pick<WorkRun,'workflow'|'steps'|'notionReceipt'|'notionArticleSource'|'skills'>,binding:WorkflowBinding,requiredTools:string[]){
+ const proof=recoverVerifiedNotionWorkflow(job,binding);if(!proof?.complete)return undefined;
+ const {workflow}=proof,featureName=(id:string)=>{const index=job.skills.findIndex(skill=>skill.id===id);return index<0?undefined:`feature_${index}`;};
+ const declared=(name:string)=>workflow.spec.steps.some((step,index)=>step.required!==false&&workflow.steps[index].state==='completed'&&(step.kind==='tool'&&step.tool===name||step.kind==='notion'&&name==='save_notion_draft'||step.kind==='feature'&&featureName(step.featureId!)===name));
+ if(requiredTools.some(name=>!declared(name)))return undefined;
+ const worker=verifiedNotionCheckpoint(job.notionReceipt,proof.steps,binding.operationId);if(!worker)return undefined;
+ const projected:TaskStep[]=[worker];
+ for(const [index,step] of workflow.spec.steps.entries()){
+  const tool=step.required!==false&&(step.kind==='tool'?step.tool:step.kind==='feature'?featureName(step.featureId!):undefined);if(!tool)continue;
+  const matching=proof.steps.filter(cp=>cp.key===workflow.steps[index].checkpointKey);if(matching.length!==1)return undefined;
+  projected.push({...matching[0],tool});
+ }
+ return verifiedNotionCompletion(job.notionReceipt,projected,requiredTools,{scopeId:binding.operationId});
 }
 const unsafePrompt=/(?:\b(?:Bearer|authorization|api[_ -]?key|password|secret|credentials?|HTTP|JSON|ECONN\w*|ETIMEDOUT|stack|traceback)\b|[{}<>])/i;
 const safeQuestion=(value:unknown,fallback:string)=>typeof value==='string'&&value.trim()&&value.length<=2000&&!unsafePrompt.test(value)?value.trim():fallback;

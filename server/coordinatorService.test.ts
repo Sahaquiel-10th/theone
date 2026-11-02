@@ -1177,7 +1177,7 @@ test('HTTP local admission is explicit and a duplicate pending operation is neve
 /** Full service-path fixture: only provider/model transports are synthetic.
  * Admission, workflow persistence, Notion ownership/readback, billing and HTML
  * file generation are the same implementations used by the live routes. */
-async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean;twoSaves?:boolean;adaptiveDefault?:boolean;legacyChain?:boolean;clarification?:'failed'|'needs_input';supplementText?:string}={}){
+async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean;twoSaves?:boolean;adaptiveDefault?:boolean;legacyChain?:boolean;clarification?:'failed'|'needs_input';supplementText?:string;noHtml?:boolean}={}){
  const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-workflow-service-'));
  const parentId='1'.repeat(32),pageId='2'.repeat(32),clock={now:Date.now()+1000};
  const source='ONE-WORKFLOW-SOURCE-青色42：插入入口后先找资料，再写完整方案。';
@@ -1202,7 +1202,7 @@ async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean
    {id:'revise',title:'修订完整方案',kind:'model' as const,executorId:'general',instruction:'把青色42改成橙色17，交付修订后的完整正文。',inputs:['source','draft','save']},
    {id:'save_again',title:'更新同一页面',kind:'notion' as const,instruction:'更新原页面并回读，不新建另一篇。',inputs:['revise']},
   ]:[]),
-  {id:'html',title:'制作真实交互网页',kind:'feature',featureId:'oneHtml',instruction:'把前置完整方案制成交互网页，保留正文中的标记和已保存入口。',inputs:options.twoSaves?['revise','save_again']:['draft','save']},
+  ...(options.noHtml?[]:[{id:'html',title:'制作真实交互网页',kind:'feature' as const,featureId:'oneHtml',instruction:'把前置完整方案制成交互网页，保留正文中的标记和已保存入口。',inputs:options.twoSaves?['revise','save_again']:['draft','save']}]),
  ];
  const mcp={
   readDocument:async(ws:string,id:string)=>{assert.equal(ws,a.workspaceId);assert.ok([parentId,pageId].includes(id));if(id===parentId)return {text:'合成保存目录'};counts.read++;if(!readbackReady)throw Error('synthetic eventual readback');return {text:body};},
@@ -1222,7 +1222,7 @@ async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean
   if(model.id==='router'){
    if(messages.at(-1)?.role==='tool'&&!messages.at(-1)?.content?.includes('"status":"loaded"'))return answer('开始处理。');
    if(!tools.some(tool=>tool.function.name==='delegate_task'))return {...answer(''),toolCalls:[{id:'load-dispatch',type:'function',function:{name:'load_tools',arguments:JSON.stringify({names:['delegate_task']})}}]};
-   return {...answer(''),toolCalls:[{id:'workflow-plan',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'青色42完整方案',instruction:'从得到大脑查找 ONE-WORKFLOW-SOURCE 青色42 入口方案，依据实际资料写完整方案并保存到 Notion，随后做成交互网页。',executorId:'general',featureIds:['oneHtml'],...(options.adaptiveDefault||options.legacyChain?{}:{workflow:{version:1,steps}})})}}]};
+   return {...answer(''),toolCalls:[{id:'workflow-plan',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'青色42完整方案',instruction:'从得到大脑查找 ONE-WORKFLOW-SOURCE 青色42 入口方案，依据实际资料写完整方案并保存到 Notion。'+(options.noHtml?'':'随后做成交互网页。'),executorId:'general',featureIds:options.noHtml?[]:['oneHtml'],...(options.adaptiveDefault||options.legacyChain?{}:{workflow:{version:1,steps}})})}}]};
   }
   if(model.id==='special'){
    counts.feature++;if(messages.at(-1)?.role==='tool')return answer('本功能要求的网页文件已经做好。');assert.equal(counts.feature,1,'the feature must not regenerate an existing HTML file');assert.deepEqual(tools.map(tool=>tool.function.name),['oneHtml']);
@@ -4195,6 +4195,27 @@ test('manual readback repairs only the saved stage, corrects an old false whole-
  await service.verifyNotionResult(a,accepted.taskId!,key);
  const db=await f.store.read(),run=db.chatOperations!.find(op=>op.conversationId===accepted.taskId&&op.workRun)!.workRun!,detail=await service.task(a,accepted.taskId!);
  assert.equal(run.workflow!.steps[1].state,'completed');assert.deepEqual(run.workflow!.steps[2],followup);assert.equal(run.workflow!.phase,'failed');assert.equal(run.state,'failed');assert.equal(run.resultOutcome,'partial');assert.equal(detail.jobs[0].workflow!.steps[1].state,'completed');assert.match(detail.conversation.messages.at(-1)!.content,/还有其他步骤未完成/);assert.equal(writes,1);assert.equal(models,2);assert.equal(detail.conversation.workPaused,true);
+});
+
+for(const mutation of ['none','usable-partial','missing-required','late-read','borrowed-worker-read','borrowed-workflow-read','duplicate-required-read','unknown-effect'] as const)test(`manual ordinary workflow readback respects prefixed knowledge, contract and unknown-effect evidence without replay; mutation=${mutation}`,async()=>{
+ const f=await workflowServiceFixture({adaptiveDefault:true,noHtml:true});
+ try{
+  const accepted=await f.service.dispatch(a,{...input('operation_manual_ordinary_missing_link','从得到大脑查找青色42入口资料，写完整方案保存到Notion。'),sourceIds:['wf-source'],outputDestination:'notion'},key);assert.ok(accepted.taskId);await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,accepted.taskId!)).jobs[0].state==='completed');await f.service.state(a);
+  await f.store.mutate(db=>{const op=db.chatOperations!.find(op=>op.conversationId===accepted.taskId&&op.workRun)!,run=op.workRun!,workflow=run.workflow!,index=workflow.spec.steps.findIndex(step=>step.kind==='notion'),save=workflow.spec.steps[index],cp=run.steps!.find(cp=>cp.tool===`workflow:${workflow.id}:${save.id}`)!;
+   op.status='completed';run.state='failed';run.resultOutcome='failed';run.failureCode='notion_verification_exhausted';run.contract!.requiredTools=['knowledge_search',...(mutation==='missing-required'?['web_search']:[])];workflow.steps[index]={id:save.id,state:'failed',summary:'旧保存核对失败。'};workflow.phase='failed';cp.state='failed';cp.output={outcome:'failed',workflow:(cp.output as any).workflow,expectedBodyDigest:run.notionReceipt!.expectedDigest};const task=db.conversations.find(task=>task.id===accepted.taskId)!;task.workPaused=true;task.workPauseReason='partial';
+   if(['late-read','borrowed-worker-read','borrowed-workflow-read'].includes(mutation))run.steps!.find(cp=>cp.tool.endsWith(':source_1'))!.updatedAt='2099-01-01T00:00:00Z';
+   if(mutation==='borrowed-worker-read'||mutation==='borrowed-workflow-read')run.steps!.unshift({key:'unrelated-read',namespace:mutation==='borrowed-worker-read'?'worker':'workflow:other',scopeId:op.id,tool:'knowledge_search',effect:'read',state:'completed',label:'其他旧检索',updatedAt:'2026-01-01T00:00:00Z',output:{status:'used',chunks:[{content:'其他资料'}]}});
+   if(mutation==='duplicate-required-read')run.steps!.push({...structuredClone(run.steps!.find(cp=>cp.tool.endsWith(':source_1'))!),state:'failed',output:{status:'failed'}});
+   if(mutation==='usable-partial')(run.steps!.find(cp=>cp.tool.endsWith(':source_1'))!.output as any).result.status='partial';
+   if(mutation==='unknown-effect')run.steps!.push({key:'unknown-extra',namespace:'worker',scopeId:op.id,tool:'oneDocument',label:'未知保存',effect:'artifact',state:'started',updatedAt:op.updatedAt});
+  });
+  const workCounts=()=>{const {read,...work}=f.counts;return work;};
+  const before=await f.store.read(),old=before.chatOperations!.find(op=>op.conversationId===accepted.taskId&&op.workRun)!,receipt=structuredClone(old.workRun!.notionReceipt),counts=workCounts(),reads=f.counts.read,modelCalls=f.calls.length,persistedNames=old.workRun!.steps!.map(cp=>cp.tool);
+  await f.service.reconcileNotionResults(a,key);assert.equal((await f.service.task(a,accepted.taskId!)).jobs[0].state,'failed','polling never repairs a historical terminal attempt');await assert.rejects(()=>f.service.verifyNotionResult(b,accepted.taskId!,key));
+  await f.service.verifyNotionResult(a,accepted.taskId!,key);const db=await f.store.read(),run=db.chatOperations!.find(op=>op.id===old.id)!.workRun!,detail=await f.service.task(a,accepted.taskId!);
+  const complete=['none','usable-partial'].includes(mutation);assert.equal(run.state,complete?'completed':'failed');assert.equal(run.resultOutcome,complete?'completed':'failed');assert.equal(run.workflow!.phase,mutation==='duplicate-required-read'?'failed':'completed');assert.equal(detail.conversation.workPaused,!complete);assert.deepEqual(run.steps!.map(cp=>cp.tool),persistedNames);assert.deepEqual(JSON.parse(JSON.stringify(run.notionReceipt)),JSON.parse(JSON.stringify(receipt)));assert.equal(f.body(),f.firstBody);assert.deepEqual(workCounts(),counts);assert.equal(f.counts.read,reads+1);assert.equal(f.calls.length,modelCalls);if(!mutation.startsWith('borrowed-'))assert.ok(run.steps!.every(cp=>cp.tool!=='knowledge_search'),'completion mapping is never persisted as fake tool evidence');
+  const messages=detail.conversation.messages.length;await f.service.verifyNotionResult(a,accepted.taskId!,key);assert.equal((await f.service.task(a,accepted.taskId!)).conversation.messages.length,messages);assert.deepEqual(workCounts(),counts);assert.equal(f.calls.length,modelCalls);
+ }finally{f.cleanup();}
 });
 
 for(const batch of [false,true])test(`a missing scoped Notion destination is corrected before any wrong task is queued; batch=${batch}`,async()=>{
