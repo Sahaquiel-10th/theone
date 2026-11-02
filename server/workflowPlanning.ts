@@ -1,5 +1,5 @@
 import {TaskWorkflowError,validateWorkflowSpec,workflowSpecSchema,type WorkflowSpec,type WorkflowStep,type WorkflowTool} from './taskWorkflow.js';
-import {coordinatorPositiveRequest} from './executionIntent.js';
+import {coordinatorPositiveRequest,freshDocumentReadRequested} from './executionIntent.js';
 import {explicitlyNeedsPublicSearch} from './publicSearch.js';
 
 /** A validated public-query step is explicit routing intent even when the
@@ -7,6 +7,11 @@ import {explicitlyNeedsPublicSearch} from './publicSearch.js';
  * admission and execution still check the user's grant, denials and tools. */
 export function workflowNeedsPublicSearch(instruction:string,workflow?:WorkflowSpec){
  return explicitlyNeedsPublicSearch(instruction)||workflow?.steps.some(step=>step.kind==='tool'&&step.tool==='web_search')===true;
+}
+/** The caller owns and authorizes the existing page; this intent check never
+ * binds a new page or grants access merely because some old page exists. */
+export function workflowReadsBoundNotion(text:string,pageId?:string){
+ return Boolean(pageId&&freshDocumentReadRequested(text)&&/只读|(?:不|不要)(?:修改|保存|写入)/.test(text));
 }
 
 /** A human may permit optional public research in a supplement. This is not
@@ -69,10 +74,13 @@ function sourceRequirements(input:ResolveTaskWorkflowInput){
 function preflight(input:ResolveTaskWorkflowInput,spec:WorkflowSpec){
  const selected=new Set(input.features.map(feature=>feature.id)),availableTools=new Set(input.tools),executors=new Set(input.executorIds),requiredSources=sourceRequirements(input);
  const ancestors=new Map<string,Set<string>>();
- for(const step of spec.steps){
+ for(const [index,step] of spec.steps.entries()){
   const prior=new Set<string>();for(const id of step.inputs){prior.add(id);for(const ancestor of ancestors.get(id)??[])prior.add(ancestor);}ancestors.set(step.id,prior);
   if(step.kind==='feature'&&!selected.has(step.featureId!))fail('feature','流程含未选择或未开放的功能，尚未执行。思考、构思案例和写正文使用 model 步骤，不需要另找功能；真实文件交付才选择已授权功能。');
-  if(step.kind==='tool'&&step.required!==false&&!availableTools.has(step.tool!))fail('tool','流程需要的必需读取工具本轮没有开放，尚未执行。可选公开检索不能当作必需功能；请调整计划或恢复真正必需的读取能力。');
+  if(step.kind==='tool'&&step.required!==false&&!availableTools.has(step.tool!)){
+   if(step.tool==='read_notion_document')fail('tool',`第${index+1}步 read_notion_document 本轮不可用：它只读取同一任务已绑定的现有页面，且本轮须明确只读。notion 步骤已经负责实际保存、完整回读和核对，只有真实验证回执才能完成。新稿的完整回读要求应保留在 notion 步骤中，再重新提交完整 workflow；不要添加读取新建页面的独立工具。若用户还要求独立再次读取，须保留这一要求并说明当前边界，不能省略后宣称完成。尚未创建任务。`);
+   fail('tool',`第${index+1}步 ${step.tool} 本轮没有可用的授权读取工具，尚未创建任务。请核对本轮真实开放的来源和工具后重新提交完整 workflow；用户要求的必需检索不能静默删除、改为可选或以旧知识代替。`);
+  }
   if(step.kind==='model'&&(step.executorId!==undefined&&!executors.has(step.executorId)||!executors.size))fail('executor','流程指定的执行模型尚未就位，尚未执行。请重新选择可用模型。');
   if(step.kind==='notion'){
    if(input.readOnlyNotion)fail('readonly','本轮只允许读取 Notion，流程不能保存或修改原文。请去掉写入步骤。');

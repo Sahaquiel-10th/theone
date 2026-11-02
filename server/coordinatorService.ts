@@ -90,7 +90,7 @@ import {datedDraftPrerequisite} from './datedDraftPrerequisite.js';
 import {taskContinuation,actionableTaskSupplement,substantiveTaskSupplement,supersedeQueuedSupplements,supplementKnowledgeRequest,taskStatusQuestion,plainTaskContinuation} from './taskContinuation.js';
 import {selectedNotionVerification} from './notionVerificationSelection.js';
 import {createWorkflowRun,workflowSpecSchema,validateWorkflowSpec,workflowProgress,type WorkflowSpec} from './taskWorkflow.js';
-import {resolveTaskWorkflow,WorkflowPlanningError,workflowWebSearchPermission,workflowSchemaForTools,workflowKnowledgeReadUnchanged,workflowNeedsPublicSearch} from './workflowPlanning.js';
+import {resolveTaskWorkflow,WorkflowPlanningError,workflowWebSearchPermission,workflowSchemaForTools,workflowKnowledgeReadUnchanged,workflowNeedsPublicSearch,workflowReadsBoundNotion} from './workflowPlanning.js';
 import {reuseCompletedWorkflowReads,workflowSourceBindingsMatch} from './workflowRecovery.js';
 import {executeWorkflowStages,recoverVerifiedNotionWorkflow,verifiedWorkflowNotionCompletion} from './workflowExecution.js';
 import {CoordinatorLocalError,localActionRequested,naturalLocalActionRequested,localReadinessCanStart,localReadinessFailure} from './coordinatorLocalPolicy.js';
@@ -848,6 +848,12 @@ export class CoordinatorService {
         main = current.conversations.find((c) => c.id === cid && own(c, s))!;
       const timeContext=current.chatOperations?.find(o=>own(o,s)&&o.operationId===input.operationId)?.runtimeContext??runtimeContext(current,s,undefined,clientTimeZone);
       const inspectedTasks=new Set<string>();
+      const inspectedNotionReadTasks=new Set<string>();
+      let refreshRoundWorkflowSchema:(()=>void)|undefined;
+      const rememberInspectedNotionRead=(taskId:string,pageId?:string)=>{
+        if(!inspectedTasks.has(taskId)||!workflowReadsBoundNotion(content,pageId)||inspectedNotionReadTasks.has(taskId))return;
+        inspectedNotionReadTasks.add(taskId);refreshRoundWorkflowSchema?.();
+      };
       let inspectedInlineArticle:{messageId:string;messageDigest:string}|undefined;
       let inspectedInlineArticleRead=false;
       const originalTaskCoverage=new Map<string,number>();
@@ -1030,7 +1036,7 @@ export class CoordinatorService {
         name: "delegate_task",
         description: input.localExecution
           ? `${config.values.toolDescriptions?.delegate_task ?? '保存明确的任务交接并分派。'} 本轮点击了本机执行：目标明确时按原字段分派；确有歧义或缺少关键要求时，只传 clarificationQuestion 问一句，不传任务字段，不创建任务、不开始执行。`
-          : `${config.values.toolDescriptions?.delegate_task??'保存明确的任务并分派给执行 AI。'} 一件任务也可以组合多个功能，必须在 featureIds 填本任务要实际使用的功能真实编号，不使用功能填 []。不能只把功能名字写进 instruction：名字不会自动给执行 AI 装上工具。`,
+          : `${config.values.toolDescriptions?.delegate_task??'保存明确的任务并分派给执行 AI。'} 单项使用 taskId/title/instruction/executorId/featureIds 字段，不接 tasks 数组或批量字段。一件任务也可以组合多个功能，必须在 featureIds 填本任务要实际使用的功能真实编号，不使用功能填 []。不能只把功能名字写进 instruction：名字不会自动给执行 AI 装上工具。`,
         run: async () => {},
         structured: {
           schema: {
@@ -1066,6 +1072,13 @@ export class CoordinatorService {
               capabilityIds?: string[];
               workflow?:WorkflowSpec;
             };
+            if(v&&typeof v==='object'&&!Array.isArray(v)){
+              if(Object.hasOwn(v,'tasks'))throw new OrchestrationInputError('delegate_task 只接收单项字段，不接 tasks 数组。批量结构请调用 delegate_tasks；单项请提供 taskId、title、instruction、executorId、featureIds，新任务 taskId 为 null。');
+              if(Object.hasOwn(v,'query'))throw new OrchestrationInputError('delegate_task 不是 query 查询工具。请按单项结构提供 taskId、title、instruction、executorId、featureIds；新任务 taskId 为 null，不使用功能填 []，多步流程放在 workflow。');
+              if(['outputKind','dependsOn','knowledge','requiredTools','direct'].some(key=>Object.hasOwn(v,key)))throw new OrchestrationInputError('这些是 delegate_tasks 的批量任务字段，不能放在 delegate_task 顶层。请使用 delegate_tasks 的 tasks 数组保留完整安排，或改成单项 taskId、title、instruction、executorId、featureIds、capabilityIds、workflow 结构。');
+              const missing=['taskId','title','instruction','executorId'].filter(key=>!Object.hasOwn(v,key));
+              if(missing.length)throw new OrchestrationInputError(`delegate_task 缺少必填字段：${missing.join('、')}。请补齐同一项任务的结构，新任务 taskId 为 null；不用功能填 featureIds: []，不是 query 或 tasks 包装。`);
+            }
             if (
               !v ||
               typeof v !== "object" ||
@@ -1139,6 +1152,7 @@ export class CoordinatorService {
         const first=c.messages.find(m=>m.role==='user');
         if(!adaptive||!first||first.content.length<=8000)inspectedTasks.add(c.id);
         else originalTaskCoverage.set(c.id,Math.max(originalTaskCoverage.get(c.id)??0,8000));
+        rememberInspectedNotionRead(c.id,c.notionDocument?.pageId);
         if(adaptive){return {id:c.id,title:c.title,referenceOnly:true,originalRequest:first?{id:first.id,content:first.content.slice(0,8000),truncated:first.content.length>8000,...(first.content.length>8000?{nextOffset:8000}:{})}:undefined,...readCoordinatorContext(c,{query:''}),executionReceipts:executionReceipts(d,s.workspaceId,s.userId,c.id),handoffs:(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===c.id&&o.workRun).slice(-2).map(o=>isOnboardingImageOperation(d,s,o.operationId)?'欢迎说明的已有结果；不要重新生图。':o.workRun!.instruction)};}
         return { id: c.id, title: c.title, messages: c.messages.slice(-20).map(m => ({ role: m.role, content: m.content.slice(-4000),artifacts:ownedArtifactResults(d,s,c.id,(m.attachments??[]).map(file=>file.id)) })), executionReceipts: executionReceipts(d, s.workspaceId, s.userId, c.id), handoffs: (d.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === c.id && o.workRun).slice(-5).map(o => isOnboardingImageOperation(d,s,o.operationId)?'根据用户设置准备专属欢迎礼物；内部作图要求不向用户复述。':o.workRun!.instruction) };
       };
@@ -1159,7 +1173,15 @@ export class CoordinatorService {
         if(!deferStart)await this.resume(s,verifyKey);return taskId;
       };
       let delegatedKnowledge=false;
-      const batchTool:OrchestrationTool={name:'delegate_tasks',description:'安排可单独跟进的交付任务，一件任务可以组合多个功能。featureIds 填本任务确定要用的功能，只有可选的不要填。图片使用 image_generation，写作使用 writing，分析使用 logic，本机文件使用 local_special。独立任务同时处理；dependsOn只填写前面任务的数组下标。',run:async()=>{},structured:{schema:structuredClone(dispatchPlanSchema),validate:validateDispatchPlan,run:async value=>{
+      const batchTool:OrchestrationTool={name:'delegate_tasks',description:'批量结构仅传 tasks 数组，每项含 taskId/title/instruction/executorId/outputKind/featureIds/dependsOn；一项也可用此数组。与 delegate_task 的单项字段结构不同。安排可单独跟进的交付任务，一件任务可以组合多个功能。featureIds 填本任务确定要用的功能，只有可选的不要填。图片使用 image_generation，写作使用 writing，分析使用 logic，本机文件使用 local_special。独立任务同时处理；dependsOn只填写前面任务的数组下标。',run:async()=>{},structured:{schema:structuredClone(dispatchPlanSchema),validate:value=>{
+        if(value&&typeof value==='object'&&!Array.isArray(value)&&!Object.hasOwn(value,'tasks'))throw new OrchestrationInputError('delegate_tasks 顶层只接收 tasks 数组，不能直接放单项字段。每项提供 taskId、title、instruction、executorId、outputKind、featureIds、dependsOn；若使用单项字段请调用 delegate_task。');
+        try{return validateDispatchPlan(value);}catch(error){
+          // This validator has only code-owned local format errors, never a
+          // provider/auth exception or an external operation to replay.
+          if(error instanceof CoordinatorError&&error.status===400)throw new OrchestrationInputError(error.message);
+          throw error;
+        }
+      },run:async value=>{
         if(adaptive&&(dispatched||imageTask))throw new OrchestrationInputError('本轮已有任务接到，不再创建另一批任务。已有结果和要求保持原样。');
         await verify();
         if((value as {tasks:PlannedTask[]}).tasks.some(t=>t.outputKind==='local_file'||t.executorId==='local_special'||t.capabilityIds?.some(id=>['builtin:codex_execution','builtin:local_agent'].includes(id))))await checkLocal(true);
@@ -1325,6 +1347,7 @@ export class CoordinatorService {
             }
           }
           if(args.taskId&&args.messageId){const first=c.messages.find(m=>m.role==='user'),covered=originalTaskCoverage.get(c.id)??0;if(first?.id===args.messageId&&(args.offset??0)<=covered){const end=Math.min(first.content.length,(args.offset??0)+8000);originalTaskCoverage.set(c.id,Math.max(covered,end));if(end===first.content.length)inspectedTasks.add(c.id);}}
+          rememberInspectedNotionRead(c.id,c.notionDocument?.pageId);
           await verify();return result;
         }}});
         referenceTools.push({name:'load_tools',description:'只加载本轮索引中已有工具的调用格式，不执行、不新增权限。一次选最多四个工具名；缺能力先 discover_capabilities。',effect:'read',run:async()=>{},structured:{schema:{type:'object',additionalProperties:false,properties:{names:{type:'array',minItems:1,maxItems:4,items:{type:'string',maxLength:80}}},required:['names']},validate:raw=>{
@@ -1334,18 +1357,22 @@ export class CoordinatorService {
       const allPending=pendingConversationTaskResults(current,s,{count:50,summaryChars:1200,totalChars:30000});
       const pendingResults=latestTaskResults(allPending).slice(0,6),selectedTasks=new Set(pendingResults.map(r=>r.taskId));
       capturedResults.push(...captureTaskResults(current,s,allPending.filter(r=>selectedTasks.has(r.taskId)).map(r=>r.id)));
-      const roundWorkflowSchema=workflowSchemaForTools([
-        ...(!mainKnowledge.declined&&authorizedSources.length?['knowledge_search']:[]),
-        ...(publicSearchAllowed&&this.deps.webSearch&&config.values.tools.includes('web_search')?['web_search']:[]),
-        ...(current.conversations.some(c=>own(c,s)&&!c.archived&&c.notionDocument?.pageId)?['read_notion_document']:[]),
-      ]);
-      (tool.structured!.schema as {properties:Record<string,unknown>}).properties.workflow=roundWorkflowSchema;
-      (batchTool.structured!.schema as typeof dispatchPlanSchema).properties.tasks.items.properties.workflow=roundWorkflowSchema;
+      refreshRoundWorkflowSchema=()=>{
+        const schema=workflowSchemaForTools([
+          ...(!mainKnowledge.declined&&authorizedSources.length?['knowledge_search']:[]),
+          ...(publicSearchAllowed&&this.deps.webSearch&&config.values.tools.includes('web_search')?['web_search']:[]),
+          ...(workflowReadsBoundNotion(content,bound?.notionDocument?.pageId)||inspectedNotionReadTasks.size?['read_notion_document']:[]),
+        ]);
+        (tool.structured!.schema as {properties:Record<string,unknown>}).properties.workflow=schema;
+        (localTool.structured!.schema as {properties:Record<string,unknown>}).properties.workflow=schema;
+        (batchTool.structured!.schema as typeof dispatchPlanSchema).properties.tasks.items.properties.workflow=schema;
+      };
+      refreshRoundWorkflowSchema();
       const messages: ModelToolMessage[] = [
         {
           role: "system",
           cacheScope:'stable',
-          content: `${current.settings.safetyRules}\n${config.model.systemPrompt}\n${referenceBoundary}\n${friendlyConversationGuidance}\n${coordinatorGuidance}\n${taskExecutionGuidance}\n${knowledgeGuidance}\n${webGuidance}${adaptive?'\n'+adaptiveGuidance+'\n多步云端任务在 delegate_task(s) 的 workflow 中编排同一任务内的步骤，而不是为每步另建任务：tool 实际检索 → model 创作 → notion 保存 → feature 制作文件。构思、论证、选取和补充案例直接用 model，不找专用功能。允许联网不等于要求联网；未查证的示例明确标为假设，不冒充真实公开案例。只有用户要求实际检索核实时才将公开搜索设为 required；可选检索明确 required:false，其不可用不应挡住必需正文。tool 只能选本轮 workflow schema 列出的真实可用工具；缺少必需检索不得虚构已查证事实。每步 inputs 引用确实需要的前置成果；默认不读旧历史，需要时才填 historyCount。tool.instruction 必须是可直接检索的具体问题/公开关键词；model/feature.instruction 只写本阶段要求，完整目标写在任务 instruction，勿重复所有提示词。先发现所需能力、确认可用并补齐依赖，再分派；不把保存/等待/简单判定交给额外模型。只对结果真需判断、创作的阶段安排 model；功能自带生成模型时无需再套一个相同 model 阶段。featureId 只能用已选真实编号，executorId 只选已开放执行器。独立图片、本机和新手引导保留既有固定流程。':''}`,
+          content: `${current.settings.safetyRules}\n${config.model.systemPrompt}\n${referenceBoundary}\n${friendlyConversationGuidance}\n${coordinatorGuidance}\n${taskExecutionGuidance}\n${knowledgeGuidance}\n${webGuidance}${adaptive?'\n'+adaptiveGuidance+'\n多步云端任务在 delegate_task(s) 的 workflow 中编排同一任务内的步骤，而不是为每步另建任务：tool 实际检索 → model 创作 → notion 保存并完整回读核对 → feature 制作文件。notion 是保存与完整标题、正文回读核对的同一阶段，只有真实验证回执才能完成，不需要额外 tool 步骤读取刚创建的页面。read_notion_document 仅用于本轮已绑定或 read_task 核对过的同一现有文章，且本轮明确只读；不能用于新建页或其他页面。构思、论证、选取和补充案例直接用 model，不找专用功能。允许联网不等于要求联网；未查证的示例明确标为假设，不冒充真实公开案例。只有用户要求实际检索核实时才将公开搜索设为 required；可选检索明确 required:false，其不可用不应挡住必需正文。tool 只能选本轮 workflow schema 列出的真实可用工具；缺少必需检索不得虚构已查证事实。每步 inputs 引用确实需要的前置成果；默认不读旧历史，需要时才填 historyCount。tool.instruction 必须是可直接检索的具体问题/公开关键词；model/feature.instruction 只写本阶段要求，完整目标写在任务 instruction，勿重复所有提示词。先发现所需能力、确认可用并补齐依赖，再分派；不把保存/等待/简单判定交给额外模型。只对结果真需判断、创作的阶段安排 model；功能自带生成模型时无需再套一个相同 model 阶段。featureId 只能用已选真实编号，executorId 只选已开放执行器。独立图片、本机和新手引导保留既有固定流程。':''}`,
         },
         {role:'system',content:`本轮授权参考：${JSON.stringify({tasks:adaptive?compactTaskCandidates(candidates,input.text,input.boundTaskId):candidates,selectedFeatures:features,boundTaskId:input.boundTaskId??null,attachments:main.messages.find(m=>m.id===mid)?.attachments?.map(f=>({name:f.originalName,kind:f.kind})),attachmentsRequireDelegation:attachments.length>0})}`},
         ...(referenceNotionCapability?[{role:'system' as const,content:`Notion 保存能力（服务端本轮核对，不是搜索工具的权限说明）：${JSON.stringify(notionSaving)}。ready 表示当前用户已授权写入且选好保存位置，通过 delegate_task(s) 使用；不要因主对话只提供搜索工具就声称 Notion 只有只读权限。这只是已验证能力状态，不是执行授权；纯权限询问、只读、讨论和否定不分派写入，残留保存选项不能改变本轮原话。${requestedNotionDelivery?(notionSaveExistingRequested(content,documentDestination)?'若写作已完成且本轮只保存：先定位同一任务和现有全文，只保存与核对，不重写文章，不重新查询原素材；主对话原文不唯一时用 read_context 的 messageId 精确定位，不能把最近普通答复冒充文章。':'本轮确实要求写入：新写或续改按本轮目标生成或修改正文，再保存并核对；不要把新写要求误当成仅保存旧稿。'):''}`}]:[]),
@@ -2068,7 +2095,7 @@ export class CoordinatorService {
     const supplementSource=supplement?supplementKnowledgeRequest(input.text):'';
     const namedSupplement=supplement?knowledgePolicy(db,s,[input.text,supplementSource].filter(Boolean).join('\n')):undefined;
     if (input.outputDestination !== undefined && !['chat', 'notion'].includes(input.outputDestination)) throw new CoordinatorError('保存位置无效', 400);
-    const boundRead=Boolean(existing?.notionDocument?.pageId&&freshDocumentReadRequested(input.text)&&/只读|(?:不|不要)(?:修改|保存|写入)/.test(input.text));
+    const boundRead=workflowReadsBoundNotion(input.text,existing?.notionDocument?.pageId);
     // The composer defaults to chat; it is not a denial of a destination named
     // in the current request. Require BOTH the human request and this task's
     // scoped instruction, never a model-only destination or another task's goal.

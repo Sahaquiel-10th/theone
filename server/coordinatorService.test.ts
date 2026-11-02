@@ -1356,7 +1356,7 @@ for(const name of ['delegate_task','delegate_tasks'] as const)test(`${name} hide
   if(messages.at(-1)?.role==='tool'&&!messages.at(-1)!.content!.includes('rejected'))return answer('开始整理。');
   plans++;const schema=tools.find(tool=>tool.function.name===name)!.function.parameters as any,workflow=name==='delegate_task'?schema.properties.workflow:schema.properties.tasks.items.properties.workflow;
   assert.equal(workflow.properties.steps.items.properties.kind.enum.includes('tool'),false);assert.equal(workflow.properties.steps.items.properties.tool,undefined);
-  if(plans===2){assert.match(messages.at(-1)!.content!,/必需读取工具本轮没有开放/);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,0);assert.equal(worker,0);}
+  if(plans===2){assert.match(messages.at(-1)!.content!,/第\d+步 web_search 本轮没有可用的授权读取工具/);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,0);assert.equal(worker,0);}
   const task={taskId:null,title:'构思案例',instruction:'自行构思一个明确标为假设的碰一碰产品案例，不查外部资料。',executorId:'general',featureIds:[],workflow:{version:1,steps:[plans===1?{id:'cases',title:'构思案例',kind:'tool',tool:'web_search',instruction:'碰一碰产品案例',inputs:[]}:{id:'cases',title:'构思案例',kind:'model',instruction:'构思案例并明确标为假设，不冒充查证事实。',inputs:[]}]}};
   return {...answer(''),toolCalls:[{id:`plan-${plans}`,type:'function',function:{name,arguments:JSON.stringify(name==='delegate_task'?task:{tasks:[{...task,outputKind:'text',dependsOn:[]}]})}}]};
  }});
@@ -4425,4 +4425,60 @@ test('freshly retrieved private paragraphs cannot become the next workflow publi
  await service.resume(a,key);await waitFor(async()=>{const run=(await service.task(a,result.taskId!)).jobs[0];return run.state==='failed'||run.state==='completed';});
  assert.equal(recalls,1);assert.equal(searches,0,'fresh private text must be registered before the following public invocation');assert.equal(drafts,0);
  const run=(await f.store.read()).chatOperations!.find(o=>o.workRun&&o.conversationId===result.taskId)!.workRun!;assert.equal(run.workflow!.phase,'needs_input');assert.equal(run.workflow!.steps[1].state,'needs_input');
+});
+
+test('a new Notion workflow repairs its extra page read and a later single/batch shape error within the existing two-correction budget',async()=>{
+ const f=fixture(),parentId='a'.repeat(32),pageId='f'.repeat(32);let routes=0,recalls=0,searches=0,drafts=0,writes=0,body='',title='';
+ await f.store.mutate(db=>{
+  db.knowledgeConnections.push({id:'f-source',workspaceId:'wa',provider:'getnote',status:'connected',clientId:'fixture'} as any,{id:'f-notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'fixture',notionWriting:{grantId:'f-grant',userId:'a',authorizedAt:'now',parentId}} as any);
+  const values={...defaultTaskValues('task_worker'),modelId:'worker',name:'写作',description:'合成写作',featureIds:[],routingRole:'writing' as const},published={...values,version:1,publishedAt:'now',publishedBy:'a'};
+  db.settings.executorProfiles=[{id:'writing',revision:1,enabled:true,draft:values,published,history:[published]}];
+  db.conversations.push({id:'unrelated-owned-notion',...a,title:'另一件已有文章',modelId:'worker',executorProfileId:'writing',archived:false,messages:[],createdAt:'now',updatedAt:'now',notionDocument:{connectionId:'f-notion',grantId:'f-grant',parentId,pageId:'b'.repeat(32),url:'https://www.notion.so/'+'b'.repeat(32)}});
+ });
+ const task={taskId:null,title:'F合成专栏',instruction:'从得到大脑检索合成方法论，实际联网检索公开设计案例，写完整专栏保存到Notion并完整回读核对。',executorId:'writing',outputKind:'text',featureIds:[],capabilityIds:['executor:writing','knowledge:f-source','builtin:public_web_search'],dependsOn:[],workflow:{version:1,steps:[
+  {id:'note',title:'读取合成资料',kind:'tool',tool:'knowledge_search',instruction:'合成方法论',inputs:[]},
+  {id:'web',title:'核对公开案例',kind:'tool',tool:'web_search',instruction:'公开设计案例',inputs:[]},
+  {id:'draft',title:'撰写完整专栏',kind:'model',instruction:'依据前置来源写全文。',inputs:['note','web']},
+  {id:'save',title:'保存并完整回读核对',kind:'notion',instruction:'保存完整正文并完整回读标题与正文核对，不以说明代替真实结果。',inputs:['draft']},
+  {id:'again',title:'再次读取刚创建页',kind:'tool',tool:'read_notion_document',instruction:'完整读取刚创建的同一页。',inputs:['save']},
+ ]}},original=structuredClone(task);
+ const documents=new NotionDocuments(f.store,{readDocument:async()=>({title,text:body||'保存目录'}),callDocumentTool:async(_w:string,_c:string,_g:string,_u:string,_n:string,args:any,before?:()=>Promise<void>)=>{await before?.();writes++;title=args.pages[0].properties.title;body=args.pages[0].content;return {pages:[{id:pageId}]};}} as unknown as NotionMcpService);
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{recalls++;return {status:'used',chunks:[{id:'f-note',provider:'getnote',title:'合成资料',content:'合成方法论私有参考。'}],failures:[],coverage:[{connectionId:'f-source',provider:'getnote',status:'used',attempts:1}]};}},{contextMode:'adaptive',notionDocuments:documents,webSearch:async()=>{searches++;return [{title:'合成公开来源',url:'https://example.test/f',content:'公开设计案例。'}];},modelCall:async(model,messages,tools)=>{
+  if(model.id!=='router'){drafts++;return answer(JSON.stringify({outcome:'completed',content:'F完整合成专栏正文。',summary:'本步骤已成稿。'}));}
+  routes++;const batch=tools.find(tool=>tool.function.name==='delegate_tasks')!,schema=(batch.function.parameters as any).properties.tasks.items.properties.workflow.properties.steps.items.properties;
+  assert.equal(schema.tool.enum.includes('read_notion_document'),false,'another owned page cannot advertise a new-page read');assert.match(schema.kind.description,/notion.*完整回读/);
+  const call=(name:string,value:unknown)=>({id:`f-${routes}-${name}`,type:'function' as const,function:{name,arguments:JSON.stringify(value)}});
+  if(routes===1)return {...answer(''),toolCalls:[call('delegate_tasks',{tasks:[task]})]};
+  assert.equal((await f.store.read()).chatOperations!.filter(operation=>operation.workRun).length,0);assert.equal(writes,0);
+  if(routes===2){assert.match(messages.at(-1)!.content!,/第5步 read_notion_document/);assert.match(messages.at(-1)!.content!,/notion.*完整回读/);return {...answer(''),toolCalls:[call('knowledge_search',{query:'合成方法论'}),call('load_tools',{names:['delegate_task','delegate_tasks']}),call('discover_capabilities',{query:'写作'})]};}
+  if(routes===3)return {...answer(''),toolCalls:[call('delegate_task',{tasks:[task]})]};
+  assert.equal(routes,4);assert.match(messages.at(-1)!.content!,/delegate_task.*单项字段.*tasks/);
+  return {...answer(''),toolCalls:[call('delegate_tasks',{tasks:[{...task,workflow:{version:1,steps:task.workflow.steps.slice(0,4)}}]})]};
+ }});
+ const result=await service.dispatch(a,input('operation_f_bounded_readback_repair','从得到大脑查找合成方法论，再上网查公开设计案例，写完整专栏保存到Notion，并完整回读核对标题与正文。'),key);
+ assert.equal(result.taskIds.length,1);assert.equal(routes,4);assert.deepEqual(task,original,'only the model supplies the corrected four-step plan');
+ await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='completed');
+ const jobs=(await f.store.read()).chatOperations!.filter(operation=>operation.workRun);assert.equal(jobs.length,1);assert.equal(jobs[0].workRun!.workflow!.spec.steps.length,4);assert.match(jobs[0].workRun!.workflow!.spec.steps[3].instruction,/完整回读标题与正文/);assert.equal(jobs[0].workRun!.notionReceipt!.state,'verified');assert.equal(recalls,2);assert.equal(searches,1);assert.equal(drafts,1);assert.equal(writes,1);await assert.rejects(()=>service.task(b,result.taskId!));
+});
+
+for(const mode of ['bound','inspected','foreign','no-page'] as const)test(`Notion read schema requires this round's own existing read-only target; mode=${mode}`,async()=>{
+ const f=fixture(),parentId='a'.repeat(32),pageId='b'.repeat(32),taskId='existing-notion-read';let routes=0,reads=0,writes=0;
+ await f.store.mutate(db=>{
+  db.knowledgeConnections.push({id:'scoped-read-notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'fixture',notionWriting:{grantId:'scoped-read-grant',userId:'a',authorizedAt:'now',parentId}} as any);
+  db.conversations.push({id:taskId,...(mode==='foreign'?b:a),title:'已有合成稿',modelId:'worker',executorProfileId:'general',archived:false,createdAt:'now',updatedAt:'now',messages:[{id:'read-origin',role:'user',content:'原任务的合成文章要求。',createdAt:'now'}],...(mode==='no-page'?{}:{notionDocument:{connectionId:'scoped-read-notion',grantId:'scoped-read-grant',parentId,pageId,url:`https://www.notion.so/${pageId}`}})});
+ });
+ const documents=new NotionDocuments(f.store,{readDocument:async()=>{reads++;return {title:'已有合成稿',text:'实际完整原文与唯一结尾。'};},callDocumentTool:async()=>{writes++;assert.fail('a read-only workflow cannot write');}} as unknown as NotionMcpService);
+ const canRead=mode==='bound'||mode==='inspected';
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('the article read cannot retrieve a knowledge source')},{contextMode:'adaptive',notionDocuments:documents,modelCall:async(model,messages,tools)=>{
+  if(model.id!=='router')return answer(JSON.stringify({outcome:'completed',content:'已依据本轮实际全文核对。',summary:'实际回读已完成。'}));
+  routes++;const delegate=tools.find(tool=>tool.function.name==='delegate_task')!,schema=(delegate.function.parameters as any).properties.workflow.properties.steps.items.properties;
+  assert.equal(schema.tool?.enum.includes('read_notion_document')??false,routes===1?mode==='bound':canRead);
+  if(routes===1)return {...answer(''),toolCalls:[{id:'scope-read-task',type:'function',function:{name:'read_task',arguments:JSON.stringify({taskId})}}]};
+  if(!canRead)return answer('尚未定位到当前账号可只读核对的文章，这轮没有执行。');
+  return {...answer(''),toolCalls:[{id:'scope-read-delegate',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId,title:'只读核对已有合成稿',instruction:'只读核对本任务当前文章的完整标题与正文，不修改、不保存。',executorId:'general',featureIds:[],workflow:{version:1,steps:[{id:'read',title:'实际读取同页全文',kind:'tool',tool:'read_notion_document',instruction:'读取本任务已绑定文章的完整标题与正文。',inputs:[]},{id:'check',title:'核对结果',kind:'model',instruction:'仅据本次完整原文核对。',inputs:['read']}]}})}}]};
+ }});
+ const result=await service.dispatch(a,{...input(`operation_scoped_notion_read_${mode}`,'请只读核对刚才合成稿当前完整标题与正文，不修改、不保存。'),...(mode==='bound'?{boundTaskId:taskId}:{})},key);
+ assert.equal(writes,0);
+ if(!canRead){assert.equal(result.taskIds.length,0);assert.equal(reads,0);assert.equal((await f.store.read()).chatOperations!.filter(operation=>operation.workRun).length,0);return;}
+ assert.equal(result.taskId,taskId);await service.resume(a,key);await waitFor(async()=>(await service.task(a,taskId)).jobs[0].state==='completed');assert.equal(reads,1);assert.equal(writes,0);await assert.rejects(()=>service.task(b,taskId));
 });

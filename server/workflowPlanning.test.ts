@@ -104,6 +104,14 @@ test('preflight rejects unselected features, unavailable tools and unavailable e
  assert.throws(()=>resolveTaskWorkflow(base({explicit:plan(step('model')),executorIds:[]})),reason('executor'));
  assert.throws(()=>resolveTaskWorkflow(base({features:[],requiredFeatureIds:['missing']})),reason('required_feature'));
 });
+test('a new Notion plan keeps full readback in its save stage and repairs an unavailable separate page read explicitly',()=>{
+ const explicit=plan(step('note',{kind:'tool',tool:'knowledge_search'}),step('web',{kind:'tool',tool:'web_search',instruction:'公开设计资料'}),step('draft',{inputs:['note','web']}),step('save',{kind:'notion',inputs:['draft'],instruction:'保存完整正文并完整回读核对。'}),step('verify',{kind:'tool',tool:'read_notion_document',inputs:['save'],instruction:'完整读取新建的同一页。'}));
+ const request=base({requiredKnowledge:true,notion:true,tools:['knowledge_search','web_search','save_notion_draft'],requiredTools:['knowledge_search','web_search'],explicit}),before=structuredClone(explicit);
+ assert.throws(()=>resolveTaskWorkflow(request),error=>error instanceof WorkflowPlanningError&&error.reason==='tool'&&/第5步.*read_notion_document/.test(error.message)&&/notion.*完整回读/.test(error.message)&&/重新提交/.test(error.message)&&/独立.*读取/.test(error.message));
+ assert.deepEqual(explicit,before,'admission must not remove a user-required proof step by itself');
+ assert.equal(resolveTaskWorkflow({...request,explicit:plan(...explicit.steps.slice(0,4))})!.steps[3].instruction,'保存完整正文并完整回读核对。');
+ for(const tool of ['knowledge_search','web_search'] as const)assert.throws(()=>resolveTaskWorkflow(base({explicit:plan(step('read',{kind:'tool',tool}))})),error=>error instanceof WorkflowPlanningError&&new RegExp(`第1步.*${tool}`).test(error.message));
+});
 test('required features and required saves cannot be omitted or made optional by a planner',()=>{
  const settings={features:[{id:'feature',name:'必需功能'}],requiredFeatureIds:['feature']};
  assert.throws(()=>resolveTaskWorkflow(base({...settings,explicit:plan(step('model'))})),reason('required_feature'));

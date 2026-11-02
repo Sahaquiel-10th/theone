@@ -7,11 +7,11 @@
 | 实际状态 | 系统行为 | 用户应看到的反馈 |
 | --- | --- | --- |
 | 来源或普通思考已完成 | 复用成果，按顺序进入下一步 | 已完成的步骤与正在处理的步骤 |
-| 可选案例检索不可用 | 记录未检索到，不冒充查证；可继续已授权的模型构思 | 哪项可选资料没取到，正文仍可继续 |
+| 可选案例检索不可用 | 分开记录未执行、调用失败与无命中，不冒充查证；可继续已授权的模型构思 | 哪项可选资料没取到，正文仍可继续 |
 | 缺必要素材，用户已补充 | 保留原目标、来源、保存位置；安全条件满足就接着做 | 已收到什么，正在从哪一步继续，不再要求进任务点开始 |
 | 保存已发出、暂未确认 | 对同次保存做有界只读核对，不重新生成或重发写入 | 正文是否写好、已找到页面与否、系统仍会自动核对 |
 | 格式等价 | 依据版本化比较规则确认，保留代码/正文/链接语义 | 保存完成、页面入口，自动汇报主对话 |
-| 正文或标题确实不同 | 停止写入，保留两边，不自动覆盖 | 明确差异类别，以及安全的原文查看/再次只读核对入口 |
+| 正文或标题核对仍不一致 | 暂停后续处理，保留两边，不自动覆盖；先区分表示差异与真实改动 | 明确差异类别，以及安全的原文查看/再次只读核对入口 |
 | 授权失效或位置改变 | 停止旧轮，指向确切设置项 | 哪里需要重新连接，原文与保存位置是否保留 |
 | 用户停止、未知写入或预算限制 | 不因补充内容而擅自重放或越过限制 | 真实停止原因及对应下一步 |
 
@@ -66,7 +66,7 @@
 - `ca0dd0d5c7bb3414ac46bd22aa4e9e23c603fe21` 的 CI run `41383042836` 四个 job 全部 success，自动部署于北京时间11:37:35完成；未取消或并行发布。另备份上传的同SHA源码包未执行部署。root确认 current 精确指向该 SHA、service active；11:38:05公开 health/首页200，JS与前次同摘要/字节。
 - 原专栏与 QA-A 分别从页面执行一次只读核对，均自动收尾为4/4、job completed/outcome completed、receipt verified、comparison v7 matched，主对话自动出现已完成回执。各仅1条原worker/save检查点；未追加生成/写入。原稿 Notion 最后编辑时间仍 `00:13:05.319Z`，QA-A仍 `03:01:13.060Z`。root独立精确原稿/回读v7比较也通过，原专栏摘要 `046c700dda0f9ea68420ab3ff9a823b70131068f1aa6f77b9180a286b408c94f`。界面证据 `output/WRITING-ORIGINAL-READONLY-ACCEPTED-20261102.jpg`。
 - 新 `ONE-QA-WRITING-1102-B` 一次提交后未创建任务、未保存文章。精确main trace `ctx_d2763171453d3fc7ad40` / request `coord_4b208f98019b10d70b9e`：三次delegate被拒，其中一份合规参数引用了目录真实知识卡和公开搜索卡，却被resolver当作不可分派功能拒绝；另两次参数形状未修正。仅主对话知识读取发生，公开搜索未调用；提示“公开搜索没查成”归因错误，不能说是供应商失败。
-- 横查又发现“云端写作，不操作本机”会把否定句里的本机词当目标，导致有连接时错误确认、无连接时拦住云任务。改为同一正向语句证明动作和本机目标，ready/offline/unavailable三态均0本机检查、0本机执行、1正常云任务；真实本机和禁止删除局部限制仍保留。
+- 横查又发现“云端写作，不操作本机”会把否定句里的本机词当目标，导致有连接时错误确认、无连接时拦住云任务。改为同一正向语句证明动作和本机目标，离线合成回归中ready/offline/unavailable三态均0本机检查、0本机执行、1正常云任务；真实本机和禁止删除局部限制仍保留。
 - 知识卡仅解析为server-only精确source引用并绑定必需knowledge_search；公开搜索卡仅绑定必需web_search，不伪装feature/executor。当前scope、显式来源、禁止读取、撤权和worker工具权限均重新核对；固定图片/本机入口暂不支持混读卡时入队前拒绝，不静默丢步骤。显式single本机入口按真实mode送同一resolver，不能借已归一的文字executor绕过。
 - 主对话联网检查统一使用口述/开关合成的有效授权。已成功交接的同轮child必须有web必需contract或workflow步骤证明，才移除重复的main查询义务；不把任意child当已查询。未调用与真实调用失败区分，分派参数卡住不再误报搜索失败；原参数修正提示补上本就合法的workflow字段。
 - 一轮全量2263/2262通过/0失败/1既有skip，早于最后固定分支与确认回执收口，不作为最终新源码验收。后续检查及新任务完整结果另记。
@@ -74,7 +74,7 @@
 
 ## 9b0a2e6 发布与 C 验收
 
-- `9b0a2e62f22dced3e8b16f72eb13ed1f01c00983` 三平台 CI verify 全通过（run `41388043578`），自动发布在收源阶段连续数分钟仍为 tar。上传 SHA-256 `0a4d93b14ab6903ae19cf9e4cdbe3546b9c35d88930fe8725266e51d5e0be5ed` 的同SHA gzip包后取消该次自动deploy，确认workflow cancelled、同SHA进程/cwd均空、current仍旧版，才单次执行原部署脚本（PID1159240）。远端实际2266项测试/2265通过/0失败/1skip、构建和只读schema gate均过，exit0、current精确9b0、service active；原脚本没有修改DB或schema。日志 `/home/ubuntu/one-deploy-9b0a2e6-20261102.log`。
+- `9b0a2e62f22dced3e8b16f72eb13ed1f01c00983` 三平台 CI verify 全通过（run `41388043578`），自动发布在收源阶段连续数分钟仍为 tar。上传 SHA-256 `0a4d93b14ab6903ae19cf9e4cdbe3546b9c35d88930fe8725266e51d5e0be5ed` 的同SHA gzip包后取消该次自动deploy，确认workflow cancelled、同SHA进程/cwd均空、current仍旧版，才单次执行原部署脚本（PID1159240）。远端实际2266项测试/2265通过/0失败/1skip、构建和只读schema gate均过，exit0、current精确9b0、service active；没有人工修改业务数据或执行schema迁移，不将只读schema gate泛化为运行期所有DB记录均不变。日志 `/home/ubuntu/one-deploy-9b0a2e6-20261102.log`。
 - 12:42:32北京时间公开health/首页200，JS `index-bclQcIUN.js` 为1463144字节，SHA-256 `8b8dda19b52a9cbdfab49fd7bd7389930859894d2815c46d85ed90c345ff22b7` 与本地相同。上线证据 `output/WRITING-RELEASE-9b0a2e6-20261102.jpg`。
 - 全新 `ONE-QA-WRITING-1102-C` 仅从普通主对话发送一次，输出选“对话中”，口述查得到大脑、查OXO官方、写稿、保存Notion，另明确不要操作本机。main正常回复云任务接收；notes/web/draft/save全4/4完成，初次保存回读即verified v7、无延后核对或手动继续，任务动态自动收起、主对话自动出现已完成和原页链接。任务 `cnv_204f8fa3b5c088557e84` / request `work_885c0b6c4506ed629559` / Notion `40ca5015999181adb0c5e886b4f53a9c`；同次只有一条worker/save检查点。原稿/回读canonical digest均 `6f7a4d77376678e4bb9b80a4dd0527599fb696388df10de4ac9cbccd697818a8`。独立fetch确认正文、表格、强调、代码及来源链接存在。UI证据 `output/WRITING-C-AUTOMATIC-MAIN-ACCEPTED-20261102.jpg`、`output/WRITING-C-FOUR-STEPS-ACCEPTED-20261102.jpg`。
 - C 的执行保存回执闭环通过，但成稿多附了写作阶段的“汇报/后续尚未保存”说明；已保存后读起来会矛盾，不能以机械链路通过冒充正文体验完全通过。保留C原样，不静默清洗或重写。补强 model 输出约定：content仅成果正文，summary/outcome说明当前步骤，全流程状态由平台说明。整单完成且最后实际阶段是严格已验证Notion，主汇报使用该阶段已验证摘要；后续HTML失败/未知保存不据此报全完成。
@@ -103,5 +103,20 @@
 - 精确本人任务 `cnv_d74443e0105f3ca8dc09`，同次op `cop_fe5284de88287acb37a41a0f44f85b0ceac5889493c0a0707e384872f79d45a4` / request `work_5111a479039382be3191`。唯一已完成model检查点原稿457字符，与同次receipt raw/normalized/v7canonical三摘要全部匹配，实际含标题回读571字符。私有证据仅在服务器0600文件 `/home/ubuntu/000-one-qa-e-comparison-20261102.json`，不进git或fixture。
 - 首处差异是裸URL末尾字面中文 `）` 与显式同label链接目标中的UTF-8 `%EF%BC%89`；完整标题、正文、表格、粗体和行内代码均经整篇对照。未trim标点、改链接或改写文章。新v8只对原样ASCII authority之后的非ASCII URL字符比较UTF-8编码表示；不decode、不整体URL归一，不改ASCII大小写、保留字符、已有百分号编码或标签、标题、代码。
 - root将冻结比较器单文件放到服务器独立0700 probe目录，文件SHA-256 `a90e6b366a67aa39f7392e19fcc6d97ea11175a9b9fb7e89e7f23b68f899c518` 与本地一致；只读比较这份精确原稿/实际回读，v8整篇摘要两边均 `aea2419cc9f5802f34c9849f7ebf7954a630bcec86e41bd7aefd44ce42936357`。这证明同篇比较通过，尚不等于线上旧任务状态已收尾。
-- 旧v2–v7含义不变（1296组合旧摘要对照零变化）；新写入用8。旧回执只允许人工只读核对时，依据同owner/op/checkpoint与唯一原稿raw/normalized/旧canonical三摘要重证，不覆盖旧version或hash，不自动重放写入。两人交叉独审及198项相关测试通过，最终全量和发布待后记。
+- 旧v2–v7含义不变（1296组合旧摘要对照零变化）；新写入用8。旧回执采用v8重证仅限人工触发只读核对，依据同owner/op/checkpoint与唯一原稿raw/normalized/旧canonical三摘要，不覆盖旧version或hash；原有协议内自动只读核对仍保留，不自动重放写入。两人交叉独审及198项相关测试通过，最终全量和发布待后记。
 - 最终冻结源全量2280项：2279通过、0失败、1既有skip，TypeScript/生产构建/diff-check通过；日志 `/tmp/one-writing-final-v8-full-20261102.log`、`/tmp/one-writing-final-v8-build-20261102.log`。原业务专栏、QA-A保留的精确私有对照在v8下也完整通过，没有把私文纳入fixture。
+
+## 7a76df9 自动发布
+
+- `7a76df977e9012ed2108c272d6c0576dac326652` 的 CI run `41438853305` 四个job全部success；应用CI完整2280项、2279通过、0失败、1skip。部署日志 `2026-11-02T12:03:26.0480130Z` 明确输出同SHA的 `ONE deployed`，deploy于北京时间20:03:29成功结束；没有取消或手动部署。
+- 20:03:56公开health `{ok:true}`、首页和JS均200；同一前端bundle的1463144字节及SHA-256与本地一致。纯服务端SHA以部署日志为证，不以未改变的前端包单独推断。
+- 原标准源码接收耗时期间，本地准备了同SHA gzip备份（SHA-256 `e6ca18731fad52425338a479bff69864eeb97e4ec6622bbbee0d843da6d33061`）；文件选择器未提交，自动部署已完成，备份未用于部署。Mac锁屏一度阻止最后UI验收，用户已解锁；下节记录之后的实际结果。
+
+## E 只读收尾与 F 新派发发现
+
+- E点击一次“再核对一次（不重写）”，直接收尾3/3，主对话自动出现已保存并回读核对的完成汇报。服务器只读确认同op completed、receipt verified、保留canonicalVersion7与原始摘要、comparisonVersion8 matched；同次仍1条worker/save、1条workflow model检查点。Notion独立fetch的最后编辑时间前后均为 `2026-11-02T10:59:50.865Z`。界面证据 `output/WRITING-E-READONLY-ACCEPTED-20261102.jpg`。没有重写E。
+- 全新F只提交一次，实际trace request `coord_99e162e5fb0b45bfa24a`，未创建child、未写Notion。第一次有效batch计划包含知识/公开检索、写作、Notion保存及额外的 `read_notion_document`（欲读本次新建页面）；最后读取步骤在本轮没有绑定，入队拒绝却只给泛化“必需读取工具未开放”及可选公开检索提示。随后主对话调用knowledge_search/load_tools/discover，再发单任务的格式未通过，受既有纠参边界停止。F验收不通过，不能以E只读修复成功代替新任务首次执行成功。
+- 根因：main schema只要本人任一旧任务存在Notion页就列出read工具；enqueue却要求所选同一任务已有绑定且本轮明确只读。新任务因此看到不可实际执行的工具。Notion保存阶段本身已经含完整正文回读核对，不需要以未绑定读取步骤来补证明。后续修目录/实际绑定一致与具体纠参提示，不自动删验证步骤、不授予未绑定新页读取权限，不重发F。
+- 冻结实现：main与enqueue共用同页只读意图判定；初始仅当前bound页开放，未绑定旧任务须本轮own `read_task`/原目标全文读取完成后动态刷新single/batch schema。外空间、外用户、无页、原目标尚未读全不获得工具。写入、新页不因此获得read工具。Notion阶段描述明确原子保存+完整回读证明；入队失败给固定步骤序号/真实tool名与保留原目标后重提计划的指引，不再错说可选公开检索。
+- 单/批混用、query包装、缺必填字段给受控格式提示，batch仅透出本地格式校验的code-owned 400错误，provider/auth错误不透。原两次纠参预算与硬步数上限不变；精确F失败序列的离线脚本经提示纠正后只创建1child、保存1次且verified，不自动删验证步、不改变原错误计划对象。
+- 最终冻结源全量2286项：2285通过、0失败、1既有skip；TypeScript/生产构建/diff-check均绿，日志 `/tmp/one-writing-final-contract-full-20261102.log`、`/tmp/one-writing-final-contract-build-20261102.log`。两人交叉独审、85项相关与另74项独立测试通过。以上为离线与源码证据，待新版本上线后的独立G真实验收。
