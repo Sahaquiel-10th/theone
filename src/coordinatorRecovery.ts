@@ -102,6 +102,7 @@ export function coordinatorRecoveryCopy(reason:string|CoordinatorFailure,interru
   if(interrupted)return failureCopy.stopped;
   const failure=typeof reason==='string'?legacyFailure(reason):parseCoordinatorFailure(reason)??legacyFailure('');
   const copy=failureCopy[failure.code];
+  if(failure.code==='tool_invalid'&&failure.stage==='planning'&&failure.outcome==='not_started')return '喵，执行步骤没安排对，这次还没开工。原要求已经保留；稍后重试这条消息，若仍卡住，请联系管理员核对。';
   if(['model_unavailable','model_timeout','model_rate_limited','model_auth','model_request_rejected','model_empty','model_invalid_response'].includes(failure.code)&&failure.outcome!=='not_started'){
     const cause=copy.split('。')[0]+'。';
     return cause+(failure.outcome==='partial'

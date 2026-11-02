@@ -934,6 +934,20 @@ export class CoordinatorService {
         localStartFailure=alreadyAccepted?{code:'transport_unknown',stage:'receipt',outcome:'unknown'}:{...failure,outcome:dispatchedTasks.some(id=>id!==taskId)?'partial':'not_started'};
         return alreadyAccepted?localStartFailure:failure;
       };
+      let delegatedPublicSearch=false;
+      const recordDelegatedPublicSearch=async(taskId:string,operationId:string)=>{
+        const child=(await this.store.read()).chatOperations?.find(operation=>own(operation,s)&&operation.operationId===operationId&&operation.conversationId===taskId&&operation.workRun?.parentOperationId===input.operationId)?.workRun;
+        if(child&&child.executionMode!=='local'&&!child.localExecution&&child.kind!=='image'&&(child.contract?.requiredTools?.includes('web_search')||child.workflow?.spec.steps.some(step=>step.kind==='tool'&&step.tool==='web_search'&&step.required!==false)))delegatedPublicSearch=true;
+      };
+      const selectedTaskSources=(task:PlannedTask,fresh:Database)=>{
+        const selected=task.knowledgeSourceIds;
+        if(!selected?.length)return sources;
+        const allowed=mainKnowledge.required?mainKnowledge.sourceIds:authorizedSources.map(source=>source.id);
+        const selectedPolicy=knowledgePolicy(fresh,s,task.instruction,selected,task.knowledge);
+        if(mainKnowledge.declined||task.knowledge==='none'||selected.some(id=>!allowed.includes(id))||selectedPolicy.declined||selectedPolicy.missing.length||selectedPolicy.required&&selected.some(id=>!selectedPolicy.sourceIds.includes(id)))
+          throw new OrchestrationInputError('所选知识来源与用户本轮授权或指定的资料范围冲突。这项任务尚未接到，请保留用户的来源限制，重新选择对应的授权知识卡片。');
+        return selected;
+      };
       const runDelegate = async (value: unknown, localForThisCall: boolean) => {
         if (answerOnly) throw new CoordinatorError('本条消息只允许回答，不能分派或执行任务', 409);
         if(adaptive&&(dispatched||imageTask))throw new OrchestrationInputError('本轮已有任务接到，不能重新分派。需要多项交付时应在首次用 delegate_tasks 一起安排；已有任务继续处理。');
@@ -956,7 +970,8 @@ export class CoordinatorService {
         if(localForThisCall)await checkLocal(true);
         if(existingTaskOnly&&(!raw.taskId||!inspectedTasks.has(raw.taskId)||input.boundTaskId&&raw.taskId!==input.boundTaskId))throw new OrchestrationInputError('本轮只能继续同一件已有任务。请先 read_task 核对它，再使用指定的原 taskId；不能新建或换成其他任务。');
         if(adaptive&&raw.taskId&&!inspectedTasks.has(raw.taskId))throw new OrchestrationInputError('继续已有任务前，请先用 read_task 读取同一 taskId，核对原目标、限制和已有结果；本轮尚未分派。');
-        const v=resolveDispatchCapabilities({...raw,outputKind:'text',dependsOn:[],featureIds:raw.featureIds??[]},routingCapabilities(fresh,s,{localAvailable:localToolAuthorized&&localReadinessCanStart(localReadiness),imageStorageAvailable:Boolean(this.deps.artifactDirectory),webSearchAvailable:publicSearchAllowed&&!!this.deps.webSearch&&config.values.tools.includes('web_search')}));
+        const v=resolveDispatchCapabilities({...raw,outputKind:localForThisCall?'local_file':'text',dependsOn:[],featureIds:raw.featureIds??[]},routingCapabilities(fresh,s,{localAvailable:localToolAuthorized&&localReadinessCanStart(localReadiness),imageStorageAvailable:Boolean(this.deps.artifactDirectory),webSearchAvailable:publicSearchAllowed&&!!this.deps.webSearch&&config.values.tools.includes('web_search')}));
+        const selectedSources=selectedTaskSources(v,fresh);
         if(v.outputKind==='local_file'&&!localForThisCall)throw new CoordinatorLocalError('local_tool_invalid',409);
         // Capability resolution can introduce local_special after validation
         // normalized the original model selection. It is an execution mode,
@@ -978,11 +993,14 @@ export class CoordinatorService {
         const childOperation = `${input.operationId}_work${dispatchedTasks.length ? '_' + dispatchedTasks.length : ''}`;
         dispatched = await this.enqueue(s, { operationId: childOperation, text: content, instruction: v.instruction,
           title: v.title, taskId: v.taskId ?? undefined, executorId, modelId: input.modelId,
-          features:selectedFeatures,requiredFeatureIds:v.featureIds??[], sources, budget: workerBudget, webSearch: webPermission,
+          features:selectedFeatures,requiredFeatureIds:v.featureIds??[], sources:selectedSources,knowledge:v.knowledgeSourceIds?.length?'all':v.knowledge,requiredTools:v.requiredTools,budget: workerBudget, webSearch: webPermission,
           confirmedExternal: Boolean(v.featureIds?.length)||input.confirmedExternal === true, featureApprovals: input.featureApprovals,
           originConversationId: cid, originMessageId: mid, attachmentIds: attachments,
           localExecution: localForThisCall, localExecutionBinding:localForThisCall&&localDevice?{...localDevice,targetName:localReadiness?.folder.targetName}:undefined,outputDestination: documentDestination, parentOperationId: input.operationId,workflow:localForThisCall?undefined:v.workflow,notionArticleRead:v.taskId?undefined:inspectedInlineArticleRead,notionArticleMessageId:v.taskId?undefined:inspectedInlineArticle?.messageId,notionArticleMessageDigest:v.taskId?undefined:inspectedInlineArticle?.messageDigest }, verifyKey);
+        await recordDelegatedPublicSearch(dispatched,childOperation);
         dispatchedTasks.push(dispatched); childOperations.push(childOperation);
+        const childKnowledge=knowledgePolicy(fresh,s,v.instruction,selectedSources,v.knowledgeSourceIds?.length?'all':v.knowledge);
+        if(!localForThisCall&&childKnowledge.required&&!childKnowledge.missing.length&&!mainKnowledge.missing.length&&mainKnowledge.sourceIds.every(id=>childKnowledge.sourceIds.includes(id)))delegatedKnowledge=true;
         let local;
         if (localForThisCall) {
           try{
@@ -1055,7 +1073,7 @@ export class CoordinatorService {
                 "executorId,instruction,taskId,title" ||
               (v.taskId !== null && typeof v.taskId !== "string")
             )
-              throw new OrchestrationInputError('delegate_task 必须包含 taskId、title、instruction、executorId；新任务 taskId 为 null。只可额外包含 featureIds、capabilityIds，保存位置由本轮设置传入，不要另加字段。');
+              throw new OrchestrationInputError('delegate_task 必须包含 taskId、title、instruction、executorId；新任务 taskId 为 null。只可额外包含 featureIds、capabilityIds、workflow，featureIds 不使用时填 []。保存位置由本轮设置传入，不要另加字段；多步云端流程放在 workflow 中。');
             if(typeof v.title!=='string'||!v.title.trim()||v.title.length>80||typeof v.instruction!=='string'||!v.instruction.trim()||v.instruction.length>4000)
               throw new OrchestrationInputError('title 必须是 1–80 字的非空字符串，instruction 必须是 1–4000 字的非空字符串。');
             // Preserve old four-field callers, but advertise the complete
@@ -1172,6 +1190,7 @@ export class CoordinatorService {
         let imageMinimum=0;
         // Validate the whole plan before accepting the first child.
         for(const t of plan.tasks){
+          selectedTaskSources(t,fresh);
           if(t.outputKind==='text'&&notionWriteRequested(content)&&notionWriteRequested(t.instruction)){
             if(!this.deps.notionDocuments)throw new CoordinatorError('Notion 写入尚未连接',428);
             this.deps.notionDocuments.assertTarget(fresh,s,writingTarget(fresh,s));
@@ -1200,8 +1219,10 @@ export class CoordinatorService {
           const isLocal=t.outputKind==='local_file';
           if(isLocal)localRequested=true;
           const executorId=t.executorId==='direct'?'general':t.executorId==='local_special'||t.executorId==='image_generation'?resolveRoutingExecutorId(current,'logic'):t.executorId;
-          const taskId=await this.enqueue(s,{operationId,parentOperationId:input.operationId,text:content,instruction:t.instruction,title:t.title,taskId:t.taskId??undefined,executorId,features:t.featureIds.length?t.featureIds:features,requiredFeatureIds:t.featureIds,sources,budget:workerBudget,webSearch:webPermission,confirmedExternal:true,featureApprovals:input.featureApprovals,originConversationId:cid,originMessageId:mid,attachmentIds:attachments,localExecution:isLocal,localExecutionBinding:isLocal&&localDevice?{...localDevice,targetName:localReadiness?.folder.targetName}:undefined,outputDestination:documentDestination,dependsOnOperationIds:dependencies,expectedOutput:t.outputKind,knowledge:t.knowledge,requiredTools:t.requiredTools,directVisual:t.direct,workflow:isLocal?undefined:t.workflow,notionArticleRead:t.taskId?undefined:inspectedInlineArticleRead,notionArticleMessageId:t.taskId?undefined:inspectedInlineArticle?.messageId,notionArticleMessageDigest:t.taskId?undefined:inspectedInlineArticle?.messageDigest},verifyKey);
-          const childKnowledge=knowledgePolicy(current,s,t.instruction,sources,t.knowledge);
+          const selectedSources=selectedTaskSources(t,fresh),selectedKnowledge=t.knowledgeSourceIds?.length?'all':t.knowledge;
+          const taskId=await this.enqueue(s,{operationId,parentOperationId:input.operationId,text:content,instruction:t.instruction,title:t.title,taskId:t.taskId??undefined,executorId,features:t.featureIds.length?t.featureIds:features,requiredFeatureIds:t.featureIds,sources:selectedSources,budget:workerBudget,webSearch:webPermission,confirmedExternal:true,featureApprovals:input.featureApprovals,originConversationId:cid,originMessageId:mid,attachmentIds:attachments,localExecution:isLocal,localExecutionBinding:isLocal&&localDevice?{...localDevice,targetName:localReadiness?.folder.targetName}:undefined,outputDestination:documentDestination,dependsOnOperationIds:dependencies,expectedOutput:t.outputKind,knowledge:selectedKnowledge,requiredTools:t.requiredTools,directVisual:t.direct,workflow:isLocal?undefined:t.workflow,notionArticleRead:t.taskId?undefined:inspectedInlineArticleRead,notionArticleMessageId:t.taskId?undefined:inspectedInlineArticle?.messageId,notionArticleMessageDigest:t.taskId?undefined:inspectedInlineArticle?.messageDigest},verifyKey);
+          await recordDelegatedPublicSearch(taskId,operationId);
+          const childKnowledge=knowledgePolicy(current,s,t.instruction,selectedSources,selectedKnowledge);
           if(!isLocal&&childKnowledge.required&&!childKnowledge.missing.length&&!mainKnowledge.missing.length&&mainKnowledge.sourceIds.every(id=>childKnowledge.sourceIds.includes(id)))delegatedKnowledge=true;
           dispatched=taskId;dispatchedTasks.push(taskId);childOperations.push(operationId);childIds.push(operationId);
           await this.store.mutate(d=>{const o=d.chatOperations!.find(o=>own(o,s)&&o.operationId===input.operationId)!;o.dispatchedTaskId??=taskId;o.dispatchedTaskIds=[...new Set(dispatchedTasks)];});
@@ -1354,7 +1375,7 @@ export class CoordinatorService {
       sections = inputTrace(compiledMessages);
       const result = await runTaskOrchestrator({
         entryPoint: "workspace",
-        requiredTools:()=>[...(mainKnowledge.required&&!delegatedKnowledge?['knowledge_search']:[]),...(input.webSearch&&publicSearchAllowed&&config.values.tools.includes('web_search')&&this.deps.webSearch&&explicitlyNeedsPublicSearch(input.text)&&(!/天气|附近|周边/.test(input.text)||timeContext.city)?['web_search']:[])],
+        requiredTools:()=>[...(mainKnowledge.required&&!delegatedKnowledge?['knowledge_search']:[]),...(!delegatedPublicSearch&&webPermission&&publicSearchAllowed&&config.values.tools.includes('web_search')&&this.deps.webSearch&&explicitlyNeedsPublicSearch(input.text)&&(!/天气|附近|周边/.test(input.text)||timeContext.city)?['web_search']:[])],
         messages:compiledMessages,
         tools:allTools,
         ...(adaptive?{activeTools:()=>allTools.filter(t=>loadedTools.has(t.name)),planningSteps:2,noProgressTools:['read_context','load_tools'],completeAfterTools:()=>{
@@ -1363,7 +1384,7 @@ export class CoordinatorService {
         }}:{}),
         maxSteps: config.values.maxSteps,
         maxCorrections:2,
-        actionRequired:reply=>requestedNotionDelivery&&notionSaving.status==='ready'&&!localClarification&&!dispatched&&!imageTask&&/(?:只(?:有|能).{0,12}(?:搜索|读取|只读)|没有.{0,14}(?:写入|创建|保存).{0,8}权限|(?:需要|请先|重新|开启|开通).{0,18}(?:授权|写入权限))/.test(reply)?'服务端已核对本账号 Notion 保存为 ready，并非只有搜索或读取权限。不要要求重复授权或手动复制。通过 delegate_task(s) 交接本轮要求：新稿先生成再保存，现成稿只保存原文、不重写；继续已有任务先 read_task 定位。只有确实缺少正文或对象不明确时才问用户。':adaptive&&input.webSearch&&publicSearchAllowed&&explicitlyNeedsPublicSearch(input.text)&&!publicSearchAttempted&&allTools.some(t=>t.name==='web_search')&&!coordinatorNeedsInput(reply)?'用户要求查最新公开事实，但尚未实际搜索。不要猜天气或声称联网查过；信息足够时现在调用 web_search，缺少城市等必要信息则只问一个问题。':!answerOnly&&!localClarification&&!dispatched&&!imageTask&&(dispatchCommitment(reply)||adaptive&&requiresCoordinatorDelivery(input.text,input.boundTaskId)&&!coordinatorNeedsInput(reply))?(adaptive?'用户明确要求实际交付或继续原任务，但这一轮还没有成功分派或真实产物。主对话里写正文、说已做好、承诺会做都不算完成。资料足够时调用本轮分派工具；继续原任务先 read_task。缺少工具格式先 load_tools。确实缺少关键资料或能力不可用时只说明卡点和下一步，不得伪造已开工或已交付。':'你承诺了行动，但这一轮还没有成功分派的回执。用户要求和补充已经足够时，现在调用分派工具开工，不要再只说“我会做”。用户允许虚构或自由发挥，不等于还必须提供照片。确实缺少必要信息就只问一个关键问题；能力不可用则说清尚未开始及一个下一步，不得假装已安排。'):undefined,
+        actionRequired:reply=>requestedNotionDelivery&&notionSaving.status==='ready'&&!localClarification&&!dispatched&&!imageTask&&/(?:只(?:有|能).{0,12}(?:搜索|读取|只读)|没有.{0,14}(?:写入|创建|保存).{0,8}权限|(?:需要|请先|重新|开启|开通).{0,18}(?:授权|写入权限))/.test(reply)?'服务端已核对本账号 Notion 保存为 ready，并非只有搜索或读取权限。不要要求重复授权或手动复制。通过 delegate_task(s) 交接本轮要求：新稿先生成再保存，现成稿只保存原文、不重写；继续已有任务先 read_task 定位。只有确实缺少正文或对象不明确时才问用户。':adaptive&&!delegatedPublicSearch&&webPermission&&publicSearchAllowed&&explicitlyNeedsPublicSearch(input.text)&&!publicSearchAttempted&&allTools.some(t=>t.name==='web_search')&&!coordinatorNeedsInput(reply)?'用户要求查最新公开事实，但尚未实际搜索。不要猜天气或声称联网查过；信息足够时现在调用 web_search，缺少城市等必要信息则只问一个问题。':!answerOnly&&!localClarification&&!dispatched&&!imageTask&&(dispatchCommitment(reply)||adaptive&&requiresCoordinatorDelivery(input.text,input.boundTaskId)&&!coordinatorNeedsInput(reply))?(adaptive?'用户明确要求实际交付或继续原任务，但这一轮还没有成功分派或真实产物。主对话里写正文、说已做好、承诺会做都不算完成。资料足够时调用本轮分派工具；继续原任务先 read_task。缺少工具格式先 load_tools。确实缺少关键资料或能力不可用时只说明卡点和下一步，不得伪造已开工或已交付。':'你承诺了行动，但这一轮还没有成功分派的回执。用户要求和补充已经足够时，现在调用分派工具开工，不要再只说“我会做”。用户允许虚构或自由发挥，不等于还必须提供照片。确实缺少必要信息就只问一个关键问题；能力不可用则说清尚未开始及一个下一步，不得假装已安排。'):undefined,
         beforeStep: verify,
         onTrace: (t) => (trace = t),
         onStage: (stage,name)=>{
@@ -1380,7 +1401,7 @@ export class CoordinatorService {
           // a request for another task card. Keep query construction with the
           // model and the handler's privacy checks; ambiguous historical places
           // and missing cities still get the ordinary context/clarification path.
-          const requiredPublicTool = !publicSearchAttempted&&input.webSearch&&publicSearchAllowed&&explicitlyNeedsPublicSearch(input.text)
+          const requiredPublicTool = !publicSearchAttempted&&!delegatedPublicSearch&&webPermission&&publicSearchAllowed&&explicitlyNeedsPublicSearch(input.text)
             &&!mainKnowledge.required&&!needsTaskContext(input.text)&&(!/天气|附近|周边/.test(input.text)||Boolean(timeContext.city))
             &&tools.some(t=>t.function.name==='web_search')?'web_search':undefined;
           failureStage='billing';
@@ -1438,6 +1459,15 @@ export class CoordinatorService {
         failureStage='model';
         throw new CoordinatorError("调度回答未完整返回");
       }
+      // A rejected handoff is the known blocking cause. Missing reads after
+      // that rejection are not evidence that their providers were called or
+      // failed. Preserve the not-started boundary and report our planning
+      // failure rather than sending the user to retry a fictitious search.
+      if(!answerOnly&&!localRequested&&!localClarification&&!dispatched&&!imageTask&&!publicSearchAttempted&&result.requiredMissing.includes('web_search')&&trace.some(step=>['delegate_task','delegate_tasks'].includes(step.tool)&&step.status==='rejected')){
+        responseFailure={code:'tool_invalid',stage:'planning',outcome:'not_started'};
+        failureStage='planning';
+        throw new OrchestrationInputError('分派参数修正后仍未通过，尚未创建任务');
+      }
       if (
         localRequested && !localAccepted && !localClarification
       ) throw new CoordinatorLocalError('dispatch_not_started',409);
@@ -1455,10 +1485,10 @@ export class CoordinatorService {
       // An unavailable source must not erase independent server-known facts.
       // Never preserve unverified model prose through this degraded path.
       const missingReadReply=result.requiredMissing.includes('web_search')
-        ?'公开搜索这次没查成，还不能替你核实最新消息。可以稍后说“继续查刚才的问题”；我会重新核对，不会把旧知识当成最新结果。'
+        ?dispatched||imageTask?'任务已经接到；公开资料这一步还没核实，暂时不能算整件事完成。请打开这件任务查看后续结果，先别重发整条要求。':publicSearchAttempted?'公开搜索这次没查成，还不能替你核实最新消息。可以稍后说“继续查刚才的问题”；我会重新核对，不会把旧知识当成最新结果。':'这次还没实际开始公开搜索，所需资料尚未核实。原问题已保留；稍后重试这条消息，我会重新查询并说明结果。'
         :mainKnowledge.missing.length?`${mainKnowledge.missing.join('、')}还没有连好，这次没能查询。先连接好它，再继续查这件事就行。`
         :'这次还没查全你要找的资料，不能当作没有找到。原问题还在，可以接着查。';
-      if(adaptive&&input.webSearch&&publicSearchAllowed&&explicitlyNeedsPublicSearch(input.text)&&!publicSearchAttempted&&!coordinatorNeedsInput(result.content))result.content='这次还没有实际查到最新公开资料，不能把天气或新闻当成刚核实的结果。原问题已保留，可以继续查询；若仍查不到，我会说明卡在哪里。';
+      if(adaptive&&!delegatedPublicSearch&&webPermission&&publicSearchAllowed&&explicitlyNeedsPublicSearch(input.text)&&!publicSearchAttempted&&!coordinatorNeedsInput(result.content))result.content='这次还没有实际查到最新公开资料，不能把天气或新闻当成刚核实的结果。原问题已保留，可以继续查询；若仍查不到，我会说明卡在哪里。';
       failureStage='saving';
       return await this.finishDispatch(
         s,

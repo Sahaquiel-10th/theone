@@ -60,3 +60,14 @@
 - 精确 QA-A 原稿825字符、回读含标题930字符，raw/legacy-normalized/v6canonical 三项与同次 receipt 全绑定。唯一未识别表示是原稿行内代码反引号与 Notion `<code>ONE-QA</code>`；v6 的全代码字节保护安全但过严。新增 v7，仅比较完全相同的单行纯文本 inline-code typed 节点，保留旧 v6 摘要含义。两篇精确对照 v7 均须通过，QA-A 摘要 `290595ea797332acf6ade4aa211b43c5a31e7f7c99d7975d671884b7029cfc09`。原稿不纳入 git。
 - 后续收尾仅允许同次唯一写入、精确 raw/normalized/原 canonical 摘要、完整 owner/revision/marker 及必需步骤和时序证明；不靠正文相似或页面标题推断成功。独审补查重复 checkpoint 与无关旧读取证明，不能让这些记录把真实失败洗成完成。
 - 后续源码最终冻结后全量2251项，2250通过、0失败、1既有skip，日志 `/tmp/one-writing-v7-final-full-20261102.log`。独审确认重复stage/worker及借旧读取时序的两处证明漏洞已拒绝；v7精确case通过，代码变化/属性/多行/实体等反例仍拒绝。发布及新完整任务最终结果待后记。
+
+## v7 上线、原任务收尾与第二次真实验收
+
+- `ca0dd0d5c7bb3414ac46bd22aa4e9e23c603fe21` 的 CI run `41383042836` 四个 job 全部 success，自动部署于北京时间11:37:35完成；未取消或并行发布。另备份上传的同SHA源码包未执行部署。root确认 current 精确指向该 SHA、service active；11:38:05公开 health/首页200，JS与前次同摘要/字节。
+- 原专栏与 QA-A 分别从页面执行一次只读核对，均自动收尾为4/4、job completed/outcome completed、receipt verified、comparison v7 matched，主对话自动出现已完成回执。各仅1条原worker/save检查点；未追加生成/写入。原稿 Notion 最后编辑时间仍 `00:13:05.319Z`，QA-A仍 `03:01:13.060Z`。root独立精确原稿/回读v7比较也通过，原专栏摘要 `046c700dda0f9ea68420ab3ff9a823b70131068f1aa6f77b9180a286b408c94f`。界面证据 `output/WRITING-ORIGINAL-READONLY-ACCEPTED-20261102.jpg`。
+- 新 `ONE-QA-WRITING-1102-B` 一次提交后未创建任务、未保存文章。精确main trace `ctx_d2763171453d3fc7ad40` / request `coord_4b208f98019b10d70b9e`：三次delegate被拒，其中一份合规参数引用了目录真实知识卡和公开搜索卡，却被resolver当作不可分派功能拒绝；另两次参数形状未修正。仅主对话知识读取发生，公开搜索未调用；提示“公开搜索没查成”归因错误，不能说是供应商失败。
+- 横查又发现“云端写作，不操作本机”会把否定句里的本机词当目标，导致有连接时错误确认、无连接时拦住云任务。改为同一正向语句证明动作和本机目标，ready/offline/unavailable三态均0本机检查、0本机执行、1正常云任务；真实本机和禁止删除局部限制仍保留。
+- 知识卡仅解析为server-only精确source引用并绑定必需knowledge_search；公开搜索卡仅绑定必需web_search，不伪装feature/executor。当前scope、显式来源、禁止读取、撤权和worker工具权限均重新核对；固定图片/本机入口暂不支持混读卡时入队前拒绝，不静默丢步骤。显式single本机入口按真实mode送同一resolver，不能借已归一的文字executor绕过。
+- 主对话联网检查统一使用口述/开关合成的有效授权。已成功交接的同轮child必须有web必需contract或workflow步骤证明，才移除重复的main查询义务；不把任意child当已查询。未调用与真实调用失败区分，分派参数卡住不再误报搜索失败；原参数修正提示补上本就合法的workflow字段。
+- 一轮全量2263/2262通过/0失败/1既有skip，早于最后固定分支与确认回执收口，不作为最终新源码验收。后续检查及新任务完整结果另记。
+- 最终冻结后的全量2266项：2265通过、0失败、1既有skip，日志 `/tmp/one-writing-routing-release-full-20261102.log`。最后新增本机raw requiredTools反例：native child不能满足main查询义务，已接到任务时也不引导整条重发。单/批知识+公开卡正例用自然确认收尾，均1任务/每项实际read各1次/worker1次；无额外main查询。最终构建与新源码发布结果待后记。

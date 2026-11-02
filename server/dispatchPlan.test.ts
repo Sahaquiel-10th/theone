@@ -7,6 +7,7 @@ test('batch plans preserve independent tasks and reject cyclic or duplicate-task
   assert.throws(()=>validateDispatchPlan({tasks:[{...task,dependsOn:[0]}]}));
   assert.throws(()=>validateDispatchPlan({tasks:[{...task,taskId:'same'},{...task,taskId:'same'}]}));
   assert.throws(()=>validateDispatchPlan({tasks:Array(5).fill(task)}));
+  assert.throws(()=>validateDispatchPlan({tasks:[{...task,knowledgeSourceIds:['foreign']}]}),'server-only resolved bindings cannot be supplied by the model');
 });
 test('legacy refusal is a returned answer, never a fabricated successful deliverable',()=>{
   assert.equal(parseTaskOutcome('当前没有绘图工具，无法生成图片').outcome,'returned');

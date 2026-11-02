@@ -16,6 +16,7 @@ function requestText(text:string){
     .replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g,'').replace(/^\s*>.*$/gm,'')
     .replace(/“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|'[^'\n]*'|`[^`]*`/g,'').trim();
 }
+const positiveRequest=(request:string)=>request.replace(/(?:不要|不用|不必|不需要|别|禁止|不(?=(?:再|重新)?(?:执行|创建|写|修改|保存|操作|生成|导出|做|处理)))(?:再|重新)?[^，,。；;\n]{0,60}/gu,'');
 /** A saved destination is a preference, not a command. Explicit restrictions,
  * explanations and status questions never acquire local write authority. */
 export function localActionRequested(text:string,boundTaskId?:string){
@@ -28,7 +29,7 @@ export function localActionRequested(text:string,boundTaskId?:string){
     ||/(?:^|[，,。；;\n])\s*(?:(?:请|本轮|现在|这次|先|暂时)\s*)*(?:禁止|不准|不允许|不要|别|不)(?:实际)?执行(?:(?:任何|新的?)?(?:本机)?(?:操作|任务))?\s*(?:$|[，,。；;\n])/u.test(original))return false;
   if(/告诉我|说明一下|解释|教我|(?:请|帮我)(?:先)?(?:说明|介绍)/u.test(request))return false;
   if(/\b(?:do not|don't|never)\s+(?:create|write|save|edit|modify|run|execute)\b|\b(?:explain|describe|tutorial)\b|\b(?:how (?:to|does|do)|what (?:is|does)|why)\b/iu.test(request))return false;
-  const positive=request.replace(/(?:不要|不用|不必|不需要|别|禁止|不(?=(?:再|重新)?(?:执行|创建|写|修改|保存|操作|生成|导出|做|处理)))(?:再|重新)?[^，,。；;\n]{0,60}/gu,'');
+  const positive=positiveRequest(request);
   const action=/(?:写|做|制作|生成|交付|保存|存到|存入|导出|创建|新建|修改|更新|编辑|填写|填入|整理|编写|搭建|搭个|搭一个|执行|处理|安排|继续|接着|开工)|\b(?:make|create|build|generate|save|write|edit|continue|resume)\b/iu;
   if(request!==original&&!positive.split(/[，,。；;\n]/u).some(clause=>action.test(clause)&&!/(?:分析|评估|讨论|总结)/u.test(clause)))return false;
   const artifact=/(?:文件|文档|文章|报告|方案|表格|这张表|工作簿|网站|网页|项目|目录|文件夹|图片|Excel|Word|PPT|HTML|\.\w{1,6}\b)/iu;
@@ -43,7 +44,9 @@ export function localActionRequested(text:string,boundTaskId?:string){
 }
 export function naturalLocalActionRequested(text:string,boundTaskId?:string){
   const request=requestText(text);
-  return localActionRequested(request,boundTaskId)&&/(?:本机|本地|电脑|桌面|工作文件夹|工作目录|已授权(?:的)?(?:目录|文件夹)|\/Users\/|[A-Za-z]:\\)/u.test(request);
+  // A cloud action and a declined local target cannot combine into a local
+  // request. Use the same positive clauses for both action and destination.
+  return localActionRequested(request,boundTaskId)&&/(?:本机|本地|电脑|桌面|工作文件夹|工作目录|已授权(?:的)?(?:目录|文件夹)|\/Users\/|[A-Za-z]:\\)/u.test(positiveRequest(request));
 }
 /** An unselected folder is the one supported first-run exception: the native
  * picker grants its scope at execution, not a model-invented absolute path. */

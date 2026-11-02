@@ -11,6 +11,12 @@ test('local destination distinguishes polite artifact requests from explanations
  assert.equal(naturalLocalActionRequested('请在本机告诉我这个文件是怎么保存的？'),false);
 });
 
+test('a declined local target does not convert a positive cloud action into a local request',()=>{
+ for(const value of ['请从得到大脑查找昨天的笔记，写成文章保存到 Notion，不操作本机。','写文章保存到Notion，不操作本机。','不操作本机，只写云端文章。','请写一段云端短文，不创建本地文件。','不要操作电脑，继续写云端方案。'])assert.equal(naturalLocalActionRequested(value),false,value);
+ assert.equal(naturalLocalActionRequested('请修改本机文件，完成后告诉我结果。'),true);
+ assert.equal(naturalLocalActionRequested('不要执行删除操作，只修改当前本机文件，改完告诉我结果。'),true);
+});
+
 test('a completion report does not cancel a concrete local edit or grant authority to an explanation',()=>{
  const actual='本机继续刚才的“独立本机新任务 ONE-QA-LOCAL-1101-D”，不要新建另一件任务。只修改已生成的 ONE-QA-LOCAL-1101-D/template.xlsx：把“验收表”工作表 B6 的数值3000改成数值3200，在同一原文件保存，不另存副本。其他单元格内容、标题、公司、类目、备注、粉色表头、边框、合并、行高列宽都不变；receipt.txt 完全不动。只允许核对并修改这个本次验收目录，不读旧任务或其他文件，不联网、不安装、不更换工作目录。改完实际回读核对，并在主对话告诉我结果。';
  for(const value of [actual,'修改本机Excel，完成后在主对话告诉我结果。','请修改本机Excel并告诉我结果。','不要修改其他文件，只修改当前本机文件，改完告诉我结果。']){assert.equal(localActionRequested(value),true,value);assert.equal(naturalLocalActionRequested(value),true,value);}

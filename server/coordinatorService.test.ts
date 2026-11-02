@@ -128,6 +128,25 @@ test('an unavailable public search has a plain next step, never a successful sea
   assert.ok(result.message.content.includes(context.today)&&result.message.content.includes(context.yesterday));
   assert.match(result.message.content,/Asia\/Shanghai/);assert.match(result.message.content,/还没有设置常驻城市/);
 });
+test('an uncorrected cloud handoff reports planning failure instead of an unattempted search or feature configuration problem',async()=>{
+ const f=fixture();let searches=0,calls=0;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no private lookup')},{webSearch:async()=>{searches++;return [];},modelCall:async()=>{
+  calls++;
+  return calls===1?{...answer(''),toolCalls:[{id:'invalid-handoff',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'设计短稿',instruction:'查询公开资料后写短稿',executorId:'general',featureIds:[],unexpected:true})}}]}:answer('这次尚未开始。');
+ }});
+ const result=await service.dispatch(a,input('operation_rejected_handoff_web_01','请上网查OXO公开设计资料，写一篇方法论文章。'),key);
+ const db=await f.store.read(),op=db.chatOperations!.find(o=>o.operationId==='operation_rejected_handoff_web_01')!;
+ assert.equal(searches,0);assert.equal(result.taskIds.length,0);assert.equal(db.chatOperations!.filter(o=>o.workRun).length,0);
+ assert.deepEqual(op.failure,{code:'tool_invalid',stage:'planning',outcome:'not_started'});
+ assert.match(result.message.content,/执行步骤没安排对/);assert.match(result.message.content,/还没开工/);assert.match(result.message.content,/重试这条消息/);
+ assert.doesNotMatch(result.message.content,/公开搜索这次没查成|重新选择需要的功能|看看刚才/);assert.ok(calls<=7);
+});
+test('a public read that was never invoked is distinguished from an actual provider failure',async()=>{
+ const f=fixture();let searches=0;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no private lookup')},{webSearch:async()=>{searches++;return [];},modelCall:async()=>answer('本轮没有开始查询。')});
+ const result=await service.dispatch(a,input('operation_public_not_invoked_01','只回答，请上网查今天的公开新闻。'),key);
+ assert.equal(searches,0);assert.equal(result.taskIds.length,0);assert.match(result.message.content,/还没实际开始公开搜索/);assert.doesNotMatch(result.message.content,/公开搜索这次没查成/);
+});
 import { executorDefaults, updateExecutor } from "./executorProfiles.js";
 
 test('missing or failed private retrieval preserves independently requested server date and own city facts',async()=>{
@@ -3509,6 +3528,16 @@ test('a natural local task does not turn the following ordinary text delegate in
   assert.equal((await f.service.task(a,accepted.taskIds[0])).jobs[0].state,'prepared');
 });
 
+for(const device of ['unavailable','offline','ready'] as const)test(`an explicit no-local cloud request skips native readiness and acknowledges its actual cloud job; device=${device}`,async()=>{
+ const f=fixture();let probes=0,localCalls=0,workers=0;
+ f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('云端文章已经安排，有结果会在这里告诉你。'):{...answer(''),toolCalls:[{id:'cloud-only',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'云端短文',instruction:'CLOUD_ONLY：写一段云端短文，只在对话中交付，不操作本机。',executorId:'general',featureIds:[]})}}]});
+ f.setWorker(async()=>{workers++;return answer(JSON.stringify({outcome:'completed',content:'云端短文已完成。',summary:'云端短文已完成。'}));});
+ const execute=device==='unavailable'?undefined:async()=>{localCalls++;throw Error('declined native execution must never be invoked');};
+ const accepted=await f.service.dispatch(a,{...input(`operation_no_local_cloud_${device}`,'写一段云端短文，只在对话中交付，不操作本机。'),outputDestination:'chat'},key,undefined,execute,undefined,async()=>{probes++;return device==='ready'?readyLocalProbe():{checkedAt:new Date().toISOString(),ready:false,connected:false,folder:{state:'unknown'},executor:{state:'unknown'},reason:'offline'};});
+ assert.equal(probes,0);assert.equal(localCalls,0);assert.equal(accepted.taskIds.length,1);assert.equal(accepted.failure,undefined);assert.match(accepted.message.content,/云端文章已经安排/);assert.doesNotMatch(accepted.message.content,/电脑操作|不能确认是否已经开始|本机.*(?:离线|连接|设置)/);
+ await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,accepted.taskId!)).jobs[0].state==='completed');const db=await f.store.read(),job=db.chatOperations!.find(op=>op.conversationId===accepted.taskId&&op.workRun)!.workRun!;assert.equal(workers,1);assert.equal(job.executionMode,undefined);assert.equal(job.localExecution,undefined);assert.equal(db.chatOperations!.filter(op=>op.workRun).length,1);assert.equal(probes,0);assert.equal(localCalls,0);await assert.rejects(()=>f.service.task(b,accepted.taskId!));
+});
+
 test('next answer reports the captured old local round after the same execution has already begun a new round',async()=>{
   const f=fixture(),stamp=new Date().toISOString();
   const {saveExecutionReceipt}=await import('./executionService.js');
@@ -4254,4 +4283,91 @@ test('a new article requested with Notion still drafts once then saves once, wit
   drafts++;return answer(JSON.stringify({outcome:'completed',content:article,summary:'新正文已完成。'}));
  }});
  const r=await service.dispatch(a,{...input('operation_new_article_not_save_only','请写一篇新文章并保存到Notion，不查知识库。'),outputDestination:'chat'},key);assert.ok(r.taskId);await service.resume(a,key);await waitFor(async()=>(await service.task(a,r.taskId!)).jobs[0].state==='completed');assert.equal(drafts,1);assert.equal(writes,1);assert.equal(body,'这份正文是在本轮新写的，不是旧稿。');assert.equal(title,'全新合成文章');
+});
+
+for(const batch of [false,true])for(const publicRead of [false,true])test(`authorized knowledge and public-query cards become exact required workflow reads; batch=${batch}; public=${publicRead}`,async()=>{
+ const f=fixture();let recalls=0,searches=0,writes=0;
+ await f.store.mutate(d=>{
+  d.knowledgeConnections.push({id:'card-source',workspaceId:'wa',provider:'getnote',status:'connected',clientId:'fixture'} as any,{id:'unselected-source',workspaceId:'wa',provider:'notion',status:'connected',clientId:'fixture'} as any,{id:'foreign-source',workspaceId:'wb',provider:'getnote',status:'connected',clientId:'fixture'} as any);
+  const values={...defaultTaskValues('task_worker'),modelId:'worker',name:'写作',description:'合成写作',featureIds:[],routingRole:'writing' as const},published={...values,version:1,publishedAt:'now',publishedBy:'a'};
+  d.settings.executorProfiles=[{id:'writing',revision:1,enabled:true,draft:values,published,history:[published]}];
+ });
+ const toolName=batch?'delegate_tasks':'delegate_task',task={taskId:null,title:'方法论验收',instruction:publicRead?'先从得到大脑查找合成方法论，再联网搜索公开案例，写成完整专栏。':'依据所选资料写完整专栏。',executorId:'writing',featureIds:[],capabilityIds:['executor:writing','knowledge:card-source',...(publicRead?['builtin:public_web_search']:[])],...(publicRead?{workflow:{version:1,steps:[
+  {id:'private',title:'查找合成方法论',kind:'tool',tool:'knowledge_search',instruction:'查找合成方法论',inputs:[]},
+  {id:'public',title:'查找公开案例',kind:'tool',tool:'web_search',instruction:'公开产品设计案例',inputs:[]},
+  {id:'draft',title:'写完整专栏',kind:'model',instruction:'依据前置资料和公开案例写完整专栏。',inputs:['private','public']},
+ ]}}:{})};
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async(ws,_q,_n,ids,user)=>{recalls++;assert.equal(ws,'wa');assert.equal(user,'a');assert.deepEqual(ids,['card-source']);return {status:'used',chunks:[{id:'synthetic',provider:'getnote',title:'合成方法论',content:'ONE-CARD-PRIVATE-MATERIAL'}],failures:[],coverage:[{connectionId:'card-source',provider:'getnote',status:'used',attempts:1}]};}},{contextMode:'adaptive',webSearch:async(_q,ctx)=>{searches++;assert.equal(ctx.workspaceId,'wa');assert.equal(ctx.userId,'a');return [{title:'合成公开案例',url:'https://example.test/card-case',content:'ONE-CARD-PUBLIC-CASE'}];},modelCall:async(model,messages,tools)=>{
+  if(model.id==='router'){
+   if(messages.at(-1)?.role==='tool'&&!messages.at(-1)?.content?.includes('"status":"loaded"'))return answer('任务已经接到，资料查询与正文会在任务中完成。');
+   if(!tools.some(t=>t.function.name===toolName))return {...answer(''),toolCalls:[{id:'load-card-dispatch',type:'function',function:{name:'load_tools',arguments:JSON.stringify({names:[toolName]})}}]};
+   return {...answer(''),toolCalls:[{id:'card-dispatch',type:'function',function:{name:toolName,arguments:JSON.stringify(batch?{tasks:[{...task,outputKind:'text',dependsOn:[]}]}:task)}}]};
+  }
+  writes++;assert.equal(recalls,1);assert.equal(searches,publicRead?1:0);assert.match(JSON.stringify(messages),/ONE-CARD-PRIVATE-MATERIAL/);if(publicRead)assert.match(JSON.stringify(messages),/ONE-CARD-PUBLIC-CASE/);
+  return answer(JSON.stringify({outcome:'completed',content:'合成完整专栏正文。',summary:'资料与公开案例已核对。'}));
+ }});
+ const r=await service.dispatch(a,{...input(`operation_card_reads_${batch}_${publicRead}`,publicRead?'从得到大脑找方法论，再联网搜索公开案例，写一篇专栏。':'依据所选资料写一篇专栏。'),webSearch:publicRead},key);
+ assert.ok(r.taskId,JSON.stringify({r,traces:(await f.store.read()).contextTraces.map(t=>t.executionSteps)}));assert.equal(r.taskIds.length,1);assert.equal(r.failure,undefined);assert.doesNotMatch(r.message.content,/还没实际开始公开搜索|稍后重试这条消息|执行步骤没安排对/);await service.resume(a,key);await waitFor(async()=>(await service.task(a,r.taskId!)).jobs[0].state==='completed');
+ const db=await f.store.read(),run=db.chatOperations!.find(op=>op.workRun&&op.conversationId===r.taskId)!.workRun!;
+ assert.equal(db.chatOperations!.filter(op=>op.workRun).length,1);assert.equal(recalls,1);assert.equal(searches,publicRead?1:0);assert.equal(writes,1);assert.deepEqual(run.sources.map(s=>s.id),['card-source']);assert.deepEqual(run.contract!.knowledgeSourceIds,['card-source']);assert.deepEqual(new Set(run.contract!.requiredTools),new Set(['knowledge_search',...(publicRead?['web_search']:[])]));assert.deepEqual(run.skills,[]);assert.equal(run.executorId,'writing');
+ await assert.rejects(()=>service.task(b,r.taskId!));assert.equal(db.powerAccounts.find(p=>p.userId==='b')!.balanceMicros,100e6);
+});
+
+test('knowledge-card delegation cannot widen selected sources, revive an opt-out or revoked source, or grant a worker web tool',async()=>{
+ for(const mode of ['foreign','selected-other','declined','named-other','revoked','worker-web-disabled'] as const){
+  const f=fixture();let recalls=0,searches=0,workers=0;
+  await f.store.mutate(d=>{
+   d.knowledgeConnections.push({id:'card-source',workspaceId:'wa',provider:'getnote',status:'connected',clientId:'fixture'} as any,{id:'other-source',workspaceId:'wa',provider:'notion',status:'connected',clientId:'fixture'} as any,{id:'foreign-source',workspaceId:'wb',provider:'getnote',status:'connected',clientId:'fixture'} as any);
+   const values={...defaultTaskValues('task_worker'),tools:mode==='worker-web-disabled'?['knowledge_search']:defaultTaskValues('task_worker').tools,modelId:'worker',name:'写作',description:'合成写作',featureIds:[],routingRole:'writing' as const},published={...values,version:1,publishedAt:'now',publishedBy:'a'};
+   d.settings.executorProfiles=[{id:'writing',revision:1,enabled:true,draft:values,published,history:[published]}];
+  });
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{recalls++;assert.fail('a rejected card cannot query private data');}},{webSearch:async()=>{searches++;assert.fail('a rejected plan cannot search');},modelCall:async(model,messages)=>{
+   if(model.id!=='router'){workers++;assert.fail('a rejected plan cannot buy worker output');}
+   if(messages.at(-1)?.role==='tool')return answer('资料来源或工具范围还需核对，这次没有开始。');
+   if(mode==='revoked')await f.store.mutate(d=>{d.knowledgeConnections.find(c=>c.id==='card-source')!.status='revoked';});
+   return {...answer(''),toolCalls:[{id:'reject-card',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'合成专栏',instruction:'依据所选资料写完整专栏。',executorId:'writing',featureIds:[],capabilityIds:[`knowledge:${mode==='foreign'?'foreign-source':'card-source'}`,...(mode==='worker-web-disabled'?['builtin:public_web_search']:[])]})}}]};
+  }});
+  const text=mode==='declined'?'只按我给出的材料写专栏，不查知识库。':mode==='named-other'?'从Notion里查找资料写专栏。':'依据所选资料写专栏，并联网找公开案例。';
+  const pending=service.dispatch(a,{...input(`operation_reject_source_${mode}`,text),webSearch:true,...(mode==='selected-other'?{sourceIds:['other-source']}:{} )},key);
+  if(mode==='revoked'||mode==='worker-web-disabled')await assertRoutingBlocked(pending,mode==='revoked'?/知识授权已变化/:/工具尚未开放/);
+  else{const response=await pending;assert.equal(response.taskIds.length,0,JSON.stringify({mode,response}));}
+  const db=await f.store.read();assert.equal(db.chatOperations!.filter(op=>op.workRun).length,0,mode);assert.equal(recalls,0);assert.equal(searches,0);assert.equal(workers,0);
+ }
+});
+
+test('the real single local handoff mode rejects referenced reads before queueing or executing, even after executor normalization',async()=>{
+ for(const button of [false,true]){
+  const f=fixture();let starts=0;
+  await f.store.mutate(d=>d.knowledgeConnections.push({id:'local-read-source',workspaceId:'wa',provider:'getnote',status:'connected',clientId:'fixture'} as any));
+  f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('请先单独读取资料，再安排本机文件。'):{...answer(''),toolCalls:[{id:'local-read-card',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'创建本机文档',instruction:'在本机创建说明文档，引用所选资料。',executorId:'general',featureIds:[],capabilityIds:['knowledge:local-read-source']})}}]});
+  const result=await f.service.dispatch(a,{...input(`operation_local_read_card_${button}`,'请在本机创建说明文档，引用所选资料。'),...(button?{localExecution:true}:{outputDestination:'local' as const})},key,undefined,async()=>{starts++;return{id:'must-not-run',status:'queued'};},undefined,readyLocalProbe,lifecycleDevice);
+  assert.equal(result.taskIds.length,0);assert.equal(starts,0);assert.equal(f.recalls.length,0);assert.equal((await f.store.read()).chatOperations!.filter(op=>op.workRun).length,0);
+ }
+});
+
+test('a native child declaring a public read cannot satisfy main search or invite the whole request to be resent',async()=>{
+ const f=fixture();let searches=0,starts=0,handed=false,publicCorrections=0;
+ await f.store.mutate(db=>{
+  const values={...defaultTaskValues('task_worker'),modelId:'worker',name:'逻辑',description:'合成本机交接',featureIds:[],routingRole:'logic' as const},published={...values,version:1,publishedAt:'now',publishedBy:'a'};
+  db.settings.executorProfiles=[{id:'logic',revision:1,enabled:true,draft:values,published,history:[published]}];
+ });
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no private lookup')},{contextMode:'adaptive',webSearch:async()=>{
+  searches++;assert.fail('the synthetic model never invokes public search');
+ },modelCall:async(model,messages,tools)=>{
+  assert.equal(model.id,'router','the native handoff must not start a cloud worker');
+  if(!handed){
+   if(!tools.some(tool=>tool.function.name==='delegate_tasks'))return {...answer(''),toolCalls:[{id:'load-native-batch',type:'function',function:{name:'load_tools',arguments:JSON.stringify({names:['delegate_tasks']})}}]};
+   handed=true;return {...answer(''),toolCalls:[{id:'native-with-read-name',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'本机说明文档',instruction:'在已授权文件夹创建说明文档。',executorId:'logic',featureIds:[],outputKind:'local_file',dependsOn:[],requiredTools:['web_search']}]})}}]};
+  }
+  if(messages.some(message=>message.role==='system'&&message.content?.includes('用户要求查最新公开事实，但尚未实际搜索')))publicCorrections++;
+  return answer('本机任务已经接到，结果会在任务中说明。');
+ }});
+ const result=await service.dispatch(a,{...input('operation_native_raw_public_read','请联网查询公开设计案例，并在本机创建说明文档。'),webSearch:true},key,undefined,async()=>{starts++;return{id:'synthetic-native-handoff',status:'queued'};},undefined,readyLocalProbe,lifecycleDevice);
+ const db=await f.store.read(),children=db.chatOperations!.filter(operation=>operation.workRun);
+ assert.equal(result.taskIds.length,1);assert.equal(children.length,1);assert.equal(children[0].workRun!.executionMode,'local');assert.deepEqual(children[0].workRun!.contract!.requiredTools,['web_search']);
+ assert.equal(starts,1);assert.equal(searches,0);assert.ok(publicCorrections>0,'a native required-tool declaration cannot satisfy the missing main public lookup');
+ assert.match(result.message.content,/任务已经接到/);assert.match(result.message.content,/公开资料.*还没核实/);assert.match(result.message.content,/查看.*后续结果/);assert.match(result.message.content,/先别重发整条要求/);
+ assert.doesNotMatch(result.message.content,/公开案例已查到|已完成公开|稍后重试这条消息|我会重新查询/);
+ assert.equal(db.contextTraces.some(trace=>trace.executionSteps?.some(step=>step.tool==='web_search'&&step.status==='returned')),false);
+ await assert.rejects(()=>service.task(b,result.taskId!));
 });
