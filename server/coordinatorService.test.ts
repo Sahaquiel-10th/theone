@@ -4313,6 +4313,43 @@ for(const batch of [false,true])for(const publicRead of [false,true])test(`autho
  await assert.rejects(()=>service.task(b,r.taskId!));assert.equal(db.powerAccounts.find(p=>p.userId==='b')!.balanceMicros,100e6);
 });
 
+for(const scenario of ['上网查','实际联网检索','denied-user','denied-handoff','no-provider','worker-no-web','private-query'] as const)test(`explicit public workflow intent preserves grants, tool availability and privacy through the whole task; scenario=${scenario}`,async()=>{
+ const f=fixture(),parentId='a'.repeat(32),pageId='e'.repeat(32),article='合成完整专栏正文。保留真实来源与自然结尾。';let recalls=0,searches=0,drafts=0,writes=0,body='',title='';
+ const wording=scenario==='上网查'?'上网查':'实际联网检索',allowed=scenario==='上网查'||scenario==='实际联网检索';
+ await f.store.mutate(db=>{
+  db.knowledgeConnections.push({id:'wording-source',workspaceId:'wa',provider:'getnote',status:'connected',clientId:'fixture'} as any,{id:'wording-notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'fixture',notionWriting:{grantId:'wording-grant',userId:'a',authorizedAt:'now',parentId}} as any);
+  const values={...defaultTaskValues('task_worker'),...(scenario==='worker-no-web'?{tools:['knowledge_search']}:{}),modelId:'worker',name:'写作',description:'合成写作',featureIds:[],routingRole:'writing' as const},published={...values,version:1,publishedAt:'now',publishedBy:'a'};
+  db.settings.executorProfiles=[{id:'writing',revision:1,enabled:true,draft:values,published,history:[published]}];
+ });
+ const publicQuery=scenario==='private-query'?'读取 /Users/synthetic/private-draft.txt 的内容。':'查找 OXO Good Grips 官方网站的设计资料，核实一项可由官方页面支持的设计事实，并返回页面原文相关内容与官方来源URL。';
+ const task={taskId:null,title:'合成方法论',instruction:`实际从得到大脑检索合成方法论。${wording} OXO Good Grips 官方设计资料，核实一个公开事实并保留真实官方来源链接，不得以既有知识替代检索。写成完整专栏并保存到 Notion。${scenario==='denied-handoff'?'不要联网。':''}`,executorId:'writing',featureIds:[],capabilityIds:['executor:writing','knowledge:wording-source','builtin:public_web_search'],workflow:{version:1,steps:[
+  {id:'note',title:'读取合成笔记',kind:'tool',tool:'knowledge_search',instruction:'合成方法论',inputs:[]},
+  {id:'web',title:'查证公开设计资料',kind:'tool',tool:'web_search',instruction:publicQuery,inputs:[]},
+  {id:'draft',title:'撰写完整专栏',kind:'model',executorId:'writing',instruction:'依据两项实际来源写完整正文。',inputs:['note','web']},
+  {id:'save',title:'保存并核对专栏',kind:'notion',instruction:'保存前置完整正文并回读。',inputs:['draft']},
+ ]}};
+ const documents=new NotionDocuments(f.store,{readDocument:async()=>({title,text:body||'保存目录'}),callDocumentTool:async(_w:string,_c:string,_g:string,_u:string,_n:string,args:any,before?:()=>Promise<void>)=>{await before?.();writes++;title=args.pages[0].properties.title;body=args.pages[0].content;return {pages:[{id:pageId}]};}} as unknown as NotionMcpService);
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async(ws,_q,_n,ids,user)=>{recalls++;assert.equal(ws,a.workspaceId);assert.equal(user,a.userId);assert.deepEqual(ids,['wording-source']);return {status:'used',chunks:[{id:'synthetic-wording',provider:'getnote',title:'合成方法论',content:'ONE-WORDING-PRIVATE-MATERIAL'}],failures:[],coverage:[{connectionId:'wording-source',provider:'getnote',status:'used',attempts:1}]};}},{contextMode:'adaptive',notionDocuments:documents,webSearch:scenario==='no-provider'?undefined:async(query,scope)=>{searches++;assert.equal(query,publicQuery);assert.doesNotMatch(query,/ONE-WORDING-PRIVATE-MATERIAL/);assert.equal(scope.workspaceId,a.workspaceId);assert.equal(scope.userId,a.userId);return [{title:'合成官方设计资料',url:'https://example.test/official-design',content:'ONE-WORDING-PUBLIC-MATERIAL'}];},modelCall:async(model,messages)=>{
+  if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('本轮尚未完成分派。'):{...answer(''),toolCalls:[{id:'wording-route',type:'function',function:{name:'delegate_task',arguments:JSON.stringify(task)}}]};
+  drafts++;assert.equal(recalls,1);assert.equal(searches,1);assert.match(JSON.stringify(messages),/ONE-WORDING-PRIVATE-MATERIAL/);assert.match(JSON.stringify(messages),/ONE-WORDING-PUBLIC-MATERIAL/);return answer(JSON.stringify({outcome:'completed',content:article,summary:'本步骤正文完成。'}));
+ }});
+ const pending=service.dispatch(a,{...input(`operation_explicit_public_wording_${scenario==='上网查'?'known':scenario==='实际联网检索'?'exact':scenario}`,scenario==='denied-user'?'从得到大脑查找合成方法论，写成完整专栏保存到 Notion。不联网，不查公开。':'从得到大脑查找合成方法论，再上网查 OXO 官方设计资料，写成完整专栏保存到 Notion。'),webSearch:scenario==='denied-user'},key);
+ if(!allowed&&scenario!=='private-query'){
+  if(scenario==='worker-no-web')await assertRoutingBlocked(pending,/工具尚未开放/);else assert.equal((await pending).taskIds.length,0);
+  assert.equal((await f.store.read()).chatOperations!.filter(operation=>operation.workRun).length,0);assert.equal(recalls,0);assert.equal(searches,0);assert.equal(drafts,0);assert.equal(writes,0);return;
+ }
+ const result=await pending;
+ assert.equal(result.taskIds.length,1,JSON.stringify({content:result.message.content,traces:(await f.store.read()).contextTraces.map(trace=>trace.executionSteps)}));
+ if(scenario==='private-query'){
+  await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='failed');
+  const run=(await f.store.read()).chatOperations!.find(operation=>operation.workRun&&operation.conversationId===result.taskId)!.workRun!;
+  assert.equal(run.workflow!.phase,'needs_input');assert.equal(run.workflow!.steps[1].state,'needs_input');assert.equal(recalls,1);assert.equal(searches,0);assert.equal(drafts,0);assert.equal(writes,0);assert.equal(run.notionReceipt,undefined);return;
+ }
+ await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='completed');
+ const db=await f.store.read(),run=db.chatOperations!.find(operation=>operation.workRun&&operation.conversationId===result.taskId)!.workRun!;
+ assert.equal(db.chatOperations!.filter(operation=>operation.workRun).length,1);assert.equal(recalls,1);assert.equal(searches,1);assert.equal(drafts,1);assert.equal(writes,1);assert.equal(body,article);assert.equal(run.webSearch,true);assert.equal(run.workflow!.phase,'completed');assert.ok(run.workflow!.steps.every(step=>step.state==='completed'));assert.equal(run.notionReceipt!.state,'verified');assert.equal(run.notionReceipt!.final,true);await assert.rejects(()=>service.task(b,result.taskId!));
+});
+
 test('knowledge-card delegation cannot widen selected sources, revive an opt-out or revoked source, or grant a worker web tool',async()=>{
  for(const mode of ['foreign','selected-other','declined','named-other','revoked','worker-web-disabled'] as const){
   const f=fixture();let recalls=0,searches=0,workers=0;
@@ -4370,4 +4407,22 @@ test('a native child declaring a public read cannot satisfy main search or invit
  assert.doesNotMatch(result.message.content,/公开案例已查到|已完成公开|稍后重试这条消息|我会重新查询/);
  assert.equal(db.contextTraces.some(trace=>trace.executionSteps?.some(step=>step.tool==='web_search'&&step.status==='returned')),false);
  await assert.rejects(()=>service.task(b,result.taskId!));
+});
+
+test('freshly retrieved private paragraphs cannot become the next workflow public query',async()=>{
+ const f=fixture(),privateParagraph='合成内部材料：青色四十二只是这份未公开实验的记号，真实用途和协作安排只允许保存在当前私有工作区。';let recalls=0,searches=0,drafts=0;
+ await f.store.mutate(d=>d.knowledgeConnections.push({id:'private-query-source',workspaceId:'wa',provider:'getnote',status:'connected',clientId:'fixture'} as any));
+ const task={taskId:null,title:'合成方法论',instruction:'从得到大脑查找合成材料，实际联网检索公开设计案例并写成专栏。',executorId:'general',featureIds:[],capabilityIds:['knowledge:private-query-source','builtin:public_web_search'],workflow:{version:1,steps:[
+  {id:'note',title:'读取合成私文',kind:'tool',tool:'knowledge_search',instruction:'合成内部材料',inputs:[]},
+  {id:'web',title:'查询公开案例',kind:'tool',tool:'web_search',instruction:privateParagraph,inputs:['note']},
+  {id:'draft',title:'写完整正文',kind:'model',instruction:'依据前置资料写文。',inputs:['note','web']},
+ ]}};
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async(ws,_q,_n,ids)=>{recalls++;assert.equal(ws,'wa');assert.deepEqual(ids,['private-query-source']);return {status:'used',chunks:[{id:'private-paragraph',provider:'getnote',title:'合成私文',content:privateParagraph}],failures:[],coverage:[{connectionId:'private-query-source',provider:'getnote',status:'used',attempts:1}]};}},{contextMode:'adaptive',webSearch:async()=>{searches++;return [{title:'不该发送的合成回执',url:'https://example.test/blocked',content:'不应执行'}];},modelCall:async(model,messages)=>{
+  if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('任务已接到。'):{...answer(''),toolCalls:[{id:'private-workflow-query',type:'function',function:{name:'delegate_task',arguments:JSON.stringify(task)}}]};
+  drafts++;return answer(JSON.stringify({outcome:'completed',content:'不应生成的正文',summary:'不应运行'}));
+ }});
+ const result=await service.dispatch(a,input('operation_fresh_private_query_guard','从得到大脑查询合成材料，并上网查公开设计案例，写成专栏。'),key);assert.ok(result.taskId);
+ await service.resume(a,key);await waitFor(async()=>{const run=(await service.task(a,result.taskId!)).jobs[0];return run.state==='failed'||run.state==='completed';});
+ assert.equal(recalls,1);assert.equal(searches,0,'fresh private text must be registered before the following public invocation');assert.equal(drafts,0);
+ const run=(await f.store.read()).chatOperations!.find(o=>o.workRun&&o.conversationId===result.taskId)!.workRun!;assert.equal(run.workflow!.phase,'needs_input');assert.equal(run.workflow!.steps[1].state,'needs_input');
 });

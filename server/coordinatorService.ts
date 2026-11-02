@@ -90,7 +90,7 @@ import {datedDraftPrerequisite} from './datedDraftPrerequisite.js';
 import {taskContinuation,actionableTaskSupplement,substantiveTaskSupplement,supersedeQueuedSupplements,supplementKnowledgeRequest,taskStatusQuestion,plainTaskContinuation} from './taskContinuation.js';
 import {selectedNotionVerification} from './notionVerificationSelection.js';
 import {createWorkflowRun,workflowSpecSchema,validateWorkflowSpec,workflowProgress,type WorkflowSpec} from './taskWorkflow.js';
-import {resolveTaskWorkflow,WorkflowPlanningError,workflowWebSearchPermission,workflowSchemaForTools,workflowKnowledgeReadUnchanged} from './workflowPlanning.js';
+import {resolveTaskWorkflow,WorkflowPlanningError,workflowWebSearchPermission,workflowSchemaForTools,workflowKnowledgeReadUnchanged,workflowNeedsPublicSearch} from './workflowPlanning.js';
 import {reuseCompletedWorkflowReads,workflowSourceBindingsMatch} from './workflowRecovery.js';
 import {executeWorkflowStages,recoverVerifiedNotionWorkflow,verifiedWorkflowNotionCompletion} from './workflowExecution.js';
 import {CoordinatorLocalError,localActionRequested,naturalLocalActionRequested,localReadinessCanStart,localReadinessFailure} from './coordinatorLocalPolicy.js';
@@ -2213,7 +2213,7 @@ export class CoordinatorService {
     if(input.directVisual){validateVisualDocument(input.directVisual.document);if(notionTarget||input.localExecution||policy.required||!skills.some(f=>f.values.tools?.some(t=>t.id===input.directVisual!.tool)))throw new CoordinatorError('本轮不能直接生成这份说明，请先确认功能与保存范围。');}
     if(restore?.steps?.some(step=>step.state==='completed'||step.state==='started'&&['artifact','external_write'].includes(step.effect))&&(JSON.stringify(restore.skills.map(f=>[f.id,f.releaseId,f.version]))!==JSON.stringify(skills.map(f=>[f.id,f.releaseId,f.version]))||JSON.stringify(restore.sources)!==JSON.stringify(sources)))throw new CoordinatorError('功能或资料授权已经变化，已有成果保留。请先重新确认这件事的范围。');
     if(input.workflow&&(input.localExecution||input.directVisual||input.expectedOutput==='image'||agent))throw new CoordinatorError('这类任务保留原有固定执行流程，不能混入另一份步骤计划。',400);
-    const workflowTools=[...allowedTools].filter(name=>name!=='knowledge_search'||sources.length>0).filter(name=>name!=='web_search'||input.webSearch&&publicSearchPermitted(effectiveInstruction)&&(!policy.required||explicitlyNeedsPublicSearch(effectiveInstruction))&&Boolean(this.deps.webSearch));
+    const workflowTools=[...allowedTools].filter(name=>name!=='knowledge_search'||sources.length>0).filter(name=>name!=='web_search'||input.webSearch&&publicSearchPermitted(effectiveInstruction)&&(!policy.required||workflowNeedsPublicSearch(effectiveInstruction,input.workflow))&&Boolean(this.deps.webSearch));
     if(boundRead)workflowTools.push('read_notion_document');
     let workflowSpec:WorkflowSpec|undefined;
     try{
@@ -2764,6 +2764,10 @@ export class CoordinatorService {
       const tools: OrchestrationTool[] = [];
       const workerTime=job.runtimeContext??runtimeContext(db,s,op!.createdAt);
       const workerPrivateTexts=[attachmentResult.text,...previous.map(message=>message.content)];
+      const rememberPrivateKnowledge=(value:unknown)=>{
+        if(!value||typeof value!=='object'||!('chunks' in value)||!Array.isArray(value.chunks))return;
+        for(const chunk of value.chunks)if(chunk&&typeof chunk==='object'&&typeof chunk.content==='string'&&chunk.content.trim())workerPrivateTexts.push(chunk.content);
+      };
       const notionContext = job.notionTarget ? await this.deps.notionDocuments!.context(s, job, c.messages[start].content,{fullReferences:Boolean(job.workflow)}) : undefined;
       const executionKnowledgeDeclined=!job.onboardingPractice?.material&&(knowledgePolicy(db,s,job.instruction).declined||knowledgePolicy(db,s,c.messages[start].content).declined);
       const requiredWorkerTools=(job.contract?.requiredTools??[]).filter(name=>name!=='knowledge_search'||!executionKnowledgeDeclined);
@@ -2774,9 +2778,9 @@ export class CoordinatorService {
       // satisfy the existing no-placeholder gate without another retrieval.
       for(const source of job.workflow?.spec.steps.filter(step=>step.kind==='tool'&&step.tool==='knowledge_search')??[]){
         const state=job.workflow!.steps.find(state=>state.id===source.id),cp=steps.find(cp=>cp.key===state?.checkpointKey&&cp.scopeId===id&&cp.namespace===`workflow:${job.workflow!.id}`&&cp.state==='completed'&&cp.effect==='read');
-        if(state?.state==='completed'&&cp?.output&&typeof cp.output==='object'&&'result' in cp.output)datedDraft?.observe(cp.output.result);
+        if(state?.state==='completed'&&cp?.output&&typeof cp.output==='object'&&'result' in cp.output){datedDraft?.observe(cp.output.result);rememberPrivateKnowledge(cp.output.result);}
       }
-      for(const step of completedSteps(steps))if(step.tool==='knowledge_search')datedDraft?.observe(step.output);
+      for(const step of completedSteps(steps))if(step.tool==='knowledge_search'){datedDraft?.observe(step.output);rememberPrivateKnowledge(step.output);}
       if (notionContext?.readOnly) tools.push(this.deps.notionDocuments!.readTool(s,job,verify));
       if (notionContext&&!notionContext.readOnly) {
         const save=this.deps.notionDocuments!.tool(s, id, cid, job, verify, notionContext.currentDocument, c.messages[start].content,{projectLeadingTitle:Boolean(job.workflow)});
@@ -2792,12 +2796,12 @@ export class CoordinatorService {
           name: "knowledge_search",
           label:'查找你的资料',effect:'read',
           description: job.values.toolDescriptions?.knowledge_search,
-          run:async(q)=>{if(job.onboardingPractice?.material){await verify();const result=practiceMaterialResult!;await verify();return result;}const selected=job.contract?.knowledgeSourceIds??job.sources.map(s=>s.id),policy=knowledgePolicy(await this.store.read(),s,job.instruction,job.sources.map(s=>s.id));if(policy.missing.length){const missing={status:'not_connected',chunks:[],message:`${policy.missing.join('、')}还没连好，这次没有查到它。`};datedDraft?.observe(missing);return missing;}const result=await this.knowledge.recallWithDiagnostics(s.workspaceId,datedKnowledgeQuery(q,job.instruction,workerTime),5,selected,s.userId,knowledgeRecallOptions(job.instruction,workerTime));datedDraft?.observe(result);return temporalKnowledgeResult(knowledgeResultComplete(result,selected)?result:{...result,status:'partial'},job.instruction,workerTime);},
+          run:async(q)=>{if(job.onboardingPractice?.material){await verify();const result=practiceMaterialResult!;await verify();rememberPrivateKnowledge(result);return result;}const selected=job.contract?.knowledgeSourceIds??job.sources.map(s=>s.id),policy=knowledgePolicy(await this.store.read(),s,job.instruction,job.sources.map(s=>s.id));if(policy.missing.length){const missing={status:'not_connected',chunks:[],message:`${policy.missing.join('、')}还没连好，这次没有查到它。`};datedDraft?.observe(missing);return missing;}const result=await this.knowledge.recallWithDiagnostics(s.workspaceId,datedKnowledgeQuery(q,job.instruction,workerTime),5,selected,s.userId,knowledgeRecallOptions(job.instruction,workerTime));datedDraft?.observe(result);rememberPrivateKnowledge(result);return temporalKnowledgeResult(knowledgeResultComplete(result,selected)?result:{...result,status:'partial'},job.instruction,workerTime);},
         });
       if (
         job.webSearch &&
         publicSearchPermitted(job.instruction) &&
-        (!requiredKnowledge||explicitlyNeedsPublicSearch(job.instruction)) &&
+        (!requiredKnowledge||workflowNeedsPublicSearch(job.instruction,job.workflow?.spec)) &&
         job.values.tools.includes("web_search") &&
         this.deps.webSearch
       )

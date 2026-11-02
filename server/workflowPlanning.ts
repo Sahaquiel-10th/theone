@@ -2,6 +2,13 @@ import {TaskWorkflowError,validateWorkflowSpec,workflowSpecSchema,type WorkflowS
 import {coordinatorPositiveRequest} from './executionIntent.js';
 import {explicitlyNeedsPublicSearch} from './publicSearch.js';
 
+/** A validated public-query step is explicit routing intent even when the
+ * handoff uses different search wording. This is never a permission grant:
+ * admission and execution still check the user's grant, denials and tools. */
+export function workflowNeedsPublicSearch(instruction:string,workflow?:WorkflowSpec){
+ return explicitlyNeedsPublicSearch(instruction)||workflow?.steps.some(step=>step.kind==='tool'&&step.tool==='web_search')===true;
+}
+
 /** A human may permit optional public research in a supplement. This is not
  * tool availability, and quoted/negated text never grants permission. */
 export function workflowWebSearchPermission(text:string,previous=false,selected?:boolean){

@@ -79,3 +79,14 @@
 - 全新 `ONE-QA-WRITING-1102-C` 仅从普通主对话发送一次，输出选“对话中”，口述查得到大脑、查OXO官方、写稿、保存Notion，另明确不要操作本机。main正常回复云任务接收；notes/web/draft/save全4/4完成，初次保存回读即verified v7、无延后核对或手动继续，任务动态自动收起、主对话自动出现已完成和原页链接。任务 `cnv_204f8fa3b5c088557e84` / request `work_885c0b6c4506ed629559` / Notion `40ca5015999181adb0c5e886b4f53a9c`；同次只有一条worker/save检查点。原稿/回读canonical digest均 `6f7a4d77376678e4bb9b80a4dd0527599fb696388df10de4ac9cbccd697818a8`。独立fetch确认正文、表格、强调、代码及来源链接存在。UI证据 `output/WRITING-C-AUTOMATIC-MAIN-ACCEPTED-20261102.jpg`、`output/WRITING-C-FOUR-STEPS-ACCEPTED-20261102.jpg`。
 - C 的执行保存回执闭环通过，但成稿多附了写作阶段的“汇报/后续尚未保存”说明；已保存后读起来会矛盾，不能以机械链路通过冒充正文体验完全通过。保留C原样，不静默清洗或重写。补强 model 输出约定：content仅成果正文，summary/outcome说明当前步骤，全流程状态由平台说明。整单完成且最后实际阶段是严格已验证Notion，主汇报使用该阶段已验证摘要；后续HTML失败/未知保存不据此报全完成。
 - 这组窄修复冻结后全量2267项：2266通过、0失败、1既有skip（`/tmp/one-writing-content-final-full-20261102.log`）。定向与独立复核明确不会strip既有原稿或放宽Notion证明；新生成能否遵守约定仍待D真实验收。
+
+## c909ecd 上线与 D 验收发现
+
+- `c909ecd0a16dc7cf2dae088601f8ce2881b2650e` 的三平台 CI verify 全部通过（run `41391363860`）。自动发布再次停在源码接收；取消该deploy后精确核对同SHA tar/脚本路径，停止已成为孤儿的源码接收进程，确认同SHA进程与cwd均空，才单次使用原部署脚本执行同源码包。包SHA-256 `53f60cfa3f24cefa9afb0a96fbeec67bdb22f0aac3cd484ffdc893c185c9649a`；部署exit0、current精确c909、service active。日志 `/home/ubuntu/one-deploy-c909ecd-20261102.log`，证据 `output/WRITING-RELEASE-c909ecd-20261102.jpg`。没有跳过原部署检查或并行重发部署。
+- 北京时间13:14:59，公开health、首页及JS均200，JS仍为 `index-bclQcIUN.js`，1463144字节，SHA-256 `8b8dda19b52a9cbdfab49fd7bd7389930859894d2815c46d85ed90c345ff22b7`。这些证明版本与服务可用，不证明新的真实任务完成。
+- 全新D仅发送一次，13:17的本人上下文 request `coord_cab86cb58d329d1fb209`：两次delegate均rejected，没有child或Notion写入。第一份未解析的参数得到受控格式修正；第二份已解析，包含真实知识/公开卡、note→web→draft→save四步，仍被入队检查拒绝：必需读取工具本轮未开放。最终结果 `tool_invalid/planning/not_started`。D验收失败，不能把先前C的通过算作D通过。证据 `output/WRITING-D-ADMISSION-DIAGNOSTIC-20261102.jpg`。
+- 代码与精确措辞离线红测锁因：原用户明确要求上网，模型交接改写为“实际联网检索 OXO Good Grips 官方设计资料”，后续入队及worker在有必需知识读取时又依赖自然语言关键词匹配，漏识“联网检索”，把已授权、计划中真实必需的web工具删掉。“上网查”同流程旧版可通过。这是能力需求判断重复且不一致，不是Notion失败或搜索供应商失败。
+- 浏览器中断后出现的“模型未就绪”源于前端目录为空；恢复网络并刷新后目录正常，未修改模型配置或授权。这不能用来解释13:17已实际产生的派发拒绝。
+- 后续窄修以已验证的显式workflow web步骤证明需求，两处统一；仍独立检查用户web授权、明确禁止、执行器工具配置、适配器与搜索词隐私。D保留原失败记录，不重新发送。修复发布后的新独立真实验收另记。
+- 同链路离线横查发现本轮新召回的私人笔记片段未进入公开搜索的整段私文保护池；合成私段原样作为下一步query时，旧版确实调用搜索适配器1次。现仅将当前已授权fresh/practice及同任务精确完成检查点中的知识正文纳入现有保护池，不增加检索或历史读取，不将原话/交接全文按substring一概禁止。修后私文外发0，正常公开OXO query仍1；本轮不扩展通用schema纠参机制。
+- 两人交叉独审、8项端到端离线控制通过；最终冻结源全量2275项：2274通过、0失败、1既有skip。TypeScript、生产构建、diff-check均通过。日志 `/tmp/one-writing-final-admission-full-20261102.log`、`/tmp/one-writing-final-admission-build-20261102.log`。真实线上新验收仍待发布后确认。
