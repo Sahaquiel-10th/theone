@@ -120,3 +120,20 @@
 - 冻结实现：main与enqueue共用同页只读意图判定；初始仅当前bound页开放，未绑定旧任务须本轮own `read_task`/原目标全文读取完成后动态刷新single/batch schema。外空间、外用户、无页、原目标尚未读全不获得工具。写入、新页不因此获得read工具。Notion阶段描述明确原子保存+完整回读证明；入队失败给固定步骤序号/真实tool名与保留原目标后重提计划的指引，不再错说可选公开检索。
 - 单/批混用、query包装、缺必填字段给受控格式提示，batch仅透出本地格式校验的code-owned 400错误，provider/auth错误不透。原两次纠参预算与硬步数上限不变；精确F失败序列的离线脚本经提示纠正后只创建1child、保存1次且verified，不自动删验证步、不改变原错误计划对象。
 - 最终冻结源全量2286项：2285通过、0失败、1既有skip；TypeScript/生产构建/diff-check均绿，日志 `/tmp/one-writing-final-contract-full-20261102.log`、`/tmp/one-writing-final-contract-build-20261102.log`。两人交叉独审、85项相关与另74项独立测试通过。以上为离线与源码证据，待新版本上线后的独立G真实验收。
+
+## efcf065 发布过程
+
+- `efcf065476b5ccb70c4526032ba5e8a69e1e4507` 的 CI run `41460443074` 三项verify全部成功，应用CI完整2286/2285通过/0失败/1skip。deploy在源码接收约20分钟后于北京时间22:39:19取消，末端仅“operation was canceled”，没有部署成功记录。不能将该自动发布写成成功，也不能仅凭取消行断言网络根因。
+- root通过已授权腾讯云终端只读确认current仍7a76，唯一残留是该SHA源码tar PID1337563（精确start ticks与完整incoming路径均核对），脚本PID1337560。只向这个孤立接收进程发送SIGTERM；随后同SHA进程及incoming目录均为空，没有停止应用或并行部署。
+- 原生App粘贴曾异常发送剪贴板现有文字到终端，出现command-not-found；已中止并向用户说明，不将原文纳入文档。后续停用原生粘贴，浏览器typeText逐次核对实际输入与预期完整命令相同后才执行；只读pwd与版本检查通过。没有以“command-not-found”泛化证明全部文件均未变，也未删除终端历史。
+- 用系统文件选择器准确选择本地 `000-one-source-efcf065-20261102.tar.gz`，不使用剪贴板路径，不增加扩展权限；8.0MB上传8秒完成。服务器SHA-256与本地均为 `ca6db8601166b283bbdecf4a5f0fe2bb4317593412bc9dab09c86ca7ebba0cb3`。再次确认没有其他theone-deploy进程、没有同名新日志/exit文件，才单次启动原部署脚本（wrapper PID1349794），保留npm安装、全量测试、构建、只读schema gate与健康检查。日志 `/home/ubuntu/one-deploy-efcf065-20261102.log`，退出文件同名`.exit`。最终退出、上线与G验收另记。
+- 原脚本最终退出0，current精确 `efcf065476b5ccb70c4526032ba5e8a69e1e4507`，service active，远端实际2286项/2285通过/0失败/1skip，日志明确同SHA `ONE deployed`。证据 `output/WRITING-RELEASE-efcf065-20261102.jpg`。不能将这次单次备用发布混记为自动deploy成功。
+- 独立公开核对北京时间23:06:24：health `{ok:true}`、首页、JS均200；bundle仍1463144字节、SHA-256 `8b8dda19b52a9cbdfab49fd7bd7389930859894d2815c46d85ed90c345ff22b7` 与本地一致。之后才从普通主对话发送一次独立G；未重发任何旧任务，也不再部署代码打断本次新验收。
+
+## G 首次完整执行与最终边界
+
+- 新G仅从普通主对话提交一次，输出“对话中”，口述指定来源、联网、写稿与Notion。未手动点击继续、只读核对或补发要求。任务 `cnv_184aa96fb5a2447a8b3d` / worker request `work_e67583cb11c87bac3254`：得到大脑、OXO官方、成稿、保存并完整回读四步均completed，首次receipt即verified、canonicalVersion8/comparison8 matched，未进入延后verification队列。主对话自动汇报“文章已保存到Notion，正文也已回读核对”并给原页，任务气泡自动收起。
+- 同owner/same-op只读记录证明：唯一已完成workflow model、唯一worker/save记录；成稿raw/normalized/同版本canonical摘要全部与该receipt匹配，期望/实际canonical摘要相等。只读工具记录分别为knowledge_search及web_search completed；main trace也保留了真实查询与一次delegate格式纠正后的正常受理，未将纠正当作重复创建。
+- 独立Notion fetch确认唯一新页 `40ca5015999181e9a2fbc991c751187a`，标题、完整正文、二列表格、粗体、行内代码 `ONE-QA-G`、标明假设的场景及官方来源链接均在；没有混入“后续尚未保存”之类运行汇报。保存层完整保留模型成稿。源笔记内部双引号在文稿中排为内层单引号，因此本次闭环通过不作为“逐字引文质量校对已全部通过”的证明；未重写G来掩盖该边界。
+- 证据：`output/WRITING-G-AUTOMATIC-MAIN-ACCEPTED-20261102.jpg`、`output/WRITING-G-FOUR-STEPS-ACCEPTED-20261102.jpg`。最后停留ONE主对话供用户查看。原业务专栏和已有文章未重跑或改写，余额、价格与权限未人工调整；真实合成测试的正常模型/工具用量并未被伪装成零消耗。
+- 本轮结论限定为上述工具目录/准入、参数纠正、保存比较、同次回读证明衔接、步骤与主对话终态路径的修复。实际网络/模型服务失败和未来未覆盖的序列化仍可能发生，应保留具体失败反馈与安全的有界恢复，不承诺所有未来任务永不失败。最后仅提交文档证据并skip CI，线上功能版本保持efcf065，不再触发部署干扰已通过的G。
