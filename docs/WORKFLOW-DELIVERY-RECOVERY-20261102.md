@@ -71,3 +71,11 @@
 - 主对话联网检查统一使用口述/开关合成的有效授权。已成功交接的同轮child必须有web必需contract或workflow步骤证明，才移除重复的main查询义务；不把任意child当已查询。未调用与真实调用失败区分，分派参数卡住不再误报搜索失败；原参数修正提示补上本就合法的workflow字段。
 - 一轮全量2263/2262通过/0失败/1既有skip，早于最后固定分支与确认回执收口，不作为最终新源码验收。后续检查及新任务完整结果另记。
 - 最终冻结后的全量2266项：2265通过、0失败、1既有skip，日志 `/tmp/one-writing-routing-release-full-20261102.log`。最后新增本机raw requiredTools反例：native child不能满足main查询义务，已接到任务时也不引导整条重发。单/批知识+公开卡正例用自然确认收尾，均1任务/每项实际read各1次/worker1次；无额外main查询。最终构建与新源码发布结果待后记。
+
+## 9b0a2e6 发布与 C 验收
+
+- `9b0a2e62f22dced3e8b16f72eb13ed1f01c00983` 三平台 CI verify 全通过（run `41388043578`），自动发布在收源阶段连续数分钟仍为 tar。上传 SHA-256 `0a4d93b14ab6903ae19cf9e4cdbe3546b9c35d88930fe8725266e51d5e0be5ed` 的同SHA gzip包后取消该次自动deploy，确认workflow cancelled、同SHA进程/cwd均空、current仍旧版，才单次执行原部署脚本（PID1159240）。远端实际2266项测试/2265通过/0失败/1skip、构建和只读schema gate均过，exit0、current精确9b0、service active；原脚本没有修改DB或schema。日志 `/home/ubuntu/one-deploy-9b0a2e6-20261102.log`。
+- 12:42:32北京时间公开health/首页200，JS `index-bclQcIUN.js` 为1463144字节，SHA-256 `8b8dda19b52a9cbdfab49fd7bd7389930859894d2815c46d85ed90c345ff22b7` 与本地相同。上线证据 `output/WRITING-RELEASE-9b0a2e6-20261102.jpg`。
+- 全新 `ONE-QA-WRITING-1102-C` 仅从普通主对话发送一次，输出选“对话中”，口述查得到大脑、查OXO官方、写稿、保存Notion，另明确不要操作本机。main正常回复云任务接收；notes/web/draft/save全4/4完成，初次保存回读即verified v7、无延后核对或手动继续，任务动态自动收起、主对话自动出现已完成和原页链接。任务 `cnv_204f8fa3b5c088557e84` / request `work_885c0b6c4506ed629559` / Notion `40ca5015999181adb0c5e886b4f53a9c`；同次只有一条worker/save检查点。原稿/回读canonical digest均 `6f7a4d77376678e4bb9b80a4dd0527599fb696388df10de4ac9cbccd697818a8`。独立fetch确认正文、表格、强调、代码及来源链接存在。UI证据 `output/WRITING-C-AUTOMATIC-MAIN-ACCEPTED-20261102.jpg`、`output/WRITING-C-FOUR-STEPS-ACCEPTED-20261102.jpg`。
+- C 的执行保存回执闭环通过，但成稿多附了写作阶段的“汇报/后续尚未保存”说明；已保存后读起来会矛盾，不能以机械链路通过冒充正文体验完全通过。保留C原样，不静默清洗或重写。补强 model 输出约定：content仅成果正文，summary/outcome说明当前步骤，全流程状态由平台说明。整单完成且最后实际阶段是严格已验证Notion，主汇报使用该阶段已验证摘要；后续HTML失败/未知保存不据此报全完成。
+- 这组窄修复冻结后全量2267项：2266通过、0失败、1既有skip（`/tmp/one-writing-content-final-full-20261102.log`）。定向与独立复核明确不会strip既有原稿或放宽Notion证明；新生成能否遵守约定仍待D真实验收。

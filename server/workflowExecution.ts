@@ -288,9 +288,11 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
  const question=requests.at(-1);
  if(question)content=content&&content!==question?`${content}\n\n还需要你补充：\n${question}`:question;
  const receipt=await input.receipt();await input.verify();
- const verifiedNotion=run.spec.steps.some((step,index)=>{if(step.kind!=='notion'||run.steps[index].state!=='completed')return false;const value=output(proof(key(step)));return notionProof(receipt,value.notionCheckpointKey,value.expectedBodyDigest);});
- if(verifiedNotion&&receipt?.pageId&&/^[a-f0-9]{32}$/i.test(receipt.pageId.replaceAll('-','')))content+=(content?'\n\n':'')+`[已保存到 Notion · 已回读核对](https://www.notion.so/${receipt.pageId.replaceAll('-','')})`;
+ const verifiedNotionSteps=run.spec.steps.flatMap((step,index)=>{if(step.kind!=='notion'||run.steps[index].state!=='completed')return [];const value=output(proof(key(step)));return notionProof(receipt,value.notionCheckpointKey,value.expectedBodyDigest)?[{id:step.id,summary:run.steps[index].summary}]:[];});
+ if(verifiedNotionSteps.length&&receipt?.pageId&&/^[a-f0-9]{32}$/i.test(receipt.pageId.replaceAll('-','')))content+=(content?'\n\n':'')+`[已保存到 Notion · 已回读核对](https://www.notion.so/${receipt.pageId.replaceAll('-','')})`;
+ const lastActualStep=run.steps.filter(step=>step.state!=='skipped').at(-1);
+ const finalNotionSummary=run.phase==='completed'?verifiedNotionSteps.find(step=>step.id===lastActualStep?.id)?.summary:undefined;
  const progress=workflowProgress(run),waiting=run.steps.some(step=>step.state==='running'||step.state==='waiting'&&step.waitingFor==='result');
  const outcome=run.phase==='completed'?'completed':run.phase==='needs_input'?'needs_input':run.phase==='failed'&&!content?'failed':'partial';
- return {run,content:content||progress.summary,summary:run.phase==='needs_input'?run.steps.filter(step=>step.state==='needs_input').at(-1)?.summary??progress.summary:wholeTaskSummary??progress.summary,outcome,waiting};
+ return {run,content:content||progress.summary,summary:run.phase==='needs_input'?run.steps.filter(step=>step.state==='needs_input').at(-1)?.summary??progress.summary:finalNotionSummary??wholeTaskSummary??progress.summary,outcome,waiting};
 }

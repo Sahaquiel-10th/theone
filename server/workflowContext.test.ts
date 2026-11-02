@@ -32,6 +32,10 @@ test('step completion is scoped to its own deliverable while later saving remain
  assert.deepEqual(goal.currentStep,{id:'write',instruction:'撰写完整专栏。',kind:'model',completionScope:'current_step'});
  assert.deepEqual(goal.deferredSteps,[{id:'save',title:'保存到 Notion',kind:'notion'}]);
  assert.match(built.messages[0].content!,/outcome 只判断当前步骤/);
+ assert.match(built.messages[0].content!,/content 只放本步骤可直接使用的成果正文/);
+ assert.match(built.messages[0].content!,/不要额外附加本次执行汇报、步骤完成声明或后续尚未执行的进度说明/);
+ assert.match(built.messages[0].content!,/summary 只概括当前步骤的成果及真实缺项/);
+ assert.match(built.messages[0].content!,/全流程进度和保存回执由平台汇总/);
  assert.match(built.messages[0].content!,/尚未执行的后续步骤不是本步骤的缺项/);
  assert.match(built.messages[0].content!,/真正缺料、正文未写完或执行失败仍须如实/);
  assert.equal(built.tools.length,0,'describing a future save does not grant its tool to the writing model');

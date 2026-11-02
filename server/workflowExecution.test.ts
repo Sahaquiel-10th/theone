@@ -132,16 +132,29 @@ test('partial or truncated model body is preserved but cannot satisfy its depend
 });
 test('a manuscript stage does not count its later Notion save as unfinished writing',async()=>{
  const f=fixture(plan(step('write',[],{instruction:'撰写完整专栏。'}),step('save',['write'],{kind:'notion',title:'保存到 Notion'})));
- const body='完整专栏正文。\n\n所有用户要求均已展开，唯一自然结尾。';let models=0,writes=0;
+ const body='完整专栏正文。\n\n正文引用“保存属于后续步骤，本轮尚未执行”来分析状态提示；这是原稿内容，不可自动删去。\n\n所有用户要求均已展开，唯一自然结尾。';let models=0,writes=0;
  const result=await f.execute({goal:'把用户提供的观点写成完整专栏并保存到 Notion。',callModel:async(s,messages)=>{
   models++;assert.equal(s.id,'write');const handoff=JSON.parse(messages[1].content!);
   assert.equal(handoff.currentStep.completionScope,'current_step');assert.equal(handoff.currentStep.kind,'model');
   assert.deepEqual(handoff.deferredSteps,[{id:'save',title:'保存到 Notion',kind:'notion'}]);
   assert.match(messages[0].content!,/本步骤已完整产出可用正文即返回 completed/);assert.match(messages[0].content!,/不宣称已经保存/);
+  assert.match(messages[0].content!,/content 只放本步骤可直接使用的成果正文/);assert.match(messages[0].content!,/全流程进度和保存回执由平台汇总/);
   return answer(body);
  },saveNotion:async(_s,content)=>{writes++;assert.equal(content,body);return f.makeProof(content);}});
  assert.equal(result.outcome,'completed');assert.deepEqual(result.run.steps.map(s=>s.state),['completed','completed']);assert.equal(models,1);assert.equal(writes,1);
- await f.execute({callModel:async()=>assert.fail('completed manuscript regenerated'),saveNotion:async()=>assert.fail('verified save repeated')});assert.equal(models,1);assert.equal(writes,1);
+ assert.equal(result.summary,result.run.steps[1].summary);assert.match(result.summary,/文章已保存到 Notion.*回读核对/);assert.match(result.content,/正文引用“保存属于后续步骤，本轮尚未执行”/);
+ const recovered=await f.execute({callModel:async()=>assert.fail('completed manuscript regenerated'),saveNotion:async()=>assert.fail('verified save repeated')});assert.equal(models,1);assert.equal(writes,1);assert.equal(recovered.summary,result.summary);
+});
+test('a final verified save supplies completion copy only when no later real deliverable remains',async()=>{
+ const saved='文章已保存到 Notion，正文也已回读核对。';
+ for(const suffix of ['skipped-optional','html-completed','html-failed'] as const){
+  const last=suffix==='skipped-optional'?step('optional',['save'],{kind:'tool',tool:'web_search',required:false}):step('html',['save'],{kind:'feature',featureId:'html_feature',title:'制作交互网页'});
+  const f=fixture(plan(step('draft'),step('save',['draft'],{kind:'notion'}),last));
+  const result=await f.execute({featureTools:{html_feature:'feature_0'},tools:suffix==='skipped-optional'?[]:[{name:'feature_0',run:async()=>suffix==='html-failed'?{status:'failed'}:{content:'完整网页成果',artifacts:[{name:'合成.html',openUrl:'/api/welcome-pages/synthetic/view'}]}}]});
+  assert.equal(f.modelCalls,1);assert.equal(f.saves,1);assert.equal(result.run.steps[1].summary,saved);
+  if(suffix==='skipped-optional'){assert.equal(result.run.steps[2].state,'skipped');assert.equal(result.outcome,'completed');assert.equal(result.summary,saved);}
+  else{assert.notEqual(result.summary,saved);if(suffix==='html-completed')assert.equal(result.outcome,'completed');else{assert.equal(result.outcome,'partial');assert.equal(result.run.phase,'failed');assert.match(result.summary,/制作交互网页/);}}
+ }
 });
 test('stage guidance never promotes an explicitly partial manuscript to a completed save input',async()=>{
  const f=fixture(plan(step('write'),step('save',['write'],{kind:'notion'})));
@@ -153,6 +166,7 @@ test('delayed verified receipt recovers the exact actual save checkpoint without
  const f=fixture(plan(step('write'),step('save',['write'],{kind:'notion'})));let models=0,writes=0,body='';
  const first=await f.execute({callModel:async()=>{models++;return answer('完整正文\n唯一自然结尾');},saveNotion:async(_s,content)=>{writes++;body=content;return f.makeProof(content,{verified:false});}});
  assert.equal(first.waiting,true);assert.equal(first.outcome,'partial');assert.equal(first.run.steps[1].waitingFor,'result');assert.equal(f.steps.find(cp=>cp.tool==='save_notion_draft')!.state,'started');
+ assert.doesNotMatch(first.summary,/文章已保存到 Notion.*回读核对/);
  await f.makeProof(body);
  const second=await f.execute({callModel:async()=>assert.fail('extra model call during verification'),saveNotion:async()=>assert.fail('write retried during verification')});
  assert.equal(second.outcome,'completed');assert.equal(second.waiting,false);assert.equal(models,1);assert.equal(writes,1);assert.match(second.content,/唯一自然结尾/);assert.match(second.content,/已回读核对/);
