@@ -26,10 +26,12 @@ test('a requires-check cancelled task sends stop to the exact original round ins
  const cancel=actual('async function cancelExecution(','const visibleReceipt =','cancelExecution',{executionPreparationRef:{current:null},preparingExecution:false,awaitingExecutionOperationId:'',executionTask:held,isExecutionRunning:()=>false,executionCancellationRequest,stoppedExecutionIdsRef:{current:stopped},takeoverTaskId:'old-exact',runningExecutions:[],transitionExecutionMode(){},executionOriginRef:{current:null},api:async(...args:unknown[])=>{writes.push(args);},refreshExecutionTasks:async()=>{},setError(){}});
  await cancel(null,held);assert.deepEqual(writes,[['/api/executions/old-exact/cancel',{method:'POST',body:JSON.stringify({expectedRound:2})}]]);
 });
-test('execution material follows a real running task, not a save preference or stale transition flag',()=>{
- const declaration=source.match(/const activeExecutionMode = ([^;]+);/)![1];
- const evaluate=(executionBusy:boolean,executionMode:boolean)=>new Function('executionBusy','executionMode',`return ${declaration};`)(executionBusy,executionMode);
- assert.equal(evaluate(true,false),true);assert.equal(evaluate(false,true),false);
+test('execution material has its own lifecycle and does not change the execution lock',()=>{
+ assert.match(source,/const activeExecutionMode = executionAppearance\.active;/);
+ assert.match(source,/const executionBusy = runningExecutions\.length > 0;/);
+ assert.match(source,/const runningExecutions = executionTasks\.filter\(isExecutionRunning\);/);
+ assert.match(source,/executionActive=\{activeExecutionMode\}/);
+ assert.match(source,/activeExecutionMode \? "execution-shell"/);
 });
 test('stopping an explicit old target cannot cancel an unrelated new preparation',async()=>{
  const writes:unknown[]=[],preparation={operationId:'new-preparation',coordinator:true,cancelled:false};
@@ -40,4 +42,23 @@ test('a preparation stop without a target only stops its exact pending operation
  const writes:unknown[]=[],preparation={operationId:'new-preparation',coordinator:true,cancelled:false},stopped=new Set();
  const cancel=actual('async function cancelExecution(','const visibleReceipt =','cancelExecution',{executionPreparationRef:{current:preparation},preparingExecution:true,awaitingExecutionOperationId:'new-preparation',stoppedPreparationIdsRef:{current:stopped},setAwaitingExecutionOperationId(){},transitionExecutionMode(){},pointFromElement:()=>null,api:async(...args:unknown[])=>{writes.push(args);},setNotice(){},setError(){}});
  await cancel(null,null);assert.equal(preparation.cancelled,true);assert.equal(stopped.has('local_new-preparation'),true);assert.deepEqual(writes,[['/api/coordinator/messages/new-preparation/stop',{method:'POST'}]]);
+});
+test('a confirmed successful conversation deletion clears only its local appearance and selected executions',async()=>{
+ const local={id:'local-a',conversationId:'thing-a'},other={id:'local-b',conversationId:'thing-b'};
+ let tasks=[local,other],selected='local-a',takeover='local-b';const forgotten:string[]=[],writes:unknown[]=[];
+ const remove=actual('async function deleteConversation(','async function moveConversation','deleteConversation',{
+  confirm:()=>true,api:async(...args:unknown[])=>{writes.push(args);},executionAppearance:{forgetConversation:(id:string)=>forgotten.push(id)},executionTasks:tasks,
+  setExecutionTasks:(update:(items:typeof tasks)=>typeof tasks)=>{tasks=update(tasks);},setSelectedExecutionId:(update:(id:string)=>string)=>{selected=update(selected);},setTakeoverTaskId:(update:(id:string)=>string)=>{takeover=update(takeover);},setConversations(){},activeId:'other',setActiveId(){}
+ });
+ await remove({id:'thing-a',title:'Test'});assert.deepEqual(writes,[['/api/conversations/thing-a',{method:'DELETE'}]]);assert.deepEqual(forgotten,['thing-a']);assert.deepEqual(tasks,[other]);assert.equal(selected,'');assert.equal(takeover,'local-b');
+});
+test('declined or failed conversation deletion never clears a live appearance',async()=>{
+ for(const confirmed of [false,true]){
+  const forgotten:string[]=[],writes:unknown[]=[];
+  const remove=actual('async function deleteConversation(','async function moveConversation','deleteConversation',{
+   confirm:()=>confirmed,api:async(...args:unknown[])=>{writes.push(args);throw Error('not deleted');},executionAppearance:{forgetConversation:(id:string)=>forgotten.push(id)}
+  });
+  if(confirmed)await assert.rejects(remove({id:'thing-a',title:'Test'}),/not deleted/);else await remove({id:'thing-a',title:'Test'});
+  assert.deepEqual(forgotten,[]);assert.equal(writes.length,Number(confirmed));
+ }
 });
