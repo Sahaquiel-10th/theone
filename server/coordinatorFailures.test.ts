@@ -10,6 +10,7 @@ import {ChatOperationError} from './chatOperations.js';
 import {ModelBillingError,BillingReviewRequiredError} from './modelBilling.js';
 import {PowerAvailabilityError} from './powerBilling.js';
 import {OrchestrationInputError,OrchestrationResponseError} from './taskOrchestrator.js';
+import {TaskWorkflowError} from './taskWorkflow.js';
 import {LocalExecutionNotStartedError} from './localExecutionAdmission.js';
 
 test('a proven local refusal retains only its reviewed cause, never raw fields or a generic routing failure',()=>{
@@ -81,4 +82,23 @@ test('unknown storage, billing, transport and internal exceptions expose only re
   assert.deepEqual(failure,{code,stage,outcome:'partial'});
   assert.doesNotMatch(JSON.stringify(failure)+coordinatorRecoveryCopy(failure),/SECRET|credential|password|private_provider/);
  }
+});
+
+
+test('a reviewed workflow verification wrapper retains Key, budget and source authorization categories without leaking causes',()=>{
+ const cases=[
+  [new OneKeyPresenceError('PRIVATE_KEY_CAUSE'),'key_required'],
+  [new CoordinatorError('本轮设置的预算不足 PRIVATE_BUDGET_CAUSE',402),'budget_exceeded'],
+  [new CoordinatorError('知识授权已变化，本轮已停止 PRIVATE_SOURCE_CAUSE',403),'source_authorization'],
+  [new CoordinatorError('Notion 授权已撤销 PRIVATE_NOTION_CAUSE',403),'notion_authorization'],
+  [new PowerAvailabilityError('PRIVATE_POWER_CAUSE','POWER_INSUFFICIENT'),'power_insufficient'],
+ ] as const;
+ for(const [cause,code] of cases){
+  const inner=new TaskWorkflowError('WORKFLOW_VERIFY_FAILED','任务状态或授权已经变化。',cause),wrapper=new TaskWorkflowError('WORKFLOW_VERIFY_FAILED','核对未通过。',inner);
+  const result=classifyCoordinatorFailure(wrapper,{stage:'tool',outcome:'unknown'});assert.equal(result.code,code);assert.doesNotMatch(JSON.stringify(wrapper)+JSON.stringify(result)+coordinatorRecoveryCopy(result),/PRIVATE_|password|Bearer/);
+ }
+ const key=new OneKeyPresenceError('PRIVATE');assert.equal(classifyCoordinatorFailure(Object.assign(new Error('untrusted wrapper'),{cause:key})).code,'internal_error');
+ const privateRaw=new Error('password=SECRET');assert.equal(classifyCoordinatorFailure(new TaskWorkflowError('WORKFLOW_VERIFY_FAILED','核对未通过。',privateRaw)).code,'internal_error');
+ assert.equal(classifyCoordinatorFailure(new TaskWorkflowError('WORKFLOW_PERSIST_FAILED','保存未确认。',key)).code,'internal_error');
+ const cycle=new TaskWorkflowError('WORKFLOW_VERIFY_FAILED','核对未通过。');Object.defineProperty(cycle,'cause',{value:cycle});assert.equal(classifyCoordinatorFailure(cycle).code,'internal_error');
 });

@@ -116,3 +116,40 @@ test('scope, operation owner, cancellation, task archival and explicit stop all 
  const mutations=[(f:ReturnType<typeof fixture>)=>{f.task.workspaceId='ws_b';},f=>{f.task.userId='usr_b';},f=>{f.task.id='other_task';},f=>{f.run.binding.operationId='other_operation';},f=>{f.run.binding.workspaceId='ws_b';},f=>{f.run.id='other_run';},f=>{f.op.status='completed';},f=>{f.op.status='interrupted';},f=>{f.op.workRun!.state='cancelled';},f=>{f.op.executionCancelled=true;},f=>{f.task.archived=true;},f=>{f.task.workPauseReason='user_stopped';},f=>{f.task.coordinatorMain=true;},f=>{f.op.workRun!.workflow=undefined;}] satisfies ((f:ReturnType<typeof fixture>)=>void)[];
  for(const mutate of mutations){const f=fixture();mutate(f);assert.equal(f.can(),false);}
 });
+
+function retryFixture(tool:'knowledge_search'|'read_notion_document'|'web_search'='knowledge_search'){
+ const f=fixture([step('draft'),step('read',{kind:'tool',tool,inputs:['draft']})]),draft=f.checkpoint('draft'),cp=f.checkpoint('read','started','waiting');
+ f.run.steps[0]={id:'draft',state:'completed',checkpointKey:draft.key};f.run.steps[1]={id:'read',state:'waiting',waitingFor:'result'};f.run.phase='waiting';
+ const first=Date.parse('2026-11-03T00:00:00Z');cp.operation={version:1,execution:'failed',verification:'not_required',recovery:{strategy:'retry_read',state:'scheduled',attempt:1,maxAttempts:3,firstAttemptAt:new Date(first).toISOString(),nextRetryAt:new Date(first+2000).toISOString(),deadlineAt:new Date(first+120000).toISOString(),reason:'timeout'}};
+ return {...f,cp,draft};
+}
+
+test('startup preserves exactly scoped safe-read retry counts beside already completed paid work',()=>{
+ for(const tool of ['knowledge_search','read_notion_document'] as const){
+  const f=retryFixture(tool);assert.equal(f.can(),true);assert.equal(f.cp.operation?.recovery?.attempt,1);assert.equal(f.cp.state,'started');assert.equal(f.run.sequence,0);
+  f.cp.operation!.execution='running';f.cp.operation!.recovery!.state='executing';assert.equal(f.can(),true,'an interrupted idempotent read may consume the next bounded attempt');
+  f.cp.operation!.recovery!.attempt=3;assert.equal(f.can(),true,'exhausted unknown last read may be finalized, never a fourth request');
+ }
+});
+
+test('startup does not mistake read effect labels or copied recovery envelopes for permission to repeat paid/search/write actions',()=>{
+ assert.equal(retryFixture('web_search').can(),false,'native search may charge a model even with effect read');
+ const mutations=[(f:ReturnType<typeof retryFixture>)=>{f.cp.effect='model';},f=>{f.cp.scopeId='foreign';},f=>{f.cp.namespace='worker';},f=>{f.cp.tool='workflow:another:read';},f=>{(f.cp.output as any).workflow.revision=2;},f=>{(f.cp.output as any).workflow.stepId='draft';},f=>{f.cp.operation!.recovery!.maxAttempts=8 as 3;},f=>{f.cp.operation!.recovery!.nextRetryAt='invalid';},f=>{f.cp.operation!.artifactRef=f.cp.key;},f=>{f.cp.operation!.execution='succeeded';},f=>{f.cp.operation!.verification='verified';},f=>{(f.cp.output as any).sourceArtifact={id:'foreign_article'};},f=>{delete f.cp.operation;},f=>{f.op.workRun!.steps!.push(structuredClone(f.cp));},f=>{f.cp.operation!.recovery!.state='finished';}] satisfies ((f:ReturnType<typeof retryFixture>)=>void)[];
+ for(const mutate of mutations){const f=retryFixture();mutate(f);assert.equal(f.can(),false);}
+ for(const effect of ['model','external_write','artifact'] as const){const f=retryFixture();f.op.workRun!.steps!.push({key:'uncertain',namespace:'nested',tool:'earlier',effect,state:'started',scopeId:f.op.id,label:'未知原操作',updatedAt:f.cp.updatedAt});assert.equal(f.can(),false);}
+});
+
+test('explicit stop, protected authorization and budget failures cannot wake a scheduled safe read',()=>{
+ const mutations=[(f:ReturnType<typeof retryFixture>)=>{f.op.executionCancelled=true;},f=>{f.task.workPauseReason='user_stopped';},f=>{f.task.archived=true;},f=>{f.op.workRun!.state='cancelled';},f=>{f.task.workspaceId='foreign';},f=>{f.task.userId='foreign';}] satisfies ((f:ReturnType<typeof retryFixture>)=>void)[];
+ for(const mutate of mutations){const f=retryFixture();mutate(f);assert.equal(f.can(),false);}
+ for(const code of ['task_key_required','task_authorization_required','task_budget_required','task_budget_limit']){const f=retryFixture();f.op.workRun!.failureCode=code;assert.equal(f.can(),false);}
+});
+
+test('imported completed safe reads rebind public-neutral artifact evidence to the new exact checkpoint',()=>{
+ const f=fixture([step('source',{kind:'tool',tool:'knowledge_search',instruction:'同一份已授权资料'})]),cp=f.checkpoint('source');f.run.steps[0]={id:'source',state:'completed',checkpointKey:cp.key};f.run.phase='completed';
+ cp.operation={version:1,execution:'succeeded',verification:'not_required',artifactRef:cp.key};
+ const next=()=>createWorkflowRun({version:1,steps:[step('next_source',{kind:'tool',tool:'knowledge_search',instruction:'同一份已授权资料'}),step('draft',{inputs:['next_source']})]},{...scope,operationId:'next_op'},2);
+ const run=next(),records=reuseCompletedWorkflowReads(f.op.workRun!,run);assert.equal(records.length,1);assert.notEqual(records[0].key,cp.key);assert.equal(records[0].operation?.artifactRef,records[0].key);assert.equal(cp.operation.artifactRef,cp.key);assert.equal(cp.scopeId,'op_a');
+ const task={...f.task,id:'next_task'},op={...f.op,id:'next_op',conversationId:task.id,workRun:{...f.op.workRun!,state:'queued' as const,workflow:run,steps:records}};assert.equal(canResumeWorkflowAfterRestart(op,task),true);
+ for(const mutate of [(c:TaskStep)=>{c.operation!.artifactRef='a'.repeat(64);},c=>{c.operation!.execution='unknown';},c=>{c.operation!.verification='pending';},c=>{c.scopeId='foreign';}] satisfies ((c:TaskStep)=>void)[]){const original=structuredClone(cp);mutate(cp);assert.deepEqual(reuseCompletedWorkflowReads(f.op.workRun!,next()),[]);Object.assign(cp,original);}
+});

@@ -45,6 +45,7 @@ export function ThingsPanel({
   onExecuteDraft,
   onRemove,
   taskNotice,
+  availableContent,
   onReadAll,
   unreadCount = 0,
   fluid = false,
@@ -61,6 +62,9 @@ export function ThingsPanel({
   workbenchLabel?: string;
   onRemove?: (id:string)=>Promise<void>;
   taskNotice?: ReactNode;
+  /** Already-created work shares the normal reading pane, never the compact
+   * notice's limited-height scrolling area. Opening it performs no execution. */
+  availableContent?: ReactNode;
   onReadAll?: () => Promise<void>;
   unreadCount?: number;
   fluid?: boolean;
@@ -92,7 +96,16 @@ export function ThingsPanel({
   const pages = Math.max(1, Math.ceil(found.length / 10)),
     current = Math.min(page, pages);
   const draft = drafts[selectedId] || "";
-  const {scroll: messagesRef, onScroll} = useFollowLatest(selectedId, Boolean(selected));
+  const {scroll: messagesRef, onScroll,showStart} = useFollowLatest(selectedId, Boolean(selected));
+  const openedAvailable=useRef('');
+  useEffect(()=>{
+    if(!availableContent){if(openedAvailable.current!==selectedId)openedAvailable.current='';return;}
+    if(openedAvailable.current===selectedId)return;
+    openedAvailable.current=selectedId;
+    // A result link opens at the manuscript, not the bottom of its old chat.
+    // Subsequent refreshes keep the reader's position instead of jumping back.
+    showStart();
+  },[selectedId,Boolean(availableContent)]);
   const list = <aside className="things-list">
         <header className="things-list-heading">
           <h2>任务</h2>
@@ -177,6 +190,7 @@ export function ThingsPanel({
             </header>
             {taskNotice ? <div className="things-task-notice">{taskNotice}</div> : null}
             <div className="things-thread-messages" ref={messagesRef} onScroll={onScroll}>
+              {availableContent}
               {selected.messagesLoaded === false ? (
                 <p>正在打开…</p>
               ) : selected.messages.length ? (
@@ -194,9 +208,9 @@ export function ThingsPanel({
                     {message.role === "assistant" ? <MessageSources message={message}/> : null}
                   </article>
                 ))
-              ) : (
+              ) : !availableContent ? (
                 <p>此任务还没有消息。</p>
-              )}
+              ) : null}
             </div>
             {executionContent}
             {errors[selectedId] ? <p className="things-send-error" role="alert">{errors[selectedId]}</p> : null}

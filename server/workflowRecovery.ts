@@ -2,6 +2,8 @@ import type {ChatOperation} from './chatOperations.js';
 import type {Conversation} from './types.js';
 import type {WorkRun} from './coordinatorTypes.js';
 import {taskStepKey,type TaskStep} from './taskSteps.js';
+import {pendingWorkflowRecovery} from './workflowExecution.js';
+import {validOperationEvidence} from './operationRecovery.js';
 import {workflowProgress,workflowPhase,type WorkflowStep} from './taskWorkflow.js';
 
 const object=(value:unknown):Record<string,unknown>|undefined=>value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:undefined;
@@ -21,7 +23,7 @@ export function workflowSourceBindingsMatch(previous:WorkRun['sources'],next:Wor
 export function canResumeWorkflowAfterRestart(operation:ChatOperation,task:Conversation):boolean{
  try{
   const job=operation.workRun,run=job?.workflow;
-  if(operation.status!=='pending'||operation.executionCancelled||!job||!['running','queued'].includes(job.state)||!run||!task||task.archived||task.coordinatorMain||task.workPauseReason==='user_stopped'||operation.conversationId!==task.id||operation.workspaceId!==task.workspaceId||operation.userId!==task.userId||run.binding.workspaceId!==operation.workspaceId||run.binding.userId!==operation.userId||run.binding.operationId!==operation.id)return false;
+  if(operation.status!=='pending'||/^task_(?:(?:key|authorization|budget)_required|budget_limit)$/.test(job?.failureCode??'')||operation.executionCancelled||!job||!['running','queued'].includes(job.state)||!run||!task||task.archived||task.coordinatorMain||task.workPauseReason==='user_stopped'||operation.conversationId!==task.id||operation.workspaceId!==task.workspaceId||operation.userId!==task.userId||run.binding.workspaceId!==operation.workspaceId||run.binding.userId!==operation.userId||run.binding.operationId!==operation.id)return false;
   // Reuses the strict persisted-run validator, including the deterministic
   // owner/revision ID, dependency states and derived phase invariant.
   workflowProgress(run);
@@ -36,6 +38,7 @@ export function canResumeWorkflowAfterRestart(operation:ChatOperation,task:Conve
    const cp=matching[0],v=object(cp.output),marker=object(v?.workflow);
    if(cp.namespace!==namespace||cp.scopeId!==operation.id||cp.tool!==expectedStep.tool||!['read','model','artifact','external_write'].includes(cp.effect)||!['started','completed','failed'].includes(cp.state)||!Number.isFinite(Date.parse(cp.updatedAt))||!marker||Object.keys(marker).sort().join()!=='revision,runId,stepId,version'||marker.version!==1||marker.runId!==run.id||marker.revision!==run.revision||marker.stepId!==step.id)return undefined;
    if(step.kind==='model'&&cp.effect!=='model'||step.kind==='tool'&&cp.effect!=='read'||step.kind==='notion'&&cp.effect!=='external_write')return undefined;
+   if(cp.operation&&(!validOperationEvidence(cp.operation)||cp.operation.artifactRef!==undefined&&cp.operation.artifactRef!==cp.key||cp.state==='completed'&&(cp.operation.execution!=='succeeded'||!cp.operation.artifactRef||step.kind==='notion'&&cp.operation.verification!=='verified')))return undefined;
    return {cp,value:v!};
   };
   const notionVerified=(step:WorkflowStep,cp:TaskStep,value:Record<string,unknown>)=>{
@@ -63,7 +66,7 @@ export function canResumeWorkflowAfterRestart(operation:ChatOperation,task:Conve
     if(state.checkpointKey!==cp.key||cp.state!=='completed'||value.outcome!=='completed')return false;
    }else if(state.state==='failed'||state.state==='needs_input'){
     if(cp.state!=='failed'||!['failed','partial','needs_input'].includes(String(value.outcome))||state.state==='needs_input'&&value.outcome!=='needs_input')return false;
-   }else if(!(cp.state==='completed'&&value.outcome==='completed')&&!notionVerified(step,cp,value))return false;
+   }else if(!(cp.state==='completed'&&value.outcome==='completed')&&!notionVerified(step,cp,value)&&!pendingWorkflowRecovery(run,steps,run.binding,step.id))return false;
   }
   // An unrelated or nested unfinished paid/artifact/write checkpoint remains a
   // safety hold even when an outer step says it finished. Read-only leftovers
@@ -105,9 +108,10 @@ export function reuseCompletedWorkflowReads(previous:WorkRun,next:import('./task
   if(sources.length!==1)continue;
   const sourceIndex=old.spec.steps.indexOf(source),tool=`workflow:${old.id}:${source.id}`,sourceKey=taskStepKey(`workflow:${old.id}`,tool,JSON.stringify({revision:old.revision,instruction:source.instruction,inputs:source.inputs}));
   const matches=(previous.steps??[]).filter(cp=>cp.key===sourceKey),cp=matches[0],value=object(cp?.output),marker=object(value?.workflow);
+  if(cp?.operation&&(!validOperationEvidence(cp.operation)||cp.operation.execution!=='succeeded'||cp.operation.verification!=='not_required'||cp.operation.artifactRef!==cp.key))continue;
   if(old.steps[sourceIndex].state!=='completed'||old.steps[sourceIndex].checkpointKey!==sourceKey||matches.length!==1||cp.state!=='completed'||cp.effect!=='read'||cp.namespace!==`workflow:${old.id}`||cp.scopeId!==old.binding.operationId||cp.tool!==tool||value?.outcome!=='completed'||marker?.version!==1||marker.runId!==old.id||marker.revision!==old.revision||marker.stepId!==source.id||Object.keys(marker).sort().join()!=='revision,runId,stepId,version')continue;
   const nextTool=`workflow:${next.id}:${step.id}`,key=taskStepKey(`workflow:${next.id}`,nextTool,JSON.stringify({revision:next.revision,instruction:step.instruction,inputs:step.inputs}));
-  imported.push({...structuredClone(cp),key,namespace:`workflow:${next.id}`,scopeId:next.binding.operationId,tool:nextTool,output:{...structuredClone(value),workflow:{version:1,runId:next.id,revision:next.revision,stepId:step.id}}});
+  imported.push({...structuredClone(cp),key,namespace:`workflow:${next.id}`,scopeId:next.binding.operationId,tool:nextTool,operation:{version:1,execution:'succeeded',verification:'not_required',artifactRef:key},output:{...structuredClone(value),workflow:{version:1,runId:next.id,revision:next.revision,stepId:step.id}}});
   next.steps[next.spec.steps.indexOf(step)]={id:step.id,state:'completed',checkpointKey:key,summary:'沿用同一任务已经取得、且重新授权核对的资料。'};
  }
  next.phase=workflowPhase(next.spec,next.steps);

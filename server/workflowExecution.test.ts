@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createWorkflowRun,type WorkflowBinding,type WorkflowSpec,type WorkflowStep} from './taskWorkflow.js';
-import {executeWorkflowStages,recoverVerifiedNotionWorkflow,type WorkflowExecutionInput} from './workflowExecution.js';
+import {executeWorkflowStages,recoverVerifiedNotionWorkflow,pendingWorkflowRecovery,type WorkflowExecutionInput} from './workflowExecution.js';
 import type {TaskStep,TaskStepStore} from './taskSteps.js';
 import type {WorkRun} from './coordinatorTypes.js';
 import {legacyNotionNormalized,notionHash} from './notionCanonical.js';
@@ -304,4 +304,76 @@ test('concurrent adapter events only issue one model call through the workflow C
  const f=fixture(plan(step('write')));const old=f.run;let calls=0;
  const result=await Promise.allSettled([f.execute({run:old,callModel:async()=>{calls++;return answer('正文');}}),f.execute({run:old,callModel:async()=>{calls++;return answer('正文');}})]);
  assert.equal(calls,1);assert.equal(result.filter(value=>value.status==='fulfilled').length,1);
+});
+
+
+test('transient safe read retries from durable result without replaying a successful prior model or save',async()=>{
+ const f=fixture(plan(step('outline'),step('source',['outline'],{kind:'tool',tool:'knowledge_search'}),step('draft',['source']),step('save',['draft'],{kind:'notion'})));
+ f.checkpoints.namespace=`workflow:${f.run.id}`;let clock=Date.parse('2026-11-03T00:00:00Z'),reads=0,models=0;
+ const overrides:Partial<WorkflowExecutionInput>={now:()=>clock,retryableReadTools:['knowledge_search'],tools:[{name:'knowledge_search',effect:'read',run:async()=>++reads===1?{status:'failed',chunks:[],failures:[{code:'TIMEOUT',retryable:true}]}:{status:'used',chunks:[{content:'恢复后的同一份资料'}]}}],callModel:async s=>{models++;return answer(`完成${s.id}`);}};
+ const first=await f.execute(overrides);assert.equal(first.waiting,true);assert.equal(first.run.steps[0].state,'completed');assert.equal(first.run.steps[1].state,'waiting');assert.equal(models,1);assert.equal(f.saves,0);
+ const scheduled=pendingWorkflowRecovery(f.run,f.steps,owner);assert.ok(scheduled);assert.equal(scheduled.attempt,1);assert.equal(Date.parse(scheduled.nextRecoveryAt)-clock,2000);
+ await f.execute(overrides);assert.equal(reads,1);assert.equal(models,1);
+ clock+=2000;const complete=await f.execute(overrides);
+ assert.equal(complete.run.phase,'completed');assert.equal(complete.waiting,false);assert.equal(reads,2);assert.equal(models,2);assert.equal(f.saves,1);assert.equal(pendingWorkflowRecovery(f.run,f.steps,owner),undefined);
+ await f.execute(overrides);assert.equal(reads,2);assert.equal(models,2);assert.equal(f.saves,1);
+ const read=f.steps.find(cp=>(cp.output as any)?.workflow?.stepId==='source')!;assert.equal(read.operation?.execution,'succeeded');assert.equal(read.operation?.recovery?.attempt,2);
+});
+
+test('read retries stop after three persisted attempts and do not reset when the owner process restarts',async()=>{
+ const f=fixture(plan(step('source',[],{kind:'tool',tool:'knowledge_search'}),step('draft',['source'])));f.checkpoints.namespace=`workflow:${f.run.id}`;
+ let clock=Date.parse('2026-11-03T00:00:00Z'),reads=0;
+ const overrides:Partial<WorkflowExecutionInput>={now:()=>clock,retryableReadTools:['knowledge_search'],tools:[{name:'knowledge_search',run:async()=>{reads++;throw Object.assign(new Error('Bearer PRIVATE'),{status:502});}}],callModel:async()=>assert.fail('model before required material')};
+ for(const elapsed of [0,2000,8000]){clock+=elapsed;await f.execute({...overrides});}
+ assert.equal(reads,3);assert.equal(f.run.phase,'failed');assert.equal(pendingWorkflowRecovery(f.run,f.steps,owner),undefined);
+ const cp=f.steps[0];assert.equal(cp.operation?.recovery?.state,'exhausted');assert.equal(cp.operation?.recovery?.attempt,3);assert.doesNotMatch(JSON.stringify(cp),/Bearer|PRIVATE/);
+ clock+=20000;await f.execute({...overrides});assert.equal(reads,3);
+});
+
+test('paid native search and any feature do not inherit safe retry from read-like names or effect labels',async()=>{
+ for(const stage of [step('search',[],{kind:'tool',tool:'web_search'}),step('feature',[],{kind:'feature',featureId:'custom'})]){
+  const f=fixture(plan(stage));f.checkpoints.namespace=`workflow:${f.run.id}`;let calls=0,clock=Date.parse('2026-11-03T00:00:00Z');
+  const name=stage.kind==='feature'?'feature_0':'web_search';
+  const overrides:Partial<WorkflowExecutionInput>={now:()=>clock,retryableReadTools:['knowledge_search','read_notion_document','web_search','feature_0'],featureTools:{custom:'feature_0'},tools:[{name,effect:'read',run:async()=>{calls++;throw Object.assign(new Error('lost paid response'),{status:502});}}]};
+  await f.execute(overrides);clock+=20000;await f.execute(overrides);assert.equal(calls,1);assert.equal(pendingWorkflowRecovery(f.run,f.steps,owner),undefined);
+ }
+});
+
+test('nontransient failures never enter retry and optional safe-read exhaustion continues required content honestly',async()=>{
+ for(const status of [400,401,403]){
+  const f=fixture(plan(step('source',[],{kind:'tool',tool:'knowledge_search'})));f.checkpoints.namespace=`workflow:${f.run.id}`;let calls=0;
+  const overrides:Partial<WorkflowExecutionInput>={retryableReadTools:['knowledge_search'],tools:[{name:'knowledge_search',run:async()=>{calls++;throw Object.assign(new Error('PRIVATE'),{status});}}]};
+  await f.execute(overrides);await f.execute(overrides);assert.equal(calls,1);assert.equal(f.run.phase,'failed');assert.equal(pendingWorkflowRecovery(f.run,f.steps,owner),undefined);
+ }
+ const f=fixture(plan(step('optional',[],{kind:'tool',tool:'knowledge_search',required:false}),step('draft',['optional'])));f.checkpoints.namespace=`workflow:${f.run.id}`;let clock=Date.parse('2026-11-03T00:00:00Z');
+ const overrides:Partial<WorkflowExecutionInput>={now:()=>clock,retryableReadTools:['knowledge_search'],tools:[{name:'knowledge_search',run:async()=>({status:'failed',failures:[{code:'UNAVAILABLE',retryable:true}]})}]};
+ for(const elapsed of [0,2000,8000]){clock+=elapsed;await f.execute(overrides);}
+ assert.equal(f.run.phase,'completed');assert.equal(f.run.steps[0].state,'skipped');assert.equal(f.modelCalls,1);
+});
+
+test('revocation, foreign owner/revision and forged retry metadata stop recovery before another call',async()=>{
+ const f=fixture(plan(step('source',[],{kind:'tool',tool:'knowledge_search'})));f.checkpoints.namespace=`workflow:${f.run.id}`;let calls=0,clock=Date.parse('2026-11-03T00:00:00Z');
+ const overrides:Partial<WorkflowExecutionInput>={now:()=>clock,retryableReadTools:['knowledge_search'],tools:[{name:'knowledge_search',run:async()=>{calls++;throw Object.assign(new Error('timeout'),{code:'ETIMEDOUT'});}}]};
+ await f.execute(overrides);clock+=2000;
+ for(const foreign of [{...owner,workspaceId:'ws_b'},{...owner,userId:'usr_b'},{...owner,operationId:'op_b'}])assert.equal(pendingWorkflowRecovery(f.run,f.steps,foreign),undefined);
+ const revised=createWorkflowRun(f.run.spec,owner,2);assert.equal(pendingWorkflowRecovery(revised,f.steps,owner),undefined);
+ await assert.rejects(()=>f.execute({...overrides,verify:async()=>{throw new Error('revoked');}}));assert.equal(calls,1);
+ const cp=f.steps[0],retry=cp.operation!.recovery!;retry.maxAttempts=9 as 3;assert.equal(pendingWorkflowRecovery(f.run,f.steps,owner),undefined);
+ await assert.rejects(()=>f.execute(overrides));assert.equal(calls,1);
+});
+
+test('lost read result before checkpoint can recover within the same consumed retry budget',async()=>{
+ const f=fixture(plan(step('source',[],{kind:'tool',tool:'knowledge_search'}),step('draft',['source'])));f.checkpoints.namespace=`workflow:${f.run.id}`;
+ let clock=Date.parse('2026-11-03T00:00:00Z'),reads=0,dropOnce=true;
+ const original=f.checkpoints.save;f.checkpoints.save=async cp=>{if(cp.state==='completed'&&cp.effect==='read'&&dropOnce){dropOnce=false;throw new Error('read result save lost');}await original(cp);};
+ const overrides:Partial<WorkflowExecutionInput>={now:()=>clock,retryableReadTools:['knowledge_search'],tools:[{name:'knowledge_search',run:async()=>{reads++;return {status:'used',chunks:[{content:'真实资料'}]};}}]};
+ const first=await f.execute(overrides);assert.equal(first.waiting,true);assert.equal(f.steps[0].operation?.recovery?.state,'executing');assert.equal(reads,1);
+ clock+=2000;const second=await f.execute(overrides);assert.equal(second.run.phase,'completed');assert.equal(reads,2);assert.equal(f.modelCalls,1);assert.equal(f.steps[0].operation?.recovery?.attempt,2);
+});
+
+test('concurrent due recovery events claim the same read attempt with CAS before calling its adapter',async()=>{
+ const f=fixture(plan(step('source',[],{kind:'tool',tool:'knowledge_search'})));f.checkpoints.namespace=`workflow:${f.run.id}`;let clock=Date.parse('2026-11-03T00:00:00Z'),reads=0;
+ const overrides:Partial<WorkflowExecutionInput>={now:()=>clock,retryableReadTools:['knowledge_search'],tools:[{name:'knowledge_search',run:async()=>++reads===1?{status:'failed',failures:[{code:'TIMEOUT',retryable:true}]}:{status:'used',chunks:[{content:'真实资料'}]}}]};
+ await f.execute(overrides);clock+=2000;
+ const results=await Promise.allSettled([f.execute(overrides),f.execute(overrides)]);assert.equal(reads,2);assert.ok(results.some(result=>result.status==='rejected'));assert.equal(f.run.phase,'completed');
 });

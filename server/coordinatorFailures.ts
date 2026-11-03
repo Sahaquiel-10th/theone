@@ -9,6 +9,7 @@ import {BillingReviewRequiredError,ModelBillingError} from './modelBilling.js';
 import {PowerAvailabilityError} from './powerBilling.js';
 import {CoordinatorLocalError} from './coordinatorLocalPolicy.js';
 import {LocalExecutionNotStartedError} from './localExecutionAdmission.js';
+import {trustedWorkflowFailureCause} from './taskWorkflow.js';
 import {parseCoordinatorFailure} from '../src/coordinatorRecovery.js';
 
 type FailureContext={stage?:CoordinatorFailureStage;outcome?:CoordinatorFailure['outcome']};
@@ -19,6 +20,7 @@ const orchestrationCodes:Record<string,CoordinatorFailureCode>={
 };
 /** Only reviewed classifications are public; raw messages never enter a receipt. */
 export function classifyCoordinatorFailure(error:unknown,context:FailureContext={}):CoordinatorFailure {
+  error=trustedWorkflowFailureCause(error);
   const make=(code:CoordinatorFailureCode,stage:CoordinatorFailureStage=context.stage??'planning'):CoordinatorFailure=>({code,stage,outcome:context.outcome??'unknown'});
   if(error instanceof LocalExecutionNotStartedError){
     const safe=parseCoordinatorFailure(error.failure);

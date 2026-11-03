@@ -289,3 +289,24 @@ test("mid-call account disable still permits failure cleanup with strict operati
   await failChatOperation(f.store, scope, { retryable: true });
   assert.equal(f.db().chatOperations[0].status, "failed");
 });
+
+test('startup requeues persisted safe-read recovery without resetting retries or calling any provider',()=>{
+ for(const mode of ['safe_read','paid_web','paid_sibling','local_hold','stopped','revoked','foreign','duplicate'] as const){
+  const f=fixture(),task=conversation();f.db().conversations.push(task);
+  const binding={workspaceId:task.workspaceId,userId:task.userId,operationId:'read-recovery-op'},run=createWorkflowRun({version:1,steps:[{id:'read',title:'读取指定资料',kind:'tool',tool:mode==='paid_web'?'web_search':'knowledge_search',instruction:'用户授权的资料线索',inputs:[]}]},binding);
+  run.steps[0]={id:'read',state:'waiting',waitingFor:'result'};run.phase='waiting';
+  const namespace=`workflow:${run.id}`,tool=`workflow:${run.id}:read`,key=taskStepKey(namespace,tool,JSON.stringify({revision:1,instruction:run.spec.steps[0].instruction,inputs:[]}));
+  const recovery={strategy:'retry_read' as const,state:'scheduled' as const,attempt:2,maxAttempts:3 as const,firstAttemptAt:'2026-11-03T00:00:00.000Z',nextRetryAt:'2026-11-03T00:00:10.000Z',deadlineAt:'2026-11-03T00:02:00.000Z',reason:'timeout' as const};
+  const cp={key,namespace,tool,label:'读取指定资料',scopeId:binding.operationId,effect:'read' as const,state:'started' as const,updatedAt:'2026-11-03T00:00:00.000Z',operation:{version:1 as const,execution:'failed' as const,verification:'not_required' as const,recovery},output:{workflow:{version:1,runId:run.id,revision:1,stepId:'read'},outcome:'waiting'}};
+  const op={...binding,id:binding.operationId,operationId:'read_recovery_startup_0001',conversationId:task.id,status:'pending',createdAt:'2026-11-03T00:00:00.000Z',updatedAt:'2026-11-03T00:00:00.000Z',workRun:{state:'running',workflow:run,steps:[cp]}} as unknown as ChatOperation;
+  if(mode==='paid_sibling')op.workRun!.steps!.push({key:'unknown_paid',namespace:'nested',tool:'model',label:'原付费调用',scopeId:op.id,effect:'model',state:'started',updatedAt:cp.updatedAt});
+  if(mode==='local_hold')f.db().executionTasks=[{workspaceId:task.workspaceId,userId:task.userId,conversationId:task.id,executionSafetyHold:true} as unknown as NonNullable<Database['executionTasks']>[number]];
+  if(mode==='stopped')task.workPauseReason='user_stopped';
+  if(mode==='revoked')op.workRun!.failureCode='task_key_required';
+  if(mode==='foreign')cp.scopeId='foreign_operation';
+  if(mode==='duplicate')op.workRun!.steps!.push(structuredClone(cp));
+  f.db().chatOperations.push(op);reconcileInterruptedChatOperations(f.db());
+  assert.equal(op.workRun!.state,mode==='safe_read'?'queued':'interrupted',mode);assert.equal(op.status,mode==='safe_read'?'pending':'interrupted',mode);
+  assert.equal(op.workRun!.steps![0].operation?.recovery?.attempt,2);assert.equal(op.workRun!.steps![0].operation?.recovery?.nextRetryAt,'2026-11-03T00:00:10.000Z');assert.equal(f.db().chatOperations.length,1);
+ }
+});

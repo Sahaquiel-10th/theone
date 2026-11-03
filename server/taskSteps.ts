@@ -1,9 +1,12 @@
 import {createHash} from 'node:crypto';
+import type {OperationEvidence} from './operationRecovery.js';
 
 /** Private, task-scoped checkpoints. Never included in the public task payload. */
 export type TaskStep = {key:string;namespace:string;tool:string;label:string;effect:'read'|'artifact'|'model'|'external_write';state:'started'|'completed'|'failed';output?:unknown;updatedAt:string;
   /** Server-owned attempt scope. A prior save is context, not a new revision. */
-  scopeId?:string};
+  scopeId?:string;
+  /** Code-owned execution/verification/recovery facts; never model output. */
+  operation?:OperationEvidence};
 export type TaskStepStore = {namespace:string;steps:TaskStep[];save:(step:TaskStep)=>Promise<void>;onReuse?:(output:unknown)=>void};
 export const taskStepKey=(namespace:string,tool:string,args:string)=>createHash('sha256').update(JSON.stringify([namespace,tool,args])).digest('hex');
 export function toolSucceeded(value:unknown){

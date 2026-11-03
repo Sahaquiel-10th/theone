@@ -56,6 +56,7 @@ import {friendlyExecutionProgress,readCapturedNotices} from './friendlyTaskStatu
 import {internalTaskId} from './taskLink';
 import {claimInitialTaskLink,settleInitialTaskLink,coordinatorTaskConversation} from './coordinatorTaskView';
 import {TaskWorkflowProgress} from './TaskWorkflowProgress';
+import {TaskAvailableResults} from './TaskAvailableResults';
 import {FeatureShelf,type FeatureChoice} from './preview/FeatureShelf';
 import {KnowledgeConnections} from './KnowledgeConnections';
 import {captureFeatureHandoff,FeatureHandoff,FeatureArmedRim,pulseFeatureComposer,type FeatureHandoffTransfer} from './FeatureHandoff';
@@ -895,7 +896,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     ...(coordinator.snapshot?.notices ?? []).map(n => ({id:n.id,taskId:n.taskId,title:n.title||conversations.find(c=>c.id===n.taskId)?.title||'这件事',state:n.state,reported:n.reported,read:n.read,outcome:n.outcome,reportable:true})),
     ...executionTasks.filter(t=>isExecutionRunning(t)).map(t=>({id:t.id,taskId:t.conversationId,title:conversations.find(c=>c.id===t.conversationId)?.title||'本机任务',state:t.status,local:true,reportable:false}))];
   const unviewedResultCount=new Set((coordinator.snapshot?.notices||[]).filter(n=>!n.read).map(n=>n.taskId)).size;
-  const uniqueTransfers = [...new Map(transfers.map(t=>[t.id,t])).values()].map(task=>({...task,updatedAt:
+  const uniqueTransfers = [...new Map(transfers.map(t=>[t.id,t])).values()].map(task=>({...task,workflow:coordinatorMetas.find(t=>t.id===task.taskId)?.workflow,updatedAt:
     coordinator.snapshot?.notices.find(n=>n.id===task.id)?.updatedAt
     || executionTasks.find(t=>t.id===task.id)?.updatedAt
     || coordinatorMetas.find(t=>t.id===task.taskId)?.updatedAt}));
@@ -2242,6 +2243,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   function renderThings() {
     const thingDestination=thingDestinations[thingId]||'chat';
     const workflow=coordinator.details[thingId]?.jobs.at(-1)?.workflow;
+    const availableResults=coordinator.details[thingId]?.jobs.at(-1)?.availableResults;
     const pauseNotice=taskPauseNotice(thingId);
     const panel=<ThingsPanel
         one={undefined}
@@ -2258,6 +2260,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         onWorkbench={id=>{if(preview.enabled)closeWorkLayer();else void openConversation(conversations.find(item=>item.id===id)!);setResultLampOpen(false);}}
         onRemove={coordinator.enabled?removeCoordinatorTask:undefined}
         taskNotice={workflow?<><TaskWorkflowProgress key={thingId} workflow={workflow}/>{pauseNotice}</>:pauseNotice}
+        availableContent={availableResults?.length?<TaskAvailableResults results={availableResults}/>:undefined}
         executionDisabled={!localDevice.canRequestExecution || preparingExecution || executionBusy || Boolean(loadingByConversation[thingId])}
         executionPreparing={preparingExecution && preparingConversationId===thingId}
         executionContent={preparingExecution && preparingConversationId===thingId || thingExecutionTask ? <ExecutionDisclosure
@@ -2379,6 +2382,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         <div className="messages">
           <TaskWorkflowProgress key={activeId} workflow={coordinator.details[activeId]?.jobs.at(-1)?.workflow}/>
           {taskPauseNotice(activeId)}
+          <TaskAvailableResults results={coordinator.details[activeId]?.jobs.at(-1)?.availableResults}/>
           {(active?.messages ?? []).length ? (
             taskConversationView(active!.messages,coordinator.details[activeId]?.jobs).map((message, index) => (
               <React.Fragment key={`${message.createdAt}-${index}`}>
@@ -2564,7 +2568,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {featureRuns.length?<div className="fluid-feature-runs" aria-label="功能运行进展">{featureRuns.map(run=><article key={run.operationId} data-status={run.status}><button type="button" onClick={()=>openFeatureRun(run.operationId)}><strong>{run.name}</strong><small>{({pending:'正在处理',completed:'成果已返回',failed:'需要查看',interrupted:'已中断'} as Record<string,string>)[run.status]||'查看进展'} ↗</small></button>{run.status!=='pending'?<button type="button" aria-label={`收起${run.name}的动态`} onClick={()=>setFeatureRuns(old=>old.filter(item=>item.operationId!==run.operationId))}><X size={13}/></button>:null}</article>)}</div>:null}
           {featureRunIssue?<p className="fluid-queue-note" role="status">{featureRunIssue}</p>:null}
           {coordinator.enabled ? <TaskTransferRail animateNotes={false} tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} departureAnchor={()=>document.querySelector<HTMLElement>('[data-task-dispatch-anchor]') || document.querySelector<HTMLElement>('.studio-presence')} returnAnchor={()=>document.querySelector<HTMLElement>('[data-task-return-anchor]') || document.querySelector<HTMLElement>('.coordinator-message.assistant:last-of-type')} recentReportedReceiptIds={coordinator.snapshot?.recentReportedReceiptIds} onReadAll={readAllTaskMessages} onOpenAll={()=>openSurface('things')} onDismiss={task=>coordinator.acknowledge(task.taskId,dismissibleReceiptIds(uniqueTransfers,task.taskId))} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null}
-          {!fluidFeedback.length&&!featureRuns.length&&!attentionCount&&(!delivery||delivery.operationId===dismissedDelivery)?<div className="fluid-panel-empty"><p>暂无任务动态。</p><small>任务进展和成果会显示在这里。</small><button type="button" onClick={()=>openSurface('things')}>查看所有任务 <ArrowUpRight size={12}/></button></div>:null}
+          {!fluidFeedback.length&&!featureRuns.length&&!attentionCount&&(!delivery||delivery.operationId===dismissedDelivery)?<div className="fluid-panel-empty"><p>暂无任务</p><button type="button" onClick={()=>openSurface('things')}>查看所有任务 <ArrowUpRight size={12}/></button></div>:null}
                   </div>
         </section>
         <section className="fluid-local-panel" data-open={fluidPanels.localOpen} aria-label="接管任务" aria-hidden={!fluidPanels.localOpen} inert={!fluidPanels.localOpen} {...fluidInteraction('local')}>

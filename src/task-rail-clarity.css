@@ -30,3 +30,28 @@ main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-rail-c
 main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-rail-clarity .task-transfer-actions>.task-retry-action {color:var(--fluid-ink);}
 main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-rail-clarity .task-transfer-actions>.task-stop-action {min-width:62px;}
 @media(prefers-reduced-motion:reduce){.one-studio .task-rail-clarity .task-transfer-heading>svg {transition:none;}}
+
+/* Three compact progress rows belong to their task. Earlier progress remains
+   scrollable; the follow-latest hook yields while the reader browses history. */
+.one-studio .task-workflow-activity {min-width:0;}
+.one-studio .task-workflow-feed {max-height:132px;overflow-y:auto;overscroll-behavior-y:auto;scrollbar-width:thin;list-style:none;margin:0;padding:0;}
+.one-studio .task-workflow-feed:focus-visible {outline:2px solid var(--studio-ink);outline-offset:2px;border-radius:6px;}
+.one-studio .task-workflow-feed>li {display:grid;grid-template-columns:14px minmax(0,1fr) auto;align-items:center;gap:8px;height:44px;box-sizing:border-box;margin:0;padding:4px 0;}
+.one-studio .task-workflow-feed-icon {display:flex;align-items:center;color:var(--studio-muted);}
+.one-studio .task-workflow-feed-copy {display:flex;flex-direction:column;min-width:0;gap:1px;color:var(--studio-ink);font-size:12px;line-height:1.5;}
+.one-studio .task-workflow-feed-copy>span {overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
+.one-studio .task-workflow-feed-copy>small {overflow:hidden;margin:0;color:var(--studio-muted);font-size:10px;line-height:1.4;white-space:nowrap;text-overflow:ellipsis;}
+.one-studio .task-workflow-feed>li[data-step-state=completed] .task-workflow-feed-icon {color:var(--studio-ink);}
+.one-studio .task-workflow-feed>li>button {display:inline-flex;align-items:center;justify-content:center;gap:3px;min-height:40px;min-width:40px;padding:0 3px;border:0;border-radius:6px;background:transparent;color:var(--studio-ink);font:inherit;font-size:10px;white-space:nowrap;cursor:pointer;}
+.one-studio .task-workflow-feed>li>button:hover {background:var(--studio-line);}
+.one-studio .task-workflow-latest {display:block;min-height:40px;margin:0 0 0 auto;padding:4px 6px;border:0;border-radius:6px;background:transparent;color:var(--studio-muted);font:inherit;font-size:10px;cursor:pointer;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-workflow-feed-copy>small {display:block;overflow:hidden;margin:0;white-space:nowrap;text-overflow:ellipsis;font-size:10px;line-height:1.4;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-workflow-feed>li>button {width:auto;min-height:40px;min-width:40px;padding:0 3px;border:0;border-radius:6px;background:transparent;color:var(--fluid-ink);font-size:10px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-workflow-latest {width:auto;min-height:40px;border:0;background:transparent;color:var(--fluid-muted);font-size:10px;}
+main.one-fluid-workspace.one-shell.one-studio .fluid-activity-panel .task-workflow-feed:focus-visible {outline-color:var(--fluid-focus);}
+@media(max-width:900px){.one-studio .task-transfer-rail:has(.task-workflow-feed){max-height:230px;flex-direction:column;}.one-studio .task-transfer-rail:has(.task-workflow-feed) .task-transfer-row{min-width:0;}}
+
+.one-studio .task-available-results {min-width:0;max-width:100%;margin:12px 0 20px;}
+.one-studio .task-available-results>.task-available-label {margin:0 0 10px;color:var(--studio-muted);font-size:11px;line-height:1.5;}
+.one-studio .task-available-results .task-available-title {margin:0 0 12px;color:var(--studio-ink);font-size:14px;font-weight:600;line-height:1.5;}
+.one-studio .task-available-results .markdown-body {min-width:0;max-width:100%;}

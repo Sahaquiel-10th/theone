@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {localActionRequested,naturalLocalActionRequested,localReadinessCanStart,localReadinessFailure} from './coordinatorLocalPolicy.js';
+import {localActionRequested,naturalLocalActionRequested,localReadinessCanStart,localReadinessFailure,confirmedLocalFollowup} from './coordinatorLocalPolicy.js';
 import type {LocalDeviceReadiness} from '../src/localDeviceReadiness.js';
 
 test('local destination distinguishes polite artifact requests from explanations and leftover preferences',()=>{
@@ -44,4 +44,44 @@ test('only the first-time native picker is allowed while readiness is incomplete
   [{executor:{state:'busy'},reason:'busy'},'local_busy'],
  ] as const){const changed={...value,...change} as LocalDeviceReadiness;assert.equal(localReadinessCanStart(changed),false);assert.equal(localReadinessFailure(changed),expected);}
  assert.equal(localReadinessCanStart(undefined),false);assert.equal(localReadinessFailure(undefined),'local_readiness_unknown');
+});
+
+test('a concrete polite project edit is actionable while capability questions stay questions',()=>{
+ assert.equal(localActionRequested('帮我看看myspace的项目，背景能不能改成橙色'),true);
+ for(const value of ['本机支持把背景改成橙色吗？','请解释一下项目背景能不能改成橙色','先讨论一下项目背景改成橙色的影响','不要修改这个项目，背景能不能改成橙色只是举例'])assert.equal(localActionRequested(value),false,value);
+});
+
+function localClarificationHistory(){
+ const scope={workspaceId:'owned-space',userId:'owned-user'};
+ const source='帮我看看myspace的项目，背景能不能改成橙色';
+ const question='你说的是当前工作文件夹里的 myspace 项目吗？确认后我就检查背景能不能改成橙色。';
+ const db:any={conversations:[{...scope,id:'main',coordinatorMain:true,archived:false,messages:[{id:'original',role:'user',content:source},{id:'clarification',role:'assistant',content:question}]}],chatOperations:[{...scope,id:'operation',operationId:'original-operation',conversationId:'main',assistantMessageId:'clarification',status:'completed'}]};
+ return {db,scope,source};
+}
+
+test('a short confirmation binds only the immediate owned unstarted local clarification',()=>{
+ const f=localClarificationHistory();
+ assert.deepEqual(confirmedLocalFollowup(f.db,f.scope,'对，就是他'),{sourceMessageId:'original',sourceText:f.source,confirmationMessageId:'clarification'});
+ for(const text of ['不是，先别做','对，但是先解释','现在怎么样了？','你好','再来一次'])assert.equal(confirmedLocalFollowup(f.db,f.scope,text),undefined,text);
+ assert.equal(confirmedLocalFollowup(f.db,{...f.scope,userId:'foreign'},'对'),undefined);
+ assert.equal(confirmedLocalFollowup(f.db,{...f.scope,workspaceId:'foreign'},'对'),undefined);
+ for(const mutate of [
+  (db:any)=>db.chatOperations[0].executionCancelled=true,
+  (db:any)=>db.chatOperations[0].status='interrupted',
+  (db:any)=>db.chatOperations[0].dispatchedTaskId='old-task',
+  (db:any)=>db.chatOperations.push({...db.chatOperations[0],id:'child',assistantMessageId:undefined,workRun:{parentOperationId:'original-operation'}}),
+  (db:any)=>db.conversations[0].messages.push({id:'unrelated',role:'user',content:'其他事'}),
+  (db:any)=>db.conversations[0].messages[1].content='这个方案可以吗？',
+  (db:any)=>db.conversations[0].messages[1].content='当前工作文件夹已经授权。文章内容有趣吗？',
+  (db:any)=>db.conversations[0].messages[0].content='写一篇文章保存到 Notion，不操作本机。',
+ ]){const db=structuredClone(f.db);mutate(db);assert.equal(confirmedLocalFollowup(db,f.scope,'对'),undefined);}
+});
+
+test('retry traverses only reviewed not-started local failures and preserves the original request',()=>{
+ const f=localClarificationHistory(),main=f.db.conversations[0];
+ main.messages.push({id:'yes',role:'user',content:'对，就是他'},{id:'failed-reply',role:'assistant',content:'旧版本机参数没接对'});
+ f.db.chatOperations.push({...f.scope,id:'failed-operation',operationId:'failed-operation',conversationId:'main',assistantMessageId:'failed-reply',status:'completed',failure:{code:'local_tool_invalid',stage:'planning',outcome:'not_started'}});
+ assert.equal(confirmedLocalFollowup(f.db,f.scope,'再来一次？')?.sourceText,f.source);
+ for(const outcome of ['unknown','partial','failed']){const db=structuredClone(f.db);db.chatOperations[1].failure.outcome=outcome;assert.equal(confirmedLocalFollowup(db,f.scope,'再来一次？'),undefined);}
+ const db=structuredClone(f.db);db.chatOperations[1].failure.code='transport_unknown';assert.equal(confirmedLocalFollowup(db,f.scope,'再来一次？'),undefined);
 });

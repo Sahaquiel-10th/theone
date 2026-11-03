@@ -4,8 +4,10 @@ import {transferStateLabel} from './noviceUx';
 import {reportedCardTransitions,departingCardTransitions} from './taskTransferLifecycle';
 import {flyTaskNote,type NoteRect} from './taskTransferMotion';
 import {TaskReadAllButton} from './TaskReadAllButton';
+import {TaskWorkflowActivity} from './TaskWorkflowActivity';
+import {taskWorkflowActivityView,type TaskWorkflowView} from './taskWorkflowView';
 
-export type Transfer={id:string;taskId:string;title:string;state:string;updatedAt?:string;reported?:boolean;read?:boolean;reportable?:boolean;outcome?:string;phase?:string;local?:boolean};
+export type Transfer={id:string;taskId:string;title:string;state:string;updatedAt?:string;reported?:boolean;read?:boolean;reportable?:boolean;outcome?:string;phase?:string;local?:boolean;workflow?:TaskWorkflowView};
 export const transferSettled=(state:string)=>['completed','returned','partial','needs_input','failed','interrupted','cancelled'].includes(state);
 export const transferNeedsRecovery=(task:Transfer)=>transferSettled(task.state)&&!['completed','returned'].includes(task.outcome||task.state);
 export const latestTransferNotes=(tasks:Transfer[])=>[...tasks].reverse().sort((a,b)=>(b.updatedAt||'').localeCompare(a.updatedAt||'')).slice(0,5);
@@ -106,8 +108,9 @@ export function TaskTransferRail({tasks,busy,onOpen,onOpenAll,onStop,onReadAll,o
     {expanded?notes.map(task=><div className="task-transfer-row" data-task-transfer-id={task.taskId} data-task-receipt-id={task.id} key={task.id}>
       <button ref={node=>rememberNode(task.id,node)} type="button" className={`task-transfer-bubble ${returningCards.some(item=>item.id===task.id)?'is-returning':''} ${departing.includes(task.id)?'is-departing':''} ${transferSettled(task.state)?'is-settled':''}`} onClick={()=>onOpen(task.taskId)}>
         <TransferStateIcon task={task}/>
-        <span><strong>{task.title}</strong><small>{transferFeedbackLabel(task)}</small></span><ArrowUpRight size={12} aria-hidden="true"/>
+        <span><strong>{task.title}</strong>{!taskWorkflowActivityView(task.workflow)||transferSettled(task.state)||['paused','prepared_local'].includes(task.state)?<small>{transferFeedbackLabel(task)}</small>:null}</span><ArrowUpRight size={12} aria-hidden="true"/>
       </button>
+      <TaskWorkflowActivity taskId={task.taskId} workflow={task.workflow} onOpen={()=>onOpen(task.taskId)}/>
       {(transferNeedsRecovery(task)||transferSettled(task.state)&&onDismiss||task.state==='paused'||task.state==='prepared_local'||!transferSettled(task.state)&&onStop)?<div className="task-transfer-actions">
         {transferNeedsRecovery(task)?<button type="button" className="task-transfer-more task-retry-action" title="打开任务详情，核对结果后再决定是否继续" onClick={()=>onOpen(task.taskId)}>查看并处理</button>:null}
         {transferSettled(task.state)&&onDismiss?<button type="button" className="task-transfer-more task-dismiss-action" aria-label={`收起${task.title}的提醒`} title="只收起提醒，不删除任务或文件" onClick={()=>{setReadError('');void onDismiss(task).catch(()=>setReadError('暂时没能收起提醒，请再试一次'));}}>{transferNeedsRecovery(task)?'收起提醒':<X size={12} aria-hidden="true"/>}</button>:null}

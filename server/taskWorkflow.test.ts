@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createWorkflowRun,runTaskWorkflow,validateWorkflowSpec,workflowProgress,workflowSpecSchema,TaskWorkflowError,type WorkflowBinding,type WorkflowRun,type WorkflowRunner,type WorkflowSpec,type WorkflowStep,type WorkflowStepResult} from './taskWorkflow.js';
+import {createWorkflowRun,runTaskWorkflow,validateWorkflowSpec,workflowProgress,workflowSpecSchema,TaskWorkflowError,trustedWorkflowFailureCause,type WorkflowBinding,type WorkflowRun,type WorkflowRunner,type WorkflowSpec,type WorkflowStep,type WorkflowStepResult} from './taskWorkflow.js';
 
 const owner:WorkflowBinding={workspaceId:'ws_a',userId:'usr_a',operationId:'op_a'};
 const step=(id:string,inputs:string[]=[],extra:Partial<WorkflowStep>={}):WorkflowStep=>({id,title:`处理${id}`,kind:'model',instruction:`完成${id}，私有原始要求不进入公开进度。`,inputs,...extra});
@@ -175,4 +175,19 @@ test('public progress is an explicit safe projection and cannot expose scope, to
  const progress=workflowProgress(run),serialized=JSON.stringify(progress);
  assert.deepEqual(Object.keys(progress).sort(),['next','status','steps','summary']);assert.deepEqual(Object.keys(progress.steps[0]).sort(),['status','summary','title']);
  assert.doesNotMatch(serialized,/ws_a|usr_a|op_a|private raw query|PRIVATE_SECRET|secret_model|read_notion_document|checkpoint_|instruction|executorId|workspaceId|binding/);assert.equal(progress.steps[0].title,'处理这一步');assert.equal(progress.steps[1].summary,'已完成整理。');
+});
+
+
+test('verification preserves its exact private cause for reviewed Key, budget and authorization classification without executing',async()=>{
+ const {OneKeyPresenceError}=await import('./oneKeyPresence.js'),{CoordinatorError}=await import('./executorProfiles.js');
+ for(const original of [new OneKeyPresenceError('PRIVATE_KEY_DIAGNOSTIC'),new CoordinatorError('本轮预算不足 PRIVATE_BUDGET',402),new CoordinatorError('知识授权已变化 PRIVATE_SOURCE',403)]){
+  const f=fixture(spec(step('one')));let executions=0;
+  await assert.rejects(()=>f.run(async()=>{executions++;return completed('one');},undefined,{verify:async()=>{throw original;}}),error=>{
+   assert.ok(error instanceof TaskWorkflowError);assert.equal(error.code,'WORKFLOW_VERIFY_FAILED');assert.equal(error.cause,original);assert.equal(trustedWorkflowFailureCause(error),original);assert.equal(Object.prototype.propertyIsEnumerable.call(error,'cause'),false);assert.doesNotMatch(JSON.stringify(error),/PRIVATE_/);return true;
+  });
+  assert.equal(executions,0);assert.equal(f.stored.sequence,0);
+ }
+ const original=new Error('private raw transport'),wrapper=new TaskWorkflowError('WORKFLOW_PERSIST_FAILED','进度保存未确认',original);
+ assert.equal(trustedWorkflowFailureCause(wrapper),wrapper);
+ const fake={code:'WORKFLOW_VERIFY_FAILED',cause:original};assert.equal(trustedWorkflowFailureCause(fake),fake);
 });

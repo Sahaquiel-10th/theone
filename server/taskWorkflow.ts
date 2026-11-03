@@ -25,7 +25,18 @@ export type WorkflowRunner={
  recover?:(step:WorkflowStep,state:WorkflowStepState)=>Promise<WorkflowStepResult|undefined>;
 };
 export class TaskWorkflowError extends Error{
- constructor(readonly code:'WORKFLOW_INVALID'|'WORKFLOW_BINDING_INVALID'|'WORKFLOW_CHANGED'|'WORKFLOW_VERIFY_FAILED'|'WORKFLOW_PERSIST_FAILED',message:string){super(message);this.name='TaskWorkflowError';}
+ constructor(readonly code:'WORKFLOW_INVALID'|'WORKFLOW_BINDING_INVALID'|'WORKFLOW_CHANGED'|'WORKFLOW_VERIFY_FAILED'|'WORKFLOW_PERSIST_FAILED',message:string,cause?:unknown){super(message,cause===undefined?undefined:{cause});this.name='TaskWorkflowError';}
+}
+/** Preserve the reviewed underlying authorization/budget category without
+ * exposing diagnostics or accepting arbitrary objects with a cause field.
+ * Persistence/conflict errors retain their own semantics. */
+export function trustedWorkflowFailureCause(error:unknown):unknown{
+ let current=error;const seen=new Set<unknown>();
+ for(let depth=0;depth<4&&current instanceof TaskWorkflowError&&current.code==='WORKFLOW_VERIFY_FAILED'&&Object.hasOwn(current,'cause')&&current.cause!==undefined;depth++){
+  if(seen.has(current)||seen.has(current.cause))return current;
+  seen.add(current);current=current.cause;
+ }
+ return current;
 }
 const tools:WorkflowTool[]=['knowledge_search','web_search','read_notion_document'];
 const statuses:WorkflowStepStatus[]=['queued','running','completed','waiting','needs_input','failed','skipped'];
@@ -117,11 +128,12 @@ function result(raw:unknown,step:WorkflowStep):WorkflowStepResult{
 }
 
 /** Bounded, sequential and event-driven. No timers, model calls or automatic
- * retries live here. A persisted running step is unknown until its owning
+ * retry policies live here. Recovery claims still use CAS before their owning
+ * adapter may perform a reviewed safe read retry. A persisted running step is unknown until its owning
  * checkpoint is recovered; completed steps can never execute again. */
 export async function runTaskWorkflow(input:WorkflowRunner):Promise<WorkflowRun>{
  let current=assertRun(input.run,input.binding);
- const verify=async()=>{try{await input.verify();}catch{throw new TaskWorkflowError('WORKFLOW_VERIFY_FAILED','任务状态或授权已经变化，先核对后再继续。');}};
+ const verify=async()=>{try{await input.verify();}catch(error){throw new TaskWorkflowError('WORKFLOW_VERIFY_FAILED','任务状态或授权已经变化，先核对后再继续。',error);}};
  const commit=async(index:number,next:WorkflowStepState)=>{
   await verify();const expected=current.sequence,candidate=structuredClone(current);candidate.steps[index]=next;candidate.sequence=expected+1;candidate.phase=workflowPhase(candidate.spec,candidate.steps);
   let saved:boolean;try{saved=await input.persist(structuredClone(candidate),expected);}catch{throw new TaskWorkflowError('WORKFLOW_PERSIST_FAILED','这一步的进度尚未确认保存；先核对原结果，不会重复执行。');}
@@ -153,7 +165,7 @@ export async function runTaskWorkflow(input:WorkflowRunner):Promise<WorkflowRun>
     await commit(index,{id:step.id,state:'waiting',waitingFor:'result',summary:'这一步还没拿到确认结果，先核对原结果；不会重复执行。'});return current;
    }
   }else if(input.recover){
-   try{await verify();const recovered=await input.recover(structuredClone(step),structuredClone(state));response=recovered===undefined?undefined:result(recovered,step);}
+   try{await commit(index,{...state});await verify();const recovered=await input.recover(structuredClone(step),structuredClone(state));response=recovered===undefined?undefined:result(recovered,step);}
    catch(error){if(error instanceof TaskWorkflowError&&['WORKFLOW_VERIFY_FAILED','WORKFLOW_CHANGED','WORKFLOW_PERSIST_FAILED'].includes(error.code))throw error;return current;}
   }
   if(response){await commit(index,{id:step.id,state:response.state,...(response.state==='completed'?{checkpointKey:response.checkpointKey}:{}),summary:response.summary,...(response.state==='waiting'?{waitingFor:'result' as const}:{})});}

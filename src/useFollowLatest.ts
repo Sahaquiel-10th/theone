@@ -1,7 +1,7 @@
 import {useLayoutEffect, useRef, useState} from 'react';
 
-export function nearLatest(node: {scrollHeight: number; scrollTop: number; clientHeight: number}): boolean {
-  return node.scrollHeight - node.scrollTop - node.clientHeight < 60;
+export function nearLatest(node: {scrollHeight: number; scrollTop: number; clientHeight: number},threshold=60): boolean {
+  return node.scrollHeight - node.scrollTop - node.clientHeight < threshold;
 }
 
 /** Contour reflow has its own reading anchor; it is not a new message. */
@@ -10,7 +10,7 @@ export function followLatestOnResize(fluidLayoutManaged: boolean): boolean {
 }
 
 /** Follow streamed content, but never move a reader who deliberately scrolled up. */
-export function useFollowLatest<T extends HTMLElement = HTMLDivElement>(conversationKey: string, visible: boolean) {
+export function useFollowLatest<T extends HTMLElement = HTMLDivElement>(conversationKey: string, visible: boolean,threshold=60) {
   const scroll = useRef<T>(null);
   const follow = useRef(true);
   const userScrollUntil=useRef(0);
@@ -56,16 +56,21 @@ export function useFollowLatest<T extends HTMLElement = HTMLDivElement>(conversa
   }, [conversationKey, visible]);
   return {scroll, newMessages, onScroll: () => {
     if (!scroll.current || !visible) return;
-    const near=nearLatest(scroll.current);
+    const near=nearLatest(scroll.current,threshold);
     // A layout/streaming scroll must not masquerade as the reader scrolling up.
     if(near||performance.now()<userScrollUntil.current)follow.current=near;
     scroll.current.dataset.followLatest=String(follow.current);
     if (follow.current) setNewMessages(false);
+  }, showStart: () => {
+    follow.current = false;
+    userScrollUntil.current=0;
+    if(scroll.current){scroll.current.dataset.followLatest='false';scroll.current.scrollTo({top:0,behavior:'auto'});}
+    setNewMessages(false);
   }, showLatest: () => {
     follow.current = true;
     userScrollUntil.current=0;
     if(scroll.current)scroll.current.dataset.followLatest='true';
-    scroll.current?.scrollTo({top: scroll.current.scrollHeight, behavior: 'smooth'});
+    scroll.current?.scrollTo({top: scroll.current.scrollHeight, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
     setNewMessages(false);
   }};
 }

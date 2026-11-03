@@ -34,6 +34,7 @@ type Meta = {
   localPrepared?: boolean;
   phase?: string;
   reconciling?:boolean;
+  workflow?:import('./taskWorkflowView').TaskWorkflowView;
 };
 type Notice = {
   id: string;
@@ -78,6 +79,7 @@ type Job = {
   waitingFor?:{taskId:string;title:string}[];
   progress?:{completed:string[];pending:string[]};
   workflow?:import('./taskWorkflowView').TaskWorkflowView;
+  availableResults?:import('./TaskAvailableResults').TaskAvailableResult[];
 };
 type Detail = { conversation: Conversation; jobs: Job[]; recovery?: import('./taskRecovery').TaskRecovery };
 export type CoordinatorSubmission = {

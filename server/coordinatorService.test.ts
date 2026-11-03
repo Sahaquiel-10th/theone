@@ -571,6 +571,49 @@ const answer = (content: string): ToolChatResult => ({
     source: "provider",
   },
 });
+for(const mode of ['recover','exhaust','stop','revoke','key_lost'] as const)test(`durable safe-read scheduler ${mode} without a foreground retry or repeated paid work`,{timeout:20000},async()=>{
+ const f=fixture();let reads=0,drafts=0,connected=true;
+ const liveKey=async()=>{if(!connected)throw new OneKeyPresenceError('synthetic disconnected');};
+ await f.store.mutate(d=>{d.knowledgeConnections.push({id:'durable-source',workspaceId:'wa',provider:'getnote',status:'connected',clientId:'fixture'} as any);});
+ const workflow={version:1,steps:[
+  {id:'read',kind:'tool',tool:'knowledge_search',title:'查找合成资料',instruction:'查找合成测试资料',inputs:[]},
+  {id:'draft',kind:'model',title:'写出文章',instruction:'仅据前一步资料写完整文章',inputs:['read']},
+ ]};
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async(ws,_q,_n,ids,user)=>{
+  assert.equal(ws,'wa');assert.equal(user,'a');assert.deepEqual(ids,['durable-source']);reads++;
+  if(mode==='exhaust'||reads===1)throw Object.assign(new Error('synthetic unavailable'),{status:503});
+  return {status:'used',chunks:[{id:'durable-material',provider:'getnote',title:'合成资料',content:'DURABLE_RESULT_紫色42'}],failures:[],coverage:[{connectionId:'durable-source',provider:'getnote',status:'used',attempts:1}]};
+ }},{contextMode:'adaptive',modelCall:async(model,messages,tools)=>{
+  if(model.id==='router'){
+   if(messages.at(-1)?.role==='tool'&&!messages.at(-1)?.content?.includes('"status":"loaded"'))return answer('我来处理。');
+   if(!tools.some(tool=>tool.function.name==='delegate_task'))return {...answer(''),toolCalls:[{id:'durable-load',type:'function',function:{name:'load_tools',arguments:JSON.stringify({names:['delegate_task']})}}]};
+   return {...answer(''),toolCalls:[{id:'durable-dispatch',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'后台恢复文章',instruction:'从得到大脑查找合成测试资料，据此写一篇完整文章，不操作本机。',executorId:'general',featureIds:[],capabilityIds:['knowledge:durable-source'],workflow})}}]};
+  }
+  drafts++;assert.match(JSON.stringify(messages),/DURABLE_RESULT_紫色42/);return answer(JSON.stringify({outcome:'completed',content:'DURABLE_FINAL_紫色42',summary:'文章已写好。'}));
+ }});
+ const accepted=await service.dispatch(a,{...input(`operation_durable_${mode}`,'从得到大脑查找合成测试资料写一篇文章，不操作本机。'),sourceIds:['durable-source']},liveKey);assert.ok(accepted.taskId,JSON.stringify(accepted));
+ await service.resume(a,liveKey);
+ const until=async(check:()=>Promise<boolean>,ms=13000)=>{const end=Date.now()+ms;while(Date.now()<end){if(await check())return;await new Promise(resolve=>setTimeout(resolve,15));}assert.fail(`durable ${mode} did not settle`);};
+ const operation=async()=>(await f.store.read()).chatOperations!.find(op=>op.workRun&&op.conversationId===accepted.taskId)!;
+ await until(async()=>Boolean((await operation()).workRun!.steps?.some(cp=>cp.operation?.recovery?.state==='scheduled')));
+ assert.equal((await operation()).status,'pending');assert.equal((await operation()).workRun!.state,'queued');assert.equal((await operation()).workRun!.unread,false);assert.equal(reads,1);assert.equal(drafts,0);
+ assert.equal((await f.store.read()).conversations.find(c=>c.id===accepted.taskId)!.workPaused,false);
+ if(mode==='stop')await service.cancelTask(a,accepted.taskId!,liveKey);
+ if(mode==='revoke')await f.store.mutate(d=>{d.knowledgeConnections.find(c=>c.id==='durable-source')!.status='revoked';});
+ if(mode==='key_lost')connected=false;
+ if(mode==='recover'||mode==='exhaust'){
+  await until(async()=>['completed','failed'].includes((await operation()).workRun!.state));
+  const op=await operation();assert.equal(reads,mode==='recover'?2:3);assert.equal(drafts,mode==='recover'?1:0);assert.equal(op.workRun!.state,mode==='recover'?'completed':'failed');
+  if(mode==='recover')assert.ok(op.workRun!.workflow!.steps.every(step=>step.state==='completed'));
+  else assert.equal(op.workRun!.steps!.find(cp=>cp.operation?.recovery)!.operation!.recovery!.state,'exhausted');
+ }else{
+  await new Promise(resolve=>setTimeout(resolve,2300));assert.equal(reads,1);assert.equal(drafts,0);
+  if(mode==='key_lost'){connected=true;await service.resume(a,liveKey);await until(async()=>(await operation()).workRun!.state==='completed');assert.equal(reads,2);assert.equal(drafts,1);}
+ }
+ await assert.rejects(()=>service.task(b,accepted.taskId!));
+ assert.equal((await f.store.read()).chatOperations!.filter(op=>op.workRun&&op.conversationId===accepted.taskId).length,1,'recovery never creates a second task attempt');
+});
+
 function fixture() {
   const models = ["router", "worker", "special"].map(
     (id) =>
@@ -1196,7 +1239,7 @@ test('HTTP local admission is explicit and a duplicate pending operation is neve
 /** Full service-path fixture: only provider/model transports are synthetic.
  * Admission, workflow persistence, Notion ownership/readback, billing and HTML
  * file generation are the same implementations used by the live routes. */
-async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean;twoSaves?:boolean;adaptiveDefault?:boolean;legacyChain?:boolean;clarification?:'failed'|'needs_input';supplementText?:string;noHtml?:boolean}={}){
+async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean;twoSaves?:boolean;adaptiveDefault?:boolean;legacyChain?:boolean;clarification?:'failed'|'needs_input';supplementText?:string;noHtml?:boolean;realClock?:boolean;automaticReadback?:boolean}={}){
  const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-workflow-service-'));
  const parentId='1'.repeat(32),pageId='2'.repeat(32),clock={now:Date.now()+1000};
  const source='ONE-WORKFLOW-SOURCE-青色42：插入入口后先找资料，再写完整方案。';
@@ -1224,7 +1267,7 @@ async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean
   ...(options.noHtml?[]:[{id:'html',title:'制作真实交互网页',kind:'feature' as const,featureId:'oneHtml',instruction:'把前置完整方案制成交互网页，保留正文中的标记和已保存入口。',inputs:options.twoSaves?['revise','save_again']:['draft','save']}]),
  ];
  const mcp={
-  readDocument:async(ws:string,id:string)=>{assert.equal(ws,a.workspaceId);assert.ok([parentId,pageId].includes(id));if(id===parentId)return {text:'合成保存目录'};counts.read++;if(!readbackReady)throw Error('synthetic eventual readback');return {text:body};},
+  readDocument:async(ws:string,id:string)=>{assert.equal(ws,a.workspaceId);assert.ok([parentId,pageId].includes(id));if(id===parentId)return {text:'合成保存目录'};counts.read++;if(!readbackReady&&!(options.automaticReadback&&counts.read>1))throw Error('synthetic eventual readback');return {text:body};},
   callDocumentTool:async(ws:string,cid:string,grant:string,user:string,name:string,args:any,beforeSend?:()=>Promise<void>)=>{
    assert.deepEqual([ws,cid,grant,user],[a.workspaceId,'wf-notion','wf-grant',a.userId]);await beforeSend?.();
    if(name==='notion-create-pages'){counts.create++;assert.equal(args.parent.page_id,parentId);body=args.pages[0].content;return {pages:[{id:pageId}]};}
@@ -1236,7 +1279,7 @@ async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean
   recalls.push({query,options:structuredClone(recallOptions)});
   counts.retrieval++;assert.equal(ws,a.workspaceId);assert.equal(user,a.userId);assert.deepEqual(ids,['wf-source']);assert.match(query,/青色42|ONE-WORKFLOW/);
   return {status:options.noMatch?'no_match':'used',chunks:options.noMatch?[]:[{id:'wf-source-body',provider:'getnote',title:'入口方案',content:source}],failures:[],coverage:[{connectionId:'wf-source',provider:'getnote',status:options.noMatch?'no_match':'used',attempts:1}]};
- }},{artifactDirectory:directory,contextMode:options.adaptiveDefault||options.clarification?'adaptive':'legacy',notionDocuments:new NotionDocuments(f.store,mcp,{now:()=>clock.now,delays:[5,10]}),reportCall:async()=>assert.fail('workflow does not buy an extra progress-summary model'),modelCall:async(model,messages,tools)=>{
+ }},{artifactDirectory:directory,contextMode:options.adaptiveDefault||options.clarification?'adaptive':'legacy',notionDocuments:new NotionDocuments(f.store,mcp,{now:options.realClock?Date.now:()=>clock.now,delays:options.realClock?[50,100]:[5,10]}),reportCall:async()=>assert.fail('workflow does not buy an extra progress-summary model'),modelCall:async(model,messages,tools)=>{
   calls.push({modelId:model.id,messages:structuredClone(messages),tools:structuredClone(tools)});
   if(model.id==='router'){
    if(messages.at(-1)?.role==='tool'&&!messages.at(-1)?.content?.includes('"status":"loaded"'))return answer('开始处理。');
@@ -3346,6 +3389,74 @@ test('single local_special routes only through its configured logic handoff and 
   assert.equal(localCalls,1);
 });
 
+test('project clarification then short confirmation dispatches the original local edit once without asking for the folder again',async()=>{
+ const f=fixture(),source='帮我看看myspace的项目，背景能不能改成橙色';
+ const profile=await f.store.mutate(d=>updateExecutor(d,'a',undefined,{revision:0,action:'draft',values:{...executorDefaults(),name:'确认后的本机编辑',modelId:'worker',routingRole:'logic'}}));
+ await f.store.mutate(d=>updateExecutor(d,'a',profile.id,{revision:1,action:'publish'}));
+ let starts=0;
+ const execute=async(cid:string)=>{starts++;const job=(await f.store.read()).chatOperations!.find(o=>o.conversationId===cid&&o.workRun)!.workRun!;assert.equal(job.executionMode,'local');assert.match(job.instruction,/myspace/);assert.match(job.instruction,/橙色/);assert.equal(job.localExecution?.targetName,'/QA/selected');return{id:'confirmed-local',status:'queued'};};
+ f.setRoute(messages=>{
+  if(messages.at(-1)?.role==='tool')return answer('已经交给当前电脑处理。');
+  if(messages.filter(m=>m.role==='user').at(-1)?.content===source)return answer('你说的是当前工作文件夹里的 myspace 项目吗？确认后我就检查背景能不能改成橙色。');
+  assert.match(JSON.stringify(messages),/服务端已将本轮简短确认绑定/);
+  return {...answer(''),toolCalls:[{id:'confirmed-edit',type:'function',function:{name:'execute_local_task',arguments:JSON.stringify({taskId:null,title:'把 myspace 背景改成橙色',instruction:'先定位 myspace 项目，唯一目标时仅将背景改为橙色并回读，不覆盖无关文件',executorId:'local_special',featureIds:[]})}}]};
+ });
+ const question=await f.service.dispatch(a,input('operation_local_clarify_project',source),key,undefined,execute,undefined,readyLocalProbe,lifecycleDevice);
+ assert.equal(question.failure,undefined);assert.equal(starts,0);assert.equal(question.taskIds.length,0);
+ const confirmed=await f.service.dispatch(a,input('operation_local_confirm_project','对，就是他'),key,undefined,execute,undefined,readyLocalProbe,lifecycleDevice);
+ assert.equal(confirmed.failure,undefined);assert.equal(starts,1);assert.equal(confirmed.taskIds.length,1);
+ const db=await f.store.read();assert.equal(db.chatOperations!.filter(o=>o.workRun).length,1);assert.equal(db.conversations.find(c=>c.coordinatorMain)!.messages.filter(m=>m.role==='user').at(-1)?.content,'对，就是他');
+});
+
+test('reviewed local not-started failure retries the same confirmed project but an accepted effect cannot be replayed from a bare retry',async()=>{
+ const f=fixture(),source='帮我看看myspace的项目，背景能不能改成橙色';
+ const profile=await f.store.mutate(d=>updateExecutor(d,'a',undefined,{revision:0,action:'draft',values:{...executorDefaults(),name:'未启动参数恢复',modelId:'worker',routingRole:'logic'}}));
+ await f.store.mutate(d=>updateExecutor(d,'a',profile.id,{revision:1,action:'publish'}));
+ f.setRoute(()=>answer('你说的是当前工作文件夹里的 myspace 项目吗？'));
+ await f.service.dispatch(a,input('operation_seed_project_clarification',source),key);
+ const mainId=(await f.store.read()).conversations.find(c=>c.coordinatorMain)!.id;
+ await f.store.mutate(d=>{
+  const main=d.conversations.find(c=>c.id===mainId)!;
+  main.messages=[{id:'original-edit',role:'user',content:source,createdAt:'now'},{id:'question-edit',role:'assistant',content:'你说的是当前工作文件夹里的 myspace 项目吗？',createdAt:'now'},{id:'confirmed-edit',role:'user',content:'对，就是他',createdAt:'now'},{id:'not-started-edit',role:'assistant',content:'旧版本机安排失败',createdAt:'now'}];
+  d.chatOperations!.push(...[{id:'question-op',operationId:'operation_question_edit',assistantMessageId:'question-edit'},{id:'not-started-op',operationId:'operation_not_started_edit',assistantMessageId:'not-started-edit',failure:{code:'local_tool_invalid',stage:'planning',outcome:'not_started'}}].map(o=>({...a,...o,conversationId:mainId,status:'completed',payloadHash:'synthetic',requestId:'synthetic',createdAt:'now',updatedAt:'now'} as any)));
+ });
+ f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('已交给电脑。'):{...answer(''),toolCalls:[{id:'retry-edit',type:'function',function:{name:'execute_local_task',arguments:JSON.stringify({taskId:null,title:'修改 myspace 背景',instruction:'仅修改背景为橙色并核对',executorId:'local_special',featureIds:[]})}}]});
+ let starts=0;const execute=async(cid:string)=>{starts++;assert.match((await f.store.read()).chatOperations!.find(o=>o.conversationId===cid&&o.workRun)!.workRun!.instruction,new RegExp(source));return{id:'known-unstarted-repaired',status:'queued'};};
+ const retried=await f.service.dispatch(a,input('operation_local_retry_confirmed','再来一次？'),key,undefined,execute,undefined,readyLocalProbe,lifecycleDevice);
+ assert.equal(retried.failure,undefined);assert.equal(starts,1);assert.equal(retried.taskIds.length,1);
+ const denied=await f.service.dispatch(a,input('operation_local_retry_after_start','再来一次？'),key,undefined,execute,undefined,readyLocalProbe,lifecycleDevice);
+ assert.equal(denied.failure?.code,'local_tool_invalid');assert.equal(starts,1);assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,1);
+});
+
+test('natural local alias via single delegation retains local mode until admission',async()=>{
+ const f=fixture();
+ const profile=await f.store.mutate(d=>updateExecutor(d,'a',undefined,{revision:0,action:'draft',values:{...executorDefaults(),name:'自然本机交接',modelId:'worker',routingRole:'logic'}}));
+ await f.store.mutate(d=>updateExecutor(d,'a',profile.id,{revision:1,action:'publish'}));
+ f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('已接到。'):{...answer(''),toolCalls:[{id:'natural-local-alias',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'修改本机合成项目',instruction:'在已授权文件夹内仅修改合成项目背景为橙色并核对',executorId:'local_special',featureIds:[]})}}]});
+ let starts=0;const result=await f.service.dispatch(a,input('operation_natural_alias_local','请修改本机项目背景为橙色'),key,undefined,async()=>{starts++;return{id:'natural-alias',status:'queued'};},undefined,readyLocalProbe,lifecycleDevice);
+ assert.equal(result.failure,undefined,JSON.stringify((await f.store.read()).contextTraces.at(-1)?.executionSteps));assert.equal(starts,1);const jobs=(await f.store.read()).chatOperations!.filter(o=>o.workRun);assert.equal(jobs.length,1);assert.equal(jobs[0].workRun!.executionMode,'local');assert.equal(jobs[0].workRun!.state,'prepared');
+});
+
+test('a confirmed local batch repairs an expanded plan before any effect and retains the original edit',async()=>{
+ const f=fixture(),source='帮我看看myspace的项目，背景能不能改成橙色';
+ const profile=await f.store.mutate(d=>updateExecutor(d,'a',undefined,{revision:0,action:'draft',values:{...executorDefaults(),name:'单个确认任务',modelId:'worker',routingRole:'logic'}}));
+ await f.store.mutate(d=>{updateExecutor(d,'a',profile.id,{revision:1,action:'publish'});d.models.find(model=>model.id==='worker')!.protocol='openai';});
+ let starts=0,arrangements=0;
+ const task={taskId:null,title:'修改项目背景',instruction:'定位 myspace 并仅修改背景为橙色',executorId:'local_special',outputKind:'local_file',featureIds:[],dependsOn:[]};
+ f.setRoute(messages=>{
+  if(messages.filter(m=>m.role==='user').at(-1)?.content===source)return answer('你说的是当前工作文件夹里的 myspace 项目吗？');
+  if(messages.at(-1)?.role==='tool'&&JSON.parse(messages.at(-1)!.content!).code!=='TOOL_INPUT_REPAIR')return answer('已经交给电脑。');
+  if(messages.at(-1)?.role==='tool'){assert.match(messages.at(-1)!.content!,/只安排这一个任务/);assert.equal(starts,0);}
+  arrangements++;
+  return {...answer(''),toolCalls:[{id:`local-batch-${arrangements}`,type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:arrangements===1?[task,{...task,title:'未经确认的额外项目'}]:[task]})}}]};
+ });
+ const execute=async(cid:string)=>{starts++;const run=(await f.store.read()).chatOperations!.find(o=>o.conversationId===cid&&o.workRun)!.workRun!;assert.match(run.instruction,new RegExp(source));assert.equal(run.localExecution?.targetName,'/QA/selected');return{id:'confirmed-batch',status:'queued'};};
+ await f.service.dispatch(a,input('operation_confirm_batch_question',source),key,undefined,execute,undefined,readyLocalProbe,lifecycleDevice);
+ const result=await f.service.dispatch(a,input('operation_confirm_batch_fixed','对，就是他'),key,undefined,execute,undefined,readyLocalProbe,lifecycleDevice);
+ assert.equal(result.failure,undefined);assert.equal(arrangements,2);assert.equal(starts,1);assert.equal(result.taskIds.length,1);
+ assert.equal((await f.store.read()).chatOperations!.filter(o=>o.workRun).length,1);
+});
+
 test('explicit local button accepts local_special through both routing tools without relaxing task ownership',async()=>{
   for(const name of ['delegate_task','execute_local_task'])for(const withCard of [false,true]){
     const f=fixture();
@@ -3744,7 +3855,7 @@ test('a saved proof waiting for deterministic finalization stays visibly active 
  await f.store.mutate(d=>{const run=d.chatOperations!.find(o=>o.id===f.operationId)!.workRun!;run.notionReceipt!.state='verified';run.notionReceipt!.digest=run.notionReceipt!.expectedDigest;run.notionReceipt!.verification=undefined;run.steps![0].state='completed';run.steps![0].output={...run.notionReceipt};});
  const service=verificationService(f,async()=>assert.fail('a complete stored readback does not need another read'));
  const state=await service.state(a),transfer=state.transfers.find(t=>t.id===f.taskId)!;
- assert.equal(transfer.state,'reconciling');assert.equal(transfer.running,false);assert.match(transfer.phase!,/保存已经核对，正在整理结果/);assert.equal(state.notices.length,0);
+ assert.equal(transfer.state,'reconciling');assert.equal(transfer.running,false);assert.match(transfer.phase!,/正在整理结果/);assert.equal(state.notices.length,0);
  const detail=await service.task(a,f.taskId);assert.equal(detail.jobs[0].verificationPending,true);assert.equal(detail.recovery.kind,'reconciling');
  await service.reconcileNotionResults(a,key);assert.equal((await service.task(a,f.taskId)).jobs[0].state,'completed');
 });
@@ -3818,9 +3929,8 @@ for(const localHold of [false,true])test(`verification releases only its own pau
  await f.store.mutate(d=>{const op=d.chatOperations!.find(o=>o.id===f.operationId)!;op.workRun!.state='failed';const task=d.conversations.find(c=>c.id===f.taskId)!;task.workPaused=true;task.workPauseReason='failed';if(localHold)(d.executionTasks??=[]).push({...a,id:'unrelated-local-hold',conversationId:f.taskId,status:'failed',executionSafetyHold:true,createdAt:'2020-01-01T00:00:00Z',updatedAt:'2020-01-01T00:00:00Z'} as unknown as NonNullable<Database['executionTasks']>[number]);});
  const service=verificationService(f,async()=>({text:f.body}),async()=>{workerCalls++;return answer('<main>新的合成 HTML 方案</main>');});
  await service.reconcileNotionResults(a,key);
- let detail=await service.task(a,f.taskId);assert.equal(detail.jobs[0].state,'completed');assert.equal(detail.jobs[1].state,'queued');assert.equal(workerCalls,0,'the read-only checker itself never starts a model');assert.equal(detail.conversation.workPaused,localHold);
- await service.resume(a,key);
- if(localHold){assert.equal(workerCalls,0);assert.equal((await service.task(a,f.taskId)).jobs[1].state,'queued');}
+ let detail=await service.task(a,f.taskId);assert.equal(detail.jobs[0].state,'completed');assert.equal(detail.conversation.workPaused,localHold);
+ if(localHold){await service.resume(a,key);assert.equal(workerCalls,0);assert.equal((await service.task(a,f.taskId)).jobs[1].state,'queued');}
  else{await waitFor(async()=>(await service.task(a,f.taskId)).jobs[1].state==='completed');detail=await service.task(a,f.taskId);assert.equal(workerCalls,1);assert.match(detail.conversation.messages.at(-1)!.content,/新的合成 HTML 方案/);assert.equal(detail.jobs[0].state,'completed');}
 });
 
@@ -3862,7 +3972,7 @@ test('a delayed manual proof survives the readback/finalization restart gap with
  const service=verificationService(f,async()=>({text:'暂未同步'}));await assert.rejects(()=>service.verifyNotionResult(a,f.taskId,key),/稍后会继续只读核对/);f.clock.now+=10;
  const reader=new NotionDocuments(f.store,{readDocument:async()=>({text:f.body}),callDocumentTool:async()=>assert.fail('readback is not a write')} as unknown as NotionMcpService,{now:()=>f.clock.now,delays:[1,2]});
  await reader.reconcileDue(a,key);await f.store.mutate(d=>reconcileInterruptedChatOperations(d));
- const state=await service.state(a),detail=await service.task(a,f.taskId);assert.equal(detail.jobs[0].notionReceipt!.state,'verified');assert.equal(detail.jobs[0].verificationPending,true);assert.equal(detail.recovery.kind,'reconciling');assert.match(state.transfers.find(t=>t.id===f.taskId)!.phase!,/保存已经核对/);assert.equal(state.notices.length,0);
+ const state=await service.state(a),detail=await service.task(a,f.taskId);assert.equal(detail.jobs[0].notionReceipt!.state,'verified');assert.equal(detail.jobs[0].verificationPending,true);assert.equal(detail.recovery.kind,'reconciling');assert.match(state.transfers.find(t=>t.id===f.taskId)!.phase!,/正在整理结果/);assert.equal(state.notices.length,0);
  await service.reconcileNotionResults(a,key);assert.equal((await service.task(a,f.taskId)).jobs[0].state,'completed');
 });
 
@@ -4481,4 +4591,39 @@ for(const mode of ['bound','inspected','foreign','no-page'] as const)test(`Notio
  assert.equal(writes,0);
  if(!canRead){assert.equal(result.taskIds.length,0);assert.equal(reads,0);assert.equal((await f.store.read()).chatOperations!.filter(operation=>operation.workRun).length,0);return;}
  assert.equal(result.taskId,taskId);await service.resume(a,key);await waitFor(async()=>(await service.task(a,taskId)).jobs[0].state==='completed');assert.equal(reads,1);assert.equal(writes,0);await assert.rejects(()=>service.task(b,taskId));
+});
+
+
+test('a generated manuscript is actually readable while destination verification is pending and hidden after source revocation',async()=>{
+ const f=await workflowServiceFixture({delayed:true,noHtml:true});
+ try{
+  const result=await f.service.dispatch(a,{...input('operation_read_pending_manuscript','从得到大脑查找青色42入口方案，写完整方案并保存到Notion。'),sourceIds:['wf-source'],confirmedExternal:true,outputDestination:'notion'},key);assert.ok(result.taskId);await f.service.resume(a,key);
+  await waitFor(async()=>(f.store.read()).then(d=>d.chatOperations!.some(o=>o.conversationId===result.taskId&&o.workRun?.failureCode==='notion_verification_pending')));
+  const detail=await f.service.task(a,result.taskId!);assert.equal(detail.jobs[0].availableResults?.[0].content,f.firstBody);assert.equal(detail.jobs[0].workflow!.steps[1].resultAvailable,true);
+  await assert.rejects(()=>f.service.task(b,result.taskId!));
+  await f.store.mutate(d=>{d.knowledgeConnections.find(source=>source.id==='wf-source')!.status='revoked';});
+  const denied=await f.service.task(a,result.taskId!);assert.equal(denied.jobs[0].availableResults,undefined);assert.equal(denied.jobs[0].workflow!.steps.some(step=>step.resultAvailable),false);assert.equal(f.counts.draft,1);assert.equal(f.counts.create,1);
+ }finally{f.cleanup();}
+});
+
+for(const noHtml of [true,false])test(`durable Notion readback timer completes without UI polling or manual continuation; successor=${!noHtml}`,async()=>{
+ const f=await workflowServiceFixture({delayed:true,realClock:true,automaticReadback:true,noHtml});
+ try{
+  const result=await f.service.dispatch(a,{...input(`operation_notion_automatic_timer_${noHtml}`,'请从得到大脑查找青色42入口方案，写成完整方案保存到Notion。'+(noHtml?'':'随后做交互网页。')),sourceIds:['wf-source'],featureIds:noHtml?[]:['oneHtml'],confirmedExternal:true,outputDestination:'notion'},key);
+  assert.ok(result.taskId);await f.service.resume(a,key);
+  await waitFor(async()=>(await f.store.read()).chatOperations!.some(o=>o.conversationId===result.taskId&&o.workRun?.failureCode==='notion_verification_pending'));
+  const pending=await f.store.read(),op=pending.chatOperations!.find(o=>o.conversationId===result.taskId&&o.workRun)!;
+  assert.equal(f.counts.create,1);assert.equal(f.counts.draft,1);assert.equal(op.status,'pending');assert.equal(f.counts.feature,0);
+  assert.equal(pending.conversations.find(c=>c.id===result.taskId)!.workPaused,false);
+  // Deliberately only inspect persisted storage: state()/task()/reconcile()/
+  // resume()/continue clicks must not secretly drive this completion.
+  await waitFor(async()=>(await f.store.read()).chatOperations!.find(o=>o.id===op.id)!.workRun!.state==='completed').catch(async error=>{const pending=(await f.store.read()).chatOperations!.find(o=>o.id===op.id)!.workRun!;throw new Error(`${error.message}: ${JSON.stringify({state:pending.state,phase:pending.workflow?.phase,receipt:pending.notionReceipt?.state,verification:pending.notionReceipt?.verification?.state,steps:pending.workflow?.steps.map(step=>({id:step.id,state:step.state})),counts:f.counts})}`);});
+  const done=await f.store.read(),completed=done.chatOperations!.find(o=>o.id===op.id)!;
+  assert.equal(completed.workRun!.resultOutcome,'completed');assert.equal(completed.workRun!.notionReceipt!.state,'verified');assert.ok(completed.workRun!.workflow!.steps.every(s=>s.state==='completed'));
+  assert.equal(f.counts.retrieval,1);assert.equal(f.counts.draft,1);assert.equal(f.counts.create,1);assert.equal(f.counts.update,0);assert.equal(f.counts.feature,noHtml?0:2);assert.ok(f.counts.read>=2);
+  const main=done.conversations.find(c=>c.coordinatorMain)!,reports=main.messages.filter(m=>m.role==='assistant'&&m.id===completed.workRun!.reportMessageId);
+  assert.ok(completed.workRun!.reportedToCoordinatorAt);assert.equal(reports.length,1);assert.match(reports[0].content,new RegExp(result.taskId!));
+  assert.doesNotMatch(main.messages.map(m=>m.content).join('\n'),/本轮没有完整做成|有必需的步骤没完成|先核对已有内容后继续/);
+  assert.equal(done.attachments.filter(file=>file.conversationId===result.taskId).length,noHtml?0:1);
+ }finally{f.cleanup();}
 });
