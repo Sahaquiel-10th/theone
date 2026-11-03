@@ -72,19 +72,20 @@ test('one ordinary save may recover an absent link from the exact model body wit
  const f=fixture({multi:true,missingLink:true}),result=recoverVerifiedNotionWorkflow(f.job,owner)!;assert.ok(result);assert.equal(result.complete,false);assert.equal(result.workflow.steps[1].state,'completed');assert.equal(result.workflow.steps[2].state,'waiting');
 });
 
-for(const version of [5,7,8] as const)test(`ordinary single-save legacy proof binds raw, normalized and v${version} model body before repairing its absent link`,()=>{
+for(const version of [5,7,8,9] as const)test(`ordinary single-save proof binds raw, normalized and v${version} model body before repairing its absent link`,()=>{
  const f=fixture({ordinary:true,missingLink:true}),before=structuredClone(f.job);f.job.notionReceipt!.canonicalVersion=version;f.job.notionReceipt!.expectedCanonicalDigest=canonicalNotionDigest(body,version);
  const result=recoverVerifiedNotionWorkflow(f.job,owner)!;assert.ok(result);assert.equal(result.complete,true);assert.equal(result.workflow.phase,'completed');assert.equal((result.steps.find(cp=>cp.key===f.key(f.save))!.output as any).notionCheckpointKey,f.worker.key);assert.deepEqual(f.job.steps,before.steps);
  assert.ok(verifiedWorkflowNotionCompletion({...f.job,skills:[]},owner,['save_notion_draft']));assert.equal(verifiedWorkflowNotionCompletion({...f.job,skills:[]},owner,['knowledge_search']),undefined,'an omitted contract requirement cannot borrow another checkpoint');
 });
 
-for(const mutation of ['null-link','wrong-link','missing-digest','wrong-raw','missing-raw','wrong-length','wrong-canonical','wrong-v7-canonical','wrong-v8-canonical','missing-canonical','changed-body','partial-model','truncated-model','foreign-source','duplicate-source','duplicate-worker-key','two-writes','two-stages','prior-write','predates-attempt'] as const)test(`ordinary absent-link recovery refuses ${mutation}`,()=>{
+for(const mutation of ['null-link','wrong-link','missing-digest','wrong-raw','missing-raw','wrong-length','wrong-canonical','wrong-v7-canonical','wrong-v8-canonical','wrong-v9-canonical','missing-canonical','changed-body','partial-model','truncated-model','foreign-source','duplicate-source','duplicate-worker-key','two-writes','two-stages','prior-write','predates-attempt'] as const)test(`ordinary absent-link recovery refuses ${mutation}`,()=>{
  const f=fixture({ordinary:true,missingLink:true}),save=f.job.steps!.find(cp=>cp.key===f.key(f.save))!,draft=f.job.steps!.find(cp=>cp.tool.endsWith(':draft'))!,value=save.output as any,model=draft.output as any;
  if(mutation==='null-link')value.notionCheckpointKey=null;if(mutation==='wrong-link')value.notionCheckpointKey='wrong';if(mutation==='missing-digest')delete value.expectedBodyDigest;
  if(mutation==='wrong-raw')f.job.notionReceipt!.expectedRawDigest='d'.repeat(64);if(mutation==='missing-raw')delete f.job.notionReceipt!.expectedRawDigest;if(mutation==='wrong-length')f.job.notionReceipt!.expectedLength=body.length+1;
  if(mutation==='wrong-canonical'||mutation==='missing-canonical'){f.job.notionReceipt!.canonicalVersion=5;if(mutation==='wrong-canonical')f.job.notionReceipt!.expectedCanonicalDigest='d'.repeat(64);}
  if(mutation==='wrong-v7-canonical'){f.job.notionReceipt!.canonicalVersion=7;f.job.notionReceipt!.expectedCanonicalDigest='d'.repeat(64);}
  if(mutation==='wrong-v8-canonical'){f.job.notionReceipt!.canonicalVersion=8;f.job.notionReceipt!.expectedCanonicalDigest='d'.repeat(64);}
+ if(mutation==='wrong-v9-canonical'){f.job.notionReceipt!.canonicalVersion=9;f.job.notionReceipt!.expectedCanonicalDigest='d'.repeat(64);}
  if(mutation==='changed-body')model.result.content+='变化';if(mutation==='partial-model')model.result.outcome='partial';if(mutation==='truncated-model')model.result.finishReason='length';if(mutation==='foreign-source')draft.scopeId='foreign';if(mutation==='duplicate-source')f.job.steps!.push(structuredClone(draft));
  if(mutation==='two-writes')f.job.steps!.push({...structuredClone(f.worker),key:'another-worker-save'});
  if(mutation==='duplicate-worker-key')f.job.steps!.push({...structuredClone(f.worker),state:'failed'});

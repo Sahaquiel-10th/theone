@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Database, ExecutionTask, Message } from './types.js';
 import { appendExecutionEvent, executionTerminal, saveExecutionReceipt } from './executionService.js';
+import { currentCodexGatewayFailure } from './codexGatewayFailure.js';
 
 export const terminalReceiptCapability = 'execution_terminal_receipt_v1';
 export const maxTerminalReceiptBytes = 512 * 1024;
@@ -156,6 +157,9 @@ export function acceptTerminalReceipt(database: Database, owner: TerminalOwner, 
     if (receipt.error === 'command_unconfirmed') task.lastError = task.status === 'cancelled'
       ? '已收到停止请求，但仍有工具没有确认结束。请先核对本机文件，不要重复操作；不会自动重跑。'
       : '这轮还有工具没有确认结束，暂时不能算完成。请先核对本机文件，不要重复操作；不会自动重跑。';
+    if (interrupted) task.executorFailure = undefined;
+    if (task.status === 'failed' && !safetyHold) task.lastError = currentCodexGatewayFailure(task) ?? task.lastError;
+    if (task.status === 'completed') task.executorFailure = undefined;
     if (receipt.targetName) task.targetName = receipt.targetName;
     if (receipt.providerThreadId) task.providerThreadId = receipt.providerThreadId;
     task.updatedAt = task.completedAt = timestamp;

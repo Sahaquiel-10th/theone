@@ -5,11 +5,14 @@ import type { Store } from "./db.js";
 import type { ExecutionTask, ModelConfig } from "./types.js";
 import { appendExecutionEvent, executionTerminal } from "./executionService.js";
 import { resolveAiTask } from "./aiTaskConfig.js";
-import { runBilledModel } from "./modelBilling.js";
+import { BillingReviewRequiredError, ModelBillingError, runBilledModel } from "./modelBilling.js";
 import { MODEL_MAX_OUTPUT_TOKENS, parseProviderUsage } from "./modelGateway.js";
 import { fetchWithSafeRetries } from './providerRetry.js';
 import { localDocumentPolicy } from './localDocumentPolicy.js';
 import { friendlyConversationGuidance } from './conversationTone.js';
+import { codexGatewayFailureMessage } from './codexGatewayFailure.js';
+import { PowerAvailabilityError } from './powerBilling.js';
+import { ExecutionBatchBudgetError } from './executionBatchBudget.js';
 
 export type CodexGatewayConfiguration = { baseUrl: string; token: string; model: "one-executor" };
 type Grant = Pick<ExecutionTask, "id" | "workspaceId" | "userId" | "deviceId" | "installationId" | "conversationId" | "batchBudget"> & {
@@ -23,6 +26,14 @@ function canonical(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 const unavailable = () => new Error("ONE_CODEX_GATEWAY_UNAVAILABLE");
+/** Only fixed, server-owned diagnostics cross the gateway boundary. Never use
+ * a supplier error body, request, URL or credentials as an execution event. */
+class CodexUpstreamError extends Error {
+  constructor(readonly code: string) {
+    super(codexGatewayFailureMessage(code));
+  }
+  get status() { return /POWER_|BUDGET_/.test(this.code) ? 402 : /BILLING_/.test(this.code) ? 409 : 502; }
+}
 function localToolDefinition(value: unknown, nested = false): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const tool = value as Record<string, unknown>;
@@ -164,6 +175,7 @@ export class CodexGateway {
           userId: grant.userId, taskId: grant.id, round: grant.round, kind: "status",
           text: "本机连接已恢复，继续处理本轮；没有重新执行任务。", createdAt: timestamp });
       }
+      task.executorFailure = undefined;
       return task.deliveryAttempt?.id;
     });
     // The attempt is issued after prepare(). Bind only after a normal request's
@@ -186,39 +198,65 @@ export class CodexGateway {
           if (signal.aborted || calls.some(row => row.requestId === requestId || row.status === "pending") || calls.length >= 64) throw unavailable();
         }
       }, async model => {
-        const response = await fetchWithSafeRetries(`${model.baseUrl.replace(/\/$/, "")}/responses`, {
+        let response: Response;
+        let retryBlocked = false;
+        const guardedRetry = async (work: () => Promise<void>) => {
+          try { await work(); } catch { retryBlocked = true; throw unavailable(); }
+        };
+        try { response = await fetchWithSafeRetries(`${model.baseUrl.replace(/\/$/, "")}/responses`, {
           method: "POST", redirect: "error", headers: { "Content-Type": "application/json", Authorization: `Bearer ${model.apiKey}` },
           body: JSON.stringify(body), signal: controller.signal
-        }, { fetch: this.options.fetch, beforeRetry: async () => { this.active(await this.store.read(), grant); await this.proof({ ...grant, method: 'POST', path: '/api/executor-gateway/v1/responses' }); },
-          onRetry: async notice => { await this.store.mutate(db => { this.active(db, grant); appendExecutionEvent(db, {id:`exe_${crypto.randomBytes(12).toString('hex')}`,workspaceId:grant.workspaceId,userId:grant.userId,taskId:grant.id,round:grant.round,kind:'status',text:`模型服务有点忙，${Math.ceil(notice.delayMs/1000)} 秒后再试（${notice.attempt}/${notice.maxRetries}）。不用重新发送，随时可以停止。`,createdAt:new Date(this.now()).toISOString()}); }); } });
-        if (!response.ok || !response.body || !response.headers.get("content-type")?.includes("text/event-stream")) throw unavailable();
+        }, { fetch: this.options.fetch, beforeRetry: () => guardedRetry(async () => { this.active(await this.store.read(), grant); await this.proof({ ...grant, method: 'POST', path: '/api/executor-gateway/v1/responses' }); }),
+          onRetry: notice => guardedRetry(async () => { await this.store.mutate(db => { this.active(db, grant); appendExecutionEvent(db, {id:`exe_${crypto.randomBytes(12).toString('hex')}`,workspaceId:grant.workspaceId,userId:grant.userId,taskId:grant.id,round:grant.round,kind:'status',text:`模型服务有点忙，${Math.ceil(notice.delayMs/1000)} 秒后再试（${notice.attempt}/${notice.maxRetries}）。不用重新发送，随时可以停止。`,createdAt:new Date(this.now()).toISOString()}); }); }) }); }
+        catch (error) {
+          if (retryBlocked || signal.aborted || controller.signal.aborted) throw error;
+          this.active(await this.store.read(), grant);
+          throw new CodexUpstreamError("ONE_CODEX_UPSTREAM_CONNECTION_FAILED");
+        }
+        if (!response.ok) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new CodexUpstreamError(response.status >= 400 && response.status <= 599
+            ? `ONE_CODEX_UPSTREAM_HTTP_${response.status}` : "ONE_CODEX_UPSTREAM_PROTOCOL");
+        }
+        if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new CodexUpstreamError("ONE_CODEX_UPSTREAM_PROTOCOL");
+        }
         const reader = response.body.getReader(), decoder = new TextDecoder();
         let pending = "", total = 0;
         try {
           while (true) {
-            const { done, value } = await reader.read();
+            let part: ReadableStreamReadResult<Uint8Array>;
+            try { part = await reader.read(); }
+            catch (error) { if (controller.signal.aborted) throw error; throw new CodexUpstreamError("ONE_CODEX_UPSTREAM_INCOMPLETE"); }
+            const { done, value } = part;
             if (done) break;
             total += value.length;
-            if (total > 32 * 1024 * 1024) throw unavailable();
+            if (total > 32 * 1024 * 1024) throw new CodexUpstreamError("ONE_CODEX_UPSTREAM_PROTOCOL");
             pending = (pending + decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n");
             let boundary: number;
             while ((boundary = pending.indexOf("\n\n")) >= 0) {
               const frame = pending.slice(0, boundary); pending = pending.slice(boundary + 2);
               const data = frame.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
               if (!data || data === "[DONE]") continue;
-              const event = JSON.parse(data) as Record<string, unknown>;
-              if (typeof event.type !== "string" || !event.type.startsWith("response.") || completed) throw unavailable();
-              if (event.type === "response.failed" || event.type === "response.incomplete" || event.type === "response.error") throw unavailable();
+              let event: Record<string, unknown>;
+              try { event = JSON.parse(data) as Record<string, unknown>; }
+              catch { throw new CodexUpstreamError("ONE_CODEX_UPSTREAM_PROTOCOL"); }
+              if (!event || typeof event !== "object" || Array.isArray(event)) throw new CodexUpstreamError("ONE_CODEX_UPSTREAM_PROTOCOL");
+              if (typeof event.type !== "string" || !event.type.startsWith("response.") || completed) throw new CodexUpstreamError("ONE_CODEX_UPSTREAM_PROTOCOL");
+              if (event.type === "response.failed" || event.type === "response.incomplete" || event.type === "response.error") throw new CodexUpstreamError("ONE_CODEX_UPSTREAM_RESPONSE_FAILED");
               const result = event.response as Record<string, unknown> | undefined;
+              if (result !== undefined && (!result || typeof result !== "object" || Array.isArray(result))) throw new CodexUpstreamError("ONE_CODEX_UPSTREAM_PROTOCOL");
               // Public alias only; errors and upstream headers are never relayed.
               if (result) result.model = "one-executor";
               if (event.type === "response.completed") {
-                if (result?.status !== "completed") throw unavailable();
+                if (result?.status !== "completed") throw new CodexUpstreamError("ONE_CODEX_UPSTREAM_RESPONSE_FAILED");
                 completed = event; usage = parseProviderUsage(result.usage);
               } else emit(event);
             }
           }
-          if (!completed || pending.trim() || controller.signal.aborted) throw unavailable();
+          if (controller.signal.aborted) throw unavailable();
+          if (!completed || pending.trim()) throw new CodexUpstreamError("ONE_CODEX_UPSTREAM_INCOMPLETE");
           return { usage };
         } finally { await reader.cancel().catch(() => undefined); }
       });
@@ -226,6 +264,28 @@ export class CodexGateway {
       this.active(await this.store.read(), grant);
       if (signal.aborted || controller.signal.aborted) throw unavailable();
       emit(completed!);
+    } catch (error) {
+      const failure = error instanceof CodexUpstreamError ? error
+        : error instanceof PowerAvailabilityError ? new CodexUpstreamError(`ONE_CODEX_${error.code}`)
+        : error instanceof ExecutionBatchBudgetError ? new CodexUpstreamError('ONE_CODEX_BUDGET_UNAVAILABLE')
+        : error instanceof BillingReviewRequiredError ? new CodexUpstreamError('ONE_CODEX_BILLING_REVIEW')
+        : error instanceof ModelBillingError ? new CodexUpstreamError('ONE_CODEX_BILLING_SETTLEMENT') : undefined;
+      if (failure) {
+        if (signal.aborted || controller.signal.aborted) throw unavailable();
+        this.active(await this.store.read(), grant);
+        await this.store.mutate(db => {
+        // A late failure must not add a misleading event to a stopped,
+        // revoked, superseded or differently owned task/round.
+        const task = this.active(db, grant);
+        if (attemptId && task.deliveryAttempt?.id !== attemptId) throw unavailable();
+        if (attemptId) task.executorFailure = { attemptId, round: grant.round, code: failure.code };
+        appendExecutionEvent(db, { id: `exe_${digest(`${requestId}:${failure.code}`).slice(0, 24)}`,
+          workspaceId: grant.workspaceId, userId: grant.userId, taskId: grant.id, round: grant.round,
+          kind: "status", text: `${failure.message}（${failure.code}）`, createdAt: new Date(this.now()).toISOString() });
+        }).catch(() => undefined);
+        this.active(await this.store.read(), grant);
+      }
+      throw failure ?? error;
     } finally { clearTimeout(timeout); clearInterval(check); signal.removeEventListener("abort", abort); }
   }
 }
@@ -243,9 +303,12 @@ export function installCodexGatewayRoutes(app: Express, gateway: CodexGateway) {
         res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
       });
       res.end();
-    } catch {
-      if (!res.headersSent) res.status(409).json({ error: { code: "ONE_EXECUTOR_REQUEST_FAILED", message: "执行请求未完成，请检查 ONE 连接和模型配置；不会自动重跑" } });
-      else res.end(`event: error\ndata: ${JSON.stringify({ type: "error", code: "ONE_EXECUTOR_REQUEST_FAILED", message: "执行请求未完成；不会自动重跑" })}\n\n`);
+    } catch (error) {
+      const safe = error instanceof CodexUpstreamError
+        ? { code: error.code, message: error.message }
+        : { code: "ONE_EXECUTOR_REQUEST_FAILED", message: "执行请求未完成，请检查 ONE 连接和模型配置；不会自动重跑" };
+      if (!res.headersSent) res.status(error instanceof CodexUpstreamError ? error.status : 409).json({ error: safe });
+      else res.end(`event: error\ndata: ${JSON.stringify({ type: "error", ...safe })}\n\n`);
     }
   });
 }

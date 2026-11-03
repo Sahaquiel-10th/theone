@@ -79,7 +79,7 @@
 
 自动重试有次数与时间上限，且按操作效果决定。不能保证外部服务提供 exactly-once；可靠性来自稳定操作身份、保存证据、平台支持的幂等/查询和只读对账。运行中不新增无限模型纠错循环，也不把供应商故障隐瞒成成功。
 
-通用连接器架构参考（待核对后补充精确来源与采用范围）：n8n 的节点输入/输出与错误类型、Zapier 的 action schema/perform 与退避。借鉴共同协议，不承诺所有第三方内容格式都无损互通。
+通用连接器架构参考（已核对官方来源，实际采用范围见下文）：n8n 的节点输入/输出与错误类型、Zapier 的 action schema/perform 与退避。借鉴共同协议，不承诺所有第三方内容格式都无损互通。
 
 ## 进度与证据
 
@@ -121,7 +121,7 @@
 ### 发布候选检查
 
 - 后续冻结候选全量2333项：2332通过、0失败、1既有skip，日志 `/tmp/one-durable-release-full-20261103.log`。TypeScript与生产构建通过（`/tmp/one-durable-release-build-20261103.log`）。前端已有构建体积提示，非新失败。
-- 逐项点击验收补齐一个真实缺口：完成写作后，仅显示“查看”仍可能打开无正文的任务。现在从同一已完成检查点投影 `availableResults` 到现有任务详情，正文可立即阅读；不保存第二份原稿、不重新生成、不新增全文请求。来源/凭证撤权后隐藏未交付正文和对应入口；跨租户、错证据不返回。整单最终正文已发布到任务消息时不重复展示。新增投影/服务/SSR等通过，最后阅读滚动视觉检查进行中。
+- 逐项点击验收补齐一个真实缺口：完成写作后，仅显示“查看”仍可能打开无正文的任务。现在从同一已完成检查点投影 `availableResults` 到现有任务详情，正文可立即阅读；不保存第二份原稿、不重新生成、不新增全文请求。来源/凭证撤权后隐藏未交付正文和对应入口；跨租户、错证据不返回。整单最终正文已发布到任务消息时不重复展示。新增投影/服务/SSR等通过，最后阅读滚动视觉检查随后已完成，见下条冻结检查。
 
 - 最终冻结源码全量2333项：2332通过、0失败、1既有skip，日志 `/tmp/one-durable-release-frozen-full-20261103.log`；TypeScript和生产构建通过，日志 `/tmp/one-durable-release-frozen-build-20261103.log`。中间正文入口、初次阅读滚动及两人独审均已通过。`git diff --check`通过。
 - 为新真机验收准备独立合成文件 `/Users/machao/Desktop/test/ONE-QA-DURABLE-1103/index.html`（559字节，初始SHA256 `30436bebf1a0e40290df19bd35d895e146ae9bee2444167169383bb47a6bf783`）。仅创建此新隔离目录，不修改原myspace或旧验收文件；尚未由ONE执行。
@@ -142,3 +142,25 @@
 
 - 补充修复验证：严格结果封套的空正文和字段类型错误均不能回退为“可用JSON文章”；failed/needs_input/partial不得进入保存，错误类型统一失败，原诊断仅留私有检查点。模型实际收到currentStep.title，提示仅单一最外层结果封套，正文中的JSON仅在content内。精确前言、普通JSON/代码示例、重复解析、空/错类型反例独审通过，8项真实service反例均0次Notion写入。
 - 本机精确长请求及生产同款交接参数相关policy10项/service7项通过：1次模型、1次本机受理，未查知识库或联网。此项是离线真实service测试，尚待下轮本机真机验收。
+
+### 补充修复发布候选
+
+- 候选 `8c534bbf3b6b2be4525022f6446a1f9c2d407929`：最终全量2356项，2355通过、0失败、1既有skip（`/tmp/one-durable-publish-final-full-20261103.log`）；TypeScript/生产构建通过（`/tmp/one-durable-publish-final-build-20261103.log`），diff-check通过。应用/Mac/Windows检查均通过；自动run [41554999459](https://github.com/Sahaquiel-10th/theone/actions/runs/41554999459)，实际部署及下轮验收另记。
+- 首轮LOCAL未受理后只读确认合成index.html仍为初始559字节/同初始SHA；因此未出现隐蔽修改，也未对原myspace重试。
+
+- 自动run41554999459补充版已于北京时间09:02:31 success，09:02:19日志明确ONE deployed（GitHub将SHA短段mask，完整headSha由run元数据提供）；CI和远端2356/2355通过/0失败/1skip。服务器current另行只读确认完整 `8c534bbf3b6b2be4525022f6446a1f9c2d407929`。本轮耗时长在实际远端npm test，已读进程确认，不是盲等、取消或并行重发。
+
+### B轮线上闭环与新阻塞（仍未当作通过）
+
+- 公开health200、首页JS与本地一致（北京时间09:04:59，index-DDTy3_Oa.js，1466348字节，同SHA）。
+- CLOUD-B `cnv_cf5c95bd9a6654b67496`，提纲→正文→保存按序运行；任务动态实显已完成提纲可查看、写作进行中，随后2/3已完成/保存后台核对。点击已完成正文可立即读到完整表格、加粗、行内代码，未点继续。真实截图 `output/task-live-cloud-b-progress-20261103.png`、`output/task-live-cloud-b-readable-20261103.png`。
+- 原页 `40da50159991812ba698c3aad80c657a` 独立Notion fetch确认正确正文，无JSON封套或步骤前言。原稿359字符，SHA256 `7cfdecf997845afc5c70bde61283a1f84fd1bc226e865bf2012e87b8c309c037`，与持久receipt.expectedRawDigest一致。但v8 canonical连续3次body_mismatch而终止，主对话明确报已完成的两步及不覆盖重写。此轮内容质量通过、自动终态闭环失败。
+- 精确本地成对合成fixture确认唯一首差是 `DURABLE_紫色42` 的Markdown inlineCode与Notion HTML code：v8保守拒绝含下划线的code等价，正文未丢。拟追加v9严格字面代码解析，不改旧v8摘要含义，不按字数或部分正文放行；旧记录仅显式只读且精确三摘要绑定后重证，不能自动放行旧内容。
+- LOCAL-B `cnv_71c2b314e7a47e579307` / `ext_e3def753fdbc5befc781` 已自动受理，同工作目录，未选目录或点击继续。Codex已建立会话，随后gateway responses返回409两次，终态receipt accepted failed；本机index.html仍原559字节/初始SHA，证明未开始改文件，未发生未知局部写入。当前查gateway具体分类，而非继续修改派发意图。此轮派发/目录复用通过、实际执行失败。
+
+### B轮根因修复候选
+
+- v9：仅拓展安全literal inline-code候选到下划线，仍需exact无属性HTML code、单行单plain-text子节点及字面值相等；不删格式/不按子串放行。修改代码一个字会失败；旧v2–v8的1008摘要矩阵不变。新写入9；旧8显式只读以raw/normalized/原canonical三摘要、长度及同op/checkpoint证据重证，原version/hash不覆盖。相关127项与独审127项通过。
+- 本机B的真实codex usage已进入模型计费调用层并失败，但既有reviewReason只记上游失败成本未知，网关所有异常均回409，无法事后重建具体HTTP原因。不把此事假称成已知供应商502/401；没有因诊断而修改余额或授权。
+- 新网关按已确认事实分类HTTP/格式/断流/网络/电力/预算，固定安全说明进入同owner/device/installation/round/attempt的私有executorFailure和执行事件，不输出供应商正文/参数/凭证；终态及主对话只投影受控中文原因。成功、停止、撤权、安全hold和晚到回执均有守卫；publicExecutionTask剥离私有诊断。相关125项、独立77项、TS/diff通过。
+- 新分类解决“只有泛409不能定位/反馈”的问题；本机B真实上游故障的实际成因尚未重证，需发布后新C验收，不能仅靠单测宣布本机执行通过。

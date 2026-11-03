@@ -192,3 +192,25 @@ test('v8 recognizes only non-ASCII UTF-8 URL spelling without changing visible l
   ['```\nhttps://example.test/a）\n```','```\nhttps://example.test/a%EF%BC%89\n```'],
  ])assert.notEqual(canonicalNotionDigest(left,8),canonicalNotionDigest(right,8),right);
 });
+
+test('v9 proves exact plain identifier inline code while keeping Markdown-active or altered HTML code opaque',()=>{
+ const digest=(body:string)=>canonicalNotionDigest(body,9);
+ const source='# 合成专栏\n\n**重点**与 `one_qa_probe`。\n\n|项目|步骤|\n|---|---:|\n|验证|1|\n\n参考：https://example.test/reference）';
+ const actual='# 合成专栏\n\n<b>重点</b>与 <code>one_qa_probe</code>。\n\n|项目|步骤|\n| --- | --- |\n|验证|1|\n\n参考：[https://example.test/reference）](https://example.test/reference%EF%BC%89)';
+ assert.equal(digest(source),digest(actual));
+ assert.notEqual(canonicalNotionDigest(source,8),canonicalNotionDigest(actual,8),'old v8 retains its exact persisted meaning');
+ for(const identifier of ['one_qa','one__qa','_one','one_','1_2','中文_标签'])assert.equal(digest('正文 `'+identifier+'`。'),digest('正文 <code>'+identifier+'</code>。'),identifier);
+ for(const changed of [actual.replace('one_qa_probe','one_qa_other'),actual.replace('<code>one_qa_probe</code>','one_qa_probe'),actual.replace('|验证|1|','|验证|2|'),actual.replace('<code>','<code class="x">'),actual.replace('one_qa_probe','one\\_qa_probe'),actual.replace('one_qa_probe','one&#95;qa_probe'),actual.replace('<code>','<code> '),actual.replace('</code>',' </code>'),actual.replace('one_qa_probe','one_qa\n_probe')])assert.notEqual(digest(source),digest(changed),changed);
+ for(const value of ['_one_','__one__','one _qa_','*one*','one\\_qa','<b>one</b>','one&qa'])assert.notEqual(digest('正文 `'+value+'`。'),digest('正文 <code>'+value+'</code>。'),value);
+ assert.notEqual(digest('```\none_qa_probe\n```'),digest('<code>one_qa_probe</code>'));
+});
+
+test('v2 through v8 digest meanings remain byte-for-byte stable across the identifier presentation upgrade',()=>{
+ const rows:string[]=[];
+ for(const prefix of ['', '# 标题\n\n','**重点**与 ','> 引用\n\n'])
+  for(const code of ['ONE-QA','one_qa','_one_','a*b','[one]','a\\b'])
+   for(const suffix of ['。','\n\n|项目|值|\n|---|---|\n|甲|1|','\n\n参考：https://example.test/a）'])
+    for(const body of [prefix+'`'+code+'`'+suffix,prefix+'<code>'+code+'</code>'+suffix])
+     for(const version of [2,3,4,5,6,7,8] as const)rows.push(canonicalNotionDigest(body,version));
+ assert.equal(rows.length,1008);assert.equal(notionHash(JSON.stringify(rows)),'11bfd4b0177fea5c0b1c97a03cfa56ecd6f9c1a4d222196cec3e0ab38e136239');
+});

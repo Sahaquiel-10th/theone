@@ -205,7 +205,8 @@ export function buildExecutionCompilerMessages(records: MessageRecord[], sourceM
 
 export function publicExecutionTask(task: ExecutionTask, scope?: ExecutionDeviceScope) {
   const { instruction: _instruction, deviceId: _deviceId, deliveryAttempt: _attempt,
-    terminalReceipt: _receipt, transportInterruption: _transport, executionSafetyHold: _hold, ...safe } = task;
+    terminalReceipt: _receipt, transportInterruption: _transport, executionSafetyHold: _hold,
+    executorFailure: _executorFailure, ...safe } = task;
   return { ...safe, resultDeliveryPending: executionDeliveryPending(task), requiresExecutionCheck: Boolean(task.executionSafetyHold),
     ...(scope ? {blocksCurrentDevice: executionBlocksDevice(task, scope)} : {}) };
 }

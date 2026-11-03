@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { acceptTerminalReceipt, maxTerminalReceiptBytes, parseTerminalReceipt, recordExecutionAttempt,
   terminalReceiptHash, type TerminalReceipt } from './executionTerminalReceipt.js';
-import { assertLocalExecutionAvailable, executionDeliveryPending, requestExecutionCancellation } from './executionService.js';
+import { publicExecutionTask, assertLocalExecutionAvailable, executionDeliveryPending, requestExecutionCancellation } from './executionService.js';
+
+import {pendingTaskResults} from './taskResultInbox.js';
 
 const now = '2026-10-14T06:00:00.000Z';
 const owner = { workspaceId: 'workspace-a', userId: 'user-a', deviceId: 'device-a', installationId: 'a'.repeat(32) };
@@ -256,4 +258,35 @@ test('old-round or foreign command warnings cannot set a hold on the current own
   const foreign = receipt({ userId: 'foreign-user', error: 'command_unconfirmed', outcome: 'failed' });
   assert.equal(acceptTerminalReceipt(db, owner, foreign, now), undefined);
   assert.equal(JSON.stringify(task), before);
+});
+
+test('the exact failed Codex attempt projects its server diagnosis through the saved receipt and main-chat briefing',()=>{
+  for(const [code,reason] of [['ONE_CODEX_UPSTREAM_HTTP_401','模型授权配置异常'],['ONE_CODEX_UPSTREAM_PROTOCOL','模型返回格式不兼容'],['ONE_CODEX_POWER_INSUFFICIENT','电力不足'],['ONE_CODEX_BUDGET_UNAVAILABLE','预算授权需要核对']]){
+    const {db,task}=fixture();task.executorFailure={attemptId:'attempt-a',round:1,code};
+    const value=receipt({outcome:'failed',finalResponse:'本轮有工具未能完成，请查看工具反馈；不会自动重跑。',error:'execution_unconfirmed'});
+    assert.equal(acceptTerminalReceipt(db,owner,value,now)?.disposition,'accepted');
+    assert.equal(task.status,'failed');assert.ok(task.lastError.includes(reason),code);
+    assert.ok(db.messages[0].content.includes(reason),code);
+    const publicTask=publicExecutionTask(task);
+    assert.equal(Object.hasOwn(publicTask,'executorFailure'),false);assert.ok(!JSON.stringify(publicTask).includes('attempt-a'));
+    const own=pendingTaskResults(db,owner)[0];
+    assert.ok(own.brief?.includes(reason),code);assert.doesNotMatch(own.brief!,/重新配置|检查文件夹|还没接上|未开始写入/);
+    assert.throws(()=>pendingTaskResults(db,{workspaceId:'workspace-b',userId:'user-a'}),/账号或个人空间不可用/);
+  }
+});
+
+test('stale diagnostics never override actual success, stops, safety holds or another attempt',()=>{
+  for(const change of ['success','cancel','hold','transport','round','attempt','unknown'] as const){
+    const {db,task}=fixture();task.executorFailure={attemptId:'attempt-a',round:1,code:'ONE_CODEX_UPSTREAM_HTTP_401'};
+    if(change==='round')task.executorFailure.round=0;
+    if(change==='attempt')task.executorFailure.attemptId='old-attempt';
+    if(change==='unknown')task.executorFailure.code='untrusted arbitrary diagnostic';
+    if(change==='transport')task.transportInterruption={attemptId:'attempt-a',round:1,reason:'socket_close',at:now};
+    const value=receipt({outcome:change==='success'?'completed':change==='cancel'?'cancelled':'failed',error:change==='hold'?'command_unconfirmed':change==='success'?undefined:'execution_unconfirmed'});
+    assert.equal(acceptTerminalReceipt(db,owner,value,now)?.disposition,'accepted');
+    assert.ok(!task.lastError?.includes('模型授权配置异常'),change);
+    if(change==='success'){assert.equal(task.status,'completed');assert.equal(task.executorFailure,undefined);assert.equal(task.finalResponse,value.finalResponse);}
+    if(change==='cancel')assert.equal(task.status,'cancelled');
+    if(change==='hold')assert.equal(task.executionSafetyHold,'command_unconfirmed');
+  }
 });

@@ -203,6 +203,8 @@ export type ExecutionTask = {
   reportRound?: number;
   /** Private delivery binding, issued by the server before sending a local round. */
   deliveryAttempt?: { id: string; round: number; issuedAt: string };
+  /** Private, server-created diagnosis; never accepted from a launcher. */
+  executorFailure?: { attemptId: string; round: number; code: string };
   transportInterruption?: { attemptId: string; round: number;
     reason: 'proof_timeout' | 'heartbeat_timeout' | 'socket_close' | 'socket_error' | 'connection_replaced' | 'local_storage' | 'cancellation_pending';
     at: string; closeCode?: number };

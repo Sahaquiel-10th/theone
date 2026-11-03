@@ -41,10 +41,19 @@ function fixture() {
       assert.ok(body.instructions.includes("本机执行器"));
       instructions.push(body.instructions);
       await fetchEffect?.();
-      if (mode === "error") return new Response("upstream-secret", { status: 403 });
+      if(mode==="http_304")return new Response(null,{status:304});
+      if(mode==="retry_key")return new Response(null,{status:429,headers:{"retry-after":"0"}});
+      if (mode === "error" || mode.startsWith("http_")) return new Response(JSON.stringify({error:{message:"upstream-secret https://supplier.example/v1 private-input"}}), { status: mode === "error" ? 403 : Number(mode.slice(5)), headers: {"retry-after":"60"} });
+      if (mode === "network") throw Error("upstream-secret https://supplier.example/v1 private-input");
+      if (mode === "oversize") return new Response(new ReadableStream({start(controller){controller.enqueue(new Uint8Array(32*1024*1024+1));controller.close();}}), {headers:{"content-type":"text/event-stream"}});
+      if (["missing_type","wrong_type","bad_result","bad_status"].includes(mode)) return new Response("data: "+JSON.stringify(mode==="missing_type"?{}:mode==="wrong_type"?{type:"error"}:mode==="bad_result"?{type:"response.created",response:"not-a-result"}:{type:"response.completed",response:{status:"failed"}})+"\n\n", {headers:{"content-type":"text/event-stream"}});
+      if (mode === "json") return new Response(JSON.stringify({error:{message:"upstream-secret"}}), {headers:{"content-type":"application/json"}});
+      if (mode === "malformed") return new Response("data: not-json-upstream-secret\n\n", {headers:{"content-type":"text/event-stream"}});
+      if (mode === "failed_event") return new Response('data: {"type":"response.failed","response":{"error":{"message":"upstream-secret"}}}\n\n', {headers:{"content-type":"text/event-stream"}});
       const events = [{ type: "response.created", response: { id: "resp_1", model: "coding-model" } },
         { type: "response.output_text.delta", item_id: "item_1", delta: "done" },
         ...(mode === "truncated" ? [] : [{ type: "response.completed", response: { id: "resp_1", status: "completed", model: "coding-model", usage: mode==='missing_usage'?undefined:{ input_tokens: 10, output_tokens: 5, total_tokens: 15 } } }])];
+      if(mode==="after_completed")events.push({type:"response.created",response:{id:"resp_2",model:"coding-model"}});
       const bytes = new TextEncoder().encode(events.map(event => `event: ${event.type}\r\ndata: ${JSON.stringify(event)}\r\n\r\n`).join(""));
       // Bytewise frames exercise boundaries, CRLF splitting and incremental decode.
       return new Response(new ReadableStream({ start(controller) { for (const byte of bytes) controller.enqueue(Uint8Array.of(byte)); controller.close(); } }), { headers: { "content-type": "text/event-stream" } });
@@ -361,6 +370,93 @@ test("HTTP route accepts no cookies as executor auth and returns sanitized error
     assert.equal(unauthenticated.status, 401);
     const config = await f.gateway.prepare(f.task); f.setMode("error");
     const failed = await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` }, body: JSON.stringify(request) });
-    assert.equal(failed.status, 409); assert.ok(!(await failed.text()).includes("upstream-secret"));
+    assert.equal(failed.status, 502); const diagnostic = await failed.json();
+    assert.equal(diagnostic.error.code,"ONE_CODEX_UPSTREAM_HTTP_403");
+    assert.match(diagnostic.error.message,/模型授权配置异常/);
+    assert.ok(!/upstream-secret|supplier\.example|private-input/.test(JSON.stringify(diagnostic)));
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
+
+test("supplier failures record bounded diagnostics for only the authorized task without replay", async () => {
+  for (const [mode, code, hint] of [
+    ["http_400", "ONE_CODEX_UPSTREAM_HTTP_400", "模型服务拒绝"],
+    ["http_304", "ONE_CODEX_UPSTREAM_PROTOCOL", "模型返回格式"],
+    ["http_401", "ONE_CODEX_UPSTREAM_HTTP_401", "模型授权配置异常"],
+    ["http_403", "ONE_CODEX_UPSTREAM_HTTP_403", "模型授权配置异常"],
+    ["http_429", "ONE_CODEX_UPSTREAM_HTTP_429", "模型服务繁忙"],
+    ["http_500", "ONE_CODEX_UPSTREAM_HTTP_500", "模型服务暂时不可用"],
+    ["http_502", "ONE_CODEX_UPSTREAM_HTTP_502", "模型服务暂时不可用"],
+    ["json", "ONE_CODEX_UPSTREAM_PROTOCOL", "模型返回格式"],
+    ["oversize", "ONE_CODEX_UPSTREAM_PROTOCOL", "模型返回格式"],
+    ["missing_type", "ONE_CODEX_UPSTREAM_PROTOCOL", "模型返回格式"],
+    ["wrong_type", "ONE_CODEX_UPSTREAM_PROTOCOL", "模型返回格式"],
+    ["bad_result", "ONE_CODEX_UPSTREAM_PROTOCOL", "模型返回格式"],
+    ["after_completed", "ONE_CODEX_UPSTREAM_PROTOCOL", "模型返回格式"],
+    ["bad_status", "ONE_CODEX_UPSTREAM_RESPONSE_FAILED", "模型没有完成"],
+    ["network", "ONE_CODEX_UPSTREAM_CONNECTION_FAILED", "连不上模型服务"],
+    ["malformed", "ONE_CODEX_UPSTREAM_PROTOCOL", "模型返回格式"],
+    ["failed_event", "ONE_CODEX_UPSTREAM_RESPONSE_FAILED", "模型没有完成"],
+    ["truncated", "ONE_CODEX_UPSTREAM_INCOMPLETE", "模型回复中断"],
+  ]) {
+    const f = fixture(), config = await f.gateway.prepare(f.task); f.setMode(mode);
+    const other = {...f.task,id:"other-task",workspaceId:"wb",userId:"b"};f.db.executionTasks.push(other);
+    const before = structuredClone(other), events:string[]=[];
+    await assert.rejects(f.gateway.responses(config.token,request,signal(),event=>events.push(String(event.type))),
+      error => error instanceof Error && (error as any).code===code);
+    assert.equal(f.calls(),1,mode);assert.equal(f.db.modelUsageRecords.length,1,mode);
+    assert.equal(f.db.modelUsageRecords[0].status,"failed",mode);assert.ok(!events.includes("response.completed"),mode);
+    assert.equal(f.db.executionEvents.length,1,mode);
+    assert.deepEqual(f.task.executorFailure,{attemptId:"attempt-a",round:0,code});
+    const diagnostic=f.db.executionEvents[0];
+    assert.equal(diagnostic.taskId,"task");assert.equal(diagnostic.workspaceId,"wa");assert.equal(diagnostic.userId,"a");assert.equal(diagnostic.round,0);
+    assert.ok(diagnostic.text.includes(code),mode);assert.ok(diagnostic.text.includes(hint),mode);
+    assert.ok(!/upstream-secret|supplier\.example|private-input/.test(JSON.stringify(diagnostic)),mode);
+    assert.deepEqual(other,before);assert.equal(f.db.powerAccounts[1].balanceMicros,10_000_000);
+    await assert.rejects(f.gateway.responses(config.token,request,signal(),()=>{}));
+    assert.equal(f.calls(),1,mode);assert.equal(f.db.executionEvents.length,1,mode);
+  }
+});
+
+
+test("late supplier failure cannot diagnose a stopped, revoked, replaced or differently owned execution",async()=>{
+  for(const change of ["stop","revoked","round","attempt","workspace","user"]){
+    const f=fixture(),config=await f.gateway.prepare(f.task);f.setMode("error");
+    f.beforeSupplierResponse(async()=>{
+      if(change==="stop")f.task.status="cancelled";
+      if(change==="revoked")f.db.oneKeyDevices[0].status="revoked";
+      if(change==="round")f.task.reportRound=1;
+      if(change==="attempt")f.task.deliveryAttempt!.id="new-attempt";
+      if(change==="workspace")f.task.workspaceId="wb";
+      if(change==="user")f.task.userId="b";
+    });
+    await assert.rejects(f.gateway.responses(config.token,request,signal(),()=>{}),/ONE_CODEX_GATEWAY_UNAVAILABLE/);
+    assert.equal(f.calls(),1,change);assert.equal(f.db.executionEvents.length,0,change);assert.equal(f.task.executorFailure,undefined,change);
+  }
+});
+
+test("insufficient power has a distinct server-owned diagnosis without calling the supplier",async()=>{
+  const f=fixture(),config=await f.gateway.prepare(f.task);f.db.powerAccounts[0].balanceMicros=0;
+  await assert.rejects(f.gateway.responses(config.token,request,signal(),()=>{}),error=>error instanceof Error&&(error as any).code==="ONE_CODEX_POWER_INSUFFICIENT");
+  assert.equal(f.calls(),0);assert.equal(f.db.modelUsageRecords.length,0);
+  assert.equal(f.task.executorFailure?.code,"ONE_CODEX_POWER_INSUFFICIENT");
+  assert.match(f.db.executionEvents[0].text,/电力不足.*会员与额度/);assert.doesNotMatch(f.db.executionEvents[0].text,/文件夹/);
+});
+
+test("unavailable batch authorization has a nonempty budget diagnosis without supplier or cross-workspace charge",async()=>{
+  const f=fixture();f.task.batchBudget={parentOperationId:"missing-parent",budget:1,startedAt:new Date().toISOString()};
+  const config=await f.gateway.prepare(f.task);
+  await assert.rejects(f.gateway.responses(config.token,request,signal(),()=>{}),error=>error instanceof Error&&(error as any).code==="ONE_CODEX_BUDGET_UNAVAILABLE"&&error.message.includes("预算授权需要核对"));
+  assert.equal(f.calls(),0);assert.equal(f.db.modelUsageRecords.length,0);
+  assert.equal(f.task.executorFailure?.code,"ONE_CODEX_BUDGET_UNAVAILABLE");assert.match(f.db.executionEvents[0].text,/预算授权需要核对/);
+  assert.equal(f.db.powerAccounts[1].balanceMicros,10_000_000);
+});
+
+
+test("a safe 429 retry still requires fresh Key proof and never diagnoses that refusal as a supplier connection error",async()=>{
+  const f=fixture(),config=await f.gateway.prepare(f.task);f.setMode("retry_key");
+  f.beforeSupplierResponse(async()=>f.deny());
+  await assert.rejects(f.gateway.responses(config.token,request,signal(),()=>{}),/ONE_CODEX_GATEWAY_UNAVAILABLE/);
+  assert.equal(f.calls(),1);assert.equal(f.proof(),2);assert.equal(f.task.executorFailure,undefined);
+  assert.ok(f.db.executionEvents.every(event=>!event.text.includes("ONE_CODEX_UPSTREAM_CONNECTION_FAILED")));
 });

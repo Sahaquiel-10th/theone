@@ -8,6 +8,7 @@ import {selectedNotionVerification} from './notionVerificationSelection.js';
 import {notionVerificationPresentation} from '../src/taskRecovery.js';
 import {workflowProgress} from './taskWorkflow.js';
 import type {WorkRun} from './coordinatorTypes.js';
+import {currentCodexGatewayFailure} from './codexGatewayFailure.js';
 
 export type TaskResultScope = { workspaceId: string; userId: string };
 export type TaskResultOutcome = 'completed' | 'returned' | 'failed' | 'partial' | 'needs_input' | 'cancelled' | 'interrupted';
@@ -250,7 +251,7 @@ function localResult(db: Database, scope: TaskResultScope, execution: ExecutionT
     : persisted?.content || result || '没有可确认的执行结果，请查看本轮过程。';
   return { id, sourceId: execution.id, source: 'local', taskId: task.id, title: clip(task.title, 120), outcome, state: outcome,
     summary: clip(outcome === 'cancelled' ? `本轮已停止，已产生的修改不会自动撤销。\n${summary}` : summary, max),
-    brief: resultBrief(outcome, undefined, summary),
+    brief: (!endingUnconfirmed && currentCodexGatewayFailure(execution)) || resultBrief(outcome, undefined, summary),
     attemptAt:localAttemptAt(db,scope,execution),
     createdAt: execution.terminalReceipt?.round === round ? execution.terminalReceipt.receivedAt : execution.completedAt ?? execution.updatedAt,
     resultMessageId: persisted?.id, attachments: [],

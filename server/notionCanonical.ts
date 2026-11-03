@@ -4,7 +4,7 @@ import {gfm} from 'micromark-extension-gfm';
 import {gfmFromMarkdown} from 'mdast-util-gfm';
 
 export const notionHash=(body:string)=>createHash('sha256').update(body).digest('hex');
-export type NotionCanonicalVersion=2|3|4|5|6|7|8;
+export type NotionCanonicalVersion=2|3|4|5|6|7|8|9;
 /** Persisted v1 receipts retain this exact comparison, never silently upgrade. */
 export function legacyNotionNormalized(body:string){
  const literalCode=/`|~~~|^(?: {4}|\t)|<(?:pre|code)\b/im.test(body);
@@ -21,7 +21,9 @@ export function legacyNotionNormalized(body:string){
  * regions independently, without interpreting their contents as formatting.
  * v7 additionally recognizes the exact plain single-line inline-code spelling
  * emitted by Notion; all other code retains its original byte proof. v8 only
- * folds non-ASCII UTF-8 URL spelling after an unchanged ASCII authority. */
+ * folds non-ASCII UTF-8 URL spelling after an unchanged ASCII authority. v9
+ * admits underscore-containing identifiers only when the HTML parser proves
+ * one exact plain text child inside attribute-free inline code. */
 export function canonicalNotionBody(body:string,version:NotionCanonicalVersion=5){
  if(version>=6){
   const protectedBody=protectNotionCode(body,version);
@@ -140,7 +142,7 @@ function notionUtf8Url(value:string){
  try{return match[1]+match[2].replace(/[^\x00-\x7f]/gu,char=>encodeURIComponent(char));}catch{return value;}
 }
 
-const plainInlineCode=(value:string)=>Boolean(value)&&value===value.trim()&&!/[\\`*_~\[\]<>&\r\n]/u.test(value);
+const plainInlineCode=(value:string,version:NotionCanonicalVersion)=>Boolean(value)&&value===value.trim()&&!(version>=9?/[\\`*~\[\]<>&\r\n]/u:/[\\`*_~\[\]<>&\r\n]/u).test(value);
 
 /** Preserve the exact bytes and positions of code and links/URLs; formatting
  * replacements must never rewrite a link target. User markers are rejected. */
@@ -191,7 +193,7 @@ function protectNotionCode(body:string,version:NotionCanonicalVersion):{text:str
   if(tag&&!escaped(index)){
    const close=new RegExp(`</${tag[1]}\\s*>`,'i'),tail=body.slice(index+tag[0].length),match=close.exec(tail);
    if(!match)return;
-   const value=tail.slice(0,match.index),inline=version>=7&&tag[0]==='<code>'&&match[0]==='</code>'&&plainInlineCode(value)?value:undefined;
+   const value=tail.slice(0,match.index),inline=version>=7&&tag[0]==='<code>'&&match[0]==='</code>'&&plainInlineCode(value,version)?value:undefined;
    protect(index+tag[0].length+match.index+match[0].length,'code',undefined,inline);continue;
   }
   if(body[index]==='<'){
@@ -202,7 +204,7 @@ function protectNotionCode(body:string,version:NotionCanonicalVersion):{text:str
    let width=1;while(body[index+width]==='`')width++;
    let cursor=index+width,closed=false;
    while(cursor<body.length){const next=body.indexOf('`',cursor);if(next<0)break;let length=1;while(body[next+length]==='`')length++;
-    if(length===width){const value=body.slice(index+width,next),inline=version>=7&&width===1&&plainInlineCode(value)?value:undefined;protect(next+length,'code',undefined,inline);closed=true;break;}cursor=next+length;
+    if(length===width){const value=body.slice(index+width,next),inline=version>=7&&width===1&&plainInlineCode(value,version)?value:undefined;protect(next+length,'code',undefined,inline);closed=true;break;}cursor=next+length;
    }
    if(!closed)return;
    continue;
