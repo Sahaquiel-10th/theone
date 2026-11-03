@@ -2322,8 +2322,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         <div className="one-chrome-actions">
           {preparingExecution||awaitingExecutionOperationId||executionBusy?<button type="button" className="one-chrome-button" onClick={event=>void cancelExecution(event.currentTarget,preparingExecution||awaitingExecutionOperationId?null:currentRunningExecution||runningExecutions[0]||executionTask)}><Square size={12}/>停止执行</button>:null}
           <button className="one-chrome-button knowledge" type="button" title="知识来源" onClick={() => openSurface("knowledge")}>
-            <span className={`connection-dot ${[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "connected" : "disconnected"}`} />
-            <span>{[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "知识已连接" : "连接知识"}</span>
+            <span className={`connection-dot ${[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection, imaConnection].some(item => item.status === "connected") ? "connected" : "disconnected"}`} />
+            <span>{[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection, imaConnection].some(item => item.status === "connected") ? "知识已连接" : "连接知识"}</span>
           </button>
           <button className={`one-chrome-button icon-only ${historyOpen ? "active" : ""}`} type="button" title="历史对话" onClick={() => setHistoryOpen((open) => !open)}>
             <Archive size={16} />
