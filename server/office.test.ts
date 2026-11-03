@@ -15,7 +15,7 @@ import {installOfficeRoutes} from './officeRoutes.js';
 import type {Database} from './types.js';
 import type {Store} from './db.js';
 import {runTaskOrchestrator,OrchestrationEffectNotStartedError,orchestrationFailureCode} from './taskOrchestrator.js';
-import type {TaskStep} from './taskSteps.js';
+import {isOrchestrationControlStep,type TaskStep} from './taskSteps.js';
 import {taskRecovery} from '../src/taskRecovery.js';
 
 function officeCheckpoint(){const steps:TaskStep[]=[];return{namespace:'feature:native-office:1',steps,save:async(step:TaskStep)=>{const index=steps.findIndex(s=>s.key===step.key);if(index<0)steps.push(step);else steps[index]=step;}};}
@@ -32,7 +32,7 @@ test('native workbook validation fails before saving and corrected arguments can
   if(turns===2){assert.match(JSON.stringify(messages),/列名|1–40/);assert.equal(checkpoints.steps[0].state,'failed');assert.equal(saves,0);return{content:'',toolCalls:[nativeCall('oneWorkbook',valid)]};}
   return{content:'表格已经生成。',toolCalls:[]};
  }});
- assert.equal(saves,1);assert.equal(result.content,'表格已经生成。');assert.deepEqual(checkpoints.steps.map(s=>s.state),['failed','completed']);assert.equal(checkpoints.steps.some(s=>s.state==='started'),false);
+ assert.equal(saves,1);assert.equal(result.content,'表格已经生成。');assert.deepEqual(checkpoints.steps.filter(s=>!isOrchestrationControlStep(s)).map(s=>s.state),['failed','completed']);assert.equal(checkpoints.steps.some(s=>s.state==='started'),false);
 });
 
 test('unrepaired native input has a specific no-artifact failure and permits retry without releasing another unknown effect',async()=>{
@@ -42,7 +42,7 @@ test('unrepaired native input has a specific no-artifact failure and permits ret
  assert.equal(saves,0);assert.equal(checkpoints.steps[0].state,'failed');
  assert.equal(taskRecovery([{id:'current',state:'failed',steps:checkpoints.steps}]).kind,'retry');
  const unknown={...checkpoints.steps[0],key:'other-real-save',tool:'oneDocument',state:'started' as const};
- assert.equal(taskRecovery([{id:'current',state:'failed',steps:[unknown,...checkpoints.steps]}]).kind,'none','another real uncertain save stays protected');
+ assert.equal(taskRecovery([{id:'current',state:'failed',steps:[unknown,...checkpoints.steps]}]).kind,'support','another real uncertain save stays protected');
 });
 
 test('a successful inspect cannot turn a rejected workbook creation into a delivered artifact',async()=>{
@@ -56,7 +56,7 @@ test('a successful inspect cannot turn a rejected workbook creation into a deliv
    if(turns===2)return{content:'',toolCalls:[nativeCall('oneWorkbook',{attachmentId:'selected-template'},'inspect')]};
    return{content:'表格已经生成。',toolCalls:[]};
   }}),error=>error instanceof OrchestrationEffectNotStartedError);
-  assert.equal(saves,0);assert.deepEqual(checkpoints.steps.map(s=>[s.effect,s.state]),[['artifact','failed'],['read','completed']]);
+  assert.equal(saves,0);assert.deepEqual(checkpoints.steps.filter(s=>!isOrchestrationControlStep(s)).map(s=>[s.effect,s.state]),[['artifact','failed'],['read','completed']]);
  }
 });
 
@@ -113,7 +113,7 @@ test('inspect is a read, while a failed saver or a partial multi-file delivery r
   const tool=officeTool(multiFile?'oneSlides':'oneWorkbook','合成保存',async()=>{},{saveOffice:async file=>{saves++;if(multiFile&&saves===1)return{id:'first-delivered',name:file.name};throw new Error('private storage receipt missing secret=never-echo');}});
   await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[tool],maxSteps:2,beforeStep:async()=>{},checkpoints:checkpoint,call:async()=>({content:'',toolCalls:[nativeCall(tool.name,multiFile?officeDemo:{title:'保存未知',sheets:[{name:'表1',headers:['值'],rows:[[1]]}]})]})}),error=>!(error instanceof OrchestrationEffectNotStartedError));
   assert.equal(checkpoint.steps[0].state,'started');assert.equal(saves,multiFile?2:1);
-  assert.equal(taskRecovery([{id:'current',state:'failed',steps:checkpoint.steps}]).kind,'none');
+  assert.equal(taskRecovery([{id:'current',state:'failed',steps:checkpoint.steps}]).kind,'support');
  }
 });
 test('workbook tool advertises the actually implemented ROUNDUP function to execution models',()=>{
@@ -193,4 +193,100 @@ test('private slide preview cannot expose a different owner/workspace or turn up
  const app=express();installOfficeRoutes(app,[(req,_res,next)=>{req.user=db.users.find(u=>u.id===req.header('x-user'))!;req.workspaceId=req.header('x-workspace');next();}],{read:async()=>db} as Store);app.use((_error:unknown,_req:unknown,res:any,_next:unknown)=>res.status(403).json({error:'denied'}));const server=app.listen(0,'127.0.0.1');await new Promise<void>(r=>server.once('listening',r));t.after(()=>new Promise<void>(r=>server.close(()=>r())));const address=server.address() as {port:number},url=`http://127.0.0.1:${address.port}`;
  const own=await fetch(url+'/api/office-files/deck/view',{headers:{'x-user':'a','x-workspace':'wa'}});assert.equal(own.status,200);assert.match(own.headers.get('content-security-policy')!,/sandbox allow-scripts allow-downloads allow-modals/);assert.doesNotMatch(own.headers.get('content-security-policy')!,/allow-same-origin/);assert.match(await own.text(),/受保护/);
  for(const [user,workspace] of [['b','wb'],['a','wb'],['b','wa']])assert.equal((await fetch(url+'/api/office-files/deck/view',{headers:{'x-user':user,'x-workspace':workspace}})).status,403);assert.equal((await fetch(url+'/api/office-files/uploaded/view',{headers:{'x-user':'a','x-workspace':'wa'}})).status,404);
+});
+
+test('missing Office artifact storage is configuration failure and never buys an argument correction',async()=>{
+ const checkpoints=officeCheckpoint();let turns=0;
+ const tool=officeTool('oneWorkbook','合成配置故障',async()=>{},{});
+ await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[tool],maxSteps:4,maxCorrections:2,beforeStep:async()=>{},checkpoints,call:async()=>{turns++;return{content:'',toolCalls:[nativeCall('oneWorkbook',{title:'有效表格',sheets:[{name:'表1',headers:['金额'],rows:[[42]]}]})]};}}));
+ assert.equal(turns,1,'a missing storage dependency cannot be fixed by buying another model turn');
+ assert.equal(checkpoints.steps.some(step=>step.state==='started'),false,'known unconfigured storage never entered the saver');
+});
+
+test('a missing model attachment binding uses the single selected owned XLSX without a paid correction',async t=>{
+ const {argumentRepairControlTool}=await import('./toolRecovery.js');const dir=await fs.mkdtemp(path.join(os.tmpdir(),'one-office-bind-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+ const template=await createWorkbook({title:'模板',sheets:[{name:'登记',headers:['客户'],rows:[['原始']]}]});const storagePath=path.join(dir,'own.xlsx');await fs.writeFile(storagePath,template.bytes);
+ const scope={workspaceId:'own-workspace',userId:'own-person',conversationId:'current-task'};
+ const db={attachments:[{...scope,id:'own-template',originalName:'模板.xlsx',size:template.bytes.length,storagePath,status:'ready',kind:'spreadsheet'}]} as unknown as Database;
+ const store={read:async()=>structuredClone(db)} as Store;
+ const context=officeArtifactContext(store,scope,dir,()=>{},['own-template']);let saves=0,turns=0;
+ const checkpoints=officeCheckpoint();const tool=officeTool('oneWorkbook','填模板',async()=>{},{...context,saveOffice:async file=>{saves++;const book=XLSX.read(file.bytes,{type:'buffer'});assert.equal(book.Sheets['登记'].A2.v,'合成');return{id:'result',name:file.name};}});
+ await runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[tool],maxSteps:4,maxCorrections:2,beforeStep:async()=>{},checkpoints,call:async()=>++turns===1?{content:'',toolCalls:[nativeCall('oneWorkbook',{title:'已填写',updates:[{sheet:'登记',cell:'A2',value:'合成'}]},'fill')]}:{content:'模板已填写。',toolCalls:[]}});
+ assert.equal(saves,1);assert.equal(turns,2);assert.equal(checkpoints.steps.some(cp=>cp.tool===argumentRepairControlTool),false);
+});
+test('a truly missing or ambiguous template asks only for the template and never buys parameter correction',async()=>{
+ const {toolRecoveryDiagnostic}=await import('./toolRecovery.js');
+ for(const selection of [{state:'none' as const},{state:'ambiguous' as const}]){
+  let calls=0,reads=0,saves=0;const checkpoints=officeCheckpoint();
+  const tool=officeTool('oneWorkbook','填模板',async()=>{},{requiresXlsxTemplate:true,resolveOfficeTemplate:async()=>selection,readOffice:async()=>{reads++;throw Error('must not read');},saveOffice:async()=>{saves++;throw Error('must not save');}});
+  const error=await runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[tool],maxSteps:4,maxCorrections:2,beforeStep:async()=>{},checkpoints,call:async()=>{calls++;return{content:'',toolCalls:[nativeCall('oneWorkbook',{title:'填写',updates:[{sheet:'登记',cell:'A2',value:'合成'}]},'fill')]};}}).catch(error=>error);
+  assert.equal(calls,1);assert.equal(reads,0);assert.equal(saves,0);assert.equal(toolRecoveryDiagnostic(error)?.kind,'missing_input');assert.equal(toolRecoveryDiagnostic(error)?.field,'template_file');assert.equal(checkpoints.steps.some(cp=>cp.state==='started'),false);assert.doesNotMatch(error.message,/schema|列名|公式|重新选功能/);
+ }
+});
+test('template discovery is scoped to selected owner records and a foreign explicit attachment never enters correction',async()=>{
+ const {toolRecoveryDiagnostic}=await import('./toolRecovery.js');const scope={workspaceId:'own-workspace',userId:'own-person',conversationId:'task'};
+ const db={attachments:[{...scope,id:'unselected-own',originalName:'own.xlsx',kind:'spreadsheet',status:'ready',size:10},{...scope,workspaceId:'foreign-workspace',id:'foreign',originalName:'secret.xlsx',kind:'spreadsheet',status:'ready',size:10}]} as unknown as Database;
+ const store={read:async()=>structuredClone(db)} as Store;
+ const context=officeArtifactContext(store,scope,undefined,()=>{},['foreign']);assert.deepEqual(await context.resolveOfficeTemplate!('workbook'),{state:'none'});
+ let calls=0;const tool=officeTool('oneWorkbook','读模板',async()=>{},context);
+ const error=await runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[tool],maxSteps:4,maxCorrections:2,beforeStep:async()=>{},call:async()=>{calls++;return{content:'',toolCalls:[nativeCall('oneWorkbook',{attachmentId:'foreign'},'inspect')]};}}).catch(error=>error);
+ assert.equal(calls,1);assert.equal(toolRecoveryDiagnostic(error),undefined);assert.doesNotMatch(error.message,/secret|foreign-workspace/);
+});
+
+test('only a reviewed whole inner runner with zero effects can prove a missing-template parent stage did not write',async t=>{
+ const {acceptFeatureNoEffectProof,featureEffectNotStarted}=await import('./taskOrchestrator.js');
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'one-office-none-proof-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+ const scope={workspaceId:'scope-a',userId:'user-a',conversationId:'task-a'};
+ const database={attachments:[],conversations:[{...scope,id:'task-a'}]} as unknown as Database;
+ const store={read:async()=>structuredClone(database),mutate:async(fn:(db:Database)=>unknown)=>fn(database)} as Store;
+ for(const previousFile of [false,true]){
+  const context=officeArtifactContext(store,scope,dir,()=>{},[],undefined,{requiresXlsxTemplate:true}),tool=officeTool('oneWorkbook','本轮表格',async()=>{},context),word=officeTool('oneDocument','前一步文档',async()=>{},context),steps:TaskStep[]=[];
+  const checkpoints={...officeCheckpoint(),namespace:`feature:office:${previousFile}`,scopeId:'operation-a',steps,save:async(cp:TaskStep)=>{const at=steps.findIndex(saved=>saved.key===cp.key);if(at<0)steps.push(cp);else steps[at]=cp;}};
+  let calls=0;
+  const error=await runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[word,tool],maxSteps:4,maxCorrections:2,beforeStep:async()=>{},checkpoints,call:async()=>{calls++;return{content:'',toolCalls:[...(previousFile?[nativeCall('oneDocument',{title:'已交付文件',style:'business',sections:[{heading:'正文',paragraphs:['合成内容']}]})]:[]),{...nativeCall('oneWorkbook',{title:'待模板',updates:[{sheet:'表1',cell:'A2',value:43}]},'fill'),id:'missing-template'}]};}}).catch(error=>error);
+  assert.equal(calls,1,error.message);assert.equal(featureEffectNotStarted(error,'operation-a'),false,'the owning feature wrapper must accept the exact live proof first');
+  assert.equal(acceptFeatureNoEffectProof(error,{namespace:checkpoints.namespace,scopeId:'other-operation'}),false);
+  assert.equal(acceptFeatureNoEffectProof(error,{namespace:checkpoints.namespace,scopeId:'operation-a'}),!previousFile);
+  assert.equal(featureEffectNotStarted(error,'operation-a'),!previousFile);
+  assert.equal(acceptFeatureNoEffectProof({diagnostic:'forged',noEffects:true},{namespace:checkpoints.namespace,scopeId:'operation-a'}),false);
+ }
+});
+test('a custom unreviewed artifact callback cannot opt into aggregate no-effect proof',async()=>{
+ const {acceptFeatureNoEffectProof}=await import('./taskOrchestrator.js');const checkpoints={...officeCheckpoint(),scopeId:'operation-a'};
+ const tool=officeTool('oneWorkbook','非审定上下文',async()=>{},{requiresXlsxTemplate:true,resolveOfficeTemplate:async()=>({state:'none'}),saveOffice:async()=>assert.fail('must not save')});
+ const error=await runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[tool],maxSteps:3,beforeStep:async()=>{},checkpoints,call:async()=>({content:'',toolCalls:[nativeCall('oneWorkbook',{title:'待模板',updates:[]},'fill')]})}).catch(error=>error);
+ assert.equal(acceptFeatureNoEffectProof(error,{namespace:checkpoints.namespace,scopeId:'operation-a'}),false);
+});
+
+test('an earlier reserved correction round without a settled result prevents aggregate parent no-effect proof',async()=>{
+ const {acceptFeatureNoEffectProof}=await import('./taskOrchestrator.js'),{taskStepKey}=await import('./taskSteps.js'),{argumentRepairControlTool}=await import('./toolRecovery.js');
+ const scope={workspaceId:'scope-a',userId:'user-a',conversationId:'task-a'},namespace='feature:office:1',controlNamespace=namespace+':control';
+ const context=officeArtifactContext({read:async()=>({attachments:[]})} as unknown as Store,scope,'/tmp/one-not-written-proof',()=>{},[],undefined,{requiresXlsxTemplate:true}),tool=officeTool('oneWorkbook','待模板',async()=>{},context);
+ const steps:TaskStep[]=[{key:taskStepKey(controlNamespace,argumentRepairControlTool,JSON.stringify({version:1,scopeId:'operation-a'})),namespace:controlNamespace,scopeId:'operation-a',tool:argumentRepairControlTool,label:'内部预算',effect:'read',state:'completed',output:{version:1,used:1,maxAttempts:2,fingerprints:['a'.repeat(64)]},updatedAt:new Date().toISOString()}];
+ const checkpoints={namespace,scopeId:'operation-a',steps,save:async(cp:TaskStep)=>{const at=steps.findIndex(saved=>saved.key===cp.key);if(at<0)steps.push(cp);else steps[at]=cp;}};
+ const error=await runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[tool],maxSteps:3,maxCorrections:2,beforeStep:async()=>{},checkpoints,call:async()=>({content:'',toolCalls:[nativeCall('oneWorkbook',{title:'填写',updates:[]},'fill')]})}).catch(error=>error);
+ assert.equal(acceptFeatureNoEffectProof(error,{namespace,scopeId:'operation-a'}),false);
+});
+
+test('an image template or mistaken fill selection is corrected internally rather than asking for an unrelated XLSX',async()=>{
+ const {requiresXlsxTemplate}=await import('./officeTools.js');const {toolRecoveryDiagnostic}=await import('./toolRecovery.js');
+ for(const request of ['图片是模板，帮我新建Excel，把公司名改成合成公司。','帮我新建一个预算表，金额42。']){
+  let calls=0,saves=0;const checkpoints=officeCheckpoint();
+  const context={requiresXlsxTemplate:requiresXlsxTemplate([request]),resolveOfficeTemplate:async()=>({state:'none' as const}),saveOffice:async(file:{name:string;bytes:Buffer})=>{saves++;return{id:'created',name:file.name};}};
+  const tool=officeTool('oneWorkbook','制作表格',async()=>{},context);
+  const result=await runTaskOrchestrator({entryPoint:'workspace',messages:[{role:'user',content:request}],tools:[tool],maxSteps:4,maxCorrections:2,beforeStep:async()=>{},checkpoints,call:async messages=>{
+   calls++;if(calls===1)return{content:'',toolCalls:[nativeCall('oneWorkbook',{title:'误选fill',updates:[{sheet:'表1',cell:'A2',value:42}]},'fill')]};
+   if(calls===2){const feedback=JSON.parse(messages.at(-1)!.content!);assert.equal(feedback.code,'TOOL_INPUT_REPAIR');assert.match(feedback.message,/改用 create/);return{content:'',toolCalls:[nativeCall('oneWorkbook',{title:'预算表',sheets:[{name:'表1',headers:['金额'],rows:[[42]]}]})]};}
+   return{content:'表格已生成。',toolCalls:[]};
+  }});
+  assert.equal(calls,3);assert.equal(saves,1);assert.equal(result.content,'表格已生成。');assert.equal(toolRecoveryDiagnostic(result),undefined);
+ }
+});
+test('only explicit existing-XLSX intent establishes a required source template, and a later image-only change removes it',async()=>{
+ const {requiresXlsxTemplate}=await import('./officeTools.js');
+ for(const request of ['请填写这份XLSX模板，金额改成42。','按这个Excel模板填写客户信息。','这个功能填写现有XLSX文件。'])assert.equal(requiresXlsxTemplate([request]),true,request);
+ for(const request of ['图片是模板，帮我生成Excel。','帮我搞个excel文档，图片是模版，需要改的有：类目改成打卡物料，金额3000。','帮我做个Excel文档，图片是模板，需要修改金额和公司名。','创建一个Excel模板。','帮我做个表格。','如果填写XLSX模板，可以自动处理。','文章里的例子是“请填写这份XLSX模板”。','不要修改XLSX文件。'])assert.equal(requiresXlsxTemplate([request]),false,request);
+ assert.equal(requiresXlsxTemplate(['请填写这份XLSX模板。','按原要求继续。']),true);
+ assert.equal(requiresXlsxTemplate(['请填写这份XLSX模板。','不用XLSX模板了，按图片新建。']),false);
+ assert.equal(requiresXlsxTemplate(['图片是模板，帮我生成Excel。','填写上传的XLSX模板。']),true);
 });

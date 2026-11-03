@@ -1,6 +1,6 @@
 export type NotionVerificationView = {state:'scheduled'|'checking'|'exhausted';version:number;attempt:number;nextCheckAt?:string;deadlineAt?:string;lastReason?:'read_failed'|'mismatch'|'incomplete'|'authorization'|'stale'|'no_page'};
 /** Public display fields only: never expose a server verification lease. */
-export type NotionReceiptView = {state:string;url?:string;error?:string;delivery?:string;verification?:NotionVerificationView;comparison?:{kind:'matched'|'title_missing'|'title_changed'|'body_mismatch'|'incomplete'|'read_failed'}};
+export type NotionReceiptView = {state:string;url?:string;error?:string;delivery?:string;recoveryInput?:'page_url';recoveredFromLink?:boolean;verification?:NotionVerificationView;comparison?:{kind:'matched'|'title_missing'|'title_changed'|'body_mismatch'|'incomplete'|'read_failed'}};
 export const notionVerificationActive=(receipt?:NotionReceiptView)=>Boolean(receipt&&receipt.state!=='verified'&&!['not_sent','rejected'].includes(receipt.delivery??'')&&['scheduled','checking'].includes(receipt.verification?.state??''));
 export function notionVerificationPresentation(receipt:NotionReceiptView,reviewWorkflow=false){
  const verification=receipt.verification,active=notionVerificationActive(receipt);
@@ -10,10 +10,11 @@ export function notionVerificationPresentation(receipt:NotionReceiptView,reviewW
  if(active)return {active,canVerify:false,message:verification?.state==='checking'
   ?`正在读取 Notion 原页面，${verification.attempt>0?`进行第 ${verification.attempt} 次核对，`:''}确认刚才是否保存完整。不会重复写入，你可以继续聊天。`
   :'Notion 的保存结果还在核对中。我会自动再读同一页面，核对好后告诉你，不用重新开始。请保持 ONE Key 连接；不会重写。'};
+ if(receipt.recoveryInput==='page_url'&&!receipt.url)return {active:false,canVerify:false,message:'文章已经保留，但 Notion 的保存响应没有带回页面编号，这一步已停止自动核对。需要你提供这次已保存的原页链接；ONE 会只读核对保存位置、标题和全文，不会新建或改写。'};
  if(verification?.state==='exhausted'){
   if(verification.lastReason==='authorization')return {active:false,canVerify:false,message:'卡在 Notion 连接或授权，自动核对已停下。请到“设置 → 连接与授权 → Notion”恢复连接，再告诉我继续核对；原保存请求不会重发。'};
   if(verification.lastReason==='stale')return {active:false,canVerify:false,message:'保存位置或任务要求已经变化，自动核对已停下。请直接告诉我要保留哪一版、存在哪里；我会先核对原页，不会按旧要求重写。'};
-  if(verification.lastReason==='no_page'||!receipt.url)return {active:false,canVerify:false,message:'Notion 还没返回这次保存的页面入口，自动核对已停下，现在不能确认保存成功。请先打开 Notion 的原保存位置查看，再把已有页面链接发给我；不会新建替代文档。'};
+  if(verification.lastReason==='no_page'||!receipt.url)return {active:false,canVerify:false,message:'Notion 没有返回可核对的页面编号，自动核对已停下，现在不能确认保存成功。原稿和原保存位置的记录保留；这次缺少足够的保存证据，需要检查本次记录，不用反复重发任务。'};
   const difference=receipt.comparison?.kind==='title_missing'?'Notion 页面已找到，但这次没有读到标题，还不能确认保存完整。'
    :receipt.comparison?.kind==='title_changed'?'Notion 页面已找到，但标题与这次文稿不同。'
    :verification.lastReason==='mismatch'?'Notion 页面已找到，但回读内容与本次文稿还没对上，尚未确认全文保存一致。'
@@ -23,7 +24,7 @@ export function notionVerificationPresentation(receipt:NotionReceiptView,reviewW
  }
  return {active:false,canVerify:Boolean(receipt.url),message:'Notion 保存结果还没确认。先查看原页面，必要时可以只读核对；不会重写。'};
 }
-export type TaskRecovery = { kind: 'retry' | 'resume' | 'review_image' | 'review_notion' | 'review_local' | 'reconciling' | 'none'; message: string; sourceJobId?: string; welcomeStep?:'manual'|'image'|'page' };
+export type TaskRecovery = { kind: 'retry' | 'resume' | 'review_image' | 'review_notion' | 'review_local' | 'reconciling' | 'connection' | 'input' | 'support' | 'none'; message: string; requestId?:string; sourceJobId?: string; welcomeStep?:'manual'|'image'|'page'; };
 
 /** An earlier unresolved write must not disappear behind a verified receipt.
  * Callers pass chronological, owner-scoped jobs; no authorization is granted here. */
@@ -56,7 +57,7 @@ export function unstartedLocalInput<T extends {id?:string;role:string}>(
 }
 
 /** A recovery action follows the persisted latest job, not a guessed UI state. */
-export function taskRecovery(jobs: { id: string; state: string; kind?: string;failureCode?:string;verificationPending?:boolean;steps?:{effect:string;state:string;tool?:string}[];dependencyBlocked?:boolean;dependsOnOperationIds?:string[]; notionTarget?: unknown; notionReceipt?: NotionReceiptView;welcomeManual?:{document?:unknown};welcomeImageAttachmentId?:string }[]): TaskRecovery {
+export function taskRecovery(jobs: { id: string; state: string; kind?: string;failureCode?:string;verificationPending?:boolean;steps?:{effect:string;state:string;tool?:string;operation?:{execution?:string}}[];dependencyBlocked?:boolean;dependsOnOperationIds?:string[]; notionTarget?: unknown; notionReceipt?: NotionReceiptView;welcomeManual?:{document?:unknown};welcomeImageAttachmentId?:string }[]): TaskRecovery {
   const latest = jobs.at(-1);
   if (!latest) return { kind: 'none', message: '原话仍在，请核对已有结果后发送新的要求。' };
   if(latest.state==='cancelled'&&latest.dependsOnOperationIds?.length)return {kind:'none',message:'前面的任务停下后，这一项也停下了。想继续的话，在这里补充新的要求就好，不会自己重新开始。'};
@@ -69,6 +70,7 @@ export function taskRecovery(jobs: { id: string; state: string; kind?: string;fa
   // Prefer the specific Notion readback path over a generic dead-end notice.
   const unresolved=jobs.filter(job=>job.notionReceipt&&job.notionReceipt.state!=='verified'&&!['not_sent','rejected'].includes(job.notionReceipt.delivery||'')).at(-1)?.notionReceipt;
   if(unresolved)return {kind:'review_notion',message:notionVerificationPresentation(unresolved).message};
+  if(latest.steps?.some(step=>['model','artifact','external_write'].includes(step.effect)&&step.state!=='completed'&&['unknown','submitted'].includes(step.operation?.execution??'')))return {kind:'support',message:'已有操作的结果还没有确认，这一轮已暂停，不会自动重新制作。请查看已确认成果和本次记录；核对原结果后才能继续，不用反复重发要求。'};
   // This diagnostic is emitted before processing any tool in a truncated turn.
   // Only an explicitly recorded empty checkpoint list proves that no earlier
   // turn started an effect. Missing legacy records are not proof of no write.
@@ -80,7 +82,7 @@ export function taskRecovery(jobs: { id: string; state: string; kind?: string;fa
   const keyFailedBeforeTools=latest.state==='failed'&&latest.failureCode==='task_key_required'&&!latest.notionReceipt&&Array.isArray(latest.steps)&&latest.steps.length===0;
   const onlyDocumentReads=!latest.notionReceipt&&Array.isArray(latest.steps)&&latest.steps.length>0&&latest.steps.every(s=>s.tool==='read_notion_document'&&s.effect==='read');
   const knownNotWritten=latest.notionTarget&&(['not_sent','rejected'].includes(latest.notionReceipt?.delivery||'')||truncatedBeforeTools||keyFailedBeforeTools||onlyDocumentReads);
-  if(latest.steps?.some(s=>s.state==='started'&&['artifact','external_write'].includes(s.effect)&&!(knownNotWritten&&s.tool==='save_notion_draft')))return {kind:'none',message:'有份文件是否保存好还没确认。先看看已有成果；需要继续时补充要求，ONE 会先核对，不会盲目重复保存。'};
+  if(latest.steps?.some(s=>s.state==='started'&&['artifact','external_write'].includes(s.effect)&&!(knownNotWritten&&s.tool==='save_notion_draft')))return {kind:'support',message:'有份文件是否保存好还没确认，这一轮已暂停，不会自动重新制作。请查看已确认的成果和本次记录；核对原结果后才能继续，不用反复重发要求。'};
   if (latest.state === 'prepared') return { kind: 'review_local', message: '请先查看本机执行回执；确认已完成的修改后，再从本机执行入口继续。' };
   if (latest.state === 'completed') return { kind: 'none', message: '最新一轮已有结果，请查看结果或提出新的修改要求。' };
   if (latest.state==='queued'&&(latest.notionTarget||latest.kind==='image')) return {kind:'resume',sourceJobId:latest.id,message:'最新要求尚未开始。确认后只启动这一条，较早待办保留历史，不再执行。'};

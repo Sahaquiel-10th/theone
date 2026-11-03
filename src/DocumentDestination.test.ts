@@ -55,3 +55,15 @@ test('unsent and rejected saves never expose an automatic or manual readback act
  }
  assert.equal(calls,0);
 });
+
+test('only a server-eligible unknown save with exact job/version exposes a real original-page input',()=>{
+ const receipt:NotionReceiptView={state:'uncertain',delivery:'unknown',recoveryInput:'page_url'};
+ const html=renderToStaticMarkup(createElement(NotionReceiptNotice,{api,taskId:'owned-task',receipt,sourceJobId:'original-job',expectedUpdatedAt:'2026-11-03T01:00:00.000Z',onRefresh:async()=>{}}));
+ assert.match(html,/已保存的 Notion 原页链接/);assert.match(html,/核对这页（不重写）/);assert.match(html,/需要你提供这次.*原页/);
+ assert.match(html,/button[^>]*disabled/);assert.doesNotMatch(html,/重新保存|开始处理/);
+ for(const props of [{sourceJobId:undefined,expectedUpdatedAt:undefined},{sourceJobId:'original-job',expectedUpdatedAt:undefined}]){
+  const incomplete=renderToStaticMarkup(createElement(NotionReceiptNotice,{api,taskId:'owned-task',receipt,...props,onRefresh:async()=>{}}));
+  assert.doesNotMatch(incomplete,/核对这页（不重写）/);
+ }
+ assert.equal(calls,0,'rendering a recovery form never starts a read, model or save');
+});

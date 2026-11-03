@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {coordinatorRecoveryCopy,dispatchCommitment,coordinatorFailureCodes,parseCoordinatorFailure,type CoordinatorFailure} from './coordinatorRecovery.js';
 test('a proven failed artifact attempt does not claim there is an unknown file to check or discard other results',()=>{
  const copy=coordinatorRecoveryCopy({code:'artifact_input_invalid',stage:'tool',outcome:'failed'});
- assert.match(copy,/尚未进入保存/);assert.match(copy,/列名|行列|公式/);assert.match(copy,/其他已有成果仍保留/);assert.doesNotMatch(copy,/核对已有文件|重新选择.*功能|全部.*没有文件/);
+ assert.match(copy,/尚未进入保存/);assert.match(copy,/列名|行列|公式/);assert.match(copy,/已有成果仍保留/);assert.doesNotMatch(copy,/核对已有文件|重新选择.*功能|全部.*没有文件/);
 });
 test('promised action needs a receipt, but clarification and ordinary conversation do not',()=>{
  for(const text of ['我会把漫画做成四格，并把网页和漫画放在同一件任务里处理。','我来画一张图。','已经安排好了。'])assert.equal(dispatchCommitment(text),true,text);
@@ -81,4 +81,15 @@ test('local binding, unconfirmed handoff and unsupported workflow keep distinct 
  assert.match(unknown,/已经交出.*原回执.*不要重复/);assert.doesNotMatch(unknown,/尚未开始|重选/);
  const workflow=coordinatorRecoveryCopy({code:'local_workflow_unsupported',stage:'planning',outcome:'not_started'});
  assert.match(workflow,/计划尚未开始.*合并成一件本机任务.*分阶段/);assert.doesNotMatch(workflow,/缺连接|没连上/);
+});
+
+
+test('system parameter failures do not ask a person to guess schemas or reselect tools',()=>{
+ for(const code of ['tool_invalid','artifact_input_invalid','tool_parameters_failed','tool_configuration_unavailable'] as const){
+  const copy=coordinatorRecoveryCopy({code,stage:'tool',outcome:'failed'});
+  assert.match(copy,/停止|尚未执行/);assert.match(copy,/已有成果|原要求/);
+  assert.doesNotMatch(copy,/请根据反馈补齐|请在“功能”里重新选择|请.*补齐列名/);
+ }
+ const missing=coordinatorRecoveryCopy({code:'input_template_required',stage:'tool',outcome:'not_started'});
+ assert.match(missing,/XLSX.*上传|上传.*XLSX/);assert.doesNotMatch(missing,/列名|公式|配置/);
 });

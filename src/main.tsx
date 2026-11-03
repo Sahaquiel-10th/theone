@@ -57,6 +57,8 @@ import {internalTaskId} from './taskLink';
 import {claimInitialTaskLink,settleInitialTaskLink,coordinatorTaskConversation} from './coordinatorTaskView';
 import {TaskWorkflowProgress} from './TaskWorkflowProgress';
 import {TaskAvailableResults} from './TaskAvailableResults';
+import {TaskRecoveryGuidance} from './TaskRecoveryGuidance';
+import {recoveryGuidance} from './recoveryGuidance';
 import {FeatureShelf,type FeatureChoice} from './preview/FeatureShelf';
 import {KnowledgeConnections} from './KnowledgeConnections';
 import {captureFeatureHandoff,FeatureHandoff,FeatureArmedRim,pulseFeatureComposer,type FeatureHandoffTransfer} from './FeatureHandoff';
@@ -802,6 +804,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [outputDestination, setOutputDestination] = useState<DocumentDestination>('chat');
   const [selectedExecutionId, setSelectedExecutionId] = useState("");
   const [executionMode, setExecutionMode] = useState(false);
+  const [connectionResuming,setConnectionResuming]=useState<string[]>([]);
   const [awaitingExecutionOperationId, setAwaitingExecutionOperationId] = useState('');
   const [preparingExecution, setPreparingExecution] = useState(false);
   const executionPreparationRef = useRef<{cancelled:boolean;operationId?:string;coordinator?:boolean}|null>(null);
@@ -900,7 +903,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     ...(coordinator.snapshot?.notices ?? []).map(n => ({id:n.id,taskId:n.taskId,title:n.title||conversations.find(c=>c.id===n.taskId)?.title||'这件事',state:n.state,reported:n.reported,read:n.read,outcome:n.outcome,reportable:true})),
     ...executionTasks.filter(t=>isExecutionRunning(t)).map(t=>({id:t.id,taskId:t.conversationId,title:conversations.find(c=>c.id===t.conversationId)?.title||'本机任务',state:t.status,local:true,reportable:false}))];
   const unviewedResultCount=new Set((coordinator.snapshot?.notices||[]).filter(n=>!n.read).map(n=>n.taskId)).size;
-  const uniqueTransfers = [...new Map(transfers.map(t=>[t.id,t])).values()].map(task=>({...task,workflow:coordinatorMetas.find(t=>t.id===task.taskId)?.workflow,updatedAt:
+  const uniqueTransfers = [...new Map(transfers.map(t=>[t.id,t])).values()].map(task=>({...task,recovery:coordinator.snapshot?.transfers?.find(t=>t.id===task.taskId)?.recovery||coordinator.snapshot?.tasks.find(t=>t.id===task.taskId)?.recovery,workflow:coordinatorMetas.find(t=>t.id===task.taskId)?.workflow,updatedAt:
     coordinator.snapshot?.notices.find(n=>n.id===task.id)?.updatedAt
     || executionTasks.find(t=>t.id===task.id)?.updatedAt
     || coordinatorMetas.find(t=>t.id===task.taskId)?.updatedAt}));
@@ -1048,6 +1051,30 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     if(currentDraftRef.current.content.trim()){setError('输入框里还有一段没发出的内容，先保留或发完它，再继续这件事。');return;}
     coordinator.dispatch({type:'bind',taskId:id});openSurface('chat');setContent(text);
   }
+  function notionRecoveryProps(id:string){
+    const job=notionReceiptForReview(coordinator.details[id]?.jobs||[]);
+    return {receipt:job?.notionReceipt,sourceJobId:job?.id,expectedUpdatedAt:job?.updatedAt};
+  }
+  async function continueFromRecovery(id:string){
+    if(connectionResuming.includes(id))return;
+    setConnectionResuming(old=>[...old,id]);
+    try{await coordinator.direct(id,'按原要求继续');await coordinator.refresh();}
+    catch(error){setError(error instanceof Error?error.message:'这次未能恢复，请查看当前连接状态。原成果保留。');}
+    finally{setConnectionResuming(old=>old.filter(item=>item!==id));}
+  }
+  function focusTaskSupplement(id:string){
+    if(currentDraftRef.current.content.trim()||currentDraftRef.current.attachments.length){setError('输入框里已有草稿和附件，请先保留或发送它们，再为这件事补充资料。');return;}
+    featurePicker.close();closeWorkLayer();setView('chat');setPreviewHome(false);setActiveId('');setFocusedTask(false);
+    preview.dispatch({type:'select',taskId:null});coordinator.dispatch({type:'bind',taskId:id});
+    requestAnimationFrame(()=>document.getElementById('one-studio-input')?.focus());
+  }
+  function renderCoordinatorRecovery(id:string){
+    const meta=coordinator.snapshot?.transfers?.find(item=>item.id===id)||coordinator.snapshot?.tasks.find(item=>item.id===id);
+    const detail=coordinator.details[id],recovery=meta?.recovery??detail?.recovery;
+    if(!recovery||!['connection','input','support','reconciling','review_notion'].includes(recovery.kind))return;
+    const workflow=meta?.workflow??detail?.jobs.at(-1)?.workflow,guide=recoveryGuidance({recovery,workflow});
+    return {label:guide.statusLabel,content:<><TaskRecoveryGuidance recovery={recovery} workflow={workflow} compact/>{recovery.kind==='connection'?<button type="button" className="coordinator-task-link" disabled={connectionResuming.includes(id)} onClick={()=>void continueFromRecovery(id)}>{connectionResuming.includes(id)?'正在检查连接…':'继续这件事'}</button>:recovery.kind==='input'?<button type="button" className="coordinator-task-link" onClick={()=>focusTaskSupplement(id)}>补充所需资料</button>:null}</>};
+  }
   function taskPauseNotice(id:string) {
     const task=coordinator.snapshot?.tasks.find(t=>t.id===id);
     const conversation=coordinator.details[id]?.conversation||conversations.find(c=>c.id===id);
@@ -1084,10 +1111,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         <button type="button" onClick={event=>void cancelExecution(event.currentTarget,local)}>再次请求停止原操作</button>
       </>}
     </section>;
-    if(!(task?.paused||conversation?.workPaused||!task?.running&&(task?.reconciling||task?.state==='reconciling')||localNeedsAction||lastJob?.dependencyBlocked))return task?.running&&lastJob?.progress?.completed.length?<section className="task-recovery task-progress-notice" role="status"><strong>正在处理</strong><p>已完成 {lastJob.progress.completed.length} 项{lastJob.progress.pending.length?`，还有 ${lastJob.progress.pending.length} 项待处理`:'，正在整理结果'}。</p><details><summary>查看处理进度</summary><p>已完成：{lastJob.progress.completed.join('、')}</p>{lastJob.progress.pending.length?<p>待处理：{lastJob.progress.pending.join('、')}</p>:null}</details></section>:null;
+    if(!(task?.paused||conversation?.workPaused||detail?.recovery?.kind==='review_notion'||!task?.running&&(task?.reconciling||task?.state==='reconciling')||localNeedsAction||lastJob?.dependencyBlocked))return task?.running&&lastJob?.progress?.completed.length?<section className="task-recovery task-progress-notice" role="status"><strong>正在处理</strong><p>已完成 {lastJob.progress.completed.length} 项{lastJob.progress.pending.length?`，还有 ${lastJob.progress.pending.length} 项待处理`:'，正在整理结果'}。</p><details><summary>查看处理进度</summary><p>已完成：{lastJob.progress.completed.join('、')}</p>{lastJob.progress.pending.length?<p>待处理：{lastJob.progress.pending.join('、')}</p>:null}</details></section>:null;
     const error=lastJob?.error;
     const recovery=detail?.recovery;
-    if(recovery?.kind==='reconciling')return <section className="task-recovery" role="status"><strong>正在核对保存结果</strong><p>{recovery.message}</p></section>;
+    if(recovery?.kind==='reconciling')return <section className="task-recovery" role="status"><strong>正在核对保存结果</strong><TaskRecoveryGuidance recovery={recovery} workflow={lastJob?.workflow}/></section>;
     const latest=taskRetryScope(detail?.jobs||[],conversation?.messages.filter(m=>m.role==='user').at(-1)?.content);
     const title=conversation?.title||task?.title||'当前任务';
     const retrying=coordinator.retryingTasks.includes(id);
@@ -1096,8 +1123,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const invalidBudget=canAdjustBudget&&(!Number.isFinite(retryBudget)||retryBudget<.001||retryBudget>10);
     const actionLabel=recovery?.welcomeStep?'继续制作使用说明':recovery?.kind==='review_image'?'重新生成图片':recovery?.kind==='resume'?'开始处理最新要求':lastJob?.progress?.completed.length?'继续未完成的部分':'重新处理最新要求';
     return <section className="task-recovery" role="status">
-      <strong>{lastJob?.dependencyBlocked?'等待关联任务完成':'任务尚未完成'}</strong>
-      <p>{recovery?.message||lastJob?.userReport||error||'正在检查任务状态…'}</p>
+      <strong>{lastJob?.dependencyBlocked?'等待关联任务完成':recovery?.kind==='connection'?'连接恢复后可以继续':recovery?.kind==='input'?'需要你补充资料':recovery?.kind==='support'?'这一步遇到内部问题':'任务尚未完成'}</strong>
+      {recovery?<TaskRecoveryGuidance recovery={recovery} workflow={lastJob?.workflow}/>:<p>{lastJob?.userReport||error||'正在检查任务状态…'}</p>}
+      {recovery?.kind==='connection'?<button type="button" disabled={connectionResuming.includes(id)} onClick={()=>void continueFromRecovery(id)}>{connectionResuming.includes(id)?'正在检查连接…':'继续这件事'}</button>:recovery?.kind==='input'?<button type="button" onClick={()=>focusTaskSupplement(id)}>补充所需资料</button>:null}
       {recovery&&(lastJob?.userReport||error)?<details><summary>查看本次处理记录</summary>{lastJob?.userReport?<p>{lastJob.userReport}</p>:null}{error&&error!==lastJob?.userReport?<p>{error}</p>:null}</details>:null}
       {lastJob?.dependencyBlocked?lastJob.waitingFor?.map(parent=><button type="button" key={parent.taskId} onClick={()=>void selectThing(parent.taskId)}>看看「{parent.title}」</button>):null}
       {recovery&&['retry','resume'].includes(recovery.kind)?<details><summary>查看继续处理的要求</summary><p>{latest}</p></details>:null}
@@ -1107,7 +1135,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         if(recovery.kind==='review_image'&&!(typeof price==='number'&&(price>0||price===0&&recovery.welcomeStep==='page'))){setError('这次图片价格还没确认，请稍后刷新任务再试。');return;}
         if(confirm(`${actionLabel} · ${title}\n本轮范围：${latest.slice(0,480)}\n${recovery.welcomeStep?`只补未完成的步骤，最多使用 ${price!.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力，按实际用量结算；已保存的说明和图片会复用。`:recovery.kind==='review_image'?`这次新生成一张图片，使用 ${price!.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力；已有结果和历史都会保留。`:canAdjustBudget?`本次继续最多使用 ${retryBudget} 电力，不含以前已用的电力，按实际用量结算。将沿用原附件和功能，只补未完成部分。`:'沿用原上限开始处理最新要求，不重复已有成果。'}`))void coordinator.retryTask(id,canAdjustBudget?retryBudget:undefined,lastJob?.id).then(()=>refresh()).catch(e=>setError(e.message));
       }}>{retrying?'正在恢复…':actionLabel}</button>:null}
-      {recovery?.kind==='review_notion'?<NotionReceiptNotice api={api} taskId={id} receipt={notionReceiptForReview(detail?.jobs||[])?.notionReceipt} reviewWorkflow={notionWorkflowNeedsReview(detail?.jobs||[])} onRefresh={()=>coordinator.load(id,true)} />:null}
+      {recovery?.kind==='review_notion'?<NotionReceiptNotice api={api} taskId={id} {...notionRecoveryProps(id)} reviewWorkflow={notionWorkflowNeedsReview(detail?.jobs||[])} onRefresh={()=>coordinator.load(id,true)} />:null}
 {localNeedsAction?<><p>{local.status==='cancelled'?'这轮已经停下，不会自己再启动。':'这轮本机操作还没完成。'}先看看操作记录；想接着做，可以回到这件事补一句要求，ONE 会先核对已有结果。</p><button type="button" onClick={()=>{setSelectedExecutionId(local.id);setExpandedExecutionId(local.id);setRevealExecutionId(local.id);void loadLatestExecution(id,local.id);}}>查看本轮操作</button><button type="button" onClick={()=>prepareTaskReview(id)}>核对后继续这件事</button></>:null}
       {!detail?<button type="button" onClick={()=>void coordinator.load(id).catch(e=>setError(e.message))}>查看恢复方式</button>:null}
     </section>;
@@ -2266,7 +2294,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         onDraftChange={(id,text)=>setThingDrafts(previous=>({...previous,[id]:text}))}
         onExecuteDraft={thingDestination === 'notion' ? undefined : (id,text,source)=>executeDraft(text,source,id)}
         sendLabel={thingDestination === 'notion' ? '写到 Notion' : thingDestination === 'local' ? '本机执行' : '发送'}
-        destinationPicker={!demo.enabled ? <><NotionReceiptNotice key={thingId} api={api} taskId={thingId} receipt={notionReceiptForReview(coordinator.details[thingId]?.jobs||[])?.notionReceipt} reviewWorkflow={notionWorkflowNeedsReview(coordinator.details[thingId]?.jobs||[])} onRefresh={()=>coordinator.load(thingId,true)} /><DocumentDestinationPicker api={api} value={thingDestination} onChange={destination=>setThingDestinations(old=>({...old,[thingId]:destination}))} localDisabled={!localDevice.canRequestExecution || executionBusy || preparingExecution} localDisabledHint={preparingExecution?'正在准备本机执行，请稍候':executionBusy?'本机任务结束后可保存':!localDevice.canRequestExecution?localDeviceDescription:undefined} onLocalSettings={()=>{setAccountSection('device');openSurface('account');}} onSettings={() => openSurface('knowledge')} /></> : undefined}
+        destinationPicker={!demo.enabled ? <>{coordinator.details[thingId]?.recovery?.kind!=='review_notion'?<NotionReceiptNotice key={thingId} api={api} taskId={thingId} {...notionRecoveryProps(thingId)} reviewWorkflow={notionWorkflowNeedsReview(coordinator.details[thingId]?.jobs||[])} onRefresh={()=>coordinator.load(thingId,true)} />:null}<DocumentDestinationPicker api={api} value={thingDestination} onChange={destination=>setThingDestinations(old=>({...old,[thingId]:destination}))} localDisabled={!localDevice.canRequestExecution || executionBusy || preparingExecution} localDisabledHint={preparingExecution?'正在准备本机执行，请稍候':executionBusy?'本机任务结束后可保存':!localDevice.canRequestExecution?localDeviceDescription:undefined} onLocalSettings={()=>{setAccountSection('device');openSurface('account');}} onSettings={() => openSurface('knowledge')} /></> : undefined}
         onSelect={id=>void selectThing(id)} onSend={continueThing}
         onWorkbench={id=>{if(preview.enabled)closeWorkLayer();else void openConversation(conversations.find(item=>item.id===id)!);setResultLampOpen(false);}}
         onRemove={coordinator.enabled?removeCoordinatorTask:undefined}
@@ -2447,7 +2475,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {demo.enabled?<ResultSignal tasks={lampTasks} busy={Boolean(content.trim()||preview.state.pending||view==='things')} ambient={view==='chat'&&!active} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)} onDismiss={closeResultLamp}/>:null}
         </div>:null}
 
-{preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation renderAssistantActions={message=><BetaFeedbackControls messageId={message.id} requestId={message.requestId} leading={<button type="button" title="复制回答" onClick={()=>void copyMarkdown(message.text)}><Copy size={14}/>复制</button>} onSave={async input=>(await api<{feedback:import('./Onboarding').OwnBetaFeedback}>('/api/me/feedback',{method:'POST',body:JSON.stringify(input)})).feedback}/>} onContinue={()=>{if(currentDraftRef.current.content.trim()){setError('输入框还有草稿，请先保留或发送它，再继续生成。');return;}if(confirm('继续生成会产生新的额度消耗，是否继续？'))void sendMessage('请接着上一条未完成的回答继续，从中断处接上，不要重复前文。');}} hasEarlierHistory={coordinator.hasEarlierHistory} loadingHistory={coordinator.loadingHistory} onLoadHistory={coordinator.enabled?coordinator.loadHistory:undefined} visible={view==='chat'||view==='features'||view==='account'} messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} completed={coordinator.settlement?.status==='completed'&&!coordinator.error} progress={coordinator.enabled?coordinator.progress:null} onStop={coordinator.enabled?coordinator.stop:undefined} onRestore={text=>{
+{preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation renderTaskRecovery={renderCoordinatorRecovery} renderAssistantActions={message=><BetaFeedbackControls messageId={message.id} requestId={message.requestId} leading={<button type="button" title="复制回答" onClick={()=>void copyMarkdown(message.text)}><Copy size={14}/>复制</button>} onSave={async input=>(await api<{feedback:import('./Onboarding').OwnBetaFeedback}>('/api/me/feedback',{method:'POST',body:JSON.stringify(input)})).feedback}/>} onContinue={()=>{if(currentDraftRef.current.content.trim()){setError('输入框还有草稿，请先保留或发送它，再继续生成。');return;}if(confirm('继续生成会产生新的额度消耗，是否继续？'))void sendMessage('请接着上一条未完成的回答继续，从中断处接上，不要重复前文。');}} hasEarlierHistory={coordinator.hasEarlierHistory} loadingHistory={coordinator.loadingHistory} onLoadHistory={coordinator.enabled?coordinator.loadHistory:undefined} visible={view==='chat'||view==='features'||view==='account'} messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} completed={coordinator.settlement?.status==='completed'&&!coordinator.error} progress={coordinator.enabled?coordinator.progress:null} onStop={coordinator.enabled?coordinator.stop:undefined} onRestore={text=>{
           if(currentDraftRef.current.content.trim()){setError('输入框已有新草稿，先保留或发送它，再恢复原话。');return;}
           const draft=coordinatorDrafts(user.id,user.access?.workspaceId??user.defaultWorkspaceId).filter(item=>item.text===text).at(-1);
           void (async()=>{

@@ -1,13 +1,14 @@
 import type {WorkRun} from './coordinatorTypes.js';
 import {parseTaskOutcome,type TaskOutcome} from './dispatchPlan.js';
 import type {ModelToolMessage,ToolChatResult} from './modelGateway.js';
-import type {OrchestrationTool} from './taskOrchestrator.js';
+import {featureEffectNotStarted,type OrchestrationTool} from './taskOrchestrator.js';
 import {notionHash,legacyNotionNormalized,canonicalNotionDigest} from './notionCanonical.js';
 import {verifiedNotionCompletion} from './notionCompletion.js';
 import {taskStepKey,type TaskStep,type TaskStepStore} from './taskSteps.js';
 import {runTaskWorkflow,workflowProgress,workflowPhase,workflowSkippedOptionalRead,type WorkflowBinding,type WorkflowRun,type WorkflowStep,type WorkflowStepResult} from './taskWorkflow.js';
 import {buildWorkflowStepContext,type WorkflowContextInput,type WorkflowHistoryMessage} from './workflowContext.js';
 import {parseWorkflowModelOutcome} from './workflowModelResult.js';
+import {parseToolRecoveryDiagnostic,toolRecoveryDiagnostic,toolRecoveryMessage,type ToolRecoveryDiagnostic} from './toolRecovery.js';
 import {notionVerificationPresentation} from '../src/taskRecovery.js';
 import {validOperationEvidence,readAttempt,readFailureRecovery,transientReadFailure,type OperationEvidence,type OperationRecovery} from './operationRecovery.js';
 
@@ -29,7 +30,7 @@ export type WorkflowExecutionInput={
  retryableReadTools?:readonly string[];now?:()=>number;
 };
 export type WorkflowExecutionResult={run:WorkflowRun;content:string;summary:string;outcome:'completed'|'partial'|'needs_input'|'failed';waiting:boolean;nextRecoveryAt?:string};
-type StoredOutput={workflow:{version:1;runId:string;revision:number;stepId:string};outcome:'completed'|'partial'|'needs_input'|'failed'|'waiting'|'skipped';result?:unknown;notionCheckpointKey?:string;priorNotionCheckpointKey?:string;expectedBodyDigest?:string;sourceArtifact?:{id:string;ref:string;originOperationId:string;bodyDigest:string}};
+type StoredOutput={toolFailure?:ToolRecoveryDiagnostic;workflow:{version:1;runId:string;revision:number;stepId:string};outcome:'completed'|'partial'|'needs_input'|'failed'|'waiting'|'skipped';result?:unknown;notionCheckpointKey?:string;priorNotionCheckpointKey?:string;expectedBodyDigest?:string;sourceArtifact?:{id:string;ref:string;originOperationId:string;bodyDigest:string}};
 type Classification={state:WorkflowStepResult['state'];outcome:StoredOutput['outcome'];summary:string;body?:string};
 export class WorkflowExecutionError extends Error{constructor(){super('这一步的原结果或授权范围无法确认，先核对已有内容；不会重复执行。');this.name='WorkflowExecutionError';}}
 const object=(value:unknown):Record<string,unknown>|undefined=>value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:undefined;
@@ -293,11 +294,19 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
   const tool=input.tools.find(tool=>tool.name===(step.kind==='feature'?input.featureTools[step.featureId!]:step.tool));
   if(!tool)return saveResult(step,undefined,step.kind==='tool'&&step.required===false?{state:'skipped',outcome:'skipped',summary:'可选检索暂不可用，未执行；继续必需内容，不据此宣称事实已核实。'}:{state:'failed',outcome:'failed',summary:'这一步需要的能力暂时没有就位，其他独立内容可以继续。'});
   if(safeRead(step))return performRead(step);
+  try{
   if(step.kind==='feature')value=await tool.run(selected.messages.filter(message=>message.role==='user').map(message=>message.content??'').join('\n\n'));
   else if(step.tool==='read_notion_document'){
    if(!tool.structured)return saveResult(step,undefined,{state:'failed',outcome:'failed',summary:'原文读取还没有接好，不能当作已经核对。'});
    value=await tool.structured.run(tool.structured.validate({}));
   }else value=await tool.run(step.instruction);
+  }catch(error){
+   const diagnostic=toolRecoveryDiagnostic(error);if(!diagnostic)throw error;
+   await verify();const needsInput=diagnostic.kind==='missing_input',summary=toolRecoveryMessage(diagnostic);
+   // A child may have delivered other files already. Mark the logical stage
+   // accurately without claiming that its parent never entered any effect.
+   return saveResult(step,{status:needsInput?'needs_input':'failed',message:summary,failure:diagnostic},{state:needsInput?'needs_input':'failed',outcome:needsInput?'needs_input':'failed',summary},{toolFailure:diagnostic},{version:1,execution:step.kind==='feature'&&!featureEffectNotStarted(error,binding.operationId)?'unknown':'failed',verification:'not_required'});
+  }
   await verify();const classified=classify(step,value);
   return saveResult(step,value,step.kind==='tool'&&step.required===false&&['failed','needs_input'].includes(classified.state)?{state:'skipped',outcome:'skipped',summary:'可选检索没有取得可用资料，继续必需内容；没有核实的案例不当作真实事实。'}:classified);
  };
@@ -347,4 +356,41 @@ export function pendingWorkflowRecovery(run:WorkflowRun|undefined,steps:readonly
   const recovery=evidence.recovery;return [{nextRecoveryAt:recovery.nextRetryAt,stepId:step.id,attempt:recovery.attempt,maxAttempts:recovery.maxAttempts}];
  });
  return found.sort((a,b)=>Date.parse(a.nextRecoveryAt)-Date.parse(b.nextRecoveryAt))[0];
+}
+
+/** Safe current-stage diagnostics for the already-authorized job projection.
+ * A model-authored similarly shaped object outside the exact workflow failed
+ * checkpoint cannot become an actionable fault. */
+export function workflowToolRecoveryDiagnostic(run:WorkflowRun|undefined,steps:TaskStep[]|undefined,binding:WorkflowBinding):ToolRecoveryDiagnostic|undefined{
+ if(!run||!steps||!sameEvidence(run.binding,binding))return;
+ const namespace=`workflow:${run.id}`;
+ const candidates=run.steps.filter(state=>['failed','needs_input'].includes(state.state)).flatMap(state=>{
+  const step=run.spec.steps.find(step=>step.id===state.id);if(!step)return [];
+  const key=taskStepKey(namespace,`workflow:${run.id}:${step.id}`,JSON.stringify({revision:run.revision,instruction:step.instruction,inputs:step.inputs}));
+  const matching=steps.filter(cp=>cp.key===key&&cp.namespace===namespace&&cp.scopeId===binding.operationId&&cp.tool===`workflow:${run.id}:${step.id}`&&cp.state==='failed');
+  if(matching.length!==1)return [];
+  const value=object(matching[0].output),result=object(value?.result);
+  if(!sameEvidence(value?.workflow,{version:1,runId:run.id,revision:run.revision,stepId:step.id}))return [];
+  const diagnostic=parseToolRecoveryDiagnostic(value?.toolFailure);return diagnostic?[diagnostic]:[];
+ });
+ return candidates.at(-1);
+}
+
+/** Strong persisted prerequisite gate: only this current feature checkpoint,
+ * created after the owning wrapper accepted a live aggregate no-effect proof.
+ * It is not inferred from a child's parameter fault or a model's output. */
+export function workflowFeatureNoEffectInput(run:WorkflowRun|undefined,steps:TaskStep[]|undefined,binding:WorkflowBinding){
+ if(!run||!steps||!sameEvidence(run.binding,binding))return;
+ const diagnostic=workflowToolRecoveryDiagnostic(run,steps,binding);if(diagnostic?.kind!=='missing_input')return;
+ const namespace=`workflow:${run.id}`;
+ const matches=run.steps.filter(state=>state.state==='needs_input').flatMap(state=>{
+  const step=run.spec.steps.find(step=>step.id===state.id);if(step?.kind!=='feature')return [];
+  const key=taskStepKey(namespace,`workflow:${run.id}:${step.id}`,JSON.stringify({revision:run.revision,instruction:step.instruction,inputs:step.inputs}));
+  const records=steps.filter(cp=>cp.key===key&&cp.namespace===namespace&&cp.scopeId===binding.operationId&&cp.tool===`workflow:${run.id}:${step.id}`&&cp.state==='failed');
+  if(records.length!==1)return [];
+  const cp=records[0],value=object(cp.output),fault=parseToolRecoveryDiagnostic(value?.toolFailure);
+  if(cp.operation?.version!==1||cp.operation.execution!=='failed'||cp.operation.verification!=='not_required'||cp.operation.recovery||cp.operation.artifactRef||value?.outcome!=='needs_input'||fault?.kind!=='missing_input'||!sameEvidence(value?.workflow,{version:1,runId:run.id,revision:run.revision,stepId:step.id}))return [];
+  return [{stepId:step.id,featureId:step.featureId!,diagnostic:fault}];
+ });
+ return matches.length===1?matches[0]:undefined;
 }

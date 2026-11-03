@@ -12,11 +12,16 @@ export type WorkRun = {
   /** Server-resolved published execution choices, never function arguments. */
   workflowModels?:Record<string,{modelId:string;systemPrompt:string;executorId:string;executorVersion:number}>;
   runtimeContext?:import('./runtimeContext.js').RuntimeContext;
+  /** Prior connection failures stay auditable when the same durable run is
+   * explicitly resumed. Refer to retained messages, not duplicate their body. */
+  connectionRecoveries?:{operationId:string;sourceUpdatedAt:string;failureCode:string;failure?:import('../src/coordinatorRecovery.js').CoordinatorFailure;resultMessageId?:string;resultOutcome?:'completed'|'failed'|'partial'|'needs_input'|'returned';at:string}[];
   fixedWorkflow?:import('./fixedWorkflows.js').FixedWorkflowInvocation;
   steps?:import('./taskSteps.js').TaskStep[];
   contract?:{version:1;requiredFeatureIds:string[];requiredTools:string[];knowledgeSourceIds?:string[];execution:'model'|'direct'};
   directVisual?:{tool:'oneHtml'|'oneFlowchart';document:import('./visualDocument.js').VisualDocument};
   userReport?:string;
+  /** Reviewed code-owned classification, never raw parameters/provider text. */
+  toolRecovery?:import('./toolRecovery.js').ToolRecoveryDiagnostic;
   retryOfOperationId?:string;
   dependencyBlocked?:boolean;
   /** Reporting to ONE and the user's review are independent durable acknowledgements. */
@@ -36,6 +41,12 @@ export type WorkRun = {
    * attempt after delayed proof; never an authorization to replay its work. */
   notionVerificationSelection?:{operationId:string;expectedDigest:string;pageId?:string;asyncTaskId?:string;checkpointKey?:string;version:number;connectionId:string;grantId:string;parentId:string;requestedAt:string};
   notionReceipt?: { state: 'pending' | 'verified' | 'uncertain'; pageId?: string; url?: string; asyncTaskId?: string; expectedDigest?: string; digest?: string;
+    /** The user selected an existing page and it was strictly read back. This
+     * proves delivery content, never an acknowledgement of the original write. */
+    linkRecovery?:{version:1;source:'user_supplied_page';selectionId:string;pageId:string;parentId:string;connectionId:string;grantId:string;checkpointKey:string;expectedRawDigest:string;expectedDigest:string;expectedCanonicalDigest:string;expectedLength:number;selectedAt:string;verifiedAt:string};
+    /** Private create title captured before dispatch; never inferred from a
+     * later conversation title when recovering an unknown create result. */
+    expectedPageTitle?:string;
     /** Versioned, server-owned evidence of the exact write being checked. */
     checkpointKey?:string; canonicalVersion?:import('./notionCanonical.js').NotionCanonicalVersion; expectedCanonicalDigest?:string; expectedRawDigest?:string;expectedLength?:number;
     /** Comparison metadata only. Neither the authored text nor fetched title/body

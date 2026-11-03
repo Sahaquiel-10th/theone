@@ -5,20 +5,45 @@ import { taskToolDescriptions } from "./aiTaskPresets.js";
 import { entryAllowsTool, type TaskEntryPoint } from "./aiTaskCatalog.js";
 import {taskStepKey,toolSucceeded,type TaskStepStore,type TaskStep} from './taskSteps.js';
 import {compileOneContext} from './oneContext.js';
+import {argumentRepairControlTool,parseArgumentRepairBudget,parseToolRecoveryDiagnostic,systemParameterFault,ToolRecoveryError,attachToolRecoveryDiagnostic,toolRecoveryDiagnostic,toolRecoveryMessage,type ToolRecoveryDiagnostic} from './toolRecovery.js';
 
 /** Only these reviewed codes may enter a trace; provider exceptions can contain secrets. */
 export class OrchestrationToolError extends Error {
   constructor(readonly code: "TOOL_DEFINITION_CHANGED", message: string) { super(message); }
 }
 /** Reviewed parameter feedback only. Never wrap provider/auth errors in this class. */
-export class OrchestrationInputError extends Error { readonly code='TOOL_INPUT_REPAIR'; }
+export class OrchestrationInputError extends Error { readonly code='TOOL_INPUT_REPAIR'; constructor(message:string,diagnostic?:ToolRecoveryDiagnostic){super(message);if(diagnostic)attachToolRecoveryDiagnostic(this,diagnostic);} }
+type ReadPrerequisite={tool:'read_task';objectId:string;isSatisfied:()=>boolean};
+const readPrerequisites=new WeakMap<OrchestrationInputError,ReadPrerequisite>();
+/** Code-owned stateful precondition, not a malformed argument. Its scope
+ * predicate is supplied by the same reviewed handler that rejected dispatch. */
+export class OrchestrationPrerequisiteError extends OrchestrationInputError{
+ constructor(message:string,prerequisite:ReadPrerequisite){super(message);readPrerequisites.set(this,prerequisite);}
+}
+
 /** Native, reviewed handlers only: this exact artifact attempt has not entered
  * a saver. Never use this for provider/transport failures or partial saves. */
 export class OrchestrationEffectNotStartedError extends OrchestrationInputError {}
 const nativeEffectProofs=new WeakMap<OrchestrationEffectNotStartedError,object>();
+export {toolRecoveryDiagnostic} from './toolRecovery.js';
 class OrchestrationArtifactBoundaryError extends Error {}
+const reviewedNativeEffects=new WeakSet<OrchestrationTool>();
+const noEffectRuns=new WeakMap<object,{namespace:string;scopeId:string}>();
+const acceptedFeatureNoEffects=new WeakMap<object,{scopeId:string}>();
+/** Only reviewed native factories may mark an effect wrapper. No JSON flag or
+ * configurable tool description can opt into this execution proof. */
+export function reviewedNativeEffectTool<T extends OrchestrationTool>(tool:T):T{reviewedNativeEffects.add(tool);return tool;}
+/** The feature owner must acknowledge the exact inner runner identity before
+ * this can describe its containing workflow stage. Never authorizes a retry. */
+export function acceptFeatureNoEffectProof(error:unknown,binding:{namespace:string;scopeId:string}){
+ if(!error||typeof error!=='object')return false;
+ const proof=noEffectRuns.get(error);
+ if(!proof||proof.namespace!==binding.namespace||proof.scopeId!==binding.scopeId)return false;
+ acceptedFeatureNoEffects.set(error,{scopeId:binding.scopeId});return true;
+}
+export function featureEffectNotStarted(error:unknown,scopeId:string){return Boolean(error&&typeof error==='object'&&acceptedFeatureNoEffects.get(error)?.scopeId===scopeId);}
 /** Code-owned native handler boundary, never model arguments or persisted data. */
-export type OrchestrationInvocation={rejectBeforeEffect:(message:string)=>OrchestrationEffectNotStartedError};
+export type OrchestrationInvocation={rejectBeforeEffect:(message:string,diagnostic?:ToolRecoveryDiagnostic)=>OrchestrationEffectNotStartedError};
 export type OrchestrationPartial = {kind:'body'|'tool_preamble';content:string;finishReason?:ModelFinishReason};
 export type OrchestrationFailureProgress = {partial?:OrchestrationPartial;completedTools:string[]};
 type ResponseFailureCode='task_empty_response'|'task_invalid_response'|'task_response_filtered'|'task_tool_instruction_incomplete';
@@ -48,6 +73,17 @@ function validModelResult(value:unknown):value is ToolChatResult{
   return typeof result.content==='string'&&Array.isArray(result.toolCalls)
     &&(result.finishReason===undefined||['stop','length','filtered','tool_calls','unknown'].includes(result.finishReason))
     &&result.toolCalls.every(call=>call&&typeof call==='object'&&typeof call.id==='string'&&call.type==='function'&&call.function&&typeof call.function==='object'&&typeof call.function.name==='string'&&typeof call.function.arguments==='string');
+}
+function canonicalArguments(raw:string){
+ try{
+  const sorted=(value:unknown,depth=0):unknown=>{
+   if(depth>40)throw Error('deep arguments');
+   if(Array.isArray(value))return value.map(item=>sorted(item,depth+1));
+   if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,sorted((value as Record<string,unknown>)[key],depth+1)]));
+   return value;
+  };
+  return JSON.stringify(sorted(JSON.parse(raw)));
+ }catch{return raw.trim();}
 }
 /** Stable diagnostics for known local failures; never persist arbitrary exception text. */
 export function orchestrationFailureCode(error:unknown){
@@ -99,6 +135,7 @@ export async function runTaskOrchestrator(input: {
 }):Promise<OrchestrationResult> {
   if (!["workspace", "published_web", "published_api"].includes(input.entryPoint)) throw new Error("执行入口无效");
   if(input.maxToolCallsPerTurn!==undefined&&(!Number.isInteger(input.maxToolCallsPerTurn)||input.maxToolCallsPerTurn<1||input.maxToolCallsPerTurn>4))throw new Error('工具调用上限配置无效');
+  if(input.tools.some(tool=>tool.name===argumentRepairControlTool))throw new Error('内部控制记录不能作为工具提供');
   // Reject miswiring before a model call can incur any charge. Descriptions and
   // global configuration cannot lift the public question-answering ceiling.
   if (input.tools.some(tool => !entryAllowsTool(input.entryPoint, tool.name))) throw new Error("分享分身仅允许读取授权知识并回答问题");
@@ -117,14 +154,44 @@ export async function runTaskOrchestrator(input: {
   const missing=()=>[...new Set(typeof input.requiredTools==='function'?input.requiredTools():input.requiredTools??[])].filter(name=>!satisfied.has(name));
   const baseSteps = Math.min(4, Math.max(1, Math.floor(input.maxSteps)));
   const planning=input.entryPoint==='workspace'&&baseSteps>1?Math.min(2,Math.max(0,Math.floor(input.planningSteps??0))):0;
-  let steps=baseSteps+planning,corrections=Math.min(2,Math.max(0,Math.floor(input.maxCorrections??0)));
+  let steps=baseSteps+planning,corrections=Math.min(2,Math.max(0,Math.floor(input.maxCorrections??(input.entryPoint==='workspace'?2:0))));
   const repair=(step:number)=>{if(!corrections||step>=baseSteps+planning+2)return false;corrections--;steps=Math.min(baseSteps+planning+2,Math.max(steps,step+2));return true;};
+  const controlNamespace=checkpoints?`${checkpoints.namespace}:control`:undefined;
+  const controlKey=checkpoints?taskStepKey(controlNamespace!,argumentRepairControlTool,JSON.stringify({version:1,scopeId:checkpoints.scopeId??null})):undefined;
+  const controls=checkpoints?.steps.filter(cp=>cp.tool===argumentRepairControlTool&&cp.namespace===controlNamespace)??[];
+  if(controls.length>1||controls.some(cp=>cp.key!==controlKey||cp.scopeId!==checkpoints?.scopeId||cp.effect!=='read'||cp.state!=='completed'||!parseArgumentRepairBudget(cp.output)))throw new ToolRecoveryError(systemParameterFault('arguments_invalid','exhausted'));
+  let budget=controls.length?parseArgumentRepairBudget(controls[0].output)!:{version:1 as const,used:0,maxAttempts:2 as const,fingerprints:[] as string[]};
+  const correctedArtifact=controls.length>0&&saved.some(cp=>cp.state==='completed'&&cp.effect==='artifact'&&toolSucceeded(cp.output)&&cp.updatedAt>=controls[0].updatedAt);
+  let needsCorrection=controls.length>0&&!correctedArtifact;
+  const correctionLimit=Math.min(2,Math.max(0,Math.floor(input.maxCorrections??(input.entryPoint==='workspace'?2:0))));
+  const saveBudget=async()=>{if(checkpoints)await checkpoints.save({key:controlKey!,namespace:controlNamespace!,scopeId:checkpoints.scopeId,tool:argumentRepairControlTool,label:'内部参数纠正预算',effect:'read',state:'completed',output:structuredClone(budget),updatedAt:new Date().toISOString()});};
+  const exhaust=(diagnostic:ToolRecoveryDiagnostic=systemParameterFault())=>new ToolRecoveryError({...diagnostic,repair:diagnostic.kind==='system_parameters'?'exhausted':'not_applicable'});
+  const markCorrection=(fingerprint:string,permanent=true)=>{if(input.entryPoint==='workspace'||correctionLimit>0){needsCorrection=true;if(permanent)rejectedHashes.add(fingerprint);}};
+  const claimCorrection=async()=>{
+    if(!needsCorrection)return;
+    if(budget.used>=correctionLimit||budget.used>=2)throw exhaust();
+    // Count before the billable call. A crash or persistence error cannot
+    // restore this allowance or silently rebuy an unknown model attempt.
+    budget={...budget,used:budget.used+1,fingerprints:[...rejectedHashes].slice(-8)};
+    await saveBudget();needsCorrection=false;
+  };
+
   const cache = new Map<string, unknown>();
   const invalidCalls=new Set<string>();
+  const rejectedHashes=new Set(budget.fingerprints);
+  const pendingPrerequisites=new Map<string,{signature:string;prerequisite:ReadPrerequisite;readSeen:boolean}>();
+  const refreshPrerequisites=()=>{for(const [fingerprint,pending] of pendingPrerequisites){let satisfied=false;try{satisfied=pending.readSeen&&pending.prerequisite.isSatisfied();}catch{/* Fresh scope/state is still unavailable. */}if(satisfied){invalidCalls.delete(pending.signature);pendingPrerequisites.delete(fingerprint);}}};
   const artifactInputFailures=new Map<string,string>();
   const unresolvedArtifactInputs=new Map<string,string>();
   const readableBodies:{content:string;kind:OrchestrationPartial['kind']}[]=[];
   let lastReadableFinish:ModelFinishReason|undefined;
+  let settledModelCalls=0,modelPending=false;
+  const recordNoEffectRun=(error:object)=>{
+    if(!checkpoints?.scopeId||controls.length>0||modelPending||!settledModelCalls||!input.tools.every(tool=>reviewedNativeEffects.has(tool)||tool.effect==='read'&&!tool.structured?.effect))return;
+    const effects=checkpoints.steps.filter(cp=>cp.namespace===checkpoints.namespace&&['artifact','external_write','model'].includes(cp.effect));
+    if(!effects.length||effects.some(cp=>cp.scopeId!==checkpoints.scopeId||cp.effect==='model'||cp.state!=='failed'||!reviewedNativeEffects.has(input.tools.find(tool=>tool.name===cp.tool)!)||(cp.output as {code?:unknown}|undefined)?.code!=='ARTIFACT_NOT_CREATED'))return;
+    noEffectRuns.set(error,{namespace:checkpoints.namespace,scopeId:checkpoints.scopeId});
+  };
   const partial=():OrchestrationPartial|undefined=>readableBodies.length?{
     // Mixed text remains available, but an unverified tool preamble must never
     // become continuation-ready manuscript or evidence that an effect happened.
@@ -139,7 +206,7 @@ export async function runTaskOrchestrator(input: {
   const rejectUncreatedArtifact=()=>{
     const message=unresolvedArtifactInputs.values().next().value;
     if(!message)return;
-    const error=new OrchestrationEffectNotStartedError(message);
+    const error=new OrchestrationEffectNotStartedError(message,systemParameterFault('artifact_validation_failed','exhausted'));
     retainFailureProgress(error,{partial:partial(),completedTools:[...satisfied]});throw error;
   };
   for (let step = 1; step <= steps; step++) {
@@ -147,13 +214,16 @@ export async function runTaskOrchestrator(input: {
     const active=input.entryPoint==='workspace'&&input.activeTools?input.activeTools():input.tools;
     if(active.some(t=>!input.tools.includes(t)||!entryAllowsTool(input.entryPoint,t.name)))throw new Error('工具加载超出本轮授权范围');
     const tools=definitions(active);
+    await claimCorrection();
     input.onStage?.('model');
     // Keep schemas needed to interpret native history, without allowing any
     // new execution in the final answer-only turn.
     let result:ToolChatResult;
+    modelPending=true;
     try{
       result=await input.call(messages, step === steps ? [] : tools,
         step === steps && tools.length ? {finalSummaryTools: tools} : undefined);
+      modelPending=false;settledModelCalls++;
     }catch(error){retainFailureProgress(error,{partial:partial(),completedTools:[...satisfied]});throw error;}
     if(!validModelResult(result))throw responseFailure('task_invalid_response','模型返回的响应格式无效，尚未执行本轮工具');
     if(result.finishReason==='filtered')throw responseFailure('task_response_filtered','模型本轮内容未通过安全检查，未展示或执行',result.finishReason);
@@ -167,7 +237,7 @@ export async function runTaskOrchestrator(input: {
       // never spend another repair turn or execute incomplete instructions.
       if(result.finishReason==='length')return {content:result.content,messages,trace,finishReason:result.finishReason,requiredMissing:missing()};
       const action=input.actionRequired?.(result.content);
-      if(action&&repair(step)){messages.push({role:'assistant',content:result.content},{role:'system',content:action});continue;}
+      if(action&&repair(step)){markCorrection(taskStepKey('action','action',action));messages.push({role:'assistant',content:result.content},{role:'system',content:action});continue;}
       if(action)return {content:'这件事还没能开始，我把你的要求留着了。可以说“继续刚才那件事”，我会先核对进展，再安排没做的部分。',messages,trace,finishReason:result.finishReason,requiredMissing:missing()};
       if(missing().length&&step<steps){messages.push({role:'assistant',content:result.content},{role:'system',content:`本任务还有必须实际完成的步骤：${missing().join('、')}。请调用对应工具；已有结果可复用。不可用时如实返回未完成部分，不能只用文字声称已经调用。`});continue;}
       rejectUncreatedArtifact();
@@ -183,6 +253,7 @@ export async function runTaskOrchestrator(input: {
       let query: string | undefined;
       let structuredArgs: unknown;
       let inputRepair: string | undefined;
+      let inputPrerequisite:ReadPrerequisite|undefined;
       try {
         const args = JSON.parse(call.function.arguments);
         if (tool?.structured) {
@@ -197,15 +268,18 @@ export async function runTaskOrchestrator(input: {
       } catch (error) {
         // Only reviewed, code-owned hints may reach the model. Arbitrary
         // validator/provider exceptions can contain credentials or user data.
-        if (tool && error instanceof OrchestrationInputError) inputRepair = error.message.slice(0,1000);
+        if (tool && error instanceof OrchestrationInputError){inputRepair=error.message.slice(0,1000);inputPrerequisite=readPrerequisites.get(error);}
       }
       let output: unknown; let completedEffect:TaskStep['effect']|undefined; let status = "rejected"; const started = Date.now();
-      const signature=JSON.stringify([call.function.name,call.function.arguments]);
-      if(invalidCalls.has(signature)){
+      const canonical=canonicalArguments(call.function.arguments);
+      const signature=JSON.stringify([call.function.name,canonical]);
+      const fingerprint=taskStepKey(checkpoints?.namespace??'',call.function.name,canonical);
+      refreshPrerequisites();
+      if(invalidCalls.has(signature)||rejectedHashes.has(fingerprint)){
         const requestedTool=/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(call.function.name)?call.function.name:'invalid_name';
         trace.push({step,tool:tool?.name??'unavailable',requestedTool,failureCode:tool?'TOOL_INPUT_REPAIR':'TOOL_NOT_OFFERED',status:'rejected',resultPreview:JSON.stringify({status:'rejected',code:tool?'TOOL_INPUT_REPAIR':'TOOL_NOT_OFFERED'}),durationMs:0});input.onTrace?.(structuredClone(trace));
-        if(artifactInputFailures.has(signature))throw new OrchestrationEffectNotStartedError(artifactInputFailures.get(signature));
-        throw new OrchestrationInputError('这一步的功能还没能正确接上，要求已保留；可以稍后继续，不会重复执行已有成果。');
+        if(artifactInputFailures.has(signature))throw new OrchestrationEffectNotStartedError(artifactInputFailures.get(signature)!,systemParameterFault('artifact_validation_failed','exhausted'));
+        throw attachToolRecoveryDiagnostic(new OrchestrationInputError('这一步的功能还没能正确接上，要求已保留；可以稍后继续，不会重复执行已有成果。'),systemParameterFault('arguments_invalid','exhausted'));
       }
       if (!tool || !query) {
         const code=tool?'TOOL_INPUT_REPAIR':'TOOL_NOT_OFFERED';
@@ -213,7 +287,7 @@ export async function runTaskOrchestrator(input: {
         // or validator/provider exception text. A repeated invalid call must
         // not spend another round trying the identical non-action.
         const requestedTool=/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(call.function.name)?call.function.name:'invalid_name';
-        invalidCalls.add(signature);
+        invalidCalls.add(signature);if(inputPrerequisite)pendingPrerequisites.set(fingerprint,{signature,prerequisite:inputPrerequisite,readSeen:false});markCorrection(fingerprint,!inputPrerequisite);
         if(inputRepair||input.maxCorrections)repair(step);
         output = {status:'rejected',code,message:inputRepair??(tool?'参数不符合此工具的 schema，请核对必填字段、类型和长度。':'此工具不在本轮可用名单，不能执行。只使用当前提供的工具名；需要其他能力先查询目录。'),...(!tool?{availableTools:input.tools.map(t=>t.name)}:{})};
       }
@@ -231,12 +305,12 @@ export async function runTaskOrchestrator(input: {
           output = cache.get(key); status = "reused";
         }
         else {
-          const checkpoint:TaskStep={key:durableKey,namespace:checkpoints?.namespace??'',tool:tool.name,label:tool.label||tool.description?.slice(0,60)||'处理资料',effect,state:'started',updatedAt:new Date().toISOString(),...(tool.checkpointScope?{scopeId:tool.checkpointScope}:{})};
+          const checkpoint:TaskStep={key:durableKey,namespace:checkpoints?.namespace??'',...(checkpoints?.scopeId?{scopeId:checkpoints.scopeId}:{}),tool:tool.name,label:tool.label||tool.description?.slice(0,60)||'处理资料',effect,state:'started',updatedAt:new Date().toISOString(),...(tool.checkpointScope?{scopeId:tool.checkpointScope}:{})};
           if(checkpoints){if(checkpoints.steps.length>=64&&!previous)throw new Error('这件事的步骤较多，先保留已有结果，请分批继续。');await checkpoints.save(checkpoint);}
           // Handler errors propagate: do not disguise revoked authorization as no matches.
           let handlerReturned=false;
           const attempt={};
-          const invocation:OrchestrationInvocation={rejectBeforeEffect:message=>{const error=new OrchestrationEffectNotStartedError(message);nativeEffectProofs.set(error,attempt);return error;}};
+          const invocation:OrchestrationInvocation={rejectBeforeEffect:(message,diagnostic)=>{const error=new OrchestrationEffectNotStartedError(message,diagnostic??systemParameterFault('artifact_validation_failed'));nativeEffectProofs.set(error,attempt);return error;}};
           try {
             input.onStage?.('tool', tool.name);
             output = tool.structured ? await tool.structured.run(structuredArgs,invocation) : await tool.run(query);
@@ -252,12 +326,14 @@ export async function runTaskOrchestrator(input: {
             // A nested runner's final input failure describes one child, not
             // every effect of its parent. Do not release the parent's write
             // checkpoint or repair/rebuy the whole feature on that evidence.
-            if(error instanceof OrchestrationEffectNotStartedError&&!nativeProof){const progress=orchestrationFailureProgress(error);error=new OrchestrationArtifactBoundaryError('这次功能还有未完成的文件步骤；已有成果会保留，请先核对成果，再处理缺少的文件。');if(progress)retainFailureProgress(error,progress);}
+            if(error instanceof OrchestrationEffectNotStartedError&&!nativeProof){const progress=orchestrationFailureProgress(error);error=attachToolRecoveryDiagnostic(new OrchestrationArtifactBoundaryError('这次功能还有未完成的文件步骤；已有成果会保留，请先核对成果，再处理缺少的文件。'),{version:1,kind:'effect_unknown',code:'effect_unconfirmed',repair:'not_applicable'});if(progress)retainFailureProgress(error,progress);}
             const artifactNotStarted=checkpoint.effect==='artifact'&&nativeProof;
-            if(checkpoints&&(!['artifact','external_write'].includes(checkpoint.effect)||artifactNotStarted))await checkpoints.save({...checkpoint,state:'failed',...(artifactNotStarted&&error instanceof Error?{output:{status:'failed',code:'ARTIFACT_NOT_CREATED',message:error.message}}:{}),updatedAt:new Date().toISOString()});
-            if(error instanceof OrchestrationInputError&&(input.maxCorrections||artifactNotStarted)){
-              invalidCalls.add(signature);if(artifactNotStarted){artifactInputFailures.set(signature,error.message);unresolvedArtifactInputs.set(tool.name,error.message);}repair(step);output={status:'rejected',code:error.code,message:error.message,...(artifactNotStarted?{artifactNotCreated:true}:{})};status='rejected';
+            const diagnostic=toolRecoveryDiagnostic(error);
+            if(checkpoints&&(!['artifact','external_write'].includes(checkpoint.effect)||artifactNotStarted))await checkpoints.save({...checkpoint,state:'failed',...(artifactNotStarted&&error instanceof Error?{output:{status:'failed',code:'ARTIFACT_NOT_CREATED',message:error.message,...(diagnostic?{failure:diagnostic}:{})}}:{}),updatedAt:new Date().toISOString()});
+            if(error instanceof OrchestrationInputError&&(!diagnostic||diagnostic.kind==='system_parameters'&&diagnostic.repair==='available')&&(input.maxCorrections||artifactNotStarted)){
+              const prerequisite=error instanceof OrchestrationInputError?readPrerequisites.get(error):undefined;invalidCalls.add(signature);if(prerequisite)pendingPrerequisites.set(fingerprint,{signature,prerequisite,readSeen:false});markCorrection(fingerprint,!prerequisite);if(artifactNotStarted){artifactInputFailures.set(signature,error.message);unresolvedArtifactInputs.set(tool.name,error.message);}repair(step);output={status:'rejected',code:error.code,message:error.message,...(artifactNotStarted?{artifactNotCreated:true}:{})};status='rejected';
             }else{
+            if(artifactNotStarted&&diagnostic)recordNoEffectRun(error as object);
             trace.push({ step, tool: tool.name, status: "failed", query,
               resultPreview: JSON.stringify({ status: "failed", code: error instanceof OrchestrationToolError ? error.code : orchestrationFailureCode(error)??"TOOL_EXECUTION_FAILED" }),
               durationMs: Date.now() - started });
@@ -269,7 +345,7 @@ export async function runTaskOrchestrator(input: {
           if(tool.cacheable!==false&&status!=='rejected')cache.set(key, output); if(status!=='rejected')status = "returned";
         }
       }
-      if(tool&&status!=='rejected'&&toolSucceeded(output)){satisfied.add(tool.name);if(completedEffect==='artifact')unresolvedArtifactInputs.delete(tool.name);if(status!=='reused')invalidCalls.clear();}
+      if(tool&&status!=='rejected'&&toolSucceeded(output)){satisfied.add(tool.name);if(completedEffect==='artifact')unresolvedArtifactInputs.delete(tool.name);for(const pending of pendingPrerequisites.values())if(tool.name===pending.prerequisite.tool&&output&&typeof output==='object'&&(output as {id?:unknown}).id===pending.prerequisite.objectId)pending.readSeen=true;refreshPrerequisites();}
       const serialized = JSON.stringify(output??null);
       trace.push({ step, tool: tool?.name ?? "unavailable",...(status==='rejected'?{requestedTool:/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(call.function.name)?call.function.name:'invalid_name',failureCode:tool?'TOOL_INPUT_REPAIR' as const:'TOOL_NOT_OFFERED' as const}:{}), status: status as ExecutionTraceStep["status"], query, resultPreview: serialized.length > 12000 ? `${serialized.slice(0, 12000)}…` : serialized, durationMs: Date.now() - started });
       input.onTrace?.(structuredClone(trace));
@@ -279,4 +355,17 @@ export async function runTaskOrchestrator(input: {
     if(receipt){rejectUncreatedArtifact();return {content:receipt,messages,trace,finishReason:'stop' as const,requiredMissing:[]};}
   }
   rejectUncreatedArtifact();throw new Error("调度未完成");
+}
+
+/** Carry only the strict private correction allowance when the service has
+ * authorized a new-material revision of this same task. Does not grant a run. */
+export function rebindArgumentRepairControls(steps:TaskStep[],sourceScopeId:string,targetScopeId:string):TaskStep[]|undefined{
+ const controls=steps.filter(cp=>cp.tool===argumentRepairControlTool);
+ const seen=new Set<string>(),result:TaskStep[]=[];
+ for(const cp of controls){
+  const expected=taskStepKey(cp.namespace,argumentRepairControlTool,JSON.stringify({version:1,scopeId:sourceScopeId}));
+  if(!cp.namespace.endsWith(':control')||cp.scopeId!==sourceScopeId||cp.key!==expected||cp.effect!=='read'||cp.state!=='completed'||!parseArgumentRepairBudget(cp.output)||seen.has(cp.namespace))return;
+  seen.add(cp.namespace);result.push({...structuredClone(cp),key:taskStepKey(cp.namespace,argumentRepairControlTool,JSON.stringify({version:1,scopeId:targetScopeId})),scopeId:targetScopeId});
+ }
+ return result;
 }

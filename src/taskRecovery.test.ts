@@ -54,7 +54,7 @@ test('Notion Key admission failure can retry only with explicit empty effect his
  const job={id:'key-failed',state:'failed',notionTarget:{},failureCode:'task_key_required',steps:[]};
  assert.equal(taskRecovery([job]).kind,'retry');
  assert.equal(taskRecovery([{...job,steps:undefined}]).kind,'review_notion');
- assert.equal(taskRecovery([{...job,steps:[{tool:'save_notion_draft',effect:'external_write',state:'started'}]}]).kind,'none');
+ assert.equal(taskRecovery([{...job,steps:[{tool:'save_notion_draft',effect:'external_write',state:'started'}]}]).kind,'support');
  assert.equal(taskRecovery([{...job,notionReceipt:{state:'uncertain',delivery:'unknown'}}]).kind,'review_notion');
  assert.equal(taskRecovery([{id:'older',state:'failed',notionReceipt:{state:'uncertain'}},job]).kind,'review_notion');
  assert.equal(taskRecovery([{...job,state:'running'}]).kind,'none');
@@ -62,7 +62,7 @@ test('Notion Key admission failure can retry only with explicit empty effect his
 test('a scoped document read can retry its summary but never hides a write or unknown effect',()=>{
  const job={id:'read',state:'failed',notionTarget:{},steps:[{tool:'read_notion_document',effect:'read',state:'completed'}]};
  assert.equal(taskRecovery([job]).kind,'retry');
- assert.equal(taskRecovery([{...job,steps:[...job.steps,{tool:'save_notion_draft',effect:'external_write',state:'started'}]}]).kind,'none');
+ assert.equal(taskRecovery([{...job,steps:[...job.steps,{tool:'save_notion_draft',effect:'external_write',state:'started'}]}]).kind,'support');
  assert.equal(taskRecovery([{...job,notionReceipt:{state:'uncertain'}}]).kind,'review_notion');
  assert.equal(taskRecovery([{id:'unknown',state:'failed',notionReceipt:{state:'uncertain'}},job]).kind,'review_notion');
 });
@@ -77,13 +77,13 @@ test('a stopped prerequisite does not leave a dead-end retry button on its cance
 });
 test('an uncertain save asks for review instead of offering a blind retry',()=>{
   const result=taskRecovery([{id:'partial',state:'failed',steps:[{effect:'artifact',state:'started'}]}]);
-  assert.equal(result.kind,'none');assert.match(result.message,/先看看已有成果/);
+  assert.equal(result.kind,'support');assert.match(result.message,/已暂停.*不会自动重新制作/);
 });
 test('an uncertain Notion write keeps its dedicated readback entry even with an unresolved external-write checkpoint',()=>{
   const job={id:'notion',state:'failed',notionTarget:{},notionReceipt:{state:'uncertain'},steps:[{effect:'external_write',state:'started'}]};
   assert.equal(taskRecovery([job]).kind,'review_notion');
   assert.equal(taskRecovery([{...job,state:'running'}]).kind,'none');
-  assert.equal(taskRecovery([{...job,notionReceipt:{state:'verified'}}]).kind,'none','verification must not silently clear another unresolved write');
+  assert.equal(taskRecovery([{...job,notionReceipt:{state:'verified'}}]).kind,'support','verification must not silently clear another unresolved write');
 });
 test('only proven unsent or rejected Notion writes allow manual retry; legacy and other effects remain protected',()=>{
  const job={id:'notion',state:'failed',notionTarget:{},steps:[{tool:'save_notion_draft',effect:'external_write',state:'started'}]};
@@ -91,7 +91,7 @@ test('only proven unsent or rejected Notion writes allow manual retry; legacy an
   const safe={...job,notionReceipt:{state:'uncertain',delivery}};
   assert.equal(taskRecovery([safe]).kind,'retry');
   assert.equal(taskRecovery([{id:'old',state:'failed',notionReceipt:{state:'uncertain'}},safe]).kind,'review_notion');
-  assert.equal(taskRecovery([{...safe,steps:[...safe.steps,{tool:'another_tool',effect:'artifact',state:'started'}]}]).kind,'none');
+  assert.equal(taskRecovery([{...safe,steps:[...safe.steps,{tool:'another_tool',effect:'artifact',state:'started'}]}]).kind,'support');
  }
  assert.equal(taskRecovery([{...job,notionReceipt:{state:'uncertain',delivery:'unknown'}}]).kind,'review_notion');
 });

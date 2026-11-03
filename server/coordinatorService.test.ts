@@ -797,6 +797,180 @@ function fixture() {
 }
 const key = async () => {};
 
+async function connectionFailureFixture(kind:'key'|'authorization'='key'){
+ const f=await workflowServiceFixture({noHtml:true});let lost=false,restored=false;
+ await f.store.mutate(db=>{db.knowledgeConnections.find(source=>source.id==='wf-source')!.providerUserId='same-original-account';});
+ const result=await f.service.dispatch(a,{...input(`operation_connection_seed_${kind}`,'请从得到大脑查找青色42入口方案，写完整方案保存到Notion。'),sourceIds:['wf-source'],outputDestination:'notion'},key);
+ const liveKey=async()=>{
+  if(restored)return;
+  const db=await f.store.read(),op=db.chatOperations!.find(op=>op.workRun&&op.conversationId===result.taskId);
+  if(op?.workRun?.steps?.some(cp=>cp.state==='completed'&&(cp.output as any)?.workflow?.stepId==='draft')){
+   lost=true;
+   if(kind==='key')throw new OneKeyPresenceError('fixture disconnected');
+   await f.store.mutate(d=>{d.knowledgeConnections.find(source=>source.id==='wf-source')!.status='revoked';});
+  }
+ };
+ await f.service.resume(a,liveKey);
+ await waitFor(async()=>lost&&(await f.store.read()).chatOperations!.find(op=>op.workRun&&op.conversationId===result.taskId)?.workRun?.state==='failed');
+ const failed=(await f.store.read()).chatOperations!.find(op=>op.workRun&&op.conversationId===result.taskId)!;
+ assert.equal(failed.workRun!.failureCode,kind==='key'?'task_key_required':'task_authorization_required');assert.equal(f.counts.draft,1);assert.equal(f.counts.create,0);
+ return {...f,taskId:result.taskId!,failed,liveKey,restore:async()=>{restored=true;await f.store.mutate(d=>{const source=d.knowledgeConnections.find(source=>source.id==='wf-source')!;source.status='connected';source.encryptedAccessToken='rotated-same-account-fixture';});}};
+}
+for(const entry of ['main','task'] as const)for(const kind of ['key','authorization'] as const)test(`explicit ${entry} continue after ${kind} recovery uses the same run and never regenerates completed prose`,async()=>{
+ const f=await connectionFailureFixture(kind);
+ try{
+  await f.restore();const calls=f.calls.length,operationId=`operation_connection_continue_${entry}_${kind}`;
+  const request={operationId,text:'继续',budget:f.failed.workRun!.budget};
+  if(entry==='main')await f.service.dispatch(a,{...request,boundTaskId:f.taskId},key);else await f.service.direct(a,f.taskId,request,key);
+  await waitFor(async()=>(await f.service.task(a,f.taskId)).jobs[0].state==='completed');
+  const db=await f.store.read(),ops=db.chatOperations!.filter(op=>op.workRun&&op.conversationId===f.taskId),run=ops[0].workRun!;
+  assert.equal(ops.length,1);assert.equal(ops[0].id,f.failed.id);assert.equal(run.workflow!.id,f.failed.workRun!.workflow!.id);assert.equal(run.workflow!.revision,f.failed.workRun!.workflow!.revision);assert.equal(run.budget,f.failed.workRun!.budget);
+  assert.equal(f.counts.draft,1);assert.equal(f.counts.retrieval,1);assert.equal(f.counts.create,1);assert.equal(f.calls.length,calls,'continuation does not buy routing or draft models');
+  const completed=f.failed.workRun!.steps!.filter(cp=>cp.state==='completed');for(const cp of completed)assert.deepEqual(run.steps!.find(saved=>saved.key===cp.key),cp,'completed source/draft checkpoint stays byte-identical');
+  assert.equal(run.connectionRecoveries!.length,1);assert.equal(run.connectionRecoveries![0].failureCode,f.failed.workRun!.failureCode);assert.equal(db.auditLogs.filter(log=>log.action==='task.connection_recovered').length,1);
+  const before=structuredClone(f.counts);
+  if(entry==='main')await f.service.dispatch(a,{...request,boundTaskId:f.taskId},key);else await f.service.direct(a,f.taskId,request,key);
+  assert.deepEqual(f.counts,before,'replaying the same accepted human continuation cannot issue another call');
+  await assert.rejects(()=>f.service.direct(b,f.taskId,{operationId:'operation_connection_foreign_001',text:'继续'},key));
+ }finally{f.cleanup();}
+});
+test('connection continuation retains source identity, unknown effects, user-stop and original budget barriers',async()=>{
+ for(const mode of ['changed-source','unknown-write','unknown-model','local-hold','stop','budget'] as const){
+  const f=await connectionFailureFixture();
+  try{
+   await f.restore();await f.store.mutate(db=>{
+    const op=db.chatOperations!.find(op=>op.id===f.failed.id)!,job=op.workRun!,task=db.conversations.find(task=>task.id===f.taskId)!;
+    if(mode==='changed-source')db.knowledgeConnections.find(source=>source.id==='wf-source')!.providerUserId='different-account';
+    if(mode==='unknown-write')job.notionReceipt={state:'uncertain',delivery:'unknown'} as any;
+    if(mode==='unknown-model')job.steps!.push({...job.steps![0],key:'unknown-model',effect:'model',state:'started'});
+    if(mode==='local-hold')(db.executionTasks??=[]).push({...a,id:'held-local',conversationId:f.taskId,status:'failed',executionSafetyHold:'command_unconfirmed'} as any);
+    if(mode==='stop')task.workPauseReason='user_stopped';
+    if(mode==='budget')job.budget=0;
+   });
+   const before=structuredClone(f.counts);await f.service.direct(a,f.taskId,{operationId:`operation_connection_block_${mode}`,text:'继续'},key);
+   await f.service.resume(a,key);assert.deepEqual(f.counts,before,mode);assert.equal((await f.service.task(a,f.taskId)).conversation.workPaused,true,mode);
+  }finally{f.cleanup();}
+ }
+});
+test('a fresh Key proof and exact state CAS precede connection continuation, including duplicate continuations',async()=>{
+ const f=await connectionFailureFixture();
+ try{
+  await f.restore();const before=structuredClone(f.counts);
+  await assert.rejects(()=>f.service.direct(a,f.taskId,{operationId:'operation_connection_still_offline',text:'继续'},async()=>{throw new OneKeyPresenceError('offline');}));assert.deepEqual(f.counts,before);
+  const replies=await Promise.allSettled([f.service.direct(a,f.taskId,{operationId:'operation_connection_dupe_001',text:'继续'},key),f.service.direct(a,f.taskId,{operationId:'operation_connection_dupe_002',text:'继续'},key)]);
+  assert.ok(replies.some(reply=>reply.status==='fulfilled'));for(const reply of replies)if(reply.status==='rejected')assert.match(String(reply.reason),/正在处理中|正在处理/);
+  await waitFor(async()=>(await f.service.task(a,f.taskId)).jobs[0].state==='completed');assert.equal(f.counts.create,1);assert.equal(f.counts.draft,1);
+  assert.equal((await f.store.read()).chatOperations!.find(op=>op.id===f.failed.id)!.workRun!.connectionRecoveries!.length,1);
+ }finally{f.cleanup();}
+});
+test('a stop, source replacement or newer task revision during fresh connection validation wins over continuation',async()=>{
+ for(const mode of ['stop','source','newer'] as const){
+  const f=await connectionFailureFixture();
+  try{
+   await f.restore();let checks=0;
+   const racingKey=async()=>{if(++checks!==3)return;await f.store.mutate(db=>{
+    const task=db.conversations.find(task=>task.id===f.taskId)!;
+    if(mode==='stop')task.workPauseReason='user_stopped';
+    if(mode==='source')db.knowledgeConnections.find(source=>source.id==='wf-source')!.providerUserId='raced-account';
+    if(mode==='newer')db.chatOperations!.push({...structuredClone(f.failed),id:'newer-op',operationId:'newer_material_operation',workRun:{...structuredClone(f.failed.workRun!),state:'queued'}});
+   });};
+   const before=structuredClone(f.counts);await f.service.direct(a,f.taskId,{operationId:`operation_connection_race_${mode}`,text:'继续'},racingKey);
+   assert.deepEqual(f.counts,before,mode);assert.equal((await f.store.read()).chatOperations!.find(op=>op.id===f.failed.id)!.workRun!.state,'failed');
+  }finally{f.cleanup();}
+ }
+});
+for(const entry of ['main','task'] as const)test(`a human original-page link in ${entry} closes the original unknown save without routing, drafting or another write`,async()=>{
+ const f=await workflowServiceFixture({noHtml:true,lostSaveAck:true});
+ try{
+  const original=await f.service.dispatch(a,{...input(`operation_link_original_${entry}`,'请从得到大脑查找青色42入口方案，写完整方案保存到Notion。'),sourceIds:['wf-source'],outputDestination:'notion'},key);
+  await f.service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.find(op=>op.workRun&&op.conversationId===original.taskId)?.workRun?.state==='failed');
+  const failed=(await f.store.read()).chatOperations!.find(op=>op.workRun&&op.conversationId===original.taskId)!,detail=await f.service.task(a,original.taskId!);
+  assert.equal(failed.workRun!.notionReceipt!.delivery,'unknown');assert.equal(detail.jobs[0].notionReceipt?.recoveryInput,'page_url');
+  const meta=(await f.service.state(a)).tasks.find(task=>task.id===original.taskId)!;assert.equal(meta.recovery.message,detail.recovery.message);assert.match(detail.recovery.message,/原页.*链接|页面链接/);
+  assert.equal(f.counts.create,1);assert.equal(f.counts.draft,1);const calls=f.calls.length;
+  const request={operationId:`operation_link_recover_${entry}`,text:`原页链接是：https://www.notion.so/${f.pageId}，请核对原文。`};
+  if(entry==='main')await f.service.dispatch(a,request,key);else await f.service.direct(a,original.taskId!,request,key);
+  const after=await f.store.read(),op=after.chatOperations!.find(op=>op.id===failed.id)!;
+  assert.equal(op.workRun!.state,'completed');assert.equal(op.workRun!.workflow!.phase,'completed');assert.equal(op.workRun!.notionReceipt!.delivery,'unknown');assert.equal(op.workRun!.notionReceipt!.state,'verified');
+  assert.equal(op.workRun!.notionReceipt!.linkRecovery?.source,'user_supplied_page');assert.equal(f.counts.create,1);assert.equal(f.counts.draft,1);assert.equal(f.calls.length,calls);assert.equal(after.chatOperations!.filter(op=>op.workRun&&op.conversationId===original.taskId).length,1);
+  const publicReceipt=(await f.service.task(a,original.taskId!)).jobs[0].notionReceipt!;assert.equal(publicReceipt.recoveredFromLink,true);assert.doesNotMatch(JSON.stringify(publicReceipt),/selectionId|connectionId|grantId|expectedRawDigest|linkRecovery|checkpointKey/);
+  if(entry==='main')await f.service.dispatch(a,request,key);else await f.service.direct(a,original.taskId!,request,key);
+  assert.equal(f.counts.create,1);assert.equal(f.calls.length,calls,'replaying the original link selection never routes again');
+ }finally{f.cleanup();}
+});
+test('a middle-stage original-page link automatically advances only its safe remaining stage',async()=>{
+ const f=await workflowServiceFixture({lostSaveAck:true});
+ try{
+  const original=await f.service.dispatch(a,{...input('operation_link_middle_original','请从得到大脑查找青色42入口方案，写完整方案保存到Notion，随后制作真实交互网页。'),sourceIds:['wf-source'],featureIds:['oneHtml'],confirmedExternal:true,outputDestination:'notion'},key);
+  await f.service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.find(op=>op.workRun&&op.conversationId===original.taskId)?.workRun?.state==='failed');
+  assert.equal(f.counts.feature,0);
+  await f.service.direct(a,original.taskId!,{operationId:'operation_link_middle_recover',text:`原页链接是：https://www.notion.so/${f.pageId}，请核对原文。`},key);
+  await waitFor(async()=>(await f.service.task(a,original.taskId!)).jobs[0].state==='completed');
+  assert.equal(f.counts.create,1);assert.equal(f.counts.draft,1);assert.equal(f.counts.retrieval,1);assert.equal(f.counts.feature,2);assert.equal((await f.store.read()).attachments.filter(file=>file.conversationId===original.taskId).length,1);
+ }finally{f.cleanup();}
+});
+test('adding options to an ordinary known-page verification cannot turn it into a newly adopted-page continuation',async()=>{
+ const f=await workflowServiceFixture({lostSaveAck:true});
+ try{
+  const original=await f.service.dispatch(a,{...input('operation_known_options_original','请从得到大脑查找青色42入口方案，写完整方案保存到Notion，随后制作真实交互网页。'),sourceIds:['wf-source'],featureIds:['oneHtml'],confirmedExternal:true,outputDestination:'notion'},key);
+  await f.service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.find(op=>op.workRun&&op.conversationId===original.taskId)?.workRun?.state==='failed');
+  await f.store.mutate(db=>{const op=db.chatOperations!.find(op=>op.workRun&&op.conversationId===original.taskId)!;op.workRun!.notionReceipt!.pageId=f.pageId;op.workRun!.notionReceipt!.url=`https://www.notion.so/${f.pageId}`;op.workRun!.notionTarget!.pageId=f.pageId;});
+  const op=(await f.store.read()).chatOperations!.find(op=>op.workRun&&op.conversationId===original.taskId)!;
+  await f.service.verifyNotionResult(a,original.taskId!,key,{sourceJobId:op.id,expectedUpdatedAt:op.updatedAt,pageUrl:`https://www.notion.so/${f.pageId}`,selectionId:'not-an-adopted-page-selection'});
+  await f.service.resume(a,key);const after=(await f.store.read()).chatOperations!.find(saved=>saved.id===op.id)!;
+  assert.equal(after.workRun!.notionReceipt!.state,'verified');assert.equal(after.workRun!.notionReceipt!.linkRecovery,undefined);assert.equal(after.workRun!.state,'failed');assert.equal(f.counts.feature,0);assert.equal(f.counts.create,1);assert.equal(f.counts.draft,1);
+ }finally{f.cleanup();}
+});
+test('a real authorized template supplement reuses the exact drafted model stage and fills only the previously unsent workbook',async()=>{
+ const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-template-resume-'));let drafts=0,features=0;
+ const draft='逐字保留的原稿：青色_42，预算金额3200。';
+ const values={name:'填写表格模板',author:'ONE',description:'填写已有XLSX模板',instructions:'ONLY_FILL_TEMPLATE',limitations:'只用当前授权XLSX',integration:'question_answer' as const,modelId:'special',knowledgeMode:'none' as const,usageMultiplier:.6,tools:[{id:'oneWorkbook',description:'填写XLSX模板'}]};
+ await f.store.mutate(db=>{const version={version:1,values,evidence:'fixture',approvedBy:'a',approvedAt:'now'};db.settings.officialFeatures=[{id:'template-fill',revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:'template-fill-release',version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}}];});
+ const workflow={version:1,steps:[{id:'draft',title:'准备完整原稿',kind:'model',instruction:'准备填写模板的完整说明，保留原文标记。',inputs:[]},{id:'fill',title:'填写已有XLSX模板',kind:'feature',featureId:'template-fill',instruction:'使用已授权XLSX模板，根据前置完整稿将表1的A2填写为3200。',inputs:['draft']}]};
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no private retrieval')},{contextMode:'adaptive',artifactDirectory:directory,modelCall:async(model,messages)=>{
+  if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('任务已接到。'):{...answer(''),toolCalls:[{id:'template-plan',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'填写原XLSX模板',instruction:'先整理完整说明，再填写用户提供的已有XLSX模板。',executorId:'general',featureIds:['template-fill'],workflow})}}]};
+  if(model.id==='worker'){drafts++;return answer(JSON.stringify({outcome:'completed',content:draft,summary:'原稿已成。'}));}
+  features++;assert.match(JSON.stringify(messages),/逐字保留的原稿/);
+  return messages.at(-1)?.role==='tool'?answer('模板已经填写完成。'):{...answer(''),toolCalls:[{id:`fill-${features}`,type:'function',function:{name:'oneWorkbook',arguments:JSON.stringify({operation:'fill',dataJson:JSON.stringify({title:'填写结果',updates:[{sheet:'表1',cell:'A2',value:3200}]})})}}]};
+ }});
+ try{
+  const first=await service.dispatch(a,input('operation_template_initial','先写完整说明，再填写我已有的XLSX模板。'),key);await service.resume(a,key);
+  await waitFor(async()=>(await service.task(a,first.taskId!)).jobs[0].state==='failed');
+  const before=(await f.store.read()).chatOperations!.find(op=>op.workRun&&op.conversationId===first.taskId)!,old=structuredClone(before.workRun!);
+  assert.equal(old.resultOutcome,'needs_input');assert.equal((await service.task(a,first.taskId!)).recovery.kind,'input');assert.equal(drafts,1);assert.equal(features,1);assert.equal((await f.store.read()).attachments.length,0);
+  const book=XLSX.utils.book_new();XLSX.utils.book_append_sheet(book,XLSX.utils.aoa_to_sheet([['金额'],[0]]),'表1');const bytes=XLSX.write(book,{type:'buffer',bookType:'xlsx'}),file=path.join(directory,'actual-template.xlsx');writeFileSync(file,bytes);
+  await f.store.mutate(db=>db.attachments.push({...a,id:'authorized-template',originalName:'原模板.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',kind:'spreadsheet',size:bytes.length,storagePath:file,extractedText:'用户本轮补充的原XLSX模板',status:'ready',createdAt:new Date().toISOString()}));
+  await service.direct(a,first.taskId!,{operationId:'operation_template_material','text':'这是模板，按原要求继续',attachmentIds:['authorized-template']},key);
+  await service.resume(a,key);await waitFor(async()=>(await service.task(a,first.taskId!)).jobs.at(-1)?.state==='completed');
+  const after=await f.store.read(),runs=after.chatOperations!.filter(op=>op.workRun&&op.conversationId===first.taskId),next=runs[1].workRun!;
+  assert.equal(runs.length,2);assert.equal(drafts,1,'the completed model manuscript is never bought again');assert.equal(features,3,'one missing-template model turn, then one fill and one summary');assert.deepEqual(runs[0].workRun,old,'original failed round remains intact');
+  const originalDraft=old.steps!.find(cp=>(cp.output as any)?.workflow?.stepId==='draft')!,imported=next.steps!.find(cp=>(cp.output as any)?.workflow?.stepId==='draft')!;assert.deepEqual((imported.output as any).result,(originalDraft.output as any).result);assert.equal((imported.output as any).result.content,draft);
+  assert.equal(next.budget,old.budget);assert.equal(next.parentOperationId,old.parentOperationId||before.operationId);
+  const output=after.attachments.filter(file=>file.id!=='authorized-template');assert.equal(output.length,1);assert.equal(XLSX.read(readFileSync(output[0].storagePath),{type:'buffer'}).Sheets['表1'].A2.v,3200);
+ }finally{rmSync(directory,{recursive:true,force:true});}
+});
+test('an image-template creation request repairs a mistaken fill operation internally instead of asking the user for an XLSX',async()=>{
+ const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-image-template-create-'));let turns=0;
+ const values={name:'制作Excel',author:'ONE',description:'生成真实表格',instructions:'按用户要求生成表格，图片模板可新建。',limitations:'仅当前授权文件',integration:'question_answer' as const,modelId:'special',knowledgeMode:'none' as const,usageMultiplier:.6,tools:[{id:'oneWorkbook',description:'生成Excel'}]};
+ await f.store.mutate(db=>{const version={version:1,values,evidence:'fixture',approvedBy:'a',approvedAt:'now'};db.settings.officialFeatures=[{id:'image-workbook',revision:1,draft:values,status:'approved',current:version,history:[version],release:{id:'image-workbook-release',version:1,userIds:['a'],publishedAt:'now',publishedBy:'a'}}];});
+ const workflow={version:1,steps:[{id:'file',title:'按图片制作Excel',kind:'feature',featureId:'image-workbook',instruction:'依据图片样式新建Excel，金额3000，公司名杭州触碰无限科技有限公司。',inputs:[]}]};
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no retrieval')},{contextMode:'adaptive',artifactDirectory:directory,modelCall:async(model,messages,tools)=>{
+  if(model.id==='router'){
+   if(!tools.some(tool=>tool.function.name==='delegate_task'))return {...answer(''),toolCalls:[{id:'load-image-task',type:'function',function:{name:'load_tools',arguments:JSON.stringify({names:['delegate_task']})}}]};
+   return messages.at(-1)?.role==='tool'&&!messages.at(-1)?.content?.includes('\"status\":\"loaded\"')?answer('已安排。'):{...answer(''),toolCalls:[{id:'image-template-plan',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'图片重建Excel',instruction:'按图片样式新建Excel。',executorId:'general',featureIds:['image-workbook'],workflow})}}]};
+  }
+  turns++;
+  if(turns===3)return answer('表格已经制作完成。');
+  if(turns===2){assert.match(messages.at(-1)!.content!,/create/);assert.doesNotMatch(messages.at(-1)!.content!,/请上传模板/);}
+  return {...answer(''),toolCalls:[{id:`workbook-${turns}`,type:'function',function:{name:'oneWorkbook',arguments:JSON.stringify({operation:turns===1?'fill':'create',dataJson:JSON.stringify(turns===1?{title:'图片重建',updates:[{sheet:'表1',cell:'A2',value:3000}]}:{title:'图片重建',sheets:[{name:'表1',headers:['公司','金额'],rows:[['杭州触碰无限科技有限公司',3000]]}]})})}}]};
+ }});
+ try{
+  const original=await service.dispatch(a,input('operation_image_template_fix','帮我搞个excel文档，图片是模版，需要改的有：金额3000，公司名都改成杭州触碰无限科技有限公司。'),key);assert.ok(original.taskId,JSON.stringify((await f.store.read()).contextTraces.map(t=>t.executionSteps)));await service.resume(a,key);
+  await waitFor(async()=>(await service.task(a,original.taskId!)).jobs[0].state==='completed');const detail=await service.task(a,original.taskId!);
+  assert.equal(turns,3);assert.notEqual(detail.recovery.kind,'input');const output=(await f.store.read()).attachments;assert.equal(output.length,1);assert.equal(XLSX.read(readFileSync(output[0].storagePath),{type:'buffer'}).Sheets['表1'].B2.v,3000);
+ }finally{rmSync(directory,{recursive:true,force:true});}
+});
+
 const readyLocalProbe=()=>Promise.resolve({checkedAt:new Date().toISOString(),ready:true,connected:true,
   folder:{state:'ready' as const,targetName:'/QA/selected'},executor:{state:'ready' as const,installedVersion:'0.160.1',installedSource:'managed' as const},reason:'ready' as const});
 
@@ -1249,7 +1423,7 @@ test('a native workbook input failure leaves retryable failed checkpoints, not a
  const result=await service.dispatch(a,input('operation_native_invalid_workbook','请生成预算表格'),key);await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='failed');
  const detail=await service.task(a,result.taskId!),db=await f.store.read(),job=db.chatOperations!.find(o=>o.conversationId===result.taskId&&o.workRun)!.workRun!;
  assert.equal(db.attachments.filter(file=>file.conversationId===result.taskId).length,0);assert.ok(job.steps?.some(step=>step.tool==='oneWorkbook'&&step.state==='failed'));assert.equal(job.steps?.some(step=>step.effect==='artifact'&&step.state==='started'),false);
- assert.equal(recoveryForSteps([{id:'native-current',...job}]).kind,'retry');assert.doesNotMatch(detail.recovery.message,/文件是否保存好还没确认|请先核对.*文件/);assert.equal(detail.jobs[0].failure?.code,'artifact_input_invalid');await assert.rejects(()=>service.task(b,result.taskId!));
+ assert.equal(recoveryForSteps([{id:'native-current',...job}]).kind,'retry');assert.doesNotMatch(detail.recovery.message,/文件是否保存好还没确认|请先核对.*文件/);assert.equal(detail.jobs[0].failure?.code,'tool_parameters_failed');assert.equal(detail.recovery.kind,'support');await assert.rejects(()=>service.task(b,result.taskId!));
 });
 
 test('a local destination is not an execution command for explanations or status questions',async()=>{
@@ -1338,7 +1512,7 @@ test('HTTP local admission is explicit and a duplicate pending operation is neve
 /** Full service-path fixture: only provider/model transports are synthetic.
  * Admission, workflow persistence, Notion ownership/readback, billing and HTML
  * file generation are the same implementations used by the live routes. */
-async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean;twoSaves?:boolean;adaptiveDefault?:boolean;legacyChain?:boolean;clarification?:'failed'|'needs_input';supplementText?:string;noHtml?:boolean;realClock?:boolean;automaticReadback?:boolean;modelResult?:{outcome:'completed'|'partial'|'needs_input'|'failed';content:string;summary:string}}={}){
+async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean;twoSaves?:boolean;adaptiveDefault?:boolean;legacyChain?:boolean;clarification?:'failed'|'needs_input';supplementText?:string;noHtml?:boolean;realClock?:boolean;automaticReadback?:boolean;lostSaveAck?:boolean;modelResult?:{outcome:'completed'|'partial'|'needs_input'|'failed';content:string;summary:string}}={}){
  const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-workflow-service-'));
  const parentId='1'.repeat(32),pageId='2'.repeat(32),clock={now:Date.now()+1000};
  const source='ONE-WORKFLOW-SOURCE-青色42：插入入口后先找资料，再写完整方案。';
@@ -1366,10 +1540,10 @@ async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean
   ...(options.noHtml?[]:[{id:'html',title:'制作真实交互网页',kind:'feature' as const,featureId:'oneHtml',instruction:'把前置完整方案制成交互网页，保留正文中的标记和已保存入口。',inputs:options.twoSaves?['revise','save_again']:['draft','save']}]),
  ];
  const mcp={
-  readDocument:async(ws:string,id:string)=>{assert.equal(ws,a.workspaceId);assert.ok([parentId,pageId].includes(id));if(id===parentId)return {text:'合成保存目录'};counts.read++;if(!readbackReady&&!(options.automaticReadback&&counts.read>1))throw Error('synthetic eventual readback');return {text:body};},
+  readDocument:async(ws:string,id:string)=>{assert.equal(ws,a.workspaceId);assert.ok([parentId,pageId].includes(id));if(id===parentId)return {text:options.lostSaveAck?`<page><content>\n<page url="https://www.notion.so/${pageId}">青色42完整方案</page>\n</content></page>`:'合成保存目录'};counts.read++;if(!readbackReady&&!(options.automaticReadback&&counts.read>1))throw Error('synthetic eventual readback');return {...(options.lostSaveAck?{properties:{title:'青色42完整方案'}}:{}),text:body};},
   callDocumentTool:async(ws:string,cid:string,grant:string,user:string,name:string,args:any,beforeSend?:()=>Promise<void>)=>{
    assert.deepEqual([ws,cid,grant,user],[a.workspaceId,'wf-notion','wf-grant',a.userId]);await beforeSend?.();
-   if(name==='notion-create-pages'){counts.create++;assert.equal(args.parent.page_id,parentId);body=args.pages[0].content;return {pages:[{id:pageId}]};}
+   if(name==='notion-create-pages'){counts.create++;assert.equal(args.parent.page_id,parentId);body=args.pages[0].content;if(options.lostSaveAck)throw Error('synthetic lost create acknowledgement');return {pages:[{id:pageId}]};}
    assert.equal(name,'notion-update-page');assert.equal(args.page_id,pageId);counts.update++;
    for(const update of args.content_updates){assert.equal(update.old_str,body,'each revision replaces the latest verified full body');body=body.replace(update.old_str,update.new_str);}return {};
   },

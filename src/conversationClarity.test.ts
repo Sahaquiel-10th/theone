@@ -41,3 +41,13 @@ test('same-site absolute links and hash routes project through the existing task
  const html=renderToStaticMarkup(createElement(MessageMarkdown,{children:'[绝对](https://one.test/?task=task_a) [锚点](/#task:task_a) [伪造](https://outside.test/?task=task_a)',taskLinkIds:['task_a'],taskLinkBase:'https://one.test/',suppressTaskLinks:true}));
  assert.doesNotMatch(html,/绝对|锚点/);assert.match(html,/href="https:\/\/outside.test\/\?task=task_a"/);
 });
+
+test('the latest task return uses its actual recovery action while older records keep their historical meaning',()=>{
+ const older={...report,id:'report_old'},latest={...report,id:'report_latest'};
+ const recovery=()=>({label:'连接恢复后可继续',content:createElement('button',{type:'button'},'继续这件事')});
+ const html=renderToStaticMarkup(createElement(CoordinatorConversation,{messages:[older,latest],tasks:[],pending:false,onOpen:()=>{},renderTaskRecovery:recovery}));
+ assert.equal((html.match(/>继续这件事<\/button>/g)||[]).length,1);
+ assert.match(html,/连接恢复后可继续/);assert.match(html,/需要你处理/,'the historical result stays intact');
+ const merged=renderToStaticMarkup(createElement(CoordinatorConversation,{messages:[{id:'ordinary-with-task',role:'assistant',text:'这次回答和任务结果一起返回。',taskId:'task_a'}],tasks:[],pending:false,onOpen:()=>{},renderTaskRecovery:recovery}));
+ assert.match(merged,/当前任务恢复进展/);assert.match(merged,/继续这件事/);assert.match(merged,/这次回答和任务结果一起返回/);
+});

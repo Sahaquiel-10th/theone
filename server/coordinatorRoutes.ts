@@ -25,6 +25,7 @@ import {installOnboardingPracticeRoutes} from './onboardingPractice.js';
 import type {LocalDeviceReadiness} from '../src/localDeviceReadiness.js';
 import {CoordinatorLocalError} from './coordinatorLocalPolicy.js';
 import {recordCoordinatorRejection} from './coordinatorRejectedHistory.js';
+import type {NotionLinkRecoveryRequest} from './notionLinkRecovery.js';
 export function installCoordinatorRoutes(
   app: Express,
   keyAuth: readonly RequestHandler[],
@@ -157,7 +158,16 @@ export function installCoordinatorRoutes(
   }));
   router.post('/tasks/:id/notion/verify', asyncRoute(async(req,res)=>{
     if (!deps.notionDocuments) throw new CoordinatorError('Notion 保存尚未连接', 428);
-    res.json(await service.verifyNotionResult(scope(req), String(req.params.id), () => verifyKey(req)));
+    const body=req.body;
+    let link:NotionLinkRecoveryRequest|undefined;
+    if(body!==undefined&&body!==null){
+      if(typeof body!=='object'||Array.isArray(body))throw new CoordinatorError('核对要求没传完整，请刷新原任务后再试。',400);
+      if(Object.keys(body).length){
+        if(Object.keys(body).sort().join()!=='expectedUpdatedAt,pageUrl,selectionId,sourceJobId'||['expectedUpdatedAt','pageUrl','selectionId','sourceJobId'].some(key=>typeof body[key]!=='string'||!body[key].trim()))throw new CoordinatorError('核对要求没传完整，请刷新原任务后再试。',400);
+        link={sourceJobId:body.sourceJobId,expectedUpdatedAt:body.expectedUpdatedAt,pageUrl:body.pageUrl,selectionId:body.selectionId};
+      }
+    }
+    res.json(await service.verifyNotionResult(scope(req), String(req.params.id), () => verifyKey(req),link));
   }));
   router.post(
     "/tasks/:id/messages",

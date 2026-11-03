@@ -418,3 +418,33 @@ test('malformed known model result fields never unlock a later Notion save',asyn
   assert.equal(result.run.steps[0].state,'failed');assert.equal(f.saves,0);assert.equal(result.run.steps[1].state,'waiting');assert.doesNotMatch(result.content,/"outcome"|"summary"|```json/);
  }
 });
+
+test('a reviewed native missing-input fault remains specific instead of becoming an endless unknown feature receipt',async()=>{
+ const {ToolRecoveryError}=await import('./toolRecovery.js');
+ const f=fixture(plan(step('file',[],{kind:'feature',featureId:'office'})));let calls=0;
+ const fault={version:1 as const,kind:'missing_input' as const,code:'template_required' as const,repair:'not_applicable' as const,field:'template_file' as const};
+ const result=await f.execute({featureTools:{office:'feature_0'},tools:[{name:'feature_0',effect:'model',run:async()=>{calls++;throw new ToolRecoveryError(fault);}}]});
+ assert.equal(result.run.steps[0].state,'needs_input');assert.equal(result.waiting,false);assert.match(result.summary,/XLSX 模板/);assert.equal(calls,1);
+ const repeated=await f.execute({featureTools:{office:'feature_0'},tools:[{name:'feature_0',effect:'model',run:async()=>assert.fail('the whole feature must not be replayed')}]});
+ assert.equal(repeated.waiting,false);assert.equal(repeated.run.steps[0].state,'needs_input');
+});
+
+test('a feature stage is known not written only after exact live whole-run proof is accepted by its wrapper',async()=>{
+ const {officeTool}=await import('./officeTools.js'),{officeArtifactContext}=await import('./featureArtifacts.js'),{runTaskOrchestrator,acceptFeatureNoEffectProof}=await import('./taskOrchestrator.js'),{workflowFeatureNoEffectInput}=await import('./workflowExecution.js');
+ for(const accepted of [false,true]){
+  const f=fixture(plan(step('file',[],{kind:'feature',featureId:'office'})));f.checkpoints.namespace=`workflow:${f.run.id}`;
+  const database={attachments:[]} as any;const context=officeArtifactContext({read:async()=>database} as any,{...owner,conversationId:'task'},'/tmp/one-not-written-proof',()=>{},[],undefined,{requiresXlsxTemplate:true});
+  const native=officeTool('oneWorkbook','填写模板',async()=>{},context),namespace='feature:office:1';let featureCalls=0;
+  const result=await f.execute({featureTools:{office:'feature_0'},tools:[{name:'feature_0',effect:'model',run:async()=>{
+   featureCalls++;
+   try{return await runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[native],maxSteps:3,maxCorrections:2,beforeStep:async()=>{},checkpoints:{namespace,scopeId:owner.operationId,steps:f.steps,save:f.checkpoints.save},call:async()=>({content:'',toolCalls:[{id:'missing-template',type:'function',function:{name:'oneWorkbook',arguments:JSON.stringify({operation:'fill',dataJson:JSON.stringify({title:'填写',updates:[]})})}}]})});}
+   catch(error){if(accepted)assert.equal(acceptFeatureNoEffectProof(error,{namespace,scopeId:owner.operationId}),true);throw error;}
+  }}]});
+  assert.equal(featureCalls,1);assert.equal(result.run.steps[0].state,'needs_input');
+  const cp=f.steps.find(cp=>cp.namespace===f.checkpoints.namespace)!;assert.equal(cp.operation?.execution,accepted?'failed':'unknown');
+  assert.equal(Boolean(workflowFeatureNoEffectInput(f.run,f.steps,owner)),accepted);
+  assert.equal(workflowFeatureNoEffectInput(f.run,f.steps,{...owner,workspaceId:'foreign'}),undefined);
+  const forged=structuredClone(f.steps);const altered=forged.find(cp=>cp.namespace===f.checkpoints.namespace)!;delete (altered.output as any).toolFailure;
+  assert.equal(workflowFeatureNoEffectInput(f.run,forged,owner),undefined,'a model-result-shaped failure alone is not the code-owned stage proof');
+ }
+});

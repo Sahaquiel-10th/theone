@@ -12,6 +12,24 @@ import {PowerAvailabilityError} from './powerBilling.js';
 import {OrchestrationInputError,OrchestrationResponseError} from './taskOrchestrator.js';
 import {TaskWorkflowError} from './taskWorkflow.js';
 import {LocalExecutionNotStartedError} from './localExecutionAdmission.js';
+import {ToolRecoveryError} from './toolRecovery.js';
+
+test('native tool recovery distinguishes system work, actual missing input and unknown effects without raw fields',()=>{
+ const cases=[
+  [{version:1,kind:'system_parameters',code:'arguments_invalid',repair:'exhausted'},'tool_parameters_failed'],
+  [{version:1,kind:'missing_input',code:'template_required',repair:'not_applicable',field:'template_file'},'input_template_required'],
+  [{version:1,kind:'configuration',code:'storage_unconfigured',repair:'not_applicable'},'tool_configuration_unavailable'],
+  [{version:1,kind:'effect_unknown',code:'effect_unconfirmed',repair:'not_applicable'},'tool_effect_unconfirmed'],
+ ] as const;
+ for(const [diagnostic,code] of cases){
+  const failure=classifyCoordinatorFailure(new ToolRecoveryError(diagnostic),{outcome:'partial'});
+  assert.deepEqual(failure,{code,stage:'tool',outcome:'partial'});
+  assert.doesNotMatch(JSON.stringify(failure),/arguments|template_file|storage_unconfigured/);
+ }
+ const forged=Object.assign(new Error('private token=SECRET'),{diagnostic:cases[0][0]});
+ assert.equal(classifyCoordinatorFailure(forged).code,'internal_error');
+ assert.doesNotMatch(coordinatorRecoveryCopy(classifyCoordinatorFailure(forged)),/SECRET|token=/);
+});
 
 test('a proven local refusal retains only its reviewed cause, never raw fields or a generic routing failure',()=>{
  const failure=classifyCoordinatorFailure(new LocalExecutionNotStartedError({code:'power_insufficient',stage:'billing',outcome:'not_started',secret:'never-echo'} as any),{stage:'receipt',outcome:'unknown'});

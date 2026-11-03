@@ -196,3 +196,90 @@ test('pure prose is a body while mixed prose and tool preambles retain their unv
   assert.equal(partial?.kind,mixed?'tool_preamble':'body');assert.match(partial!.content,/可读的正文第二段/);assert.equal(calls,3);
  }
 });
+
+test('argument correction is a hard two-call budget even with progressive planning room',async()=>{
+ const {toolRecoveryDiagnostic}=await import('./toolRecovery.js');let calls=0,runs=0;
+ const error=await runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[{name:'oneFlowchart',run:async()=>{},structured:{schema:{},validate:()=>{throw new OrchestrationInputError('字段结构需修正');},run:async()=>{runs++;}}}],maxSteps:4,planningSteps:2,maxCorrections:2,beforeStep:async()=>{},call:async()=>{calls++;return{content:'',toolCalls:[{id:`attempt-${calls}`,type:'function',function:{name:'oneFlowchart',arguments:JSON.stringify({different:calls})}}]};}}).catch(error=>error);
+ assert.equal(calls,3,'one original model call and at most two correction calls');assert.equal(runs,0);assert.equal(toolRecoveryDiagnostic(error)?.repair,'exhausted');
+});
+test('correction allowance is persisted before the paid call and is not reset by the same scoped runner restarting',async()=>{
+ const {argumentRepairControlTool,parseArgumentRepairBudget}=await import('./toolRecovery.js');const steps:TaskStep[]=[];let calls=0;
+ const checkpoints={namespace:'feature:test:1',scopeId:'operation-a',steps,save:async(cp:TaskStep)=>{const at=steps.findIndex(saved=>saved.key===cp.key);if(at<0)steps.push(structuredClone(cp));else steps[at]=structuredClone(cp);}};
+ const options={entryPoint:'workspace' as const,messages:[],tools:[{name:'oneFlowchart',run:async()=>{},structured:{schema:{},validate:()=>{throw new OrchestrationInputError('结构需要修正');},run:async()=>assert.fail('invalid tool ran')}}],maxSteps:4,maxCorrections:2,beforeStep:async()=>{},checkpoints,
+  call:async()=>{calls++;if(calls>1){const cp=steps.find(cp=>cp.tool===argumentRepairControlTool)!;assert.equal(parseArgumentRepairBudget(cp.output)?.used,calls-1);}return{content:'',toolCalls:[{id:`attempt-${calls}`,type:'function' as const,function:{name:'oneFlowchart',arguments:JSON.stringify({different:calls})}}]};}};
+ await assert.rejects(()=>runTaskOrchestrator(options));assert.equal(calls,3);
+ const control=steps.find(cp=>cp.tool===argumentRepairControlTool)!;assert.equal(control.namespace,'feature:test:1:control');assert.equal(control.scopeId,'operation-a');assert.equal(parseArgumentRepairBudget(control.output)?.used,2);assert.doesNotMatch(JSON.stringify(control),/different|结构需要修正/);
+ await assert.rejects(()=>runTaskOrchestrator(options));assert.equal(calls,3,'restart stops before another model purchase');
+});
+test('a repair control persistence failure or wrong-scope/corrupt budget stops before buying a correction',async()=>{
+ const {argumentRepairControlTool}=await import('./toolRecovery.js');let calls=0;
+ const options={entryPoint:'workspace' as const,messages:[],tools:[{name:'knowledge_search',run:async()=>{}}],maxSteps:4,maxCorrections:2,beforeStep:async()=>{},call:async()=>{calls++;return{content:'',toolCalls:[{id:'invalid',type:'function' as const,function:{name:'knowledge_search',arguments:'{"wrong":true}'}}]};}};
+ await assert.rejects(()=>runTaskOrchestrator({...options,checkpoints:{namespace:'worker',scopeId:'operation-a',steps:[],save:async()=>{throw Error('control save failed');}}}),/control save failed/);assert.equal(calls,1);
+ for(const output of [{version:1,used:99,maxAttempts:2,fingerprints:[]},{version:1,used:1,maxAttempts:2,fingerprints:['not-a-sha']}]){
+  calls=0;await assert.rejects(()=>runTaskOrchestrator({...options,checkpoints:{namespace:'worker',scopeId:'operation-a',steps:[{key:'wrong',namespace:'worker:control',scopeId:'operation-b',tool:argumentRepairControlTool,label:'internal',effect:'read',state:'completed',output,updatedAt:new Date().toISOString()}],save:async()=>assert.fail('must not mutate a foreign budget')}}));assert.equal(calls,0);
+ }
+});
+
+test('stop or authorization revocation wins before a pending argument correction purchase',async()=>{
+ let calls=0,checks=0;const stopped=Error('revoked before correction');
+ await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[{name:'knowledge_search',run:async()=>assert.fail('invalid tool ran')}],maxSteps:4,maxCorrections:2,beforeStep:async()=>{if(++checks>=3)throw stopped;},call:async()=>{calls++;return{content:'',toolCalls:[{id:'bad',type:'function',function:{name:'knowledge_search',arguments:'{"wrong":true}'}}]};}}),error=>error===stopped);
+ assert.equal(calls,1);
+});
+
+test('a rejected parameter identity survives unrelated tool success and cannot buy another correction',async()=>{
+ let calls=0,reads=0;
+ const options={entryPoint:'workspace' as const,messages:[],tools:[{name:'knowledge_search',effect:'read' as const,run:async()=>{reads++;return{chunks:['synthetic']};}}],maxSteps:4,maxCorrections:2,beforeStep:async()=>{},call:async()=>{
+  calls++;if(calls===2)return{content:'',toolCalls:[call('good','usable')]};
+  return{content:'',toolCalls:[{id:`bad-${calls}`,type:'function' as const,function:{name:'knowledge_search',arguments:'{"wrong":true}'}}]};
+ }};
+ await assert.rejects(()=>runTaskOrchestrator(options));assert.equal(calls,3);assert.equal(reads,1);
+});
+test('internal correction control records cannot be offered as model tools',async()=>{
+ const {argumentRepairControlTool}=await import('./toolRecovery.js');let calls=0;
+ await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[{name:argumentRepairControlTool,run:async()=>assert.fail('control is not a callable tool')}],maxSteps:4,beforeStep:async()=>{},call:async()=>{calls++;return{content:'',toolCalls:[]};}}),/内部控制/);assert.equal(calls,0);
+});
+test('a new-material revision carries the same private correction budget instead of resetting it',async()=>{
+ const {rebindArgumentRepairControls}=await import('./taskOrchestrator.js');const {argumentRepairControlTool}=await import('./toolRecovery.js');const {taskStepKey}=await import('./taskSteps.js');
+ const namespace='feature:office:1:control';const budget={version:1,used:2,maxAttempts:2,fingerprints:['a'.repeat(64)]};
+ const original:TaskStep={key:taskStepKey(namespace,argumentRepairControlTool,JSON.stringify({version:1,scopeId:'old-run'})),namespace,scopeId:'old-run',tool:argumentRepairControlTool,label:'内部控制',effect:'read',state:'completed',output:budget,updatedAt:new Date().toISOString()};
+ const carried=rebindArgumentRepairControls([original],'old-run','new-run')!;assert.equal(carried[0].scopeId,'new-run');assert.deepEqual(carried[0].output,budget);assert.notEqual(carried[0].key,original.key);assert.equal(original.scopeId,'old-run');
+ let calls=0;await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[],maxSteps:4,maxCorrections:2,checkpoints:{namespace:'feature:office:1',scopeId:'new-run',steps:carried,save:async()=>assert.fail('exhausted budget must not mutate')},beforeStep:async()=>{},call:async()=>{calls++;return{content:'',toolCalls:[]};}}));assert.equal(calls,0);
+ assert.equal(rebindArgumentRepairControls([{...original,scopeId:'foreign'}],'old-run','new-run'),undefined);assert.equal(rebindArgumentRepairControls([{...original,output:{...budget,used:99}}],'old-run','new-run'),undefined);
+});
+
+test('reformatting the same invalid object is still the same rejected parameter identity',async()=>{
+ let calls=0,runs=0;
+ await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:4,maxCorrections:2,beforeStep:async()=>{},tools:[{name:'knowledge_search',run:async()=>{runs++;}}],call:async()=>{
+  calls++;return{content:'',toolCalls:[{id:`invalid-${calls}`,type:'function',function:{name:'knowledge_search',arguments:calls===1?'{"wrong":true,"other":42}':'{ "other": 42, "wrong": true }'}}]};
+ }}));assert.equal(calls,2);assert.equal(runs,0);
+});
+
+test('a stateful read prerequisite permits identical dispatch arguments only after its exact scoped read succeeds',async()=>{
+ const {OrchestrationPrerequisiteError}=await import('./taskOrchestrator.js'),{argumentRepairControlTool,parseArgumentRepairBudget}=await import('./toolRecovery.js');
+ for(const readKind of ['same','other','failed','other-tool'] as const){
+  const inspected=new Set<string>(),steps:TaskStep[]=[];let calls=0,attempts=0,dispatches=0;
+  const delegate={name:'delegate_task',effect:'read' as const,run:async()=>{},structured:{schema:{},validate:(raw:unknown)=>raw,run:async()=>{
+   attempts++;if(!inspected.has('task-a'))throw new OrchestrationPrerequisiteError('先读取原任务。',{tool:'read_task',objectId:'task-a',isSatisfied:()=>inspected.has('task-a')});dispatches++;return{status:'queued',taskId:'task-a'};
+  }}};
+  const read={name:readKind==='other-tool'?'knowledge_search':'read_task',effect:'read' as const,run:async()=>{
+   if(readKind==='failed')return{status:'failed',id:'task-a'};
+   const id=readKind==='other'?'task-b':'task-a';inspected.add(id);return{id};
+  }};
+  const options={entryPoint:'workspace' as const,messages:[],tools:[delegate,read],maxSteps:4,planningSteps:2,maxCorrections:2,beforeStep:async()=>{},checkpoints:{namespace:'coordinator',scopeId:'operation-a',steps,save:async(cp:TaskStep)=>{const at=steps.findIndex(saved=>saved.key===cp.key);if(at<0)steps.push(cp);else steps[at]=cp;}},completeAfterTools:()=>dispatches?'已接到任务。':undefined,
+   call:async()=>{calls++;return calls===2?{content:'',toolCalls:[call('required-read','task-a',read.name)]}:{content:'',toolCalls:[{id:`delegate-${calls}`,type:'function' as const,function:{name:'delegate_task',arguments:'{"taskId":"task-a"}'}}]};}};
+  if(readKind==='same'){const result=await runTaskOrchestrator(options);assert.equal(result.content,'已接到任务。');assert.equal(attempts,2);assert.equal(dispatches,1);}
+  else{await assert.rejects(()=>runTaskOrchestrator(options));assert.equal(attempts,1,'another or failed read must not release the original rejected dispatch');assert.equal(dispatches,0);}
+  assert.equal(calls,3);assert.equal(parseArgumentRepairBudget(steps.find(cp=>cp.tool===argumentRepairControlTool)!.output)?.used,1,'satisfying a prerequisite does not refund its correction call');
+ }
+});
+test('a successful matching task read cannot release a genuine malformed-schema rejection',async()=>{
+ let calls=0,runs=0;
+ await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[{name:'delegate_task',run:async()=>{},structured:{schema:{},validate:()=>{throw new OrchestrationInputError('字段类型不对。');},run:async()=>{runs++;}}},{name:'read_task',effect:'read',run:async()=>({id:'task-a'})}],maxSteps:4,planningSteps:2,maxCorrections:2,beforeStep:async()=>{},call:async()=>{calls++;return calls===2?{content:'',toolCalls:[call('read','task-a','read_task')]}:{content:'',toolCalls:[{id:`bad-${calls}`,type:'function',function:{name:'delegate_task',arguments:'{"taskId":"task-a","invalid":true}'}}]};}}));
+ assert.equal(calls,3);assert.equal(runs,0);
+});
+test('a truncated task read does not release dispatch until the same owner confirms complete scoped coverage',async()=>{
+ const {OrchestrationPrerequisiteError}=await import('./taskOrchestrator.js');let complete=false,calls=0,dispatches=0;
+ const delegate={name:'delegate_task',effect:'read' as const,run:async()=>{},structured:{schema:{},validate:(raw:unknown)=>raw,run:async()=>{if(!complete)throw new OrchestrationPrerequisiteError('先完整读取。',{tool:'read_task',objectId:'task-a',isSatisfied:()=>complete});dispatches++;return{taskId:'task-a'};}}};
+ const result=await runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[delegate,{name:'read_task',effect:'read',run:async()=>({id:'task-a',originalRequest:{truncated:true}})},{name:'read_context',effect:'read',run:async()=>{complete=true;return{items:[{id:'original-a',truncated:false}]};}}],maxSteps:4,planningSteps:2,maxCorrections:2,beforeStep:async()=>{},completeAfterTools:()=>dispatches?'已接到任务。':undefined,call:async()=>{calls++;return calls===2?{content:'',toolCalls:[call('read','task-a','read_task')]}:calls===3?{content:'',toolCalls:[call('tail','original-a','read_context')]}:{content:'',toolCalls:[{id:`delegate-${calls}`,type:'function',function:{name:'delegate_task',arguments:'{"taskId":"task-a"}'}}]};}});
+ assert.equal(result.content,'已接到任务。');assert.equal(calls,4);assert.equal(dispatches,1);
+});

@@ -11,6 +11,7 @@ import {CoordinatorLocalError} from './coordinatorLocalPolicy.js';
 import {LocalExecutionNotStartedError} from './localExecutionAdmission.js';
 import {trustedWorkflowFailureCause} from './taskWorkflow.js';
 import {parseCoordinatorFailure} from '../src/coordinatorRecovery.js';
+import {toolRecoveryDiagnostic} from './toolRecovery.js';
 
 type FailureContext={stage?:CoordinatorFailureStage;outcome?:CoordinatorFailure['outcome']};
 const orchestrationCodes:Record<string,CoordinatorFailureCode>={
@@ -34,6 +35,8 @@ export function classifyCoordinatorFailure(error:unknown,context:FailureContext=
   if(error instanceof OneKeyPresenceError)return make('key_required',context.stage??'accepting');
   if(error instanceof BillingReviewRequiredError||error instanceof ModelBillingError)return make('billing_unavailable','billing');
   if(error instanceof PowerAvailabilityError)return make(error.code==='POWER_INSUFFICIENT'?'power_insufficient':'billing_unavailable','billing');
+  const toolFailure=toolRecoveryDiagnostic(error);
+  if(toolFailure)return make(toolFailure.kind==='missing_input'?'input_template_required':toolFailure.kind==='configuration'?'tool_configuration_unavailable':toolFailure.kind==='effect_unknown'?'tool_effect_unconfirmed':'tool_parameters_failed','tool');
   const orchestration=orchestrationFailureCode(error);
   if(orchestration&&Object.hasOwn(orchestrationCodes,orchestration))return make(orchestrationCodes[orchestration],orchestration==='task_budget_limit'?'billing':/^task_(?:empty|invalid|response)/.test(orchestration)?'model':context.stage??'planning');
   if(error instanceof ChatOperationError){

@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {newAutomaticReceiptIds,visibleTransfers,presentationTransfers,transferFeedbackLabel,type Transfer} from './TaskTransferRail';
+import {newAutomaticReceiptIds,visibleTransfers,presentationTransfers,transferFeedbackLabel,transferRecoveryAction,type Transfer} from './TaskTransferRail';
+
+test('current recovery evidence wins over a generic failure label in task activity',()=>{
+ const base:Transfer={id:'round',taskId:'task',title:'专栏',state:'failed',outcome:'failed',phase:'旧的执行阶段'};
+ for(const [kind,label] of [['connection','连接恢复后可继续'],['input','需要你补充资料'],['support','内部问题，已停止'],['reconciling','ONE 正在自动恢复'],['review_notion','保存结果待核对'],['review_local','原电脑结果待核对']] as const){
+  assert.equal(transferFeedbackLabel({...base,recovery:{kind,message:'具体原因'}}),label);
+ }
+ assert.equal(transferRecoveryAction({...base,recovery:{kind:'reconciling',message:'自动核对'}}).label,'查看进展');
+ assert.equal(transferRecoveryAction({...base,recovery:{kind:'connection',message:'恢复连接后继续'}}).label,'查看并处理');
+});
 import {taskCategory,taskUiOutcome,taskEntrySelection} from './taskAttention';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';

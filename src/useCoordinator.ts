@@ -23,6 +23,7 @@ import type {
 } from "./preview/dispatchPreviewState";
 
 type Meta = {
+  recovery?:import('./taskRecovery').TaskRecovery;
   id: string;
   title: string;
   updatedAt: string;
@@ -62,6 +63,9 @@ type Snapshot = {
   recentReportedReceiptIds?: string[];
 };
 type Job = {
+  updatedAt?:string;
+  failure?:import('./coordinatorRecovery').CoordinatorFailure;
+  failureCode?:string;
   budget?:number;
   kind?:string;
   retryPower?:number;

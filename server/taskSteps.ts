@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import type {OperationEvidence} from './operationRecovery.js';
+import {argumentRepairControlTool} from './toolRecovery.js';
 
 /** Private, task-scoped checkpoints. Never included in the public task payload. */
 export type TaskStep = {key:string;namespace:string;tool:string;label:string;effect:'read'|'artifact'|'model'|'external_write';state:'started'|'completed'|'failed';output?:unknown;updatedAt:string;
@@ -7,21 +8,22 @@ export type TaskStep = {key:string;namespace:string;tool:string;label:string;eff
   scopeId?:string;
   /** Code-owned execution/verification/recovery facts; never model output. */
   operation?:OperationEvidence};
-export type TaskStepStore = {namespace:string;steps:TaskStep[];save:(step:TaskStep)=>Promise<void>;onReuse?:(output:unknown)=>void};
+export type TaskStepStore = {namespace:string;scopeId?:string;steps:TaskStep[];save:(step:TaskStep)=>Promise<void>;onReuse?:(output:unknown)=>void};
 export const taskStepKey=(namespace:string,tool:string,args:string)=>createHash('sha256').update(JSON.stringify([namespace,tool,args])).digest('hex');
 export function toolSucceeded(value:unknown){
   if(!value||typeof value!=='object')return true;
   const v=value as {status?:string;outcome?:string};
   return !['failed','partial','rejected','uncertain','not_connected','unavailable','not_configured','needs_input','truncated'].includes(v.status||'')&&!['failed','needs_input','partial'].includes(v.outcome||'');
 }
-export function completedSteps(steps:TaskStep[]){return steps.filter(s=>s.state==='completed'&&toolSucceeded(s.output));}
+export const isOrchestrationControlStep=(step:Pick<TaskStep,'namespace'|'tool'>)=>step.tool===argumentRepairControlTool&&step.namespace.endsWith(':control');
+export function completedSteps(steps:TaskStep[]){return steps.filter(s=>!isOrchestrationControlStep(s)&&s.state==='completed'&&toolSucceeded(s.output));}
 export function stepProgress(steps:TaskStep[]){
   const done=completedSteps(steps);
   // Feature/artifact checkpoints already reuse one successful delivery across
   // rephrased arguments. Keep historical failures, but don't report them as
   // still pending after that SAME scoped delivery succeeds. Distinct reads
   // and uncertain writes must not disappear from progress.
-  const pending=steps.filter(step=>!done.includes(step)&&!(step.state==='failed'&&done.some(saved=>saved.namespace===step.namespace&&saved.tool===step.tool&&saved.scopeId===step.scopeId&&(
+  const pending=steps.filter(step=>!isOrchestrationControlStep(step)&&!done.includes(step)&&!(step.state==='failed'&&done.some(saved=>saved.namespace===step.namespace&&saved.tool===step.tool&&saved.scopeId===step.scopeId&&(
     step.namespace==='worker'&&/^feature_\d+$/.test(step.tool)||['artifact','external_write'].includes(step.effect)&&saved.effect===step.effect
   ))));
   return {completed:[...new Set(done.map(s=>s.label))],pending:[...new Set(pending.map(s=>s.label))]};

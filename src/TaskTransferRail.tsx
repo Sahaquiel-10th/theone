@@ -6,8 +6,10 @@ import {flyTaskNote,type NoteRect} from './taskTransferMotion';
 import {TaskReadAllButton} from './TaskReadAllButton';
 import {TaskWorkflowActivity} from './TaskWorkflowActivity';
 import {taskWorkflowActivityView,type TaskWorkflowView} from './taskWorkflowView';
+import {recoveryGuidance} from './recoveryGuidance';
+import type {TaskRecovery} from './taskRecovery';
 
-export type Transfer={id:string;taskId:string;title:string;state:string;updatedAt?:string;reported?:boolean;read?:boolean;reportable?:boolean;outcome?:string;phase?:string;local?:boolean;workflow?:TaskWorkflowView};
+export type Transfer={id:string;taskId:string;title:string;state:string;updatedAt?:string;reported?:boolean;read?:boolean;reportable?:boolean;outcome?:string;phase?:string;local?:boolean;workflow?:TaskWorkflowView;recovery?:TaskRecovery};
 export const transferSettled=(state:string)=>['completed','returned','partial','needs_input','failed','interrupted','cancelled'].includes(state);
 export const transferNeedsRecovery=(task:Transfer)=>transferSettled(task.state)&&!['completed','returned'].includes(task.outcome||task.state);
 export const latestTransferNotes=(tasks:Transfer[])=>[...tasks].reverse().sort((a,b)=>(b.updatedAt||'').localeCompare(a.updatedAt||'')).slice(0,5);
@@ -30,6 +32,7 @@ export function presentationTransfers(tasks:Transfer[],delivered:Set<string>,ret
   return [...current,...visibleTransfers(returning).filter(task=>!currentTasks.has(task.taskId))];
 }
 export function transferFeedbackLabel(task:Transfer) {
+  if(task.recovery&&['connection','input','support','reconciling','review_notion','review_local'].includes(task.recovery.kind))return recoveryGuidance({recovery:task.recovery,workflow:task.workflow}).statusLabel;
   // A phase can belong to the last active step. It must not hide a newer
   // pause, permission request or unsuccessful result.
   if(task.state==='paused')return '已暂停';
@@ -45,6 +48,10 @@ export function transferFeedbackLabel(task:Transfer) {
   if(task.state==='completed')return '已完成';
   if(task.phase)return task.phase;
   return transferStateLabel(task.state);
+}
+export function transferRecoveryAction(task:Transfer){
+  const automatic=task.recovery&&recoveryGuidance({recovery:task.recovery,workflow:task.workflow}).automatic;
+  return automatic?{label:'查看进展',title:'ONE 正在自动核对或恢复，暂时不用操作'}:{label:'查看并处理',title:'打开任务详情，查看原因和下一步'};
 }
 function TransferStateIcon({task}:{task:Transfer}) {
   const outcome=task.outcome||task.state;
@@ -112,7 +119,7 @@ export function TaskTransferRail({tasks,busy,onOpen,onOpenAll,onStop,onReadAll,o
       </button>
       <TaskWorkflowActivity taskId={task.taskId} workflow={task.workflow} onOpen={()=>onOpen(task.taskId)}/>
       {(transferNeedsRecovery(task)||transferSettled(task.state)&&onDismiss||task.state==='paused'||task.state==='prepared_local'||!transferSettled(task.state)&&onStop)?<div className="task-transfer-actions">
-        {transferNeedsRecovery(task)?<button type="button" className="task-transfer-more task-retry-action" title="打开任务详情，核对结果后再决定是否继续" onClick={()=>onOpen(task.taskId)}>查看并处理</button>:null}
+        {transferNeedsRecovery(task)?<button type="button" className="task-transfer-more task-retry-action" title={transferRecoveryAction(task).title} onClick={()=>onOpen(task.taskId)}>{transferRecoveryAction(task).label}</button>:null}
         {transferSettled(task.state)&&onDismiss?<button type="button" className="task-transfer-more task-dismiss-action" aria-label={`收起${task.title}的提醒`} title="只收起提醒，不删除任务或文件" onClick={()=>{setReadError('');void onDismiss(task).catch(()=>setReadError('暂时没能收起提醒，请再试一次'));}}>{transferNeedsRecovery(task)?'收起提醒':<X size={12} aria-hidden="true"/>}</button>:null}
         {task.state==='paused'||task.state==='prepared_local'?<button type="button" className="task-transfer-more task-retry-action" onClick={()=>onOpen(task.taskId)}>{task.state==='prepared_local'?'查看并确认':'查看并处理'}</button>:null}
         {!transferSettled(task.state)&&onStop?<button type="button" className="task-transfer-more task-stop-action" aria-label={`停止任务：${task.title}`} disabled={stopping.includes(task.id)} onClick={event=>{const source=event.currentTarget;setStopError('');setStopping(old=>[...old,task.id]);void onStop(task,source).catch(()=>setStopError('尚未确认任务已停止，请打开任务查看状态，或重试停止')).finally(()=>setStopping(old=>old.filter(id=>id!==task.id)));}}>{stopping.includes(task.id)?'正在停止':'停止任务'}</button>:null}

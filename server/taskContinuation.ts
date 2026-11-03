@@ -20,7 +20,8 @@ export function taskContinuation(db:Database,scope:Scope,task:Conversation){
     if(run.state==='running')return false; // A supplement waits for this round; it never interrupts it.
     const notWritten=['not_sent','rejected'].includes(run.notionReceipt?.delivery??'');
     if(run.notionTarget&&run.notionReceipt?.state!=='verified'&&!notWritten&&(!Array.isArray(run.steps)||run.steps.some(step=>step.tool==='save_notion_draft'&&step.effect==='external_write')))return true;
-    return run.notionReceipt&&run.notionReceipt.state!=='verified'&&!notWritten||run.steps?.some(step=>step.state==='started'&&['artifact','external_write'].includes(step.effect)&&!(step.tool==='save_notion_draft'&&notWritten));
+    return run.notionReceipt&&run.notionReceipt.state!=='verified'&&!notWritten||run.steps?.some(step=>['model','artifact','external_write'].includes(step.effect)
+      &&(step.state==='started'||['unknown','submitted'].includes(step.operation?.execution??''))&&!(step.tool==='save_notion_draft'&&notWritten));
   });
   const stopped=task.workPauseReason==='user_stopped'||prior&&['cancelled','interrupted','prepared'].includes(prior.workRun!.state);
   const protectedFailure=prior&&/^task_(?:(?:key|authorization|budget)_required|budget_limit)$/.test(prior.workRun!.failureCode??'');

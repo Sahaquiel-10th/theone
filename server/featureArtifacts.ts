@@ -6,17 +6,25 @@ import type { Attachment, Database } from './types.js';
 import { ownedAttachment } from './attachmentService.js';
 import { tableFileToCsv } from './skillTables.js';
 import {createVisualArtifact,type SaveVisual} from './visualTools.js';
-import type {OfficeContext} from './officeTools.js';
+import {reviewedOfficeArtifactContext,type OfficeContext} from './officeTools.js';
 import {validateDeck} from './officeSlides.js';
 import {visualPrerequisiteImage} from './visualPrerequisites.js';
 
-export function officeArtifactContext(store:Store,scope:{workspaceId:string;userId:string;conversationId:string},directory:string|undefined,verify:(db:Database)=>void,allowedIds:string[],onSaved?:(id:string)=>void):OfficeContext {
- return {
+export function officeArtifactContext(store:Store,scope:{workspaceId:string;userId:string;conversationId:string},directory:string|undefined,verify:(db:Database)=>void,allowedIds:string[],onSaved?:(id:string)=>void,requirements:{requiresXlsxTemplate?:boolean}={}):OfficeContext {
+ return reviewedOfficeArtifactContext({
+  requiresXlsxTemplate:requirements.requiresXlsxTemplate===true,
+  resolveOfficeTemplate:async kind=>{
+   const db=await store.read();verify(db);
+   // Resolve only this task's already-selected, owned attachments. A foreign
+   // record never contributes a candidate or reveals its existence.
+   const candidates=db.attachments.filter(file=>allowedIds.includes(file.id)&&file.workspaceId===scope.workspaceId&&file.userId===scope.userId&&file.status==='ready'&&(kind==='workbook'?/\.xlsx$/i.test(file.originalName)&&file.size<=2*1024*1024:kind==='slides'?file.officeArtifact==='slides'&&file.size<=25*1024*1024:['spreadsheet','text'].includes(file.kind)));
+   verify(await store.read());return candidates.length===1?{state:'one' as const,id:candidates[0].id}:candidates.length?{state:'ambiguous' as const}:{state:'none' as const};
+  },
   readTable:async id=>{const d=await store.read();verify(d);return selectedTableCsv(store,scope,allowedIds,id);},
   readOffice:async id=>{const d=await store.read();verify(d);if(!allowedIds.includes(id))throw new Error('未选择此模板');const file=ownedAttachment(d.attachments,scope,id);if(file.status!=='ready'||!/\.xlsx$/i.test(file.originalName)||file.size>2*1024*1024)throw new Error('模板需要已就绪且不超过2MB的XLSX');const bytes=await fs.readFile(file.storagePath);if(bytes.length!==file.size)throw new Error('模板文件已变化');verify(await store.read());return bytes;},
   readSlides:async id=>{const d=await store.read();verify(d);if(!allowedIds.includes(id))throw new Error('未选择上一版演示稿');const file=ownedAttachment(d.attachments,scope,id);if(file.officeArtifact!=='slides'||file.status!=='ready'||file.size>25*1024*1024)throw new Error('上一版演示稿不可用');const html=await fs.readFile(file.storagePath,'utf8'),content=/<script id="deckData" type="application\/json">([\s\S]*?)<\/script>/.exec(html)?.[1];verify(await store.read());if(!content)throw new Error('上一版演示稿缺少完整页面内容');return validateDeck(JSON.parse(content));},
   ...(directory?{saveOffice:async file=>{const kind=file.mime.endsWith('spreadsheetml.sheet')?'spreadsheet' as const:'document' as const;const saved=await saveFeatureArtifact(store,scope,directory,file.name,file.bytes,file.mime,kind,verify);await store.mutate(db=>{verify(db);ownedAttachment(db.attachments,scope,saved.id).officeArtifact=file.mime==='text/html'?'slides':'file';});onSaved?.(saved.id);return saved;}}:{})
- };
+ });
 }
 
 export function visualArtifactSaver(store:Store,scope:{workspaceId:string;userId:string;conversationId:string},directory:string|undefined,verify:(db:Database)=>void,onSaved?:(id:string)=>void,welcomeImageId?:string,dependencyOperationIds:string[]=[]):SaveVisual|undefined {
