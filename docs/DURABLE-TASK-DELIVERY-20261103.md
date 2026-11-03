@@ -164,3 +164,21 @@
 - 本机B的真实codex usage已进入模型计费调用层并失败，但既有reviewReason只记上游失败成本未知，网关所有异常均回409，无法事后重建具体HTTP原因。不把此事假称成已知供应商502/401；没有因诊断而修改余额或授权。
 - 新网关按已确认事实分类HTTP/格式/断流/网络/电力/预算，固定安全说明进入同owner/device/installation/round/attempt的私有executorFailure和执行事件，不输出供应商正文/参数/凭证；终态及主对话只投影受控中文原因。成功、停止、撤权、安全hold和晚到回执均有守卫；publicExecutionTask剥离私有诊断。相关125项、独立77项、TS/diff通过。
 - 新分类解决“只有泛409不能定位/反馈”的问题；本机B真实上游故障的实际成因尚未重证，需发布后新C验收，不能仅靠单测宣布本机执行通过。
+
+- 冻结候选 `1d6a39e4eb22f70cfcedb3e7a8a1f9c218922f00`：最终全量2369项/2368通过/0失败/1既有skip，日志 `/tmp/one-durable-v9-gateway-final-full-20261103.log`；TS/生产构建通过，日志 `/tmp/one-durable-v9-gateway-final-build-20261103.log`；独立网关/终态/汇报复核131项通过，diff-check通过。已推送branch和main，自动发布与新C验收待回填。
+
+- 1d6a39e自动run [41560637934](https://github.com/Sahaquiel-10th/theone/actions/runs/41560637934) 四job全部success，北京时间09:56:54日志部署完成、09:56:56 job结束；服务器current另只读确认完整同SHA。预检保留3条未启动旧任务，没有自动重跑。开始新C验收。
+
+### C轮真机事实
+
+- LOCAL-C真实闭环通过：`ext_f4052f106b4fcb0a0eb2` / `cnv_0f35967ca26ce3e39ded` / Codex thread `01a19f23-33e4-7231-b563-de2c9934a446`。2026-11-03 10:00:42创建、10:01:56完成（北京时间）；status=completed，terminalReceipt accepted/completed，主对话已出现实际结果。同原已选目录，不重新选目录或点继续。
+- 独立文件回读：559字节，最终SHA256 `ff400d37418d3172c0073c29ce5f62169ebaf2ddb53bcd0fb5473cb7b057c05d`。橙色#f59e0b恰1处、旧色0处、KEEP_紫色42_保持原样保留；把这一处颜色还原后字节SHA与最初文件完全一致，证明只改颜色、其他内容未改。真实截图 `output/task-live-local-c-result-20261103.png`。
+- CLOUD-C内容保存/严格全文核对通过，但独立任务隔离失败，未算新任务验收通过。trace `ctx_411e1a6ef9809086e61` / `coord_fd1310d9666e3ffd5a6d` 先read旧A再delegate旧A `cnv_de4947ba29d9874c4d53`；模型交接将本轮C固定标题改回旧A标题，并继承旧A页面。独立fetch确认A合成页已被改成带C标题的新正文，说明这不是简单UI名字旧，而是旧页面被复用。仅此本轮合成测试页受影响，业务原稿/myspace仍未动；保留现状和历史，不再重写该页。
+- 根因是只有“不要新建→接续原任务”守卫，没有反向明确“独立新任务→不得沿旧ID/页面/成功证明”；模型读旧task后可把旧instruction当当前目标。新增server当前原话主目标、新身份/明确固定标题约束、单/批/入队守卫，模型可在同轮拒绝反馈后纠正成null新建，不把拒绝变成让用户点重试。正文引用与执行继承分离，合法server-owned retry不被原文中的独立新任务误挡。修复/新D验收待回填。
+
+### 独立任务与精确原稿来源补充修复
+
+- 当前用户非引用的明确新任务意图约束单项、批量schema/validate/dispatch及enqueue；旧taskId在任何创建前拒绝，模型在同轮按错误反馈纠正null，无需用户重发。明确quoted固定标题由服务器锁定，完整本轮原话为child主目标，旧步骤说明不能覆盖。
+- 新任务不继承旧页面/步骤/receipt；授权旧正文另存只使用已read_task且read_context exact conversation/message/digest的内容指针，foreign、原文变化或同正文换messageId均拒绝。已有主对话长文章选择保留，合法server-owned retry通过原版本检查后仍可恢复；不会把原文中“独立新任务”误作永不允许恢复。
+- 真实service单/批2条均从read旧A、错误旧ID被拒，到同轮null纠正并创建/核对新Notion页；另覆原稿引用、mixed batch全批无部分入队、direct/bound入口及合法retry。317项service+intent绿，最终exact来源补丁后8条关键回归/TS/diff绿；独审9条intent+5条service绿。新D线上验收仍待做。
+- 主对话brief原来全局剥除Markdown标记导致代码/文件路径的下划线消失。现在保留行内code和普通标识符/路径字面值，仅去掉边界明确的强调标记；旧HTML/技术诊断过滤不变。Inbox56项、TS/diff和独审通过。

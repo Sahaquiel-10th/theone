@@ -7,11 +7,13 @@ export function discussionOnly(text: string): boolean {
     || /(?:^|[.;:\n])\s*(?:do not execute|do not run|answer only|discussion only)(?=$|[.;:,\s])/i.test(text);
 }
 
-function currentRequest(text:string){
+function currentRequestSource(text:string){
   return text.split(/(?:正文|原文|引用|示例|材料|附件内容)(?:如下|内容)?\s*[:：]/u)[0]
     .replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g,'')
-    .replace(/^\s*>.*$/gm,'')
-    .replace(/“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|'[^'\n]*'|`[^`]*`/g,'');
+    .replace(/^\s*>.*$/gm,'');
+}
+function currentRequest(text:string){
+  return currentRequestSource(text).replace(/“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|'[^'\n]*'|`[^`]*`/g,'');
 }
 
 /** Remove declined effects, not their whole clause: “不创建，但保存” still
@@ -48,6 +50,31 @@ export function coordinatorTaskIntent(text:string,boundTaskId?:string){
   const creationBan=/(?:不要|不用|无需|不必|不需要|禁止|别|不)(?:再|重新)?(?:创建|新建|另建|新开|分派|建)(?:一个|新的|独立)?(?:任务|事情)|(?:don't|do not)\s+create\s+(?:a\s+)?task/i.test(request);
   const existingTaskOnly=!onlyAnswer&&creationBan&&existingTaskActionRequested(request,boundTaskId);
   return {answerOnly:onlyAnswer||creationBan&&!existingTaskOnly,existingTaskOnly};
+}
+
+/** Task identity comes from the current human request, never a read task's
+ * old instructions. New articles/pages/files inside an existing task do not
+ * imply a new task. Explicit server-owned recovery is handled separately. */
+export function independentTaskRequested(text:string){
+  const request=currentRequest(text),intent=coordinatorTaskIntent(text);
+  if(intent.answerOnly||intent.existingTaskOnly||/^\s*(?:请|帮我)?(?:如果|假设|举例|例如|示例|解释|翻译|如何|怎么(?:创建|新建|判断|识别))/u.test(request))return false;
+  const clauses=request.split(/[，,。；;！!？?\n]/u).filter(clause=>!/(?:不要|不用|无需|不必|不需要|禁止|别|不是|并非|不算)[^，,。；;\n]{0,24}(?:独立(?:的|新)?(?:任务|事情|合成验收)|全新(?:的)?任务|新的?任务)/u.test(clause));
+  return clauses.some(clause=>/^\s*(?:(?:这是|本轮|这次|本次|我要|我想做|请|帮我|先|现在|发起|做|创建|新建|开始)\s*)*(?:(?:是|作为|一个|一项|一件|个)\s*)*(?:独立(?:的)?(?:本机|本地|云端)?(?:合成)?(?:全新|新)?(?:任务|事情|验收|测试)|全新(?:的)?(?:任务|事情))/u.test(coordinatorPositiveRequest(clause))
+    ||/(?:这是|本轮是|这次是|本轮作为|这次作为)(?:一个|一项|一件)?新的?任务|(?:创建|新建|另建|新开|另开|另起)(?:一(?:个|项|件)|个)?(?:独立|全新|新)?(?:的)?(?:任务|事情)|^\s*新的?任务\s*[:：]/u.test(coordinatorPositiveRequest(clause))
+    ||/(?:不要|不用|无需|禁止|别|不)(?:再)?(?:继续|接着|复用|沿用)(?:(?:或|和|及|、)(?:继续|接着|重跑|重做|复用|沿用))*(?:任何|此前的|之前的|以前的|原来的)?(?:旧的?|历史|之前的|此前的|以前的|原来的|上一个)(?:任务|事情)/u.test(clause));
+}
+
+/** Only an explicit quoted title field outside quoted/source material may
+ * constrain a fresh task's title. Ordinary headings are not guessed here. */
+export function independentTaskTitle(text:string):string|undefined{
+  if(!independentTaskRequested(text))return;
+  const source=currentRequestSource(text),visible=source.replace(/“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|'[^'\n]*'|`[^`]*`/g,match=>' '.repeat(match.length)),titles:string[]=[];
+  for(const field of visible.matchAll(/(?:^|[，,。；;！!？?\n])\s*(?:(?:本轮|这次|任务|文章)的?)?\s*(?:标题(?:固定|必须(?:固定)?|为|是)|固定标题)(?:为|是|[:：])?/gu)){
+    const value=/^\s*(?:“([^”\n]+)”|「([^」\n]+)」|『([^』\n]+)』|"([^"\n]+)"|'([^'\n]+)'|`([^`\n]+)`)/u.exec(source.slice(field.index!+field[0].length));
+    const title=value?.slice(1).find(value=>value!==undefined);
+    if(title&&title===title.trim()&&title.length<=80)titles.push(title);
+  }
+  const unique=[...new Set(titles)];return unique.length===1?unique[0]:undefined;
 }
 
 /** Only a fresh read of the already bound document, not a status question or

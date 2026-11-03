@@ -59,8 +59,13 @@ const technical = /(?:\b(?:MCP|HTTP|API|JSON|ECONN\w*|ETIMEDOUT|EPIPE|Bearer|api
 const unfinishedCodeLine=/^\s*(?:(?:error|错误(?:码)?|诊断码)\s*[:：]\s*)?`?goal_?unfinished`?\s*$/i;
 function reportLine(line: string) {
   if (technical.test(line)||unfinishedCodeLine.test(line)) return '';
-  return line.replace(/^\s*(?:#{1,6}\s*|[-*•]\s*|\d+[.、]\s*)/, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/<[^>]*>/g, '').replace(/[*_`]/g, '').trim();
+  const literals:string[]=[];
+  const plain=line.replace(/^\s*(?:#{1,6}\s*|[-*•]\s*|\d+[.、]\s*)/, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/<[^>]*>/g, '').replace(/(`+)(.*?)\1(?!`)/g,(_match,_ticks,value:string)=>`\u0000${literals.push(value)-1}\u0000`);
+  // Formatting delimiters are optional; underscores inside a result code or
+  // file path are part of the actual result and must survive the plain brief.
+  return plain.replace(/[*`]/g, '').replace(/(?<![\p{L}\p{N}_/\\])(_{1,2})(?!_)(\S(?:.*?\S)?)\1(?![\p{L}\p{N}_/\\])/gu,'$2')
+    .replace(/\u0000(\d+)\u0000/g,(_match,index:string)=>literals[Number(index)]??'').trim();
 }
 const briefHeading=/^(?:情况说明|需要你给我的一步|需要你补充|下一步|已保存到 Notion|【本机执行回执)(?:[：:\s]*|[（(].*)$/;
 const taskButtonNavigation=/(?:任务(?:里|中|页|区)|按钮|点击|点[“"「『]?继续|开始处理最新要求|重新处理最新要求)/;

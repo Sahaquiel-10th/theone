@@ -800,6 +800,105 @@ const key = async () => {};
 const readyLocalProbe=()=>Promise.resolve({checkedAt:new Date().toISOString(),ready:true,connected:true,
   folder:{state:'ready' as const,targetName:'/QA/selected'},executor:{state:'ready' as const,installedVersion:'0.160.1',installedSource:'managed' as const},reason:'ready' as const});
 
+for(const delegate of ['delegate_task','delegate_tasks'] as const)test(`an explicit fresh task corrects an inspected old ID in the same turn and writes its own result (${delegate})`,async()=>{
+ const f=fixture(),oldTitle='ONE-QA-FRESH-OLD',newTitle='ONE-QA-FRESH-C',oldPage='a'.repeat(32),newPage='b'.repeat(32),parentId='c'.repeat(32),body=`# ${newTitle}\n\n这是新一轮的合成正文，保留独立成果。`;
+ const old=await f.service.dispatch(a,input(`operation_fresh_seed_${delegate}`,'先写 UI 合成旧稿'),key);
+ await f.store.mutate(d=>{
+  d.knowledgeConnections.push({id:'fresh-notion',workspaceId:'wa',provider:'notion',status:'connected',notionWriting:{grantId:'fresh-grant',userId:'a',parentId}} as any);
+  const c=d.conversations.find(c=>c.id===old.taskId)!,op=d.chatOperations!.find(op=>op.conversationId===c.id&&op.workRun)!;
+  c.title=oldTitle;c.messages.push({id:'old-result',role:'assistant',content:`# ${oldTitle}\n\nOLD_ARTIFACT_ONLY`,createdAt:new Date().toISOString()});
+  c.notionDocument={connectionId:'fresh-notion',grantId:'fresh-grant',parentId,pageId:oldPage,url:`https://www.notion.so/${oldPage}`};
+  op.status='completed';op.workRun!.state='completed';op.workRun!.resultMessageId='old-result';op.workRun!.resultOutcome='completed';op.workRun!.notionTarget={...c.notionDocument,referenceIds:[]};
+  op.workRun!.notionReceipt={state:'verified',pageId:oldPage,url:`https://www.notion.so/${oldPage}`,expectedDigest:'d'.repeat(64),final:true};
+ });
+ const initial=await f.store.read(),oldJob=initial.chatOperations!.find(op=>op.conversationId===old.taskId&&op.workRun)!,oldConversation=initial.conversations.find(c=>c.id===old.taskId)!;
+ let router=0,drafts=0,creates=0,updates=0,title='',savedBody='';
+ const request=`独立合成验收 ${newTitle}，不继续或重跑任何旧任务。请写一篇新的短文并保存到 Notion。标题固定“${newTitle}”。只用合成资料，不查知识库、不联网。`;
+ const plan=(taskId:string|null)=>({taskId,title:oldTitle,instruction:`把旧稿 ${oldTitle} 写好并保存到 Notion，沿用原来的标题。`,executorId:'general',featureIds:[],workflow:{version:1,steps:[{id:'draft',title:'撰写短文',kind:'model',instruction:'写完整短文',inputs:[]},{id:'save',title:'保存并核对',kind:'notion',instruction:'保存完整正文并回读',inputs:['draft']}]}});
+ const invoke=(name:string,args:unknown)=>({...answer(''),toolCalls:[{id:`fresh-route-${router}`,type:'function' as const,function:{name,arguments:JSON.stringify(args)}}]});
+ const mcp={readDocument:async(ws:string,id:string)=>{assert.equal(ws,'wa');assert.equal(id,newPage,'a fresh task cannot read/write the old saved page as its own result');return {text:`<page><properties>${JSON.stringify({title})}</properties><content>${savedBody}</content></page>`};},callDocumentTool:async(ws:string,connection:string,grant:string,user:string,name:string,args:any,before?:()=>Promise<void>)=>{
+  await before?.();assert.deepEqual([ws,connection,grant,user],['wa','fresh-notion','fresh-grant','a']);if(name==='notion-update-page'){updates++;assert.fail('old page must not be updated');}assert.equal(name,'notion-create-pages');creates++;title=args.pages[0].properties.title;savedBody=args.pages[0].content;return {pages:[{id:newPage}]};
+ }} as unknown as NotionMcpService;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge was authorized')},{contextMode:'adaptive',notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages)=>{
+  if(model.id!=='router'){drafts++;assert.ok(JSON.stringify(messages).includes(newTitle),'the complete current goal reaches the model');return answer(JSON.stringify({outcome:'completed',content:body,summary:'新稿已完成'}));}
+  router++;
+  if(router===1)return invoke('read_task',{taskId:old.taskId});
+  if(router===2){assert.ok(messages.at(-1)!.content!.includes(oldTitle));return invoke(delegate,delegate==='delegate_task'?plan(old.taskId!):{tasks:[{...plan(old.taskId!),outputKind:'text',dependsOn:[]}]});}
+  assert.equal(JSON.parse(messages.at(-1)!.content!).status,'rejected','old task selection must be rejected before accepting any child');
+  return invoke(delegate,delegate==='delegate_task'?plan(null):{tasks:[{...plan(null),outputKind:'text',dependsOn:[]}]});
+ }});
+ const result=await service.dispatch(a,input(`operation_fresh_current_${delegate}`,request),key);
+ assert.ok(result.taskId);assert.notEqual(result.taskId,old.taskId);assert.deepEqual(result.taskIds,[result.taskId]);assert.equal(router,3,'correction is automatic in the same user turn');
+ const admitted=await f.store.read(),child=admitted.chatOperations!.find(op=>op.conversationId===result.taskId&&op.workRun)!;
+ assert.equal(admitted.conversations.find(c=>c.id===result.taskId)!.title,newTitle,'an explicit fixed title outranks the model old title');
+ assert.ok(child.workRun!.instruction.includes(request),'the current complete user instruction cannot be replaced by old handoff prose');assert.equal(child.workRun!.notionTarget!.pageId,undefined);assert.equal(child.workRun!.notionReceipt,undefined);assert.equal(child.workRun!.steps!.length,0);
+ await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='completed');
+ const final=await f.store.read(),updatedOld=final.chatOperations!.find(op=>op.id===oldJob.id)!;
+ assert.equal(drafts,1);assert.equal(creates,1);assert.equal(updates,0);assert.equal(title,newTitle);assert.equal(updatedOld.workRun!.instruction,oldJob.workRun!.instruction);assert.deepEqual(updatedOld.workRun!.notionReceipt,oldJob.workRun!.notionReceipt);assert.deepEqual(final.conversations.find(c=>c.id===old.taskId)!.messages,oldConversation.messages);
+ assert.equal(final.chatOperations!.filter(op=>op.conversationId===result.taskId&&op.workRun).length,1);await assert.rejects(()=>service.task(b,result.taskId!));assert.equal(final.powerAccounts[1].balanceMicros,100e6);
+});
+
+test('a fresh task may copy exact inspected owned manuscript content, never its old page or write proof',async()=>{
+ for(const mode of ['owned','foreign','source-changed','source-replaced'] as const){
+  const f=fixture(),sourceTitle='现成合成原稿',sourceBody=`# ${sourceTitle}\n\n完整原文：青色42和自然结尾。`,oldPage='a'.repeat(32),newPage='b'.repeat(32),parentId='c'.repeat(32),sourceTask='cnv_11111111111111111111';
+  const sourceOwner=mode==='foreign'?b:a;
+  await f.store.mutate(d=>{
+   d.knowledgeConnections.push({id:'copy-notion',workspaceId:'wa',provider:'notion',status:'connected',notionWriting:{grantId:'copy-grant',userId:'a',parentId}} as any);
+   d.conversations.push({...sourceOwner,id:sourceTask,title:sourceTitle,modelId:'worker',executorProfileId:'general',archived:false,createdAt:'now',updatedAt:'now',messages:[{id:'source-user',role:'user',content:'原任务完整要求',createdAt:'now'},{id:'source-body',role:'assistant',content:sourceBody,createdAt:'now'}],notionDocument:{connectionId:'copy-notion',grantId:'copy-grant',parentId,pageId:oldPage}});
+   d.chatOperations!.push({...sourceOwner,id:'source-op',conversationId:sourceTask,operationId:'source_copy_operation_001',status:'completed',createdAt:'now',updatedAt:'now',workRun:{state:'completed',instruction:'原任务完整要求',resultMessageId:'source-body',resultOutcome:'completed',notionTarget:{connectionId:'copy-notion',grantId:'copy-grant',parentId,pageId:oldPage,referenceIds:[]},notionReceipt:{state:'verified',pageId:oldPage,expectedDigest:'f'.repeat(64),final:true},steps:[{key:'old-write-proof',scopeId:'source-op',namespace:'worker',tool:'save_notion_draft',effect:'external_write',state:'completed',updatedAt:'now'}],sources:[],skills:[]}} as any);
+  });
+  let route=0,creates=0,title='',saved='';const feedbacks:string[]=[];
+  const invoke=(name:string,args:unknown)=>({...answer(''),toolCalls:[{id:`copy-${route}`,type:'function' as const,function:{name,arguments:JSON.stringify(args)}}]});
+  const mcp={readDocument:async(ws:string,page:string)=>{assert.equal(ws,'wa');assert.equal(page,newPage);return {text:`<page><properties>${JSON.stringify({title})}</properties><content>${saved}</content></page>`};},callDocumentTool:async(_w:string,_c:string,_g:string,_u:string,name:string,args:any,before?:()=>Promise<void>)=>{await before?.();assert.equal(name,'notion-create-pages');creates++;title=args.pages[0].properties.title;saved=args.pages[0].content;return {pages:[{id:newPage}]};}} as unknown as NotionMcpService;
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge')},{contextMode:'adaptive',notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages)=>{
+   assert.equal(model.id,'router','an already complete manuscript is not regenerated');route++;feedbacks.push(messages.at(-1)?.content??'');
+   if(route===1)return invoke('load_tools',{names:['read_task']});
+   if(route===2)return invoke('read_task',{taskId:sourceTask});
+   if(route===3)return invoke('read_context',{taskId:sourceTask,messageId:'source-body',query:''});
+   if(route===4){
+    if(mode==='owned')assert.ok(messages.at(-1)!.content!.includes(sourceBody.slice(-12)));
+    if(mode==='foreign')assert.doesNotMatch(JSON.stringify(messages),/完整原文：青色42/);
+    if(mode==='source-changed')await f.store.mutate(d=>{d.conversations.find(c=>c.id===sourceTask)!.messages.find(m=>m.id==='source-body')!.content+='后来修改';});
+    if(mode==='source-replaced')await f.store.mutate(d=>{d.conversations.find(c=>c.id===sourceTask)!.messages.push({id:'new-same-body',role:'assistant',content:sourceBody,createdAt:'later'});const op=structuredClone(d.chatOperations!.find(op=>op.id==='source-op')!);op.id='new-same-body-op';op.operationId='new_same_body_operation';op.workRun!.resultMessageId='new-same-body';d.chatOperations!.push(op);});
+    return invoke('delegate_task',{taskId:null,title:'原稿另存',instruction:'把现成原文保存到 Notion，不重写。',executorId:'general',featureIds:[]});
+   }
+   assert.equal(JSON.parse(messages.at(-1)!.content!).status,'rejected');return answer('原稿暂未核对完整，请确认要使用的版本。');
+  }});
+  const result=await service.dispatch(a,input(`operation_fresh_copy_${mode}`,'另开新任务，把现成原稿原样保存到 Notion，不重写、不查知识库、不联网。'),key);
+  if(mode!=='owned'){assert.equal(result.taskIds.length,0);assert.equal(creates,0);continue;}
+  assert.ok(result.taskId,JSON.stringify({mode,result,feedbacks}));const admitted=await f.store.read(),job=admitted.chatOperations!.find(op=>op.conversationId===result.taskId&&op.workRun)!.workRun!;
+  assert.notEqual(result.taskId,sourceTask);assert.equal(job.notionArticleSource!.conversationId,sourceTask);assert.equal(job.notionArticleSource!.messageId,'source-body');assert.equal(job.notionTarget!.pageId,undefined);assert.equal(job.notionReceipt,undefined);assert.deepEqual(job.steps,[]);
+  await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='completed');
+  assert.equal(creates,1);assert.equal(title,sourceTitle);assert.equal(saved,'完整原文：青色42和自然结尾。');assert.equal((await service.task(a,result.taskId!)).jobs[0].notionReceipt?.pageId,newPage);
+  const original=(await f.store.read()).chatOperations!.find(op=>op.id==='source-op')!;assert.equal(original.workRun!.notionReceipt!.pageId,oldPage);assert.equal(original.workRun!.steps![0].key,'old-write-proof');
+ }
+});
+
+test('fresh task guards reject a mixed batch atomically and cannot bypass task scope through direct or bound input',async()=>{
+ const f=fixture(),old=await f.service.dispatch(a,input('operation_fresh_atomic_seed','UI 原任务'),key),before=await f.store.read();let calls=0;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge')},{modelCall:async()=>{
+  calls++;if(calls>1)return answer('本批任务没有开始。');
+  const plan=(taskId:string|null)=>({taskId,title:'合成任务',instruction:'写一份合成说明',executorId:'general',featureIds:[],outputKind:'text',dependsOn:[]});
+  return {...answer(''),toolCalls:[{id:'mixed-fresh',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[plan(null),plan(old.taskId!)]})}}]};
+ }});
+ const request='这是独立新任务，不继续任何旧任务。写两份合成说明。';
+ const result=await service.dispatch(a,input('operation_fresh_atomic_current',request),key);
+ assert.deepEqual(result.taskIds,[]);assert.equal((await f.store.read()).chatOperations!.filter(op=>op.workRun).length,before.chatOperations!.filter(op=>op.workRun).length);
+ await assert.rejects(()=>service.direct(a,old.taskId!,{operationId:'operation_fresh_direct_guard',text:request},key),/独立新任务/);
+ await assert.rejects(()=>service.dispatch(a,{...input('operation_fresh_bound_guard',request),boundTaskId:old.taskId!},key),/独立新任务/);
+ await assert.rejects(()=>service.direct(b,old.taskId!,{operationId:'operation_fresh_foreign_guard',text:request},key),/不存在/);
+ assert.deepEqual((await f.store.read()).conversations.find(c=>c.id===old.taskId)!.messages,before.conversations.find(c=>c.id===old.taskId)!.messages);
+});
+
+test('an explicitly authorized retry of a fresh task keeps its own identity and existing recovery checks',async()=>{
+ const f=fixture(),request='独立新任务，写一份 UI 合成说明，不继续任何旧任务。',accepted=await f.service.dispatch(a,input('operation_fresh_retry_seed',request),key),source=(await f.service.task(a,accepted.taskId!)).jobs[0];
+ await f.store.mutate(d=>{const op=d.chatOperations!.find(op=>op.id===source.id)!;op.status='failed';op.workRun!.state='failed';d.conversations.find(c=>c.id===accepted.taskId)!.workPaused=true;});
+ await assert.rejects(()=>f.service.retryLatest(b,accepted.taskId!,source.id,undefined,key),/不存在/);
+ await f.service.retryLatest(a,accepted.taskId!,source.id,undefined,key);await f.service.retryLatest(a,accepted.taskId!,source.id,undefined,key);
+ const retried=await f.service.task(a,accepted.taskId!);assert.equal(retried.jobs.length,2);assert.equal(retried.jobs[1].state,'queued');assert.equal(retried.conversation.id,accepted.taskId);assert.equal(retried.jobs[1].instruction,source.instruction);
+ await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,accepted.taskId!)).jobs[1].state==='completed');assert.equal(f.calls.filter(call=>call.modelId==='worker').length,1);
+});
+
 const lifecycleDevice={deviceId:'local-lifecycle-key',installationId:'a'.repeat(32)};
 async function localLifecycleFixture(tool:'delegate_task'|'delegate_tasks'='delegate_task'){
  const f=fixture();

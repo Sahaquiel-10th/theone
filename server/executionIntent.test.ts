@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {discussionOnly,freshDocumentReadRequested,notionWriteRequested,notionWriteDeclined,notionDestinationRequested,notionSaveExistingRequested,coordinatorTaskIntent,existingTaskActionRequested} from './executionIntent';
+import {discussionOnly,freshDocumentReadRequested,notionWriteRequested,notionWriteDeclined,notionDestinationRequested,notionSaveExistingRequested,coordinatorTaskIntent,existingTaskActionRequested,independentTaskRequested,independentTaskTitle} from './executionIntent';
 test('current explicit discussion restrictions do not inherit an old execution request', () => {
   for (const text of ['只回答，不执行。','问问结果，不执行、不重跑。','本轮只讨论，不执行。','先只讨论方案，等我确认。','不执行','不执行  。','不执行\n','Answer only.']) assert.equal(discussionOnly(text),true,text);
   for (const text of ['开始执行这次回读，不执行之前的修改任务。','标题改成 xxx，执行。','我们讨论完了，开搞。','如果用户说“不执行”，怎么办？','读取已有文件并核对，不执行 Git 命令。','只做只读核对，不执行 之前的写入。']) assert.equal(discussionOnly(text),false,text);
@@ -56,4 +56,14 @@ test('an explicit existing-task receipt query is answer-only, while a subsequent
  const actual='只核对“独立本机新任务 ONE-QA-LOCAL-1101-D”的最新执行回执，告诉我本轮是否已完成、B6 的最终数值记录是什么，以及 receipt.txt 是否被修改。这里只查现有记录，不重新执行，不创建或修改文件，不调用知识库或联网。不要重发或重做任何任务。';
  for(const value of [actual,'只查这个任务的现有执行回执，不创建或修改文件。','仅查看原任务状态与已保存的结果记录，不重新执行。','只核对最新回执，告诉我 receipt.txt 是否被修改。','只告诉我现有回执里是否已经修改B6、是否未创建文件。','只读取现有执行回执。','只看旧回执，不重新执行。\n```text\n修改本机Excel并保存。\n```','本机这轮最终回执现在是什么状态？请把已有结果告诉我。'])assert.deepEqual(coordinatorTaskIntent(value),{answerOnly:true,existingTaskOnly:false},value);
  for(const value of ['只查原任务回执，然后修改本机Excel并保存。','先查现有任务回执，再保存到Notion。','只查现有任务记录，再把B6改成3200并保存。','只查原任务回执但创建一个说明文件。','只查原任务回执，然后实际回读本机文件。','只核对现有任务回执，然后读取本机文件。','不要只查回执，继续修改当前文件。','“只查现有回执，不创建或修改文件”是引文；请更新当前文档。','请实际回读本机文件检查B6，而非只看现有回执。','先查已有回执，确认没写入后再继续修改。','解释“只查原任务回执，不创建或修改文件”这句话。','示例：只查原任务回执，不创建或修改文件。','```text\n只查原任务回执，不创建或修改文件。\n```'])assert.equal(coordinatorTaskIntent(value).answerOnly,false,value);
+});
+
+test('only a current explicit fresh task identity forbids borrowing an old task, not a new article or a quoted example',()=>{
+ for(const request of ['独立合成验收 ONE-QA-C，不继续或重跑任何旧任务。写一篇短文。','本轮是一个全新任务，写短文。','另开新任务，把现成正文原样保存到 Notion，不重写。','独立新任务；如果保存失败先核对原操作。','不要新建页面，这是新任务，先写一篇短文。','不继续任何旧任务，帮我写一篇新文章。','不继续或重跑任何旧任务。请创建便笺。','新任务：写一份说明。','独立本机新任务，创建合成便笺。'])assert.equal(independentTaskRequested(request),true,request);
+ for(const request of ['不要新建任务，只继续原任务。','不要把它当新任务，接着上一轮。','不是新任务，继续。','原任务里写一个新方案。','把文章另存成新页面。','解释“独立新任务”这句话。','如果新建任务会扣费吗？','示例：独立合成验收ONE-QA。','看看这个新任务完成了没。','请翻译：独立合成验收 ONE-QA。','正文如下：独立新任务。','```text\n独立新任务\n```','> 独立新任务\n解释这段话。','不要独立合成验收，先讨论。','继续原任务，不重跑其他旧任务。','继续同一件，不复用旧成果。','继续刚才那个独立合成验收C，只修改这篇文章。','修改独立任务A的正文。'])assert.equal(independentTaskRequested(request),false,request);
+});
+
+test('a fresh task title binds only an explicit unquoted quoted-title field, never article headings or material',()=>{
+ for(const request of ['独立合成验收。标题固定“ONE-QA-C”。','创建新任务，固定标题为「ONE-QA-C」。','全新任务。标题必须为 "ONE-QA-C"。'])assert.equal(independentTaskTitle(request),'ONE-QA-C',request);
+ for(const request of ['独立新任务。正文如下：标题固定“OLD”。','独立新任务。引用：“标题固定「OLD」。”','独立新任务。\n> 标题固定“OLD”。','独立新任务。\n```text\n标题固定“OLD”。\n```','独立新任务。\n# 普通文章标题','继续原任务。标题固定“OLD”。','独立新任务，标题固定“FIRST”。标题固定“SECOND”。'])assert.equal(independentTaskTitle(request),undefined,request);
 });

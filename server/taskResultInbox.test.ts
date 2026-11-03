@@ -105,6 +105,25 @@ test('a completed result uses its brief once instead of echoing the longer saved
  assert.doesNotMatch(db.conversations.find(c=>c.id==='main-a')!.messages.at(-1)!.content,/正文也回读核对过了/);
 });
 
+test('a local result brief preserves literal inline code, identifiers and file paths while removing presentation markup',()=>{
+ const db=fixture(),execution=local(db,'literal-result-brief');
+ execution.finalResponse='已原地修改 `my_space/index.html`，保留标识 `KEEP_紫色42_保持原样`、`_literal_value_` 与 file_path。**已回读**，_内容一致_。';
+ const receipt=pendingTaskResults(db,a)[0];
+ assert.equal(receipt.brief,'已原地修改 my_space/index.html，保留标识 KEEP_紫色42_保持原样、_literal_value_ 与 file_path。已回读，内容一致。');
+ assert.equal(receipt.summary,execution.finalResponse,'briefing does not alter the owned full result');
+ appendTaskResultReport(db,a);
+ assert.match(db.conversations.find(c=>c.id==='main-a')!.messages.at(-1)!.content,/KEEP_紫色42_保持原样/);
+ assert.equal(db.conversations.find(c=>c.id==='main-b')!.messages.length,0);
+});
+
+test('preserving code literals does not restore stripped HTML attributes or technical diagnostic lines',()=>{
+ const db=fixture(),execution=local(db,'literal-plain-boundary');
+ execution.finalResponse='已保存 `file_path.xlsx` <span onclick="HIDDEN_JS()" data-private="HIDDEN_HTML">可查看</span><!-- HIDDEN_COMMENT -->。\nAPI password: HIDDEN_DIAGNOSTIC';
+ const brief=pendingTaskResults(db,a)[0].brief!;
+ assert.equal(brief,'已保存 file_path.xlsx 可查看。');
+ assert.doesNotMatch(brief,/HIDDEN_|onclick|data-private|<|>/);
+});
+
 test('scheduled and checking Notion saves are not terminal results in any automatic or manual inbox path',()=>{
  for(const state of ['scheduled','checking'] as const){
   const db=fixture(),{operation}=cloud(db,`notion-${state}`,a,{state:'failed',text:'保存可能已写入'});
