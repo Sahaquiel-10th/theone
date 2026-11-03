@@ -12,3 +12,11 @@
 .ima-connection-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
 .ima-connection-feedback { font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; margin: 20px 0 0; }
 .ima-credential-form button, .ima-scope button { justify-self: start; min-height: 44px; }
+
+.knowledge-connections-split { container: one-knowledge / inline-size; }
+@container one-knowledge (max-width: 520px) {
+  .knowledge-connections-split > .fluid-split-material { display: none; }
+  .knowledge-connections-split > :is(.fluid-split-primary, .fluid-split-secondary) { left: 0; width: 100%; border: 1px solid var(--fluid-line, #d9ded3); background: var(--fluid-input, #fffefb); }
+  .knowledge-connections-split[data-split-open="true"] > .fluid-split-primary,
+  .knowledge-connections-split[data-split-open="false"] > .fluid-split-secondary { display: none; }
+}
