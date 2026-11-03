@@ -85,3 +85,10 @@ test('reproducible baseline versus step comparison measures only serialized inpu
  assert.equal(data(built).inputs[0].content,delivery);assert.equal(comparison.basis,'serialized_utf8_bytes');assert.equal(comparison.baselineTools,30);assert.equal(comparison.stepTools,1);assert.ok(comparison.savedBytes>0);assert.ok(comparison.baseline.toolBytes>comparison.step.toolBytes);assert.deepEqual(comparison.step,built.inputProfile);assert.doesNotMatch(JSON.stringify(comparison),/token|cost|费用|交付正文/);
  t.diagnostic(JSON.stringify({basis:comparison.basis,baselineBytes:comparison.baseline.totalBytes,stepBytes:comparison.step.totalBytes,baselineToolBytes:comparison.baseline.toolBytes,stepToolBytes:comparison.step.toolBytes,baselineTools:comparison.baselineTools,stepTools:comparison.stepTools,savedBytes:comparison.savedBytes}));
 });
+
+test('a guided model receives its exact stage title and one outer result contract without expanding later-step authority',()=>{
+ const built=buildWorkflowStepContext(fixture({step:{id:'draft',title:'撰写短文',kind:'model',instruction:'依据资料写正文。'},deferredSteps:[{id:'save',title:'保存并回读',kind:'notion'}]})),goal=JSON.parse(built.messages[1].content!);
+ assert.equal(goal.currentStep.title,'撰写短文');assert.equal(goal.currentStep.id,'draft');assert.equal(goal.currentStep.completionScope,'current_step');assert.equal(built.tools.length,0);
+ assert.match(built.messages[0].content!,/只返回一个最外层 JSON 对象/);assert.match(built.messages[0].content!,/不要前言、后记或代码围栏/);assert.match(built.messages[0].content!,/JSON 示例当结果封套/);assert.match(built.messages[0].content!,/空正文不能标 completed/);
+ for(const title of ['',42,'x'.repeat(81)])assert.throws(()=>buildWorkflowStepContext(fixture({step:{id:'draft',title:title as string,instruction:'写正文。'}})),WorkflowContextError);
+});

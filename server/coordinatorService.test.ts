@@ -1239,7 +1239,7 @@ test('HTTP local admission is explicit and a duplicate pending operation is neve
 /** Full service-path fixture: only provider/model transports are synthetic.
  * Admission, workflow persistence, Notion ownership/readback, billing and HTML
  * file generation are the same implementations used by the live routes. */
-async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean;twoSaves?:boolean;adaptiveDefault?:boolean;legacyChain?:boolean;clarification?:'failed'|'needs_input';supplementText?:string;noHtml?:boolean;realClock?:boolean;automaticReadback?:boolean}={}){
+async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean;twoSaves?:boolean;adaptiveDefault?:boolean;legacyChain?:boolean;clarification?:'failed'|'needs_input';supplementText?:string;noHtml?:boolean;realClock?:boolean;automaticReadback?:boolean;modelResult?:{outcome:'completed'|'partial'|'needs_input'|'failed';content:string;summary:string}}={}){
  const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-workflow-service-'));
  const parentId='1'.repeat(32),pageId='2'.repeat(32),clock={now:Date.now()+1000};
  const source='ONE-WORKFLOW-SOURCE-青色42：插入入口后先找资料，再写完整方案。';
@@ -1301,6 +1301,7 @@ async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean
    assert.equal(legacyRound,4);return answer(JSON.stringify({outcome:'completed',content:'完整方案和交互网页已做好。',summary:'完整方案和网页都已完成。'}));
   }
   counts.draft++;assert.deepEqual(tools,[]);assert.ok(JSON.stringify(messages).includes(source),'model receives the actual source body');
+  if(options.modelResult)return answer(JSON.stringify(options.modelResult));
   if(options.clarification){
    if(counts.draft===1)return answer(JSON.stringify({outcome:options.clarification,content:'案例还没整理出来，请澄清案例要求。',summary:'案例需要澄清'}));
    assert.ok(JSON.stringify(messages).includes(options.supplementText??'公开案例我是让你自己想'));assert.match(JSON.stringify(messages),/青色42/);
@@ -3437,6 +3438,25 @@ test('natural local alias via single delegation retains local mode until admissi
  assert.equal(result.failure,undefined,JSON.stringify((await f.store.read()).contextTraces.at(-1)?.executionSteps));assert.equal(starts,1);const jobs=(await f.store.read()).chatOperations!.filter(o=>o.workRun);assert.equal(jobs.length,1);assert.equal(jobs[0].workRun!.executionMode,'local');assert.equal(jobs[0].workRun!.state,'prepared');
 });
 
+test('the exact scoped local acceptance request survives result reporting followed by old-task exclusions',async()=>{
+ const f=fixture();
+ const source='独立合成验收 ONE-QA-DURABLE-1103-LOCAL。帮我看看当前已授权工作文件夹里的 ONE-QA-DURABLE-1103 项目，背景能不能改成橙色 #f59e0b？只检查并修改该项目的 index.html，保留 KEEP_紫色42_保持原样 及其余内容；完成后回读目标文件，告诉我实际位置和修改结果。不继续或重跑任何旧任务，不动 myspace、不联网、不查知识库、不发布。';
+ const instruction='仅在当前已授权的 ONE 工作文件夹内处理。定位 ONE-QA-DURABLE-1103 项目，检查并修改该项目的 index.html，将页面背景改为橙色 #f59e0b；保留字符串 KEEP_紫色42_保持原样 及其余内容，不改其他文件。完成后实际回读目标文件，核实背景修改与保留字符串，并报告文件实际位置和修改结果。不要继续或重跑旧任务；不要触碰 myspace；不联网、不查知识库、不发布。未授权搜索其他目录或扩大范围。';
+ const profile=await f.store.mutate(d=>updateExecutor(d,'a',undefined,{revision:0,action:'draft',values:{...executorDefaults(),name:'明确目录的本机操作',modelId:'worker',routingRole:'logic'}}));
+ await f.store.mutate(d=>{updateExecutor(d,'a',profile.id,{revision:1,action:'publish'});d.settings.executorProfiles!.find(p=>p.id===profile.id)!.id='logic';});
+ let models=0,starts=0;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('this local request cannot retrieve knowledge')},{contextMode:'adaptive',modelCall:async(_model,_messages,tools)=>{
+  models++;assert.ok(tools.some(tool=>tool.function.name==='execute_local_task'));
+  return {...answer(''),toolCalls:[{id:'exact-local-edit',type:'function',function:{name:'execute_local_task',arguments:JSON.stringify({taskId:null,title:'合成项目背景改橙色',instruction,executorId:'logic',featureIds:[]})}}]};
+ }});
+ const result=await service.dispatch(a,{...input('operation_exact_scoped_local_edit',source),outputDestination:'chat'},key,undefined,async(cid,mid)=>{
+  starts++;const op=(await f.store.read()).chatOperations!.find(op=>op.conversationId===cid&&op.workRun)!;
+  assert.equal(op.workRun!.executionMode,'local');assert.equal(op.workRun!.inputMessageId,mid);assert.equal(op.workRun!.state,'prepared');assert.match(op.workRun!.instruction,new RegExp(instruction.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));return{id:'exact-scoped-local',status:'queued'};
+ },undefined,readyLocalProbe,lifecycleDevice);
+ assert.equal(result.failure,undefined);assert.equal(result.taskIds.length,1);assert.equal(starts,1);assert.equal(models,1);
+ const db=await f.store.read();assert.equal(db.chatOperations!.filter(op=>op.workRun).length,1);assert.equal(db.chatOperations!.find(op=>op.workRun)!.workRun!.webSearch,false);
+});
+
 test('a confirmed local batch repairs an expanded plan before any effect and retains the original edit',async()=>{
  const f=fixture(),source='帮我看看myspace的项目，背景能不能改成橙色';
  const profile=await f.store.mutate(d=>updateExecutor(d,'a',undefined,{revision:0,action:'draft',values:{...executorDefaults(),name:'单个确认任务',modelId:'worker',routingRole:'logic'}}));
@@ -4625,5 +4645,34 @@ for(const noHtml of [true,false])test(`durable Notion readback timer completes w
   assert.ok(completed.workRun!.reportedToCoordinatorAt);assert.equal(reports.length,1);assert.match(reports[0].content,new RegExp(result.taskId!));
   assert.doesNotMatch(main.messages.map(m=>m.content).join('\n'),/本轮没有完整做成|有必需的步骤没完成|先核对已有内容后继续/);
   assert.equal(done.attachments.filter(file=>file.conversationId===result.taskId).length,noHtml?0:1);
+ }finally{f.cleanup();}
+});
+
+
+for(const outcome of ['failed','partial','needs_input','completed'] as const)test(`workflow service never saves an empty guided model envelope; outcome=${outcome}`,async()=>{
+ const f=await workflowServiceFixture({noHtml:true,modelResult:{outcome,content:'',summary:outcome==='needs_input'?'请补充文章主题。':'正文生成失败。'}});
+ try{
+  const result=await f.service.dispatch(a,{...input(`operation_workflow_empty_envelope_${outcome}`,'从得到大脑查青色42资料，写文章并保存Notion。'),sourceIds:['wf-source'],confirmedExternal:true,outputDestination:'notion'},key);assert.ok(result.taskId);await f.service.resume(a,key);
+  await waitFor(async()=>(await f.store.read()).chatOperations!.some(o=>o.conversationId===result.taskId&&o.workRun?.state==='failed'));
+  const db=await f.store.read(),job=db.chatOperations!.find(o=>o.conversationId===result.taskId&&o.workRun)!.workRun!;
+  assert.equal(f.counts.retrieval,1);assert.equal(f.counts.draft,1);assert.equal(f.counts.create,0);assert.equal(f.counts.update,0);assert.equal(f.counts.read,0);assert.equal(f.counts.feature,0);
+  assert.notEqual(job.workflow!.steps[1].state,'completed');assert.equal(job.workflow!.steps[2].state,'waiting');assert.equal(job.notionReceipt,undefined);assert.notEqual(job.resultOutcome,'completed');
+  assert.equal(job.resultOutcome,outcome==='needs_input'?'needs_input':'failed');
+  const messages=db.conversations.filter(c=>c.id===result.taskId||c.coordinatorMain).flatMap(c=>c.messages.filter(m=>m.role==='assistant').map(m=>m.content)).join('\n');assert.doesNotMatch(messages,/"outcome"|"summary"|```json|已保存到 Notion/);
+  if(outcome==='needs_input')assert.match(messages,/请补充文章主题/);
+ }finally{f.cleanup();}
+});
+
+
+for(const outcome of ['failed','partial','needs_input','completed'] as const)test(`workflow service never saves malformed reserved result fields; outcome=${outcome}`,async()=>{
+ const f=await workflowServiceFixture({noHtml:true,modelResult:{outcome,content:{message:'生成失败'},summary:'正文没有产生'} as any});
+ try{
+  const result=await f.service.dispatch(a,{...input(`operation_workflow_malformed_envelope_${outcome}`,'从得到大脑查青色42资料，写文章并保存Notion。'),sourceIds:['wf-source'],confirmedExternal:true,outputDestination:'notion'},key);assert.ok(result.taskId);await f.service.resume(a,key);
+  await waitFor(async()=>(await f.store.read()).chatOperations!.some(o=>o.conversationId===result.taskId&&o.workRun?.state==='failed'));
+  const db=await f.store.read(),job=db.chatOperations!.find(o=>o.conversationId===result.taskId&&o.workRun)!.workRun!;
+  assert.equal(f.counts.retrieval,1);assert.equal(f.counts.draft,1);assert.equal(f.counts.create,0);assert.equal(f.counts.update,0);assert.equal(f.counts.read,0);assert.equal(f.counts.feature,0);
+  assert.equal(job.workflow!.steps[1].state,'failed');assert.equal(job.workflow!.steps[2].state,'waiting');assert.equal(job.notionReceipt,undefined);assert.equal(job.resultOutcome,'failed');
+  const cp=job.steps!.find(cp=>(cp.output as any)?.workflow?.stepId==='draft')!;assert.match((cp.output as any).result.content,/"outcome"/,'the untrusted result remains private diagnostic data');
+  const messages=db.conversations.filter(c=>c.id===result.taskId||c.coordinatorMain).flatMap(c=>c.messages.filter(m=>m.role==='assistant').map(m=>m.content)).join('\n');assert.doesNotMatch(messages,/"outcome"|"summary"|```json|已保存到 Notion/);
  }finally{f.cleanup();}
 });

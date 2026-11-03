@@ -18,14 +18,18 @@ function requestText(text:string){
     .replace(/“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|'[^'\n]*'|`[^`]*`/g,'').trim();
 }
 const positiveRequest=(request:string)=>request.replace(/(?:不要|不用|不必|不需要|别|禁止|不(?=(?:再|重新)?(?:执行|创建|写|修改|保存|操作|生成|导出|做|处理)))(?:再|重新)?[^，,。；;\n]{0,60}/gu,'');
+const reportField='(?:(?:本次|这次|实际|最终|保存|文件|项目|修改|处理|执行|的)\\s*)*(?:位置|路径|结果|进展|完成情况)';
+const completionReport=new RegExp(`(?:^|[，,。；;\\n]|并|然后|再)\\s*(?:(?:完成|修改|保存|处理|执行)(?:后|完)|改完|做完|最后|然后|并|再|请|在主对话|在这里|\\s)*(?:告诉我|向我汇报|给我汇报)${reportField}(?:\\s*(?:和|及|与|、)\\s*${reportField})*(?:[。!！\\s]*)(?=[，,。；;\\n]|$)`,'gu');
 /** A saved destination is a preference, not a command. Explicit restrictions,
  * explanations and status questions never acquire local write authority. */
 export function localActionRequested(text:string,boundTaskId?:string){
   const original=requestText(text);
   // A completion report is not an explanation request, but it also supplies
-  // no execution authority. Remove only this terminal reporting segment,
+  // no execution authority. Remove only these bounded result-field clauses,
   // then require an actionable request under the unchanged explanation rules.
-  const request=original.replace(/(?:^|[，,。；;\n]|并|然后|再)\s*(?:(?:完成|修改|保存|处理|执行)(?:后|完)|改完|做完|最后|然后|并|再|请|在主对话|在这里|\s)*(?:告诉我|向我汇报|给我汇报)(?:本次|这次|实际|最终)?(?:结果|进展|完成情况)[。!！\s]*$/u,'').trim();
+  // A following restriction ("不动旧项目") must not change a completion
+  // report back into an explanation request. The original bans still apply.
+  const request=original.replace(completionReport,'').trim();
   if(!request||coordinatorTaskIntent(original,boundTaskId).answerOnly||discussionOnly(original)||taskStatusQuestion(original)
     ||/(?:^|[，,。；;\n])\s*(?:(?:请|本轮|现在|这次|先|暂时)\s*)*(?:禁止|不准|不允许|不要|别|不)(?:实际)?执行(?:(?:任何|新的?)?(?:本机)?(?:操作|任务))?\s*(?:$|[，,。；;\n])/u.test(original))return false;
   if(/告诉我|说明一下|解释|教我|(?:请|帮我)(?:先)?(?:说明|介绍)/u.test(request))return false;

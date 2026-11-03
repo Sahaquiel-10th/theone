@@ -51,6 +51,16 @@ test('a concrete polite project edit is actionable while capability questions st
  for(const value of ['本机支持把背景改成橙色吗？','请解释一下项目背景能不能改成橙色','先讨论一下项目背景改成橙色的影响','不要修改这个项目，背景能不能改成橙色只是举例'])assert.equal(localActionRequested(value),false,value);
 });
 
+test('a concrete local edit retains authority when its completion report precedes preservation constraints',()=>{
+ const actual='独立合成验收 ONE-QA-DURABLE-1103-LOCAL。帮我看看当前已授权工作文件夹里的 ONE-QA-DURABLE-1103 项目，背景能不能改成橙色 #f59e0b？只检查并修改该项目的 index.html，保留 KEEP_紫色42_保持原样 及其余内容；完成后回读目标文件，告诉我实际位置和修改结果。不继续或重跑任何旧任务，不动 myspace、不联网、不查知识库、不发布。';
+ for(const request of [actual,'请修改当前本机项目的背景，改完告诉我文件位置和修改结果；不要覆盖其他文件。','请在已授权目录创建说明文件，完成后告诉我路径、结果。不联网。','请修改本机Excel并告诉我结果，不操作其他文件。']){
+  assert.equal(localActionRequested(request),true,request);assert.equal(naturalLocalActionRequested(request),true,request);
+ }
+ for(const request of ['请告诉我实际位置和修改结果，不要执行。','请告诉我怎么修改本机项目，完成后告诉我文件位置和修改结果。','请分析修改本机项目的风险，然后告诉我位置和结果。不联网。','本轮禁止执行任何操作；修改本机Excel只是示例，完成后告诉我实际位置和修改结果。不联网。']){
+  assert.equal(localActionRequested(request),false,request);assert.equal(naturalLocalActionRequested(request),false,request);
+ }
+});
+
 function localClarificationHistory(){
  const scope={workspaceId:'owned-space',userId:'owned-user'};
  const source='帮我看看myspace的项目，背景能不能改成橙色';

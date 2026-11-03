@@ -7,6 +7,7 @@ import {verifiedNotionCompletion} from './notionCompletion.js';
 import {taskStepKey,type TaskStep,type TaskStepStore} from './taskSteps.js';
 import {runTaskWorkflow,workflowProgress,workflowPhase,workflowSkippedOptionalRead,type WorkflowBinding,type WorkflowRun,type WorkflowStep,type WorkflowStepResult} from './taskWorkflow.js';
 import {buildWorkflowStepContext,type WorkflowContextInput,type WorkflowHistoryMessage} from './workflowContext.js';
+import {parseWorkflowModelOutcome} from './workflowModelResult.js';
 import {notionVerificationPresentation} from '../src/taskRecovery.js';
 import {validOperationEvidence,readAttempt,readFailureRecovery,transientReadFailure,type OperationEvidence,type OperationRecovery} from './operationRecovery.js';
 
@@ -124,16 +125,16 @@ const unsafePrompt=/(?:\b(?:Bearer|authorization|api[_ -]?key|password|secret|cr
 const safeQuestion=(value:unknown,fallback:string)=>typeof value==='string'&&value.trim()&&value.length<=2000&&!unsafePrompt.test(value)?value.trim():fallback;
 const bodyOf=(value:unknown):string=>{
  if(typeof value==='string')return parseTaskOutcome(value).content;
- const v=object(value);return typeof v?.content==='string'?parseTaskOutcome(v.content).content:'';
+ const v=object(value);return typeof v?.content==='string'?(['completed','partial','needs_input','failed','returned'].includes(String(v.outcome))&&typeof v.summary==='string'?v.content:parseTaskOutcome(v.content).content):'';
 };
 function parsed(value:unknown):TaskOutcome|undefined{
- const v=object(value);if(v&&['completed','partial','needs_input','failed'].includes(String(v.outcome))&&typeof v.content==='string'&&typeof v.summary==='string')return parseTaskOutcome(JSON.stringify(v));
+ const v=object(value);if(v&&['completed','partial','needs_input','failed','returned'].includes(String(v.outcome))&&typeof v.content==='string'&&typeof v.summary==='string')return {outcome:v.outcome as TaskOutcome['outcome'],content:v.content,summary:v.summary.slice(0,500)};
  const content=typeof value==='string'?value:typeof v?.content==='string'?v.content:undefined;return content?.trim()?parseTaskOutcome(content):undefined;
 }
 function classify(step:WorkflowStep,value:unknown):Classification{
  const v=object(value),answer=parsed(value),status=String(v?.status??v?.state??'');
  if(answer?.outcome==='needs_input'||status==='needs_input'){
-  const question=safeQuestion(answer?.content??v?.message,'还缺完成这一步需要的资料，请补充后接着处理。');
+  const question=safeQuestion(answer?.content?.trim()?answer.content:answer?.summary??v?.message,'还缺完成这一步需要的资料，请补充后接着处理。');
   return {state:'needs_input',outcome:'needs_input',summary:question.length<=240?question:'还缺完成这一步需要的资料，请补充后接着处理。'};
  }
  if(['pending','uncertain'].includes(status))return {state:'waiting',outcome:'waiting',summary:'这一步的原结果还在核对，不会重复执行。'};
@@ -192,7 +193,7 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
   }
   return [{...binding,id:`checkpoint_${cp.key}`,kind:'tool_result',content:typeof result==='string'?result:JSON.stringify(result??null),ref:cp.key,complete:v?.status!=='partial'&&v?.complete!==false&&output(cp).outcome==='completed'}];
  };
- const context=(step:WorkflowStep,refs:readonly string[])=>buildWorkflowStepContext({scope:binding,modelSystemPrompt:input.modelPromptForStep?.(step)??input.modelSystemPrompt,goal:input.goal,constraints:[],step:{id:step.id,kind:step.kind,instruction:step.instruction,historyMessageIds:(step.historyCount?input.history.slice(-step.historyCount):[]).map(message=>message.id)},deferredSteps:input.run.spec.steps.slice(input.run.spec.steps.findIndex(candidate=>candidate.id===step.id)+1).map(({id,title,kind})=>({id,title,kind})),history:input.history,inputs:[...input.inputs,...refs.flatMap(checkpointInputs),...step.inputs.flatMap(id=>{const source=input.run.spec.steps.find(source=>source.id===id);return source?.kind==='tool'&&source.required===false&&!refs.includes(key(source))?[{...binding,id:`optional_missing_${id}`,kind:'tool_result' as const,content:'此可选检索未取得可用结果。不得把它当作已核实事实；需要示例时可明确标注为假设，不得虚构真实公开案例。',complete:false}]:[];})],tools:[]});
+ const context=(step:WorkflowStep,refs:readonly string[])=>buildWorkflowStepContext({scope:binding,modelSystemPrompt:input.modelPromptForStep?.(step)??input.modelSystemPrompt,goal:input.goal,constraints:[],step:{id:step.id,title:step.title,kind:step.kind,instruction:step.instruction,historyMessageIds:(step.historyCount?input.history.slice(-step.historyCount):[]).map(message=>message.id)},deferredSteps:input.run.spec.steps.slice(input.run.spec.steps.findIndex(candidate=>candidate.id===step.id)+1).map(({id,title,kind})=>({id,title,kind})),history:input.history,inputs:[...input.inputs,...refs.flatMap(checkpointInputs),...step.inputs.flatMap(id=>{const source=input.run.spec.steps.find(source=>source.id===id);return source?.kind==='tool'&&source.required===false&&!refs.includes(key(source))?[{...binding,id:`optional_missing_${id}`,kind:'tool_result' as const,content:'此可选检索未取得可用结果。不得把它当作已核实事实；需要示例时可明确标注为假设，不得虚构真实公开案例。',complete:false}]:[];})],tools:[]});
  // Validate all caller-wrapped references, including unselected history, before
  // the first billable or external call. A wrong scope never degrades to empty.
  context(input.run.spec.steps[0],[]);
@@ -273,7 +274,7 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
   let value:unknown;
   if(step.kind==='model'){
    const called=await input.callModel(structuredClone(step),selected.messages);await verify();
-   const answer=parseTaskOutcome(called.content),invalid=called.toolCalls.length>0||called.finishReason==='filtered'||!called.content.trim();
+   const answer=parseWorkflowModelOutcome(called.content,step.title),invalid=called.toolCalls.length>0||called.finishReason==='filtered'||!called.content.trim();
    value={...answer,...(called.finishReason?{finishReason:called.finishReason}:{})};
    const classification=invalid?{state:'failed' as const,outcome:'failed' as const,summary:'这一步没有返回可直接使用的正文。'}:called.finishReason==='length'?{state:'failed' as const,outcome:'partial' as const,summary:'正文还没有完整返回，已返回的内容会保留。'}:classify(step,value);
    return saveResult(step,value,classification);
@@ -305,7 +306,7 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
   const cp=stored(step);if(!cp)return [];const value=output(cp),answer=parsed(value.result);
   return ['completed','partial'].includes(value.outcome)&&answer?.content.trim()&&answer.outcome!=='needs_input'&&answer.outcome!=='failed'?[answer.content]:[];
  });
- const requests=run.spec.steps.flatMap(step=>{const cp=stored(step);if(!cp)return [];const value=output(cp),answer=parsed(value.result),v=object(value.result);return value.outcome==='needs_input'?[safeQuestion(answer?.content??v?.message,run.steps.find(state=>state.id===step.id)?.summary??'还缺完成这一步需要的资料，请补充后接着处理。')]:[];});
+ const requests=run.spec.steps.flatMap(step=>{const cp=stored(step);if(!cp)return [];const value=output(cp),answer=parsed(value.result),v=object(value.result);return value.outcome==='needs_input'?[safeQuestion(answer?.content?.trim()?answer.content:answer?.summary??v?.message,run.steps.find(state=>state.id===step.id)?.summary??'还缺完成这一步需要的资料，请补充后接着处理。')]:[];});
  let content=candidates.at(-1)??'',wholeTaskSummary:string|undefined;
  const completedFeatures=run.spec.steps.filter((step,index)=>step.kind==='feature'&&run.steps[index].state==='completed');
  if(run.phase==='completed'&&completedFeatures.length>1){

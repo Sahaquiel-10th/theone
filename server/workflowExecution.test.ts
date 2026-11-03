@@ -377,3 +377,44 @@ test('concurrent due recovery events claim the same read attempt with CAS before
  await f.execute(overrides);clock+=2000;
  const results=await Promise.allSettled([f.execute(overrides),f.execute(overrides)]);assert.equal(reads,2);assert.ok(results.some(result=>result.status==='rejected'));assert.equal(f.run.phase,'completed');
 });
+
+test('guided model step explanation plus a single fenced result saves only its exact manuscript',async()=>{
+ const title='撰写短文',article='# ONE-QA-DURABLE-1103-CLOUD\n\n正文含 **强调** 与 `inline code`。\n\n| 项目 | 内容 |\n| --- | --- |\n| 一 | 保留 |\n\n自然结尾。',envelope={outcome:'completed',content:article,summary:'短文已经写好。'};
+ const raw=`这是"${title}"步骤（model 步骤），我只需产出正文；保存与回读是后续 Notion 步骤，本步不执行。下面是本步成果。\n\n\`\`\`json\n${JSON.stringify(envelope)}\n\`\`\``;
+ const f=fixture(plan(step('draft',[],{title}),step('save',['draft'],{kind:'notion'})));let saved='';
+ const result=await f.execute({callModel:async(_s,messages)=>{assert.equal(JSON.parse(messages[1].content!).currentStep.title,title);return {content:raw,toolCalls:[]};},saveNotion:async(_s,body)=>{saved=body;return f.makeProof(body);}});
+ assert.equal(saved,article);assert.equal(result.run.phase,'completed');assert.equal(f.modelCalls,0);
+ const cp=f.steps.find(cp=>(cp.output as any)?.workflow?.stepId==='draft')!;assert.equal((cp.output as any).result.content,article);assert.equal((cp.output as any).result.summary,envelope.summary);
+ assert.doesNotMatch(saved,/这是“撰写短文”|"outcome"|"summary"/);
+});
+
+test('a fenced failed outcome after the current step explanation cannot become a completed manuscript or Notion write',async()=>{
+ const title='撰写短文',raw=`这是“${title}”步骤的结果。\n\n\`\`\`json\n${JSON.stringify({outcome:'failed',content:'只拿到部分说明，正文未完成。',summary:'正文尚未完成。'})}\n\`\`\``;
+ const f=fixture(plan(step('draft',[],{title}),step('save',['draft'],{kind:'notion'})));
+ const result=await f.execute({callModel:async()=>({content:raw,toolCalls:[]})});assert.equal(result.run.steps[0].state,'failed');assert.equal(f.saves,0);assert.equal(result.run.steps[1].state,'waiting');
+});
+
+test('a normalized manuscript containing a JSON envelope example is saved as authored rather than parsed a second time',async()=>{
+ const jsonArticle=JSON.stringify({outcome:'failed',content:'这只是文章中的完整 JSON 示例',summary:'JSON示例'}),article='# 结果协议文章\n\n```json\n'+jsonArticle+'\n```\n\n文章结尾。';
+ for(const content of [jsonArticle,article,JSON.stringify({outcome:'failed',content:{message:'文章里的 JSON 示例'},summary:'这不是步骤结果'})]){
+  const f=fixture(plan(step('draft',[],{title:'撰写短文'}),step('save',['draft'],{kind:'notion'})));let saved='';
+  const result=await f.execute({callModel:async()=>({content:JSON.stringify({outcome:'completed',content,summary:'协议文章已写好。'}),toolCalls:[]}),saveNotion:async(_s,body)=>{saved=body;return f.makeProof(body);}});
+  assert.equal(saved,content);assert.equal(result.run.phase,'completed');assert.match(result.content,/JSON/);
+ }
+});
+
+test('empty model envelopes cannot satisfy a drafting stage or reach a later save',async()=>{
+ for(const outcome of ['failed','partial','needs_input','completed'] as const)for(const wrapped of [false,true]){
+  const title='撰写短文',value={outcome,content:'',summary:outcome==='needs_input'?'请补充文章主题。':'正文生成失败。'},raw=wrapped?`这是“${title}”步骤的结果。\n\n\`\`\`json\n${JSON.stringify(value)}\n\`\`\``:JSON.stringify(value);
+  const f=fixture(plan(step('draft',[],{title}),step('save',['draft'],{kind:'notion'}))),result=await f.execute({callModel:async()=>({content:raw,toolCalls:[]})});
+  assert.notEqual(result.run.steps[0].state,'completed');assert.equal(f.saves,0);assert.equal(result.run.steps[1].state,'waiting');assert.doesNotMatch(result.content,/"outcome"|"summary"|```json/);
+ }
+});
+
+test('malformed known model result fields never unlock a later Notion save',async()=>{
+ for(const outcome of ['failed','needs_input','partial','completed'] as const){
+  const title='撰写短文',raw=`这是“${title}”步骤的结果。\n\n\`\`\`json\n${JSON.stringify({outcome,content:{message:'生成失败'},summary:'正文没有产生'})}\n\`\`\``;
+  const f=fixture(plan(step('draft',[],{title}),step('save',['draft'],{kind:'notion'}))),result=await f.execute({callModel:async()=>({content:raw,toolCalls:[]})});
+  assert.equal(result.run.steps[0].state,'failed');assert.equal(f.saves,0);assert.equal(result.run.steps[1].state,'waiting');assert.doesNotMatch(result.content,/"outcome"|"summary"|```json/);
+ }
+});
