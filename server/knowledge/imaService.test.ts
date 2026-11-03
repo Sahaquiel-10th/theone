@@ -181,3 +181,11 @@ test("ima is an explicit knowledge source without matching image or animal", asy
   assert.deepEqual(knowledgePolicy(f.db, scope, "在腾讯 ima 中查找采购资料").requested, ["ima"]);
   for (const text of ["查找 image 示例", "查找 animal 资料"]) assert.deepEqual(knowledgePolicy(f.db, scope, text).requested, []);
 });
+
+test("ima bounds malformed markup without repeatedly rescanning nested angle brackets", async () => {
+  const f = fixture(); await f.service.connect(scope, credentials);
+  f.options.override = path => path === "get_doc_content" ? { code: 0, data: { content: "<".repeat(60_000) + "采购" } } : undefined;
+  const chunks = await f.service.search("a", "采购", 5);
+  assert.ok(chunks.every(chunk => chunk.content.length <= 24_000));
+  assert.ok(chunks.some(chunk => chunk.content.endsWith("采购")));
+});

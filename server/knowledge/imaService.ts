@@ -43,7 +43,7 @@ function redact(value: string, credentials: Credentials) {
   return result;
 }
 function readable(value: unknown, credentials: Credentials) {
-  return typeof value === "string" ? redact(value, credentials).replace(/<[^>]*>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").trim() : "";
+  return typeof value === "string" ? redact(value, credentials).replace(/<[^<>]*>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").trim() : "";
 }
 function relevance(text: string, query: string) {
   const tokens = [...new Set(query.toLowerCase().match(/[a-z0-9]+|[\u4e00-\u9fff]{1,}/g) || [])];
