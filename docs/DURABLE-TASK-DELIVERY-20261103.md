@@ -1,5 +1,13 @@
 # 持久成果驱动的任务执行与交付改造
 
+## 最终状态（2026-11-03）
+
+运行源码 `cb8503ea5af31f8da18ea29867daa0f30761405e` 已自动上线，精确current/CI/公开health与JS均已核对。2378项检查，2377通过、0失败、1既有skip；应用、Mac、Windows CI通过。本轮真机为Mac，未把Windows CI写成Windows实体机验收。
+
+新云D按3步自动完成并生成独立新Notion页，全文、任务3/3与主对话完成一致；旧A/B页在D后正文不变。本机C实际只改隔离文件的一处颜色，终态accepted/completed与独立字节回读一致。旧B合成页另外通过显式只读重证，没有重新生成或保存。原业务文章/myspace未重跑；C曾误复用旧A合成页，已如实保留该失败历史并在最后修复后用D验证隔离，不将中间轮次算通过。
+
+自动故障恢复的真实计时器/重启/撤权/停止测试是离线服务集成，未在生产强制断网或制造供应商故障。通用重试只覆盖已审定安全读取；新增平台仍需自己的数据转换、幂等/查询与内容验证实现，未知模型/写入不盲重放。B旧上游失败原因因当时未记HTTP分类无法追溯，未伪称已知原因；新网关已补安全分层诊断，C实际模型与文件链路随后成功。
+
 ## 用户目标与本轮范围
 
 让用户交代任务后能安心离开：系统保留已经做出的成果，自动处理可恢复的临时故障；确实需要用户提供资料、授权或作决定时才打扰。不能将“点一下重试”当作常规人工步骤。以 2026-11-03 用户五项要求与两张截图为验收依据，不能以测试数或任务卡代替真实交付。
@@ -72,8 +80,8 @@
 - [x] TypeScript、相关单元/集成和隔离测试、全量测试、生产构建、diff-check。
 - [x] 故障注入覆盖：成功后丢响应、成果落盘后中断、重复回执、重启、前端断线、撤权与用户停止（离线/真实计时器集成，非生产故障注入）。
 - [x] 独立审查，提交/推送，核对部署精确版本、health 和实际前端产物。
-- [ ] 新合成云文档任务与本机任务闭环，截图/成果/回读/步骤终态分别留证。
-- [ ] 文档逐项回填：已完成、未验证、阻塞和证据；不得把本地通过写成真机/线上通过。
+- [x] 新合成云文档任务与本机任务闭环，截图/成果/回读/步骤终态分别留证。
+- [x] 文档逐项回填：已完成、未验证、阻塞和证据；不得把本地通过写成真机/线上通过。
 
 ## 方案取舍
 
@@ -182,3 +190,22 @@
 - 新任务不继承旧页面/步骤/receipt；授权旧正文另存只使用已read_task且read_context exact conversation/message/digest的内容指针，foreign、原文变化或同正文换messageId均拒绝。已有主对话长文章选择保留，合法server-owned retry通过原版本检查后仍可恢复；不会把原文中“独立新任务”误作永不允许恢复。
 - 真实service单/批2条均从read旧A、错误旧ID被拒，到同轮null纠正并创建/核对新Notion页；另覆原稿引用、mixed batch全批无部分入队、direct/bound入口及合法retry。317项service+intent绿，最终exact来源补丁后8条关键回归/TS/diff绿；独审9条intent+5条service绿。新D线上验收仍待做。
 - 主对话brief原来全局剥除Markdown标记导致代码/文件路径的下划线消失。现在保留行内code和普通标识符/路径字面值，仅去掉边界明确的强调标记；旧HTML/技术诊断过滤不变。Inbox56项、TS/diff和独审通过。
+
+- 最后冻结源码 `cb8503ea5af31f8da18ea29867daa0f30761405e` 全量2378项/2377通过/0失败/1既有skip（`/tmp/one-durable-fresh-final-full-20261103.log`）；TS/生产构建通过（`/tmp/one-durable-fresh-final-build-20261103.log`），diff-check通过。自动run [41565934515](https://github.com/Sahaquiel-10th/theone/actions/runs/41565934515) 三平台verify已全部success，实际部署/D验收待回填。
+
+### 旧B合成页显式只读重证实测
+
+- 在1d6a39e线上只点击一次B任务“再核对一次（不重写）”；没有点继续、重发要求、重新生成或保存。该次是旧v8历史收据的显式只读支持验收，不是新默认流程需人工点击的证明。
+- UI随后自动3/3与完成汇报；服务器state/outcome completed，receipt.state verified / comparison.kind matched / comparatorVersion9，同时receipt.canonicalVersion仍8，原expectedRawDigest `7cfdecf997845afc5c70bde61283a1f84fd1bc226e865bf2012e87b8c309c037` 与旧expectedCanonicalDigest均保留。
+- 两条task_worker usage仍只有北京时间09:07:12、09:07:37的原始成功模型调用，无新模型用量；save_notion_draft检查点仍原09:08:16保存，没有新写入。独立Notion fetch比对正文与重证前逐字一致。真实截图 `output/task-live-cloud-b-readonly-recovered-20261103.png`。
+
+- cb8503e自动run41565934515四job全部success，服务器日志北京时间10:43:57明确部署完整同SHA，10:43:59 job完成；远端2378/2377通过/0失败/1skip与TS/生产构建/预检全部通过。current另只读确认完整同SHA，无回滚/并行重发；旧未启动任务仍保留。已提交唯一新云D请求，等待其新身份/新页/严格全文核对/主对话一致。
+
+### 最终D独立云端验收（通过）
+
+- 新任务 `cnv_35395a47304e1f70a73b`，标题精确 `ONE-QA-DURABLE-1103-CLOUD-D`；非A/B/C旧任务ID，无retryOf。三点提纲→撰写短文→保存并回读，workflow/state/outcome全部completed，3/3。无继续按钮、没有重发要求。
+- 新页面 [ONE-QA-DURABLE-1103-CLOUD-D](https://www.notion.so/40da50159991813cabfdfb4cde752c8f)，与A/B页面均不同。receipt verified，canonicalVersion9/comparator9/matched；独立Notion connector fetch复核真实标题、完整正文、表格、加粗、原样DURABLE_紫色42，未含步骤前言/JSON封套。
+- 服务端该job仅2条成功task_worker用量（北京时间10:46:07与10:46:25），对应提纲/正文；1个save_notion_draft实际保存检查点（10:46:55），无额外写入；Notion阶段随后完成严格回读。
+- D结束后重新独立fetchA/B，分别与D前的A-after-C及B-recovered正文逐字相同，证明最后新任务未再修改旧页。A在C轮曾被误改的事实仍保留，不把“D后不变”误说成整个过程A未变。
+- 公开最终核对北京时间10:46:09：health200 `{ok:true}`，JS index-DDTy3_Oa.js 1466348字节/SHA256 `1b31bdb83b3a59c0962b0230b437f23ab107e9802c9b0a4e03998f3e1cdf742f` 与本地一致；服务器current精确cb8503e。
+- 真线上截图 `output/task-live-cloud-d-progress-20261103.png`、`output/task-live-cloud-d-completed-20261103.png`。本机C与旧B只读重证截图、日志及独立成果校验见前文。最终文档补充仅记录验收，不改变已验证运行源码。
