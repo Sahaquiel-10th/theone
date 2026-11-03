@@ -1,6 +1,6 @@
 import type {Database} from './types.js';
 import {canReadKnowledge} from './enterprisePolicy.js';
-export const knowledgeNames:Record<string,string>={notion:'Notion',getnote:'得到大脑',feishu:'飞书',flowus:'FlowUs',yinxiang:'印象笔记',flomo:'flomo'};
+export const knowledgeNames:Record<string,string>={notion:'Notion',getnote:'得到大脑',feishu:'飞书',flowus:'FlowUs',yinxiang:'印象笔记',flomo:'flomo',ima:'腾讯 ima'};
 export type KnowledgePolicy={required:boolean;sourceIds:string[];requested:string[];missing:string[];declined:boolean};
 /** These explicit source names constrain, never expand, the user's selection.
  * Semantic planning still decides the work; exact named-source requirements
@@ -30,7 +30,7 @@ export function knowledgePolicy(db:Database,scope:{workspaceId:string;userId:str
   const isQuery=(clause:string)=>/查找|查询|查阅|查查|查一下|搜|检索|寻找|找找|找一下|(?:^|[\s]|请|帮我|去|到|在|从|里|中|想|再|继续|重新|额外|另外)(?:查|找)(?!看)/.test(clause)
     || /看看|查看/.test(clause)&&!/(?:保存|写入|回读|核对|检查|创建|新建)/.test(clause)
     || /我记得/.test(clause);
-  const named=Object.entries(knowledgeNames).filter(([id,name])=>clauses.some(clause=>new RegExp(id+'|'+name,'i').test(clause)&&isQuery(clause))).map(([id])=>id);
+  const named=Object.entries(knowledgeNames).filter(([id,name])=>clauses.some(clause=>new RegExp(id==='ima'?'(?:^|[^a-z0-9_])ima(?=$|[^a-z0-9_])':id+'|'+name,'i').test(clause)&&isQuery(clause))).map(([id])=>id);
   const query=clauses.some(isQuery);
   const personal=/我记得有(?:个|一|件)/.test(text)||/(?:昨天|前天|今天|上周|本周)(?:.{0,12}我的.{0,8}(?:会议|录音|笔记)|.{0,12}(?:会议记录|会议纪要|录音|笔记))/.test(text);
   const declined=original!==text&&!query&&!personal;

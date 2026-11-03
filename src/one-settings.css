@@ -1,3 +1,4 @@
+@import "./ima-connection.css";
 /* Settings use compact lists and focused dialogs; never inherit chat markdown cards. */
 .admin-page [hidden], .pricing-editor [hidden] { display: none !important; }
 .admin-billing-sections { width: 100%; max-width: 1000px; }

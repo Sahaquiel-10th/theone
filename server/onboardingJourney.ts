@@ -20,7 +20,7 @@ export type OnboardingJourney = {
   handbook?: import('./betaProfile.js').OnboardingHandbook;
 };
 export type WelcomeContext = { platforms: string[]; features: { id: string; name: string; description: string }[] };
-const platformNames: Record<string,string> = { getnote:'得到大脑',notion:'Notion',yinxiang:'印象笔记',flowus:'FlowUs',feishu:'飞书',flomo:'flomo' };
+const platformNames: Record<string,string> = { getnote:'得到大脑',notion:'Notion',yinxiang:'印象笔记',flowus:'FlowUs',feishu:'飞书',flomo:'flomo',ima:'腾讯 ima' };
 export function welcomeContext(db: Database, scope: AccountScope): WelcomeContext {
   accountInScope(db,scope);
   const platforms=[...new Set(db.knowledgeConnections.filter(c=>c.workspaceId===scope.workspaceId&&c.status==='connected'&&canReadKnowledge(db,scope,c.id)).map(c=>platformNames[c.provider]).filter(Boolean))];

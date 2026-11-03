@@ -10,7 +10,7 @@ import {welcomeManualConfig} from './welcomeManual.js';
 import {invokeFixedWorkflow,type FixedWorkflowInvocation} from './fixedWorkflows.js';
 
 const platformNames: Record<KnowledgeProviderId, string> = {
-  getnote: "得到大脑", notion: "Notion", yinxiang: "印象笔记", flowus: "FlowUs", feishu: "飞书", flomo: "flomo",
+  getnote: "得到大脑", notion: "Notion", yinxiang: "印象笔记", flowus: "FlowUs", feishu: "飞书", flomo: "flomo", ima: "腾讯 ima",
 };
 const noticeText: Record<NonNullable<OnboardingHandbook["reason"]>, string> = {
   not_configured: "图片指南暂时还没准备好，你可以先开始聊天。",

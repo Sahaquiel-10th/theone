@@ -168,7 +168,7 @@ export function routingCapabilities(db: Database, scope: FeatureScope, options: 
   });
   const builtins = builtinCapabilityCards(db, options).filter((card) => ["image_generation", "codex_execution"].includes(card.taskKind ?? "") && card.available);
   const features = (db.settings.officialFeatures ?? []).filter((record) => featureEntitled(db, scope, record)).map((record) => featureCard(db, record, scope)).filter((card) => card.available);
-  const names:Record<string,string>={getnote:'得到大脑',notion:'Notion',feishu:'飞书',flowus:'FlowUs',yinxiang:'印象笔记',flomo:'flomo'};
+  const names:Record<string,string>={getnote:'得到大脑',notion:'Notion',feishu:'飞书',flowus:'FlowUs',yinxiang:'印象笔记',flomo:'flomo',ima:'腾讯 ima'};
   const sources:CapabilityCard[]=(db.knowledgeConnections??[]).filter(connection=>connection.workspaceId===scope.workspaceId&&connection.status==='connected'&&canReadKnowledge(db,scope,connection.id)).map(connection=>({
     id:`knowledge:${connection.id}`,kind:'knowledge',mode:'text',name:`查询${names[connection.provider]??connection.provider}`,
     description:`按需检索已连接的${names[connection.provider]??connection.provider}中的资料，返回来源或真实无匹配结果。不代表写入、同步或读取所有正文。`,

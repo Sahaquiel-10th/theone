@@ -265,7 +265,7 @@ type AppCapabilities = {
 };
 
 type KnowledgeConnection = {
-  provider: "getnote" | "notion" | "yinxiang" | "flowus" | "flomo";
+  provider: "getnote" | "notion" | "yinxiang" | "flowus" | "flomo" | "ima";
   status: "disconnected" | "pending" | "connected" | "error" | "revoked";
   providerSpaceName?: string;
   credentialExpiresAt?: string;
@@ -772,6 +772,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   });
   const [notionConnection, setNotionConnection] = useState<KnowledgeConnection>({ provider: "notion", status: "disconnected" });
   const [yinxiangConnection, setYinxiangConnection] = useState<KnowledgeConnection>({ provider: "yinxiang", status: "disconnected" });
+  const [imaConnection, setImaConnection] = useState<KnowledgeConnection>({ provider: "ima", status: "disconnected" });
   const [flomoConnection, setFlomoConnection] = useState<KnowledgeConnection>({ provider: "flomo", status: "disconnected" });
   const [flowusConnection, setFlowusConnection] = useState<KnowledgeConnection>({ provider: "flowus", status: "disconnected" });
   const [runtimeUpdate, setRuntimeUpdate] = useState<RuntimeUpdateStatus | null>(null);
@@ -1185,7 +1186,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   async function refresh() {
     const keep = <T,>(fallback: T) => (error: Error) => { setError(error.message); return fallback; };
-    const [modelResult, conversationResult, workspaceResult, agentResult, capabilityResult, knowledgeResult, notionResult, yinxiangResult, flowusResult, flomoResult] = await Promise.all([
+    const [modelResult, conversationResult, workspaceResult, agentResult, capabilityResult, knowledgeResult, notionResult, yinxiangResult, flowusResult, flomoResult, imaResult] = await Promise.all([
       api<{ models: Model[]; defaultModelId: string }>("/api/models").catch(keep({ models, defaultModelId })),
       api<{ conversations: Conversation[]; pagination: { page: number; hasMore: boolean } }>(
         `/api/conversations?summary=1&page=1&pageSize=${conversationPageSize}&archived=${showArchived}`
@@ -1197,7 +1198,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/notion").catch(keep({ connection: notionConnection, configured: false })),
       api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/yinxiang").catch(keep({ connection: yinxiangConnection, configured: false })),
       api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/flowus").catch(keep({ connection: flowusConnection, configured: false })),
-      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/flomo").catch(keep({ connection: flomoConnection, configured: false }))
+      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/flomo").catch(keep({ connection: flomoConnection, configured: false })),
+      api<{ connection: KnowledgeConnection; configured: boolean }>("/api/knowledge/connections/ima").catch(keep({ connection: imaConnection, configured: false }))
     ]);
     setModels(modelResult.models);
     setDefaultModelId(modelResult.defaultModelId);
@@ -1223,6 +1225,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setYinxiangConnection(yinxiangResult.connection);
     setFlowusConnection(flowusResult.connection);
     setFlomoConnection(flomoResult.connection);
+    setImaConnection(imaResult.connection);
     setDraftModelId((current) => (
       modelResult.models.some((model) => model.id === current)
         ? current
@@ -2293,7 +2296,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     return (<section className="account-page features-page"><header className="admin-header"><div><h2>功能</h2></div></header><div className="account-body settings-account-body">{featureSelectionNotice?<p className="feature-selection-notice" role="status">{featureSelectionNotice}</p>:null}{preview.enabled?<FeatureShelf api={api} models={models} active={workLayer==='features'} onDone={()=>{closeWorkLayer();requestAnimationFrame(()=>featurePicker.input.current?.focus());}} onOperationChange={setViewedFeatureOperation} initialOperationId={featureOperationId||undefined} initialOpenRequest={featureOpenRequest} onRunStarted={run=>{setFeatureOperationId(run.operationId);updateFeatureRun(run);closeWorkLayer();fluidPanels.open('activity');focusFluid('activity');}} onRunStatus={updateFeatureRun} selected={featureForNext.map(item=>item.id)} onChoose={chooseFeature}/>:<FeatureMarketplace api={api} models={models} onAsk={()=>openSurface('chat')}/>}</div></section>);
   }
   function renderAccount() {
-    return (<AccountPage user={user} onLogout={onLogout} profile={profile} onSaveProfile={async patch=>{const result=await saveProfile(patch);if(patch.appearance)setScenePreview(null);return result;}} onOpenGuide={startStory} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={openHistory} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgeConnections api={api} inline={preview.enabled} returnOutcome={knowledgeReturnRef.current} onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : next.provider === "flomo" ? setFlomoConnection(next) : setKnowledgeConnection(next)} />} />);
+    return (<AccountPage user={user} onLogout={onLogout} profile={profile} onSaveProfile={async patch=>{const result=await saveProfile(patch);if(patch.appearance)setScenePreview(null);return result;}} onOpenGuide={startStory} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={openHistory} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgeConnections api={api} inline={preview.enabled} returnOutcome={knowledgeReturnRef.current} onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : next.provider === "flomo" ? setFlomoConnection(next) : next.provider === "ima" ? setImaConnection(next) : setKnowledgeConnection(next)} />} />);
   }
 
   // Until the authenticated first snapshot arrives, a missing feature flag is
@@ -2566,7 +2569,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               <button type="button" onClick={() => setContent(demo.enabled ? "UI 先记着这个想法，不要执行" : "从我的个人知识中，找出现在最值得重新关注的内容")}><span>{demo.enabled ? '有个想法，先帮我记着' : '找找被我忘掉的好东西'}</span><i aria-hidden="true">↗</i></button>
             </div>
           ) : null}
-        <footer className="studio-assistant-footer"><span className={`connection-dot ${[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "connected" : "disconnected"}`} /><button type="button" onClick={() => openSurface("knowledge")}>{[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection].some(item => item.status === "connected") ? "知识已连接" : "连接知识"}</button></footer>
+        <footer className="studio-assistant-footer"><span className={`connection-dot ${[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection, imaConnection].some(item => item.status === "connected") ? "connected" : "disconnected"}`} /><button type="button" onClick={() => openSurface("knowledge")}>{[knowledgeConnection, notionConnection, yinxiangConnection, flowusConnection, flomoConnection, imaConnection].some(item => item.status === "connected") ? "知识已连接" : "连接知识"}</button></footer>
       </aside>
 
       {fluidEnabled?<>

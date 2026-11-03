@@ -1,0 +1,183 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { Store } from "../db.js";
+import type { Database } from "../types.js";
+import { ImaError, ImaService, imaSearchQuery } from "./imaService.js";
+import { decryptCredential, knowledgeCredentialContext } from "./credentialCipher.js";
+import { imaConnector } from "../connectors/ima.js";
+import { ConnectorRegistry } from "../connectors/registry.js";
+import { KnowledgeService } from "./knowledgeService.js";
+import { knowledgePolicy } from "../taskContract.js";
+
+const credentials = { clientId: "client-test-a", apiKey: "ima-api-secret-a" };
+function fixture() {
+  const now = new Date().toISOString();
+  const db = { users: ["a", "b", "member"].map(id => ({ id, enabled: true, defaultWorkspaceId: id === "member" ? "a" : id })), workspaces: ["a", "b"].map(id => ({ id, status: "active" })), workspaceMembers: [{ userId: "a", workspaceId: "a", role: "owner" }, { userId: "b", workspaceId: "b", role: "owner" }, { userId: "member", workspaceId: "a", role: "member" }], knowledgeConnections: [], auditLogs: [] } as unknown as Database;
+  const store = { async read() { return db; }, async mutate<T>(fn: (db: Database) => T) { return fn(db); } } as Store;
+  const calls: { path: string; body: Record<string, unknown>; client: string; key: string }[] = [];
+  const options: { libraries?: number; override?: (path: string, body: Record<string, unknown>) => unknown | Promise<unknown> } = {};
+  const fetcher = (async (url, init) => {
+    assert.equal(new URL(String(url)).origin, "https://ima.qq.com");
+    assert.equal(init?.redirect, "error"); assert.ok(init?.signal); assert.equal(init?.method, "POST");
+    const path = new URL(String(url)).pathname.split("/").at(-1)!, body = JSON.parse(String(init?.body));
+    const headers = new Headers(init?.headers); calls.push({ path, body, client: headers.get("ima-openapi-clientid")!, key: headers.get("ima-openapi-apikey")! });
+    const override = await options.override?.(path, body);
+    if (override instanceof Response) return override;
+    if (override !== undefined) return Response.json(override);
+    let data: unknown;
+    if (path === "search_knowledge_base") data = { info_list: Array.from({ length: options.libraries ?? 2 }, (_, i) => ({ id: `kb-${i}`, name: `资料库 ${i}` })), is_end: true };
+    else if (path === "list_notebook") data = { note_folder_infos: [] };
+    else if (path === "search_note") data = { search_note_infos: [{ note_book_info: { note_id: "own-note", title: "采购计划", summary: "摘要不是正文" } }], is_end: true };
+    else if (path === "search_knowledge") data = { info_list: [{ media_id: "file-1", title: "采购资料", highlight_content: "<em>采购</em>资料命中片段" }], is_end: true };
+    else if (path === "get_doc_content") data = { content: "采购计划正文" };
+    else if (path === "get_media_info") data = { media_type: 1, url_info: { url: "http://127.0.0.1/private", headers: { Authorization: "secret-upstream-header" } } };
+    else throw Error("unreviewed endpoint called");
+    return Response.json({ code: 0, data });
+  }) as typeof fetch;
+  return { db, store, calls, options, service: new ImaService(store, fetcher), now };
+}
+const scope = { workspaceId: "a", userId: "a" };
+
+test("ima verifies official read endpoints before encrypting credentials; state never returns credentials", async () => {
+  const f = fixture(), result = await f.service.connect(scope, credentials);
+  assert.equal(result.connection.status, "connected"); assert.deepEqual(f.calls.map(c => c.path), ["search_knowledge_base", "list_notebook"]);
+  const c = f.db.knowledgeConnections[0];
+  assert.equal(c.clientId, "ima-openapi");
+  assert.equal(decryptCredential(c.encryptedApiKey!, knowledgeCredentialContext("a", "ima", "api_key")), credentials.apiKey);
+  assert.equal(decryptCredential(c.encryptedClientId!, knowledgeCredentialContext("a", "ima", "client_id")), credentials.clientId);
+  assert.throws(() => decryptCredential(c.encryptedApiKey!, knowledgeCredentialContext("b", "ima", "api_key")));
+  assert.throws(() => decryptCredential(c.encryptedApiKey!, knowledgeCredentialContext("a", "ima", "client_id")));
+  assert.doesNotMatch(JSON.stringify(f.db), /ima-api-secret-a|client-test-a/);
+  assert.doesNotMatch(JSON.stringify(await f.service.state(scope)), /encrypted|apiKey|clientId|ima-api-secret-a|client-test-a/);
+  assert.deepEqual(result.connection.retrievalScope?.selectedIds, ["kb-0", "kb-1"]);
+});
+
+test("ima rejects wrong workspace/member/disabled owner before any upstream request", async () => {
+  const f = fixture();
+  for (const denied of [{ workspaceId: "b", userId: "a" }, { workspaceId: "a", userId: "member" }, { workspaceId: "a", userId: "missing" }]) {
+    await assert.rejects(f.service.connect(denied, credentials), (e: unknown) => e instanceof ImaError && e.status === 403);
+    await assert.rejects(f.service.state(denied));
+    await assert.rejects(f.service.disconnect(denied));
+  }
+  f.db.users[0].enabled = false;
+  await assert.rejects(f.service.connect(scope, credentials));
+  assert.equal(f.calls.length, 0); assert.equal(f.db.knowledgeConnections.length, 0);
+});
+
+test("ima searches only selected libraries and own notes; denied content does not leak metadata as evidence", async () => {
+  const f = fixture(); await f.service.connect(scope, credentials);
+  await f.service.updateScope(scope, ["kb-1"]); f.calls.length = 0;
+  let chunks = await f.service.search("a", "采购", 5);
+  assert.equal(chunks.length, 2); assert.ok(chunks.some(c => c.content === "采购计划正文")); assert.ok(chunks.some(c => c.content === "采购 资料命中片段"));
+  assert.deepEqual(f.calls.filter(c => c.path === "search_knowledge").map(c => c.body.knowledge_base_id), ["kb-1"]);
+  assert.equal(f.calls.filter(c => c.path === "get_doc_content").length, 1);
+  assert.ok(f.calls.every(c => !/create|import|append|upload|add_/.test(c.path)));
+  f.options.override = path => path === "get_doc_content" ? { code: 210005, msg: "private upstream secret" } : undefined;
+  chunks = await f.service.search("a", "采购", 5);
+  assert.equal(chunks.length, 1); assert.doesNotMatch(JSON.stringify(chunks), /摘要不是正文|secret/);
+  await assert.rejects(f.service.search("b", "采购", 5));
+});
+
+test("ima does not follow returned media URLs or forward upstream headers", async () => {
+  const f = fixture(); await f.service.connect(scope, credentials); f.calls.length = 0;
+  f.options.override = path => path === "search_note" ? { code: 0, data: { search_note_infos: [] } } : path === "search_knowledge" ? { code: 0, data: { info_list: [{ media_id: "private-file", title: "资料标题" }] } } : undefined;
+  await assert.rejects(f.service.search("a", "资料", 5), /没有可读正文/);
+  assert.ok(f.calls.some(c => c.path === "get_media_info"));
+  assert.ok(f.calls.every(c => c.client === credentials.clientId && c.key === credentials.apiKey));
+});
+
+test("ima fails closed on HTTP 200 provider error, oversized responses and malformed lists without exposing msg", async () => {
+  for (const response of [{ code: 20004, msg: "Bearer ima-api-secret-a client-test-a" }, { code: 0, data: { info_list: "not-an-array", is_end: true } }, new Response("x", { headers: { "content-length": String(1024 * 1024) } })]) {
+    const f = fixture(); f.options.override = () => response;
+    await assert.rejects(f.service.connect(scope, credentials), (e: unknown) => e instanceof Error && !/Bearer|ima-api-secret-a|client-test-a/.test(e.message));
+    const c = f.db.knowledgeConnections[0]; assert.notEqual(c.status, "connected"); assert.equal(c.encryptedApiKey, undefined);
+    assert.doesNotMatch(JSON.stringify(f.db), /ima-api-secret-a|client-test-a/);
+  }
+});
+
+test("ima preserves a working account when replacement credentials fail and redacts echoed credentials", async () => {
+  const f = fixture(); await f.service.connect(scope, credentials); const before = f.db.knowledgeConnections[0].encryptedApiKey;
+  f.options.override = () => ({ code: 20004, msg: "replacement invalid" });
+  await assert.rejects(f.service.connect(scope, { clientId: "new-client", apiKey: "new-key-secret" }));
+  assert.equal(f.db.knowledgeConnections[0].encryptedApiKey, before); assert.equal(f.db.knowledgeConnections[0].status, "connected");
+  f.options.override = path => path === "get_doc_content" ? { code: 0, data: { content: `资料 ${credentials.apiKey} ${credentials.clientId}` } } : undefined;
+  const result = await f.service.search("a", "资料", 5);
+  assert.doesNotMatch(JSON.stringify(result), /ima-api-secret-a|client-test-a/);
+  assert.match(JSON.stringify(result), /凭据已隐藏/);
+});
+
+test("ima bounds library scope, rejects foreign IDs and cannot read after owner revocation", async () => {
+  const f = fixture(); f.options.libraries = 7; await f.service.connect(scope, credentials);
+  assert.deepEqual(f.db.knowledgeConnections[0].retrievalScope?.selectedIds, []);
+  await assert.rejects(f.service.updateScope(scope, ["foreign-library"]));
+  await assert.rejects(f.service.updateScope(scope, ["kb-0", "kb-1", "kb-2", "kb-3", "kb-4", "kb-5"]));
+  await assert.rejects(f.service.updateScope(scope, ["kb-0", "kb-0"]));
+  await f.service.updateScope(scope, ["kb-2"]); f.calls.length = 0;
+  await f.service.search("a", "采购", 1);
+  assert.equal(f.calls.filter(c => c.path === "search_knowledge").length, 1);
+  f.db.users[0].enabled = false; f.calls.length = 0;
+  await assert.rejects(f.service.search("a", "采购", 5)); assert.equal(f.calls.length, 0);
+});
+
+test("ima disconnect wins over delayed credential verification and retrieval", async () => {
+  const f = fixture(); let enter!: () => void, release!: () => void;
+  const started = new Promise<void>(r => { enter = r; }), gate = new Promise<void>(r => { release = r; });
+  f.options.override = async path => { if (path === "list_notebook") { enter(); await gate; } return undefined; };
+  const connecting = f.service.connect(scope, credentials); await started; await f.service.disconnect(scope); release();
+  await assert.rejects(connecting, /取消|替换/);
+  assert.equal(f.db.knowledgeConnections[0].status, "revoked"); assert.equal(f.db.knowledgeConnections[0].encryptedApiKey, undefined);
+  f.options.override = undefined; await f.service.connect(scope, credentials);
+  let readEnter!: () => void, readRelease!: () => void;
+  const readStarted = new Promise<void>(r => { readEnter = r; }), readGate = new Promise<void>(r => { readRelease = r; });
+  f.options.override = async path => { if (path === "get_doc_content") { readEnter(); await readGate; } return undefined; };
+  const reading = f.service.search("a", "采购", 5); await readStarted; await f.service.disconnect(scope); readRelease();
+  await assert.rejects(reading); assert.equal(f.db.knowledgeConnections[0].status, "revoked");
+});
+
+test("ima registration uses the reviewed connector and knowledge recall shares no other workspace", async () => {
+  const f = fixture(); await f.service.connect(scope, credentials);
+  const adapter = imaConnector(f.service), registry = new ConnectorRegistry([adapter]);
+  assert.equal(adapter.manifest.auth, "api_key"); assert.equal(adapter.manifest.security.access, "read_only");
+  assert.deepEqual(adapter.manifest.security.allowedHosts, ["ima.qq.com"]);
+  const service = new KnowledgeService(f.store, registry);
+  assert.ok((await service.recall("a", "采购", 1)).length === 1);
+  f.calls.length = 0; assert.equal((await service.recall("b", "采购", 5)).length, 0); assert.equal(f.calls.length, 0);
+  const disabled = new KnowledgeService(f.store, new ConnectorRegistry([adapter], ["ima"]));
+  assert.equal((await disabled.recall("a", "采购", 5)).length, 0); assert.equal(f.calls.length, 0);
+});
+
+test("ima bounds concurrent requests per workspace and releases capacity after completion", async () => {
+  const f = fixture(); await f.service.connect(scope, credentials);
+  let release!: () => void, enter!: () => void, waiting = 0;
+  const gate = new Promise<void>(r => { release = r; }), started = new Promise<void>(r => { enter = r; });
+  f.options.override = async path => { if (path === "search_note") { if (++waiting === 4) enter(); await gate; } return undefined; };
+  const first = f.service.search("a", "采购", 1), second = f.service.search("a", "采购", 1);
+  await started;
+  await assert.rejects(f.service.search("a", "采购", 1), (error: unknown) => error instanceof ImaError && error.status === 429);
+  release(); await Promise.all([first, second]); f.options.override = undefined;
+  assert.equal((await f.service.search("a", "采购", 1)).length, 1);
+});
+
+test("ima library refresh reuses encrypted credentials without implicitly adding new sources", async () => {
+  const f = fixture(); await f.service.connect(scope, credentials);
+  await f.service.updateScope(scope, ["kb-1"]); f.options.libraries = 4; f.calls.length = 0;
+  const result = await f.service.refreshLibraries(scope);
+  assert.equal(result.connection.retrievalScope?.knowledgeBases.length, 4);
+  assert.deepEqual(result.connection.retrievalScope?.selectedIds, ["kb-1"]);
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0].key, credentials.apiKey);
+  await assert.rejects(f.service.refreshLibraries({ workspaceId: "a", userId: "b" }));
+  await f.service.disconnect(scope); await assert.rejects(f.service.refreshLibraries(scope));
+});
+
+test("ima strips simple search commands without claiming semantic expansion", () => {
+  assert.equal(imaSearchQuery("请帮我在 ima 中查找采购的相关笔记？"), "采购");
+  assert.equal(imaSearchQuery("search ima for procurement"), "procurement");
+  assert.equal(imaSearchQuery("2026 年采购计划"), "2026 年采购计划");
+  assert.equal(imaSearchQuery("采购"), "采购");
+});
+
+test("ima is an explicit knowledge source without matching image or animal", async () => {
+  const f = fixture(); await f.service.connect(scope, credentials);
+  assert.deepEqual(knowledgePolicy(f.db, scope, "在腾讯 ima 中查找采购资料").requested, ["ima"]);
+  for (const text of ["查找 image 示例", "查找 animal 资料"]) assert.deepEqual(knowledgePolicy(f.db, scope, text).requested, []);
+});

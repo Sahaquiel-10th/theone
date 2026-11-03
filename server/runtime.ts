@@ -18,6 +18,8 @@ import { YinxiangService } from "./knowledge/yinxiangService.js";
 import { yinxiangConnector } from "./connectors/yinxiang.js";
 import { FeishuService } from "./knowledge/feishuService.js";
 import { feishuConnector } from "./connectors/feishu.js";
+import { ImaService } from "./knowledge/imaService.js";
+import { imaConnector } from "./connectors/ima.js";
 
 export const oneKeyPresence = new OneKeyPresence(store);
 export const codexGateway = new CodexGateway(store, scope => oneKeyPresence.requireProof(scope), {
@@ -34,8 +36,9 @@ export const flomoMcpService = new FlomoMcpService(store);
 export const flowusMcpService = new RemoteMcpKnowledgeService(store, flowusConfig);
 export const yinxiangService = new YinxiangService(store);
 export const feishuService = new FeishuService(store);
+export const imaService = new ImaService(store);
 export const connectorRegistry = new ConnectorRegistry(
-  [getnoteConnector, notionConnector(notionMcpService), yinxiangConnector(yinxiangService), remoteMcpConnector(flowusMcpService, flowusConfig), remoteMcpConnector(flomoMcpService, flomoConfig), feishuConnector(feishuService), ...executionConnectors(oneKeyPresence, localAgentService, { preferCodex: codexGateway.enabled() })],
+  [getnoteConnector, notionConnector(notionMcpService), yinxiangConnector(yinxiangService), remoteMcpConnector(flowusMcpService, flowusConfig), remoteMcpConnector(flomoMcpService, flomoConfig), feishuConnector(feishuService), imaConnector(imaService), ...executionConnectors(oneKeyPresence, localAgentService, { preferCodex: codexGateway.enabled() })],
   (process.env.ONE_DISABLED_CONNECTORS || "").split(",").map(value => value.trim()).filter(Boolean)
 );
 export const connectorService = new ConnectorService(store, connectorRegistry);
