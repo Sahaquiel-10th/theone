@@ -2,11 +2,11 @@ import {useEffect,useRef,useState} from 'react';
 import {Check,RefreshCw,Send,Settings2} from 'lucide-react';
 import type {TeachingGameConfig,TeachingOperation,TeachingPublicActivity} from '../server/teachingTypes';
 import './teaching-game.css';
-import {gameAttemptResolution} from './teachingGameState';
+import {decodeGameDraft,gameAttemptResolution,type GameDraft,type GameDraftAttempt} from './teachingGameState';
 
 type Turn={id:string;operationId?:string;question:string;answer?:string;choices?:string[];status:string;error?:string;createdAt:string};
 type Receipt={config:TeachingGameConfig;history:Turn[]};
-type Attempt={operationId:string;content:string;gameRevision:number};
+type Attempt=GameDraftAttempt;
 type Request=<T>(path:string,options?:RequestInit)=>Promise<T>;
 const failure=(error:unknown)=>error instanceof Error?error.message:'这一步暂未完成，请核对后继续。';
 const definite=(error:unknown)=>Boolean(error&&typeof error==='object'&&'status'in error&&([400,401,402,403,404,410,422,429].includes(Number(error.status))||('code'in error&&error.code==='TEACHING_GAME_REVISION_CONFLICT')));
@@ -15,7 +15,7 @@ const definite=(error:unknown)=>Boolean(error&&typeof error==='object'&&'status'
  * own role; teacher materials and the shared activity are never writable here. */
 export function TeachingGame({activity,base,sessionId,request}:{activity:TeachingPublicActivity;base:string;sessionId:string;request:Request}) {
   const path=`${base}/activities/${encodeURIComponent(activity.id)}/game`,storageKey=`one-teaching-game-draft:${base}:${sessionId}:${activity.id}`;
-  const [saved]=useState<{content?:string;attempt?:Attempt}>(()=>{try{return JSON.parse(localStorage.getItem(storageKey)??'{}');}catch{return {};}});
+  const [saved]=useState<GameDraft>(()=>{try{return decodeGameDraft(localStorage.getItem(storageKey));}catch{return {};}});
   const [receipt,setReceipt]=useState<Receipt>(),[content,setContent]=useState(saved.content??''),[attempt,setAttempt]=useState<Attempt|undefined>(saved.attempt);
   const [role,setRole]=useState(''),[prompt,setPrompt]=useState(''),[editing,setEditing]=useState(false),[editorRevision,setEditorRevision]=useState<number>(),[busy,setBusy]=useState(false),[loading,setLoading]=useState(true),[error,setError]=useState(''),[notice,setNotice]=useState('');
   const requestRef=useRef(request),editingRef=useRef(editing),live=useRef(true),contentRef=useRef(content),attemptRef=useRef(attempt),busyRef=useRef(busy);requestRef.current=request;editingRef.current=editing;contentRef.current=content;attemptRef.current=attempt;busyRef.current=busy;
@@ -25,7 +25,7 @@ export function TeachingGame({activity,base,sessionId,request}:{activity:Teachin
       let resolution=gameAttemptResolution(pending,value.config.revision,value.history.flatMap(turn=>turn.operationId?[turn.operationId]:[]));
       if(resolution==='lookup'){
         try{const prior=await requestRef.current<{operation:TeachingOperation}>(`${base}/operations/${pending.operationId}`);resolution=gameAttemptResolution(pending,value.config.revision,[],prior.operation);}
-        catch(error){if(error&&typeof error==='object'&&'status'in error&&Number(error.status)===404)resolution='not_sent';else throw error;}
+        catch(error){if(error&&typeof error==='object'&&'status'in error&&Number(error.status)===404)resolution=gameAttemptResolution(pending,value.config.revision,[],null);else throw error;}
       }
       if(!live.current)return;
       if(['accepted','previous_round','not_sent'].includes(resolution)){
@@ -37,7 +37,7 @@ export function TeachingGame({activity,base,sessionId,request}:{activity:Teachin
   useEffect(()=>{live.current=true;void load(true).catch(error=>{if(live.current)setError(failure(error));}).finally(()=>{if(live.current)setLoading(false);});return()=>{live.current=false;};},[path]);
   useEffect(()=>{if(!working)return;const timer=setTimeout(()=>void load().catch(error=>{if(live.current)setError(failure(error));}),1600);return()=>clearTimeout(timer);},[working,receipt,path]);
   useEffect(()=>{if(!content.trim()&&!attempt&&!editing)return;const warn=(event:BeforeUnloadEvent)=>{event.preventDefault();event.returnValue='';};window.addEventListener('beforeunload',warn);return()=>window.removeEventListener('beforeunload',warn);},[content,attempt,editing]);
-  async function send(value=content){if(!receipt||busyRef.current||working)return;const next=attemptRef.current??{operationId:crypto.randomUUID(),content:value.trim(),gameRevision:receipt.config.revision};if(!next.content)return;setBusy(true);setError('');setNotice('');setAttempt(next);attemptRef.current=next;saveDraft(contentRef.current,next);try{await requestRef.current<{operation:TeachingOperation}>(`${base}/questions`,{method:'POST',body:JSON.stringify({activityId:activity.id,...next})});await load();}catch(error){if(definite(error)){setAttempt(undefined);attemptRef.current=undefined;saveDraft(contentRef.current,undefined);}if(error&&typeof error==='object'&&'code'in error&&error.code==='TEACHING_GAME_REVISION_CONFLICT')await load(true).catch(()=>{});setError(failure(error));}finally{if(live.current)setBusy(false);}}
+  async function send(value=content){if(!receipt||busyRef.current||working)return;const next=attemptRef.current??{operationId:crypto.randomUUID(),content:value.trim(),gameRevision:receipt.config.revision};if(!next.content)return;setBusy(true);setError('');setNotice('');setAttempt(next);attemptRef.current=next;saveDraft(contentRef.current,next);try{const returned=await requestRef.current<{operation:TeachingOperation}>(`${base}/questions`,{method:'POST',body:JSON.stringify({activityId:activity.id,...next})});if(live.current&&attemptRef.current?.operationId===next.operationId){const resolution=gameAttemptResolution(next,receipt.config.revision,[],returned.operation);if(resolution==='accepted'||resolution==='previous_round'){setAttempt(undefined);attemptRef.current=undefined;setContent('');saveDraft('',undefined);}}await load();}catch(error){if(definite(error)){setAttempt(undefined);attemptRef.current=undefined;saveDraft(contentRef.current,undefined);}if(error&&typeof error==='object'&&'code'in error&&error.code==='TEACHING_GAME_REVISION_CONFLICT')await load(true).catch(()=>{});setError(failure(error));}finally{if(live.current)setBusy(false);}}
   async function updateRole(){if(!receipt||busy||working||attempt||editorRevision!==receipt.config.revision){setError('角色已在其他页面更新，请先读取当前设定，再决定修改。');return;}setBusy(true);setError('');try{const value=await requestRef.current<{config:TeachingGameConfig}>(path,{method:'PATCH',body:JSON.stringify({revision:editorRevision,roleName:role,prompt})});if(!live.current)return;setReceipt({config:value.config,history:[]});setEditorRevision(undefined);setEditing(false);setNotice('新的角色设定已保存，接下来从新的一局开始。');setContent('');saveDraft('',undefined);}catch(error){if(error&&typeof error==='object'&&'status'in error&&Number(error.status)===409){const checked=await load().catch(()=>undefined);if(checked&&checked.config.roleName===role.trim()&&checked.config.prompt===prompt.trim()){setEditing(false);setEditorRevision(undefined);setNotice('角色设定已保存，已找回上一次的结果。');return;}}setError(failure(error));}finally{if(live.current)setBusy(false);}}
   const last=receipt?.history.filter(turn=>turn.status==='completed').at(-1) as (Turn&{choices?:string[]})|undefined;
   return <section className="teaching-game teaching-sheet" aria-label="我的课堂文字游戏"><header><div><span className="teaching-eyebrow">课堂文字游戏 · 我的分身</span><h2>{activity.title}</h2><p>{activity.instructions||'先选择自己的角色，再通过对话和选择推动故事。'}</p></div>{activity.allowStudentPrompt!==false?<button type="button" disabled={busy||working||!!attempt||loading} aria-expanded={editing} onClick={()=>{setRole(receipt?.config.roleName??'');setPrompt(receipt?.config.prompt??'');setEditorRevision(editing?undefined:receipt?.config.revision);setEditing(!editing);}}><Settings2 size={16} aria-hidden="true"/>{editing?'取消角色修改':'修改我的角色'}</button>:null}</header>
