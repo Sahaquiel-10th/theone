@@ -70,6 +70,7 @@ import { connectorRegistry, connectorService, notionMcpService, yinxiangService,
 import { installTeachingRoutes } from './teachingRoutes.js';
 import { installTeachingFileRoutes } from './teachingFiles.js';
 import { installTeachingAiRoutes } from './teachingAiRoutes.js';
+import { installTeachingKnowledgeRoutes } from './teachingKnowledgeRoutes.js';
 import { installFeishuRoutes } from "./feishuRoutes.js";
 import { connectorRoutes } from "./connectorRoutes.js";
 import { AuthorizationSessionError, AuthorizationSessions } from "./connectors/authorizationSessions.js";
@@ -247,7 +248,8 @@ installLocalDeviceReadinessRoute(app,keyAuth,localDeviceReadiness);
 const inspectLocalReadiness=(req:express.Request,options?:{fresh?:boolean})=>localDeviceReadiness.inspect(localDeviceReadinessScope(req),options);
 installTeachingRoutes(app, keyAuth, store, { verifyKey: confirmKeyBeforeModel });
 installTeachingFileRoutes(app, keyAuth, store, uploadDir, attachmentService);
-installTeachingAiRoutes(app, keyAuth, store, { verifyKey: confirmKeyBeforeModel });
+installTeachingKnowledgeRoutes(app, keyAuth, store, { notion: notionMcpService, knowledgeService, verifyKey: confirmKeyBeforeModel });
+installTeachingAiRoutes(app, keyAuth, store, { verifyKey: confirmKeyBeforeModel, knowledge: { notion: notionMcpService, knowledgeService } });
 installVisitorRoutes(app,store,jwtSecret);
 installPublicSharingRoutes(app, keyAuth, store, knowledgeService, attachmentService,jwtSecret,{directory:uploadDir});
 installWelcomeGuideRoutes(app,keyAuth,store);

@@ -1,7 +1,12 @@
 /** Teaching records stay with their owning account; public DTOs are explicit projections. */
 export type TeachingStage = 'before' | 'during' | 'after';
-export type TeachingKind = 'inquiry' | 'scenario' | 'quiz' | 'assignment';
+export type TeachingKind = 'inquiry' | 'scenario' | 'quiz' | 'assignment' | 'game';
+export type TeachingTaskKind = 'grade' | 'ask' | 'quiz' | 'game';
 export type TeachingScope = { workspaceId: string; userId: string };
+export type TeachingKnowledgeSource = {
+  provider: import('./types.js').KnowledgeProviderId; connectionId: string; binding: string;
+  scope: 'page' | 'connection'; pageId?: string; label: string;
+};
 export type TeachingCriterion = { id: string; label: string; description: string; maxScore: number };
 export type TeachingQuestion = { id: string; prompt: string; type: 'single' | 'text'; options: string[]; answer: string; points: number };
 export type TeachingScene = { id: string; title: string; content: string; choices: string[]; reflection: string };
@@ -10,18 +15,27 @@ export type TeachingActivity = TeachingScope & {
   title: string; instructions: string; status: 'draft' | 'published' | 'closed';
   /** Teacher-only exam originals and grading references, excluded from student DTOs. */
   referenceText?: string; sourceAttachmentIds?: string[];
+  /** Teacher-authored teaching behavior; student edits never change this record. */
+  avatarPrompt?: string; allowStudentPrompt?: boolean; knowledgeSources?: TeachingKnowledgeSource[];
   questions: TeachingQuestion[]; scenes: TeachingScene[]; rubric: TeachingCriterion[];
   createdAt: string; updatedAt: string;
 };
 export type TeachingCourse = TeachingScope & {
   id: string; revision: number; title: string; subject: string; description: string;
   materialText: string; materialAttachmentIds: string[]; budgetMicros: number;
+  /** Guided tasks use one private course container, created only on an explicit save/upload. */
+  clientDraftId?: string; taskKind?: TeachingTaskKind; knowledgeSources?: TeachingKnowledgeSource[];
   status: 'draft' | 'published' | 'closed'; slug?: string; activities: TeachingActivity[];
   createdAt: string; updatedAt: string;
 };
 export type TeachingSession = TeachingScope & {
   id: string; courseId: string; tokenHash: string; participantName: string; participantRef: string;
   consentedAt: string; createdAt: string; expiresAt: string;
+  gameConfigs?: TeachingGameConfig[];
+};
+export type TeachingGameConfig = TeachingScope & {
+  courseId: string; sessionId: string; activityId: string; revision: number;
+  roleName: string; prompt: string; conversationId: string; updatedAt: string;
 };
 export type TeachingGrade = {
   criteria: { criterionId: string; score: number; comment: string; evidence: string }[];
@@ -38,13 +52,14 @@ export type TeachingOperation = TeachingScope & {
   id: string; courseId: string; activityId?: string; submissionId?: string; sessionId?: string;
   operationId: string; payloadHash: string; kind: 'prepare' | 'answer' | 'grade' | 'insights';
   courseRevision?: number; question?: string; attachmentIds?: string[];
+  conversationId?: string; gameRevision?: number; gamePromptSnapshot?: { roleName: string; prompt: string };
   status: 'running' | 'completed' | 'uncertain' | 'failed'; result?: unknown; error?: string;
   createdAt: string; completedAt?: string;
 };
 export type TeachingState = {
   courses: TeachingCourse[]; sessions: TeachingSession[]; submissions: TeachingSubmission[]; operations: TeachingOperation[];
 };
-export type TeachingPublicActivity = Omit<TeachingActivity, 'workspaceId' | 'userId' | 'questions' | 'referenceText' | 'sourceAttachmentIds'> & {
+export type TeachingPublicActivity = Omit<TeachingActivity, 'workspaceId' | 'userId' | 'questions' | 'referenceText' | 'sourceAttachmentIds' | 'knowledgeSources'> & {
   questions: Omit<TeachingQuestion, 'answer'>[];
 };
 export type TeachingPublicCourse = Pick<TeachingCourse, 'id' | 'revision' | 'title' | 'subject' | 'description'> & {

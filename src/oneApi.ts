@@ -12,6 +12,8 @@ function reviewedAuthFailure(path:string,status:number,fields:Record<string,unkn
 let expectedUserId = "";
 let expectedWorkspaceId = "";
 let identityRevision = 0;
+/** Local drafts use the same account-generation boundary as authenticated requests. */
+export function currentApiIdentity() { return { userId: expectedUserId, workspaceId: expectedWorkspaceId, revision: identityRevision }; }
 export const SESSION_EVENT = "one-session-changed";
 export const SESSION_STORAGE_KEY = "one-session-revision";
 export function expectUser(id: string, workspaceId = "") { expectedUserId = id; expectedWorkspaceId = workspaceId; identityRevision++; }

@@ -102,3 +102,38 @@ test('classroom storage endpoints allow 100 new participants and submissions in 
   }
   assert.equal(db.users[0].teaching!.sessions.length, 100); assert.equal(db.users[0].teaching!.submissions.length, 100);
 });
+
+test('HTTP guided tasks are created only explicitly and game edits/history are private to each student session', async t => {
+  let db = { users: [{ id: 'teacher', enabled: true }], workspaces: [{ id: 'ws', status: 'active' }], workspaceMembers: [{ workspaceId: 'ws', userId: 'teacher', role: 'owner' }], attachments: [] } as unknown as Database;
+  const store: Store = { read: async () => db, mutate: async fn => { const before = structuredClone(db); try { return fn(db); } catch (error) { db = before; throw error; } } };
+  const app = express(); app.use(express.json()); installTeachingRoutes(app, [(req, _res, next) => { req.user = { id: 'teacher' } as any; req.workspaceId = 'ws'; next(); }], store);
+  const server = app.listen(0, '127.0.0.1'); await once(server, 'listening'); t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = `http://127.0.0.1:${(server.address() as any).port}/api/teaching`;
+  const call = async (url: string, method = 'GET', body?: unknown, token?: string) => {
+    const response = await fetch(base + url, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { status: response.status, body: await response.json() };
+  };
+  assert.equal((await call('/courses')).body.courses.length, 0); assert.equal(db.users[0].teaching, undefined);
+  const created = await Promise.all(Array.from({ length: 4 }, () => call('/tasks', 'POST', { draftId: 'task_http_game_draft', kind: 'game' })));
+  assert.equal(created.filter(result => result.status === 201).length, 1); assert.equal(new Set(created.map(result => result.body.course.id)).size, 1);
+  assert.equal(db.users[0].teaching!.courses.length, 1); assert.equal((await call('/tasks', 'POST', { draftId: 'task_http_game_draft', kind: 'ask' })).status, 409);
+  const { course, activity } = created[0].body;
+  const published = await call(`/courses/${course.id}/publish`, 'POST', { revision: course.revision, confirmed: true }); assert.equal(published.status, 200);
+  const pub = `/public/${published.body.course.slug}`, one = await call(pub + '/sessions', 'POST', { participantName: '同名', consent: true }), two = await call(pub + '/sessions', 'POST', { participantName: '同名', consent: true });
+  const gameUrl = pub + `/activities/${activity.id}/game`;
+  const before = JSON.stringify(db), initial = await call(gameUrl, 'GET', undefined, one.body.token);
+  assert.equal(initial.status, 200); assert.equal(initial.body.config.revision, 0); assert.equal(JSON.stringify(db), before);
+  assert.equal((await call(gameUrl)).status, 401);
+  const updated = await call(gameUrl, 'PATCH', { revision: 0, roleName: '学徒', prompt: 'PRIVATE_STUDENT_ROLE', sessionId: two.body.sessionId, avatarPrompt: 'change teacher' }, one.body.token);
+  assert.equal(updated.status, 200); assert.equal(updated.body.config.revision, 1);
+  assert.doesNotMatch(JSON.stringify(updated.body), /tokenHash|workspaceId|userId|sessionId/);
+  assert.notEqual(db.users[0].teaching!.courses[0].activities[0].avatarPrompt, 'change teacher');
+  assert.equal((await call(gameUrl, 'GET', undefined, two.body.token)).body.config.prompt, '');
+  const config = updated.body.config;
+  db.users[0].teaching!.operations.push({ workspaceId: 'ws', userId: 'teacher', id: 'http_game_op', courseId: course.id, activityId: activity.id, sessionId: one.body.sessionId, operationId: 'http_game_operation_001', payloadHash: 'hash', kind: 'answer', conversationId: config.conversationId, gameRevision: config.revision, question: '我去河边', result: { kind: 'answer', answer: '你看见码头。', choices: ['观察'] }, status: 'completed', createdAt: new Date().toISOString() });
+  const restored = await call(gameUrl, 'GET', undefined, one.body.token); assert.equal(restored.body.history[0].answer, '你看见码头。'); assert.equal(restored.body.history[0].operationId, 'http_game_operation_001'); assert.deepEqual(restored.body.history[0].choices, ['观察']);
+  assert.equal((await call(gameUrl, 'GET', undefined, two.body.token)).body.history.length, 0);
+  assert.equal((await call(gameUrl, 'PATCH', { revision: 0, roleName: '', prompt: '' }, one.body.token)).status, 409);
+  const closed = await call(`/courses/${course.id}/close`, 'POST', { revision: published.body.course.revision }); assert.equal(closed.status, 200);
+  assert.equal((await call(gameUrl, 'GET', undefined, one.body.token)).status, 410);
+});

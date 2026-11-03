@@ -19,7 +19,7 @@ test('avatars and features have independent destinations in both navigation path
  const marketplace=fs.readFileSync(new URL('./FeatureMarketplace.tsx',import.meta.url),'utf8');
  assert.doesNotMatch(shelf,/SharingPanel|我的分身/);
  assert.doesNotMatch(marketplace,/SharingPanel|我的分身|setKind|kind==='personal'/);
- assert.match(marketplace,/<FeatureCatalog api=\{api\} query=\{query\} category=\{category\} equipment\/>/);
+ assert.match(marketplace,/<FeatureCatalog api=\{api\} query=\{query\} category=\{category\} equipment(?:\s|\/>)/);
  assert.match(main,/onClick=\{\(\) => openSurface\("avatars"\)\}>分身<\/button>/);
  assert.match(main,/aria-label="分身" onClick=\{\(\)=>openSurface\('avatars'\)\}/);
  assert.match(main,/<FluidWorkLayer title="分身" open=\{workLayer==='avatars'\} className="fluid-work-layer-avatars"/);

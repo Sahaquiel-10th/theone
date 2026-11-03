@@ -134,6 +134,44 @@ test("Notion refresh stays scoped to the exact workspace connection", async () =
   assert.equal(decryptCredential(f.database.knowledgeConnections[1].encryptedAccessToken!), "old-workspace-b");
 });
 
+test('a late Notion refresh cannot overwrite a same-record reconnect, even when Store.read exposes live objects', async t => {
+  const f = fixture(), expired = new Date(Date.now() - 60_000).toISOString();
+  f.database.knowledgeConnections.push({ id: 'notion-a', workspaceId: 'workspace-a', provider: 'notion', status: 'connected', clientId: 'old-client', providerUserId: 'old-account', providerSpaceId: 'old-space', encryptedAccessToken: encryptCredential('old-access'), encryptedRefreshToken: encryptCredential('old-refresh'), encryptedClientSecret: encryptCredential('old-client-secret'), oauthTokenAuthMethod: 'client_secret_post', credentialExpiresAt: expired, createdAt: expired, updatedAt: expired });
+  let started!: () => void, release!: () => void, clients = 0;
+  const sending = new Promise<void>(resolve => { started = resolve; }), gate = new Promise<void>(resolve => { release = resolve; }); t.after(release);
+  const service = new NotionMcpService(f.store, { fetch: (async (_url, init) => { const body = new URLSearchParams(String(init?.body)); assert.equal(body.get('refresh_token'), 'old-refresh'); assert.equal(body.get('client_secret'), 'old-client-secret'); started(); await gate; return new Response(JSON.stringify({ access_token: 'stale-refreshed-access', refresh_token: 'stale-refreshed-refresh', expires_in: 3600 })); }) as typeof fetch, createClient: async () => { clients++; assert.fail('a stale refresh must not create an MCP client'); } });
+  const rejected = assert.rejects(service.verify('workspace-a'), /撤销|改变/);
+  await sending;
+  // OAuth completion reuses the connection ID and mutates this exact live row.
+  Object.assign(f.database.knowledgeConnections[0], { clientId: 'new-client', providerUserId: 'new-account', providerSpaceId: 'new-space', encryptedAccessToken: encryptCredential('new-access'), encryptedRefreshToken: encryptCredential('new-refresh'), encryptedClientSecret: encryptCredential('new-client-secret'), oauthTokenAuthMethod: 'none', credentialExpiresAt: new Date(Date.now() + 3600_000).toISOString() });
+  const reconnected = structuredClone(f.database.knowledgeConnections[0]); release(); await rejected;
+  assert.deepEqual(f.database.knowledgeConnections[0], reconnected);
+  assert.equal(decryptCredential(f.database.knowledgeConnections[0].encryptedAccessToken!), 'new-access'); assert.equal(clients, 0);
+});
+
+test('a read returning 401 cannot refresh or replay against a replacement or revoked Notion authorization', async () => {
+  for (const change of ['reconnect', 'revoke'] as const) {
+    const f = fixture(), now = new Date().toISOString();
+    f.database.knowledgeConnections.push({ id: 'notion-a', workspaceId: 'workspace-a', provider: 'notion', status: 'connected', clientId: 'old-client', providerUserId: 'old-account', providerSpaceId: 'old-space', encryptedAccessToken: encryptCredential('old-access'), encryptedRefreshToken: encryptCredential('old-refresh'), createdAt: now, updatedAt: now });
+    let reads = 0, refreshes = 0; const connectedTokens: string[] = [];
+    const service = new NotionMcpService(f.store, { fetch: (async () => { refreshes++; throw Error('new identity must never be refreshed by an old read'); }) as typeof fetch, createClient: async token => { connectedTokens.push(token); return { listTools: async () => ({ tools: [{ name: 'notion-fetch' }] }), callTool: async () => { reads++; const current = f.database.knowledgeConnections[0]; if (change === 'reconnect') Object.assign(current, { clientId: 'new-client', providerUserId: 'new-account', providerSpaceId: 'new-space', encryptedAccessToken: encryptCredential('new-access'), encryptedRefreshToken: encryptCredential('new-refresh') }); else { current.status = 'revoked'; current.encryptedAccessToken = undefined; current.encryptedRefreshToken = undefined; } throw Object.assign(Error('HTTP 401 unauthorized'), { status: 401 }); }, close: async () => {} }; } });
+    await assert.rejects(service.readDocument('workspace-a', 'selected-page'), /撤销|改变/);
+    assert.deepEqual(connectedTokens, ['old-access']); assert.equal(reads, 1); assert.equal(refreshes, 0);
+    if (change === 'reconnect') assert.equal(decryptCredential(f.database.knowledgeConnections[0].encryptedAccessToken!), 'new-access');
+  }
+});
+
+test('concurrent reads of the same expired authorization still share one valid refresh', async t => {
+  const f = fixture(), expired = new Date(Date.now() - 60_000).toISOString();
+  f.database.knowledgeConnections.push({ id: 'notion-a', workspaceId: 'workspace-a', provider: 'notion', status: 'connected', clientId: 'client-a', providerUserId: 'same-account', providerSpaceId: 'same-space', encryptedAccessToken: encryptCredential('old-access'), encryptedRefreshToken: encryptCredential('old-refresh'), credentialExpiresAt: expired, createdAt: expired, updatedAt: expired });
+  let refreshes = 0, started!: () => void, release!: () => void; const tokens: string[] = [];
+  const sending = new Promise<void>(resolve => { started = resolve; }), gate = new Promise<void>(resolve => { release = resolve; }); t.after(release);
+  const service = new NotionMcpService(f.store, { fetch: (async () => { refreshes++; started(); await gate; return new Response(JSON.stringify({ access_token: 'new-access', refresh_token: 'new-refresh', expires_in: 3600 })); }) as typeof fetch, createClient: async token => { tokens.push(token); return { listTools: async () => ({ tools: [{ name: 'notion-fetch' }] }), callTool: async () => ({ text: 'authorized read' }), close: async () => {} }; } });
+  const first = service.readDocument('workspace-a', 'page-one'), second = service.readDocument('workspace-a', 'page-two');
+  await sending; release(); await Promise.all([first, second]);
+  assert.equal(refreshes, 1); assert.deepEqual(tokens, ['new-access', 'new-access']);
+});
+
 const dateRange={from:'2026-10-24',to:'2026-10-24',timeZone:'Asia/Shanghai',anchorAt:'2026-10-25T02:00:00Z',basis:'event' as const};
 const dateSchema={type:'object',properties:{query:{type:'string'},filters:{type:'object',properties:{created_date_range:{type:'object',properties:{start_date:{type:'string'},end_date:{type:'string'}}}}}}};
 const textResult=(value:unknown)=>({content:[{type:'text',text:JSON.stringify(value)}]});

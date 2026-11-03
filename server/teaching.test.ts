@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Database } from './types.js';
 import { publicUser } from './serializers.js';
-import { TeachingError, activeTeachingCourse, addTeachingSubmission, authTeachingSession, closeTeachingCourse, createTeachingActivity, createTeachingCourse, createTeachingSession, listTeachingCourses, ownedTeachingCourse, publicTeachingCourse, publicTeachingSubmission, publishTeachingCourse, reviewTeachingSubmission, teachingState, updateTeachingActivity, updateTeachingCourse } from './teaching.js';
+import { TeachingError, activeTeachingCourse, addTeachingSubmission, authTeachingSession, closeTeachingCourse, createTeachingActivity, createTeachingCourse, createTeachingSession, createTeachingTask, listTeachingCourses, ownedTeachingCourse, publicTeachingCourse, publicTeachingSubmission, publishTeachingCourse, reviewTeachingSubmission, teachingState, updateTeachingActivity, updateTeachingCourse } from './teaching.js';
 
 const a = { workspaceId: 'wa', userId: 'teacher-a' }, b = { workspaceId: 'wb', userId: 'teacher-b' }, same = { workspaceId: 'wa', userId: 'teacher-b' };
 function fixture() {
@@ -51,6 +51,39 @@ test('read-only teaching list and lookup do not initialize or mutate private use
   assert.deepEqual(teachingState(db, a), { courses: [], sessions: [], submissions: [], operations: [] });
   fails(() => ownedTeachingCourse(db, a, 'missing'), 404);
   assert.equal(db.users[0].teaching, undefined); assert.equal(JSON.stringify(db), before);
+});
+
+test('explicit task creation is idempotent, private and supplies an editable activity for each supported job', () => {
+  const db = fixture();
+  for (const kind of ['grade', 'ask', 'quiz', 'game'] as const) {
+    const created = createTeachingTask(db, a, { draftId: `teacher_draft_${kind}`, kind, workspaceId: b.workspaceId, userId: b.userId });
+    assert.equal(created.course.status, 'draft'); assert.equal(created.course.slug, undefined);
+    assert.equal(created.activity.status, 'published'); assert.equal(created.course.taskKind, kind);
+    assert.equal(created.course.workspaceId, a.workspaceId); assert.equal(created.activity.userId, a.userId);
+    assert.equal(created.activity.kind, kind === 'grade' ? 'assignment' : kind === 'ask' ? 'inquiry' : kind);
+    const repeated = createTeachingTask(db, a, { draftId: `teacher_draft_${kind}`, kind, title: '不会覆盖已创建内容', budgetMicros: 1 });
+    assert.equal(repeated.duplicate, true); assert.equal(repeated.course.id, created.course.id); assert.equal(repeated.activity.id, created.activity.id);
+    assert.notEqual(repeated.course.title, '不会覆盖已创建内容');
+    if (kind === 'grade') assert.equal(created.activity.rubric[0].maxScore, 100);
+    if (kind === 'game') assert.equal(created.activity.allowStudentPrompt, true);
+  }
+  assert.equal(teachingState(db, a).courses.length, 4);
+  fails(() => createTeachingTask(db, a, { draftId: 'teacher_draft_grade', kind: 'game' }), 409);
+  fails(() => createTeachingTask(db, { workspaceId: b.workspaceId, userId: a.userId }, { draftId: 'teacher_draft_grade', kind: 'grade' }), 403);
+  const other = createTeachingTask(db, b, { draftId: 'teacher_draft_grade', kind: 'grade' });
+  assert.notEqual(other.course.id, teachingState(db, a).courses[0].id);
+});
+
+test('public teaching projection exposes only the teacher-approved avatar prompt, never source grants or private task ids', () => {
+  const { db, course, activity } = setup();
+  // Distinct markers also protect against future accidental rest/spread serializers.
+  course.clientDraftId = 'PRIVATE_CLIENT_DRAFT';
+  course.knowledgeSources = [{ provider: 'notion', connectionId: 'PRIVATE_CONNECTION', binding: 'PRIVATE_BINDING', scope: 'page', pageId: 'PRIVATE_PAGE', label: 'PRIVATE_LABEL' }];
+  activity.knowledgeSources = structuredClone(course.knowledgeSources); activity.avatarPrompt = 'PUBLIC_TEACHER_ROLE';
+  const projection = JSON.stringify(publicTeachingCourse(course));
+  assert.match(projection, /PUBLIC_TEACHER_ROLE/);
+  assert.doesNotMatch(projection, /PRIVATE_CLIENT_DRAFT|PRIVATE_CONNECTION|PRIVATE_BINDING|PRIVATE_PAGE|PRIVATE_LABEL|knowledgeSources|tokenHash/);
+  assert.equal(teachingState(db, a).sessions.length, 0);
 });
 
 test('public course, student receipt and publicUser project no teacher materials, answers, owner identifiers or session secrets', () => {

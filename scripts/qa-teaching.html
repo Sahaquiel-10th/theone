@@ -3,10 +3,12 @@ import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {TeachingWorkspace} from '/src/TeachingWorkspace.tsx';
 import {TeachingPublicPage} from '/src/TeachingPublicPage.tsx';
+import {FeatureShelf} from '/src/preview/FeatureShelf.tsx';
+import '/src/preview/feature-workflow.css';
 import {api,expectUser} from '/src/oneApi.ts';
 import '/src/styles.css';
 expectUser('qa-teacher','qa-workspace');
 const params=new URLSearchParams(location.search);
 document.documentElement.dataset.appearance=params.get('appearance')||'paper';
-createRoot(document.getElementById('root')).render(params.get('student')?React.createElement(TeachingPublicPage,{slug:params.get('student')}):React.createElement('main',{style:{maxWidth:1300,margin:'24px auto',padding:'0 24px'}},React.createElement(TeachingWorkspace,{api,initialStage:params.get('stage')||'after'})));
+createRoot(document.getElementById('root')).render(params.get('student')?React.createElement(TeachingPublicPage,{slug:params.get('student')}):React.createElement('main',{style:{maxWidth:1300,margin:'24px auto',padding:'0 24px'}},params.has('catalog')?React.createElement(FeatureShelf,{api,models:[],selected:[],onChoose:()=>{}}):React.createElement(TeachingWorkspace,{api})));
 </script></body></html>

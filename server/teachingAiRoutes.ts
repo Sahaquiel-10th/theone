@@ -11,16 +11,19 @@ import { uid } from './security.js';
 import { attachmentSegments, prepareAttachmentContext } from './attachmentRetrieval.js';
 import { runBilledModel } from './modelBilling.js';
 import { callModelWithTools } from './modelGateway.js';
+import { teachingGameSnapshot, teachingGameModelHistory } from './teachingGames.js';
+import { assertTeachingKnowledgeSources, readTeachingKnowledgeSources, type TeachingKnowledgeDependencies } from './teachingKnowledge.js';
 
 export type TeachingAiRouteDependencies = {
   verifyKey: (req: Request) => Promise<void>;
   modelCall?: typeof callModelWithTools;
+  knowledge?: Omit<TeachingKnowledgeDependencies, 'verify'>;
 };
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const tokenOf = (req: Request) => req.headers.authorization?.replace(/^Bearer /, '') ?? '';
 const owner = (req: Request) => ({ workspaceId: req.workspaceId!, userId: req.user!.id });
 function publicOperation(operation: TeachingOperation) {
-  return { id: operation.id, operationId: operation.operationId, courseRevision: operation.courseRevision, activityId: operation.activityId, submissionId: operation.submissionId, kind: operation.kind, status: operation.status, result: operation.result, error: operation.error, createdAt: operation.createdAt, completedAt: operation.completedAt };
+  return { id: operation.id, operationId: operation.operationId, courseRevision: operation.courseRevision, activityId: operation.activityId, submissionId: operation.submissionId, conversationId: operation.conversationId, gameRevision: operation.gameRevision, kind: operation.kind, status: operation.status, result: operation.result, error: operation.error, createdAt: operation.createdAt, completedAt: operation.completedAt };
 }
 function courseUsage(db: Awaited<ReturnType<Store['read']>>, course: TeachingCourse) {
   return db.modelUsageRecords.filter(u => u.workspaceId === course.workspaceId && u.userId === course.userId && u.conversationId === teachingConversationId(course.id)).reduce((sum, u) => sum + (u.chargedMicros ?? 0) + (u.reservedMicros ?? 0), 0);
@@ -45,23 +48,25 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
     if (typeof body.operationId !== 'string' || !/^[A-Za-z0-9_-]{16,100}$/.test(body.operationId)) throw new TeachingError('请重新发起这次教学操作');
     if (!['prepare', 'answer', 'grade', 'insights'].includes(String(body.kind))) throw new TeachingError('请选择教学操作');
     const state = teachingState(db, scope, { create: true });
-    const payloadHash = hash({ kind: body.kind, activityId: body.activityId, submissionId: body.submissionId, content: body.content, attachmentIds: body.attachmentIds ?? [] });
+    const payloadHash = hash({ kind: body.kind, activityId: body.activityId, submissionId: body.submissionId, content: body.content, attachmentIds: body.attachmentIds ?? [], gameRevision: body.gameRevision });
     const old = state.operations.find(o => o.workspaceId === scope.workspaceId && o.userId === scope.userId && o.courseId === course.id && o.sessionId === sessionId && o.operationId === body.operationId);
     if (old) { if (old.payloadHash !== payloadHash) throw new TeachingError('提交内容已经变化，请重新确认后发起', 409); return { operation: old, created: false }; }
     const activity = body.activityId === undefined ? undefined : course.activities.find(a => a.id === body.activityId);
     if (body.kind !== 'insights' && !activity) throw new TeachingError('请先保存并选择教学活动');
-    if (sessionId && (activity?.status !== 'published' || !['inquiry', 'scenario'].includes(activity.kind))) throw new TeachingError('这个活动暂未开放导学问答', 403);
+    if (sessionId && (activity?.status !== 'published' || !['inquiry', 'scenario', 'game'].includes(activity.kind))) throw new TeachingError('这个活动暂未开放导学问答', 403);
     if (body.kind === 'prepare' && course.status === 'published') throw new TeachingError('请先关闭学生入口，再准备新版活动', 409);
     if (body.kind === 'grade' && !state.submissions.some(s => s.id === body.submissionId && s.courseId === course.id && s.activityId === activity?.id && s.workspaceId === scope.workspaceId && s.userId === scope.userId)) throw new TeachingError('未找到本课程的这份作业', 404);
     if (body.kind === 'grade' && state.submissions.find(s => s.id === body.submissionId)?.grade?.status === 'published') throw new TeachingError('这份成绩已经发布，请保留已确认结果', 409);
     if (body.kind === 'answer' && (typeof body.content !== 'string' || !body.content.trim() || body.content.length > 6000)) throw new TeachingError('请填写 1–6000 字的学习问题');
+    const game = sessionId && activity?.kind === 'game' ? teachingGameSnapshot(db, scope, course.id, activity.id, sessionId) : undefined;
+    if (game && body.gameRevision !== game.revision) throw new TeachingError('个人游戏设定已变化，请先核对当前这一局', 409, 'TEACHING_GAME_REVISION_CONFLICT');
     const attachmentIds = body.attachmentIds ?? [];
     if (!Array.isArray(attachmentIds) || attachmentIds.length > 3 || attachmentIds.some(id => typeof id !== 'string')) throw new TeachingError('每次最多选择 3 份现场资料');
     validateTeachingAttachments(db, scope, course.id, attachmentIds as string[], sessionId ?? scope.userId);
     const mine = state.operations.filter(o => o.workspaceId === scope.workspaceId && o.courseId === course.id);
     if (body.kind === 'grade' && mine.some(o => o.kind === 'grade' && o.submissionId === body.submissionId && o.status === 'running')) throw new TeachingError('这份作业正在评阅，请先查看本次结果', 409);
     if (state.operations.length >= 10_000 || mine.filter(o => o.status === 'running').length >= 4 || (sessionId && mine.filter(o => o.status === 'running' && o.sessionId === sessionId).length) || mine.filter(o => Date.now() - Date.parse(o.createdAt) < 60_000).length >= 120) throw new TeachingError('教学 AI 正在处理其他请求，请稍后再试；原有记录已保留', 429);
-    const operation: TeachingOperation = { ...scope, id: uid('tai'), courseId: course.id, courseRevision: course.revision, activityId: activity?.id, submissionId: typeof body.submissionId === 'string' ? body.submissionId : undefined, sessionId, operationId: body.operationId, payloadHash, kind: body.kind as TeachingOperation['kind'], question: body.kind === 'answer' ? String(body.content) : undefined, attachmentIds: attachmentIds as string[], status: 'running', createdAt: new Date().toISOString() };
+    const operation: TeachingOperation = { ...scope, id: uid('tai'), courseId: course.id, courseRevision: course.revision, activityId: activity?.id, submissionId: typeof body.submissionId === 'string' ? body.submissionId : undefined, sessionId, operationId: body.operationId, payloadHash, kind: body.kind as TeachingOperation['kind'], question: body.kind === 'answer' ? String(body.content) : undefined, attachmentIds: attachmentIds as string[], status: 'running', ...(game ? { conversationId: game.conversationId, gameRevision: game.revision, gamePromptSnapshot: { roleName: game.roleName, prompt: game.prompt } } : {}), createdAt: new Date().toISOString() };
     state.operations.push(operation); return { operation, created: true };
   }
   async function execute(operation: TeachingOperation, verify: () => Promise<void>) {
@@ -72,6 +77,30 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
       const db = await store.read(), course = structuredClone(ownedTeachingCourse(db, scope, operation.courseId));
       const activity = structuredClone(course.activities.find(a => a.id === operation.activityId));
       const submission = structuredClone(teachingState(db, scope).submissions.find(s => s.id === operation.submissionId && s.courseId === course.id));
+      const assertGame = (fresh: Awaited<ReturnType<Store['read']>>) => {
+        if (!operation.sessionId || activity?.kind !== 'game') return;
+        const current = teachingGameSnapshot(fresh, scope, course.id, activity.id, operation.sessionId);
+        if (current.revision !== operation.gameRevision || current.conversationId !== operation.conversationId) throw new TeachingError('游戏已重新开始，这一轮未覆盖新设定', 409, 'TEACHING_GAME_REVISION_CONFLICT');
+      };
+      assertGame(db);
+      let history: { question: string; answer: string }[] = [];
+      if (operation.kind === 'answer' && operation.sessionId && activity) {
+        if (activity.kind === 'game') history = teachingGameModelHistory(db, scope, course.id, activity.id, operation.sessionId, operation.conversationId);
+        else {
+          const previous = teachingState(db, scope).operations.filter(item => item.workspaceId === scope.workspaceId && item.userId === scope.userId && item.courseId === course.id && item.activityId === activity.id && item.sessionId === operation.sessionId && item.kind === 'answer' && item.status === 'completed' && item.question).slice(-6);
+          let total = 0;
+          for (const item of previous.reverse()) {
+            const result = item.result as { kind?: string; answer?: string } | undefined;
+            if (result?.kind !== 'answer' || typeof result.answer !== 'string') continue;
+            if (total + item.question!.length + result.answer.length > 24000) break;
+            history.unshift({ question: item.question!, answer: result.answer }); total += item.question!.length + result.answer.length;
+          }
+        }
+      }
+      const courseSources = course.knowledgeSources ?? [];
+      const privateSources = operation.kind === 'grade' ? submission?.activitySnapshot.knowledgeSources ?? [] : operation.kind === 'prepare' ? activity?.knowledgeSources ?? [] : [];
+      const assertSources = (fresh: Awaited<ReturnType<Store['read']>>) => { assertTeachingKnowledgeSources(fresh, scope, courseSources); assertTeachingKnowledgeSources(fresh, scope, privateSources); };
+      assertSources(db);
       const candidates = db.models.filter(m => m.kind === 'chat');
       const teacher = db.users.find(u => u.id === scope.userId)!;
       const model = candidates.find(m => m.enabled && m.apiKey && m.id === teacher.preferredModelId) ?? candidates.find(m => m.enabled && m.apiKey && m.isDefault) ?? candidates.find(m => m.enabled && m.apiKey) ?? candidates[0];
@@ -82,16 +111,28 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
       const courseText = courseFiles.length ? (await prepareAttachmentContext(courseFiles, { ...scope, conversationId: teachingConversationId(course.id) }, operation.question ?? activity?.title ?? '课程材料', 40_000, async () => { throw new TeachingError('请按章节选择课程资料'); })).text : '';
       if (course.materialText.length + courseText.length > 120_000) throw new TeachingError('课程资料较多，请按章节准备活动', 422);
       course.materialText += courseText ? `\n\n${courseText}` : '';
+      if (operation.kind !== 'insights' && courseSources.length) {
+        const found = await readTeachingKnowledgeSources(store, scope, courseSources, (operation.question ?? activity?.title ?? '课程资料').slice(0, 6000), { ...deps.knowledge, verify });
+        course.materialText += found.text ? `\n\n${found.text}` : '';
+      }
       let attachmentText = '', imageFiles: Attachment[] = [];
       if (operation.kind === 'prepare' && activity) {
         const ids = activity.sourceAttachmentIds ?? [];
         validateTeachingAttachments(db, scope, course.id, ids);
         attachmentText = `${activity.referenceText ?? ''}\n${await fullWorkText(ids.map(id => db.attachments.find(f => f.id === id)!))}`;
+        if (privateSources.length) {
+          const found = await readTeachingKnowledgeSources(store, scope, privateSources, activity.title, { ...deps.knowledge, verify });
+          attachmentText += found.text ? `\n\n${found.text}` : '';
+        }
       } else if (operation.kind === 'grade' && submission) {
         const references = submission.activitySnapshot.sourceAttachmentIds ?? [];
         validateTeachingAttachments(db, scope, course.id, references);
         const gradingReference = `${submission.activitySnapshot.referenceText ?? ''}\n${await fullWorkText(references.map(id => db.attachments.find(f => f.id === id)!))}`.trim();
         if (gradingReference) course.materialText += `\n\n【教师评分参考，不是学生作品】\n${gradingReference}`;
+        if (privateSources.length) {
+          const found = await readTeachingKnowledgeSources(store, scope, privateSources, submission.activitySnapshot.title, { ...deps.knowledge, verify });
+          course.materialText += found.text ? `\n\n【教师评分参考，不是学生作品】\n${found.text}` : '';
+        }
         validateTeachingAttachments(db, scope, course.id, submission.attachmentIds, submission.sessionId ?? scope.userId);
         const files = submission.attachmentIds.map(id => db.attachments.find(f => f.id === id)!);
         attachmentText = await fullWorkText(files);
@@ -108,17 +149,21 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
       if (operation.kind === 'insights') {
         // Only explicitly disclosed course questions, never a publisher's private chat history.
         for (const question of teachingState(db, scope).operations.filter(o => o.courseId === course.id && o.workspaceId === scope.workspaceId && o.sessionId && o.kind === 'answer' && o.status === 'completed' && o.question && (!activity || o.activityId === activity.id))) {
+          // Classification belongs to the saved operation, even if the teacher later changes the activity type.
+          if (question.gameRevision !== undefined || question.gamePromptSnapshot || (question.result as {fictional?:boolean}|undefined)?.fictional === true) continue;
           const snapshot = course.activities.find(a => a.id === question.activityId);
           const participant = teachingState(db, scope).sessions.find(s => s.id === question.sessionId && s.courseId === course.id && s.workspaceId === scope.workspaceId && s.userId === scope.userId);
-          if (snapshot) submissions.push({ ...scope, id: question.id, courseId: course.id, activityId: snapshot.id, activityRevision: snapshot.revision, participantName: participant?.participantName ?? '', participantRef: participant?.participantRef ?? '', operationId: question.operationId, payloadHash: question.payloadHash, text: question.question!, answers: {}, attachmentIds: [], activitySnapshot: snapshot, createdAt: question.createdAt });
+          if (snapshot && snapshot.kind !== 'game') submissions.push({ ...scope, id: question.id, courseId: course.id, activityId: snapshot.id, activityRevision: snapshot.revision, participantName: participant?.participantName ?? '', participantRef: participant?.participantRef ?? '', operationId: question.operationId, payloadHash: question.payloadHash, text: question.question!, answers: {}, attachmentIds: [], activitySnapshot: snapshot, createdAt: question.createdAt });
         }
       }
-      const output = await executeTeachingAi({ kind: operation.kind, course, activity, submission, submissions, question: operation.question, imageDataUrls, attachmentText, model }, { call: async (messages, options) => {
+      const output = await executeTeachingAi({ kind: operation.kind, course, activity, submission, submissions, question: operation.question, history, gameConfig: operation.gamePromptSnapshot, imageDataUrls, attachmentText, model }, { call: async (messages, options) => {
         await verify();
         const safety = (await store.read()).settings.safetyRules;
         const inputMessages: Message[] = [{ role: 'system', content: safety, createdAt: operation.createdAt }, ...messages];
         return runBilledModel(store, { ...scope, conversationId: teachingConversationId(course.id), model, input: { messages: inputMessages }, activity: `teaching_${operation.kind}`, requestId: operation.id, maxOutputTokens: options?.maxOutputTokens, beforeReserve: (fresh, amount) => {
           const live = ownedTeachingCourse(fresh, scope, course.id);
+          assertSources(fresh);
+          assertGame(fresh);
           if (live.revision !== operation.courseRevision || (operation.sessionId && live.status !== 'published')) throw new TeachingError('课程内容或开放状态已变化，这次尚未继续', 409);
           if (courseUsage(fresh, live) + amount > live.budgetMicros) throw new TeachingError('本次预计用量超过课程额度，请老师调整上限后再试', 402);
         } }, snapshot => (deps.modelCall ?? callModelWithTools)(snapshot, inputMessages.map(m => ({ role: m.role, content: m.content, inputImageDataUrls: m.inputImageDataUrls })), [], operation.id, options));
@@ -126,6 +171,8 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
       await verify();
       await store.mutate(fresh => {
         const live = ownedTeachingCourse(fresh, scope, course.id), state = teachingState(fresh, scope), saved = state.operations.find(o => o.id === operation.id)!;
+        assertSources(fresh);
+        assertGame(fresh);
         if (live.revision !== operation.courseRevision || saved.status !== 'running') throw new TeachingError('课程已更新，结果保留待核对，请刷新后查看', 409);
         if (output.kind === 'grade') {
           const target = state.submissions.find(s => s.id === operation.submissionId && s.courseId === course.id && s.userId === scope.userId && s.workspaceId === scope.workspaceId);

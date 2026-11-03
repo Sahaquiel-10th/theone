@@ -5,11 +5,11 @@ export const teachingStages: {id:TeachingStage;title:string;description:string}[
   {id:'during',title:'课中工具包',description:'情境讨论与现场导学'},
   {id:'after',title:'课后工具包',description:'收取答卷与作业，复核批注'},
 ];
-export const teachingKinds:Record<TeachingKind,string>={inquiry:'学情调研 / 现场导学',scenario:'情境活动',quiz:'在线答题',assignment:'作业与批改'};
+export const teachingKinds:Record<TeachingKind,string>={inquiry:'学情调研 / 现场导学',scenario:'情境活动',quiz:'在线答题',assignment:'作业与批改',game:'课堂文字游戏'};
 export const stageKinds=(stage:TeachingStage):TeachingKind[]=>stage==='before'?['inquiry']:stage==='during'?['scenario','inquiry']:['assignment','quiz'];
-export type ActivityDraft=Pick<TeachingActivity,'title'|'stage'|'kind'|'instructions'|'questions'|'scenes'|'rubric'>&{referenceText:string;sourceAttachmentIds:string[]};
+export type ActivityDraft=Pick<TeachingActivity,'title'|'stage'|'kind'|'instructions'|'questions'|'scenes'|'rubric'>&{referenceText:string;sourceAttachmentIds:string[];avatarPrompt?:string;allowStudentPrompt?:boolean};
 export function newActivityDraft(stage:TeachingStage,kind:TeachingKind=stageKinds(stage)[0]):ActivityDraft{return {title:'',stage,kind,instructions:'',referenceText:'',sourceAttachmentIds:[],questions:[],scenes:[],rubric:[]};}
-export function activityDraft(activity:TeachingActivity):ActivityDraft{return structuredClone({title:activity.title,stage:activity.stage,kind:activity.kind,instructions:activity.instructions,referenceText:activity.referenceText??'',sourceAttachmentIds:activity.sourceAttachmentIds??[],questions:activity.questions,scenes:activity.scenes,rubric:activity.rubric});}
+export function activityDraft(activity:TeachingActivity):ActivityDraft{return structuredClone({title:activity.title,stage:activity.stage,kind:activity.kind,instructions:activity.instructions,referenceText:activity.referenceText??'',sourceAttachmentIds:activity.sourceAttachmentIds??[],...(activity.avatarPrompt!==undefined?{avatarPrompt:activity.avatarPrompt}:{}),...(activity.allowStudentPrompt!==undefined?{allowStudentPrompt:activity.allowStudentPrompt}:{}),questions:activity.questions,scenes:activity.scenes,rubric:activity.rubric});}
 export const activityDraftKey=(courseId:string,stage:TeachingStage,activityId?:string)=>`${courseId}:${stage}:${activityId??'new'}`;
 export const draftChanged=(draft:ActivityDraft,activity?:TeachingActivity)=>JSON.stringify(draft)!==JSON.stringify(activity?activityDraft(activity):newActivityDraft(draft.stage,draft.kind));
 /** A previously completed draft must not replace a teacher's newer saved activity. */

@@ -1,16 +1,13 @@
-import {BookOpen,Presentation,ClipboardCheck,ArrowRight} from 'lucide-react';
-import type {TeachingStage} from '../server/teachingTypes';
+import {ArrowUpRight,GraduationCap} from 'lucide-react';
 import './teaching-entry.css';
 
-const toolkits = [
-  {stage:'before',name:'课前工具包',description:'准备导学资料，了解学生关注什么。',keywords:'教学 备课 教材 调研 学情',Icon:BookOpen},
-  {stage:'during',name:'课中工具包',description:'情境互动与实地导学，让知识进入体验。',keywords:'教学 老师 课堂 研学 拍照 博物馆',Icon:Presentation},
-  {stage:'after',name:'课后工具包',description:'发布测验、收取作业、AI 批改与反馈。',keywords:'教学 老师 考试 评分 试卷 学情',Icon:ClipboardCheck},
-] as const;
+export function matchesTeachingEntry(query='',category='all') {
+  if(!['all','teaching','training'].includes(category))return false;
+  const text='教师工作台 教学 教研 分身 老师 作业 批改 评分 试卷 测验 课前 课中 课后 教材 导学 Notion 知识库 图片 博物馆 研学 文字游戏';
+  return query.trim().toLowerCase().split(/\s+/).filter(Boolean).every(word=>text.toLowerCase().includes(word));
+}
 
-export function TeachingEntry({onOpen,query=''}:{onOpen:(stage:TeachingStage)=>void;query?:string}) {
-  const words=query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const visible=toolkits.filter(item=>words.every(word=>`${item.name} ${item.description} ${item.keywords}`.toLowerCase().includes(word)));
-  if(!visible.length)return null;
-  return <section className="teaching-entry" aria-label="教学工具包"><header><span>教学工具包</span><small>从备课到反馈，在一个工作区完成</small></header><div>{visible.map(({stage,name,description,Icon})=><button type="button" key={stage} onClick={()=>onOpen(stage)}><Icon size={21} aria-hidden="true"/><strong>{name}</strong><span>{description}</span><ArrowRight size={16} aria-hidden="true"/></button>)}</div></section>;
+/** One workbench is the catalog unit. Teaching phases stay inside the workbench. */
+export function TeachingEntry({onOpen}:{onOpen:()=>void}) {
+  return <article className="feature-shelf-card teaching-workbench-entry" aria-label="功能：教师工作台"><header><span className="feature-shelf-symbol" aria-hidden="true"><GraduationCap size={17}/></span><h3>教师工作台</h3><span className="teaching-workbench-label">工作台</span></header><p className="feature-shelf-description">批改作业、让学生向你的分身提问，或准备测验与课堂文字游戏。按步骤完成，资料和记录自动归在一起。</p><footer><span>支持文件与已连接知识库</span><button type="button" className="feature-shelf-item" onClick={onOpen}>打开工作台<ArrowUpRight size={15} aria-hidden="true"/></button></footer></article>;
 }

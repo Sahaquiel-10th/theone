@@ -21,6 +21,10 @@ const maxChunkChars = 24_000;
 const maxToolTextChars = 256_000;
 const notionHosts = ["mcp.notion.com"] as const;
 const mcpTimeoutMs = Math.max(3_000, Number(process.env.NOTION_MCP_TIMEOUT_MS ?? 20_000));
+const readAuthorizationFields = ['id', 'workspaceId', 'provider', 'clientId', 'providerUserId', 'providerSpaceId', 'encryptedAccessToken', 'encryptedRefreshToken', 'encryptedClientSecret', 'oauthTokenAuthMethod'] as const;
+function sameReadAuthorization(current: KnowledgeConnection | undefined, expected: KnowledgeConnection): current is KnowledgeConnection {
+  return !!current && ['connected', 'error'].includes(current.status) && readAuthorizationFields.every(field => current[field] === expected[field]);
+}
 
 type OAuthClient = { clientId: string; clientSecret?: string; tokenAuthMethod: "none" | "client_secret_post" };
 type OAuthFlow = OAuthClient & {
@@ -294,7 +298,7 @@ export class NotionMcpService {
   private readonly fetcher: typeof fetch;
   private readonly createClient: (accessToken: string) => Promise<McpClient>;
   private readonly authorizationSessions: AuthorizationSessions;
-  private readonly refreshes = new Map<string, Promise<string>>();
+  private readonly refreshes = new Map<string, Promise<KnowledgeConnection>>();
 
   constructor(private store: Store, options: NotionMcpServiceOptions = {}) {
     this.fetcher = options.fetch || createNotionFetch();
@@ -538,13 +542,16 @@ export class NotionMcpService {
 
   private async callReadOnly(connection: KnowledgeConnection, name: string, args: Record<string, unknown>) {
     if (!readOnlyTools.has(name)) throw new Error("Notion 工具未获准使用");
+    const expected = structuredClone(connection);
     for (let attempt=0;;attempt++) {
-      const client = await this.clientFor(connection);
+      const client = await this.clientFor(expected);
       try {
         const listed = await withinDeadline(client.listTools(), "Notion MCP 工具查询超时");
         if (!listed.tools.some(tool => tool.name === name)) throw new Error("Notion MCP 缺少所需的只读工具");
+        await this.assertReadAuthorization(expected);
         const result = await withinDeadline(client.callTool({ name, arguments: args }), "Notion MCP 读取超时");
         this.assertToolResult(result);
+        await this.assertReadAuthorization(expected);
         return result;
       } catch (error) {
         if(attempt>=1 || this.isAuthorizationError(error) || !(transientConnectionFailure(error) || error instanceof Error && /^Notion MCP (?:工具查询|读取)超时$/.test(error.message)))throw error;
@@ -623,14 +630,22 @@ export class NotionMcpService {
   }
 
   private async withRefresh<T>(workspaceId: string, operation: (connection: KnowledgeConnection) => Promise<T>) {
-    let connection = await this.connected(workspaceId);
+    // Store.read may return live records. Never let a reconnect mutate the
+    // credentials against which this read/401 recovery was authorized.
+    const connection = structuredClone(await this.connected(workspaceId));
     try { return await operation(connection); }
     catch (error) {
       if (!connection.encryptedRefreshToken || !this.isAuthorizationError(error)) throw error;
-      await this.refreshAccessToken(connection);
-      connection = await this.connected(workspaceId);
-      return operation(connection);
+      await this.assertReadAuthorization(connection);
+      const refreshed = await this.refreshAccessToken(connection);
+      await this.assertReadAuthorization(refreshed);
+      return operation(refreshed);
     }
+  }
+
+  private async assertReadAuthorization(expected: KnowledgeConnection) {
+    const current = connectionFor(await this.store.read(), expected.workspaceId);
+    if (!sameReadAuthorization(current, expected)) throw new Error('Notion 知识授权已撤销或改变，请重新连接');
   }
 
   private isAuthorizationError(error: unknown) {
@@ -644,9 +659,10 @@ export class NotionMcpService {
     let connection = connectionFor(db, workspaceId);
     if (!connection || connection.status === "revoked" || !connection.encryptedAccessToken) throw new Error("请先连接 Notion");
     if (connection.credentialExpiresAt && Date.parse(connection.credentialExpiresAt) <= Date.now() + 60_000) {
-      await this.refreshAccessToken(connection);
+      const refreshed = await this.refreshAccessToken(connection);
       db = await this.store.read();
       connection = connectionFor(db, workspaceId);
+      if (!sameReadAuthorization(connection, refreshed)) throw new Error('Notion 知识授权已撤销或改变，请重新连接');
     }
     if (!connection?.encryptedAccessToken) throw new Error("Notion 授权资料不完整，请重新连接");
     return connection;
@@ -669,29 +685,34 @@ export class NotionMcpService {
   }
 
   private async refreshAccessToken(connection: KnowledgeConnection) {
-    const existing = this.refreshes.get(connection.workspaceId);
+    const expected = structuredClone(connection);
+    // A newer authorization in the same workspace must not share an older
+    // request's refresh promise. Identical authorization snapshots still dedup.
+    const refreshKey = crypto.createHash('sha256').update(JSON.stringify(readAuthorizationFields.map(field => expected[field]))).digest('hex');
+    const existing = this.refreshes.get(refreshKey);
     if (existing) return existing;
     const refresh = (async () => {
-      if (!connection.encryptedRefreshToken) throw new Error("Notion 授权已过期，请重新连接");
-      const params = new URLSearchParams({ grant_type: "refresh_token", refresh_token: connectionSecret(connection, "refresh_token", connection.encryptedRefreshToken), client_id: connection.clientId });
+      if (!expected.encryptedRefreshToken) throw new Error("Notion 授权已过期，请重新连接");
+      await this.assertReadAuthorization(expected);
+      const params = new URLSearchParams({ grant_type: "refresh_token", refresh_token: connectionSecret(expected, "refresh_token", expected.encryptedRefreshToken), client_id: expected.clientId });
       const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" };
-      if (connection.encryptedClientSecret && connection.oauthTokenAuthMethod === "client_secret_post") params.append("client_secret", connectionSecret(connection, "client_secret", connection.encryptedClientSecret));
+      if (expected.encryptedClientSecret && expected.oauthTokenAuthMethod === "client_secret_post") params.append("client_secret", connectionSecret(expected, "client_secret", expected.encryptedClientSecret));
       const response = await this.fetcher(assertAllowedConnectorUrl(TOKEN_URL, notionHosts), { method: "POST", headers, body: params, redirect: "error" });
       if (!response.ok) throw new Error("Notion 授权已过期，请重新连接");
       const token = validatedToken(await readBoundedJson<unknown>(response, 256 * 1024));
-      await this.store.mutate(db => {
-        const target = connectionFor(db, connection.workspaceId);
-        if (!target || target.id !== connection.id || target.status === "revoked") throw new Error("Notion 连接已被撤销");
+      return this.store.mutate(db => {
+        const target = connectionFor(db, expected.workspaceId);
+        if (!sameReadAuthorization(target, expected)) throw new Error("Notion 知识授权已撤销或改变，请重新连接");
         target.encryptedAccessToken = protectConnectionSecret(target.workspaceId, "access_token", token.access_token);
         if (token.refresh_token) target.encryptedRefreshToken = protectConnectionSecret(target.workspaceId, "refresh_token", token.refresh_token);
         target.credentialExpiresAt = token.expires_in ? new Date(Date.now() + token.expires_in * 1000).toISOString() : undefined;
         target.status = "connected";
         target.lastError = undefined;
         target.updatedAt = new Date().toISOString();
+        return structuredClone(target);
       });
-      return token.access_token;
-    })().finally(() => this.refreshes.delete(connection.workspaceId));
-    this.refreshes.set(connection.workspaceId, refresh);
+    })().finally(() => this.refreshes.delete(refreshKey));
+    this.refreshes.set(refreshKey, refresh);
     return refresh;
   }
 

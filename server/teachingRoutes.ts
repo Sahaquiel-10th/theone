@@ -2,7 +2,8 @@ import type { Express, Request, RequestHandler, Response } from 'express';
 import type { Store } from './db.js';
 import { asyncRoute } from './middleware.js';
 import type { TeachingScope } from './teachingTypes.js';
-import { TeachingError, activeTeachingCourse, addTeachingSubmission, authTeachingSession, closeTeachingCourse, createTeachingActivity, createTeachingCourse, createTeachingSession, listTeachingCourses, ownedTeachingCourse, publicTeachingCourse, publicTeachingSession, publicTeachingSubmission, publishTeachingCourse, reviewTeachingSubmission, teachingSubmissions, updateTeachingActivity, updateTeachingCourse } from './teaching.js';
+import { TeachingError, activeTeachingCourse, addTeachingSubmission, authTeachingSession, closeTeachingCourse, createTeachingActivity, createTeachingCourse, createTeachingSession, createTeachingTask, listTeachingCourses, ownedTeachingCourse, publicTeachingCourse, publicTeachingSession, publicTeachingSubmission, publishTeachingCourse, reviewTeachingSubmission, teachingSubmissions, updateTeachingActivity, updateTeachingCourse } from './teaching.js';
+import { publicTeachingGameConfig, teachingGameHistory, teachingGameSnapshot, updateTeachingGameConfig } from './teachingGames.js';
 
 type Dependencies = { verifyKey?: (req: Request) => Promise<void> };
 const scope = (req: Request): TeachingScope => {
@@ -40,6 +41,11 @@ export function installTeachingRoutes(app: Express, keyAuth: readonly RequestHan
     if (rates.size > 10000) for (const [k, value] of rates) if (at - value.at > 60000) rates.delete(k);
   }
 
+  app.post('/api/teaching/tasks', ...keyAuth, route(async (req, res) => {
+    await verify(req);
+    const result = await store.mutate(db => createTeachingTask(db, scope(req), req.body));
+    return res.status(result.duplicate ? 200 : 201).json({ course: result.course, activity: result.activity });
+  }));
   app.get(base, ...keyAuth, route(async (req, res) => res.json({ courses: listTeachingCourses(await store.read(), scope(req)) })));
   app.post(base, ...keyAuth, route(async (req, res) => {
     await verify(req); const course = await store.mutate(db => createTeachingCourse(db, scope(req), req.body)); return res.status(201).json({ course });
@@ -79,6 +85,20 @@ export function installTeachingRoutes(app: Express, keyAuth: readonly RequestHan
   app.get(pub + '/session', route(async (req, res) => {
     classroomRate(req, 'session-read');
     const { session } = authTeachingSession(await store.read(), String(req.params.slug), teachingBearer(req)); return res.json({ session: publicTeachingSession(session) });
+  }));
+  app.get(pub + '/activities/:activityId/game', route(async (req, res) => {
+    classroomRate(req, 'game-read');
+    const db = await store.read(), { course, session, scope: s } = authTeachingSession(db, String(req.params.slug), teachingBearer(req));
+    const config = teachingGameSnapshot(db, s, course.id, String(req.params.activityId), session.id);
+    return res.json({ config: publicTeachingGameConfig(config), history: teachingGameHistory(db, s, course.id, String(req.params.activityId), session.id) });
+  }));
+  app.patch(pub + '/activities/:activityId/game', route(async (req, res) => {
+    classroomRate(req, 'game-save');
+    return res.json(await store.mutate(db => {
+      const { course, session, scope: s } = authTeachingSession(db, String(req.params.slug), teachingBearer(req));
+      const config = updateTeachingGameConfig(db, s, course.id, String(req.params.activityId), session.id, req.body);
+      return { config: publicTeachingGameConfig(config), history: teachingGameHistory(db, s, course.id, String(req.params.activityId), session.id) };
+    }));
   }));
   app.get(pub + '/submissions', route(async (req, res) => {
     classroomRate(req, 'submission-read');

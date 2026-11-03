@@ -1,8 +1,7 @@
 import {useEffect,useRef,useState} from 'react';
 import {BadgeCheck,Check,Search,ArrowLeft,Clock3,KeyRound} from 'lucide-react';
 import {TeachingWorkspace} from '../TeachingWorkspace';
-import type {TeachingStage} from '../../server/teachingTypes';
-import {TeachingEntry} from '../TeachingEntry';
+import {TeachingEntry,matchesTeachingEntry} from '../TeachingEntry';
 import type {api as Api} from '../oneApi';
 import {FeatureLaunch,FeatureRunView,FeatureRunHistory,type FeatureRunSummary} from '../FeatureCatalog';
 import {MyToolCredentials} from '../FeatureConnections';
@@ -15,7 +14,7 @@ type ShelfProps={active?:boolean;api:typeof Api;models:{id:string;name:string;ki
 /** The list remains a spatial anchor while a feature's working surface splits beside it. */
 export function FeatureShelf({active=true,api,selected,onChoose,onDone,initialOperationId,initialOpenRequest,onRunStarted,onRunStatus,onOperationChange}:ShelfProps) {
  const [query,setQuery]=useState(''),[page,setPage]=useState(1),[category,setCategory]=useState('all');
- const [teachingStage,setTeachingStage]=useState<TeachingStage|null>(null);
+ const [teachingOpen,setTeachingOpen]=useState(false);
  const [error,setError]=useState(''),[loading,setLoading]=useState(true),[refresh,setRefresh]=useState(0),[detail,setDetail]=useState<FeatureChoice|null>(null),[operation,setOperation]=useState(initialOperationId);
  const [utility,setUtility]=useState<'history'|'credentials'|null>(null),[list,setList]=useState<{items:FeatureChoice[];total:number}>({items:[],total:0});
  const selectionSession=Boolean(onDone&&!utility);
@@ -30,7 +29,8 @@ export function FeatureShelf({active=true,api,selected,onChoose,onDone,initialOp
  function changeUtility(next:'history'|'credentials'){setUtility(next);closeDetail();}
  function showDetail(feature:FeatureChoice){setOperation(undefined);setDetail(feature);}
  function started(operationId:string){const run={operationId,name:detail?.name??'功能任务',status:'pending'};setOperation(operationId);setDetail(null);onRunStarted?.(run);}
- if(teachingStage)return <TeachingWorkspace api={api} initialStage={teachingStage} onClose={()=>setTeachingStage(null)}/>;
+ if(teachingOpen)return <TeachingWorkspace api={api} onClose={()=>setTeachingOpen(false)}/>;
+ const teachingVisible=page===1&&matchesTeachingEntry(query,category);
  const secondary=operation?<section className="feature-workflow-detail">
   <div className="feature-detail-toolbar"><button type="button" className="feature-workflow-back" onClick={closeDetail}><ArrowLeft size={16} aria-hidden="true"/>收起详情</button><h3 ref={detailHeading} tabIndex={-1} className="feature-run-context">运行记录</h3></div>
   <FeatureRunView key={operation} api={api} operationId={operation} onStatus={onRunStatus} active={active}/>
@@ -42,12 +42,11 @@ export function FeatureShelf({active=true,api,selected,onChoose,onDone,initialOp
  const primary=<div className="feature-shelf-list-anchor">
   <div className="feature-workflow-navigation"><nav className="feature-shelf-tabs" aria-label="功能范围"><button type="button" aria-pressed={!utility} onClick={showAvailable}>可用功能</button></nav><nav className="feature-workflow-utilities" aria-label="功能管理"><button type="button" aria-pressed={utility==='history'} onClick={()=>changeUtility('history')}><Clock3 size={14}/>运行记录</button><button type="button" aria-pressed={utility==='credentials'} onClick={()=>changeUtility('credentials')}><KeyRound size={14}/>工具连接</button></nav></div>
   {utility==='history'?<FeatureRunHistory api={api} active={active} onOpen={run=>{setDetail(null);setOperation(run.operationId);}}/>:utility==='credentials'?<section className="feature-workflow-connections"><h3>工具连接</h3><p className="feature-selection-hint">查看、更新或撤销你本人的接口凭证。</p><MyToolCredentials api={api} inline/></section>:<>
-   {category==='all'?<TeachingEntry onOpen={setTeachingStage} query={query}/>:null}
-   <div className="feature-shelf-toolbar"><label className="feature-shelf-search"><Search size={15}/><input aria-label="搜索功能" placeholder="搜索功能名称或用途" value={query} onChange={event=>{setQuery(event.target.value);setPage(1);}}/></label>{!loading&&!error?<span className="feature-shelf-total">共 {list.total} 项</span>:null}</div>
+   <div className="feature-shelf-toolbar"><label className="feature-shelf-search"><Search size={15}/><input aria-label="搜索功能" placeholder="搜索功能名称或用途" value={query} onChange={event=>{setQuery(event.target.value);setPage(1);}}/></label>{!loading&&!error?<span className="feature-shelf-total">共 {list.total+(matchesTeachingEntry(query,category)?1:0)} 项</span>:null}</div>
    <nav className="feature-shelf-categories" aria-label="功能分类">{[{id:'all',name:'全部'},...featureCategories].map(item=><button key={item.id} type="button" aria-pressed={category===item.id} onClick={()=>{setCategory(item.id);setPage(1);}}>{item.name}</button>)}</nav>
    {loading?<p role="status">正在找功能…</p>:error?<div role="alert"><p>{error}</p><button type="button" onClick={()=>setRefresh(value=>value+1)}>重新加载</button></div>:<>
-    <div className="feature-shelf-grid">{list.items.map(feature=><FeatureShelfCard key={feature.id} feature={feature} selected={selected.includes(feature.id)} inspecting={detail?.id===feature.id} onInspect={()=>detail?.id===feature.id?closeDetail():showDetail(feature)} onChoose={onChoose}/>)}</div>
-    {!list.items.length?<div className="feature-empty"><p>{query||category!=='all'?'没有找到匹配的功能':'暂无可用功能'}</p>{query||category!=='all'?<button type="button" onClick={()=>{setQuery('');setCategory('all');setPage(1);}}>清除筛选</button>:null}</div>:null}
+    <div className="feature-shelf-grid">{teachingVisible?<TeachingEntry onOpen={()=>setTeachingOpen(true)}/>:null}{list.items.map(feature=><FeatureShelfCard key={feature.id} feature={feature} selected={selected.includes(feature.id)} inspecting={detail?.id===feature.id} onInspect={()=>detail?.id===feature.id?closeDetail():showDetail(feature)} onChoose={onChoose}/>)}</div>
+    {!list.items.length&&!teachingVisible?<div className="feature-empty"><p>{query||category!=='all'?'没有找到匹配的功能':'暂无可用功能'}</p>{query||category!=='all'?<button type="button" onClick={()=>{setQuery('');setCategory('all');setPage(1);}}>清除筛选</button>:null}</div>:null}
     {list.total>10?<footer className="feature-pagination"><button type="button" disabled={page===1} onClick={()=>setPage(page-1)}>上一页</button><span>{page} / {Math.ceil(list.total/10)} · {list.total} 项</span><button type="button" disabled={page*10>=list.total} onClick={()=>setPage(page+1)}>下一页</button></footer>:null}
    </>}
   </>}
