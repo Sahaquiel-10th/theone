@@ -6,7 +6,7 @@ import { AttachmentService, ATTACHMENT_CHUNK_BYTES, ATTACHMENT_MAX_BYTES, remove
 import { publicAttachmentSummary } from './conversationAttachments.js';
 import { asyncRoute } from './middleware.js';
 import { uid } from './security.js';
-import { authTeachingSession, ownedTeachingCourse, teachingConversationId, teachingState, TeachingError } from './teaching.js';
+import { authTeachingSession, ownedTeachingCourse, teachingConversationId, teachingState, teachingSessionActivity, TeachingError } from './teaching.js';
 import type { TeachingCourse, TeachingScope, TeachingSession } from './teachingTypes.js';
 import type { Attachment } from './types.js';
 
@@ -28,16 +28,34 @@ export function installTeachingFileRoutes(app: Express, auth: readonly RequestHa
     return { scope, course: ownedTeachingCourse(db, scope, String(req.params.courseId)), fileUserId: scope.userId };
   };
   const currentFile = (db: Awaited<ReturnType<Store['read']>>, a: FileAccess, id: string) => {
+    const course=assertAccess(db,a);
     const file = db.attachments.find(f => f.id === id && f.workspaceId === a.scope.workspaceId && f.userId === a.fileUserId && f.conversationId === teachingConversationId(a.course.id));
-    if (!file) throw new TeachingError('附件不存在或不属于本次课程', 404);
+    if (!file || !visibleFile(db,a,course,id)) throw new TeachingError('附件不存在或不属于本次课程', 404);
     return file;
+  };
+  const visibleFile = (db: Awaited<ReturnType<Store['read']>>,a:FileAccess,course:TeachingCourse,id:string) => {
+    if(course.materialAttachmentIds.includes(id)&&!a.session)return true;
+    const state=teachingState(db,a.scope),refs=course.activities.filter(activity=>activity.sourceAttachmentIds?.includes(id)).map(activity=>activity.id);
+    for(const row of state.submissions.filter(row=>row.courseId===course.id&&row.workspaceId===a.scope.workspaceId&&row.userId===a.scope.userId))if(row.attachmentIds.includes(id)||row.activitySnapshot.sourceAttachmentIds?.includes(id)||row.gradingSnapshot?.sourceAttachmentIds?.includes(id))refs.push(row.activityId);
+    for(const operation of state.operations.filter(row=>row.courseId===course.id&&row.workspaceId===a.scope.workspaceId&&row.userId===a.scope.userId&&row.activityId))if(operation.attachmentIds?.includes(id))refs.push(operation.activityId!);
+    return !refs.length||refs.some(activityId=>{const activity=course.activities.find(row=>row.id===activityId&&!row.deletedAt);if(!activity)return false;if(!a.session)return true;try{teachingSessionActivity(course,a.session,activityId);return true;}catch{return false;}});
+  };
+  const assertAccess = (db: Awaited<ReturnType<Store['read']>>, a: FileAccess) => {
+    const course=ownedTeachingCourse(db,a.scope,a.course.id);
+    if(a.session){
+      const session=teachingState(db,a.scope).sessions.find(row=>row.id===a.session!.id&&row.courseId===course.id&&row.workspaceId===a.scope.workspaceId&&row.userId===a.scope.userId&&row.expiresAt>new Date().toISOString()&&row.tokenHash===a.session!.tokenHash);
+      if(!session||session.createdAt<(course.sessionsRevokedAt??course.updatedAt))throw new TeachingError('参与身份已更新，请重新进入',401);
+      if(session.activityId)teachingSessionActivity(course,session,session.activityId);else if(course.status!=='published')throw new TeachingError('学生入口已关闭',410);
+    }
+    return course;
   };
   for (const publicRoute of [false, true]) {
     const prefix = publicRoute ? '/public/:slug' : '/courses/:courseId';
     const middleware = publicRoute ? [] : [...auth];
     router.get(`${prefix}/uploads`, ...middleware, asyncRoute(async (req, res) => {
       const a = await access(req, publicRoute), db = await store.read();
-      res.json({ attachments: db.attachments.filter(file => file.workspaceId === a.scope.workspaceId && file.userId === a.fileUserId && file.conversationId === teachingConversationId(a.course.id)).map(publicAttachmentSummary) });
+      const course=assertAccess(db,a);
+      res.json({ attachments: db.attachments.filter(file => file.workspaceId === a.scope.workspaceId && file.userId === a.fileUserId && file.conversationId === teachingConversationId(a.course.id) && visibleFile(db,a,course,file.id)).map(publicAttachmentSummary) });
     }));
     router.post(`${prefix}/uploads`, ...middleware, asyncRoute(async (req, res) => {
       const a = await access(req, publicRoute), body = req.body ?? {};
@@ -81,6 +99,7 @@ export function installTeachingFileRoutes(app: Express, auth: readonly RequestHa
       currentFile(await store.read(), a, String(req.params.id));
       if (!Buffer.isBuffer(req.body)) throw new TeachingError('上传格式不正确');
       const uploadedBytes = await service.chunk({ workspaceId: a.scope.workspaceId, userId: a.fileUserId }, String(req.params.id), Number(req.query.offset), req.body);
+      currentFile(await store.read(),a,String(req.params.id));
       res.json({ uploadedBytes });
     }));
     router.post(`${prefix}/uploads/:id/complete`, ...middleware, asyncRoute(async (req, res) => {
@@ -100,7 +119,7 @@ export function installTeachingFileRoutes(app: Express, auth: readonly RequestHa
           saved.status = 'ready'; saved.textChars = 0; saved.segmentCount = 0;
         });
       }
-      res.json({ ok: true });
+      currentFile(await store.read(),a,file.id);res.json({ ok: true });
     }));
     router.get(`${prefix}/uploads/:id`, ...middleware, asyncRoute(async (req, res) => {
       const a = await access(req, publicRoute);
@@ -128,7 +147,10 @@ export function installTeachingFileRoutes(app: Express, auth: readonly RequestHa
     }));
     router.get(`${prefix}/submissions/:submissionId/attachments/:attachmentId/content`, ...middleware, asyncRoute(async (req, res) => {
       const a = await access(req, publicRoute), db = await store.read();
+      const currentCourse=assertAccess(db,a);
       const submission = teachingState(db, a.scope).submissions.find(s => s.id === req.params.submissionId && s.courseId === a.course.id && s.workspaceId === a.scope.workspaceId && s.userId === a.scope.userId && (!a.session || s.sessionId === a.session.id));
+      if (submission && !currentCourse.activities.some(activity=>activity.id===submission.activityId&&!activity.deletedAt)) throw new TeachingError('活动已移入回收站',404);
+      if(submission&&a.session)teachingSessionActivity(currentCourse,a.session,submission.activityId);
       const file = submission?.attachmentIds.includes(String(req.params.attachmentId)) && db.attachments.find(f => f.id === req.params.attachmentId && f.workspaceId === a.scope.workspaceId && f.userId === (submission.sessionId ?? a.scope.userId) && f.conversationId === teachingConversationId(a.course.id) && f.status === 'ready');
       if (!file) throw new TeachingError('未找到已提交给本课程的附件', 404);
       res.setHeader('X-Content-Type-Options', 'nosniff');

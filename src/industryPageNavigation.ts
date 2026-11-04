@@ -1,4 +1,5 @@
 import type {IndustryWorkspaceId} from './industryWorkspaceState';
+import {clearTeachingWorkbenchParams} from './teachingWorkbenchNavigation';
 
 export type OnePageSurface='chat'|'things'|'features'|'avatars'|'account'|'admin'|'company'|'agents'|'agentEditor';
 export type IndustryPageLocation={open:boolean;workspace:IndustryWorkspaceId|null;surface:OnePageSurface};
@@ -65,6 +66,7 @@ export function openIndustryPageNavigation(browser:IndustryNavigationBrowser,sco
   // Stamp the departing ONE entry so Back restores its destination without resetting its chat.
   const current=syncIndustryPageNavigation(browser,scopeKey,surface),url=new URL(browser.location.href);
   if(!current.open)browser.history.replaceState(historyState(browser.history.state,scopeKey,surface),'',relative(url));
+  clearTeachingWorkbenchParams(url);
   url.pathname=workspace?`/workbenches/${workspace}`:'/workbenches';
   const state=historyState(browser.history.state,scopeKey,surface);
   if(relative(url)!==relative(new URL(browser.location.href)))browser.history.pushState(state,'',relative(url));
@@ -76,6 +78,7 @@ export function openIndustryPageNavigation(browser:IndustryNavigationBrowser,sco
 export function exitIndustryPageNavigation(browser:IndustryNavigationBrowser,scopeKey:string,surface:OnePageSurface):IndustryPageLocation{
   const current=syncIndustryPageNavigation(browser,scopeKey,surface),url=new URL(browser.location.href);
   if(current.open)url.pathname='/';
+  clearTeachingWorkbenchParams(url);
   const state=historyState(browser.history.state,scopeKey,surface);
   if(current.open)browser.history.pushState(state,'',relative(url));
   else browser.history.replaceState(state,'',relative(url));

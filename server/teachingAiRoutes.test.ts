@@ -55,6 +55,26 @@ async function fixture(t: TestContext, modelCall: NonNullable<TeachingAiRouteDep
   return { get db() { return db; }, store, base, post, poll, start, directory, removeKey: () => { keyPresent = false; } };
 }
 
+test('teacher preview receipts and alias recovery expose only that teacher trial question, never student private questions', async t => {
+  let calls = 0; const f = await fixture(t, async () => { calls++; return reply(guidedAnswer()); });
+  const { course, activity } = addCourse(f.db);
+  const body = { kind: 'answer', preview: true, activityId: activity.id, conversationId: 'teacher-trial-original', operationId: 'teacher-trial-receipt-001', content: 'TEACHER_OWN_PREVIEW_QUESTION', budgetConfirmed: true };
+  const first = await f.post(`/courses/${course.id}/ai`, body); assert.equal(first.status, 202, await first.clone().text());
+  const initial = (await first.json() as any).operation; assert.equal(initial.question, body.content);
+  await f.poll(`/courses/${course.id}/operations/${initial.id}`);
+  const recovered = await fetch(`${f.base}/courses/${course.id}/operations/${body.operationId}`, { headers: ownerHeaders });
+  assert.equal(recovered.status, 200); assert.equal((await recovered.json() as any).operation.question, body.content);
+  const list = await fetch(`${f.base}/courses/${course.id}/operations?activityId=${activity.id}&conversationId=${body.conversationId}`, { headers: ownerHeaders });
+  assert.equal((await list.json() as any).operations[0].question, body.content);
+  for (const scope of [sameWorkspace, otherWorkspace]) assert.equal((await fetch(`${f.base}/courses/${course.id}/operations/${body.operationId}`, { headers: { ...ownerHeaders, 'x-teacher': scope.userId } })).status, 404);
+  const student = createTeachingSession(f.db, course.slug!, { participantName: '学生', consent: true }), headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${student.token}` };
+  const submitted = await f.post(`/public/${course.slug}/questions`, { activityId: activity.id, operationId: 'student-private-question-001', preview: true, conversationId: body.conversationId, content: 'STUDENT_PRIVATE_QUESTION' }, headers);
+  assert.equal(submitted.status, 202); const studentInitial = (await submitted.json() as any).operation; assert.equal(Object.hasOwn(studentInitial, 'question'), false);
+  const studentDone = await f.poll(`/public/${course.slug}/operations/${studentInitial.id}`, headers); assert.equal(Object.hasOwn(studentDone, 'question'), false);
+  const ownStudentHistory = await fetch(`${f.base}/public/${course.slug}/operations`, { headers }); assert.doesNotMatch(await ownStudentHistory.text(), /STUDENT_PRIVATE_QUESTION|TEACHER_OWN_PREVIEW_QUESTION/);
+  assert.equal((await f.post(`/courses/${course.id}/ai`, body)).status, 200); assert.equal(calls, 2, 'receipt recovery and replay never create a third paid call');
+});
+
 test('HTTP AI requests are idempotent, payload conflicts reject, and restart polling never reissues unknown attempts', async t => {
   let calls = 0;
   const f = await fixture(t, async () => { calls++; return reply({ instructions: '请探索茶叶文化并提出自己的问题。' }); });

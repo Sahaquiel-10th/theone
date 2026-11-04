@@ -86,34 +86,50 @@ export function teachingState(db: Database, scope: TeachingScope, options: { cre
 export function ownedTeachingCourse(db: Database, scope: TeachingScope, courseId: string) {
   const state = teachingState(db, scope);
   const course = state.courses.find(c => c.id === courseId && c.workspaceId === scope.workspaceId && c.userId === scope.userId);
-  if (!course) throw new TeachingError('课程不存在', 404, 'TEACHING_NOT_FOUND');
+  if (!course || course.deletedAt) throw new TeachingError('课程不存在', 404, 'TEACHING_NOT_FOUND');
   return course;
 }
 export function listTeachingCourses(db: Database, scope: TeachingScope) {
-  return teachingState(db, scope).courses.filter(c => c.workspaceId === scope.workspaceId && c.userId === scope.userId);
+  return teachingState(db, scope).courses.filter(c => c.workspaceId === scope.workspaceId && c.userId === scope.userId && !c.deletedAt).map(teachingCourseView);
 }
-export function activeTeachingCourse(db: Database, slug: string) {
-  if (!/^[A-Za-z0-9_-]{20,100}$/.test(slug)) throw new TeachingError('课程入口不存在', 404, 'TEACHING_NOT_FOUND');
-  for (const user of db.users) {
-    const course = user.teaching?.courses.find(c => c.slug === slug && c.userId === user.id);
-    if (!course) continue;
-    const scope = { workspaceId: course.workspaceId, userId: course.userId };
-    teachingMember(db, scope);
-    if (course.status !== 'published') throw new TeachingError('老师已关闭这个课程入口', 410, 'TEACHING_CLOSED');
-    return course;
+/** Ordinary teacher reads never expose trashed children. Internal mutations use the owned record. */
+export function teachingCourseView(course: TeachingCourse): TeachingCourse { return { ...course, activities: course.activities.filter(activity => !activity.deletedAt) }; }
+export function preserveTeachingAccess(course: TeachingCourse) {
+  course.sessionsRevokedAt ??= course.updatedAt;
+  course.materialRevision ??= course.revision;
+}
+export function activeTeachingAccess(db: Database, slug: string) {
+  if (!/^[A-Za-z0-9_-]{20,100}$/.test(slug)) throw new TeachingError('学习入口不存在', 404, 'TEACHING_NOT_FOUND');
+  for (const user of db.users) for (const course of user.teaching?.courses ?? []) {
+    if (course.userId !== user.id) continue;
+    const activity = course.activities.find(item => item.slug === slug && item.courseId === course.id && item.workspaceId === course.workspaceId && item.userId === course.userId);
+    if (course.slug !== slug && !activity) continue;
+    teachingMember(db, { workspaceId: course.workspaceId, userId: course.userId });
+    if (course.deletedAt || activity?.deletedAt) throw new TeachingError('学习入口已移入回收站', 410, 'TEACHING_TRASHED');
+    if (activity ? activity.status !== 'published' || activity.isOpen !== true : course.status !== 'published') throw new TeachingError('老师已关闭这个学习入口', 410, 'TEACHING_CLOSED');
+    return { course, activity };
   }
-  throw new TeachingError('课程入口不存在或已更新', 404, 'TEACHING_NOT_FOUND');
+  throw new TeachingError('学习入口不存在或已更新', 404, 'TEACHING_NOT_FOUND');
+}
+export function activeTeachingCourse(db: Database, slug: string) { return activeTeachingAccess(db, slug).course; }
+export function teachingSessionActivity(course: TeachingCourse, session: TeachingSession, activityId: string) {
+  if (!session.activityId && course.status !== 'published') throw new TeachingError('老师已关闭课程入口',410,'TEACHING_CLOSED');
+  const activity = course.activities.find(item => item.id === activityId && item.courseId === course.id && item.workspaceId === course.workspaceId && item.userId === course.userId && !item.deletedAt);
+  if (!activity || activity.status !== 'published' || activity.isOpen === false || session.activityId && session.activityId !== activityId || !session.activityId && course.status !== 'published' || session.activityId && activity.isOpen !== true) throw new TeachingError('这个学习入口未开放本活动', 403, 'TEACHING_ACTIVITY_FORBIDDEN');
+  if (activity.sessionsRevokedAt && session.createdAt < activity.sessionsRevokedAt) throw new TeachingError('这个活动已重新开放，请从活动链接重新进入', 409, 'TEACHING_SESSION_CHANGED');
+  if (session.activityAccessRevisions && session.activityAccessRevisions[activityId] !== (activity.accessRevision ?? 0)) throw new TeachingError('这个活动入口已重新开放，请重新进入',409,'TEACHING_SESSION_CHANGED');
+  return activity;
 }
 export function authTeachingSession(db: Database, slug: string, token: string) {
-  const course = activeTeachingCourse(db, slug);
+  const { course, activity } = activeTeachingAccess(db, slug);
   if (!/^[A-Za-z0-9_-]{40,100}$/.test(token)) throw new TeachingError('请先填写参与信息', 401, 'TEACHING_SESSION_REQUIRED');
   const scope = { workspaceId: course.workspaceId, userId: course.userId };
   const state = teachingState(db, scope), tokenHash = hash(`${slug}:${token}`);
-  const session = state.sessions.find(s => s.courseId === course.id && s.workspaceId === scope.workspaceId && s.userId === scope.userId && s.expiresAt > now() && s.tokenHash.length === tokenHash.length && timingSafeEqual(Buffer.from(s.tokenHash), Buffer.from(tokenHash)));
+  const session = state.sessions.find(s => s.courseId === course.id && s.workspaceId === scope.workspaceId && s.userId === scope.userId && s.activityId === activity?.id && s.expiresAt > now() && s.tokenHash.length === tokenHash.length && timingSafeEqual(Buffer.from(s.tokenHash), Buffer.from(tokenHash)));
   if (!session) throw new TeachingError('参与身份已过期，请重新进入课程', 401, 'TEACHING_SESSION_REQUIRED');
-  // Publication rotation revokes prior sessions even if the URL is replayed with a new slug.
-  if (session.createdAt < course.updatedAt) throw new TeachingError('课程内容已更新，请重新进入', 409, 'TEACHING_SESSION_CHANGED');
-  return { course, session, scope, state };
+  if (session.createdAt < (course.sessionsRevokedAt ?? course.updatedAt)) throw new TeachingError('学习入口已更新，请重新进入', 409, 'TEACHING_SESSION_CHANGED');
+  if (activity) teachingSessionActivity(course, session, activity.id);
+  return { course, activity, session, scope, state };
 }
 export const requireTeachingSession = authTeachingSession;
 
@@ -139,13 +155,14 @@ export function createTeachingCourse(db: Database, scope: TeachingScope, input: 
   if (clientCreateKey) {
     const existing = state.courses.find(course => course.workspaceId === scope.workspaceId && course.userId === scope.userId && course.clientCreateKey === clientCreateKey);
     if (existing) {
+      if (existing.deletedAt) throw new TeachingError('原课程已在回收站，请先恢复原课程', 409, 'TEACHING_TRASHED');
       if (existing.createPayloadHash !== createPayloadHash) throw new TeachingError('该创建编号已用于另一份课程内容，请先核对原课程', 409, 'TEACHING_CREATE_CONFLICT');
       return existing;
     }
   }
   if (state.courses.length >= TEACHING_LIMITS.courses) throw new TeachingError('课程数量已达上限，请联系老师管理现有课程', 409, 'TEACHING_CAPACITY');
   const createdAt = now();
-  const course: TeachingCourse = { ...scope, id: id('tc'), revision: 1, ...content, ...(clientCreateKey ? { clientCreateKey, createPayloadHash } : {}), materialAttachmentIds: [], status: 'draft', activities: [], createdAt, updatedAt: createdAt };
+  const course: TeachingCourse = { ...scope, id: id('tc'), revision: 1, materialRevision: 1, ...content, ...(clientCreateKey ? { clientCreateKey, createPayloadHash } : {}), materialAttachmentIds: [], status: 'draft', activities: [], createdAt, updatedAt: createdAt };
   state.courses.push(course); return course;
 }
 /** One explicit save/upload creates a private task container atomically inside Store.mutate. */
@@ -158,6 +175,7 @@ export function createTeachingTask(db: Database, scope: TeachingScope, input: un
   const budgetMicros = integer(body.budgetMicros, '教学用量上限', 1_000_000_000, 5_000_000);
   const existing = teachingState(db, scope).courses.find(c => c.workspaceId === scope.workspaceId && c.userId === scope.userId && c.clientDraftId === draftId);
   if (existing) {
+    if (existing.deletedAt) throw new TeachingError('原任务已在回收站，请先恢复', 409, 'TEACHING_TRASHED');
     if (existing.taskKind !== kind) throw new TeachingError('这个草稿编号已用于另一种教学任务，请重新开始', 409, 'TEACHING_TASK_CONFLICT');
     const activity = existing.activities[0];
     if (!activity || activity.workspaceId !== scope.workspaceId || activity.userId !== scope.userId || activity.courseId !== existing.id) throw new TeachingError('任务内容已变化，请从已有任务重新打开', 409, 'TEACHING_TASK_CONFLICT');
@@ -176,27 +194,33 @@ export function createTeachingTask(db: Database, scope: TeachingScope, input: un
   return { course, activity, duplicate: false };
 }
 export function updateTeachingCourse(db: Database, scope: TeachingScope, courseId: string, input: unknown) {
-  const body = object(input), course = ownedTeachingCourse(db, scope, courseId); revision(course, body.revision); editable(course);
+  const body = object(input), course = ownedTeachingCourse(db, scope, courseId); revision(course, body.revision);
   const attachmentIds = strings(body.materialAttachmentIds, '材料附件', 20, 100, course.materialAttachmentIds);
   validateTeachingAttachments(db, scope, courseId, attachmentIds);
-  Object.assign(course, { title: body.title === undefined ? course.title : requiredText(body.title, '课程名称', 160), subject: text(body.subject, '学科', 120, course.subject), description: text(body.description, '课程介绍', 4000, course.description), materialText: text(body.materialText, '课程材料', 120000, course.materialText), materialAttachmentIds: attachmentIds, knowledgeSources: bindTeachingKnowledgeSources(db, scope, body.knowledgeSources, course.knowledgeSources), budgetMicros: integer(body.budgetMicros, '教学用量上限', 1_000_000_000, course.budgetMicros), revision: course.revision + 1, updatedAt: now() });
-  return course;
+  const next={ title: body.title === undefined ? course.title : requiredText(body.title, '课程名称', 160), subject: text(body.subject, '学科', 120, course.subject), description: text(body.description, '课程介绍', 4000, course.description), materialText: text(body.materialText, '课程材料', 120000, course.materialText), materialAttachmentIds: attachmentIds, knowledgeSources: bindTeachingKnowledgeSources(db, scope, body.knowledgeSources, course.knowledgeSources), budgetMicros: integer(body.budgetMicros, '教学用量上限', 1_000_000_000, course.budgetMicros) };
+  const material=(row:Pick<TeachingCourse,'title'|'subject'|'description'|'materialText'|'materialAttachmentIds'|'knowledgeSources'>)=>JSON.stringify([row.title,row.subject,row.description,row.materialText,row.materialAttachmentIds,row.knowledgeSources??[]]);
+  const changed=material(course)!==material(next);preserveTeachingAccess(course);if(changed)course.materialRevision=(course.materialRevision??course.revision)+1;
+  Object.assign(course,next,{revision:course.revision+1,updatedAt:now()});return course;
 }
 export function publishTeachingCourse(db: Database, scope: TeachingScope, courseId: string, input: unknown) {
   const body = object(input), course = ownedTeachingCourse(db, scope, courseId); revision(course, body.revision);
   if (body.confirmed !== true) throw new TeachingError('请确认课程材料与活动可向学生开放');
-  if (!course.activities.some(a => a.status === 'published')) throw new TeachingError('请先将至少一项活动设为向学生开放');
+  if (!course.activities.some(a => !a.deletedAt && a.status === 'published')) throw new TeachingError('请先将至少一项活动设为向学生开放');
   validateTeachingAttachments(db, scope, courseId, course.materialAttachmentIds);
   bindTeachingKnowledgeSources(db, scope, undefined, course.knowledgeSources);
-  for (const activity of course.activities.filter(a => a.status === 'published')) {
+  for (const activity of course.activities.filter(a => !a.deletedAt && a.status === 'published')) {
     validateTeachingAttachments(db, scope, courseId, activity.sourceAttachmentIds ?? []);
     bindTeachingKnowledgeSources(db, scope, undefined, activity.knowledgeSources);
   }
   if (course.status === 'published') return course;
+  preserveTeachingAccess(course); course.sessionsRevokedAt = now();
+  for(const activity of course.activities)if(!activity.deletedAt&&activity.status==='published')activity.isOpen=true;
   course.status = 'published'; course.slug = randomBytes(24).toString('base64url'); course.revision++; course.updatedAt = now(); return course;
 }
 export function closeTeachingCourse(db: Database, scope: TeachingScope, courseId: string, input: unknown) {
   const course = ownedTeachingCourse(db, scope, courseId); revision(course, object(input).revision);
+  preserveTeachingAccess(course); course.sessionsRevokedAt = now();
+  for (const activity of course.activities) { activity.isOpen = false; activity.sessionsRevokedAt = course.sessionsRevokedAt; activity.accessRevision=(activity.accessRevision??0)+1; }
   course.status = 'closed'; course.revision++; course.updatedAt = now(); return course;
 }
 function activityFields(db: Database, scope: TeachingScope, courseId: string, body: Record<string, unknown>, previous?: TeachingActivity) {
@@ -207,17 +231,38 @@ function activityFields(db: Database, scope: TeachingScope, courseId: string, bo
   return { stage: stage as TeachingActivity['stage'], kind: kind as TeachingActivity['kind'], status: status as TeachingActivity['status'], title: body.title === undefined && previous ? previous.title : requiredText(body.title, '活动名称', 160), instructions: text(body.instructions, '活动说明', 12000, previous?.instructions ?? ''), avatarPrompt: text(body.avatarPrompt, '教学分身提示词', 12000, previous?.avatarPrompt ?? ''), allowStudentPrompt: boolean(body.allowStudentPrompt, '学生角色编辑权限', previous?.allowStudentPrompt ?? kind === 'game'), knowledgeSources: bindTeachingKnowledgeSources(db, scope, body.knowledgeSources, previous?.knowledgeSources), referenceText: text(body.referenceText, '活动私有参考材料', 120000, previous?.referenceText ?? ''), sourceAttachmentIds, questions: questions(body.questions, previous?.questions), scenes: scenes(body.scenes, previous?.scenes), rubric: rubric(body.rubric, previous?.rubric) };
 }
 export function createTeachingActivity(db: Database, scope: TeachingScope, courseId: string, input: unknown) {
-  const body = object(input), course = ownedTeachingCourse(db, scope, courseId); revision(course, body.revision); editable(course);
+  const body = object(input), course = ownedTeachingCourse(db, scope, courseId);
+  const clientCreateKey = body.clientRequestId === undefined ? undefined : requiredText(body.clientRequestId, '工具创建编号', 120);
+  if (clientCreateKey !== undefined && !/^[A-Za-z0-9_-]{8,120}$/.test(clientCreateKey)) throw new TeachingError('工具创建编号格式不正确');
+  const fields = activityFields(db, scope, courseId, body);
+  const stableRows = (name: 'questions' | 'scenes' | 'rubric') => fields[name].map((row,index) => ({...row,id:Array.isArray(body[name]) && (body[name] as Record<string,unknown>[])[index]?.id !== undefined ? row.id : null}));
+  const createPayloadHash = hash(JSON.stringify({...fields,questions:stableRows('questions'),scenes:stableRows('scenes'),rubric:stableRows('rubric')}));
+  if (clientCreateKey) {
+    const existing = course.activities.find(activity => activity.clientCreateKey === clientCreateKey && activity.workspaceId === scope.workspaceId && activity.userId === scope.userId);
+    if (existing) {
+      if (existing.deletedAt) throw new TeachingError('原工具已在回收站，请先恢复', 409, 'TEACHING_TRASHED');
+      if (existing.createPayloadHash !== createPayloadHash) throw new TeachingError('这个创建编号已用于另一份工具内容，请核对原工具', 409, 'TEACHING_CREATE_CONFLICT');
+      return { course, activity: existing, duplicate: true };
+    }
+  }
+  revision(course, body.revision);
   if (course.activities.length >= TEACHING_LIMITS.activities) throw new TeachingError('这门课程的活动数量已达上限', 409, 'TEACHING_CAPACITY');
-  const createdAt = now(), activity: TeachingActivity = { ...scope, id: id('ta'), courseId, revision: 1, ...activityFields(db, scope, courseId, body), createdAt, updatedAt: createdAt };
-  course.activities.push(activity); course.revision++; course.updatedAt = createdAt; return { course, activity };
+  preserveTeachingAccess(course);
+  const createdAt = now(), activity: TeachingActivity = { ...scope, id: id('ta'), courseId, revision: 1, publicRevision:1, ...fields, isOpen: false, ...(clientCreateKey ? {clientCreateKey, createPayloadHash} : {}), createdAt, updatedAt: createdAt };
+  course.activities.push(activity); course.revision++; course.updatedAt = createdAt; return { course, activity, duplicate: false };
 }
 export function updateTeachingActivity(db: Database, scope: TeachingScope, courseId: string, activityId: string, input: unknown) {
-  const body = object(input), course = ownedTeachingCourse(db, scope, courseId); revision(course, body.revision); editable(course);
-  const activity = course.activities.find(a => a.id === activityId && a.workspaceId === scope.workspaceId && a.userId === scope.userId && a.courseId === courseId);
+  const body = object(input), course = ownedTeachingCourse(db, scope, courseId); revision(course, body.revision);
+  const activity = course.activities.find(a => a.id === activityId && a.workspaceId === scope.workspaceId && a.userId === scope.userId && a.courseId === courseId && !a.deletedAt);
   if (!activity) throw new TeachingError('活动不存在', 404, 'TEACHING_NOT_FOUND');
   if (body.activityRevision !== undefined && body.activityRevision !== activity.revision) throw new TeachingError('活动已更新，请刷新后重试', 409, 'TEACHING_REVISION_CONFLICT');
-  Object.assign(activity, activityFields(db, scope, courseId, body, activity), { revision: activity.revision + 1, updatedAt: now() });
+  if (activity.isOpen === true || activity.isOpen === undefined && course.status === 'published' && activity.status === 'published') throw new TeachingError('请先关闭这个活动的学生入口，再修改活动', 409, 'TEACHING_ACTIVITY_CLOSE_REQUIRED');
+  const fields = activityFields(db, scope, courseId, body, activity);
+  preserveTeachingAccess(course);
+  const publicTask=(value:Pick<TeachingActivity,'title'|'kind'|'stage'|'instructions'|'questions'|'scenes'|'allowStudentPrompt'|'avatarPrompt'>)=>JSON.stringify([value.title,value.kind,value.stage,value.instructions,value.questions,value.scenes,value.allowStudentPrompt??value.kind==='game',['inquiry','game'].includes(value.kind)?value.avatarPrompt??'':'']);
+  activity.publicRevision??=activity.revision;
+  if(publicTask(activity)!==publicTask(fields))activity.publicRevision++;
+  Object.assign(activity, fields, { revision: activity.revision + 1, updatedAt: now() });
   course.revision++; course.updatedAt = activity.updatedAt; return { course, activity };
 }
 /** Private assignment grading can be prepared after collection without rotating
@@ -226,7 +271,7 @@ export function updateTeachingGrading(db: Database, scope: TeachingScope, course
   const body = object(input), course = ownedTeachingCourse(db, scope, courseId);
   revision(course, body.revision);
   const activity = course.activities.find(item => item.id === activityId && item.courseId === courseId && item.workspaceId === scope.workspaceId && item.userId === scope.userId);
-  if (!activity) throw new TeachingError('活动不存在', 404, 'TEACHING_NOT_FOUND');
+  if (!activity || activity.deletedAt) throw new TeachingError('活动不存在', 404, 'TEACHING_NOT_FOUND');
   if (activity.kind !== 'assignment') throw new TeachingError('只有作业活动支持单独设置评分要求');
   if (body.activityRevision !== activity.revision) throw new TeachingError('评分要求已更新，请刷新后再保存', 409, 'TEACHING_REVISION_CONFLICT');
   const allowed = ['revision', 'activityRevision', 'rubric', 'referenceText', 'sourceAttachmentIds', 'knowledgeSources', 'avatarPrompt'];
@@ -234,6 +279,8 @@ export function updateTeachingGrading(db: Database, scope: TeachingScope, course
   const sourceAttachmentIds = strings(body.sourceAttachmentIds, '评分私有材料', 20, 100, activity.sourceAttachmentIds ?? []);
   validateTeachingAttachments(db, scope, courseId, sourceAttachmentIds);
   const grading = { rubric: rubric(body.rubric, activity.rubric), referenceText: text(body.referenceText, '评分私有参考材料', 120000, activity.referenceText ?? ''), sourceAttachmentIds, knowledgeSources: bindTeachingKnowledgeSources(db, scope, body.knowledgeSources, activity.knowledgeSources), avatarPrompt: text(body.avatarPrompt, '教学分身提示词', 12000, activity.avatarPrompt ?? '') };
+  preserveTeachingAccess(course);
+  activity.publicRevision??=activity.revision;
   Object.assign(activity, grading, { revision: activity.revision + 1, updatedAt: now() });
   course.revision++;
   // course.updatedAt is the existing publication/session-revocation watermark.
@@ -241,18 +288,18 @@ export function updateTeachingGrading(db: Database, scope: TeachingScope, course
   return { course, activity };
 }
 
-export function publicTeachingCourse(course: TeachingCourse) {
+export function publicTeachingCourse(course: TeachingCourse, activityId?: string) {
   return { id: course.id, revision: course.revision, title: course.title, subject: course.subject, description: course.description,
-    activities: course.activities.filter(a => a.status === 'published').map(a => ({ id: a.id, courseId: a.courseId, revision: a.revision, stage: a.stage, kind: a.kind, title: a.title, instructions: a.instructions, avatarPrompt: a.kind === 'inquiry' || a.kind === 'game' ? a.avatarPrompt ?? '' : '', allowStudentPrompt: a.kind === 'game' && a.allowStudentPrompt === true, status: a.status, questions: a.questions.map(q => ({ id: q.id, prompt: q.prompt, type: q.type, options: q.options, points: q.points })), scenes: a.scenes.map(s => ({ id: s.id, title: s.title, content: s.content, choices: s.choices, reflection: '' })), rubric: a.rubric.map(r => ({ id: r.id, label: r.label, description: r.description, maxScore: r.maxScore })), createdAt: a.createdAt, updatedAt: a.updatedAt })) };
+    activities: course.activities.filter(a => !a.deletedAt && a.status === 'published' && a.isOpen !== false && (!activityId || a.id === activityId)).map(a => ({ id: a.id, courseId: a.courseId, revision: a.publicRevision??a.revision, stage: a.stage, kind: a.kind, title: a.title, instructions: a.instructions, avatarPrompt: a.kind === 'inquiry' || a.kind === 'game' ? a.avatarPrompt ?? '' : '', allowStudentPrompt: a.kind === 'game' && a.allowStudentPrompt === true, status: a.status, questions: a.questions.map(q => ({ id: q.id, prompt: q.prompt, type: q.type, options: q.options, points: q.points })), scenes: a.scenes.map(s => ({ id: s.id, title: s.title, content: s.content, choices: s.choices, reflection: '' })), rubric: a.rubric.map(r => ({ id: r.id, label: r.label, description: r.description, maxScore: r.maxScore })), createdAt: a.createdAt, updatedAt: a.updatedAt })) };
 }
 export function createTeachingSession(db: Database, slug: string, input: unknown) {
-  const body = object(input), course = activeTeachingCourse(db, slug), scope = { workspaceId: course.workspaceId, userId: course.userId };
+  const body = object(input), {course,activity} = activeTeachingAccess(db, slug), scope = { workspaceId: course.workspaceId, userId: course.userId };
   if (body.consent !== true) throw new TeachingError('请确认向任课老师提交参与信息及本课程学习记录');
   const participantName = requiredText(body.participantName, '姓名或昵称', 80), participantRef = text(body.participantRef, '学号或识别信息', 100, ''), participantClass = text(body.participantClass, '班级', 100, '');
   const state = teachingState(db, scope, { create: true });
   if (state.sessions.length >= TEACHING_LIMITS.sessions) throw new TeachingError('课程参与人数已达上限，请联系老师', 429, 'TEACHING_CAPACITY');
   const token = randomBytes(32).toString('base64url'), createdAt = now();
-  const session: TeachingSession = { ...scope, id: id('tss'), courseId: course.id, tokenHash: hash(`${slug}:${token}`), participantName, participantRef, participantClass, consentedAt: createdAt, createdAt, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() };
+  const session: TeachingSession = { ...scope, ...(activity ? {activityId:activity.id} : {}), activityAccessRevisions:Object.fromEntries(course.activities.filter(item=>!item.deletedAt&&item.status==='published'&&item.isOpen!==false&&(!activity||item.id===activity.id)).map(item=>[item.id,item.accessRevision??0])), id: id('tss'), courseId: course.id, tokenHash: hash(`${slug}:${token}`), participantName, participantRef, participantClass, consentedAt: createdAt, createdAt, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() };
   state.sessions.push(session); return { token, sessionId: session.id, participantName, participantRef, participantClass, expiresAt: session.expiresAt };
 }
 export function publicTeachingSession(session: TeachingSession) { return { id: session.id, participantName: session.participantName, participantRef: session.participantRef, participantClass: session.participantClass ?? '', expiresAt: session.expiresAt }; }
@@ -278,9 +325,10 @@ export function addTeachingSubmission(db: Database, scope: TeachingScope, course
   if (ownedTeachingCourse(db, scope, course.id) !== course) throw new TeachingError('课程不存在', 404);
   const body = object(input), activityId = requiredText(body.activityId, '活动编号', 100);
   const activity = course.activities.find(a => a.id === activityId && a.workspaceId === scope.workspaceId && a.userId === scope.userId && a.courseId === course.id);
-  if (!activity) throw new TeachingError('活动不存在', 404, 'TEACHING_NOT_FOUND');
-  if (session && (session.courseId !== course.id || session.workspaceId !== scope.workspaceId || session.userId !== scope.userId || course.status !== 'published' || activity.status !== 'published')) throw new TeachingError('该活动暂未开放提交', 410, 'TEACHING_CLOSED');
-  if (body.activityRevision !== undefined && body.activityRevision !== activity.revision) throw new TeachingError('活动内容已更新，请刷新后提交', 409, 'TEACHING_REVISION_CONFLICT');
+  if (!activity || activity.deletedAt) throw new TeachingError('活动不存在', 404, 'TEACHING_NOT_FOUND');
+  if (session) teachingSessionActivity(course, session, activity.id);
+  if (session && (session.courseId !== course.id || session.workspaceId !== scope.workspaceId || session.userId !== scope.userId || activity.status !== 'published')) throw new TeachingError('该活动暂未开放提交', 410, 'TEACHING_CLOSED');
+  if (body.activityRevision !== undefined && body.activityRevision !== (session?activity.publicRevision??activity.revision:activity.revision)) throw new TeachingError('活动内容已更新，请刷新后提交', 409, 'TEACHING_REVISION_CONFLICT');
   const operationId = requiredText(body.operationId, '提交编号', 120);
   if (!/^[A-Za-z0-9_-]{8,120}$/.test(operationId)) throw new TeachingError('提交编号格式不正确');
   const answers = answerValues(body.answers, activity), content = text(body.text, '作业内容', 80000, ''), attachmentIds = strings(body.attachmentIds, '作业附件', 10, 100);
@@ -288,7 +336,7 @@ export function addTeachingSubmission(db: Database, scope: TeachingScope, course
   const participantClass = session ? session.participantClass ?? '' : text(body.participantClass, '班级', 100, '');
   if (!content && !attachmentIds.length && !Object.values(answers).some(Boolean)) throw new TeachingError('请填写答案、学习记录或上传作业');
   validateTeachingAttachments(db, scope, course.id, attachmentIds, session?.id ?? scope.userId);
-  const state = teachingState(db, scope, { create: true }), payloadHash = hash(JSON.stringify({ activityId, activityRevision: activity.revision, participantName, participantRef, ...(participantClass ? { participantClass } : {}), text: content, answers: Object.fromEntries(Object.entries(answers).sort()), attachmentIds }));
+  const state = teachingState(db, scope, { create: true }), payloadHash = hash(JSON.stringify({ activityId, activityRevision: session?activity.publicRevision??activity.revision:activity.revision, participantName, participantRef, ...(participantClass ? { participantClass } : {}), text: content, answers: Object.fromEntries(Object.entries(answers).sort()), attachmentIds }));
   const existing = state.submissions.find(s => s.workspaceId === scope.workspaceId && s.userId === scope.userId && s.courseId === course.id && s.sessionId === session?.id && s.operationId === operationId);
   if (existing) { if (existing.payloadHash !== payloadHash) throw new TeachingError('此提交编号已使用，请刷新确认已提交内容', 409, 'TEACHING_OPERATION_CONFLICT'); return { submission: existing, duplicate: true }; }
   if (state.submissions.length >= TEACHING_LIMITS.submissions) throw new TeachingError('课程提交数量已达上限，请联系老师', 429, 'TEACHING_CAPACITY');
@@ -297,7 +345,8 @@ export function addTeachingSubmission(db: Database, scope: TeachingScope, course
 }
 export function teachingSubmissions(db: Database, scope: TeachingScope, courseId: string) {
   ownedTeachingCourse(db, scope, courseId);
-  return teachingState(db, scope).submissions.filter(s => s.workspaceId === scope.workspaceId && s.userId === scope.userId && s.courseId === courseId);
+  const course = ownedTeachingCourse(db, scope, courseId);
+  return teachingState(db, scope).submissions.filter(s => s.workspaceId === scope.workspaceId && s.userId === scope.userId && s.courseId === courseId && course.activities.some(activity=>activity.id===s.activityId&&!activity.deletedAt));
 }
 export function publicTeachingSubmission(s: TeachingSubmission) {
   const grade = s.grade?.status === 'published' ? { criteria: s.grade.criteria.map(c => ({ criterionId: c.criterionId, score: c.score, comment: c.comment, evidence: c.evidence })), total: s.grade.total, feedback: s.grade.feedback, source: s.grade.source, status: s.grade.status, needsReview: s.grade.needsReview, reviewedAt: s.grade.reviewedAt, publishedAt: s.grade.publishedAt } : undefined;
@@ -311,7 +360,7 @@ export function bindTeachingGradingBasis(db: Database, scope: TeachingScope, cou
   if (body.confirmed !== true) throw new TeachingError('请明确确认采用当前评分标准');
   if (submission.grade?.status === 'published') throw new TeachingError('成绩已发布，不能更换这份作业的评分依据', 409, 'TEACHING_GRADE_PUBLISHED');
   const current = course.activities.find(activity => activity.id === submission.activityId && activity.courseId === courseId && activity.workspaceId === scope.workspaceId && activity.userId === scope.userId);
-  if (!current || current.kind !== 'assignment' || submission.activitySnapshot.kind !== 'assignment') throw new TeachingError('只有作业活动可在收件后明确采用新评分标准');
+  if (!current || current.deletedAt || current.kind !== 'assignment' || submission.activitySnapshot.kind !== 'assignment') throw new TeachingError('只有作业活动可在收件后明确采用新评分标准');
   if (body.submissionActivityRevision !== submission.activityRevision || body.activityRevision !== current.revision) throw new TeachingError('作业或评分活动版本已变化，请刷新后再确认', 409, 'TEACHING_GRADING_REVISION_CONFLICT');
   if (!current.rubric.length || current.rubric.some(item => item.maxScore <= 0)) throw new TeachingError('请先保存完整的作业评分标准');
   validateTeachingAttachments(db, scope, courseId, current.sourceAttachmentIds ?? []);

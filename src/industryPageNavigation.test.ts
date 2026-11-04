@@ -108,6 +108,22 @@ test('blocked session storage does not prevent deep links or history navigation'
   back();assert.equal(syncIndustryPageNavigation(browser,'owner').workspace,'image_edit');
 });
 
+test('teacher page Back restores the exact step while directory and ONE entry clear teacher record IDs',()=>{
+  const {browser,back}=browserAt('https://one.example/?task=task-a');
+  openIndustryPageNavigation(browser,'owner','teaching','chat');
+  browser.history.pushState(browser.history.state,'','/workbenches/teaching?task=task-a&tView=tool&tTool=grade&tCourse=tc_a&tItem=ta_b&tStep=grading');
+  assert.equal(syncIndustryPageNavigation(browser,'owner').workspace,'teaching');
+  assert.match(browser.location.href,/tStep=grading/);
+  openIndustryPageNavigation(browser,'owner',null,'chat');
+  assert.equal(browser.location.href,'https://one.example/workbenches?task=task-a');
+  back();syncIndustryPageNavigation(browser,'owner');
+  assert.match(browser.location.href,/tItem=ta_b&tStep=grading/);
+  exitIndustryPageNavigation(browser,'owner','chat');
+  assert.equal(browser.location.href,'https://one.example/?task=task-a');
+  back();syncIndustryPageNavigation(browser,'different-owner');
+  assert.equal(browser.location.href,'https://one.example/workbenches');
+});
+
 test('the application mounts its workbench page once inside the shared shell and makes chat content inert',()=>{
   const main=fs.readFileSync(new URL('./main.tsx',import.meta.url),'utf8');
   assert.match(main,/window\.addEventListener\('popstate',sync\)/);

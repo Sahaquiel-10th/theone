@@ -16,7 +16,7 @@ const studyAccept='.docx,.pdf,.png,.jpg,.jpeg,.webp,.txt,.md';
 const message=(error:unknown)=>error instanceof Error?error.message:'评分要求暂时未能保存，请核对后重试。';
 
 /** Teacher references can change while a student assignment remains live. */
-export function TeachingGradingSettings({request,course,activity,onSaved,onBusy,onDirty,open,onOpenChange}:{request:TeachingRequest;course:TeachingCourse;activity:TeachingActivity;onSaved:(course:TeachingCourse)=>void;onBusy:(value:boolean)=>void;onDirty:(value:boolean)=>void;open:boolean;onOpenChange:(value:boolean)=>void}){
+export function TeachingGradingSettings({request,course,activity,onSaved,onBusy,onDirty,open,onOpenChange,standalone=false}:{request:TeachingRequest;course:TeachingCourse;activity:TeachingActivity;onSaved:(course:TeachingCourse)=>void;onBusy:(value:boolean)=>void;onDirty:(value:boolean)=>void;open:boolean;onOpenChange:(value:boolean)=>void;standalone?:boolean}){
   const owner=useRef(currentApiIdentity()).current,mounted=useRef(true),locked=useRef(false);
   const storageKey=courseViewKey(owner,course.id)+':grading:'+activity.id;
   const [restored]=useState(()=>{try{return decodeGradingEditor(localStorage.getItem(storageKey),owner,course.id,activity);}catch{return;}});
@@ -42,9 +42,8 @@ export function TeachingGradingSettings({request,course,activity,onSaved,onBusy,
     if(locked.current)return;locked.current=true;setSaving(true);setError('');
     try{const result=await request<{course:TeachingCourse}>(`/api/teaching/courses/${course.id}`);const current=result.course.activities.find(item=>item.id===activity.id);if(!current)throw new Error('本活动暂时无法找到，请返回课程列表核对。');if(!mounted.current)return;onSaved(result.course);setBaseRevision(current.revision);setNotice(gradingDraftChanged(draft,current)?'已核对最新版本，本机评分修改仍保留，请比较后再保存。':'评分要求已保存，原保存结果已核对。');}catch(error){if(mounted.current)setError(message(error));}finally{locked.current=false;if(mounted.current)setSaving(false);}
   }
-  return <details className="teaching-sheet teaching-grading-settings" open={open} onToggle={event=>onOpenChange(event.currentTarget.open)}>
-    <summary><span><strong>本活动评分要求</strong><small>{activity.rubric.length} 个评分项 · 教师参考仅用于评阅</small></span><span>{changed?'有未保存修改':'无需暂停学生入口'}</span></summary>
-    <div className="teaching-grading-settings-body">
+  const heading=<><span><strong>本活动评分要求</strong><small>{activity.rubric.length} 个评分项 · 教师参考仅用于评阅</small></span><span>{changed?'有未保存修改':'无需暂停学生入口'}</span></>;
+  const body=<div className="teaching-grading-settings-body">
       <p className="teacher-help">可在收件后补充或调整评分项和教师参考，不改变学生原题目、作业要求或链接。保存后不会自动替换已收作业的评分依据，也不会调用 AI。</p>
       {error?<p className="teaching-message teaching-error" role="alert">{error}</p>:null}{notice?<p className="teaching-message" role="status"><Check size={16}/>{notice}</p>:null}
       {stale?<div className="teaching-message"><span>这份本机评分草稿基于旧版本，尚未覆盖当前要求。</span><button type="button" disabled={saving||uploading} onClick={()=>{setDraft(activityDraft(activity));setBaseRevision(activity.revision);}}>使用当前已保存要求</button><button type="button" disabled={saving||uploading} onClick={()=>setBaseRevision(activity.revision)}>已核对，保留本机修改</button></div>:null}
@@ -57,6 +56,6 @@ export function TeachingGradingSettings({request,course,activity,onSaved,onBusy,
         <label>AI 评阅引导（可选）<textarea rows={3} maxLength={12000} value={draft.avatarPrompt??''} onChange={event=>setDraft(current=>({...current,avatarPrompt:event.target.value}))} placeholder="例如先指出已达到的要求，再给出一条具体改进建议；不会替代上面的评分项。"/></label>
       </fieldset>
       <footer><span>保存本活动的要求后，在对应收件中“采用当前评分要求”。已发布的成绩不会改变。</span><div><button type="button" disabled={saving||uploading} onClick={()=>void reconcile()}><RefreshCw size={16}/>核对已保存要求</button><button type="button" className="teaching-primary" disabled={saving||uploading||stale||!changed} onClick={()=>void save()}><Save size={16}/>{saving?'正在保存…':'保存评分要求'}</button></div></footer>
-    </div>
-  </details>;
+    </div>;
+  return standalone?<section className="teaching-sheet teaching-grading-settings"><header>{heading}</header>{body}</section>:<details className="teaching-sheet teaching-grading-settings" open={open} onToggle={event=>onOpenChange(event.currentTarget.open)}><summary>{heading}</summary>{body}</details>;
 }

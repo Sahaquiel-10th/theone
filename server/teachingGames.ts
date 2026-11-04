@@ -1,15 +1,15 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { Database } from './types.js';
 import type { TeachingGameConfig, TeachingOperation, TeachingScope } from './teachingTypes.js';
-import { ownedTeachingCourse, teachingState, TeachingError } from './teaching.js';
+import { ownedTeachingCourse, teachingState, teachingSessionActivity, TeachingError } from './teaching.js';
 
 function access(db: Database, scope: TeachingScope, courseId: string, activityId: string, sessionId: string) {
   const course = ownedTeachingCourse(db, scope, courseId), state = teachingState(db, scope);
-  if (course.status !== 'published') throw new TeachingError('老师已关闭这个游戏入口', 410, 'TEACHING_CLOSED');
-  const activity = course.activities.find(a => a.id === activityId && a.courseId === course.id && a.workspaceId === scope.workspaceId && a.userId === scope.userId && a.status === 'published');
+  const activity = course.activities.find(a => a.id === activityId && a.courseId === course.id && a.workspaceId === scope.workspaceId && a.userId === scope.userId && a.status === 'published' && !a.deletedAt);
   if (!activity || activity.kind !== 'game') throw new TeachingError('文字游戏不存在或尚未开放', 404, 'TEACHING_GAME_NOT_FOUND');
-  const session = state.sessions.find(s => s.id === sessionId && s.courseId === courseId && s.workspaceId === scope.workspaceId && s.userId === scope.userId && s.expiresAt > new Date().toISOString() && s.createdAt >= course.updatedAt);
+  const session = state.sessions.find(s => s.id === sessionId && s.courseId === courseId && s.workspaceId === scope.workspaceId && s.userId === scope.userId && s.expiresAt > new Date().toISOString() && s.createdAt >= (course.sessionsRevokedAt ?? course.updatedAt));
   if (!session) throw new TeachingError('参与身份已过期，请重新进入课程', 401, 'TEACHING_SESSION_REQUIRED');
+  teachingSessionActivity(course, session, activityId);
   return { course, activity, session, state };
 }
 /** First read is deterministic and read-only; no game config is persisted until save. */
