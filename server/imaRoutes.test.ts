@@ -38,6 +38,11 @@ test("ima HTTP routes enforce Key and ownership, ignore query identity, redact c
   assert.equal((await request("a", "PATCH", { selectedIds: [] }, "/scope")).status, 200);
   assert.equal((await request("a", "POST", undefined, "/check")).status, 200);
   assert.equal((await request("a", "POST", undefined, "/libraries/refresh")).status, 200);
+  assert.equal((await request("a", "POST", { query: "个人知识库" }, "/libraries/refresh")).status, 200);
+  assert.equal((await request("employee", "POST", { query: "个人知识库" }, "/libraries/refresh")).status, 403);
+  assert.equal((await request("a", "POST", { query: "个人知识库", workspaceId: "b" }, "/libraries/refresh")).status, 400);
+  assert.equal((await request("a", "POST", { query: " " }, "/libraries/refresh")).status, 400);
+  assert.equal((await request("a", "POST", { query: { url: "https://example.com" } }, "/libraries/refresh")).status, 400);
   hostile = true;
   const failed = await request("a", "PUT", credentials); assert.equal(failed.status, 502);
   assert.doesNotMatch(await failed.text(), /secret|client-real-a|api-real-secret-a/);

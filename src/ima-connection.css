@@ -12,6 +12,9 @@
 .ima-connection-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
 .ima-connection-feedback { font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; margin: 20px 0 0; }
 .ima-credential-form button, .ima-scope button { justify-self: start; min-height: 44px; }
+.ima-library-find summary { cursor: pointer; font-size: 13px; }
+.ima-library-find label { display: grid; gap: 8px; font-size: 13px; margin: 12px 0; }
+.ima-library-find input { width: 100%; min-height: 44px; box-sizing: border-box; font: inherit; }
 
 .knowledge-connections-split { container: one-knowledge / inline-size; }
 @container one-knowledge (max-width: 520px) {

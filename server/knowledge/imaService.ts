@@ -10,6 +10,7 @@ import type { KnowledgeChunk } from "./provider.js";
 const origin = "https://ima.qq.com";
 const paths = {
   libraries: "/openapi/wiki/v1/search_knowledge_base",
+  ownedLibraries: "/openapi/wiki/v1/get_addable_knowledge_base_list",
   search: "/openapi/wiki/v1/search_knowledge",
   media: "/openapi/wiki/v1/get_media_info",
   notebooks: "/openapi/note/v1/list_notebook",
@@ -104,15 +105,35 @@ export class ImaService {
       throw new ImaError("IMA_UNAVAILABLE", "ima 连接超时或响应异常，请稍后重试");
     }
   }
-  private async libraries(credentials: Credentials, signal: AbortSignal) {
+  private async libraries(credentials: Credentials, signal: AbortSignal, query = "") {
     const found = new Map<string, Library>(); let cursor = "", truncated = false;
-    for (let page = 0; page < 5; page++) {
-      const data = await this.call(credentials, paths.libraries, { query: "", cursor, limit: 20 }, signal);
-      for (const row of list(data.info_list).slice(0, 20)) { const id = identifier(row.id); if (id && redact(id, credentials) !== id) throw new ImaError("IMA_RESPONSE_INVALID", "ima 返回的知识库标识异常，请稍后重试"); if (id) found.set(id, { id, name: readable(row.name, credentials).slice(0, 200) || "ima 知识库" }); }
-      if (data.is_end === true) return { knowledgeBases: [...found.values()], truncated: false };
-      const next = identifier(data.next_cursor);
-      if (!next || next === cursor) throw new ImaError("IMA_RESPONSE_INVALID", "ima 知识库列表未完整返回，请稍后重试");
-      cursor = next; truncated = true;
+    const read = async (path: typeof paths.libraries | typeof paths.ownedLibraries) => {
+      cursor = "";
+      for (let page = 0; page < 5; page++) {
+        const data = await this.call(credentials, path, { ...(path === paths.libraries ? { query } : {}), cursor, limit: 20 }, signal);
+        const rows = path === paths.libraries ? data.info_list : data.addable_knowledge_base_list;
+        for (const row of list(rows).slice(0, 20)) {
+          const id = identifier(row.id);
+          if (id && redact(id, credentials) !== id) throw new ImaError("IMA_RESPONSE_INVALID", "ima 返回的知识库标识异常，请稍后重试");
+          if (id && !found.has(id)) {
+            if (found.size >= 100) { truncated = true; return; }
+            found.set(id, { id, name: readable(row.name, credentials).slice(0, 200) || "ima 知识库" });
+          }
+        }
+        if (data.is_end === true) return;
+        const next = identifier(data.next_cursor);
+        if (!next || next === cursor) throw new ImaError("IMA_RESPONSE_INVALID", "ima 知识库列表未完整返回，请稍后重试");
+        cursor = next;
+      }
+      truncated = true;
+    };
+    await read(paths.libraries);
+    // Some accounts omit the personal library from the generic empty-query
+    // search. This official endpoint only lists existing writable libraries;
+    // it does not add content or request any additional authorization.
+    if (!query && !found.size && !truncated) {
+      try { await read(paths.ownedLibraries); }
+      catch (error) { if (!(error instanceof ImaError) || error.status !== 403) throw error; }
     }
     return { knowledgeBases: [...found.values()], truncated };
   }
@@ -181,11 +202,19 @@ export class ImaService {
     });
     return this.state(scope);
   }
-  async refreshLibraries(scope: Scope) {
+  async refreshLibraries(scope: Scope, query?: string) {
+    if (query !== undefined && (typeof query !== "string" || !query.trim() || query.trim().length > 100)) throw new ImaError("IMA_QUERY_INVALID", "请输入最多 100 字的知识库名称", 400);
     owner(await this.store.read(), scope);
     const c = await this.connected(scope.workspaceId), release = this.acquire(scope.workspaceId);
     try {
-      const available = await this.libraries(this.credentials(c), AbortSignal.timeout(30_000));
+      const available = await this.libraries(this.credentials(c), AbortSignal.timeout(30_000), query?.trim());
+      const matchedCount = available.knowledgeBases.length;
+      if (query) {
+        const merged = new Map((c.retrievalScope?.knowledgeBases || []).map(library => [library.id, library]));
+        for (const library of available.knowledgeBases) merged.set(library.id, library);
+        available.truncated ||= merged.size > 100 || Boolean(c.retrievalScope?.truncated);
+        available.knowledgeBases = [...merged.values()].slice(0, 100);
+      }
       await this.current(c);
       await this.store.mutate(db => {
         owner(db, scope); const target = this.find(db, scope.workspaceId);
@@ -193,7 +222,7 @@ export class ImaService {
         target.retrievalScope = { ...available, selectedIds: (c.retrievalScope?.selectedIds || []).filter(id => available.knowledgeBases.some(library => library.id === id)) };
         target.updatedAt = new Date().toISOString();
       });
-      return this.state(scope);
+      return { ...await this.state(scope), matchedCount };
     } finally { release(); }
   }
   localStatus(db: Database, workspaceId: string) {
@@ -255,6 +284,7 @@ export class ImaService {
     }
     await this.current(c);
     if (!chunks.length && unreadable) throw new ImaError("IMA_CONTENT_UNAVAILABLE", "ima 命中资料但没有可读正文片段，请换用更具体的关键词或检查资料权限");
+    if (!chunks.length && !c.retrievalScope?.selectedIds.length) throw new ImaError("IMA_KNOWLEDGE_SCOPE_REQUIRED", "ima 本次只检索了个人笔记，尚未检索知识库内的文件；请在连接详情刷新并选择知识库，不能据此判断库内没有内容", 409);
     return chunks;
     } finally { release(); }
   }

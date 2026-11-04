@@ -9,6 +9,7 @@ import { datedKnowledgeChunks, dateSearchQuery, validKnowledgeDateRange, type Kn
 const maxConnectorChunkChars = 24_000;
 
 export type KnowledgeFailure = {
+  authorizationValid?: true;
   provider: string;
   code: "AUTHORIZATION_REQUIRED" | "PERMISSION_REQUIRED" | "RATE_LIMITED" | "TIMEOUT" | "UNAVAILABLE";
   message: string;
@@ -39,6 +40,7 @@ function safeFailure(provider: string, cause: unknown): KnowledgeFailure {
   const providerCode = provider === "getnote" && typeof cause === "object" && cause !== null && "providerCode" in cause ? Number(cause.providerCode) : undefined;
   const label = provider === "notion" ? "Notion" : provider === "getnote" ? "得到大脑" : provider === "yinxiang" ? "印象笔记" : provider === "flowus" ? "息流 FlowUs" : provider === "flomo" ? "flomo" : provider === "ima" ? "腾讯 ima" : "知识来源";
   const failure = (code: KnowledgeFailure["code"], message: string, retryable: boolean): KnowledgeFailure => ({ provider, code, message, retryable });
+  if (provider === "ima" && code === "IMA_KNOWLEDGE_SCOPE_REQUIRED") return { ...failure("UNAVAILABLE", "ima 知识库检索范围尚未就绪，本次只检索了个人笔记，未查询库内文件。请在连接详情刷新并选择知识库；不能将此结果解释为库内没有相关内容。", false), authorizationValid: true };
   if (code === "GETNOTE_CREDENTIAL_EXPIRED" || status === 401 || providerCode === 10001 || /授权.*(?:失效|过期)|未授权|unauthori[sz]ed|invalid[_ -]?token|expired[_ -]?token|\b401\b/i.test(value)) return failure("AUTHORIZATION_REQUIRED", `${label}授权已失效，请重新连接`, false);
   if (["GETNOTE_MEMBER_REQUIRED", "GETNOTE_SCOPE_REQUIRED"].includes(code) || status === 403 || providerCode === 10201 || /会员|权限不足|forbidden|\b403\b/i.test(value)) return failure("PERMISSION_REQUIRED", `${label}当前账号权限不足，请检查会员和授权范围`, false);
   if (code === "GETNOTE_RATE_LIMITED" || status === 429 || providerCode === 42900 || providerCode === 10202 || /额度|频率|rate.?limit|too many requests|\b429\b/i.test(value)) return failure("RATE_LIMITED", `${label}调用额度或频率已达上限，请稍后重试`, true);
@@ -179,7 +181,7 @@ export class KnowledgeService {
       // connection, OAuth refresh, or more recent check that completed meanwhile.
       if (!connection || connection.status === "revoked" || connection.status === "pending" || connection.clientId !== snapshot.clientId || connection.encryptedApiKey !== snapshot.encryptedApiKey || connection.encryptedAccessToken !== snapshot.encryptedAccessToken || (connection.lastCheckedAt && connection.lastCheckedAt > startedAt)) return;
       const checkedAt = new Date().toISOString();
-      connection.status = failure ? "error" : "connected";
+      connection.status = failure && !failure.authorizationValid ? "error" : "connected";
       connection.lastError = failure?.message;
       connection.lastCheckedAt = checkedAt;
       connection.updatedAt = checkedAt;

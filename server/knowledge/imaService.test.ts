@@ -26,6 +26,7 @@ function fixture() {
     if (override !== undefined) return Response.json(override);
     let data: unknown;
     if (path === "search_knowledge_base") data = { info_list: Array.from({ length: options.libraries ?? 2 }, (_, i) => ({ id: `kb-${i}`, name: `资料库 ${i}` })), is_end: true };
+    else if (path === "get_addable_knowledge_base_list") data = { addable_knowledge_base_list: [], is_end: true };
     else if (path === "list_notebook") data = { note_folder_infos: [] };
     else if (path === "search_note") data = { search_note_infos: [{ note_book_info: { note_id: "own-note", title: "采购计划", summary: "摘要不是正文" } }], is_end: true };
     else if (path === "search_knowledge") data = { info_list: [{ media_id: "file-1", title: "采购资料", highlight_content: "<em>采购</em>资料命中片段" }], is_end: true };
@@ -188,4 +189,67 @@ test("ima bounds malformed markup without repeatedly rescanning nested angle bra
   const chunks = await f.service.search("a", "采购", 5);
   assert.ok(chunks.every(chunk => chunk.content.length <= 24_000));
   assert.ok(chunks.some(chunk => chunk.content.endsWith("采购")));
+});
+
+test("ima discovers a personal library omitted by empty-query search through an official read-only list", async () => {
+  const f = fixture(); f.options.libraries = 0;
+  f.options.override = path => path === "get_addable_knowledge_base_list" ? { code: 0, data: { addable_knowledge_base_list: [{ id: "encoded-personal-library=", name: "个人知识库" }], is_end: true } } : undefined;
+  const result = await f.service.connect(scope, credentials);
+  assert.deepEqual(result.connection.retrievalScope?.selectedIds, ["encoded-personal-library="]);
+  assert.deepEqual(f.calls.map(call => call.path), ["search_knowledge_base", "get_addable_knowledge_base_list", "list_notebook"]);
+  assert.deepEqual(f.calls[1].body, { cursor: "", limit: 20 });
+  f.options.override = path => path === "search_note" ? { code: 0, data: { search_note_infos: [] } } : undefined;
+  f.calls.length = 0;
+  const chunks = await f.service.search("a", "采购", 5);
+  assert.equal(chunks.length, 1);
+  assert.equal(f.calls.find(call => call.path === "search_knowledge")?.body.knowledge_base_id, "encoded-personal-library=");
+  assert.ok(f.calls.every(call => !/create|import|append|upload/.test(call.path)));
+});
+
+test("ima refresh repairs an older empty catalog without widening selection, and named lookup preserves existing sources", async () => {
+  const f = fixture(); f.options.libraries = 0; await f.service.connect(scope, credentials);
+  f.options.override = path => path === "get_addable_knowledge_base_list" ? { code: 0, data: { addable_knowledge_base_list: [{ id: "personal", name: "个人知识库" }], is_end: true } } : undefined;
+  const refreshed = await f.service.refreshLibraries(scope);
+  assert.deepEqual(refreshed.connection.retrievalScope?.knowledgeBases, [{ id: "personal", name: "个人知识库" }]);
+  assert.deepEqual(refreshed.connection.retrievalScope?.selectedIds, []);
+  await f.service.updateScope(scope, ["personal"]);
+  f.options.override = (path, body) => path === "search_knowledge_base" ? { code: 0, data: { info_list: body.query === "项目资料" ? [{ id: "project", name: "项目资料" }] : [], is_end: true } } : undefined;
+  f.calls.length = 0;
+  const named = await f.service.refreshLibraries(scope, "项目资料");
+  assert.equal(named.matchedCount, 1);
+  assert.deepEqual(named.connection.retrievalScope?.knowledgeBases.map(item => item.id), ["personal", "project"]);
+  assert.deepEqual(named.connection.retrievalScope?.selectedIds, ["personal"]);
+  assert.deepEqual(f.calls.map(call => call.path), ["search_knowledge_base"]);
+  await assert.rejects(f.service.refreshLibraries({ workspaceId: "b", userId: "a" }, "个人知识库"));
+  await assert.rejects(f.service.refreshLibraries(scope, " "));
+  await assert.rejects(f.service.refreshLibraries(scope, "x".repeat(101)));
+  assert.equal(f.calls.length, 1);
+});
+
+test("ima notes-only empty search reports missing library coverage, never a whole-library no_match", async () => {
+  const f = fixture(); f.options.libraries = 0; await f.service.connect(scope, credentials);
+  f.options.override = path => path === "search_note" ? { code: 0, data: { search_note_infos: [] } } : undefined;
+  const service = new KnowledgeService(f.store, new ConnectorRegistry([imaConnector(f.service)]));
+  const result = await service.recallWithDiagnostics("a", "采购", 5, undefined, "a", { retry: true });
+  assert.equal(result.status, "failed");
+  assert.equal(result.coverage?.[0].status, "failed");
+  assert.equal(result.coverage?.[0].attempts, 1);
+  assert.match(result.failures[0].message, /未查询库内文件/);
+  assert.equal(result.failures[0].authorizationValid, true);
+  assert.equal(f.db.knowledgeConnections[0].status, "connected");
+  assert.equal(f.calls.filter(call => call.path === "search_knowledge").length, 0);
+  assert.equal(f.db.knowledgeConnections[0].encryptedApiKey !== undefined, true);
+});
+
+test("ima fallback permission errors do not impersonate a whole-library search, and failed refresh preserves the catalog", async () => {
+  const f = fixture(); f.options.libraries = 0;
+  f.options.override = path => path === "get_addable_knowledge_base_list" ? { code: 210011, msg: "secret permission detail" } : undefined;
+  await f.service.connect(scope, credentials);
+  assert.deepEqual(f.db.knowledgeConnections[0].retrievalScope?.knowledgeBases, []);
+  f.options.libraries = 1; f.options.override = undefined; await f.service.refreshLibraries(scope);
+  await f.service.updateScope(scope, ["kb-0"]);
+  const before = structuredClone(f.db.knowledgeConnections[0]);
+  f.options.libraries = 0; f.options.override = path => path === "get_addable_knowledge_base_list" ? new Response("private provider failure", { status: 500 }) : undefined;
+  await assert.rejects(f.service.refreshLibraries(scope), /暂时无法连接/);
+  assert.deepEqual(f.db.knowledgeConnections[0], before);
 });

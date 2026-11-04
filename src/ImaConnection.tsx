@@ -6,13 +6,14 @@ import { SettingsDialog } from "./SettingsControls";
 import { parseImaCredentials } from "./imaCredentials";
 
 export type ImaConnectionState = { provider: "ima"; status: "disconnected" | "pending" | "connected" | "error" | "revoked"; lastCheckedAt?: string; lastError?: string; retrievalScope?: { knowledgeBases: { id: string; name: string }[]; selectedIds: string[]; truncated: boolean } };
-type State = { configured: boolean; connection: ImaConnectionState; managementRestricted?: boolean };
+type State = { configured: boolean; connection: ImaConnectionState; managementRestricted?: boolean; matchedCount?: number };
 type Props = { api: typeof Api; query?: string; filter?: string; onConnectionChange?: (connection: ImaConnectionState) => void; open?: boolean; onOpenChange?: (open: boolean, source?: HTMLButtonElement) => void; detailTarget?: HTMLElement | null };
 const empty: ImaConnectionState = { provider: "ima", status: "disconnected" };
 
 export function ImaConnection({ api, query = "", filter = "all", onConnectionChange, open: controlledOpen, onOpenChange, detailTarget }: Props) {
   const [state, setState] = useState<State>(), [localOpen, setOpen] = useState(false), [notice, setNotice] = useState(""), [busy, setBusy] = useState("");
   const [clientId, setClientId] = useState(""), [apiKey, setApiKey] = useState(""), [updating, setUpdating] = useState(false), [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [libraryName, setLibraryName] = useState("");
   const active = useRef(true), pending = useRef(false), callback = useRef(onConnectionChange), formId = useId();
   callback.current = onConnectionChange;
   const open = controlledOpen ?? localOpen, connected = state?.connection.status === "connected";
@@ -30,7 +31,7 @@ export function ImaConnection({ api, query = "", filter = "all", onConnectionCha
     await action("connect", async () => {
       const result = await api<{ connection: ImaConnectionState }>("/api/knowledge/connections/ima", { method: "PUT", body: JSON.stringify({ clientId: clientId.trim(), apiKey: apiKey.trim() }) });
       if (!active.current) return; setClientId(""); setApiKey(""); setUpdating(false); apply({ configured: true, connection: result.connection });
-      setNotice(result.connection.retrievalScope && !result.connection.retrievalScope.selectedIds.length && result.connection.retrievalScope.knowledgeBases.length ? "ima 已连接。知识库较多，请在下方选择检索范围；个人笔记已可检索。" : "ima 已连接，读取接口检查通过。可以回到对话中搜索相关笔记和资料片段。");
+      setNotice(!result.connection.retrievalScope?.knowledgeBases.length ? "ima 凭据已验证，但还未定位到知识库。请刷新列表或按名称查找；此时不能判断库内是否有相关内容。" : !result.connection.retrievalScope.selectedIds.length ? "ima 已连接。请在下方选择知识库并保存，个人笔记已可检索。" : "ima 已连接，读取接口检查通过。可以回到对话中搜索相关笔记和资料片段。");
     });
   }
   function pasteCredentials(event: ClipboardEvent<HTMLInputElement>) {
@@ -42,7 +43,7 @@ export function ImaConnection({ api, query = "", filter = "all", onConnectionCha
   const detail = <section className="ima-connection-detail">
     <p className="knowledge-connection-purpose">{connected ? updating ? "填写官网的新凭据，检查通过后才会替换；更新失败会保留现有连接。" : "ONE 会按问题检索你的个人笔记和下方选中的知识库。你可以调整范围、检查连接或随时断开。" : "首次从 ima 官网获取两项凭据，填好后即可连接。之后 ONE 会按问题检索个人笔记和所选知识库。"}</p>
     <p className="hint">此连接只读：不新建、修改或删除 ima 内容，不同步整个知识库。资料按关键词检索，效果不等同于 ima 内置的语义问答。</p>
-    {connected && !updating ? <div className="notice" role="status">ima 已连接</div> : <form onSubmit={event => void connect(event)} className="ima-credential-form" aria-label="连接腾讯 ima">
+    {connected && !updating ? <div className="notice" role="status">{scope?.selectedIds.length ? "ima 已连接" : "ima 凭据已验证 · 知识库范围待确认"}</div> : <form onSubmit={event => void connect(event)} className="ima-credential-form" aria-label="连接腾讯 ima">
       <a href="https://ima.qq.com/agent-interface" target="_blank" rel="noopener noreferrer">打开 ima 官网获取凭据</a>
       <p className="hint" id={`${formId}-help`}>在官网生成凭据，分别填入下方；也可将官网复制的整段配置信息粘贴到任意一栏，自动填好两项。不要发到聊天里，连接成功后输入框会自动清空。</p>
       <label htmlFor={`${formId}-client`}>Client ID<input id={`${formId}-client`} type="password" autoComplete="off" spellCheck={false} required maxLength={2000} value={clientId} disabled={!!busy} onPaste={pasteCredentials} onChange={e => setClientId(e.target.value)} aria-describedby={`${formId}-help`} /></label>
@@ -53,10 +54,15 @@ export function ImaConnection({ api, query = "", filter = "all", onConnectionCha
     </form>}
     {connected && scope ? <fieldset className="ima-scope" disabled={!!busy}>
       <legend>知识库检索范围</legend><p className="hint">最多选择 5 个知识库。个人笔记始终参与检索；不选知识库时只检索个人笔记。</p>
-      {scope.knowledgeBases.length ? <div className="ima-scope-list">{scope.knowledgeBases.map(library => <label key={library.id}><input type="checkbox" checked={selectedIds.includes(library.id)} disabled={!selectedIds.includes(library.id) && selectedIds.length >= 5} onChange={e => setSelectedIds(ids => e.target.checked ? [...ids, library.id] : ids.filter(id => id !== library.id))} /><span>{library.name}</span></label>)}</div> : <p className="hint">ima 尚未返回可检索的知识库，仍可搜索本人的笔记。</p>}
+      {scope.knowledgeBases.length ? <div className="ima-scope-list">{scope.knowledgeBases.map(library => <label key={library.id}><input type="checkbox" checked={selectedIds.includes(library.id)} disabled={!selectedIds.includes(library.id) && selectedIds.length >= 5} onChange={e => setSelectedIds(ids => e.target.checked ? [...ids, library.id] : ids.filter(id => id !== library.id))} /><span>{library.name}</span></label>)}</div> : <p className="hint">知识库列表还未定位成功，库内文件尚未参与检索。请刷新，或输入 ima 中显示的知识库名称；这不代表知识库里没有资料。</p>}
       {scope.truncated ? <p className="hint">本次显示前 100 个知识库。如未找到目标库，请联系 ONE 管理员。</p> : null}
       <button className="secondary" type="button" disabled={!scopeChanged || !!busy} onClick={() => void action("scope", async () => { const result = await api<State>("/api/knowledge/connections/ima/scope", { method: "PATCH", body: JSON.stringify({ selectedIds }) }); apply(result); if (active.current) setNotice("检索范围已保存，后续问题会使用新范围。"); })}>{busy === "scope" ? "正在保存…" : "保存检索范围"}</button>
-      <button className="secondary" type="button" disabled={!!busy || scopeChanged} onClick={() => void action("libraries", async () => { apply(await api<State>("/api/knowledge/connections/ima/libraries/refresh", { method: "POST" })); if (active.current) setNotice("知识库列表已刷新。新增知识库不会自动勾选，请按需选择并保存。"); })}>{busy === "libraries" ? "正在刷新…" : "刷新知识库列表"}</button>
+      <button className="secondary" type="button" disabled={!!busy || scopeChanged} onClick={() => void action("libraries", async () => { const result = await api<State>("/api/knowledge/connections/ima/libraries/refresh", { method: "POST" }); apply(result); if (active.current) setNotice(result.connection.retrievalScope?.knowledgeBases.length ? "已读取知识库列表，请勾选需要检索的知识库并保存。" : "读取接口已连通，但仍未定位到知识库；库内文件尚未检索，请尝试按名称查找。"); })}>{busy === "libraries" ? "正在刷新…" : "刷新知识库列表"}</button>
+      <details className="ima-library-find" open={!scope.knowledgeBases.length}>
+        <summary>按名称查找知识库</summary>
+        <label htmlFor={`${formId}-library`}>ima 中的知识库名称<input id={`${formId}-library`} type="search" maxLength={100} value={libraryName} disabled={!!busy} onChange={event => setLibraryName(event.target.value)} placeholder="例如：我的个人知识库" /></label>
+        <button className="secondary" type="button" disabled={!!busy || scopeChanged || !libraryName.trim()} onClick={() => void action("find", async () => { const result = await api<State>("/api/knowledge/connections/ima/libraries/refresh", { method: "POST", body: JSON.stringify({ query: libraryName.trim() }) }); apply(result); if (active.current) setNotice(result.matchedCount ? "已找到知识库，请勾选并保存检索范围。" : "按这个名称暂未定位到知识库，现有范围已保留；这不代表库内没有资料。"); })}>{busy === "find" ? "正在查找…" : "查找知识库"}</button>
+      </details>
     </fieldset> : null}
     {connected ? <div className="ima-connection-actions"><button className="secondary" type="button" disabled={!!busy} onClick={() => void action("check", async () => { await api("/api/knowledge/connections/ima/check", { method: "POST" }); if (active.current) setNotice("ima 读取接口检查通过。"); })}>{busy === "check" ? "正在检查…" : "检查连接"}</button><button className="secondary" type="button" disabled={!!busy} onClick={() => { setUpdating(true); setNotice(""); }}>更新凭据</button><button className="danger" type="button" disabled={!!busy} onClick={() => { if (!window.confirm("断开 ima？ONE 将停止使用这组凭据，不会删除 ima 中的内容。")) return; void action("disconnect", async () => { await api("/api/knowledge/connections/ima", { method: "DELETE" }); apply({ configured: true, connection: empty }); if (active.current) { setClientId(""); setApiKey(""); setUpdating(false); setNotice("已断开 ima。如需使凭据本身失效，请前往 ima 官网撤销。"); } }); }}>断开连接</button></div> : null}
     {notice ? <p role="status" className="ima-connection-feedback">{notice}</p> : null}
