@@ -19,10 +19,11 @@ export type CuriousMessage = { id:string; role:'assistant'|'user'; content:strin
 export type CuriousFacts = { name?:string; activity?:{id:string;label:string}; context:string[]; habits:string[]; knowledge?:{choice:'connected'|'later';platforms:string[]} };
 type RequestReceipt = { id:string; hash:string; state:'pending'|'done'; at:string };
 /** Private account state. General profile projections must remove this record. */
-export type CuriousSession = { id:string; revision:number; status:'active'|'paused'|'completed'; stage:CuriousStage; current?:CuriousQuestion; messages:CuriousMessage[]; facts:CuriousFacts; startedAt:string; completedAt?:string; receipts:RequestReceipt[]; guideOperationId?:string };
-export type CuriousSessionView = Omit<CuriousSession,'receipts'>;
+export type CuriousSession = { id:string; revision:number; status:'active'|'paused'|'completed'; stage:CuriousStage; current?:CuriousQuestion; messages:CuriousMessage[]; facts:CuriousFacts; startedAt:string; completedAt?:string; receipts:RequestReceipt[]; guideOperationId?:string; history?:CuriousSessionArchive[] };
+export type CuriousSessionArchive = Omit<CuriousSession,'history'>;
+export type CuriousSessionView = Omit<CuriousSession,'receipts'|'history'>;
 export type CuriousOnboardingView = { profile:AccountProfile; session?:CuriousSessionView; context:WelcomeContext; handbookOffer:OnboardingHandbookOffer; welcomeDelivery?:WelcomeDelivery; notice?:string; busy?:boolean; billingNotice:string };
-export type CuriousOnboardingInput = { action:'begin'|'answer'|'pause'|'resume'|'finish'; requestId:string; sessionId?:string; revision?:number; optionId?:string; text?:string; personaId?:string; connectionId?:string };
+export type CuriousOnboardingInput = { action:'begin'|'restart'|'answer'|'pause'|'resume'|'finish'; requestId:string; sessionId?:string; revision?:number; optionId?:string; text?:string; personaId?:string; connectionId?:string };
 type DraftQuestion = { understanding:string; question:string; options:{label:string;reply:string}[] };
 export type CuriousDependencies = { storageAvailable:boolean; verifyKey:()=>Promise<void>; generate?:(input:{model:ModelConfig;messages:ModelToolMessage[];requestId:string;tools:typeof curiousQuestionTool[]})=>Promise<ToolChatResult> };
 export const curiousSessionActive = (session?:CuriousSession) => session?.status === 'active';
@@ -122,7 +123,7 @@ function finish(db:Database,scope:AccountScope,s:CuriousSession,storageAvailable
 export function curiousOnboardingView(db:Database,scope:AccountScope,storageAvailable:boolean,notice?:string):CuriousOnboardingView {
   const current=resolvedOnboardingHandbookProfile(db,scope),p=current.profile,internal=p.onboarding.curious;
   let session:CuriousSessionView|undefined;
-  if(internal){const {receipts,...rest}=structuredClone(internal);session=rest;
+  if(internal){const {receipts,history,...rest}=structuredClone(internal);session=rest;
     // A connection callback may expose newly authorized choices, but never
     // confirms one or pretends a source was read.
     if(session.status==='active'&&session.stage==='knowledge')session.current={...question('knowledge',db,scope),id:session.current?.id??`${session.id}_knowledge`};
@@ -135,7 +136,7 @@ export function curiousOnboardingView(db:Database,scope:AccountScope,storageAvai
 }
 function validateInput(input:CuriousOnboardingInput){
   if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['action','requestId','sessionId','revision','optionId','text','personaId','connectionId'].includes(k)))throw new BetaInputError('这一轮的格式不正确');
-  if(!['begin','answer','pause','resume','finish'].includes(input.action)||!clean(input.requestId,120)||!/^[A-Za-z0-9_-]{8,120}$/.test(input.requestId))throw new BetaInputError('请重新选择这一轮');
+  if(!['begin','restart','answer','pause','resume','finish'].includes(input.action)||!clean(input.requestId,120)||!/^[A-Za-z0-9_-]{8,120}$/.test(input.requestId))throw new BetaInputError('请重新选择这一轮');
   if(input.action!=='begin'&&(!clean(input.sessionId,120)||!Number.isSafeInteger(input.revision)||input.revision! < 0))throw new BetaInputError('请刷新后接着聊',409);
 }
 /** Durable request receipts are claimed before external calls. An uncertain
@@ -146,11 +147,17 @@ export async function updateCuriousOnboarding(store:Store,scope:AccountScope,inp
     const user=accountInScope(db,scope);let p=accountProfile(db,scope),s=p.onboarding.curious;
     const receipt=s?.receipts.find(r=>r.id===input.requestId);
     if(receipt){if(receipt.hash!==hash)throw new BetaInputError('同一次选择不能改成别的内容',409);return {duplicate:true};}
-    if(input.action==='begin'){
-      if(s)return {duplicate:true};
-      if(p.onboarding.journey?.experience===5&&p.onboarding.journey.stage!=='complete')throw new BetaInputError('原来的体验还有任务，请先从原入口继续。',409);
+    if(input.action==='begin'||input.action==='restart'){
+      let history:CuriousSessionArchive[]|undefined;
+      if(input.action==='restart'){
+        assertCurrent(s,input);
+        const {history:previousHistory,...previous}=structuredClone(s);
+        history=[...(previousHistory??[]),previous].slice(-3);
+      }else if(s)return {duplicate:true};
+      // Entering the new conversation never cancels an older practice or
+      // rewrites its journey, authorized sources, or durable work records.
       initializeCompanion(db,scope);p=accountProfile(db,scope);
-      s={id:uid('curious'),revision:1,status:'active',stage:'name',facts:{context:[],habits:[]},messages:[],receipts:[],startedAt:new Date().toISOString()};
+      s={id:uid('curious'),revision:1,status:'active',stage:'name',facts:{context:[],habits:[]},messages:[],receipts:[],startedAt:new Date().toISOString(),...(history?{history}:{})};
       s.current=question('name',db,scope);append(s,'assistant',s.current.text);p.onboarding.curious=s;
     }else{
       assertCurrent(s,input);

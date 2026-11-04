@@ -13,13 +13,13 @@ export type CuriousOnboardingProps={
   profile:AccountProfile;
   request?:typeof api;
   onProfile:(profile:AccountProfile)=>void;
-  onKnowledge:()=>void;
+  onKnowledge:(sessionId?:string)=>void;
   onComplete:()=>void;
   onContinueChat?:(text?:string)=>void;
   onActiveChange?:(active:boolean)=>void;
   onOpenTask?:(id:string)=>void;
   refreshKey?:string;
-  /** Synthetic, isolated previews and presentation tests only. */
+  /** An accepted launch response, or an isolated presentation fixture. */
   initialView?:CuriousOnboardingView;
 };
 
@@ -101,7 +101,9 @@ export function CuriousOnboarding({profile,request=api,onProfile,onKnowledge,onC
   operateRef.current=operate;
   useEffect(()=>{
     mounted.current=true;identity.current=currentApiIdentity();
-    if(!initialView)void refresh();
+    // The accepted launch snapshot paints immediately; a remount must still
+    // reconcile later answers, source authorizations, or another tab's restart.
+    void refresh();
     return()=>{mounted.current=false;++version.current;};
   },[refresh]);
   useEffect(()=>{
@@ -143,7 +145,7 @@ export function CuriousOnboarding({profile,request=api,onProfile,onKnowledge,onC
   };
   const answer=(option?:CuriousOption,text?:string,personaId?:string)=>{
     if(!session||busy||suspended)return;
-    if(option?.action==='connect'){callbacks.current.onKnowledge();return;}
+    if(option?.action==='connect'){callbacks.current.onKnowledge(session.id);return;}
     if(option?.action==='choose_style'&&!personaId){setPicking(v=>!v);return;}
     const chosen=personaId?companionChoices.find(p=>p.id===personaId):undefined;
     void operate({input:{action:'answer',requestId:requestId(),sessionId:session.id,revision:session.revision,...(option?{optionId:option.id}:{}),...(text?{text}:{}),...(personaId?{personaId}:{})},reply:chosen?`试试「${chosen.name}」`:text??option?.reply??option?.label});
@@ -180,7 +182,7 @@ export function CuriousOnboarding({profile,request=api,onProfile,onKnowledge,onC
   const renderChoices=()=>current&&active&&!busy&&!pending&&<div className="curious-current" tabIndex={-1} ref={prompt} aria-label="这一轮可以这样回复">
     <div className="curious-replies">{current.options.map(option=><button type="button" key={option.id} data-action={option.action} aria-expanded={option.action==='choose_style'?picking:undefined} onClick={()=>answer(option)}>{option.action==='connect'&&<Plug size={15} aria-hidden="true"/>}<span>{option.label}</span>{option.action==='connect'&&<ExternalLink size={13} aria-hidden="true"/>}</button>)}</div>
     {session?.stage==='style'&&<>
-      {picking&&<div className="curious-personas" aria-label="挑一种聊天口气">{companionChoices.map(choice=><button type="button" key={choice.id} aria-pressed={choice.id===companion.persona} onClick={()=>answer(current.options.find(o=>o.id==='pick_persona'),undefined,choice.id)}><strong>{choice.name}</strong><small>{choice.description}</small></button>)}</div>}
+      {picking&&<div className="curious-personas" aria-label="挑一种聊天口气">{companionChoices.map(choice=><button type="button" key={choice.id} aria-pressed={choice.id===companion.persona} onClick={()=>answer(current.options.find(o=>o.action==='choose_style'),undefined,choice.id)}><strong>{choice.name}</strong><small>{choice.description}</small></button>)}</div>}
       <details className="curious-style" open={styleExpanded} onToggle={event=>setStyleExpanded(event.currentTarget.open)}><summary>口气也可以微调，或者写成你喜欢的样子</summary><div className="curious-style-controls">
         <fieldset><legend>这份性格放开到什么程度</legend><div className="curious-strengths">{companionIntensityChoices.map(choice=><button type="button" key={choice.id} aria-pressed={style.intensity===choice.id} title={choice.description} onClick={()=>{setStyle(s=>({...s,intensity:choice.id}));setStyleSaved(false);}}>{choice.name}</button>)}</div></fieldset>
         <label className="curious-custom"><span>你喜欢的聊天方式（选填，最多 120 个字）</span><input value={style.custom??''} maxLength={240} aria-invalid={invalidStyle||undefined} onChange={e=>{setStyle(s=>({...s,custom:e.target.value}));setStyleSaved(false);}} placeholder="比如：短一点，少用感叹号，也可以直接吐槽"/></label>
@@ -199,7 +201,7 @@ export function CuriousOnboarding({profile,request=api,onProfile,onKnowledge,onC
   const delivery=view?.welcomeDelivery;
   const closing=session?.status==='completed'&&session.completedAt?history.filter(message=>message.role==='assistant').at(-1):undefined;
   return <section className="curious-onboarding" data-active={active} aria-label="和 ONE 认识一下" aria-busy={loading||working}>
-    {active&&<header className="curious-header"><div><span><strong>ONE</strong><small>{persona?.name??'先认识一下'}</small></span></div><button type="button" className="curious-quiet" onClick={()=>pause()}>先做别的</button></header>}
+    {active&&<header className="curious-header"><div><span><strong>主对话 · 和 ONE 认识一下</strong><small>{persona?.name??'先认识一下'}</small></span></div><button type="button" className="curious-quiet" onClick={()=>pause()}>先做别的</button></header>}
     {active?<div className="curious-scroll" ref={scroll}>{transcript}
       {(loading||working||view?.busy)&&<p className="curious-pending" role="status"><LoaderCircle size={15} className="curious-spinner" aria-hidden="true"/>{loading?'正在接上这段对话…':view?.busy&&!working?'这一轮还在整理，已聊过的内容会保留。':'正在接着你这句话想…'}</p>}
       {view?.busy&&!working&&<div className="curious-rest"><button type="button" onClick={resume}>恢复这段对话</button></div>}

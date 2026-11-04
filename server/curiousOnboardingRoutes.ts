@@ -14,10 +14,14 @@ export function installCuriousOnboardingRoutes(app:Express,keyAuth:readonly Requ
   router.post('/',asyncRoute(async(req,res)=>{
     const s=scope(req),view=await updateCuriousOnboarding(store,s,req.body as CuriousOnboardingInput,{storageAvailable:deps.storageAvailable,verifyKey:()=>deps.verifyKey(req),generate:deps.curiousGenerate});
     let notice=view.notice;
-    // Collection and delivery have separate lifecycles. Only the one pending
-    // marker allocated by this session can enter the existing durable pipeline.
+    // Collection and delivery have separate lifecycles. A concurrent restart
+    // may archive the finished session before its already authorized handoff.
+    // Keep that original handoff, while restart itself never queues work.
     const db=await store.read(),p=accountProfile(db,s),h=p.onboarding.handbook;
-    if(p.onboarding.curious?.status==='completed'&&h?.status==='pending'&&p.onboarding.curious.guideOperationId===h.operationId){
+    const guideOwner=[p.onboarding.curious,...(p.onboarding.curious?.history??[])].find(session=>session?.status==='completed'&&session.guideOperationId===h?.operationId);
+    // The frozen snapshot remains the authorization receipt even after a very
+    // old session has fallen out of the bounded conversation archive.
+    if(req.body.action!=='restart'&&(guideOwner||h?.guideSnapshot?.curiosity)&&h?.status==='pending'){
       try {
         const delivery=await startOnboardingHandbook(store,s,{storageAvailable:deps.storageAvailable,verifyKey:()=>deps.verifyKey(req),enqueueImage:deps.enqueueImage});
         notice=delivery.notice??notice;

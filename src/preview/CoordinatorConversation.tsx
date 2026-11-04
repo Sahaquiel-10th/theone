@@ -17,7 +17,7 @@ export function CoordinatorConversation({messages,tasks,pending,onOpen,visible=t
  useEffect(()=>{if(pending){setRetainProgress(true);return;}if(!completed){setRetainProgress(false);return;}const timer=setTimeout(()=>setRetainProgress(false),350);return()=>clearTimeout(timer);},[pending,completed]);
  const {scroll,newMessages,onScroll,showLatest}=useFollowLatest('coordinator',visible);
  const latestAssistantId=messages.filter(message=>message.role==='assistant').at(-1)?.id;
- return <div className="coordinator-conversation">
+ return <div className="coordinator-conversation" hidden={!visible}>
   <div ref={scroll} className="coordinator-messages" aria-label="与 ONE 的持续对话" role="log" aria-live="polite" onScroll={onScroll}>
    {hasEarlierHistory&&onLoadHistory?<button className="coordinator-history-button" type="button" disabled={loadingHistory} onClick={async()=>{const node=scroll.current;if(!node)return;const height=node.scrollHeight,top=node.scrollTop;await onLoadHistory();requestAnimationFrame(()=>{node.scrollTop=top+node.scrollHeight-height;});}}>{loadingHistory?'正在翻更早的记录…':'查看更早的聊天记录 ↑'}</button>:null}
    {messages.map(message=>{const taskIds=messageTaskIds(message),report=conversationTaskReport(message,typeof window!=='undefined'?window.location.href:undefined);return <article key={message.id} className={`coordinator-message ${message.role}${message.role==='assistant'?' markdown-body':''}${report?' coordinator-system-report':''}`} aria-label={report?'任务更新':message.role==='assistant'?'ONE 的回复':'你的消息'} data-message-kind={message.kind||'conversation'} data-task-return-anchor={message.role==='assistant'&&message.id===latestAssistantId?'':undefined}>

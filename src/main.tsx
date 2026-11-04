@@ -28,6 +28,10 @@ import {ThingsPanel} from './ThingsPanel';
 import {TaskReadAllButton} from './TaskReadAllButton';
 import {StoryOnboarding} from './StoryOnboarding';
 import {CuriousOnboarding} from './CuriousOnboarding';
+import {OnboardingEntry} from './OnboardingEntry';
+import {curiousLaunchInput,type CuriousLaunchMode} from './curiousLaunch';
+import {clearCuriousReturn,readCuriousReturn,saveCuriousReturn} from './curiousReturn';
+import type {CuriousOnboardingInput,CuriousOnboardingView} from '../server/curiousOnboarding';
 import {CompanionSettings} from './CompanionSettings';
 import {PracticeResume} from './PracticeResume';
 import {onboardingEffectPreview} from './onboardingPreviewBoundary';
@@ -154,6 +158,7 @@ import "./one-attention.css";
 import "./one-beta.css";
 import "./one-onboarding.css";
 import './curious-onboarding.css';
+import './companion-settings.css';
 import "./one-settings.css";
 import './one-product.css';
 import './account-preferences.css';
@@ -620,6 +625,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const preview = coordinator.enabled ? coordinator : demo;
   const [profile, setProfile] = useState<AccountProfile>(user.profile || { workspaceId: user.defaultWorkspaceId, displayName: "", onboarding: { knowledgeChoice: "pending" }, updatedAt: user.createdAt });
   const [curiousEntered,setCuriousEntered]=useState(false),[curiousActive,setCuriousActive]=useState(false);
+  const [curiousSeed,setCuriousSeed]=useState<{key:number;view:CuriousOnboardingView}>();
+  const curiousLaunchRetry=useRef<{mode:CuriousLaunchMode;input:CuriousOnboardingInput}|undefined>(undefined);
+  const curiousReturnChecked=useRef(false);
   const [handbookOffer,setHandbookOffer]=useState<OnboardingHandbookOffer>(),[handbookNotice,setHandbookNotice]=useState('');
   const [welcomeContext,setWelcomeContext]=useState<WelcomeContext>(),[profileLoaded,setProfileLoaded]=useState(false),[storyOpen,setStoryOpen]=useState(false),[storyHidden,setStoryHidden]=useState(false),[storyTaskId,setStoryTaskId]=useState('');
   const [delivery,setDelivery]=useState<Delivery>(),[deliveryBusy,setDeliveryBusy]=useState(false),[deliveryError,setDeliveryError]=useState(''),[dismissedDelivery,setDismissedDelivery]=useState('');
@@ -667,18 +675,60 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     }
     return result.profile;
   }
-  async function startStory() {
-    if(industryPageRef.current.open)leaveIndustryPage('chat');
-    storyRequested.current=true;
-    setStoryLaunchError('');setStoryOpen(true);setStoryHidden(false);
-    const legacy=profile.onboarding.journey;
-    if(guideEffectPreview||legacy&&legacy.stage!=='complete'){
-      if(preview.enabled){setWorkLayer('guide');setView('chat');}else openSurface('chat');
-      return;
-    }
-    setCuriousEntered(true);setWorkLayer(null);setView('chat');setComposeNew(true);
+  function returnToMainChat(text?:string){
+    switchDraft('new');
+    openSurface('chat');
+    setComposeNew(true);setPreviewHome(false);setActiveId('');setFocusedTask(false);
+    if(preview.enabled){preview.dispatch({type:'select',taskId:null});preview.dispatch({type:'bind',taskId:null});}
+    if(fluidPanels.activityOpen)fluidPanels.toggle('activity');
+    focusFluid('main');
+    if(text)setContent(previous=>previous.trim()&&previous!==text?previous+'\n\n'+text:text);
+    requestAnimationFrame(()=>document.getElementById('one-studio-input')?.focus());
+  }
+  async function startStory(mode:CuriousLaunchMode='continue') {
+    if(storyLaunchPending.current)return;
+    if(guideEffectPreview){storyRequested.current=true;setStoryOpen(true);setStoryHidden(false);setWorkLayer('guide');setView('chat');return;}
+    storyLaunchPending.current=true;setStoryLaunching(true);setStoryLaunchError('');
+    try{
+      let next:CuriousOnboardingView;
+      // A lost response retries the original durable request, never a second restart.
+      let pending=curiousLaunchRetry.current;
+      if(!pending||pending.mode!==mode){
+        next=await api<CuriousOnboardingView>('/api/me/profile/curious-onboarding');
+        const input=curiousLaunchInput(next,mode,`curious_${crypto.randomUUID()}`);
+        pending=input?{mode,input}:undefined;curiousLaunchRetry.current=pending;
+      }
+      if(pending)next=await api<CuriousOnboardingView>('/api/me/profile/curious-onboarding',{method:'POST',body:JSON.stringify(pending.input)});
+      curiousLaunchRetry.current=undefined;
+      clearCuriousReturn(sessionStorage,user.id,user.access?.workspaceId??user.defaultWorkspaceId);
+      setProfile(next!.profile);setCuriousSeed(previous=>({key:(previous?.key??0)+1,view:next!}));
+      storyRequested.current=true;setStoryOpen(true);setStoryHidden(false);setCuriousEntered(true);setCuriousActive(next!.session?.status==='active');
+      returnToMainChat();
+    }catch(e){
+      if(e instanceof ApiError&&e.status===409)curiousLaunchRetry.current=undefined;
+      throw e;
+    }finally{storyLaunchPending.current=false;setStoryLaunching(false);}
   }
   storyStarter.current=startStory;
+  async function startLegacyStory(){
+    if(industryPageRef.current.open)leaveIndustryPage('chat');
+    storyRequested.current=true;setStoryOpen(true);setStoryHidden(false);setCuriousEntered(false);setCuriousActive(false);
+    if(preview.enabled){setWorkLayer('guide');setView('chat');}else openSurface('chat');
+  }
+  useEffect(()=>{
+    if(!profileLoaded||curiousReturnChecked.current)return;
+    curiousReturnChecked.current=true;
+    const workspaceId=user.access?.workspaceId??user.defaultWorkspaceId;
+    const mark=readCuriousReturn(sessionStorage,user.id,workspaceId);
+    if(!mark)return;
+    let live=true;
+    void api<CuriousOnboardingView>('/api/me/profile/curious-onboarding').then(next=>{
+      if(!live||readCuriousReturn(sessionStorage,user.id,workspaceId)?.sessionId!==mark.sessionId)return;
+      if(next.session?.id!==mark.sessionId||next.session.status!=='active'){clearCuriousReturn(sessionStorage,user.id,workspaceId);return;}
+      setProfile(next.profile);setCuriousSeed(previous=>({key:(previous?.key??0)+1,view:next}));setCuriousEntered(true);setCuriousActive(true);
+    }).catch(()=>{});
+    return()=>{live=false;};
+  },[profileLoaded,api,user.id,user.access?.workspaceId,user.defaultWorkspaceId]);
   function dismissStory(){storyRequested.current=false;setStoryHidden(true);setStoryOpen(false);closeWorkLayer();}
   useEffect(()=>{
     if(!guideEffectPreview)return;
@@ -945,7 +995,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const fluidEnabled = startup==='workspace' && view === 'chat' && preview.enabled;
   const legacyGuidePending=!!profile.onboarding.journey&&profile.onboarding.journey.stage!=='complete';
   const firstCurious=!storyHidden&&!hasSubmittedChat&&!conversations.length&&!profile.onboarding.completedAt&&!preview.state.dialogue.length&&(demo.enabled||coordinator.ready);
-  const curiousVisible=view==='chat'&&workLayer!=='guide'&&!guideEffectPreview&&!legacyGuidePending&&profileLoaded&&(curiousEntered||storyOpen||user.access?.kind!=='company'&&firstCurious);
+  const curiousVisible=view==='chat'&&workLayer!=='guide'&&!guideEffectPreview&&(!legacyGuidePending||curiousEntered)&&profileLoaded&&(curiousEntered||storyOpen||user.access?.kind!=='company'&&firstCurious);
   const fluidHasDialogue = preview.state.dialogue.length > 0 || Boolean(preview.state.pending) || curiousVisible;
   const fluidCanvasRef = useRef<HTMLDivElement>(null);
   const fluidEyeOwnerRef = useRef<'main'|'activity'|'local'>('main');
@@ -2294,16 +2344,16 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     </>;}
 
   function renderGuideDelivery(){return <>
-        {view==='chat'&&workLayer!=='guide'&&storyHidden&&profile.onboarding.journey?.experience===5&&profile.onboarding.journey.stage==='ready'?<PracticeResume key={profile.onboarding.journey.id} request={api} refreshKey={coordinator.state.tasks.map(task=>`${task.id}:${task.status}`).join('|')} onResume={()=>void startStory()} onOpenTask={id=>openSurface('things',id)}/>:null}
+        {!curiousVisible&&view==='chat'&&workLayer!=='guide'&&storyHidden&&profile.onboarding.journey?.experience===5&&profile.onboarding.journey.stage==='ready'?<PracticeResume key={profile.onboarding.journey.id} request={api} refreshKey={coordinator.state.tasks.map(task=>`${task.id}:${task.status}`).join('|')} onResume={()=>void startLegacyStory()} onOpenTask={id=>void openLinkedTask(id)}/>:null}
         {!curiousVisible&&delivery&&delivery.operationId!==dismissedDelivery&&view==='chat'&&(storyHidden||profile.onboarding.journey?.stage==='complete')?<WelcomeDelivery delivery={delivery} busy={deliveryBusy} error={deliveryError} onOpen={id=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(id)}`).then(result=>openConversation(result.conversation)).catch(e=>setDeliveryError(e.message))} onCheck={()=>void checkWelcome()} onRetry={()=>void retryWelcome()} onDismiss={dismissWelcome}/>:null}
         {!curiousVisible&&!delivery&&handbookNotice && view==='chat' ? <p className="one-onboarding-handbook-notice" role="status">{handbookNotice}{storyTaskId?<button type="button" onClick={()=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(storyTaskId)}`).then(result=>openConversation(result.conversation)).catch(e=>setError(e.message))}>查看任务 ↗</button>:null}<button type="button" onClick={()=>setHandbookNotice('')} aria-label="收起说明">知道了</button></p> : null}
     </>;}
 
   function renderStory(){
-    if(!guideEffectPreview&&!legacyGuidePending)return <CuriousOnboarding request={api} refreshKey={workLayer??view} profile={profile} onProfile={next=>{setProfile(next);setCuriousEntered(true);}} onActiveChange={setCuriousActive} onContinueChat={text=>{setCuriousActive(false);setStoryHidden(true);setStoryOpen(false);closeWorkLayer();setView('chat');if(text)setContent(previous=>previous.trim()&&previous!==text?previous+'\n\n'+text:text);requestAnimationFrame(()=>document.getElementById('one-studio-input')?.focus());}} onKnowledge={()=>{storyRequested.current=true;openSurface('knowledge');}} onComplete={()=>{storyRequested.current=false;setStoryHidden(true);setStoryOpen(false);setCuriousActive(false);void checkWelcome();void coordinator.refresh().catch(()=>{});}} onOpenTask={id=>{setStoryHidden(true);setStoryOpen(false);openSurface('things',id);}}/>;
+    if(!guideEffectPreview&&(curiousEntered||!legacyGuidePending))return <CuriousOnboarding key={curiousSeed?.key??0} initialView={curiousSeed?.view} request={api} refreshKey={workLayer??view} profile={profile} onProfile={next=>{setProfile(next);setCuriousEntered(true);}} onActiveChange={setCuriousActive} onContinueChat={text=>{setCuriousActive(false);setStoryHidden(true);setStoryOpen(false);returnToMainChat(text);}} onKnowledge={sessionId=>{storyRequested.current=true;if(sessionId)saveCuriousReturn(sessionStorage,user.id,user.access?.workspaceId??user.defaultWorkspaceId,sessionId);openSurface('knowledge');}} onComplete={()=>{clearCuriousReturn(sessionStorage,user.id,user.access?.workspaceId??user.defaultWorkspaceId);storyRequested.current=false;setStoryHidden(true);setStoryOpen(false);setCuriousActive(false);void checkWelcome();void coordinator.refresh().catch(()=>{});}} onOpenTask={id=>{setStoryHidden(true);setStoryOpen(false);void openLinkedTask(id);}}/>;
     if(storyLaunching)return <section className="story-launch-status" role="status"><h3>正在打开引导</h3><p>你的对话和草稿会留在这里。</p></section>;
     if(storyLaunchError)return <section className="story-launch-status" role="alert"><h3>引导暂时没打开</h3><p>{storyLaunchError}</p><button type="button" className="primary" onClick={()=>void startStory()}>重新打开引导</button></section>;
-    return <StoryOnboarding effectPreview={guideEffectPreview} profile={profile} context={welcomeContext} offer={handbookOffer} request={api} onRefresh={()=>coordinator.refresh()} onOpenTask={id=>{storyRequested.current=false;setStoryHidden(true);setStoryOpen(false);openSurface('things',id);}} onContinueChat={()=>{dismissStory();openSurface('chat');requestAnimationFrame(()=>document.getElementById('one-studio-input')?.focus());}} onBegin={startStory} onAction={saveStory} onKnowledge={()=>{storyRequested.current=false;openSurface('knowledge');}} onDevice={()=>{storyRequested.current=false;setAccountSection('device');openSurface('account');}} onDismiss={dismissStory}/>;
+    return <StoryOnboarding effectPreview={guideEffectPreview} profile={profile} context={welcomeContext} offer={handbookOffer} request={api} onRefresh={()=>coordinator.refresh()} onOpenTask={id=>{storyRequested.current=false;setStoryHidden(true);setStoryOpen(false);openSurface('things',id);}} onContinueChat={()=>{dismissStory();openSurface('chat');requestAnimationFrame(()=>document.getElementById('one-studio-input')?.focus());}} onBegin={startLegacyStory} onAction={saveStory} onKnowledge={()=>{storyRequested.current=false;openSurface('knowledge');}} onDevice={()=>{storyRequested.current=false;setAccountSection('device');openSurface('account');}} onDismiss={dismissStory}/>;
   }
 
   function renderRuntimeNotices(){return <>
@@ -2409,7 +2459,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     return <IndustryWorkspaces api={api} scopeKey={industryScopeKey} currentWorkspace={industryPage.workspace} onOpenWorkspace={openIndustryPage} onBackToDirectory={()=>openIndustryPage(null)} onExitToOne={()=>openSurface('chat')} renderCommerce={(kind,onBack)=><CommerceIndustryTool kind={kind} onBack={onBack}/>}/>;
   }
   function renderAccount() {
-    return (<AccountPage user={user} onLogout={onLogout} profile={profile} onSaveProfile={async patch=>{const result=await saveProfile(patch);if(patch.appearance)setScenePreview(null);return result;}} onOpenGuide={startStory} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={openHistory} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgeConnections api={api} inline={preview.enabled} returnOutcome={knowledgeReturnRef.current} onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : next.provider === "flomo" ? setFlomoConnection(next) : next.provider === "ima" ? setImaConnection(next) : setKnowledgeConnection(next)} />} />);
+    return (<AccountPage user={user} onLogout={onLogout} profile={profile} onSaveProfile={async patch=>{const result=await saveProfile(patch);if(patch.appearance)setScenePreview(null);return result;}} onOpenGuide={startStory} introductionActive={curiousActive} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={openHistory} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgeConnections api={api} inline={preview.enabled} returnOutcome={knowledgeReturnRef.current} onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : next.provider === "flomo" ? setFlomoConnection(next) : next.provider === "ima" ? setImaConnection(next) : setKnowledgeConnection(next)} />} />);
   }
 
   // Until the authenticated first snapshot arrives, a missing feature flag is
@@ -2549,7 +2599,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
       <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 指挥台" onPointerDownCapture={()=>{if(fluidEnabled)focusFluid('main');}} onFocusCapture={()=>{if(fluidEnabled)focusFluid('main');}}>
         {!fluidEnabled?renderAttentionInbox():null}
-        {curiousVisible||view==='chat'&&workLayer!=='guide'&&!guideEffectPreview&&(!fluidEnabled||!fluidHasDialogue)&&profileLoaded&&!storyHidden&&(storyOpen||legacyGuidePending)?renderStory():null}
+        {curiousVisible||view==='chat'&&workLayer!=='guide'&&!guideEffectPreview&&(!fluidEnabled||!fluidHasDialogue)&&profileLoaded&&!storyHidden&&storyOpen?renderStory():null}
         {!fluidEnabled?renderGuideDelivery():null}
         {!fluidEnabled||!fluidHasDialogue?<div className="studio-presence">
           {!fluidEnabled||!fluidDesktop?<OneHeroEye mood={heroMood} label={view==='features'?'收起功能，回到 ONE':'打开功能'} onActivate={()=>openSurface(view==='features'?'chat':'features')}/>:null}
@@ -2558,7 +2608,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {demo.enabled?<ResultSignal tasks={lampTasks} busy={Boolean(content.trim()||preview.state.pending||view==='things')} ambient={view==='chat'&&!active} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)} onDismiss={closeResultLamp}/>:null}
         </div>:null}
 
-{preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation renderTaskRecovery={renderCoordinatorRecovery} renderAssistantActions={message=><BetaFeedbackControls messageId={message.id} requestId={message.requestId} leading={<button type="button" title="复制回答" onClick={()=>void copyMarkdown(message.text)}><Copy size={14}/>复制</button>} onSave={async input=>(await api<{feedback:import('./Onboarding').OwnBetaFeedback}>('/api/me/feedback',{method:'POST',body:JSON.stringify(input)})).feedback}/>} onContinue={()=>{if(currentDraftRef.current.content.trim()){setError('输入框还有草稿，请先保留或发送它，再继续生成。');return;}if(confirm('继续生成会产生新的额度消耗，是否继续？'))void sendMessage('请接着上一条未完成的回答继续，从中断处接上，不要重复前文。');}} hasEarlierHistory={coordinator.hasEarlierHistory} loadingHistory={coordinator.loadingHistory} onLoadHistory={coordinator.enabled?coordinator.loadHistory:undefined} visible={view==='chat'||view==='features'||view==='account'} messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} completed={coordinator.settlement?.status==='completed'&&!coordinator.error} progress={coordinator.enabled?coordinator.progress:null} onStop={coordinator.enabled?coordinator.stop:undefined} onRestore={text=>{
+{preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation renderTaskRecovery={renderCoordinatorRecovery} renderAssistantActions={message=><BetaFeedbackControls messageId={message.id} requestId={message.requestId} leading={<button type="button" title="复制回答" onClick={()=>void copyMarkdown(message.text)}><Copy size={14}/>复制</button>} onSave={async input=>(await api<{feedback:import('./Onboarding').OwnBetaFeedback}>('/api/me/feedback',{method:'POST',body:JSON.stringify(input)})).feedback}/>} onContinue={()=>{if(currentDraftRef.current.content.trim()){setError('输入框还有草稿，请先保留或发送它，再继续生成。');return;}if(confirm('继续生成会产生新的额度消耗，是否继续？'))void sendMessage('请接着上一条未完成的回答继续，从中断处接上，不要重复前文。');}} hasEarlierHistory={coordinator.hasEarlierHistory} loadingHistory={coordinator.loadingHistory} onLoadHistory={coordinator.enabled?coordinator.loadHistory:undefined} visible={!curiousActive&&(view==='chat'||view==='features'||view==='account')} messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} completed={coordinator.settlement?.status==='completed'&&!coordinator.error} progress={coordinator.enabled?coordinator.progress:null} onStop={coordinator.enabled?coordinator.stop:undefined} onRestore={text=>{
           if(currentDraftRef.current.content.trim()){setError('输入框已有新草稿，先保留或发送它，再恢复原话。');return;}
           const draft=coordinatorDrafts(user.id,user.access?.workspaceId??user.defaultWorkspaceId).filter(item=>item.text===text).at(-1);
           void (async()=>{
@@ -3021,16 +3071,13 @@ function AgentEditorPage({ agent, agents, models, onCancel, onSaved }: {
   </section>;
 }
 
-function AccountPage({ user, onLogout, profile, onSaveProfile, onOpenGuide, models, defaultModelId, onModelChange, onOpenSidebar, section, setSection, knowledge }: { user: User; onLogout: () => void; profile: AccountProfile; onSaveProfile: (patch: ProfilePatch) => Promise<unknown>; onOpenGuide:()=>Promise<unknown>; models: Model[]; defaultModelId: string; onModelChange: () => Promise<void>; onOpenSidebar: () => void; section: string; setSection: (section: string) => void; knowledge: React.ReactNode }) {
+function AccountPage({ user, onLogout, profile, onSaveProfile, onOpenGuide, introductionActive, models, defaultModelId, onModelChange, onOpenSidebar, section, setSection, knowledge }: { user: User; onLogout: () => void; profile: AccountProfile; onSaveProfile: (patch: ProfilePatch) => Promise<unknown>; onOpenGuide:(mode?:CuriousLaunchMode)=>Promise<unknown>; introductionActive:boolean; models: Model[]; defaultModelId: string; onModelChange: () => Promise<void>; onOpenSidebar: () => void; section: string; setSection: (section: string) => void; knowledge: React.ReactNode }) {
   const api = useContext(PrivateApiContext);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [notice, setNotice] = useState("");
-  const [openingGuide,setOpeningGuide]=useState(false);
   const [passwordOpen,setPasswordOpen]=useState(false);
-  const guidePending=!!profile.onboarding.journey&&profile.onboarding.journey.stage!=='complete';
-  const guideButton=<button type="button" disabled={openingGuide} onClick={()=>{setOpeningGuide(true);void onOpenGuide().catch(e=>setNotice(e.message)).finally(()=>setOpeningGuide(false));}}>{openingGuide?'正在打开…':guidePending?'继续新手引导':'认识 ONE / 查看初次聊天'}<ArrowUpRight size={15}/></button>;
   const [billing, setBilling] = useState<{ balanceMicros: number; reservedMicros?: number; availableMicros?: number; ledger: PowerLedgerEntry[]; orders: RechargeOrder[]; usage: UsageRecord[]; rechargeCnyPerPower: number } | null>(null);
   const [selectedModelId, setSelectedModelId] = useState(defaultModelId);
 
@@ -3077,16 +3124,16 @@ function AccountPage({ user, onLogout, profile, onSaveProfile, onOpenGuide, mode
         </div>
       </header>
       <AccountPreferencesLayout section={section} onChange={setSection}>
-        {guidePending&&section!=='profile'?<div className="story-settings-return"><span>设置完成后，可以继续新手引导。</span>{guideButton}</div>:null}
+        {introductionActive&&section!=='profile'?<div className="curious-settings-return"><span>设置好资料后，可以回到刚才的聊天。</span><button type="button" onClick={()=>void onOpenGuide('continue').catch(e=>setNotice(e.message))}>返回这段聊天 <ArrowUpRight size={15}/></button></div>:null}
         {section === "device" ? <LocalDeviceSettings key={user.id} api={api}/> : section === "knowledge" ? <>{knowledge}<FeatureBudgetSettings key={user.id} api={api}/></> : section === "power" ? user.access?.kind === "company" ? <div className="settings-empty"><p>费用由公司按协议对公打款承担，无需个人充值。</p><p>公司可用电力：{((billing?.availableMicros??0)/1e6).toFixed(3)}；个人额度由公司管理员配置。</p></div> : billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载会员与额度…</p> : <>
         <div className="account-profile-grid">
+        <section className="account-panel account-span-full story-settings-entry"><OnboardingEntry profile={profile} request={api} onOpen={onOpenGuide}/></section>
         <AppearanceSettings profile={profile} onSave={onSaveProfile}/>
         <section className="account-panel account-span-full"><CompanionSettings profile={profile} onSave={onSaveProfile}/></section>
         <section className="account-panel"><h3>个人资料</h3><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
         <ContextSettings key={'context-'+user.id} api={api}/>
         <AttentionSettings key={'attention-'+user.id} api={api} onOpenKnowledge={()=>setSection('knowledge')}/>
         <SavedWelcomeGuides api={api}/>
-        <section className="account-panel story-settings-entry"><h3>新手引导</h3><p className="settings-muted">从聊天认识 ONE；已经聊过的内容会保留。</p>{guideButton}</section>
         <details className="account-panel account-advanced-settings">
           <summary>高级设置 · 默认模型</summary>
           <SearchPicker label="默认模型" value={selectedModelId} onChange={chooseModel} options={models.filter(model => model.kind === "chat").map(model => ({ value: model.id, label: model.name }))} />

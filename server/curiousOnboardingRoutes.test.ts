@@ -55,3 +55,35 @@ test('unavailable guide configuration preserves collection completion and never 
   assert.equal(v.session!.status,'completed');assert.equal(v.welcomeDelivery?.state,'failed');assert.equal(f.stats().queued,0);assert.equal(v.profile.onboarding.handbook?.reason,'not_configured');assert.ok(v.notice);
   await fetch(f.url);assert.equal(f.stats().queued,0);
 });
+
+test('HTTP restart and a second completion preserve the existing running manual, gift, snapshot, and task',async t=>{
+  const f=await fixture(t);let v=await f.toKnowledge();v=await f.act(v,'answer',{optionId:'later'});f.db.chatOperations![0].workRun!.state='running';
+  const oldSessionId=v.session!.id,oldHandbook=structuredClone(f.db.users[0].profile!.onboarding.handbook),oldTasks=structuredClone(f.db.chatOperations),oldGift=f.db.users[0].profile!.onboarding.welcomeGiftOperationId;
+  const restart={action:'restart',requestId:'http_restart_once_123',sessionId:oldSessionId,revision:v.session!.revision};const responses=await Promise.all([f.post(restart),f.post(restart)]);for(const r of responses)assert.equal(r.status,200);
+  v=await responses[0].json();const duplicate=await responses[1].json();assert.notEqual(v.session!.id,oldSessionId);assert.equal(v.session!.id,duplicate.session.id);assert.equal(v.session!.stage,'name');assert.equal(v.welcomeDelivery!.state,'running');assert.equal(f.stats().queued,1);assert.equal(f.stats().generated,2);
+  assert.equal((await f.post({action:'answer',requestId:'old_answer_after_restart',sessionId:oldSessionId,revision:restart.revision,optionId:'later'})).status,409);
+  for(const optionId of ['existing_name','keep_style','business','reply_0','reply_1','later'])v=await f.act(v,'answer',{optionId});
+  assert.equal(v.session!.status,'completed');assert.equal(v.session!.facts.activity!.id,'business');assert.equal(v.session!.guideOperationId,undefined);assert.equal(v.welcomeDelivery!.taskId,'guide_task');assert.equal(v.welcomeDelivery!.state,'running');assert.equal(f.stats().queued,1);assert.equal(f.stats().generated,4);
+  assert.deepEqual(f.db.users[0].profile!.onboarding.handbook,oldHandbook);assert.deepEqual(f.db.chatOperations,oldTasks);assert.equal(f.db.users[0].profile!.onboarding.welcomeGiftOperationId,oldGift);assert.equal(v.profile.onboarding.curious,undefined);assert.equal('history' in v.session!,false);
+});
+
+test('HTTP restart is scoped to the exact authorized owner and rejects stale concurrent restarts',async t=>{
+  const f=await fixture(t);let v=await f.act(undefined,'begin');v=await f.act(v,'finish');
+  const input={action:'restart',requestId:'scoped_restart_123',sessionId:v.session!.id,revision:v.session!.revision};
+  assert.equal((await f.post(input,{'x-owner':'b'})).status,409);assert.equal(f.db.users[1].profile,undefined);
+  const responses=await Promise.all([f.post(input),f.post({...input,requestId:'different_restart_123'})]);assert.deepEqual(responses.map(r=>r.status).sort(),[200,409]);
+  const current=await(await fetch(f.url)).json();assert.equal(current.session.stage,'name');assert.equal(f.db.users[0].profile!.onboarding.curious!.history!.length,1);
+  assert.equal((await f.post({...input,requestId:'forged_workspace_restart',workspaceId:'wb'})).status,400);
+  f.db.workspaceMembers.find(m=>m.userId==='a'&&m.workspaceId==='wa')!.status='disabled';assert.equal((await f.post({action:'restart',requestId:'revoked_member_restart',sessionId:current.session.id,revision:current.session.revision})).status,403);assert.equal(f.stats().queued,0);assert.equal(f.stats().generated,0);
+});
+
+test('an already authorized finish survives a concurrent restart without restart itself queueing or replacing its snapshot',async t=>{
+  const f=await fixture(t),v=await f.toKnowledge();
+  let release!:()=>void,entered!:()=>void,held=false;const handoff=new Promise<void>(resolve=>{entered=resolve;}),barrier=new Promise<void>(resolve=>{release=resolve;});t.after(()=>release());
+  const originalRead=f.store.read;f.store.read=async()=>{const current=await originalRead();if(!held&&current.users[0].profile?.onboarding.curious?.status==='completed'&&current.users[0].profile?.onboarding.handbook?.status==='pending'){held=true;entered();await barrier;}return current;};
+  const finishing=f.post({action:'answer',requestId:'finish_before_restart',sessionId:v.session!.id,revision:v.session!.revision,optionId:'later'});
+  let timeout:ReturnType<typeof setTimeout>|undefined;t.after(()=>clearTimeout(timeout));await Promise.race([handoff,new Promise<never>((_resolve,reject)=>{timeout=setTimeout(()=>reject(new Error('finish did not reach the handoff barrier')),5000);})]);clearTimeout(timeout);
+  const old=f.db.users[0].profile!.onboarding.curious!,snapshot=structuredClone(f.db.users[0].profile!.onboarding.handbook!.guideSnapshot),operationId=f.db.users[0].profile!.onboarding.handbook!.operationId;
+  const restarted=await f.post({action:'restart',requestId:'restart_during_handoff',sessionId:old.id,revision:old.revision});assert.equal(restarted.status,200);const fresh=await restarted.json();assert.notEqual(fresh.session.id,old.id);assert.equal(f.stats().queued,0,'restart is not a queue trigger');assert.equal(f.db.users[0].profile!.onboarding.handbook!.operationId,operationId);
+  release();assert.equal((await finishing).status,200);assert.equal(f.stats().queued,1);assert.equal(f.db.users[0].profile!.onboarding.curious!.id,fresh.session.id);assert.equal(f.db.users[0].profile!.onboarding.curious!.status,'active');assert.deepEqual(f.db.users[0].profile!.onboarding.handbook!.guideSnapshot,snapshot);assert.equal(f.db.users[0].profile!.onboarding.handbook!.operationId,operationId);
+});

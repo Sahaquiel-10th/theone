@@ -6,6 +6,7 @@ import {readFileSync} from 'node:fs';
 import type {CuriousOnboardingView} from '../server/curiousOnboarding';
 import {CuriousOnboarding} from './CuriousOnboarding';
 import {companionChoices,companionIntensityChoices,companionSample} from './companionPersonas';
+import {CoordinatorConversation} from './preview/CoordinatorConversation';
 
 const fixture=():CuriousOnboardingView=>({
   profile:{workspaceId:'synthetic-workspace',displayName:'小林',companion:{persona:'puppy',intensity:'normal'},onboarding:{knowledgeChoice:'pending'},updatedAt:'2026-11-04T00:00:00Z'},
@@ -33,6 +34,11 @@ test('completed or paused conversations stay reviewable without an active onboar
     assert.doesNotMatch(html,/<textarea|发送这条回复|>手上材料太散<\/span>/);
     assert.equal(html.includes('接着认识'),status==='paused');
   }
+});
+
+test('old main-chat history stays mounted but is hidden while the introductory conversation owns the input',()=>{
+  const html=renderToStaticMarkup(createElement(CoordinatorConversation,{messages:[{id:'old',role:'assistant',text:'之前聊过的事'}],tasks:[],pending:false,onOpen:()=>{},visible:false}));
+  assert.match(html,/<div class="coordinator-conversation" hidden=""/);assert.match(html,/之前聊过的事/);
 });
 
 test('source settings actions remain distinct from a confirmed source choice',()=>{

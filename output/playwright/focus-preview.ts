@@ -3,11 +3,12 @@ import {createStatusAuditFixture} from './status-audit-fixture';
 const stamp=new Date().toISOString();
 const fixtureParams=new URLSearchParams(location.search);
 const curiousPreview=fixtureParams.get('curiousPreview')==='1';
+const curiousState=fixtureParams.get('curiousState');
 const startupAudit=fixtureParams.get('startupAudit')==='1';
 const uxAudit=fixtureParams.get('uxAudit')==='1'||startupAudit;
 const statusAudit=fixtureParams.get('statusAudit')==='1';
 const profile:any={workspaceId:'preview',displayName:'小马',onboarding:{completedAt:stamp,knowledgeChoice:'skipped'},updatedAt:stamp};
-if(curiousPreview){delete profile.onboarding.completedAt;profile.companion={persona:'puppy',intensity:'normal'};}
+if(curiousPreview){if(!curiousState)delete profile.onboarding.completedAt;profile.companion={persona:'puppy',intensity:'normal'};if(curiousState==='legacy')profile.onboarding.journey={id:'legacy-fixture',version:2,experience:5,stage:'name',startedAt:stamp,events:[]};}
 const profileStorageKey='one-focus-preview-profile:v1:preview:preview';
 try{const saved=JSON.parse(localStorage.getItem(profileStorageKey)||'null');if(saved?.appearance?.scene==='silver'||saved?.appearance?.scene==='graphite')profile.appearance={scene:saved.appearance.scene};if(typeof saved?.displayName==='string'&&saved.displayName.trim())profile.displayName=saved.displayName.trim().slice(0,40);}catch{/* Private browser storage is optional. */}
 const user:any={id:'preview',username:'preview',role:'user',enabled:true,defaultWorkspaceId:'preview',createdAt:stamp,profile};
@@ -83,7 +84,7 @@ if(densityQA){
 }
 // Exact, in-memory account/settings responses for the local UX audit. No
 // OAuth navigation, payment, installation, device access or remote writes occur.
-const fixtureKnowledge=new Map(['getnote','notion','yinxiang','flowus','flomo','feishu'].map(provider=>[provider,{provider,status:uxAudit&&provider==='notion'&&fixtureParams.get('auditKnowledge')!=='empty'?'connected':'disconnected',providerSpaceName:provider==='notion'?'ONE 合成资料空间':undefined}]));
+const fixtureKnowledge=new Map(['getnote','notion','yinxiang','flowus','flomo','feishu','ima'].map(provider=>[provider,{provider,status:uxAudit&&provider==='notion'&&fixtureParams.get('auditKnowledge')!=='empty'?'connected':'disconnected',providerSpaceName:provider==='notion'?'ONE 合成资料空间':undefined}]));
 let fixtureFolder=uxAudit&&fixtureParams.get('auditDevice')!=='empty'?'ONE 演示工作区':'';
 let fixtureExecutor:any={available:true,...(uxAudit&&fixtureParams.get('auditDevice')!=='empty'?{installedVersion:'0.0.0-fixture',installedSource:'managed',version:'0.0.0-fixture'}:{version:'0.0.0-fixture'}),...(fixtureParams.get('auditDevice')==='preparing'?{preparing:true,phase:'verifying'}:{})};
 let fixtureContext:any=null,fixtureAttentionSettings:any=uxAudit&&fixtureParams.get('auditAttention')==='enabled'?{enabled:true,revision:1,sourceIds:['fixture-notion'],topics:['项目进展'],intervalHours:6,dailyLimit:4,quietStart:22,quietEnd:8,timeZone:'Asia/Shanghai',lastStatus:'checked',lastCheckedAt:stamp,checksToday:1}:null;
@@ -107,13 +108,15 @@ function fixtureCurious(body:any,method:string){
  const view=()=>({profile,session:curiousSession,context:{platforms:[],features:[]},handbookOffer:{available:false,firstGift:true},billingNotice:'本地合成演示：不调用模型、不制作说明书、不计费。',...(curiousSession?.status==='completed'?{notice:'本地合成演示已走完；正式环境会交给独立说明书任务。'}:{})});
  if(method==='GET')return {status:200,value:view()};
  if(curiousReceipts.has(body.requestId))return {status:200,value:view()};
- if(body.action==='begin'){
+ if(body.action==='begin'||body.action==='restart'){
+  if(body.action==='restart'&&(body.sessionId!==curiousSession?.id||body.revision!==curiousSession.revision))return{status:409,value:{error:'合成选项已变化，请刷新'}};
+  if(body.action==='restart')curiousSession=undefined;
   if(!curiousSession){curiousSession={id:'fixture-curious-'+crypto.randomUUID(),revision:1,status:'active',stage:'name',messages:[],facts:{context:[],habits:[]},startedAt:stamp};setQuestion('好耶，等到你了！我是 ONE，以后就是你的 AI 搭档啦。怎么称呼你？',[`就叫我${profile.displayName}`,'先叫我朋友'],true);}
  }else{
   if(body.sessionId!==curiousSession?.id||body.revision!==curiousSession.revision)return{status:409,value:{error:'合成选项已变化，请刷新'}};
-  if(body.action==='pause'){curiousSession.status='paused';curiousSession.current=undefined;}
-  else if(body.action==='resume'){curiousSession.status='active';setQuestion('接着认识你：你平时最常忙哪类事？',['写东西、做内容','做方案、推进项目','学习研究、整理资料','做生意、服务客户','讲课、带人、答疑','生活、兴趣、随便聊']);curiousSession.stage='activity';}
-  else if(body.action==='finish'){curiousSession.status='completed';curiousSession.current=undefined;profile.onboarding.completedAt=stamp;message('assistant','这会儿我对你的日常有点数了。我们可以继续正常聊天。这里是合成演示，尚未安排真实说明书。');}
+  if(body.action==='pause'){curiousSession.status='paused';curiousSession.pausedQuestion=curiousSession.current;curiousSession.current=undefined;}
+  else if(body.action==='resume'){curiousSession.status='active';curiousSession.current=curiousSession.pausedQuestion;delete curiousSession.pausedQuestion;}
+  else if(body.action==='finish'){curiousSession.status='completed';curiousSession.completedAt=stamp;curiousSession.current=undefined;profile.onboarding.completedAt=stamp;message('assistant','这会儿我对你的日常有点数了。我们可以继续正常聊天。这里是合成演示，尚未安排真实说明书。');}
   else if(body.action==='answer'){
    const option=curiousSession.current?.options.find((o:any)=>o.id===body.optionId),reply=body.text||option?.reply;
    if(!reply)return{status:400,value:{error:'请选择当前回复'}};
@@ -125,11 +128,11 @@ function fixtureCurious(body:any,method:string){
    }else if(curiousSession.stage==='activity'){curiousSession.facts.activity={id:'planning',label:reply};curiousSession.stage='context';setQuestion(`「${reply}」，收到。我想先认识这些事情里的另一个人：你的成果通常给谁看？`,['客户、合作方','老板、同事','学员、社群','主要自己用'],true);}
    else if(curiousSession.stage==='context'){curiousSession.facts.context.push(reply);curiousSession.stage='habit';setQuestion(`主要给「${reply}」看。先搭个小骨架：遇到了什么 → 建议怎么做 → 怎么落地。你平时怎么跟他们讲？`,['发文档，让对方自己看','开会时，边讲边看','发链接，随时能看','还没有固定方式'],true);}
    else if(curiousSession.stage==='habit'){curiousSession.facts.habits.push(reply);curiousSession.stage='knowledge';setQuestion('你平时积累的资料也能派上用场。需要时，我可以从已连接的资料中查找并附上来源。现在也可以先不接，照样聊。',['去连接我的资料','以后再接，先认识到这'],false,{'0':'connect'});}
-   else{curiousSession.facts.knowledge={choice:'later',platforms:[]};curiousSession.status='completed';curiousSession.current=undefined;profile.onboarding.completedAt=stamp;message('assistant','好耶，我记下了：你经常给客户讲方案，喜欢边讲边演示。正式环境会据此整理你的专属使用说明。现在可以照常聊啦。');}
+   else{curiousSession.facts.knowledge={choice:'later',platforms:[]};curiousSession.status='completed';curiousSession.completedAt=stamp;curiousSession.current=undefined;profile.onboarding.completedAt=stamp;message('assistant','好耶，我记下了：你经常给客户讲方案，喜欢边讲边演示。正式环境会据此整理你的专属使用说明。现在可以照常聊啦。');}
   }
   curiousSession.revision++;
  }
- curiousReceipts.add(body.requestId);return{status:200,value:view()};
+ profile.updatedAt=new Date().toISOString();curiousReceipts.add(body.requestId);return{status:200,value:view()};
 }
 /** Mirror the forward-only journey contract, without authorization, model or device side effects. */
 function fixtureJourney(body:any):{status?:number;error?:string} {
@@ -175,7 +178,7 @@ function fixtureJourney(body:any):{status?:number;error?:string} {
  profile.updatedAt=now;return{};
 }
 const workflowJobs=new Map<string,any[]>(),workflowOperations=new Map<string,{taskId:string;jobId:string}>();
-if(workflowPreview&&!curiousPreview){
+if(workflowPreview&&(!curiousPreview||curiousState)){
  for(const [suffix,title,state,request,response] of [
   ['research','整理项目资料','running','请整理 ONE 的任务、成果与本机执行如何衔接。',''],
   ['outline','改版接入清单','completed','请列出工作台正式接入的核对清单。','## 接入清单\n\n- 主对话与草稿持续保留。\n- 功能选择和独立运行分别接入。\n- 分身分享链接可以找回。\n\n这是合成结果，没有调用模型或读取真实资料。'],
@@ -494,7 +497,7 @@ window.fetch=async(input,options={})=>{
  else if(path==='/api/knowledge/connections/notion/writing'){
   if(method==='PUT')fixtureWriting={...fixtureWriting,parentId:'22222222222222222222222222222222',referenceIds:[],ready:true};result={...fixtureWriting,connected:fixtureKnowledge.get('notion')?.status==='connected'};
  }
- else if(/^\/api\/knowledge\/connections\/(?:getnote|notion|yinxiang|flowus|flomo|feishu)$/.test(path)){
+ else if(/^\/api\/knowledge\/connections\/(?:getnote|notion|yinxiang|flowus|flomo|feishu|ima)$/.test(path)){
   const provider=path.split('/').at(-1)!;if(method==='DELETE')fixtureKnowledge.set(provider,{provider,status:'disconnected'});result={connection:fixtureKnowledge.get(provider),configured:provider!=='feishu',testConnectAvailable:false};
  }
  else if(path==='/api/me/billing')result={balanceMicros:uxAudit?12500000:0,reservedMicros:0,availableMicros:uxAudit?12500000:0,ledger:[],orders:[],usage:[],rechargeCnyPerPower:7};

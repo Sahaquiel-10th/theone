@@ -118,3 +118,39 @@ test('an old pending timestamp cannot expose temporary choices or let a late mod
   await assert.rejects(f.act(before,'answer',{optionId:'reply_0'}),/过时/);
   const next=await f.act(resumed,'answer',{optionId:'reply_0'});assert.deepEqual(next.session!.facts.context,[fallback.options[0].reply]);assert.notEqual(next.session!.facts.context[0],'通常用现有材料改写');
 });
+
+test('legacy accounts enter the new conversation with one-click existing name while keeping prior practice and manual work',async()=>{
+  const f=fixture();
+  f.db.users[0].profile={workspaceId:'wa',displayName:'小张',companion:{persona:'strategist',intensity:'wild',custom:'简短一点'},updatedAt:'before',onboarding:{completedAt:'old_complete',knowledgeChoice:'connected',welcomeGiftOperationId:'old_manual',handbook:{operationId:'old_manual',status:'queued',funding:'one',maxPower:.5,taskId:'old_task',requestedAt:'before',updatedAt:'before'},journey:{id:'old_journey',launchId:'old_launch',version:2,experience:5,stage:'features',startedAt:'before',featureIds:[],events:[]},practice:{id:'old_practice',journeyId:'old_journey',first:{taskId:'practice_task',state:'running'}} as never}};
+  f.db.knowledgeConnections.push({id:'my_notes',workspaceId:'wa',provider:'notion',status:'connected',encryptedApiKey:'ENCRYPTED_CREDENTIAL'} as never);
+  f.db.conversations.push({...scope,id:'old_task'} as never);f.db.chatOperations!.push({...scope,id:'old_child',conversationId:'old_task',operationId:'old_manual_image',workRun:{kind:'image',state:'running'}} as never);
+  const before=structuredClone(f.db.users[0].profile),connectionsBefore=structuredClone(f.db.knowledgeConnections),tasksBefore=structuredClone(f.db.chatOperations);
+  let v=await f.act(undefined,'begin');assert.equal(v.session!.stage,'name');assert.ok(v.session!.current!.options.some(o=>o.id==='existing_name'&&o.reply==='小张'));assert.equal(f.stats().calls,0);
+  v=await f.act(v,'answer',{optionId:'existing_name'});v=await f.act(v,'answer',{optionId:'keep_style'});v=await f.act(v,'answer',{optionId:'business'});v=await f.act(v,'answer',{optionId:'reply_0'});v=await f.act(v,'answer',{optionId:'reply_1'});v=await f.act(v,'answer',{optionId:'connection:my_notes'});
+  assert.equal(v.session!.status,'completed');assert.equal(v.session!.guideOperationId,undefined);assert.equal(v.welcomeDelivery!.state,'running');assert.equal(v.welcomeDelivery!.taskId,'old_task');
+  assert.equal(f.db.users[0].username,'LOGIN_NAME');assert.equal(v.profile.displayName,'小张');assert.deepEqual(v.profile.companion,before.companion);assert.deepEqual(f.db.users[0].profile!.onboarding.handbook,before.onboarding.handbook);assert.equal(f.db.users[0].profile!.onboarding.welcomeGiftOperationId,'old_manual');
+  assert.deepEqual(f.db.users[0].profile!.onboarding.journey,before.onboarding.journey);assert.deepEqual(f.db.users[0].profile!.onboarding.practice,before.onboarding.practice);assert.deepEqual(f.db.knowledgeConnections,connectionsBefore);assert.deepEqual(f.db.chatOperations,tasksBefore);assert.equal(f.stats().calls,2,'only the two chosen conversation turns call a model');
+});
+
+test('restart is an explicit idempotent CAS for active, paused, and completed sessions with bounded private history',async()=>{
+  const f=fixture(),first=await f.toActivity();f.db.users[0].profile!.onboarding.curious!.messages.push({id:'private_old',role:'user',content:'PRIVATE_ARCHIVED_INFORMATION'});
+  const restart={action:'restart' as const,requestId:'restart_idempotent_123',sessionId:first.session!.id,revision:first.session!.revision};
+  await assert.rejects(updateCuriousOnboarding(f.store,{userId:'b',workspaceId:'wa'},restart,f.deps),/无权访问/);
+  const [a,b]=await Promise.all([updateCuriousOnboarding(f.store,scope,restart,f.deps),updateCuriousOnboarding(f.store,scope,restart,f.deps)]);
+  assert.notEqual(a.session!.id,first.session!.id);assert.equal(a.session!.id,b.session!.id);assert.equal(a.session!.revision,1);assert.equal(a.session!.stage,'name');assert.deepEqual(a.session!.facts,{context:[],habits:[]});assert.equal(f.stats().calls,0);
+  assert.equal(f.db.users[0].profile!.onboarding.curious!.history!.length,1);assert.equal(f.db.users[0].profile!.onboarding.curious!.history![0].id,first.session!.id);assert.match(JSON.stringify(f.db.users[0].profile!.onboarding.curious!.history),/PRIVATE_ARCHIVED_INFORMATION/);assert.doesNotMatch(JSON.stringify(a),/PRIVATE_ARCHIVED_INFORMATION|"history"|"receipts"/);
+  await assert.rejects(f.act(first,'answer',{optionId:'writing'}),/过时/);await assert.rejects(updateCuriousOnboarding(f.store,scope,{...restart,revision:restart.revision+1},f.deps),/不能改成/);
+  await assert.rejects(f.act(first,'restart'),/过时/);assert.equal((await f.act(a,'begin')).session!.id,a.session!.id,'begin never silently restarts an existing session');
+  let v=await f.act(a,'pause');const pausedId=v.session!.id;v=await f.act(v,'restart');assert.notEqual(v.session!.id,pausedId);assert.equal(v.session!.status,'active');assert.equal(f.db.users[0].profile!.onboarding.curious!.history!.length,2);
+  v=await f.act(v,'finish');const completedId=v.session!.id;v=await f.act(v,'restart');assert.notEqual(v.session!.id,completedId);v=await f.act(v,'restart');
+  const history=f.db.users[0].profile!.onboarding.curious!.history!;assert.equal(history.length,3);assert.ok(!history.some(s=>s.id===first.session!.id));assert.ok(history.every(s=>!('history' in s)));assert.equal(publicAccountProfile(accountProfile(f.db,scope)).onboarding.curious,undefined);
+});
+
+test('restart during a pending model call isolates late replies and never overwrites the fresh session',async()=>{
+  const f=fixture(),activity=await f.toActivity();f.hold();
+  const pending=updateCuriousOnboarding(f.store,scope,{action:'answer',requestId:'restart_pending_123',sessionId:activity.session!.id,revision:activity.session!.revision,optionId:'writing'},f.deps);
+  for(let attempts=0;f.stats().calls===0&&attempts<100;attempts++)await new Promise(r=>setTimeout(r,5));assert.equal(f.stats().calls,1);
+  const before=curiousOnboardingView(f.db,scope,false);assert.equal(before.busy,true);const fresh=await f.act(before,'restart');assert.equal(fresh.busy,undefined);assert.equal(fresh.session!.stage,'name');assert.notEqual(fresh.session!.id,before.session!.id);
+  const saved=structuredClone(f.db.users[0].profile!.onboarding.curious);f.release();const late=await pending;assert.equal(late.session!.id,fresh.session!.id);assert.deepEqual(f.db.users[0].profile!.onboarding.curious,saved);assert.equal(f.db.modelUsageRecords.length,1);
+  await assert.rejects(f.act(before,'answer',{optionId:'reply_0'}),/过时/);assert.deepEqual(fresh.session!.facts,{context:[],habits:[]});
+});

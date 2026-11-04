@@ -1,0 +1,107 @@
+/* A bundled stylesheet: the production app deliberately disallows inline CSS. */
+.one-companion-settings {
+  --companion-ink: var(--fluid-ink, var(--studio-ink, #25343f));
+  --companion-muted: var(--fluid-muted, var(--studio-muted, #536570));
+  --companion-line: var(--fluid-line, var(--studio-line, #52667730));
+  --companion-inset: var(--fluid-input, #52667708);
+  --companion-accent: var(--fluid-accent, #f0cf48);
+  --companion-focus: var(--fluid-focus, #806300);
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  margin: 0;
+  color: var(--companion-ink);
+  font: inherit;
+  container: companion-settings / inline-size;
+}
+.one-companion-settings *, .one-companion-settings *::before, .one-companion-settings *::after { box-sizing: border-box; }
+.one-companion-settings .companion-settings-header { display: grid; gap: 6px; }
+.one-companion-settings .companion-settings-header > div { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.one-companion-settings .companion-settings-header h3 { margin: 0; color: var(--companion-ink); font-size: 16px; font-weight: 620; line-height: 1.5; }
+.one-companion-settings .companion-current { color: var(--companion-muted); font-size: 11px; line-height: 1.6; }
+:is(.one-companion-settings, .account-panel .one-companion-settings) .companion-hint { margin: 0; color: var(--companion-muted); font-size: 12px; line-height: 1.7; }
+.one-companion-settings fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.one-companion-settings legend { padding: 0; margin: 0 0 8px; color: var(--companion-muted); font-size: 12px; font-weight: 500; line-height: 1.6; }
+.one-companion-settings .companion-personas { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+:is(.one-companion-settings, .account-panel .one-companion-settings) .companion-choice {
+  position: relative;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  min-width: 0;
+  min-height: 64px;
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--companion-line);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--companion-ink);
+  font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color 120ms ease-out, border-color 120ms ease-out;
+}
+.one-companion-settings .companion-choice-name { padding-right: 12px; font-size: 13px; font-weight: 600; line-height: 1.6; }
+.one-companion-settings .companion-choice-tag { min-width: 0; color: var(--companion-muted); font-size: 11px; line-height: 1.6; white-space: normal; overflow-wrap: anywhere; }
+.one-companion-settings .companion-choice-check { position: absolute; top: 11px; right: 8px; color: var(--companion-ink); }
+.one-companion-settings :is(.companion-choice, .companion-segment):hover { background: var(--fluid-hover, #5266770c); }
+.one-companion-settings :is(.companion-choice, .companion-segment)[data-selected='true'] { border-color: var(--companion-focus); background: color-mix(in srgb, var(--companion-accent) 12%, transparent); }
+.one-companion-settings :is(.companion-choice, .companion-segment):has(input:focus-visible) { outline: 2px solid var(--companion-focus); outline-offset: 3px; }
+/* Keep real radios for native arrow-key behavior, without inheriting the
+   account panel's full-width text-input padding and borders. */
+.one-companion-settings input.companion-radio, .account-panel .one-companion-settings input.companion-radio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  max-height: 1px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 0;
+}
+.one-companion-settings .companion-strength { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 3px; border: 1px solid var(--companion-line); border-radius: 12px; background: var(--companion-inset); }
+:is(.one-companion-settings, .account-panel .one-companion-settings) .companion-segment { position: relative; display: flex; align-items: center; justify-content: center; min-width: 0; min-height: 44px; margin: 0; padding: 8px 6px; border: 1px solid transparent; border-radius: 8px; color: var(--companion-muted); font-size: 12px; line-height: 1.5; cursor: pointer; touch-action: manipulation; }
+.account-panel .one-companion-settings .companion-segment[data-selected='true'] { border-color: var(--companion-focus); font-weight: 600; }
+.one-companion-settings .companion-segment[data-selected='true'] > span { color: var(--companion-ink); }
+.one-companion-settings .companion-preview { display: grid; gap: 8px; padding: 14px 16px; border-radius: 12px; background: var(--companion-inset); }
+.one-companion-settings .companion-preview-label { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; color: var(--companion-muted); font-size: 11px; line-height: 1.6; }
+:is(.one-companion-settings, .account-panel .one-companion-settings) .companion-preview > p { margin: 0; color: var(--companion-ink); font-size: 14px; line-height: 1.75; overflow-wrap: anywhere; }
+.one-companion-settings .companion-custom { margin: 0; border-top: 1px solid var(--companion-line); }
+.one-companion-settings .companion-custom > summary { display: flex; align-items: center; gap: 8px; width: fit-content; min-height: 44px; padding: 10px 0; color: var(--companion-muted); font-size: 12px; line-height: 1.7; cursor: pointer; list-style: none; }
+.one-companion-settings .companion-custom > summary::-webkit-details-marker { display: none; }
+.one-companion-settings .companion-custom > summary::before { content: '+'; display: inline-block; width: 12px; font-size: 16px; line-height: 1; }
+.one-companion-settings .companion-custom[open] > summary::before { content: '−'; }
+.one-companion-settings .companion-custom > summary > span { color: var(--companion-muted); font-size: 11px; opacity: .8; }
+/* Formal work layers also style generic details/summary as large controls. */
+main.one-shell.one-studio .fluid-work-layer .one-companion-settings details.companion-custom { display: block; width: 100%; min-height: 0; margin: 0; padding: 0; border: 0; border-top: 1px solid var(--companion-line); border-radius: 0; background: transparent; box-shadow: none; }
+main.one-shell.one-studio .fluid-work-layer .one-companion-settings details.companion-custom > summary { display: flex; flex-direction: row; align-items: center; justify-content: flex-start; width: 100%; min-height: 44px; margin: 0; padding: 10px 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; white-space: nowrap; }
+.one-companion-settings .companion-custom > div { display: grid; gap: 8px; padding: 2px 0 4px; }
+:is(.one-companion-settings, .account-panel .one-companion-settings) .companion-custom label { display: block; margin: 0; color: var(--companion-muted); font-size: 12px; line-height: 1.7; }
+.one-companion-settings input.companion-custom-input, .one-studio .studio-surface .account-panel .one-companion-settings input.companion-custom-input { width: 100%; min-width: 0; min-height: 44px; margin: 0; padding: 10px 12px; border: 1px solid var(--companion-line); border-radius: 10px; background: var(--companion-inset); color: var(--companion-ink); font: inherit; font-size: 13px; line-height: 1.6; }
+.one-companion-settings .companion-custom small { color: var(--companion-muted); font-size: 11px; line-height: 1.7; }
+.one-companion-settings .companion-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.one-companion-settings button.companion-save, .one-studio .studio-surface .account-preferences .account-panel .one-companion-settings button.companion-save { display: inline-flex; align-items: center; justify-content: center; flex: none; align-self: center; width: auto; min-width: 96px; min-height: 44px; margin: 0; padding: 10px 16px; border: 1px solid transparent; border-radius: 10px; background: var(--companion-accent); color: var(--fluid-on-accent, #292814); font: inherit; font-size: 13px; font-weight: 600; line-height: 1.5; cursor: pointer; box-shadow: none; }
+.one-companion-settings button.companion-save:enabled:hover, .one-studio .studio-surface .account-preferences .account-panel .one-companion-settings button.companion-save:enabled:hover { border-color: transparent; background: color-mix(in srgb, var(--companion-accent) 88%, var(--companion-ink)); }
+.one-companion-settings button.companion-save:disabled { cursor: default; opacity: .5; }
+.one-companion-settings :is(input.companion-custom-input, summary, button):focus-visible { outline: 2px solid var(--companion-focus); outline-offset: 3px; }
+.one-companion-settings .companion-actions > p { flex: 1 1 160px; }
+.one-companion-settings [role='alert'] { margin: 0; color: var(--companion-ink); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.one-companion-settings fieldset:disabled { opacity: .65; }
+.one-companion-settings fieldset:disabled label { cursor: wait; }
+.one-companion-settings .companion-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; border: 0; clip-path: inset(50%); overflow: hidden; white-space: nowrap; }
+@container companion-settings (max-width: 540px) {
+  .one-companion-settings .companion-personas { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .one-companion-settings .companion-personas { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .one-companion-settings .companion-preview { padding: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .one-companion-settings :is(.companion-choice, .companion-segment) { transition: none; }
+}

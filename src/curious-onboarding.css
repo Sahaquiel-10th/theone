@@ -19,6 +19,7 @@
   container-type: inline-size;
   container-name: curious-chat;
 }
+.coordinator-conversation[hidden] { display: none !important; }
 .curious-onboarding *, .curious-onboarding *::before, .curious-onboarding *::after { box-sizing: border-box; }
 .curious-onboarding [hidden] { display: none !important; }
 .curious-onboarding[data-active='true'] { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; overflow: hidden; }
@@ -69,6 +70,7 @@
 .curious-avatar { display: grid; place-items: center; flex: none; width: 32px; min-height: 32px; padding-top: 3px; }
 .curious-avatar .one-eye { --eye-white: var(--curious-accent); --eye-black: var(--curious-ink); flex: none; }
 .curious-message-body { min-width: 0; max-width: calc(100% - 44px); }
+.curious-message[data-role='assistant'] .curious-message-body { flex: 1; }
 .curious-message-name { display: block; margin: 0 0 4px; color: var(--curious-muted); font-size: 10px; font-weight: 600; line-height: 1.5; }
 .curious-closing { margin-top: 20px; }
 .curious-message-text { margin: 0; color: inherit; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; text-wrap: pretty; }
@@ -77,6 +79,7 @@
 .curious-message[data-role='user'] .curious-message-name { color: color-mix(in srgb, var(--curious-user-ink) 72%, transparent); }
 .curious-current { min-width: 0; outline: none; }
 .curious-replies { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; margin-top: 16px; }
+.curious-replies:has(> button:nth-child(4)) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .curious-replies > button { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; background: var(--curious-inset); }
 .curious-replies > button > span { min-width: 0; overflow-wrap: anywhere; }
 .curious-replies > button > svg { flex: none; }
@@ -124,8 +127,6 @@
 @keyframes curious-spin { to { transform: rotate(360deg); } }
 @container curious-chat (max-width: 560px) {
   .curious-personas { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .curious-replies { flex-direction: column; }
-  .curious-replies > button { width: 100%; }
 }
 @media (max-width: 600px) {
   .curious-onboarding { padding: 16px 12px 20px; background: var(--curious-paper); border-radius: 20px; }
@@ -143,6 +144,19 @@
   .curious-compose-field > button { align-self: flex-end; }
   .curious-handoff { gap: 8px; padding: 12px; }
 }
+.account-preferences .account-panel.story-settings-entry { gap: 10px; }
+.account-preferences .account-panel .onboarding-entry-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.account-preferences .onboarding-entry-copy { display: grid; gap: 6px; }
+.account-preferences .onboarding-entry-actions button:first-child { background: var(--fluid-accent,#f0cf48); color: var(--fluid-on-accent,#242513); border-color: transparent; }
+main.one-shell.one-studio .fluid-work-layer .account-panel .onboarding-entry-actions button.primary { background: var(--fluid-accent,#f0cf48); color: var(--fluid-on-accent,#242513); border-color: transparent; }
+.account-preferences .account-panel .onboarding-entry { width: 100%; flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; }
+.account-preferences .onboarding-entry-copy { flex: 1; }
+.account-preferences .onboarding-entry-actions { flex: none; }
+@media(max-width:700px){.account-preferences .account-panel .onboarding-entry{flex-direction:column;align-items:flex-start;gap:12px}}
+.one-studio .studio-surface .account-preferences .story-settings-entry button,
+.account-preferences .story-settings-entry button { min-height: 44px; }
+.curious-settings-return { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 16px; padding: 12px 16px; border-radius: 12px; background: var(--fluid-input,#ffffff51); color: var(--fluid-muted,#52616d); font-size: 13px; }
+.curious-settings-return button { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--fluid-line,#52667730); border-radius: 10px; background: transparent; color: var(--fluid-ink,#25333d); cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   .curious-onboarding *, .curious-onboarding *::before, .curious-onboarding *::after { transition: none !important; scroll-behavior: auto !important; }
   .curious-spinner { animation: none; }
