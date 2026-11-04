@@ -14,7 +14,7 @@ test("ima HTTP routes enforce Key and ownership, ignore query identity, redact c
   const service = new ImaService(store, (async (url) => {
     calls++;
     if (hostile) throw Error("secret echoed client-real-a api-real-secret-a");
-    return Response.json({ code: 0, data: String(url).endsWith("search_knowledge_base") ? { info_list: [{ id: "kb-1", name: "当前账号知识库" }], is_end: true } : { note_folder_infos: [] } });
+    return Response.json({ code: 0, data: String(url).endsWith("search_knowledge_base") ? { info_list: [{ id: "kb-1", name: "当前账号知识库" }], is_end: true } : String(url).endsWith("search_note") ? { search_note_infos: [] } : String(url).endsWith("search_knowledge") ? { info_list: [] } : { note_folder_infos: [] } });
   }) as typeof fetch);
   const app = express(); app.use(express.json());
   installImaRoutes(app, [(req, res, next) => { const id = String(req.headers["x-fixture-key"] || ""); if (!db.users.some(u => u.id === id)) return res.sendStatus(428); req.user = db.users.find(u => u.id === id); req.workspaceId = id === "employee" ? "a" : id; next(); }], service, () => enabled);
@@ -43,6 +43,15 @@ test("ima HTTP routes enforce Key and ownership, ignore query identity, redact c
   assert.equal((await request("a", "POST", { query: "个人知识库", workspaceId: "b" }, "/libraries/refresh")).status, 400);
   assert.equal((await request("a", "POST", { query: " " }, "/libraries/refresh")).status, 400);
   assert.equal((await request("a", "POST", { query: { url: "https://example.com" } }, "/libraries/refresh")).status, 400);
+  assert.equal((await request("", "POST", { query: "采购" }, "/search/check")).status, 428);
+  assert.equal((await request("employee", "POST", { query: "采购" }, "/search/check")).status, 403);
+  assert.equal((await request("a", "POST", { query: "采购", workspaceId: "b" }, "/search/check")).status, 400);
+  assert.equal((await request("a", "POST", { query: " " }, "/search/check")).status, 400);
+  assert.equal((await request("b", "POST", { query: "采购" }, "/search/check")).status, 401);
+  assert.equal((await request("a", "PATCH", { selectedIds: ["kb-1"] }, "/scope")).status, 200);
+  const diagnostic = await request("a", "POST", { query: "采购" }, "/search/check");
+  assert.equal(diagnostic.status, 200);
+  const diagnosticText = await diagnostic.text(); assert.match(diagnosticText, /"count":0/); assert.doesNotMatch(diagnosticText, /client-real-a|api-real-secret-a|encrypted/);
   hostile = true;
   const failed = await request("a", "PUT", credentials); assert.equal(failed.status, 502);
   assert.doesNotMatch(await failed.text(), /secret|client-real-a|api-real-secret-a/);

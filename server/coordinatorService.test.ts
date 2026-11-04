@@ -168,6 +168,14 @@ test('missing or failed private retrieval preserves independently requested serv
  }
 });
 import { beginChatOperation,reconcileInterruptedChatOperations } from "./chatOperations.js";
+test('private-read completion gate preserves the reviewed provider failure reason instead of only a generic incomplete reply',async()=>{
+ const f=fixture();let reads=0,calls=0;
+ await f.store.mutate(d=>{d.knowledgeConnections.push({id:'private-ima',workspaceId:'wa',provider:'ima',status:'connected',clientId:'test'} as any);});
+ const reason='ima 已命中资料，但接口未返回可读正文片段，本次还未取得可引用原文。';
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>{reads++;return {status:'failed',chunks:[],failures:[{provider:'ima',code:'UNAVAILABLE',message:reason,retryable:false,authorizationValid:true}],coverage:[{connectionId:'private-ima',provider:'ima',status:'failed',attempts:1}]};}},{modelCall:async()=>++calls===1?{...answer(''),toolCalls:[{id:'ima-read',type:'function',function:{name:'knowledge_search',arguments:JSON.stringify({query:'杭州'})}}]}:answer('库里确实没有任何相关内容。')});
+ const result=await service.dispatch(a,input('operation_ima_failure_reason_01','只从 ima 知识库查找杭州原话，直接回答。'),key);
+ assert.equal(reads,1);assert.match(result.message.content,/还没查全/);assert.ok(result.message.content.includes(reason));assert.doesNotMatch(result.message.content,/库里确实没有任何相关内容/);
+});
 import { MODEL_MAX_OUTPUT_TOKENS, ModelRequestError, type ModelToolMessage, type ModelToolDefinition, type ToolChatResult } from "./modelGateway.js";
 
 test('main-chat display history is scoped and retains old task links, separate from task pagination',async()=>{

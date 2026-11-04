@@ -142,7 +142,7 @@ export class ImaService {
     return { configured: true, connection: this.publicConnection(c) };
   }
   private publicConnection(c?: KnowledgeConnection) {
-    return { provider: "ima" as const, status: !c || c.status === "revoked" ? "disconnected" : c.status, lastCheckedAt: c?.lastCheckedAt, lastError: c?.lastError, retrievalScope: c?.status !== "revoked" ? c?.retrievalScope : undefined };
+    return { provider: "ima" as const, status: !c || c.status === "revoked" ? "disconnected" : c.status, credentialsStored: Boolean(c && c.status !== "revoked" && c.encryptedClientId && c.encryptedApiKey && c.credentialOwnerUserId), lastCheckedAt: c?.lastCheckedAt, lastError: c?.lastError, retrievalScope: c?.status !== "revoked" ? c?.retrievalScope : undefined };
   }
   async connect(scope: Scope, input: Credentials) {
     const credentials = validateCredentials(input), operation = uid("ima"), signal = AbortSignal.timeout(30_000);
@@ -238,6 +238,20 @@ export class ImaService {
     if (!Array.isArray(data.note_folder_infos)) throw new ImaError("IMA_RESPONSE_INVALID", "ima 读取接口暂不可用");
     await this.current(c);
     } finally { release(); }
+  }
+  async checkSearch(scope: Scope, query: string) {
+    if (typeof query !== "string" || !query.trim() || query.trim().length > 400) throw new ImaError("IMA_QUERY_INVALID", "请输入最多 400 字的检索关键词", 400);
+    await this.state(scope);
+    const snapshot = await this.connected(scope.workspaceId);
+    const chunks = await this.search(scope.workspaceId, query.trim(), 5);
+    await this.current(snapshot);
+    const connection = await this.store.mutate(db => {
+      owner(db, scope); const target = this.find(db, scope.workspaceId);
+      if (!target || target.status === "revoked" || target.encryptedApiKey !== snapshot.encryptedApiKey || target.encryptedClientId !== snapshot.encryptedClientId || JSON.stringify(target.retrievalScope?.selectedIds) !== JSON.stringify(snapshot.retrievalScope?.selectedIds)) throw new ImaError("IMA_OPERATION_REPLACED", "ima 连接或检索范围已更改，请重试", 409);
+      target.status = "connected"; target.lastError = undefined; target.lastCheckedAt = new Date().toISOString(); target.updatedAt = target.lastCheckedAt;
+      return this.publicConnection(target);
+    });
+    return { chunks, count: chunks.length, connection, message: chunks.length ? "已取得 ima 实际返回的资料片段" : "本次关键词没有命中可读资料，不代表知识库不存在相关内容" };
   }
   async search(workspaceId: string, query: string, topK: number): Promise<KnowledgeChunk[]> {
     if (typeof query !== "string" || !query.trim()) return [];

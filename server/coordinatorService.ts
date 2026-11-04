@@ -1458,9 +1458,9 @@ export class CoordinatorService {
         },
       };
       const mainKnowledge=taskRecordOnly?{required:false,sourceIds:[],requested:[],missing:[],declined:true}:knowledgePolicy(current,s,input.text,sources);
-      const privateSearchTexts:string[]=[];
+      const privateSearchTexts:string[]=[],privateSearchFailures:string[]=[];
       let publicSearchAttempted=false;
-      if(!mainKnowledge.declined&&(authorizedSources.length||mainKnowledge.required))referenceTools.push({name:'knowledge_search',description:config.values.toolDescriptions?.knowledge_search,label:'查找你的资料',effect:'read',run:async query=>{await verify();if(mainKnowledge.missing.length)return {status:'not_connected',message:`${mainKnowledge.missing.join('、')}还没连好，这次没有查询到它。`};const selected=mainKnowledge.required?mainKnowledge.sourceIds:authorizedSources.map(source=>source.id);const result=await this.knowledge.recallWithDiagnostics(s.workspaceId,datedKnowledgeQuery(query,input.text,timeContext),5,selected,s.userId,knowledgeRecallOptions(input.text,timeContext));await verify();privateSearchTexts.push(...result.chunks.map(c=>c.content));return temporalKnowledgeResult(knowledgeResultComplete(result,selected)?result:{...result,status:'partial'},input.text,timeContext);}});
+      if(!mainKnowledge.declined&&(authorizedSources.length||mainKnowledge.required))referenceTools.push({name:'knowledge_search',description:config.values.toolDescriptions?.knowledge_search,label:'查找你的资料',effect:'read',run:async query=>{await verify();if(mainKnowledge.missing.length)return {status:'not_connected',message:`${mainKnowledge.missing.join('、')}还没连好，这次没有查询到它。`};const selected=mainKnowledge.required?mainKnowledge.sourceIds:authorizedSources.map(source=>source.id);const result=await this.knowledge.recallWithDiagnostics(s.workspaceId,datedKnowledgeQuery(query,input.text,timeContext),5,selected,s.userId,knowledgeRecallOptions(input.text,timeContext));await verify();privateSearchTexts.push(...result.chunks.map(c=>c.content));privateSearchFailures.push(...(result.failures??[]).map(failure=>failure.message));return temporalKnowledgeResult(knowledgeResultComplete(result,selected)?result:{...result,status:'partial'},input.text,timeContext);}});
       const publicSearchAllowed=!taskRecordOnly&&webPermission&&(!mainKnowledge.required||explicitlyNeedsPublicSearch(input.text));
       if(this.deps.webSearch&&publicSearchAllowed)referenceTools.push({name:'web_search',description:config.values.toolDescriptions?.web_search,run:async query=>{await verify();try{reviewedPublicQuery(query,privateSearchTexts);}catch{return {status:'rejected',message:'搜索词夹带了个人资料，请只用必要的公开关键词，不得发送私人内容。'};}const result=await publicSearchOutcome(q=>this.deps.webSearch!(q,{...s,conversationId:cid,requestId,modelId:config.model.id,verify,beforeReserve:(fresh,amount)=>{
         featureMember(fresh,s);
@@ -1681,7 +1681,7 @@ export class CoordinatorService {
       const missingReadReply=result.requiredMissing.includes('web_search')
         ?dispatched||imageTask?'任务已经接到；公开资料这一步还没核实，暂时不能算整件事完成。请打开这件任务查看后续结果，先别重发整条要求。':publicSearchAttempted?'公开搜索这次没查成，还不能替你核实最新消息。可以稍后说“继续查刚才的问题”；我会重新核对，不会把旧知识当成最新结果。':'这次还没实际开始公开搜索，所需资料尚未核实。原问题已保留；稍后重试这条消息，我会重新查询并说明结果。'
         :mainKnowledge.missing.length?`${mainKnowledge.missing.join('、')}还没有连好，这次没能查询。先连接好它，再继续查这件事就行。`
-        :'这次还没查全你要找的资料，不能当作没有找到。原问题还在，可以接着查。';
+        :['这次还没查全你要找的资料，不能当作没有找到。原问题还在，可以接着查。',...[...new Set(privateSearchFailures)].slice(0,3)].join('\n\n');
       if(adaptive&&!delegatedPublicSearch&&webPermission&&publicSearchAllowed&&explicitlyNeedsPublicSearch(input.text)&&!publicSearchAttempted&&!coordinatorNeedsInput(result.content))result.content='这次还没有实际查到最新公开资料，不能把天气或新闻当成刚核实的结果。原问题已保留，可以继续查询；若仍查不到，我会说明卡在哪里。';
       failureStage='saving';
       return await this.finishDispatch(

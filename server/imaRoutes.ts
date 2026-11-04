@@ -37,5 +37,9 @@ export function installImaRoutes(app: Express, keyAuth: readonly RequestHandler[
     if (req.body && (Object.keys(req.body).some(key => key !== "query") || (req.body.query !== undefined && typeof req.body.query !== "string"))) throw new ImaError("IMA_QUERY_INVALID", "请输入知识库名称", 400);
     res.json(await service.refreshLibraries(scope(req), req.body?.query));
   }));
+  app.post(base + "/search/check", ...keyAuth, gate, handle(async (req, res) => {
+    if (!req.body || Object.keys(req.body).some(key => key !== "query") || typeof req.body.query !== "string") throw new ImaError("IMA_QUERY_INVALID", "请输入检索关键词", 400);
+    res.json(await service.checkSearch(scope(req), req.body.query));
+  }));
   app.delete(base, ...keyAuth, handle(async (req, res) => { await service.disconnect(scope(req)); res.json({ ok: true }); }));
 }

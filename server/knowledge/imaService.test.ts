@@ -253,3 +253,38 @@ test("ima fallback permission errors do not impersonate a whole-library search, 
   await assert.rejects(f.service.refreshLibraries(scope), /暂时无法连接/);
   assert.deepEqual(f.db.knowledgeConnections[0], before);
 });
+
+test("ima owner search diagnostics return only authorized excerpts and distinguish an actual empty query result", async () => {
+  const f = fixture(); await f.service.connect(scope, credentials);
+  f.db.knowledgeConnections[0].status = "error";
+  f.db.knowledgeConnections[0].lastError = "上次检索需要检查";
+  const result = await f.service.checkSearch(scope, "采购");
+  assert.equal(result.count, 2); assert.match(result.message, /实际返回/);
+  assert.equal(result.connection.status, "connected"); assert.equal(result.connection.lastError, undefined);
+  assert.doesNotMatch(JSON.stringify(result), /ima-api-secret-a|client-test-a|encrypted|Authorization/);
+  f.calls.length = 0;
+  for (const denied of [{ workspaceId: "b", userId: "a" }, { workspaceId: "a", userId: "member" }]) await assert.rejects(f.service.checkSearch(denied, "采购"));
+  await assert.rejects(f.service.checkSearch(scope, "x".repeat(401)));
+  assert.equal(f.calls.length, 0);
+  f.options.override = path => path === "search_note" ? { code: 0, data: { search_note_infos: [] } } : path === "search_knowledge" ? { code: 0, data: { info_list: [] } } : undefined;
+  const empty = await f.service.checkSearch(scope, "不存在的词");
+  assert.equal(empty.count, 0); assert.match(empty.message, /本次关键词/);
+});
+
+test("ima diagnostic reauthorizes its caller after reading instead of relying on another credential owner", async () => {
+  const f = fixture(); await f.service.connect(scope, credentials);
+  f.db.workspaceMembers.push({ userId: "b", workspaceId: "a", role: "owner" } as never);
+  f.options.override = path => { if (path === "get_doc_content") f.db.workspaceMembers.find(member => member.workspaceId === "a" && member.userId === "b")!.role = "member"; return undefined; };
+  await assert.rejects(f.service.checkSearch({ workspaceId: "a", userId: "b" }, "采购"), /所有者/);
+  assert.equal(f.db.workspaceMembers.find(member => member.userId === "a")!.role, "owner");
+});
+
+test("ima reports matching files without readable excerpts separately from no_match and retains valid credentials", async () => {
+  const f = fixture(); await f.service.connect(scope, credentials);
+  f.options.override = path => path === "search_note" ? { code: 0, data: { search_note_infos: [] } } : path === "search_knowledge" ? { code: 0, data: { info_list: [{ media_id: "file-only", title: "采购资料.pdf" }] } } : undefined;
+  await assert.rejects(f.service.checkSearch(scope, "采购"), (error: unknown) => error instanceof ImaError && error.code === "IMA_CONTENT_UNAVAILABLE");
+  const result = await new KnowledgeService(f.store, new ConnectorRegistry([imaConnector(f.service)])).recallWithDiagnostics("a", "采购", 5);
+  assert.equal(result.status, "failed"); assert.match(result.failures[0].message, /已命中资料.*未返回可读正文片段/);
+  assert.equal(result.failures[0].authorizationValid, true); assert.equal(f.db.knowledgeConnections[0].status, "connected");
+  assert.equal((await f.service.state(scope)).connection.credentialsStored, true);
+});
