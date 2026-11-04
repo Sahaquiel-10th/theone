@@ -349,8 +349,20 @@ main.one-fluid-workspace.one-shell.one-studio .coordinator-answer-actions .messa
 main.one-fluid-workspace.one-shell.one-studio .coordinator-answer-actions .one-beta-feedback-actions button:hover,
 main.one-fluid-workspace.one-shell.one-studio .coordinator-answer-actions .one-beta-feedback-actions button[aria-pressed="true"] { border-color: var(--fluid-line); background: var(--fluid-hover); color: var(--fluid-ink); }
 
-/* ONE remains the same visible conversation partner during and after setup. */
-.coordinator-conversation .coordinator-message.assistant{position:relative;margin-left:44px;max-width:calc(100% - 44px)}
-.coordinator-one-avatar{position:absolute;left:-40px;top:0;width:28px;height:32px;display:grid;place-items:center}
-.studio-composer[hidden]{display:none!important}
-@media(max-width:600px){.coordinator-conversation .coordinator-message.assistant{margin-left:36px;max-width:calc(100% - 36px)}.coordinator-one-avatar{left:-36px;width:28px}}
+/* Message avatars are static project logos; the main visual keeps its own motion. */
+.coordinator-conversation .coordinator-message.assistant { position: relative; padding-left: 56px; }
+.coordinator-one-avatar { position: absolute; left: 0; top: 0; width: 44px; height: 44px; display: block; }
+.coordinator-one-avatar .one-message-avatar { width: 44px; height: 44px; min-width: 44px; max-width: none; margin: 0; }
+main.one-fluid-workspace.one-shell.one-studio .coordinator-messages .coordinator-message.assistant { position: relative; padding-left: 56px; }
+.studio-composer[hidden] { display: none !important; }
+.message.assistant:has(> .classic-one-avatar) { display: flex; align-items: flex-start; gap: 12px; }
+.classic-one-avatar { flex: 0 0 44px; }
+.message.assistant:has(> .classic-one-avatar) > .bubble { min-width: 0; max-width: calc(100% - 56px); }
+@media(max-width:600px){
+  .coordinator-conversation .coordinator-message.assistant,
+  main.one-fluid-workspace.one-shell.one-studio .coordinator-messages .coordinator-message.assistant { padding-left: 52px; }
+  .coordinator-one-avatar { width: 40px; height: 40px; }
+  .coordinator-one-avatar .one-message-avatar { width: 40px; height: 40px; min-width: 40px; }
+  .classic-one-avatar { flex-basis: 40px; }
+  .message.assistant:has(> .classic-one-avatar) > .bubble { max-width: calc(100% - 52px); }
+}

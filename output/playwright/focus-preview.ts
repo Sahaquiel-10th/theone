@@ -99,26 +99,31 @@ let fixtureGuideBeginFailed=false;
 const fixtureWelcome=()=>({profile,welcomeContext:{platforms:uxAudit&&fixtureKnowledge.get('notion')?.status==='connected'?['Notion']:[],features:features.map(({id,name,description})=>({id,name,description}))},handbookOffer:{available:false},handbookNotice:'本地引导演示，不会生成说明或使用电力。'});
 // Opt-in visual fixture: synthetic replies, no model, queue, billing or private sources.
 let curiousSession:any;
+let curiousHistory:any[]=[];
+const curiousContinuity=curiousPreview&&fixtureParams.get('curiousContinuity')==='1';
+const curiousFixtureKey='one-curious-continuity-fixture:v1:'+encodeURIComponent(fixtureParams.get('fixtureCase')??'main');
+if(curiousContinuity){try{const saved=JSON.parse(localStorage.getItem(curiousFixtureKey)||'null');if(saved){curiousSession=saved.session;curiousHistory=saved.history??[];coordinatorMessages.splice(0,coordinatorMessages.length,...(saved.coordinatorMessages??[]));if(saved.displayName)profile.displayName=saved.displayName;}}catch{}}
+function saveCuriousFixture(){if(curiousContinuity){try{localStorage.setItem(curiousFixtureKey,JSON.stringify({session:curiousSession,history:curiousHistory,coordinatorMessages,displayName:profile.displayName}));}catch{}}}
 const curiousReceipts=new Set<string>();
 function fixtureCurious(body:any,method:string){
- const message=(role:string,content:string)=>curiousSession.messages.push({id:crypto.randomUUID(),role,content});
+ const message=(role:string,content:string)=>curiousSession.messages.push({id:crypto.randomUUID(),role,content,createdAt:new Date().toISOString()});
  const setQuestion=(text:string,replies:string[],allowText=false,actions:Record<string,string>={})=>{
   curiousSession.current={id:crypto.randomUUID(),text,allowText,options:replies.map((label,i)=>({id:`option_${i}`,label,reply:label,...(actions[String(i)]?{action:actions[String(i)]}:{})}))};message('assistant',text);
  };
- const view=()=>({profile,session:curiousSession,context:{platforms:[],features:[]},handbookOffer:{available:false,firstGift:true},billingNotice:'本地合成演示：不调用模型、不制作说明书、不计费。',...(curiousSession?.status==='completed'?{notice:'本地合成演示已走完；正式环境会交给独立说明书任务。'}:{})});
+ const view=()=>({profile,session:curiousSession,history:curiousHistory.map(({id,status,startedAt,completedAt,messages})=>({id,status,startedAt,completedAt,messages})),context:{platforms:[],features:[]},handbookOffer:{available:false,firstGift:true},billingNotice:'本地合成演示：不调用模型、不制作说明书、不计费。',...(curiousSession?.status==='completed'?{notice:'本地合成演示已走完；正式环境会交给独立说明书任务。'}:{})});
  if(method==='GET')return {status:200,value:view()};
  if(curiousReceipts.has(body.requestId))return {status:200,value:view()};
  if(body.action==='begin'||body.action==='restart'){
   if(body.action==='restart'&&(body.sessionId!==curiousSession?.id||body.revision!==curiousSession.revision))return{status:409,value:{error:'合成选项已变化，请刷新'}};
-  if(body.action==='restart')curiousSession=undefined;
-  if(!curiousSession){curiousSession={id:'fixture-curious-'+crypto.randomUUID(),revision:1,status:'active',stage:'name',messages:[],facts:{context:[],habits:[]},startedAt:stamp};setQuestion('好耶，等到你了！我是 ONE，以后就是你的 AI 搭档啦。怎么称呼你？',[`就叫我${profile.displayName}`,'先叫我朋友'],true);}
+  if(body.action==='restart'){curiousHistory.push(structuredClone(curiousSession));curiousSession=undefined;}
+  if(!curiousSession){curiousSession={id:'fixture-curious-'+crypto.randomUUID(),revision:1,status:'active',stage:'name',messages:[],facts:{context:[],habits:[]},startedAt:new Date().toISOString()};setQuestion('好耶，等到你了！我是 ONE，以后就是你的 AI 搭档啦。怎么称呼你？',[`就叫我${profile.displayName}`,'先叫我朋友'],true);}
  }else{
   if(body.sessionId!==curiousSession?.id||body.revision!==curiousSession.revision)return{status:409,value:{error:'合成选项已变化，请刷新'}};
   if(body.action==='pause'){curiousSession.status='paused';curiousSession.pausedQuestion=curiousSession.current;curiousSession.current=undefined;}
-  else if(body.action==='resume'){curiousSession.status='active';curiousSession.current=curiousSession.pausedQuestion;delete curiousSession.pausedQuestion;}
-  else if(body.action==='finish'){curiousSession.status='completed';curiousSession.completedAt=stamp;curiousSession.current=undefined;profile.onboarding.completedAt=stamp;message('assistant','这会儿我对你的日常有点数了。我们可以继续正常聊天。这里是合成演示，尚未安排真实说明书。');}
+  else if(body.action==='resume'){curiousSession.status='active';curiousSession.current=curiousSession.pausedQuestion;delete curiousSession.pausedQuestion;if(curiousSession.current)message('assistant',curiousSession.current.text);}
+  else if(body.action==='finish'){curiousSession.status='completed';curiousSession.completedAt=new Date().toISOString();curiousSession.current=undefined;profile.onboarding.completedAt=stamp;message('assistant','这会儿我对你的日常有点数了。我们可以继续正常聊天。这里是合成演示，尚未安排真实说明书。');}
   else if(body.action==='answer'){
-   const option=curiousSession.current?.options.find((o:any)=>o.id===body.optionId),reply=body.text||option?.reply;
+   const option=curiousSession.current?.options.find((o:any)=>o.id===body.optionId),reply=body.text||option?.reply||option?.label;
    if(!reply)return{status:400,value:{error:'请选择当前回复'}};
    message('user',reply);
    if(curiousSession.stage==='name'){profile.displayName=body.text|| (reply==='先叫我朋友'?'朋友':profile.displayName);curiousSession.facts.name=profile.displayName;curiousSession.stage='style';setQuestion(`收到收到，${profile.displayName}！我就是这股热乎劲儿，喜欢这个口气吗？`,['就这个口气','换一种试试','自己挑'],false,{'1':'change_style','2':'choose_style'});}
@@ -128,11 +133,18 @@ function fixtureCurious(body:any,method:string){
    }else if(curiousSession.stage==='activity'){curiousSession.facts.activity={id:'planning',label:reply};curiousSession.stage='context';setQuestion(`「${reply}」，收到。我想先认识这些事情里的另一个人：你的成果通常给谁看？`,['客户、合作方','老板、同事','学员、社群','主要自己用'],true);}
    else if(curiousSession.stage==='context'){curiousSession.facts.context.push(reply);curiousSession.stage='habit';setQuestion(`主要给「${reply}」看。先搭个小骨架：遇到了什么 → 建议怎么做 → 怎么落地。你平时怎么跟他们讲？`,['发文档，让对方自己看','开会时，边讲边看','发链接，随时能看','还没有固定方式'],true);}
    else if(curiousSession.stage==='habit'){curiousSession.facts.habits.push(reply);curiousSession.stage='knowledge';setQuestion('你平时积累的资料也能派上用场。需要时，我可以从已连接的资料中查找并附上来源。现在也可以先不接，照样聊。',['去连接我的资料','以后再接，先认识到这'],false,{'0':'connect'});}
-   else{curiousSession.facts.knowledge={choice:'later',platforms:[]};curiousSession.status='completed';curiousSession.completedAt=stamp;curiousSession.current=undefined;profile.onboarding.completedAt=stamp;message('assistant','好耶，我记下了：你经常给客户讲方案，喜欢边讲边演示。正式环境会据此整理你的专属使用说明。现在可以照常聊啦。');}
+   else{curiousSession.facts.knowledge={choice:'later',platforms:[]};curiousSession.status='completed';curiousSession.completedAt=new Date().toISOString();curiousSession.current=undefined;profile.onboarding.completedAt=stamp;message('assistant','好耶，我记下了：你经常给客户讲方案，喜欢边讲边演示。正式环境会据此整理你的专属使用说明。现在可以照常聊啦。');}
   }
   curiousSession.revision++;
  }
- profile.updatedAt=new Date().toISOString();curiousReceipts.add(body.requestId);return{status:200,value:view()};
+ profile.updatedAt=new Date().toISOString();curiousReceipts.add(body.requestId);saveCuriousFixture();return{status:200,value:view()};
+}
+if(curiousPreview&&fixtureParams.get('curiousStage')==='knowledge'&&!curiousSession){
+ fixtureCurious({action:'begin',requestId:'fixture-knowledge-begin'},'POST');
+ curiousSession.stage='knowledge';
+ const text='你说的这些事，往往也用得上**自己的资料**。下面是目前已连接的来源，选一个，以后需要时可以**按需查找**，再核对引用。\n\n现在还没有读取里面的内容。';
+ curiousSession.messages.push({id:'fixture-knowledge-question',role:'assistant',content:text,createdAt:new Date().toISOString()});
+ curiousSession.current={id:'fixture-knowledge-current',text,options:[{id:'connection:fixture-ima',label:'用已连接的 腾讯 ima',reply:'以后需要时用 腾讯 ima'},{id:'connection:fixture-notion',label:'用已连接的 Notion',reply:'以后需要时用 Notion'},{id:'connect',label:'再连接一个来源',action:'connect'},{id:'later',label:'以后再接，先认识到这',reply:'资料以后再接'}]};
 }
 /** Mirror the forward-only journey contract, without authorization, model or device side effects. */
 function fixtureJourney(body:any):{status?:number;error?:string} {
@@ -279,7 +291,7 @@ window.fetch=async(input,options={})=>{
  const path=url.pathname,method=(options.method||(input instanceof Request?input.method:'GET')).toUpperCase();let body:any={};if(typeof options.body==='string'){try{body=JSON.parse(options.body);}catch{return json({error:'本地预览只接受 JSON 请求体'},400);}}
  if(realService && (path.startsWith('/api/coordinator')||path.startsWith('/api/conversations')||path.startsWith('/api/attachments')||path.startsWith('/api/features'))){logRequest(method,path,'explicit-real-service');return nativeFetch('http://127.0.0.1:4291'+url.pathname+url.search,{...options,credentials:'include'});}
  const requestRecord=logRequest(method,path);
- const reply=(value:any,status=200)=>{requestRecord.status=status;previewLog.textContent=JSON.stringify(previewApiLog);return json(value,status);};
+ const reply=(value:any,status=200)=>{requestRecord.status=status;previewLog.textContent=JSON.stringify(previewApiLog);saveCuriousFixture();return json(value,status);};
  if(startupAudit&&path==='/api/coordinator'&&method==='GET'){
   const attempt=++startupReads;
   if(startupDelayMs&&(attempt===1||attempt<=startupFailures))await new Promise(resolve=>setTimeout(resolve,startupDelayMs));
@@ -410,6 +422,14 @@ window.fetch=async(input,options={})=>{
   else result={conversation,jobs,recovery:{kind:'none',message:jobs.some(job=>job.state==='running')?'本轮合成任务仍在处理中。':'已有内容保留；可以在这件事里继续补充要求。'}};
  }
  else if(transferPreview && path==='/api/coordinator/messages'){
+  if(curiousContinuity){
+   const existing=operations.get(body.operationId);if(existing?.conversation&&existing?.message)return reply(existing);
+   const at=new Date().toISOString(),message={id:crypto.randomUUID(),role:'assistant',content:'收到，这段正常聊天也留在这里。',createdAt:at};
+   coordinatorMessages.push({id:crypto.randomUUID(),role:'user',content:body.text,createdAt:at},message);
+   const conversation={id:'main',workspaceId:'preview',userId:user.id,modelId:'preview-model',createdAt:stamp,updatedAt:at,messages:[...coordinatorMessages]};
+   const receipt={status:'completed',conversation,message};operations.set(body.operationId,receipt);return reply(receipt);
+  }
+
   if(new URLSearchParams(location.search).has('sendFailure')){
    await new Promise(resolve=>setTimeout(resolve,1500));
    return reply({error:'合成提交失败，未开始执行'},503);
@@ -426,6 +446,7 @@ window.fetch=async(input,options={})=>{
   setTimeout(()=>{task.status='completed';task.updatedAt=new Date().toISOString();transferNotices.push({id:task.id,taskId:cid,title:c.title,state:'completed'});c.messages.push({id:crypto.randomUUID(),role:'assistant',content:'合成测试结果：目标、交接和用户补充均已保留。没有操作真实文件。',createdAt:task.updatedAt});},transferDelay);
   result={status:'completed',taskId:cid};operations.set(body.operationId,{taskId:cid});
  }
+ else if(curiousContinuity&&path.startsWith('/api/coordinator/messages/')){const receipt=operations.get(path.split('/').at(-1)!);if(!receipt?.conversation)return reply({error:'没有这条合成操作'},404);return reply(receipt);}
  else if(transferPreview && path.startsWith('/api/coordinator/messages/'))result={status:'completed',taskId:operations.get(path.split('/').at(-1)!)?.taskId};
  else if(transferPreview && path.startsWith('/api/coordinator/tasks/'))result={conversation:conversations.find(c=>c.id===path.split('/')[4]),jobs:[]};
  else if(transferPreview && path==='/api/coordinator/reports'){

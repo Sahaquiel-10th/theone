@@ -113,14 +113,14 @@ export function useCoordinator(
     [ready,setReady] = useCoordinatorScopedState(scope,false),
     [loadingHistory,setLoadingHistory] = useCoordinatorScopedState(scope,false),
     [historyError,setHistoryError] = useCoordinatorScopedState(scope,''),
-    [outgoing, setOutgoing] = useCoordinatorScopedState<{id:string;text:string;priorIds:string[];failed?:boolean;notStarted?:boolean} | null>(scope,null),
+    [outgoing, setOutgoing] = useCoordinatorScopedState<{id:string;text:string;createdAt?:string;priorIds:string[];failed?:boolean;notStarted?:boolean} | null>(scope,null),
     [progress, setProgress] = useCoordinatorScopedState<{phase:string;startedAt:string} | null>(scope,null),
     [details, setDetails] = useCoordinatorScopedState<Record<string, Detail>>(scope,{}),
     [selected, setSelected] = useCoordinatorScopedState<string | null>(scope,null),
     [bound, setBound] = useCoordinatorScopedState<string | null>(scope,null),
     [localPending, setPending] = useCoordinatorScopedState<string | null>(scope,null),
     [error, setError] = useCoordinatorScopedState(scope,""),
-    [failureReply,setFailureReply]=useCoordinatorScopedState<{scope:string;operationId:string;text:string}|null>(scope,null),
+    [failureReply,setFailureReply]=useCoordinatorScopedState<{scope:string;operationId:string;text:string;createdAt?:string}|null>(scope,null),
     [settlement, setSettlement] = useCoordinatorScopedState<{operationId:string;status:string;taskId?:string;taskIds?:string[]} | null>(scope,null),
     [page, setPage] = useCoordinatorScopedState(scope,1);
   const snapshot=storedSnapshot?.clientScope===userId?storedSnapshot:null;
@@ -218,7 +218,7 @@ export function useCoordinator(
     });
     if(status.status!=='completed'){
       setOutgoing(old=>old?.id===operation?{...old,failed:!needsReview}:old);
-      setFailureReply({scope:userId,operationId:operation,text:coordinatorRecoveryCopy(coordinatorReceiptFailure(status),status.status==='interrupted'&&(!businessFailure||businessFailure.code==='stopped'))});
+      setFailureReply({scope:userId,operationId:operation,text:coordinatorRecoveryCopy(coordinatorReceiptFailure(status),status.status==='interrupted'&&(!businessFailure||businessFailure.code==='stopped')),createdAt:new Date().toISOString()});
       submissionError.current='';setError('');
     }else{
       if(businessFailure)setOutgoing(old=>old?.id===operation?{...old,failed:!needsReview}:old);
@@ -243,7 +243,7 @@ export function useCoordinator(
           markCoordinatorDraft(userId,workspaceId,operation,'missing');
           if(pendingRef.current===operation){setCurrentPending(null);setProgress(null);}
           setOutgoing(old=>old?.id===operation?{...old,failed:true}:old);
-          setFailureReply({scope:userId,operationId:operation,text:coordinatorRecoveryCopy({code:'receipt_not_found',stage:'receipt',outcome:'not_started'})});
+          setFailureReply({scope:userId,operationId:operation,text:coordinatorRecoveryCopy({code:'receipt_not_found',stage:'receipt',outcome:'not_started'}),createdAt:new Date().toISOString()});
           submissionError.current='';setError('');
           return;
         }
@@ -337,12 +337,12 @@ export function useCoordinator(
     let persisted:string|null=null;try{persisted=localStorage.getItem(pendingKey(userId));}catch{}
     const drafts=coordinatorDrafts(userId,workspaceId),draft=drafts.find(item=>item.operationId===persisted)??drafts.at(-1);
     if(draft){
-      setOutgoing({id:draft.operationId,text:draft.text,priorIds:[],failed:draft.state==='failed'||draft.state==='missing',notStarted:draft.rejection?.failure.outcome==='not_started'});
+      setOutgoing({id:draft.operationId,text:draft.text,createdAt:draft.createdAt,priorIds:[],failed:draft.state==='failed'||draft.state==='missing',notStarted:draft.rejection?.failure.outcome==='not_started'});
       if(draft.state==='pending'){
         setCurrentPending(draft.operationId);
         setProgress({phase:'正在核对上次提交',startedAt:draft.createdAt});
-      }else if(draft.state==='missing')setFailureReply({scope:userId,operationId:draft.operationId,text:coordinatorRecoveryCopy({code:'receipt_not_found',stage:'receipt',outcome:'not_started'})});
-      else if(draft.rejection)setFailureReply({scope:userId,operationId:draft.operationId,text:`${coordinatorRecoveryCopy(draft.rejection.failure)}${draft.rejection.requestId?` · 编号 ${draft.rejection.requestId}`:''}`});
+      }else if(draft.state==='missing')setFailureReply({scope:userId,operationId:draft.operationId,text:coordinatorRecoveryCopy({code:'receipt_not_found',stage:'receipt',outcome:'not_started'}),createdAt:new Date().toISOString()});
+      else if(draft.rejection)setFailureReply({scope:userId,operationId:draft.operationId,text:`${coordinatorRecoveryCopy(draft.rejection.failure)}${draft.rejection.requestId?` · 编号 ${draft.rejection.requestId}`:''}`,createdAt:new Date().toISOString()});
     }
   },[scope]);
   useEffect(() => {
@@ -389,7 +389,7 @@ export function useCoordinator(
     )
       throw Error("上一条消息还在处理，请稍候");
     sending.current = input.operationId;
-    setOutgoing({id:input.operationId,text:input.text,priorIds:snapshotRef.current?.conversation?.messages.map(m=>m.id!)||[]});
+    setOutgoing({id:input.operationId,text:input.text,createdAt:new Date().toISOString(),priorIds:snapshotRef.current?.conversation?.messages.map(m=>m.id!)||[]});
     setProgress({phase:'正在发送你的要求',startedAt:new Date().toISOString()});
     setCurrentPending(input.operationId);
     submissionError.current = "";
@@ -422,7 +422,7 @@ export function useCoordinator(
         acceptReceipt(input.operationId,{status:'failed',failure:rejected,error:e instanceof Error?e.message:coordinatorRecoveryCopy(rejected)});
         markCoordinatorDraft(userId,workspaceId,input.operationId,'failed',{failure:rejected,requestId:e instanceof ApiError?e.requestId:undefined});
         setOutgoing(old=>old?.id===input.operationId?{...old,notStarted:true}:old);
-        setFailureReply({scope:userId,operationId:input.operationId,text:e instanceof Error?e.message:coordinatorRecoveryCopy(rejected)});
+        setFailureReply({scope:userId,operationId:input.operationId,text:e instanceof Error?e.message:coordinatorRecoveryCopy(rejected),createdAt:new Date().toISOString()});
         return input.operationId;
       }
       await recoverCoordinatorSubmission({
@@ -432,7 +432,7 @@ export function useCoordinator(
         unknown:failure=>{
           if(missingReceipts.has(input.operationId))return;
           setProgress(old=>({...old,phase:'正在核对上次提交',startedAt:old?.startedAt??new Date().toISOString()}));
-          setFailureReply({scope:userId,operationId:input.operationId,text:`${coordinatorRecoveryCopy(failure)}\n\n提交编号：${input.operationId}。如果持续无法核对，请把这个编号交给管理员检查，不必反复发送。`});
+          setFailureReply({scope:userId,operationId:input.operationId,text:`${coordinatorRecoveryCopy(failure)}\n\n提交编号：${input.operationId}。如果持续无法核对，请把这个编号交给管理员检查，不必反复发送。`,createdAt:new Date().toISOString()});
         },
       });
       if(!isCurrent())throw e;

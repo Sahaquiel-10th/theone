@@ -1,0 +1,32 @@
+.one-message-avatar {
+  display: block;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  /* Fill the SVG's transparent corners to keep the chat tile's smaller radius. */
+  background: #0b0b0a;
+  object-fit: contain;
+  object-position: center;
+  box-shadow: none;
+  animation: none !important;
+  transition: none !important;
+  transform: none !important;
+  pointer-events: none;
+  user-select: none;
+}
+
+@media (max-width: 600px) {
+  .one-message-avatar {
+    flex-basis: 40px;
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    border-radius: 6px;
+  }
+}

@@ -61,13 +61,13 @@ export function useFluidContentFlow(canvas:RefObject<HTMLDivElement|null>,enable
       assistant.dataset.fluidReadingWidth=column.width.toFixed(1);
       // Paragraphs get a local CSS shape: their individual lines can use the
       // recovered upper/lower region. Rich blocks keep a safe rectangular area.
-      const blocks=assistant.querySelectorAll<HTMLElement>('.coordinator-message.user, .coordinator-message.assistant > *, .coordinator-history-button, .coordinator-messages > [data-task-dispatch-anchor], .studio-presence, .studio-composer, .studio-suggestions, .attention-receipt-slot');
+      const blocks=assistant.querySelectorAll<HTMLElement>('.coordinator-message.user, .coordinator-message.assistant > *, .coordinator-history-button, .coordinator-messages > [data-task-dispatch-anchor], .studio-presence, .studio-composer, .curious-footer, .curious-session-divider, .studio-suggestions, .attention-receipt-slot');
       for(const block of blocks){
         const rect=block.getBoundingClientRect(),top=rect.top-origin.top,bottom=rect.bottom-origin.top;
         if(bottom<0||top>layout.height)continue;
-        const blockLeft=column.left;
+        const blockLeft=block.matches('.coordinator-message.assistant > *')?Math.max(column.left,rect.left-origin.left):column.left;
         if(block.matches('.coordinator-message.assistant > p')&&!block.querySelector('img,pre,table,button,iframe')){
-          const full=column.width,maxCut=Math.max(0,Math.min(full,full-(layout.safeRight-32-column.left)));
+          const full=Math.max(0,column.right-blockLeft),maxCut=Math.max(0,Math.min(full,full-(layout.safeRight-32-blockLeft)));
           let range=ranges.get(block);if(!range){range=document.createRange();ranges.set(block,range);}range.selectNodeContents(block);
           const text=range.getBoundingClientRect();
           const lineHeight=parseFloat(getComputedStyle(block).lineHeight)||27;
@@ -98,7 +98,7 @@ export function useFluidContentFlow(canvas:RefObject<HTMLDivElement|null>,enable
     }
     function observe(){
       observer.disconnect();observer.observe(root!);
-      root!.querySelectorAll<HTMLElement>('.studio-assistant,.coordinator-messages,.coordinator-message,.coordinator-message > *, .studio-composer').forEach(el=>observer.observe(el));
+      root!.querySelectorAll<HTMLElement>('.studio-assistant,.coordinator-messages,.coordinator-message,.coordinator-message > *, .studio-composer,.curious-footer').forEach(el=>observer.observe(el));
       schedule();
     }
     const mutations=new MutationObserver(observe);mutations.observe(root,{childList:true,subtree:true,characterData:true});

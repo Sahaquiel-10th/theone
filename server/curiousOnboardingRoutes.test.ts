@@ -87,3 +87,15 @@ test('an already authorized finish survives a concurrent restart without restart
   const restarted=await f.post({action:'restart',requestId:'restart_during_handoff',sessionId:old.id,revision:old.revision});assert.equal(restarted.status,200);const fresh=await restarted.json();assert.notEqual(fresh.session.id,old.id);assert.equal(f.stats().queued,0,'restart is not a queue trigger');assert.equal(f.db.users[0].profile!.onboarding.handbook!.operationId,operationId);
   release();assert.equal((await finishing).status,200);assert.equal(f.stats().queued,1);assert.equal(f.db.users[0].profile!.onboarding.curious!.id,fresh.session.id);assert.equal(f.db.users[0].profile!.onboarding.curious!.status,'active');assert.deepEqual(f.db.users[0].profile!.onboarding.handbook!.guideSnapshot,snapshot);assert.equal(f.db.users[0].profile!.onboarding.handbook!.operationId,operationId);
 });
+
+test('HTTP owner history keeps every prior introduction recoverable and never exposes it through another scope or general profile',async t=>{
+  const f=await fixture(t);let v=await f.act(undefined,'begin');const firstId=v.session!.id;
+  const first=f.db.users[0].profile!.onboarding.curious!;first.messages.push({id:'owner_only_chat',role:'user',content:'FIRST_PRIVATE_CHAT_VISIBLE_TO_OWNER'});first.facts.context=['RAW_FACT_NOT_CHAT'];first.receipts.push({id:'RAW_RECEIPT_ID',hash:'RAW_RECEIPT_HASH',state:'done',at:first.startedAt});f.db.users[0].profile!.companion!.custom='OWNER_CUSTOM_STYLE';
+  for(let index=0;index<5;index++)v=await f.act(v,'restart');
+  const response=await fetch(f.url),own=await response.json() as CuriousOnboardingView;assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');assert.equal(own.history!.length,5);assert.equal(own.history![0].id,firstId);assert.match(JSON.stringify(own.history),/FIRST_PRIVATE_CHAT_VISIBLE_TO_OWNER/);
+  assert.doesNotMatch(JSON.stringify(own.history),/RAW_FACT_NOT_CHAT|RAW_RECEIPT_ID|RAW_RECEIPT_HASH|OWNER_CUSTOM_STYLE|"facts"|"receipts"|"current"|"guideOperationId"/);assert.ok(own.history!.every(s=>s.messages.every(m=>Number.isFinite(Date.parse(m.createdAt!)))));assert.equal(f.db.users[0].profile!.onboarding.curious!.history!.length,5);assert.equal(f.db.messages.length,0);assert.equal(f.stats().generated,0);assert.equal(f.stats().queued,0);
+  const foreign=await(await fetch(f.url,{headers:{'x-owner':'b'}})).json();assert.equal(foreign.history,undefined);assert.doesNotMatch(JSON.stringify(foreign),/FIRST_PRIVATE_CHAT_VISIBLE_TO_OWNER|RAW_FACT_NOT_CHAT|RAW_RECEIPT/);
+  const general=await(await fetch(f.base)).json();assert.equal(general.profile.onboarding.curious,undefined);assert.doesNotMatch(JSON.stringify(general),/FIRST_PRIVATE_CHAT_VISIBLE_TO_OWNER|RAW_FACT_NOT_CHAT|RAW_RECEIPT/);
+  assert.equal((await f.post({action:'restart',requestId:'forged_private_history',sessionId:own.session!.id,revision:own.session!.revision,history:[{id:'forged',messages:[]}]})).status,400);
+  f.db.workspaceMembers.find(m=>m.userId==='a'&&m.workspaceId==='wa')!.status='disabled';assert.equal((await fetch(f.url)).status,403);
+});

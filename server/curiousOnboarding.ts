@@ -15,14 +15,15 @@ import { uid } from './security.js';
 export type CuriousStage = 'name' | 'style' | 'activity' | 'context' | 'habit' | 'knowledge';
 export type CuriousOption = { id:string; label:string; reply?:string; action?:'connect'|'finish'|'change_style'|'choose_style'; personaId?:string };
 export type CuriousQuestion = { id:string; text:string; options:CuriousOption[]; allowText?:boolean };
-export type CuriousMessage = { id:string; role:'assistant'|'user'; content:string };
+export type CuriousMessage = { id:string; role:'assistant'|'user'; content:string; createdAt?:string };
 export type CuriousFacts = { name?:string; activity?:{id:string;label:string}; context:string[]; habits:string[]; knowledge?:{choice:'connected'|'later';platforms:string[]} };
 type RequestReceipt = { id:string; hash:string; state:'pending'|'done'; at:string };
 /** Private account state. General profile projections must remove this record. */
 export type CuriousSession = { id:string; revision:number; status:'active'|'paused'|'completed'; stage:CuriousStage; current?:CuriousQuestion; messages:CuriousMessage[]; facts:CuriousFacts; startedAt:string; completedAt?:string; receipts:RequestReceipt[]; guideOperationId?:string; history?:CuriousSessionArchive[] };
 export type CuriousSessionArchive = Omit<CuriousSession,'history'>;
 export type CuriousSessionView = Omit<CuriousSession,'receipts'|'history'>;
-export type CuriousOnboardingView = { profile:AccountProfile; session?:CuriousSessionView; context:WelcomeContext; handbookOffer:OnboardingHandbookOffer; welcomeDelivery?:WelcomeDelivery; notice?:string; busy?:boolean; billingNotice:string };
+export type CuriousHistoryView = Pick<CuriousSession,'id'|'status'|'startedAt'|'completedAt'> & {messages:CuriousMessage[]};
+export type CuriousOnboardingView = { profile:AccountProfile; session?:CuriousSessionView; history?:CuriousHistoryView[]; context:WelcomeContext; handbookOffer:OnboardingHandbookOffer; welcomeDelivery?:WelcomeDelivery; notice?:string; busy?:boolean; billingNotice:string };
 export type CuriousOnboardingInput = { action:'begin'|'restart'|'answer'|'pause'|'resume'|'finish'; requestId:string; sessionId?:string; revision?:number; optionId?:string; text?:string; personaId?:string; connectionId?:string };
 type DraftQuestion = { understanding:string; question:string; options:{label:string;reply:string}[] };
 export type CuriousDependencies = { storageAvailable:boolean; verifyKey:()=>Promise<void>; generate?:(input:{model:ModelConfig;messages:ModelToolMessage[];requestId:string;tools:typeof curiousQuestionTool[]})=>Promise<ToolChatResult> };
@@ -101,7 +102,17 @@ async function generateQuestion(store:Store,scope:AccountScope,session:CuriousSe
 function assertCurrent(s:CuriousSession|undefined,input:CuriousOnboardingInput):asserts s is CuriousSession {
   if(!s||input.sessionId!==s.id||input.revision!==s.revision)throw new BetaInputError('这几个选项已经过时了，刷新后接着聊。',409,'CURIOUS_STALE');
 }
-function append(s:CuriousSession,role:CuriousMessage['role'],content:string){s.messages.push({id:uid('cm'),role,content});}
+function append(s:CuriousSession,role:CuriousMessage['role'],content:string){s.messages.push({id:uid('cm'),role,content,createdAt:new Date().toISOString()});}
+/** Old records acquire stable display times without rewriting history. Only
+ * approved message fields leave this owner's dedicated endpoint. */
+function datedMessages(s:Pick<CuriousSession,'startedAt'|'messages'>):CuriousMessage[]{
+  const parsedStart=Date.parse(s.startedAt),start=Number.isFinite(parsedStart)?parsedStart:0;
+  return s.messages.map((message,index)=>{
+    const parsed=Date.parse(message.createdAt??''),fallback=start+index;
+    const createdAt=new Date(Number.isFinite(parsed)?parsed:Number.isFinite(new Date(fallback).getTime())?fallback:index).toISOString();
+    return {id:message.id,role:message.role,content:message.content,createdAt};
+  });
+}
 function minimumFacts(f:CuriousFacts){return !!f.activity&&f.context.length>0&&f.habits.length>0&&!!f.knowledge;}
 function finish(db:Database,scope:AccountScope,s:CuriousSession,storageAvailable:boolean){
   const user=accountInScope(db,scope),p=accountProfile(db,scope),at=new Date().toISOString();
@@ -123,7 +134,7 @@ function finish(db:Database,scope:AccountScope,s:CuriousSession,storageAvailable
 export function curiousOnboardingView(db:Database,scope:AccountScope,storageAvailable:boolean,notice?:string):CuriousOnboardingView {
   const current=resolvedOnboardingHandbookProfile(db,scope),p=current.profile,internal=p.onboarding.curious;
   let session:CuriousSessionView|undefined;
-  if(internal){const {receipts,history,...rest}=structuredClone(internal);session=rest;
+  if(internal){const {receipts,history,...rest}=internal;session={...structuredClone(rest),messages:datedMessages(internal)};
     // A connection callback may expose newly authorized choices, but never
     // confirms one or pretends a source was read.
     if(session.status==='active'&&session.stage==='knowledge')session.current={...question('knowledge',db,scope),id:session.current?.id??`${session.id}_knowledge`};
@@ -132,7 +143,8 @@ export function curiousOnboardingView(db:Database,scope:AccountScope,storageAvai
   // resume writes a replacement question and advances the revision; a late
   // model response is then rejected by the original revision CAS below.
   const pending=internal?.status==='active'&&(!internal.current||internal.receipts.some(r=>r.state==='pending'));
-  return {profile:publicAccountProfile(p,{owner:true}),session,context:welcomeContext(db,scope),handbookOffer:onboardingHandbookOffer(db,storageAvailable,scope),welcomeDelivery:welcomeDelivery(db,scope),...(notice||current.notice?{notice:notice||current.notice}:{}),...(pending?{busy:true}:{}),billingNotice:p.onboarding.welcomeGiftOperationId&&!internal?.guideOperationId?'对话按正常用量；已有说明书会保留，不自动重新制作。':'对话按正常用量，首次说明书由 ONE 赠送。'};
+  const history=internal?.history?.map(s=>({id:s.id,status:s.status,startedAt:s.startedAt,...(s.completedAt?{completedAt:s.completedAt}:{}),messages:datedMessages(s)}));
+  return {profile:publicAccountProfile(p,{owner:true}),session,...(history?.length?{history}:{}),context:welcomeContext(db,scope),handbookOffer:onboardingHandbookOffer(db,storageAvailable,scope),welcomeDelivery:welcomeDelivery(db,scope),...(notice||current.notice?{notice:notice||current.notice}:{}),...(pending?{busy:true}:{}),billingNotice:p.onboarding.welcomeGiftOperationId&&!internal?.guideOperationId?'对话按正常用量；已有说明书会保留，不自动重新制作。':'对话按正常用量，首次说明书由 ONE 赠送。'};
 }
 function validateInput(input:CuriousOnboardingInput){
   if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['action','requestId','sessionId','revision','optionId','text','personaId','connectionId'].includes(k)))throw new BetaInputError('这一轮的格式不正确');
@@ -152,7 +164,7 @@ export async function updateCuriousOnboarding(store:Store,scope:AccountScope,inp
       if(input.action==='restart'){
         assertCurrent(s,input);
         const {history:previousHistory,...previous}=structuredClone(s);
-        history=[...(previousHistory??[]),previous].slice(-3);
+        history=[...(previousHistory??[]),previous];
       }else if(s)return {duplicate:true};
       // Entering the new conversation never cancels an older practice or
       // rewrites its journey, authorized sources, or durable work records.
@@ -168,7 +180,9 @@ export async function updateCuriousOnboarding(store:Store,scope:AccountScope,inp
         if(s.status==='completed')throw new BetaInputError('认识已经结束，可以直接聊天。',409);
         s.status='active';for(const r of s.receipts)if(r.state==='pending')r.state='done';
         s.current=question(s.stage,db,scope);
-        if(s.messages.at(-1)?.content!==s.current.text)append(s,'assistant',s.current.text);
+        // Resuming is a new conversation event, even if the same question was
+        // asked before normal chats that occurred while onboarding was paused.
+        append(s,'assistant',s.current.text);
       }else if(input.action==='finish'){
         if(s.status==='completed')return {duplicate:true};
         if(!s.facts.knowledge)s.facts.knowledge={choice:'later',platforms:[]};

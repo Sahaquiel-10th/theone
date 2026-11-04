@@ -18,7 +18,7 @@ test('welcome artifacts retain their compact private card through the main conve
  const message=coordinatorMessage({id:'guide',role:'assistant',content:'使用说明好了',createdAt:'t',attachments:[{id:'att-guide',originalName:'小张的 ONE 使用说明.png',mimeType:'image/png',kind:'image',size:1,welcomeGuide:true}]});
  assert.equal(message.files?.[0].welcomeGuide,true);
  const html=renderToStaticMarkup(createElement(CoordinatorConversation,{messages:[message],tasks:[],pending:false,onOpen:()=>{}}));
- assert.match(html,/打开看看/);assert.match(html,/小张的 ONE 使用说明/);assert.doesNotMatch(html,/<iframe|<img|\/api\/welcome-pages/);
+ assert.match(html,/打开看看/);assert.match(html,/小张的 ONE 使用说明/);assert.doesNotMatch(html,/<iframe|<img[^>]+src="(?!\/one-mark\.svg)|\/api\/welcome-pages/);
 });
 test('the continuous conversation renders private images with a download entry',()=>{
  const render=(imageUrl:string)=>renderToStaticMarkup(createElement(CoordinatorConversation,{messages:[{id:'image',role:'assistant',text:'图片已生成',imageUrl}],tasks:[],pending:false,onOpen:()=>{}}));
@@ -26,7 +26,7 @@ test('the continuous conversation renders private images with a download entry',
  assert.match(html, /<img[^>]+src="\/api\/attachments\/att_picture\/content"/);
  assert.match(html, /href="\/api\/attachments\/att_picture\/content" download=""/);
  assert.match(html, /下载图片/);
- assert.doesNotMatch(render('https://example.com/private.png'), /<img|下载图片/);
+ assert.doesNotMatch(render('https://example.com/private.png'), /<img[^>]+src="(?!\/one-mark\.svg)|下载图片/);
 });
 test('the main adapter retains grounding disclosures without copying provider or storage metadata',()=>{
  const result=coordinatorMessage({
@@ -59,7 +59,7 @@ test('user text remains literal while the assistant keeps direct Markdown block 
 });
 test('main Markdown images use private attachment routes while retaining a download for an inline result',()=>{
  const html=renderToStaticMarkup(createElement(CoordinatorConversation,{messages:[{id:'private-inline',role:'assistant',text:'![图片](/api/attachments/owned-picture/content)\n\n![远程](https://example.com/tracker.png)\n\n![本地](/Users/me/private.png)',imageUrl:'/api/attachments/owned-picture/content'}],tasks:[],pending:false,onOpen:()=>{}}));
- assert.equal((html.match(/<img/g)||[]).length,1);
+ assert.equal((html.match(/<img[^>]+src="\/api\/attachments\//g)||[]).length,1);
  assert.match(html,/src="\/api\/attachments\/owned-picture\/content"/);
  assert.match(html,/href="\/api\/attachments\/owned-picture\/content" download=""/);
  assert.doesNotMatch(html,/tracker.png|src="\/Users/);

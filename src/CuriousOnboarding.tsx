@@ -1,10 +1,12 @@
-import {useCallback,useEffect,useId,useRef,useState,type FormEvent} from 'react';
+import {useCallback,useEffect,useId,useRef,useState,type FormEvent,type ReactNode} from 'react';
 import {ArrowUp,BookOpen,Check,ExternalLink,LoaderCircle,Plug,RefreshCw} from 'lucide-react';
 import type {AccountProfile} from '../server/betaProfile';
 import type {CuriousOnboardingInput,CuriousOnboardingView,CuriousOption} from '../server/curiousOnboarding';
 import type {CompanionPreferences} from '../server/oneCompanion';
 import {api,ApiError,currentApiIdentity} from './oneApi';
-import {OneEye} from './OneEye';
+import {OneMessageAvatar} from './OneMessageAvatar';
+import {CuriousText,CuriousInlineText,curiousOptionPresentation} from './curiousPresentation';
+import type {ConversationInlineEntry} from './conversationTimeline';
 import {companionChoices,companionIntensityChoices,companionSample} from './companionPersonas';
 
 const endpoint='/api/me/profile/curious-onboarding';
@@ -19,19 +21,21 @@ export type CuriousOnboardingProps={
   onActiveChange?:(active:boolean)=>void;
   onOpenTask?:(id:string)=>void;
   refreshKey?:string;
+  renderConversation?:(entries:ConversationInlineEntry[])=>ReactNode;
   /** An accepted launch response, or an isolated presentation fixture. */
   initialView?:CuriousOnboardingView;
 };
 
 /** A conversation embedded in the main chat. Only server-provided choices can
  * advance it; connecting a source opens settings and never claims authorization. */
-export function CuriousOnboarding({profile,request=api,onProfile,onKnowledge,onComplete,onContinueChat,onActiveChange,onOpenTask,refreshKey,initialView}:CuriousOnboardingProps){
+export function CuriousOnboarding({profile,request=api,onProfile,onKnowledge,onComplete,onContinueChat,onActiveChange,onOpenTask,refreshKey,initialView,renderConversation}:CuriousOnboardingProps){
   const [view,setView]=useState(initialView),[loading,setLoading]=useState(!initialView),[working,setWorking]=useState(false),[error,setError]=useState('');
   const [draft,setDraft]=useState(''),[pending,setPending]=useState<PendingAnswer>(),[suspended,setSuspended]=useState(false),[picking,setPicking]=useState(false);
   const [styleExpanded,setStyleExpanded]=useState(false);
   const [style,setStyle]=useState<CompanionPreferences>(initialView?.profile.companion??profile.companion??{persona:'robot',intensity:'normal'}),[styleSample,setStyleSample]=useState(false),[styleSaved,setStyleSaved]=useState(false);
   const mounted=useRef(false),version=useRef(0),locked=useRef(false),viewRef=useRef(view),pauseQueued=useRef(false),continueText=useRef<string|undefined>(undefined);
-  const beginId=useRef(''),pendingRef=useRef<PendingAnswer|undefined>(undefined),scroll=useRef<HTMLDivElement>(null),prompt=useRef<HTMLDivElement>(null),focusNext=useRef(false);
+  const pendingAt=useRef('');
+  const beginId=useRef(''),pendingRef=useRef<PendingAnswer|undefined>(undefined),scroll=useRef<HTMLDivElement>(null),prompt=useRef<HTMLDivElement>(null),focusNext=useRef(Boolean(initialView));
   const lastRefreshKey=useRef(refreshKey);
   const callbacks=useRef({onProfile,onKnowledge,onComplete,onContinueChat,onActiveChange,onOpenTask});callbacks.current={onProfile,onKnowledge,onComplete,onContinueChat,onActiveChange,onOpenTask};
   const operateRef=useRef<(item:PendingAnswer)=>Promise<void>>(async()=>{}),identity=useRef(currentApiIdentity()),completedNotice=useRef('');
@@ -71,6 +75,7 @@ export function CuriousOnboarding({profile,request=api,onProfile,onKnowledge,onC
   const operate=useCallback(async(item:PendingAnswer)=>{
     if(locked.current||!mounted.current||!ownIdentity())return;
     locked.current=true;setWorking(true);setError('');++version.current;
+    if(pendingRef.current?.input.requestId!==item.input.requestId)pendingAt.current=new Date().toISOString();
     pendingRef.current=item;setPending(item);
     try{
       const next=await request<CuriousOnboardingView>(endpoint,{method:'POST',body:JSON.stringify(item.input)});
@@ -180,7 +185,7 @@ export function CuriousOnboarding({profile,request=api,onProfile,onKnowledge,onC
     }
   };
   const renderChoices=()=>current&&active&&!busy&&!pending&&<div className="curious-current" tabIndex={-1} ref={prompt} aria-label="这一轮可以这样回复">
-    <div className="curious-replies">{current.options.map(option=><button type="button" key={option.id} data-action={option.action} aria-expanded={option.action==='choose_style'?picking:undefined} onClick={()=>answer(option)}>{option.action==='connect'&&<Plug size={15} aria-hidden="true"/>}<span>{option.label}</span>{option.action==='connect'&&<ExternalLink size={13} aria-hidden="true"/>}</button>)}</div>
+    <div className="curious-replies" data-stage={session?.stage}>{current.options.map(option=>{const display=curiousOptionPresentation(option,session?.stage);return <button type="button" key={option.id} data-action={option.action} data-intent={display.intent} data-option-kind={display.kind} aria-expanded={option.action==='choose_style'?picking:undefined} onClick={()=>answer(option)}>{option.action==='connect'&&<Plug size={17} aria-hidden="true"/>}<span className="curious-option-copy"><span className="curious-option-title"><CuriousInlineText text={display.title} emphasis={display.emphasis} fallbackEmphasis={false}/></span>{display.support&&<small>{display.support}</small>}</span>{option.action==='connect'&&<ExternalLink size={13} aria-hidden="true"/>}</button>;})}</div>
     {session?.stage==='style'&&<>
       {picking&&<div className="curious-personas" aria-label="挑一种聊天口气">{companionChoices.map(choice=><button type="button" key={choice.id} aria-pressed={choice.id===companion.persona} onClick={()=>answer(current.options.find(o=>o.action==='choose_style'),undefined,choice.id)}><strong>{choice.name}</strong><small>{choice.description}</small></button>)}</div>}
       <details className="curious-style" open={styleExpanded} onToggle={event=>setStyleExpanded(event.currentTarget.open)}><summary>口气也可以微调，或者写成你喜欢的样子</summary><div className="curious-style-controls">
@@ -193,20 +198,31 @@ export function CuriousOnboarding({profile,request=api,onProfile,onKnowledge,onC
     </>}
   </div>;
   const history=[...(session?.messages??[])];
-  if(current&&history.at(-1)?.content!==current.text)history.push({id:`current-${current.id}`,role:'assistant',content:current.text});
-  const transcript=<ol className="curious-messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="和 ONE 的初次聊天">{history.map((message,index)=><li className="curious-message" data-role={message.role} key={message.id}>
-    {message.role==='assistant'&&<span className="curious-avatar"><OneEye size="xs" mood="attentive" decorative/></span>}
-    <div className="curious-message-body"><span className="curious-message-name">{message.role==='assistant'?'ONE':session?.facts.name??view?.profile.displayName??'你'}</span><p className="curious-message-text">{message.content}</p>{index===history.length-1&&message.role==='assistant'&&renderChoices()}</div>
-  </li>)}{pending?.reply&&working&&<li className="curious-message" data-role="user"><div className="curious-message-body"><span className="curious-message-name">你</span><p className="curious-message-text">{pending.reply}</p></div></li>}</ol>;
+  if(current&&history.at(-1)?.content!==current.text)history.push({id:`current-${current.id}`,role:'assistant',content:current.text,createdAt:history.at(-1)?.createdAt??session?.startedAt});
+  const entries:ConversationInlineEntry[]=[];
+  const renderMessage=(message:typeof history[number],key:string,isCurrent=false)=> <article className={`coordinator-message curious-inline-message ${message.role}${message.role==='assistant'?' markdown-body':''}`} data-role={message.role} data-message-kind="introduction" aria-label={message.role==='assistant'?'ONE 的回复':'你的消息'} key={key}>
+    {message.role==='assistant'&&<span className="coordinator-one-avatar" aria-hidden="true"><OneMessageAvatar/></span>}
+    {message.role==='assistant'?<CuriousText text={message.content}/>:<p className="coordinator-user-text">{message.content}</p>}
+    {isCurrent&&renderChoices()}
+  </article>;
+  const addSession=(s:{id:string;startedAt:string;status:string;messages:typeof history},isCurrent:boolean)=>{
+    entries.push({id:`intro-start-${s.id}`,createdAt:s.startedAt,content:<div className="curious-session-divider" data-onboarding-session={s.id}><span>和 ONE 认识一下</span><small>{isCurrent&&active?'聊聊你的日常':s.status==='paused'?'稍后接着聊':'聊天记录'}</small></div>});
+    s.messages.forEach((message,index)=>entries.push({id:`intro-${s.id}-${message.id}`,createdAt:message.createdAt??new Date((Date.parse(s.startedAt)||0)+index+1).toISOString(),content:renderMessage(message,`${s.id}-${message.id}`,isCurrent&&index===s.messages.length-1&&message.role==='assistant')}));
+  };
+  for(const previous of view?.history??[])addSession(previous,false);
+  if(session)addSession({...session,messages:history},true);
+  if(pending?.reply&&working)entries.push({id:'intro-pending-reply',createdAt:pendingAt.current,content:renderMessage({id:'pending-reply',role:'user',content:pending.reply},'pending-reply')});
+  const statusAt=pendingAt.current||history.at(-1)?.createdAt||session?.startedAt||new Date().toISOString();
+  if(loading||working||view?.busy)entries.push({id:'intro-loading',createdAt:statusAt,content:<p className="curious-pending" role="status"><LoaderCircle size={15} className="curious-spinner" aria-hidden="true"/>{loading?'正在接上这段对话…':view?.busy&&!working?'这一轮还在整理，已聊过的内容会保留。':'正在接着你这句话想…'}</p>});
   const delivery=view?.welcomeDelivery;
-  const closing=session?.status==='completed'&&session.completedAt?history.filter(message=>message.role==='assistant').at(-1):undefined;
-  return <section className="curious-onboarding" data-active={active} aria-label="和 ONE 认识一下" aria-busy={loading||working}>
-    {active&&<header className="curious-header"><div><span><strong>主对话 · 和 ONE 认识一下</strong><small>{persona?.name??'先认识一下'}</small></span></div><button type="button" className="curious-quiet" onClick={()=>pause()}>先做别的</button></header>}
-    {active?<div className="curious-scroll" ref={scroll}>{transcript}
-      {(loading||working||view?.busy)&&<p className="curious-pending" role="status"><LoaderCircle size={15} className="curious-spinner" aria-hidden="true"/>{loading?'正在接上这段对话…':view?.busy&&!working?'这一轮还在整理，已聊过的内容会保留。':'正在接着你这句话想…'}</p>}
-      {view?.busy&&!working&&<div className="curious-rest"><button type="button" onClick={resume}>恢复这段对话</button></div>}
-    </div>:<details className="curious-transcript"><summary>{session?.status==='completed'?'和 ONE 的初次聊天':'刚才和 ONE 聊过的内容'}<span> · 点开回看</span></summary><div className="curious-scroll">{transcript}</div></details>}
-    {closing&&<div className="curious-message curious-closing" data-role="assistant"><span className="curious-avatar"><OneEye size="xs" decorative/></span><div className="curious-message-body"><span className="curious-message-name">ONE</span><p className="curious-message-text">{closing.content}</p></div></div>}
+  const endAt=(offset:number)=>new Date((Date.parse(session?.completedAt??history.at(-1)?.createdAt??session?.startedAt??'')||0)+offset).toISOString();
+  if(!active&&session?.status!=='completed')entries.push({id:`intro-resume-${session?.id??'local'}`,createdAt:endAt(1),content:<div className="curious-rest"><p>先聊你的事。这段对话留在这里，想继续时再接上。</p><button type="button" disabled={working} onClick={resume}>接着认识</button></div>});
+  if(!active&&delivery)entries.push({id:`intro-guide-${delivery.operationId}`,createdAt:endAt(2),content:<div className="curious-handoff" aria-label="ONE 使用说明"><BookOpen size={18} aria-hidden="true"/><div><strong>{session?.guideOperationId===delivery.operationId?'你的 ONE 使用说明':'之前的 ONE 使用说明'}</strong><p>{delivery.message}</p><div className="curious-handoff-actions">{delivery.taskId&&onOpenTask&&<button type="button" onClick={()=>callbacks.current.onOpenTask?.(delivery.taskId!)}>打开这件事</button>}{delivery.canRetry&&<button type="button" disabled={working} onClick={()=>void retryGuide()}>重新安排这份说明</button>}<button type="button" className="curious-quiet" disabled={working} onClick={()=>void refresh()}>查看最新状态</button></div></div></div>});
+  return <section className="curious-onboarding" data-active={active} data-integrated={Boolean(renderConversation)} aria-label="主对话中的认识一下" aria-busy={loading||working}>
+    {renderConversation?renderConversation(entries):<div className="curious-scroll coordinator-messages" ref={scroll} role="log" aria-live="polite" aria-label="与 ONE 的持续对话">{entries.map(entry=><div key={entry.id} className="curious-timeline-entry">{entry.content}</div>)}</div>}
+    <div className="curious-footer">
+    {active&&<header className="curious-header"><span><strong>认识一下</strong><small>{persona?.name??'ONE'}</small></span><button type="button" className="curious-quiet" onClick={()=>pause()}>先做别的</button></header>}
+    {view?.busy&&!working&&<div className="curious-rest"><button type="button" onClick={resume}>恢复这段对话</button></div>}
     {error&&<div className="curious-error" role="alert"><p>{error}</p><div className="curious-error-actions"><button type="button" disabled={working} onClick={()=>void refresh()}><RefreshCw size={13} aria-hidden="true"/> 查看当前状态</button>{pendingRef.current&&!working&&!suspended&&<button type="button" onClick={()=>{if(pendingRef.current)void operate(pendingRef.current);}}>{pending?.input.action==='answer'?'重试这条回复':'再试一次'}</button>}</div></div>}
     {active&&current&&(current.allowText||onContinueChat)&&!view?.busy&&<form className="curious-compose" onSubmit={submit}>
       <label htmlFor={`${id}-reply`}>{current.allowText?(session?.stage==='name'?'也可以直接告诉我怎么称呼你':'没有刚好合适的？也可以自己说'):'也可以先说你想聊的事，带回主对话'}</label>
@@ -220,7 +236,8 @@ export function CuriousOnboarding({profile,request=api,onProfile,onKnowledge,onC
       {current.allowText&&draft.trim()&&onContinueChat&&<button type="button" className="curious-quiet curious-direct" disabled={busy} onClick={()=>pause(draft.trim())}>直接聊这件事</button>}
     </form>}
     {active&&view?.billingNotice&&<p className="curious-billing">{view.billingNotice}</p>}
-    {!active&&session?.status!=='completed'&&<div className="curious-rest"><p>先聊你的事。这段对话留在这里，想继续时再接上。</p><button type="button" disabled={working} onClick={resume}>接着认识</button></div>}
-    {delivery&&<div className="curious-handoff" aria-label="你的 ONE 使用说明"><BookOpen size={18} aria-hidden="true"/><div><strong>你的 ONE 使用说明</strong><p>{delivery.message}</p><div className="curious-handoff-actions">{delivery.taskId&&onOpenTask&&<button type="button" onClick={()=>callbacks.current.onOpenTask?.(delivery.taskId!)}>打开这件事</button>}{delivery.canRetry&&<button type="button" disabled={working} onClick={()=>void retryGuide()}>重新安排这份说明</button>}<button type="button" className="curious-quiet" disabled={working} onClick={()=>void refresh()}>查看最新状态</button></div></div></div>}
+
+
+    </div>
   </section>;
 }

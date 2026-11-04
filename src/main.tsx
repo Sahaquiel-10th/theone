@@ -30,6 +30,8 @@ import {TaskReadAllButton} from './TaskReadAllButton';
 import {StoryOnboarding} from './StoryOnboarding';
 import {CuriousOnboarding} from './CuriousOnboarding';
 import {OnboardingEntry} from './OnboardingEntry';
+import {OneMessageAvatar} from './OneMessageAvatar';
+import type {ConversationInlineEntry} from './conversationTimeline';
 import {curiousLaunchInput,type CuriousLaunchMode} from './curiousLaunch';
 import {clearCuriousReturn,readCuriousReturn,saveCuriousReturn} from './curiousReturn';
 import type {CuriousOnboardingInput,CuriousOnboardingView} from '../server/curiousOnboarding';
@@ -160,6 +162,7 @@ import "./one-beta.css";
 import "./one-onboarding.css";
 import './curious-onboarding.css';
 import './companion-settings.css';
+import './one-message-avatar.css';
 import "./one-settings.css";
 import './one-product.css';
 import './account-preferences.css';
@@ -626,9 +629,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const preview = coordinator.enabled ? coordinator : demo;
   const [profile, setProfile] = useState<AccountProfile>(user.profile || { workspaceId: user.defaultWorkspaceId, displayName: "", onboarding: { knowledgeChoice: "pending" }, updatedAt: user.createdAt });
   const [curiousEntered,setCuriousEntered]=useState(false),[curiousActive,setCuriousActive]=useState(false);
+  const [curiousChecked,setCuriousChecked]=useState(false);
   const [curiousSeed,setCuriousSeed]=useState<{key:number;view:CuriousOnboardingView}>();
   const curiousLaunchRetry=useRef<{mode:CuriousLaunchMode;input:CuriousOnboardingInput}|undefined>(undefined);
-  const curiousReturnChecked=useRef(false);
+  const curiousReturnChecked=useRef(false),curiousLaunchEpoch=useRef(0);
   const [handbookOffer,setHandbookOffer]=useState<OnboardingHandbookOffer>(),[handbookNotice,setHandbookNotice]=useState('');
   const [welcomeContext,setWelcomeContext]=useState<WelcomeContext>(),[profileLoaded,setProfileLoaded]=useState(false),[storyOpen,setStoryOpen]=useState(false),[storyHidden,setStoryHidden]=useState(false),[storyTaskId,setStoryTaskId]=useState('');
   const [delivery,setDelivery]=useState<Delivery>(),[deliveryBusy,setDeliveryBusy]=useState(false),[deliveryError,setDeliveryError]=useState(''),[dismissedDelivery,setDismissedDelivery]=useState('');
@@ -689,7 +693,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   async function startStory(mode:CuriousLaunchMode='continue') {
     if(storyLaunchPending.current)return;
     if(guideEffectPreview){storyRequested.current=true;setStoryOpen(true);setStoryHidden(false);setWorkLayer('guide');setView('chat');return;}
-    storyLaunchPending.current=true;setStoryLaunching(true);setStoryLaunchError('');
+    ++curiousLaunchEpoch.current;storyLaunchPending.current=true;setStoryLaunching(true);setStoryLaunchError('');
     try{
       let next:CuriousOnboardingView;
       // A lost response retries the original durable request, never a second restart.
@@ -720,14 +724,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     if(!profileLoaded||curiousReturnChecked.current)return;
     curiousReturnChecked.current=true;
     const workspaceId=user.access?.workspaceId??user.defaultWorkspaceId;
-    const mark=readCuriousReturn(sessionStorage,user.id,workspaceId);
-    if(!mark)return;
+    const mark=readCuriousReturn(sessionStorage,user.id,workspaceId),epoch=curiousLaunchEpoch.current;
     let live=true;
     void api<CuriousOnboardingView>('/api/me/profile/curious-onboarding').then(next=>{
-      if(!live||readCuriousReturn(sessionStorage,user.id,workspaceId)?.sessionId!==mark.sessionId)return;
-      if(next.session?.id!==mark.sessionId||next.session.status!=='active'){clearCuriousReturn(sessionStorage,user.id,workspaceId);return;}
-      setProfile(next.profile);setCuriousSeed(previous=>({key:(previous?.key??0)+1,view:next}));setCuriousEntered(true);setCuriousActive(true);
-    }).catch(()=>{});
+      if(!live||epoch!==curiousLaunchEpoch.current)return;
+      if(mark&&next.session?.id!==mark.sessionId)clearCuriousReturn(sessionStorage,user.id,workspaceId);
+      if(!next.session)return;
+      setProfile(next.profile);setCuriousSeed(previous=>({key:(previous?.key??0)+1,view:next}));setCuriousEntered(true);setCuriousActive(next.session.status==='active');
+    }).catch(()=>{}).finally(()=>{if(live)setCuriousChecked(true);});
     return()=>{live=false;};
   },[profileLoaded,api,user.id,user.access?.workspaceId,user.defaultWorkspaceId]);
   function dismissStory(){storyRequested.current=false;setStoryHidden(true);setStoryOpen(false);closeWorkLayer();}
@@ -995,7 +999,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   // Material-only animation: the coordinator and composer remain mounted in place.
   const fluidEnabled = startup==='workspace' && view === 'chat' && preview.enabled;
   const legacyGuidePending=!!profile.onboarding.journey&&profile.onboarding.journey.stage!=='complete';
-  const firstCurious=!storyHidden&&!hasSubmittedChat&&!conversations.length&&!profile.onboarding.completedAt&&!preview.state.dialogue.length&&(demo.enabled||coordinator.ready);
+  const firstCurious=curiousChecked&&!storyHidden&&!hasSubmittedChat&&!conversations.length&&!profile.onboarding.completedAt&&!preview.state.dialogue.length&&(demo.enabled||coordinator.ready);
   const curiousVisible=view==='chat'&&workLayer!=='guide'&&!guideEffectPreview&&(!legacyGuidePending||curiousEntered)&&profileLoaded&&(curiousEntered||storyOpen||user.access?.kind!=='company'&&firstCurious);
   const fluidHasDialogue = preview.state.dialogue.length > 0 || Boolean(preview.state.pending) || curiousVisible;
   const fluidCanvasRef = useRef<HTMLDivElement>(null);
@@ -2359,8 +2363,34 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         {!curiousVisible&&!delivery&&handbookNotice && view==='chat' ? <p className="one-onboarding-handbook-notice" role="status">{handbookNotice}{storyTaskId?<button type="button" onClick={()=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(storyTaskId)}`).then(result=>openConversation(result.conversation)).catch(e=>setError(e.message))}>查看任务 ↗</button>:null}<button type="button" onClick={()=>setHandbookNotice('')} aria-label="收起说明">知道了</button></p> : null}
     </>;}
 
+  function renderMainConversation(inlineEntries:ConversationInlineEntry[]=[]){return <CoordinatorConversation renderTaskRecovery={renderCoordinatorRecovery} renderAssistantActions={message=><BetaFeedbackControls messageId={message.id} requestId={message.requestId} leading={<button type="button" title="复制回答" onClick={()=>void copyMarkdown(message.text)}><Copy size={14}/>复制</button>} onSave={async input=>(await api<{feedback:import('./Onboarding').OwnBetaFeedback}>('/api/me/feedback',{method:'POST',body:JSON.stringify(input)})).feedback}/>} onContinue={()=>{if(currentDraftRef.current.content.trim()){setError('输入框还有草稿，请先保留或发送它，再继续生成。');return;}if(confirm('继续生成会产生新的额度消耗，是否继续？'))void sendMessage('请接着上一条未完成的回答继续，从中断处接上，不要重复前文。');}} hasEarlierHistory={coordinator.hasEarlierHistory} loadingHistory={coordinator.loadingHistory} onLoadHistory={coordinator.enabled?coordinator.loadHistory:undefined} inlineEntries={inlineEntries} visible={(view==='chat'||view==='features'||view==='account')} messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} completed={coordinator.settlement?.status==='completed'&&!coordinator.error} progress={coordinator.enabled?coordinator.progress:null} onStop={coordinator.enabled?coordinator.stop:undefined} onRestore={text=>{
+          if(currentDraftRef.current.content.trim()){setError('输入框已有新草稿，先保留或发送它，再恢复原话。');return;}
+          const draft=coordinatorDrafts(user.id,user.access?.workspaceId??user.defaultWorkspaceId).filter(item=>item.text===text).at(-1);
+          void (async()=>{
+            if(draft){
+              if(draft.state==='review')throw new Error('这件事已有部分进展或结果待核对，请打开原任务继续，避免从头重做。');
+              // These references are not permissions: read every attachment and
+              // feature through the current account before putting it back.
+              const [files,features]=await Promise.all([
+                Promise.all((draft.attachmentIds??[]).map(async id=>{const {attachment}=await api<{attachment:AttachmentSummary}>(`/api/attachments/${encodeURIComponent(id)}`);if(!attachment||attachment.id!==id||attachment.status&&attachment.status!=='ready')throw new Error('原附件暂时不能使用，原话仍保留；请检查附件状态后再恢复。');return attachment;})),
+                Promise.all((draft.featureIds??[]).map(async id=>{const feature=await api<FeatureChoice>(`/api/features/${encodeURIComponent(id)}`);if(!feature||typeof feature.name!=='string')throw new Error('原功能暂时不能使用，原话仍保留；请重新检查功能。');return{...feature,id};})),
+              ]);
+              if(draft.boundTaskId)await coordinator.load(draft.boundTaskId,true);
+              if(currentDraftRef.current.content.trim())throw new Error('输入框已有新草稿，原话仍保留，请先处理当前草稿。');
+              setContent(text);setPendingAttachments(files);setFeatureForNext(features);
+              restoredCoordinatorSubmission.current=draft.localExecution?draft:null;
+              if(draft.modelId)setDraftModelId(draft.modelId);
+              setWebSearch(Boolean(draft.webSearch));setOutputDestination(draft.localExecution?'local':draft.outputDestination??'chat');
+              coordinator.dispatch({type:'bind',taskId:draft.boundTaskId??null});
+            }else{
+              setContent(text);const failed=coordinatorFailedDraft.current;
+              if(failed?.text===text){setPendingAttachments(failed.files);setFeatureForNext(failed.features);}
+            }
+          })().catch(error=>setError(error instanceof Error?error.message:'原话仍保留，附件或功能暂时无法恢复，请检查连接。'));
+        }} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)}/>;}
+
   function renderStory(){
-    if(!guideEffectPreview&&(curiousEntered||!legacyGuidePending))return <CuriousOnboarding key={curiousSeed?.key??0} initialView={curiousSeed?.view} request={api} refreshKey={workLayer??view} profile={profile} onProfile={next=>{setProfile(next);setCuriousEntered(true);}} onActiveChange={setCuriousActive} onContinueChat={text=>{setCuriousActive(false);setStoryHidden(true);setStoryOpen(false);returnToMainChat(text);}} onKnowledge={sessionId=>{storyRequested.current=true;if(sessionId)saveCuriousReturn(sessionStorage,user.id,user.access?.workspaceId??user.defaultWorkspaceId,sessionId);openSurface('knowledge');}} onComplete={()=>{clearCuriousReturn(sessionStorage,user.id,user.access?.workspaceId??user.defaultWorkspaceId);storyRequested.current=false;setStoryHidden(true);setStoryOpen(false);setCuriousActive(false);void checkWelcome();void coordinator.refresh().catch(()=>{});}} onOpenTask={id=>{setStoryHidden(true);setStoryOpen(false);void openLinkedTask(id);}}/>;
+    if(!guideEffectPreview&&(curiousEntered||!legacyGuidePending))return <CuriousOnboarding key={curiousSeed?.key??0} initialView={curiousSeed?.view} renderConversation={preview.enabled?renderMainConversation:undefined} request={api} refreshKey={workLayer??view} profile={profile} onProfile={next=>{setProfile(next);setCuriousEntered(true);}} onActiveChange={setCuriousActive} onContinueChat={text=>{setCuriousActive(false);setStoryHidden(true);setStoryOpen(false);returnToMainChat(text);}} onKnowledge={sessionId=>{storyRequested.current=true;if(sessionId)saveCuriousReturn(sessionStorage,user.id,user.access?.workspaceId??user.defaultWorkspaceId,sessionId);openSurface('knowledge');}} onComplete={()=>{clearCuriousReturn(sessionStorage,user.id,user.access?.workspaceId??user.defaultWorkspaceId);storyRequested.current=false;setStoryHidden(true);setStoryOpen(false);setCuriousActive(false);void checkWelcome();void coordinator.refresh().catch(()=>{});}} onOpenTask={id=>{setStoryHidden(true);setStoryOpen(false);void openLinkedTask(id);}}/>;
     if(storyLaunching)return <section className="story-launch-status" role="status"><h3>正在打开引导</h3><p>你的对话和草稿会留在这里。</p></section>;
     if(storyLaunchError)return <section className="story-launch-status" role="alert"><h3>引导暂时没打开</h3><p>{storyLaunchError}</p><button type="button" className="primary" onClick={()=>void startStory()}>重新打开引导</button></section>;
     return <StoryOnboarding effectPreview={guideEffectPreview} profile={profile} context={welcomeContext} offer={handbookOffer} request={api} onRefresh={()=>coordinator.refresh()} onOpenTask={id=>{storyRequested.current=false;setStoryHidden(true);setStoryOpen(false);openSurface('things',id);}} onContinueChat={()=>{dismissStory();openSurface('chat');requestAnimationFrame(()=>document.getElementById('one-studio-input')?.focus());}} onBegin={startLegacyStory} onAction={saveStory} onKnowledge={()=>{storyRequested.current=false;openSurface('knowledge');}} onDevice={()=>{storyRequested.current=false;setAccountSection('device');openSurface('account');}} onDismiss={dismissStory}/>;
@@ -2570,6 +2600,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             taskConversationView(active!.messages,coordinator.details[activeId]?.jobs).map((message, index) => (
               <React.Fragment key={`${message.createdAt}-${index}`}>
                 <article hidden={replyPending&&message.role==='assistant'&&!message.content.trim()} className={`message ${message.role} ${message.id && message.id === (executionTask?.sourceMessageId || executionSourceMessageId) && activeExecutionMode ? "execution-source" : ""}`}>
+                  {message.role==='assistant'?<span className="classic-one-avatar"><OneMessageAvatar/></span>:null}
                   <div className="bubble">
                     <div className="studio-message-author">{message.originalContent ? 'ONE 交给这个任务的要求' : message.role === "assistant" ? "ONE" : "你"}</div>
                     {remainingResultAttachments(message.attachments,message.role==='assistant'?message.imageUrl:undefined).length ? <AttachmentList attachments={remainingResultAttachments(message.attachments,message.role==='assistant'?message.imageUrl:undefined)} /> : null}
@@ -2618,31 +2649,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           {demo.enabled?<ResultSignal tasks={lampTasks} busy={Boolean(content.trim()||preview.state.pending||view==='things')} ambient={view==='chat'&&!active} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)} onDismiss={closeResultLamp}/>:null}
         </div>:null}
 
-{preview.enabled&&preview.state.dialogue.length>0?<CoordinatorConversation renderTaskRecovery={renderCoordinatorRecovery} renderAssistantActions={message=><BetaFeedbackControls messageId={message.id} requestId={message.requestId} leading={<button type="button" title="复制回答" onClick={()=>void copyMarkdown(message.text)}><Copy size={14}/>复制</button>} onSave={async input=>(await api<{feedback:import('./Onboarding').OwnBetaFeedback}>('/api/me/feedback',{method:'POST',body:JSON.stringify(input)})).feedback}/>} onContinue={()=>{if(currentDraftRef.current.content.trim()){setError('输入框还有草稿，请先保留或发送它，再继续生成。');return;}if(confirm('继续生成会产生新的额度消耗，是否继续？'))void sendMessage('请接着上一条未完成的回答继续，从中断处接上，不要重复前文。');}} hasEarlierHistory={coordinator.hasEarlierHistory} loadingHistory={coordinator.loadingHistory} onLoadHistory={coordinator.enabled?coordinator.loadHistory:undefined} visible={!curiousActive&&(view==='chat'||view==='features'||view==='account')} messages={preview.state.dialogue} tasks={preview.state.tasks} pending={Boolean(preview.state.pending)} completed={coordinator.settlement?.status==='completed'&&!coordinator.error} progress={coordinator.enabled?coordinator.progress:null} onStop={coordinator.enabled?coordinator.stop:undefined} onRestore={text=>{
-          if(currentDraftRef.current.content.trim()){setError('输入框已有新草稿，先保留或发送它，再恢复原话。');return;}
-          const draft=coordinatorDrafts(user.id,user.access?.workspaceId??user.defaultWorkspaceId).filter(item=>item.text===text).at(-1);
-          void (async()=>{
-            if(draft){
-              if(draft.state==='review')throw new Error('这件事已有部分进展或结果待核对，请打开原任务继续，避免从头重做。');
-              // These references are not permissions: read every attachment and
-              // feature through the current account before putting it back.
-              const [files,features]=await Promise.all([
-                Promise.all((draft.attachmentIds??[]).map(async id=>{const {attachment}=await api<{attachment:AttachmentSummary}>(`/api/attachments/${encodeURIComponent(id)}`);if(!attachment||attachment.id!==id||attachment.status&&attachment.status!=='ready')throw new Error('原附件暂时不能使用，原话仍保留；请检查附件状态后再恢复。');return attachment;})),
-                Promise.all((draft.featureIds??[]).map(async id=>{const feature=await api<FeatureChoice>(`/api/features/${encodeURIComponent(id)}`);if(!feature||typeof feature.name!=='string')throw new Error('原功能暂时不能使用，原话仍保留；请重新检查功能。');return{...feature,id};})),
-              ]);
-              if(draft.boundTaskId)await coordinator.load(draft.boundTaskId,true);
-              if(currentDraftRef.current.content.trim())throw new Error('输入框已有新草稿，原话仍保留，请先处理当前草稿。');
-              setContent(text);setPendingAttachments(files);setFeatureForNext(features);
-              restoredCoordinatorSubmission.current=draft.localExecution?draft:null;
-              if(draft.modelId)setDraftModelId(draft.modelId);
-              setWebSearch(Boolean(draft.webSearch));setOutputDestination(draft.localExecution?'local':draft.outputDestination??'chat');
-              coordinator.dispatch({type:'bind',taskId:draft.boundTaskId??null});
-            }else{
-              setContent(text);const failed=coordinatorFailedDraft.current;
-              if(failed?.text===text){setPendingAttachments(failed.files);setFeatureForNext(failed.features);}
-            }
-          })().catch(error=>setError(error instanceof Error?error.message:'原话仍保留，附件或功能暂时无法恢复，请检查连接。'));
-        }} onOpen={id=>void openConversation(conversations.find(item=>item.id===id)!)}/>:null}
+{!curiousVisible&&preview.enabled&&preview.state.dialogue.length>0?renderMainConversation():null}
         {coordinator.removedTask?<p role="status">任务已删除，历史保留。<button type="button" onClick={()=>void coordinator.restoreTask().then(()=>refresh()).catch(e=>setError(e.message))}>恢复任务（不会自动重跑）</button></p>:null}
 {!fluidEnabled ? coordinator.enabled && view==='chat' ? <TaskTransferRail tasks={uniqueTransfers} busy={Boolean(isComposing || coordinator.state.pending)} departureAnchor={()=>document.querySelector<HTMLElement>('[data-task-dispatch-anchor]') || document.querySelector<HTMLElement>('.studio-presence')} returnAnchor={()=>document.querySelector<HTMLElement>('[data-task-return-anchor]') || document.querySelector<HTMLElement>('.coordinator-message.assistant:last-of-type')} recentReportedReceiptIds={coordinator.snapshot?.recentReportedReceiptIds} onReadAll={readAllTaskMessages} onOpenAll={()=>openSurface('things')} onDismiss={task=>coordinator.acknowledge(task.taskId,dismissibleReceiptIds(uniqueTransfers,task.taskId))} onOpen={id=>{const item=conversations.find(c=>c.id===id);if(item)void openConversation(item);}} onStop={async(task,source)=>{const local=executionTasks.find(t=>t.id===task.id&&isExecutionRunning(t));if(local)await cancelExecution(source,local);else await coordinator.stopTask(task.taskId);}} onReport={ids=>coordinator.report(ids)} /> : null : null}
 

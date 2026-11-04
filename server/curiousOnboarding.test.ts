@@ -132,18 +132,18 @@ test('legacy accounts enter the new conversation with one-click existing name wh
   assert.deepEqual(f.db.users[0].profile!.onboarding.journey,before.onboarding.journey);assert.deepEqual(f.db.users[0].profile!.onboarding.practice,before.onboarding.practice);assert.deepEqual(f.db.knowledgeConnections,connectionsBefore);assert.deepEqual(f.db.chatOperations,tasksBefore);assert.equal(f.stats().calls,2,'only the two chosen conversation turns call a model');
 });
 
-test('restart is an explicit idempotent CAS for active, paused, and completed sessions with bounded private history',async()=>{
+test('restart is an explicit idempotent CAS for active, paused, and completed sessions with recoverable owner history',async()=>{
   const f=fixture(),first=await f.toActivity();f.db.users[0].profile!.onboarding.curious!.messages.push({id:'private_old',role:'user',content:'PRIVATE_ARCHIVED_INFORMATION'});
   const restart={action:'restart' as const,requestId:'restart_idempotent_123',sessionId:first.session!.id,revision:first.session!.revision};
   await assert.rejects(updateCuriousOnboarding(f.store,{userId:'b',workspaceId:'wa'},restart,f.deps),/无权访问/);
   const [a,b]=await Promise.all([updateCuriousOnboarding(f.store,scope,restart,f.deps),updateCuriousOnboarding(f.store,scope,restart,f.deps)]);
   assert.notEqual(a.session!.id,first.session!.id);assert.equal(a.session!.id,b.session!.id);assert.equal(a.session!.revision,1);assert.equal(a.session!.stage,'name');assert.deepEqual(a.session!.facts,{context:[],habits:[]});assert.equal(f.stats().calls,0);
-  assert.equal(f.db.users[0].profile!.onboarding.curious!.history!.length,1);assert.equal(f.db.users[0].profile!.onboarding.curious!.history![0].id,first.session!.id);assert.match(JSON.stringify(f.db.users[0].profile!.onboarding.curious!.history),/PRIVATE_ARCHIVED_INFORMATION/);assert.doesNotMatch(JSON.stringify(a),/PRIVATE_ARCHIVED_INFORMATION|"history"|"receipts"/);
+  assert.equal(f.db.users[0].profile!.onboarding.curious!.history!.length,1);assert.equal(f.db.users[0].profile!.onboarding.curious!.history![0].id,first.session!.id);assert.match(JSON.stringify(f.db.users[0].profile!.onboarding.curious!.history),/PRIVATE_ARCHIVED_INFORMATION/);assert.doesNotMatch(JSON.stringify(a.session),/PRIVATE_ARCHIVED_INFORMATION|"history"|"receipts"/);assert.match(JSON.stringify(a.history),/PRIVATE_ARCHIVED_INFORMATION/);assert.doesNotMatch(JSON.stringify(a.history),/"facts"|"receipts"|"current"|"guideOperationId"/);
   await assert.rejects(f.act(first,'answer',{optionId:'writing'}),/过时/);await assert.rejects(updateCuriousOnboarding(f.store,scope,{...restart,revision:restart.revision+1},f.deps),/不能改成/);
   await assert.rejects(f.act(first,'restart'),/过时/);assert.equal((await f.act(a,'begin')).session!.id,a.session!.id,'begin never silently restarts an existing session');
   let v=await f.act(a,'pause');const pausedId=v.session!.id;v=await f.act(v,'restart');assert.notEqual(v.session!.id,pausedId);assert.equal(v.session!.status,'active');assert.equal(f.db.users[0].profile!.onboarding.curious!.history!.length,2);
   v=await f.act(v,'finish');const completedId=v.session!.id;v=await f.act(v,'restart');assert.notEqual(v.session!.id,completedId);v=await f.act(v,'restart');
-  const history=f.db.users[0].profile!.onboarding.curious!.history!;assert.equal(history.length,3);assert.ok(!history.some(s=>s.id===first.session!.id));assert.ok(history.every(s=>!('history' in s)));assert.equal(publicAccountProfile(accountProfile(f.db,scope)).onboarding.curious,undefined);
+  const history=f.db.users[0].profile!.onboarding.curious!.history!;assert.equal(history.length,4);assert.equal(history[0].id,first.session!.id);assert.ok(history.every(s=>!('history' in s)));assert.equal(v.history!.length,4);assert.equal(v.history![0].id,first.session!.id);assert.equal(publicAccountProfile(accountProfile(f.db,scope)).onboarding.curious,undefined);
 });
 
 test('restart during a pending model call isolates late replies and never overwrites the fresh session',async()=>{
@@ -153,4 +153,25 @@ test('restart during a pending model call isolates late replies and never overwr
   const before=curiousOnboardingView(f.db,scope,false);assert.equal(before.busy,true);const fresh=await f.act(before,'restart');assert.equal(fresh.busy,undefined);assert.equal(fresh.session!.stage,'name');assert.notEqual(fresh.session!.id,before.session!.id);
   const saved=structuredClone(f.db.users[0].profile!.onboarding.curious);f.release();const late=await pending;assert.equal(late.session!.id,fresh.session!.id);assert.deepEqual(f.db.users[0].profile!.onboarding.curious,saved);assert.equal(f.db.modelUsageRecords.length,1);
   await assert.rejects(f.act(before,'answer',{optionId:'reply_0'}),/过时/);assert.deepEqual(fresh.session!.facts,{context:[],habits:[]});
+});
+
+test('owner history projects only chat records with stable legacy timestamps without rewriting private storage',async()=>{
+  const f=fixture();let v=await f.act(undefined,'begin');const internal=f.db.users[0].profile!.onboarding.curious!,start='2026-11-01T01:02:03.000Z';
+  internal.startedAt=start;internal.facts.context=['PRIVATE_FACT_NOT_CHAT'];internal.receipts.push({id:'PRIVATE_RECEIPT',hash:'PRIVATE_HASH',state:'done',at:start});
+  internal.messages=[{id:'old_0',role:'assistant',content:'旧轮聊天第一句'},{id:'old_1',role:'user',content:'旧轮已经有时间',createdAt:'2026-11-01T01:02:10.000Z'},{id:'old_2',role:'assistant',content:'旧轮无效时间',createdAt:'invalid',extra:'PRIVATE_MESSAGE_METADATA'} as never];
+  f.db.users[0].profile!.companion!.custom='PRIVATE_CUSTOM_STYLE';const before=Date.now();v=await f.act(v,'restart');const after=Date.now();
+  const archive=v.history![0];assert.deepEqual(Object.keys(archive).sort(),['id','messages','startedAt','status']);assert.deepEqual(archive.messages.map(m=>m.createdAt),[start,'2026-11-01T01:02:10.000Z','2026-11-01T01:02:03.002Z']);
+  assert.ok(archive.messages.every(m=>Object.keys(m).sort().join(',')==='content,createdAt,id,role'));assert.doesNotMatch(JSON.stringify(archive),/PRIVATE_FACT_NOT_CHAT|PRIVATE_RECEIPT|PRIVATE_HASH|PRIVATE_MESSAGE_METADATA|PRIVATE_CUSTOM_STYLE/);
+  const createdAt=Date.parse(v.session!.messages[0].createdAt!);assert.ok(createdAt>=before&&createdAt<=after,'new append records real server time');
+  const saved=JSON.stringify(f.db.users[0].profile),again=curiousOnboardingView(f.db,scope,false);assert.deepEqual(again.history,v.history);assert.equal(JSON.stringify(f.db.users[0].profile),saved,'GET must not persist inferred legacy timestamps');assert.equal(f.db.users[0].profile!.onboarding.curious!.history![0].messages[0].createdAt,undefined);
+  const foreign=curiousOnboardingView(f.db,{userId:'b',workspaceId:'wb'},false);assert.equal(foreign.history,undefined);assert.doesNotMatch(JSON.stringify(foreign),/旧轮聊天|PRIVATE_/);assert.throws(()=>curiousOnboardingView(f.db,{userId:'b',workspaceId:'wa'},false),/无权访问/);
+  assert.doesNotMatch(JSON.stringify(publicAccountProfile(accountProfile(f.db,scope))),/旧轮聊天|PRIVATE_FACT_NOT_CHAT|PRIVATE_RECEIPT|PRIVATE_CUSTOM_STYLE/);assert.equal(v.profile.onboarding.curious,undefined);assert.equal(v.profile.companion!.custom,'PRIVATE_CUSTOM_STYLE','the existing owner-only settings field remains authorized');
+});
+
+test('resume appends the repeated current question as a new timestamped event, and duplicate resume does not append twice',async()=>{
+  const f=fixture();let v=await f.act(undefined,'begin');v=await f.act(v,'pause');const internal=f.db.users[0].profile!.onboarding.curious!,previous=structuredClone(internal.messages.at(-1)!);internal.messages.at(-1)!.createdAt='2020-01-01T00:00:00.000Z';
+  const input={action:'resume' as const,requestId:'resume_new_timeline_event',sessionId:v.session!.id,revision:v.session!.revision},count=internal.messages.length,before=Date.now();
+  const resumed=await updateCuriousOnboarding(f.store,scope,input,f.deps),after=Date.now(),latest=resumed.session!.messages.at(-1)!;
+  assert.equal(resumed.session!.messages.length,count+1);assert.equal(latest.content,previous.content);assert.equal(latest.content,resumed.session!.current!.text);assert.notEqual(latest.id,previous.id);assert.ok(Date.parse(latest.createdAt!)>=before&&Date.parse(latest.createdAt!)<=after);assert.equal(f.stats().calls,0);
+  const duplicate=await updateCuriousOnboarding(f.store,scope,input,f.deps);assert.equal(duplicate.session!.messages.length,count+1);assert.deepEqual(duplicate.session!.messages.at(-1),latest);assert.equal(f.db.modelUsageRecords.length,0);assert.equal(f.db.messages.length,0);
 });

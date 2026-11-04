@@ -1,11 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {coordinatorDialogue} from './coordinatorDialogue';
+import {conversationTimeline} from './conversationTimeline';
 import type {CoordinatorDraft} from './coordinatorDrafts';
 import type {Message} from '../server/types';
 const failure={code:'local_device_offline',stage:'accepting',outcome:'not_started'} as const;
 const draft:CoordinatorDraft={operationId:'original-operation',text:'save the original file',createdAt:'2026-11-01T00:00:00.000Z',state:'failed',outputDestination:'local',rejection:{failure,requestId:'req-safe'}};
 const input={userId:'user',messages:[] as Message[],drafts:[draft],outgoing:null,failureReply:null};
+test('a pending ordinary send keeps its original position when an introduction starts before its receipt arrives',()=>{
+ const pending=coordinatorDialogue({...input,drafts:[],outgoing:{id:'pending',text:'先发出的消息',priorIds:[],createdAt:'2026-11-04T01:00:00Z'}});
+ const combined=conversationTimeline(pending,[{id:'intro',createdAt:'2026-11-04T01:00:01Z',content:'后来打开引导'}]);
+ assert.equal(combined[0].kind,'message');assert.equal(pending[0].createdAt,'2026-11-04T01:00:00Z');
+});
 test('a known refused turn survives refresh and a later unrelated send, without pretending acceptance',()=>{
  const before=coordinatorDialogue(input);assert.equal(before.length,2);assert.equal(before[0].text,draft.text);assert.equal(before[0].featureName,'尚未开始 · 原话保留');assert.match(before[1].text,/连接|Key/);
  const after=coordinatorDialogue({...input,outgoing:{id:'new',text:'Why?',priorIds:[]}});assert.equal(after.length,3);assert.equal(after[0].text,draft.text);assert.equal(after[2].text,'Why?');

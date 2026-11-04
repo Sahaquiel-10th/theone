@@ -5,7 +5,8 @@ const main = fs.readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
 const sharing = fs.readFileSync(new URL("./PublicSharing.tsx", import.meta.url), "utf8");
 import {primaryWorkspaceNavigation} from './industryWorkspaceState';
 test('preview preserves the main conversation and result identity across navigation',()=>{
- assert.match(main,/preview.enabled&&preview.state.dialogue.length>0\?<CoordinatorConversation/);
+ assert.match(main,/preview.enabled&&preview.state.dialogue.length>0\?renderMainConversation\(\)/);
+ assert.match(main,/renderConversation=\{preview.enabled\?renderMainConversation:undefined\}/);
  assert.match(main,/demo.enabled\?<ResultSignal/);
  assert.match(main,/coordinator.enabled && view==='chat' \? <TaskTransferRail/);
  const shelf=fs.readFileSync(new URL('./preview/FeatureShelf.tsx',import.meta.url),'utf8');

@@ -20,31 +20,44 @@ const render=(view:CuriousOnboardingView,extra:Record<string,unknown>={})=>rende
 test('conversation retains earlier replies and exposes only current server choices',()=>{
   const html=render(fixture());
   assert.match(html,/data-role="user"/);assert.match(html,/小林/);assert.match(html,/怎么称呼你/);
-  assert.equal((html.match(/最近写东西时，哪一块最费劲/g)??[]).length,1);
-  assert.equal((html.match(/>手上材料太散<\/span>/g)??[]).length,1);
+  assert.equal((html.replace(/<[^>]*>/g,'').match(/最近写东西时，哪一块最费劲/g)??[]).length,1);
+  assert.equal((html.replace(/<[^>]*>/g,'').match(/手上材料太散/g)??[]).length,1);
   assert.doesNotMatch(html,/步骤|第 3 步|任务已经完成|已读取/);
   assert.match(html,/发送这条回复/);assert.match(html,/先做别的/);
 });
 
-test('completed or paused conversations stay reviewable without an active onboarding composer',()=>{
+test('completed or paused introductions stay visible in the conversation without a separate composer',()=>{
   for(const status of ['paused','completed'] as const){
     const view=fixture();view.session!.status=status;view.session!.current=undefined;
     const html=render(view);
-    assert.match(html,/curious-transcript/);assert.match(html,/怎么称呼你/);assert.match(html,/点开回看/);
+    assert.match(html,/data-message-kind="introduction"/);assert.match(html,/怎么称呼你/);assert.doesNotMatch(html,/curious-transcript|点开回看/);
     assert.doesNotMatch(html,/<textarea|发送这条回复|>手上材料太散<\/span>/);
     assert.equal(html.includes('接着认识'),status==='paused');
   }
 });
 
-test('old main-chat history stays mounted but is hidden while the introductory conversation owns the input',()=>{
+test('a temporarily hidden destination preserves its mounted conversation messages',()=>{
   const html=renderToStaticMarkup(createElement(CoordinatorConversation,{messages:[{id:'old',role:'assistant',text:'之前聊过的事'}],tasks:[],pending:false,onOpen:()=>{},visible:false}));
   assert.match(html,/<div class="coordinator-conversation" hidden=""/);assert.match(html,/之前聊过的事/);
+});
+
+test('introductions are inline history between ordinary chat turns, with only the latest live options',()=>{
+  const view=fixture();view.session!.startedAt='2026-11-04T04:00:00Z';
+  view.session!.messages=view.session!.messages.map((message,index)=>({...message,createdAt:`2026-11-04T04:00:0${index+1}Z`}));
+  view.history=[{id:'earlier-intro',status:'completed',startedAt:'2026-11-04T02:00:00Z',messages:[{id:'past',role:'assistant',content:'上次认识你时聊过的内容',createdAt:'2026-11-04T02:00:01Z'}]}];
+  const html=render(view,{renderConversation:(inlineEntries:import('./conversationTimeline').ConversationInlineEntry[])=>createElement(CoordinatorConversation,{messages:[{id:'old-chat',role:'user',text:'最早的普通聊天',createdAt:'2026-11-04T01:00:00Z'},{id:'between',role:'assistant',text:'两轮之间的普通聊天',createdAt:'2026-11-04T03:00:00Z'}],tasks:[],pending:false,onOpen:()=>{},inlineEntries})});
+  assert.ok(html.indexOf('最早的普通聊天')<html.indexOf('上次认识你时聊过的内容'));
+  assert.ok(html.indexOf('上次认识你时聊过的内容')<html.indexOf('两轮之间的普通聊天'));
+  assert.ok(html.indexOf('两轮之间的普通聊天')<html.indexOf('怎么称呼你'));
+  assert.equal((html.match(/aria-label="这一轮可以这样回复"/g)??[]).length,1);
+  assert.doesNotMatch(html,/curious-transcript|one-eye-pupil|mood-attentive/);
+  assert.match(html,/src="\/one-mark.svg"/);
 });
 
 test('source settings actions remain distinct from a confirmed source choice',()=>{
   const view=fixture();view.session!.stage='knowledge';
   view.session!.current={id:'knowledge-q',text:'可以连接自己的资料，也可以以后再接。',options:[{id:'connect',label:'去连接我的资料',action:'connect'},{id:'connection:own-note',label:'用已连接的 Notion',reply:'以后需要时用 Notion'},{id:'later',label:'以后再接'}]};
-  const html=render(view);assert.match(html,/data-action="connect"/);assert.match(html,/用已连接的 Notion/);assert.match(html,/以后再接/);
+  const html=render(view);assert.match(html,/data-action="connect"/);assert.match(html,/Notion/);assert.match(html,/已连接 · 按需查找/);assert.match(html,/data-intent="primary"/);assert.match(html,/以后再接/);
   assert.match(html,/带回主对话/);assert.match(html,/aria-label="直接聊这件事"/);
   assert.doesNotMatch(html,/连接成功|已经读过|已查资料/);
 });
