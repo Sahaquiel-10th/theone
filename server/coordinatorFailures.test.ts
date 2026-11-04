@@ -14,6 +14,22 @@ import {OrchestrationInputError,OrchestrationResponseError} from './taskOrchestr
 import {TaskWorkflowError} from './taskWorkflow.js';
 import {LocalExecutionNotStartedError} from './localExecutionAdmission.js';
 import {ToolRecoveryError} from './toolRecovery.js';
+import {TaskMaterialLimitError} from './taskMaterialLineage.js';
+import {textModelRetryable} from './modelStepRecovery.js';
+
+test('only the typed selected-material limit is an actionable planning refusal, never model repair or a generic failure',()=>{
+ const error=new TaskMaterialLimitError();error.message='PRIVATE_SOURCE api_key=SECRET';
+ for(const context of [{},{stage:'model' as const,outcome:'partial' as const},{stage:'receipt' as const,outcome:'unknown' as const}]){
+  const failure=classifyCoordinatorFailure(error,context);
+  assert.deepEqual(failure,{code:'material_limit',stage:'planning',outcome:'not_started'});
+  const copy=coordinatorRecoveryCopy(failure);assert.match(copy,/8 份.*256,000 个字符.*原文.*保留.*减少材料.*只用本轮材料/);
+  assert.doesNotMatch(copy,/PRIVATE_SOURCE|api_key|SECRET|32,000|模型|中断|重试/);
+ }
+ assert.equal(error instanceof OrchestrationInputError,false,'a material cap must not let argument repair silently switch to current');
+ assert.equal(textModelRetryable(error),false);
+ const forged=Object.assign(new Error('PRIVATE_SOURCE'),{name:'TaskMaterialLimitError',code:'material_limit'});
+ assert.equal(classifyCoordinatorFailure(forged).code,'internal_error');assert.doesNotMatch(coordinatorRecoveryCopy(classifyCoordinatorFailure(forged)),/PRIVATE_SOURCE/);
+});
 
 test('native tool recovery distinguishes system work, actual missing input and unknown effects without raw fields',()=>{
  const cases=[

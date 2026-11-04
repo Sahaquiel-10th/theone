@@ -12,3 +12,9 @@ test('unbound, foreign, local, image and existing conversation-scope tasks retai
  const text='新材料：蓝';
  for(const change of [{run:undefined},{run:{materialScope:'conversation' as const,materialSource:source}},{run:{...input.run,kind:'image' as const}},{run:{...input.run,executionMode:'local' as const}},{run:{...input.run,localExecution:{deviceId:'device'}}},{run:{...input.run,materialSource:{...source,userId:'foreign'}}},{run:{...input.run,materialSource:{...source,workspaceId:'foreign'}}},{run:{...input.run,materialSource:{...source,taskId:'other-task'}}}])assert.equal(needsBoundMaterialDecision({...input,text,...change} as Parameters<typeof needsBoundMaterialDecision>[0]),false);
 });
+test('an already selected appended lineage still requests a semantic decision for another material, but not a brief',()=>{
+ const run={materialScope:'conversation' as const,materialSources:[source,{...source,inputMessageId:'second-message'}]};
+ assert.equal(needsBoundMaterialDecision({...input,run,text:'新增原文：蓝'}),true);
+ assert.equal(needsBoundMaterialDecision({...input,run,text:'把比较写得口语一点'}),false);
+ for(const materialSources of [[],[source,{...source,userId:'foreign'}],null as never])assert.equal(needsBoundMaterialDecision({...input,run:{...run,materialSources},text:'新增原文：蓝'}),false);
+});

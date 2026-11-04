@@ -9,6 +9,9 @@ export type WorkRun = {
   budgetIncludesRouting?:true;
   /** The selected material revision survives short later instructions. */
   materialSource?:import('./taskInputSource.js').TaskInputSourceReference;
+  /** Exact selected originals, independent of optional conversational history.
+   * Private server references, reauthorized before every use/paid call. */
+  materialSources?:import('./taskInputSource.js').TaskInputSourceReference[];
   /** A multi-goal batch keeps its scoped brief; its full raw message is
    * provenance, not fresh instructions for every child. */
   inputContentMode?:'material'|'brief';

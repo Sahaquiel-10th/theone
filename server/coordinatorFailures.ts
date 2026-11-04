@@ -1,6 +1,7 @@
 import {AttachmentPreparationError} from './attachmentPreparation.js';
 import {TextModelRecoveryError} from './modelStepRecovery.js';
 import {TaskInputSourceError} from './taskInputSource.js';
+import {TaskMaterialLimitError} from './taskMaterialLineage.js';
 import {CoordinatorInputError,CoordinatorInputTooLongError} from '../src/coordinatorInput.js';
 import type {CoordinatorFailure,CoordinatorFailureCode,CoordinatorFailureStage} from '../src/coordinatorRecovery.js';
 import {ModelRequestError,ModelResponseError} from './modelGateway.js';
@@ -29,6 +30,7 @@ export function classifyCoordinatorFailure(error:unknown,context:FailureContext=
   const make=(code:CoordinatorFailureCode,stage:CoordinatorFailureStage=context.stage??'planning'):CoordinatorFailure=>({code,stage,outcome:context.outcome??'unknown'});
   if(error instanceof CoordinatorInputTooLongError)return make('input_too_long','accepting');
   if(error instanceof CoordinatorInputError)return make('submission_invalid','accepting');
+  if(error instanceof TaskMaterialLimitError)return {code:'material_limit',stage:'planning',outcome:'not_started'};
   if(error instanceof TaskInputSourceError)return make('submission_invalid','planning');
   if(error instanceof TextModelRecoveryError)return make('model_invalid_response','model');
   if(error instanceof AttachmentPreparationError)return make(error.code==='result_incomplete'?'model_incomplete':error.code==='result_unknown'?'model_invalid_response':'submission_invalid',error.code==='binding_invalid'?'planning':'model');

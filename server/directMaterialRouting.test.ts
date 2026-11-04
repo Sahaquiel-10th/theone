@@ -59,7 +59,7 @@ test('a pending routed parent cannot be purchased again after restart, and expos
 });
 
 test('an already accepted legacy direct operation replays its original enqueue even if it now resembles a material decision',async()=>{
- const f=fixture(),taskId=await f.start();await f.store.mutate(db=>{const previous=db.chatOperations!.find(op=>op.conversationId===taskId&&op.workRun)!;previous.workRun!.materialScope='conversation';});
+ const f=fixture(),taskId=await f.start();await f.store.mutate(db=>{const previous=db.chatOperations!.find(op=>op.conversationId===taskId&&op.workRun)!;previous.workRun!.materialScope='conversation';delete previous.workRun!.materialSources;});
  const payload={operationId:'material_routing_old_direct_path',text:'材料如下：\n'+ '旧入口已受理的原话。'.repeat(100),budget:1};
  const before=f.routerCalls();await f.service.direct(scope,taskId,payload,key);await f.service.resume(scope,key);const jobs=await f.settle(2);assert.equal(f.routerCalls(),before);
  await f.store.mutate(db=>{const own=db.chatOperations!.find(op=>op.id===jobs[1].id)!.workRun!;own.materialScope='current';own.materialSource=own.inputSource;});

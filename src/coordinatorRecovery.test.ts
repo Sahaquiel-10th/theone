@@ -98,3 +98,11 @@ test('oversized input copy explains the limit and attachment path without asking
  const copy=coordinatorRecoveryCopy({code:'input_too_long',stage:'accepting',outcome:'not_started'});
  assert.match(copy,/32,000.*附件.*输入框.*保留.*原文.*附件/);assert.doesNotMatch(copy,/管理员|刷新|回执|看看刚才/);
 });
+
+test('selected-material limits explain the accumulated cap and require an explicit scope choice without retrying or discarding originals',()=>{
+ const failure={code:'material_limit' as const,stage:'planning' as const,outcome:'not_started' as const};
+ assert.deepEqual(parseCoordinatorFailure({...failure,raw:'PRIVATE_SOURCE',arguments:{materialScope:'current'}}),failure);
+ const copy=coordinatorRecoveryCopy(failure);
+ assert.match(copy,/8 份.*256,000 个字符/);assert.match(copy,/还没开始新的处理.*原文都会保留/);assert.match(copy,/请减少材料.*明确.*只用本轮材料/);assert.match(copy,/不会自行丢掉旧材料/);
+ assert.doesNotMatch(copy,/PRIVATE_SOURCE|materialScope|32,000|重试|重新发送|管理员|模型|中断/);
+});
