@@ -37,6 +37,7 @@
 - 官方凭据可能包含写权限；只读承诺由 ONE 审核过的适配器落实，不声称官方签发了只读 Key。
 - 资料作为不可信参考，不能提升权限或启动本地执行。拒绝重定向与任意远端下载；对象访问只向固定文件主机转发审核过的 Authorization、Date、Content-Type/MD5、COS 临时令牌及 SSE-C 读取头，拒绝 API Key 回声和其他 headers。不添加 ima API 认证头；COS 对象授权中的公共标识不冒充 API Secret。Host 仅接受与已验证 URL 相同的值，由 fetch 自行设置。上游错误只映射为固定安全提示，不回显原始 `msg`。
 - [COS 官方 GET Object 文档](https://cloud.tencent.com/document/api/436/7753) 的 SSE-C 示例要求算法、客户密钥及其 MD5 三个请求头；这些只作为特定文件的临时读取参数存在于服务器内存，不进入解析进程、浏览器或模型。文件诊断区分访问方式未适配、下载被拒、大小限制和解析失败，仅展示名称和固定原因码。
+- 真实账号诊断确认 PKB 文件访问使用六个 ima 自有签名头：`x-ima-create-url-time`、`x-ima-platform`、`x-ima-resource-category`、`x-ima-sign`、`x-ima-trace-id`、`x-ima-uid-sha256`。仅将这六个精确名称加入固定主机的读取允许名单，不接受任意 `x-ima-*`，取值仍不回显、不持久化、不进入模型。原先只允许通用存储头会在下载前返回 `IMA_FILE_HEADERS_DENIED`，不能解释为账号未授权或库内没有资料。
 - 运维可通过 `ONE_DISABLED_CONNECTORS=ima` 停用新连接、检查、检索；断开仍可用。无需重新灌装启动器或数据库 DDL 迁移。
 
 ## 验收证据

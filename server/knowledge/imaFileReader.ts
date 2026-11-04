@@ -66,7 +66,7 @@ export async function readImaFile(input: { url: unknown; headers: unknown; media
   for (const [name, value] of entries) {
     if (typeof value !== "string" || value.length > 8192 || /[\r\n]/.test(value)) throw Error("IMA_FILE_HEADERS_DENIED");
     if (name.toLowerCase() === "host" && value.toLowerCase() === url.host) continue; // fetch supplies the validated Host itself.
-    if (!["authorization", "date", "content-type", "content-md5", "x-cos-security-token", "x-cos-server-side-encryption-customer-algorithm", "x-cos-server-side-encryption-customer-key", "x-cos-server-side-encryption-customer-key-md5"].includes(name.toLowerCase())) throw Error("IMA_FILE_HEADERS_DENIED");
+    if (!["authorization", "date", "content-type", "content-md5", "x-cos-security-token", "x-cos-server-side-encryption-customer-algorithm", "x-cos-server-side-encryption-customer-key", "x-cos-server-side-encryption-customer-key-md5", "x-ima-create-url-time", "x-ima-platform", "x-ima-resource-category", "x-ima-sign", "x-ima-trace-id", "x-ima-uid-sha256"].includes(name.toLowerCase())) throw Error("IMA_FILE_HEADERS_DENIED");
     headers.set(name, value);
   }
   active++;

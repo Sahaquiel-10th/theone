@@ -7,7 +7,7 @@ const input = () => ({ url: "https://pkb.ima.myqcloud.com/official-file", header
 test("ima original-file reader rejects unreviewed destinations, credentials in URLs and unsafe forwarded headers before networking", async () => {
   let calls = 0; const fetcher = (async () => { calls++; return new Response("never"); }) as typeof fetch;
   for (const url of ["http://pkb.ima.myqcloud.com/a", "https://pkb.ima.myqcloud.com.evil.test/a", "https://127.0.0.1/a", "https://user:secret@pkb.ima.myqcloud.com/a", "https://pkb.ima.myqcloud.com:444/a", "https://ima.qq.com/a"]) await assert.rejects(readImaFile({ ...input(), url }, fetcher));
-  for (const headers of [{ Cookie: "private" }, { Host: "127.0.0.1" }, { Authorization: "a\r\nb" }]) await assert.rejects(readImaFile({ ...input(), headers }, fetcher));
+  for (const headers of [{ Cookie: "private" }, { Host: "127.0.0.1" }, { Authorization: "a\r\nb" }, { "x-ima-unreviewed": "not-approved" }]) await assert.rejects(readImaFile({ ...input(), headers }, fetcher));
   assert.equal(calls, 0); assert.equal(imaFileFormat(3, "old.doc"), undefined);
 });
 test("ima original-file reader bounds advertised and streamed bytes and refuses redirects", async () => {
@@ -21,6 +21,17 @@ test("ima forwards reviewed COS SSE-C read headers only to the pinned host and n
   assert.equal(result, "杭州文件正文");
   assert.equal(imaFileIssue(new Error("IMA_FILE_HEADERS_DENIED")), "IMA_FILE_HEADERS_DENIED");
   assert.equal(imaFileIssue(new Error("private signed URL https://private.test/?token=secret")), "IMA_FILE_DOWNLOAD_OR_PARSE_UNAVAILABLE");
+});
+test("ima forwards the six observed official file-signature headers without forwarding API authentication", async () => {
+  const headers = { "x-ima-create-url-time": "1793757600", "x-ima-platform": "openapi", "x-ima-resource-category": "file", "x-ima-sign": "synthetic-object-signature", "x-ima-trace-id": "synthetic-trace", "x-ima-uid-sha256": "synthetic-owner-hash" };
+  let calls = 0;
+  const result = await readImaFile({ ...input(), headers }, (async (url, init) => {
+    calls++; assert.equal(new URL(String(url)).hostname, "pkb.ima.myqcloud.com"); assert.equal(init?.method, "GET"); assert.equal(init?.redirect, "error");
+    const sent = new Headers(init?.headers); assert.equal(sent.get("ima-openapi-clientid"), null); assert.equal(sent.get("ima-openapi-apikey"), null);
+    for (const [name, value] of Object.entries(headers)) assert.equal(sent.get(name), value);
+    return new Response("杭州知识库文件原文");
+  }) as typeof fetch);
+  assert.equal(calls, 1); assert.equal(result, "杭州知识库文件原文"); assert.doesNotMatch(result, /synthetic-/);
 });
 test("ima text parsing runs in a separate restricted process and returns bounded real excerpts", async () => {
   const text = await parseImaFile(Buffer.from("杭州位于钱塘江下游。\n".repeat(5000)), "txt", "钱塘江", AbortSignal.timeout(20_000));
