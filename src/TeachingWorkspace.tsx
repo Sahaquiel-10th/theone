@@ -7,7 +7,7 @@ import {TeachingToolPage} from './TeachingToolPage';
 import {decodeTeacherDrafts,encodeTeacherDrafts,sameTeacherIdentity,teacherDraftStorageKey,type TeacherTaskDraft} from './teacherTaskState';
 import {TeacherTaskFlow} from './TeacherTaskFlow';
 import {courseSelectionKey} from './teacherCourseState';
-import {readTeachingWorkbenchRoute,teachingTools,teachingWorkbenchHref,type TeachingWorkbenchRoute} from './teachingWorkbenchNavigation';
+import {commitTeachingWorkbenchNavigation,readTeachingWorkbenchRoute,teachingTools,type TeachingWorkbenchRoute} from './teachingWorkbenchNavigation';
 import './teaching.css';
 import './teacherWorkbench.css';
 import './teachingCourses.css';
@@ -22,6 +22,7 @@ export function TeachingWorkspace({api,active=true,onClose,initialStage}:{api:ty
   const [filter,setFilter]=useState<TeachingStage|'all'>(initialStage??'all'),[query,setQuery]=useState(''),[notice,setNotice]=useState('');
   const [legacy,setLegacy]=useState<TeacherTaskDraft[]>(()=>{try{return decodeTeacherDrafts(localStorage.getItem(teacherDraftStorageKey(currentApiIdentity())),currentApiIdentity());}catch{return [];}});
   const generation=useRef(0),mounted=useRef(true),root=useRef<HTMLElement>(null),heading=useRef<HTMLHeadingElement>(null);
+  const activeRef=useRef(active);activeRef.current=active;
   const identityReady=sameTeacherIdentity(owner,currentApiIdentity());
   async function load(){const token=++generation.current,started=currentApiIdentity();setLoading(true);setError('');try{const result=await api<{courses:TeachingCourse[]}>('/api/teaching/courses');if(mounted.current&&token===generation.current&&sameTeacherIdentity(started,currentApiIdentity()))setCourses(result.courses);}catch(e){if(mounted.current&&token===generation.current&&sameTeacherIdentity(started,currentApiIdentity()))setError(e instanceof Error?e.message:'课程暂时未能读取，请重试。');}finally{if(mounted.current&&token===generation.current)setLoading(false);}}
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;generation.current++;};},[]);
@@ -30,7 +31,7 @@ export function TeachingWorkspace({api,active=true,onClose,initialStage}:{api:ty
   useEffect(()=>{const reset=()=>{generation.current++;const next=currentApiIdentity();setOwner(next);setCourses([]);setRoute({view:'home'});setNotice('');setQuery('');setFilter('all');try{setLegacy(decodeTeacherDrafts(localStorage.getItem(teacherDraftStorageKey(next)),next));}catch{setLegacy([]);}};window.addEventListener(SESSION_EVENT,reset);return()=>window.removeEventListener(SESSION_EVENT,reset);},[]);
   useEffect(()=>{if(active&&(route.view==='home'||route.view==='select'))void load();},[api,active,owner.userId,owner.workspaceId,owner.revision,route.view]);
   useLayoutEffect(()=>{if(!active)return;root.current?.closest('.industry-page-shell')?.scrollTo({top:0});(root.current?.querySelector<HTMLElement>('[data-teaching-page-title],h1,h2')??heading.current)?.focus({preventScroll:true});},[active,route]);
-  function navigate(next:TeachingWorkbenchRoute,replace=false){if(!sameTeacherIdentity(owner,currentApiIdentity()))return;const href=teachingWorkbenchHref(window.location.href,next);if(`${window.location.pathname}${window.location.search}${window.location.hash}`!==href)window.history[replace?'replaceState':'pushState'](window.history.state,'',href);setRoute(next);setQuery('');}
+  function navigate(next:TeachingWorkbenchRoute,replace=false){if(!sameTeacherIdentity(owner,currentApiIdentity()))return;commitTeachingWorkbenchNavigation(window,next,activeRef.current,replace);setRoute(next);setQuery('');}
   function rememberCourse(id:string){try{localStorage.setItem(courseSelectionKey(owner),id);}catch{/* Choosing still works without storage. */}}
   function selectCourse(tool:TeachingTaskKind,courseId:string){rememberCourse(courseId);navigate({view:'tool',tool,courseId,step:'list'});}
   function openTool(tool:TeachingTaskKind){let recent='';try{recent=localStorage.getItem(courseSelectionKey(owner))??'';}catch{}if(!loading&&courses.some(course=>course.id===recent))selectCourse(tool,recent);else navigate({view:'select',tool});}

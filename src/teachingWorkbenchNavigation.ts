@@ -41,3 +41,14 @@ export function teachingWorkbenchHref(href:string,route:TeachingWorkbenchRoute){
   if(route.view==='legacy'&&route.draftId)url.searchParams.set('tDraft',route.draftId);
   return `${url.pathname}${url.search}${url.hash}`;
 }
+
+type TeachingNavigationBrowser={location:{href:string};history:Pick<History,'state'|'pushState'|'replaceState'>};
+/** A retained, hidden tool may finish saving after the teacher has left it.
+ * Preserve its receipt without changing the teacher's new page or history. */
+export function commitTeachingWorkbenchNavigation(browser:TeachingNavigationBrowser,route:TeachingWorkbenchRoute,active:boolean,replace=false){
+  const current=new URL(browser.location.href);
+  if(!active||!/^\/workbenches\/teaching\/?$/.test(current.pathname))return false;
+  const href=teachingWorkbenchHref(current.href,route);
+  if(`${current.pathname}${current.search}${current.hash}`!==href)browser.history[replace?'replaceState':'pushState'](browser.history.state,'',href);
+  return true;
+}
