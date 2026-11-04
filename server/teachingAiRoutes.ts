@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import type { Store } from './db.js';
 import type { Attachment, Message, ModelConfig } from './types.js';
 import type { TeachingActivity, TeachingCourse, TeachingOperation, TeachingScope, TeachingSubmission } from './teachingTypes.js';
-import { authTeachingSession, ownedTeachingCourse, teachingState, validateTeachingAttachments, teachingConversationId, TeachingError } from './teaching.js';
+import { authTeachingSession, ownedTeachingCourse, teachingState, teachingGradingActivity, validateTeachingAttachments, teachingConversationId, TeachingError } from './teaching.js';
 import { executeTeachingAi, TeachingAiError, type TeachingAiResult } from './teachingAi.js';
 import { asyncRoute } from './middleware.js';
 import { uid } from './security.js';
@@ -48,7 +48,7 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
     if (typeof body.operationId !== 'string' || !/^[A-Za-z0-9_-]{16,100}$/.test(body.operationId)) throw new TeachingError('请重新发起这次教学操作');
     if (!['prepare', 'answer', 'grade', 'insights'].includes(String(body.kind))) throw new TeachingError('请选择教学操作');
     const state = teachingState(db, scope, { create: true });
-    const payloadHash = hash({ kind: body.kind, activityId: body.activityId, submissionId: body.submissionId, content: body.content, attachmentIds: body.attachmentIds ?? [], gameRevision: body.gameRevision });
+    const payloadHash = hash({ kind: body.kind, activityId: body.activityId, submissionId: body.submissionId, content: body.content, attachmentIds: body.attachmentIds ?? [], gameRevision: body.gameRevision, gradingRevision: body.gradingRevision });
     const old = state.operations.find(o => o.workspaceId === scope.workspaceId && o.userId === scope.userId && o.courseId === course.id && o.sessionId === sessionId && o.operationId === body.operationId);
     if (old) { if (old.payloadHash !== payloadHash) throw new TeachingError('提交内容已经变化，请重新确认后发起', 409); return { operation: old, created: false }; }
     const activity = body.activityId === undefined ? undefined : course.activities.find(a => a.id === body.activityId);
@@ -66,7 +66,9 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
     const mine = state.operations.filter(o => o.workspaceId === scope.workspaceId && o.courseId === course.id);
     if (body.kind === 'grade' && mine.some(o => o.kind === 'grade' && o.submissionId === body.submissionId && o.status === 'running')) throw new TeachingError('这份作业正在评阅，请先查看本次结果', 409);
     if (state.operations.length >= 10_000 || mine.filter(o => o.status === 'running').length >= 4 || (sessionId && mine.filter(o => o.status === 'running' && o.sessionId === sessionId).length) || mine.filter(o => Date.now() - Date.parse(o.createdAt) < 60_000).length >= 120) throw new TeachingError('教学 AI 正在处理其他请求，请稍后再试；原有记录已保留', 429);
-    const operation: TeachingOperation = { ...scope, id: uid('tai'), courseId: course.id, courseRevision: course.revision, activityId: activity?.id, submissionId: typeof body.submissionId === 'string' ? body.submissionId : undefined, sessionId, operationId: body.operationId, payloadHash, kind: body.kind as TeachingOperation['kind'], question: body.kind === 'answer' ? String(body.content) : undefined, attachmentIds: attachmentIds as string[], status: 'running', ...(game ? { conversationId: game.conversationId, gameRevision: game.revision, gamePromptSnapshot: { roleName: game.roleName, prompt: game.prompt } } : {}), createdAt: new Date().toISOString() };
+    const gradingRevision = body.kind === 'grade' ? state.submissions.find(item => item.id === body.submissionId)!.gradingRevision ?? 0 : undefined;
+    if (body.kind === 'grade' && body.gradingRevision !== undefined && body.gradingRevision !== gradingRevision) throw new TeachingError('评分依据已变化，请刷新后再评阅', 409, 'TEACHING_GRADING_REVISION_CONFLICT');
+    const operation: TeachingOperation = { ...scope, id: uid('tai'), courseId: course.id, courseRevision: course.revision, activityId: activity?.id, submissionId: typeof body.submissionId === 'string' ? body.submissionId : undefined, submissionGradingRevision: gradingRevision, sessionId, operationId: body.operationId, payloadHash, kind: body.kind as TeachingOperation['kind'], question: body.kind === 'answer' ? String(body.content) : undefined, attachmentIds: attachmentIds as string[], status: 'running', ...(game ? { conversationId: game.conversationId, gameRevision: game.revision, gamePromptSnapshot: { roleName: game.roleName, prompt: game.prompt } } : {}), createdAt: new Date().toISOString() };
     state.operations.push(operation); return { operation, created: true };
   }
   async function execute(operation: TeachingOperation, verify: () => Promise<void>) {
@@ -77,6 +79,13 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
       const db = await store.read(), course = structuredClone(ownedTeachingCourse(db, scope, operation.courseId));
       const activity = structuredClone(course.activities.find(a => a.id === operation.activityId));
       const submission = structuredClone(teachingState(db, scope).submissions.find(s => s.id === operation.submissionId && s.courseId === course.id));
+      const gradingActivity = submission ? teachingGradingActivity(submission) : undefined;
+      const assertGrading = (fresh: Awaited<ReturnType<Store['read']>>) => {
+        if (operation.kind !== 'grade') return;
+        const target = teachingState(fresh, scope).submissions.find(item => item.id === operation.submissionId && item.courseId === course.id && item.workspaceId === scope.workspaceId && item.userId === scope.userId);
+        if (!target || (target.gradingRevision ?? 0) !== (operation.submissionGradingRevision ?? 0)) throw new TeachingError('评分依据已更新，旧版本结果未采用，请核对当前标准后重新发起', 409, 'TEACHING_GRADING_REVISION_CONFLICT');
+      };
+      assertGrading(db);
       const assertGame = (fresh: Awaited<ReturnType<Store['read']>>) => {
         if (!operation.sessionId || activity?.kind !== 'game') return;
         const current = teachingGameSnapshot(fresh, scope, course.id, activity.id, operation.sessionId);
@@ -98,7 +107,7 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
         }
       }
       const courseSources = course.knowledgeSources ?? [];
-      const privateSources = operation.kind === 'grade' ? submission?.activitySnapshot.knowledgeSources ?? [] : operation.kind === 'prepare' ? activity?.knowledgeSources ?? [] : [];
+      const privateSources = operation.kind === 'grade' ? gradingActivity?.knowledgeSources ?? [] : operation.kind === 'prepare' ? activity?.knowledgeSources ?? [] : [];
       const assertSources = (fresh: Awaited<ReturnType<Store['read']>>) => { assertTeachingKnowledgeSources(fresh, scope, courseSources); assertTeachingKnowledgeSources(fresh, scope, privateSources); };
       assertSources(db);
       const candidates = db.models.filter(m => m.kind === 'chat');
@@ -125,12 +134,12 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
           attachmentText += found.text ? `\n\n${found.text}` : '';
         }
       } else if (operation.kind === 'grade' && submission) {
-        const references = submission.activitySnapshot.sourceAttachmentIds ?? [];
+        const references = gradingActivity?.sourceAttachmentIds ?? [];
         validateTeachingAttachments(db, scope, course.id, references);
-        const gradingReference = `${submission.activitySnapshot.referenceText ?? ''}\n${await fullWorkText(references.map(id => db.attachments.find(f => f.id === id)!))}`.trim();
+        const gradingReference = `${gradingActivity?.referenceText ?? ''}\n${await fullWorkText(references.map(id => db.attachments.find(f => f.id === id)!))}`.trim();
         if (gradingReference) course.materialText += `\n\n【教师评分参考，不是学生作品】\n${gradingReference}`;
         if (privateSources.length) {
-          const found = await readTeachingKnowledgeSources(store, scope, privateSources, submission.activitySnapshot.title, { ...deps.knowledge, verify });
+          const found = await readTeachingKnowledgeSources(store, scope, privateSources, gradingActivity?.title ?? '', { ...deps.knowledge, verify });
           course.materialText += found.text ? `\n\n【教师评分参考，不是学生作品】\n${found.text}` : '';
         }
         validateTeachingAttachments(db, scope, course.id, submission.attachmentIds, submission.sessionId ?? scope.userId);
@@ -153,10 +162,10 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
           if (question.gameRevision !== undefined || question.gamePromptSnapshot || (question.result as {fictional?:boolean}|undefined)?.fictional === true) continue;
           const snapshot = course.activities.find(a => a.id === question.activityId);
           const participant = teachingState(db, scope).sessions.find(s => s.id === question.sessionId && s.courseId === course.id && s.workspaceId === scope.workspaceId && s.userId === scope.userId);
-          if (snapshot && snapshot.kind !== 'game') submissions.push({ ...scope, id: question.id, courseId: course.id, activityId: snapshot.id, activityRevision: snapshot.revision, participantName: participant?.participantName ?? '', participantRef: participant?.participantRef ?? '', operationId: question.operationId, payloadHash: question.payloadHash, text: question.question!, answers: {}, attachmentIds: [], activitySnapshot: snapshot, createdAt: question.createdAt });
+          if (snapshot && snapshot.kind !== 'game') submissions.push({ ...scope, id: question.id, courseId: course.id, activityId: snapshot.id, activityRevision: snapshot.revision, participantName: participant?.participantName ?? '', participantRef: participant?.participantRef ?? '', participantClass: participant?.participantClass ?? '', operationId: question.operationId, payloadHash: question.payloadHash, text: question.question!, answers: {}, attachmentIds: [], activitySnapshot: snapshot, createdAt: question.createdAt });
         }
       }
-      const output = await executeTeachingAi({ kind: operation.kind, course, activity, submission, submissions, question: operation.question, history, gameConfig: operation.gamePromptSnapshot, imageDataUrls, attachmentText, model }, { call: async (messages, options) => {
+      const output = await executeTeachingAi({ kind: operation.kind, course, activity, submission, submissions, question: operation.question, history, gameConfig: operation.gamePromptSnapshot, imageDataUrls, imageAttachmentIds: operation.kind === 'grade' ? imageFiles.map(file => file.id) : undefined, attachmentText, model }, { call: async (messages, options) => {
         await verify();
         const safety = (await store.read()).settings.safetyRules;
         const inputMessages: Message[] = [{ role: 'system', content: safety, createdAt: operation.createdAt }, ...messages];
@@ -164,6 +173,7 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
           const live = ownedTeachingCourse(fresh, scope, course.id);
           assertSources(fresh);
           assertGame(fresh);
+          assertGrading(fresh);
           if (live.revision !== operation.courseRevision || (operation.sessionId && live.status !== 'published')) throw new TeachingError('课程内容或开放状态已变化，这次尚未继续', 409);
           if (courseUsage(fresh, live) + amount > live.budgetMicros) throw new TeachingError('本次预计用量超过课程额度，请老师调整上限后再试', 402);
         } }, snapshot => (deps.modelCall ?? callModelWithTools)(snapshot, inputMessages.map(m => ({ role: m.role, content: m.content, inputImageDataUrls: m.inputImageDataUrls })), [], operation.id, options));
@@ -173,10 +183,12 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
         const live = ownedTeachingCourse(fresh, scope, course.id), state = teachingState(fresh, scope), saved = state.operations.find(o => o.id === operation.id)!;
         assertSources(fresh);
         assertGame(fresh);
+        assertGrading(fresh);
         if (live.revision !== operation.courseRevision || saved.status !== 'running') throw new TeachingError('课程已更新，结果保留待核对，请刷新后查看', 409);
         if (output.kind === 'grade') {
           const target = state.submissions.find(s => s.id === operation.submissionId && s.courseId === course.id && s.userId === scope.userId && s.workspaceId === scope.workspaceId);
           if (!target || target.grade?.status === 'published') throw new TeachingError('作业状态已变化，未覆盖老师确认的结果', 409);
+          output.grade.gradingRevision = operation.submissionGradingRevision ?? 0;
           target.grade = output.grade;
         }
         saved.result = output; saved.status = 'completed'; saved.completedAt = new Date().toISOString();

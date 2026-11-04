@@ -9,7 +9,7 @@ import type { Store } from './db.js';
 import type { Attachment, Database, ModelConfig } from './types.js';
 import { installTeachingAiRoutes, type TeachingAiRouteDependencies } from './teachingAiRoutes.js';
 import { installTeachingRoutes } from './teachingRoutes.js';
-import { addTeachingSubmission, authTeachingSession, closeTeachingCourse, createTeachingActivity, createTeachingCourse, createTeachingSession, publishTeachingCourse, reviewTeachingSubmission, teachingState, updateTeachingActivity, type TeachingError } from './teaching.js';
+import { addTeachingSubmission, authTeachingSession, bindTeachingGradingBasis, closeTeachingCourse, createTeachingActivity, createTeachingCourse, createTeachingSession, publishTeachingCourse, reviewTeachingSubmission, teachingState, updateTeachingActivity, type TeachingError } from './teaching.js';
 import type { TeachingActivity, TeachingCourse, TeachingScope } from './teachingTypes.js';
 
 const teacher = { workspaceId: 'teaching-wa', userId: 'teacher-a' };
@@ -381,4 +381,93 @@ test('game configuration cannot change while a billed turn is in flight and unkn
   assert.equal(calls, 1);
   const same = await f.post(`/public/${course.slug}/questions`, { activityId: activity.id, gameRevision: 0, operationId: 'game-pending-restart-1', content: '开始' }, headers);
   assert.equal((await same.json() as any).operation.status, 'uncertain'); assert.equal(calls, 1);
+});
+
+test('adopting a new grading basis during a model call cannot attach or publish the stale suggestion', async t => {
+  let release!: () => void, calls = 0; const gate = new Promise<void>(resolve => { release = resolve; }); t.after(release);
+  const f = await fixture(t, async () => { calls++; await gate; return reply({ criteria: [{ criterionId: 'observation', score: 5, comment: '旧版本建议', evidence: '我观察了茶具' }], feedback: 'STALE_GRADING_SUGGESTION' }); });
+  const { course, activity } = addCourse(f.db, teacher, 'assignment', false);
+  const submission = addTeachingSubmission(f.db, teacher, course, { activityId: activity.id, operationId: 'basis-inflight-submit1', participantName: '一', text: '我观察了茶具。' }).submission;
+  const started = await f.post(`/courses/${course.id}/ai`, { kind: 'grade', submissionId: submission.id, activityId: activity.id, operationId: 'basis-inflight-grade1', budgetConfirmed: true, gradingRevision: 0 }); assert.equal(started.status, 202);
+  const operation = (await started.json() as any).operation;
+  for (let attempt = 0; attempt < 100 && !calls; attempt++) await new Promise(resolve => setTimeout(resolve, 5)); assert.equal(calls, 1);
+  // Adopting the saved current rubric is a real teacher action which changes
+  // only this submission's basis revision, not the general course revision.
+  const adopted = await f.post(`/courses/${course.id}/submissions/${submission.id}/grading-basis`, { confirmed: true, submissionActivityRevision: submission.activityRevision, activityRevision: activity.revision, expectedGradingRevision: 0 }); assert.equal(adopted.status, 200); assert.equal((await adopted.json() as any).submission.gradingRevision, 1);
+  release(); const finished = await f.poll(`/courses/${course.id}/operations/${operation.id}`); assert.equal(finished.status, 'failed'); assert.match(finished.error, /评分依据.*变化|评分.*版本/);
+  assert.equal(teachingState(f.db, teacher).submissions.find(row => row.id === submission.id)!.grade, undefined); assert.equal(f.db.modelUsageRecords.length, 1);
+  assert.equal((await f.post(`/courses/${course.id}/ai`, { kind: 'grade', submissionId: submission.id, activityId: activity.id, operationId: 'basis-stale-new-grade1', budgetConfirmed: true, gradingRevision: 0 })).status, 409);
+  assert.equal((await f.post(`/courses/${course.id}/submissions/${submission.id}/grading-basis`, { confirmed: true, submissionActivityRevision: submission.activityRevision, activityRevision: activity.revision, expectedGradingRevision: 1 }, { ...ownerHeaders, 'x-teacher': sameWorkspace.userId })).status, 404);
+});
+
+test('course create HTTP receipt replays and rejects conflicting payload without accepting a foreign owner', async t => {
+  const f = await fixture(t, async () => { assert.fail('course create has no model call'); });
+  const body = { clientRequestId: 'create-course-http-001', title: '一次课程' };
+  const first = await f.post('/courses', body); assert.equal(first.status, 201); const course = (await first.json() as any).course;
+  const replay = await f.post('/courses', body); assert.equal(replay.status, 200); assert.equal((await replay.json() as any).course.id, course.id);
+  assert.equal((await f.post('/courses', { ...body, title: 'changed' })).status, 409);
+  const foreign = await f.post('/courses', body, { ...ownerHeaders, 'x-teacher': otherWorkspace.userId }); assert.equal(foreign.status, 201); assert.notEqual((await foreign.json() as any).course.id, course.id);
+  assert.equal(f.db.modelUsageRecords.length, 0);
+});
+
+test('teacher grades a student attachment-only photograph through the billed vision route and students wait for publication', async t => {
+  let calls = 0;
+  const f = await fixture(t, async (_model, messages) => { calls++; assert.ok(messages.some(message => message.inputImageDataUrls?.length === 1)); const data = JSON.parse(String(messages.find(message => message.role === 'user')!.content)).untrustedTeachingData; assert.equal(data.work.text, ''); assert.equal(data.imageCount, 1); assert.doesNotMatch(JSON.stringify(data), /private-photo-owner|学生图名|private-ref/); return reply({ criteria: [{ criterionId: 'observation', score: 8, comment: '需老师核对原图', evidence: '可见观察记录和标注', evidenceImageIndex: 1 }], feedback: '视觉评分建议，待老师复核。' }); });
+  const { course, activity } = addCourse(f.db, teacher, 'assignment'), joined = createTeachingSession(f.db, course.slug!, { participantName: '学生图名', participantRef: 'private-ref', participantClass: '测试一班', consent: true }), studentHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${joined.token}` };
+  const storagePath = path.join(f.directory, 'student-original.png'); await fs.writeFile(storagePath, Buffer.from('synthetic-private-image'));
+  const photo = { id: 'private-photo-owner', workspaceId: teacher.workspaceId, userId: joined.sessionId, conversationId: `teaching:${course.id}`, status: 'ready', kind: 'image', mimeType: 'image/png', originalName: 'photo.png', size: 23, storagePath, extractedText: '', createdAt: new Date().toISOString() } as Attachment; f.db.attachments.push(photo);
+  const submitted = await f.post(`/public/${course.slug}/submissions`, { activityId: activity.id, operationId: 'photo-assignment-only1', attachmentIds: [photo.id] }, studentHeaders); assert.equal(submitted.status, 201); const submission = (await submitted.json() as any).submission;
+  const response = await f.post(`/courses/${course.id}/ai`, { kind: 'grade', activityId: activity.id, submissionId: submission.id, operationId: 'photo-vision-grade001', budgetConfirmed: true }); assert.equal(response.status, 202); const op = (await response.json() as any).operation;
+  const done = await f.poll(`/courses/${course.id}/operations/${op.id}`); assert.equal(done.status, 'completed', JSON.stringify(done)); assert.match(done.result.grade.criteria[0].evidence, /^图片1：.*视觉建议/); assert.equal(calls, 1); assert.equal(f.db.modelUsageRecords.length, 1);
+  const mine = await (await fetch(`${f.base}/public/${course.slug}/submissions`, { headers: studentHeaders })).json() as any; assert.equal(Object.hasOwn(mine.submissions[0], 'grade'), false);
+});
+
+test('collect, set private assignment grading, explicitly adopt and publish feedback through the original student link and token', async t => {
+  let calls = 0;
+  const f = await fixture(t, async (_model, messages) => { calls++; const data = JSON.parse(String(messages.find(message => message.role === 'user')!.content)).untrustedTeachingData; assert.equal(data.criteria[0].id, 'late-rubric'); assert.match(data.materialText, /PRIVATE_NEW_REFERENCE/); return reply({ criteria: [{ criterionId: 'late-rubric', score: 9, comment: '有具体观察', evidence: '我观察了茶具' }], feedback: '新标准下的建议，待老师复核' }); });
+  const course = createTeachingCourse(f.db, teacher, { title: '先收作业再评分', budgetMicros: 1_000_000 });
+  const { activity } = createTeachingActivity(f.db, teacher, course.id, { revision: course.revision, kind: 'assignment', stage: 'after', title: '交观察作业', instructions: '请上传观察记录', status: 'published', rubric: [] });
+  publishTeachingCourse(f.db, teacher, course.id, { revision: course.revision, confirmed: true });
+  const slug = course.slug!, sharedAt = course.updatedAt;
+  const joined = await f.post(`/public/${slug}/sessions`, { participantName: '原学生', participantClass: '一班', consent: true }); assert.equal(joined.status, 201); const session = await joined.json() as any;
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${session.token}` };
+  const submitted = await f.post(`/public/${slug}/submissions`, { activityId: activity.id, operationId: 'late-rubric-student-01', text: '我观察了茶具。' }, headers); assert.equal(submitted.status, 201); const submission = (await submitted.json() as any).submission;
+  const original = structuredClone(teachingState(f.db, teacher).submissions.find(row => row.id === submission.id)!.activitySnapshot);
+  const patch = (body: unknown, access: Record<string,string> = ownerHeaders, id = course.id) => fetch(`${f.base}/courses/${id}/activities/${activity.id}/grading`, { method: 'PATCH', headers: access, body: JSON.stringify(body) });
+  const grading = { revision: course.revision, activityRevision: activity.revision, rubric: [{ id: 'late-rubric', label: '观察', description: '具体、真实的观察', maxScore: 10 }], referenceText: 'PRIVATE_NEW_REFERENCE', sourceAttachmentIds: [], knowledgeSources: [], avatarPrompt: 'PRIVATE_GRADING_GUIDANCE_WITH_ANSWER' };
+  assert.equal((await patch(grading, { 'Content-Type': 'application/json' })).status, 401);
+  assert.equal((await patch(grading, headers)).status, 401, 'a student token never grants teacher grading access');
+  for (const scope of [sameWorkspace, otherWorkspace]) assert.equal((await patch(grading, { ...ownerHeaders, 'x-teacher': scope.userId })).status, 404);
+  const other = addCourse(f.db, teacher, 'assignment'); assert.equal((await patch({ ...grading, revision: other.course.revision }, ownerHeaders, other.course.id)).status, 404);
+  const saved = await patch(grading); assert.equal(saved.status, 200, await saved.clone().text()); const updated = await saved.json() as any;
+  assert.equal(updated.course.slug, slug); assert.equal(updated.course.status, 'published'); assert.equal(updated.course.updatedAt, sharedAt);
+  const studentCourse = await (await fetch(`${f.base}/public/${slug}`)).json() as any; assert.equal(studentCourse.course.activities[0].avatarPrompt, ''); assert.doesNotMatch(JSON.stringify(studentCourse), /PRIVATE_GRADING_GUIDANCE_WITH_ANSWER|PRIVATE_NEW_REFERENCE|sourceAttachmentIds|knowledgeSources/);
+  assert.equal((await patch(grading)).status, 409, 'a stale edit cannot overwrite the current grading setup');
+  const unchanged = teachingState(f.db, teacher).submissions.find(row => row.id === submission.id)!; assert.deepEqual(unchanged.activitySnapshot, original); assert.equal(unchanged.gradingSnapshot, undefined);
+  const before = await fetch(`${f.base}/public/${slug}/session`, { headers }); assert.equal(before.status, 200); assert.equal((await before.json() as any).session.id, session.sessionId);
+  const adopted = await f.post(`/courses/${course.id}/submissions/${submission.id}/grading-basis`, { confirmed: true, submissionActivityRevision: submission.activityRevision, activityRevision: updated.activity.revision, expectedGradingRevision: 0 }); assert.equal(adopted.status, 200); assert.equal((await adopted.json() as any).submission.gradingRevision, 1);
+  const started = await f.post(`/courses/${course.id}/ai`, { kind: 'grade', activityId: activity.id, submissionId: submission.id, operationId: 'late-rubric-ai-grade1', budgetConfirmed: true, gradingRevision: 1 }); assert.equal(started.status, 202); const operation = (await started.json() as any).operation;
+  const done = await f.poll(`/courses/${course.id}/operations/${operation.id}`); assert.equal(done.status, 'completed', JSON.stringify(done)); assert.equal(calls, 1);
+  const suggested = await (await fetch(`${f.base}/public/${slug}/submissions`, { headers })).json() as any; assert.equal(Object.hasOwn(suggested.submissions[0], 'grade'), false);
+  const grade = { ...done.result.grade, gradingRevision: 1, feedback: '老师复核后发布的原学生反馈' };
+  const reviewed = await fetch(`${f.base}/courses/${course.id}/submissions/${submission.id}/review`, { method: 'PATCH', headers: ownerHeaders, body: JSON.stringify({ grade }) }); assert.equal(reviewed.status, 200);
+  const publicResult = await fetch(`${f.base}/public/${slug}/submissions`, { headers }); assert.equal(publicResult.status, 200); const mine = await publicResult.json() as any;
+  assert.equal(mine.submissions.length, 1); assert.equal(mine.submissions[0].id, submission.id); assert.equal(mine.submissions[0].grade.total, 9); assert.equal(mine.submissions[0].grade.feedback, grade.feedback);
+  assert.doesNotMatch(JSON.stringify(mine), /PRIVATE_NEW_REFERENCE|gradingSnapshot|sourceAttachmentIds|knowledgeSources/);
+  const secondGrading = await patch({ ...grading, revision: updated.course.revision, activityRevision: updated.activity.revision, rubric: [{ id: 'future', label: '以后的标准', description: '', maxScore: 100 }] }); assert.equal(secondGrading.status, 200);
+  assert.equal((await fetch(`${f.base}/public/${slug}/submissions`, { headers })).status, 200);
+  assert.equal(unchanged.grade?.total, 9); assert.equal((await f.post(`/courses/${course.id}/submissions/${submission.id}/grading-basis`, { confirmed: true, activityRevision: activity.revision, submissionActivityRevision: submission.activityRevision, expectedGradingRevision: 1 })).status, 409);
+  // The established close/republish revocation behavior remains unchanged.
+  const liveCourse = teachingState(f.db, teacher).courses.find(row => row.id === course.id)!;
+  closeTeachingCourse(f.db, teacher, course.id, { revision: liveCourse.revision }); assert.equal((await fetch(`${f.base}/public/${slug}/submissions`, { headers })).status, 410);
+  publishTeachingCourse(f.db, teacher, course.id, { revision: liveCourse.revision, confirmed: true }); assert.notEqual(liveCourse.slug, slug);
+  assert.equal((await fetch(`${f.base}/public/${slug}/submissions`, { headers })).status, 404);
+  assert.equal((await fetch(`${f.base}/public/${liveCourse.slug}/submissions`, { headers })).status, 401);
+});
+
+test('the private grading endpoint rechecks ONE Key before mutating a published assignment', async t => {
+  const f = await fixture(t, async () => { assert.fail('grading setup has no model call'); }), { course, activity } = addCourse(f.db, teacher, 'assignment'); const revision = course.revision, activityRevision = activity.revision;
+  f.removeKey();
+  const response = await fetch(`${f.base}/courses/${course.id}/activities/${activity.id}/grading`, { method: 'PATCH', headers: ownerHeaders, body: JSON.stringify({ revision, activityRevision, referenceText: 'must not save' }) }); assert.equal(response.status, 428);
+  assert.equal(course.revision, revision); assert.equal(activity.revision, activityRevision); assert.notEqual(activity.referenceText, 'must not save');
 });

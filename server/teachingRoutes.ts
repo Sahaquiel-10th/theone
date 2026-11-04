@@ -2,7 +2,7 @@ import type { Express, Request, RequestHandler, Response } from 'express';
 import type { Store } from './db.js';
 import { asyncRoute } from './middleware.js';
 import type { TeachingScope } from './teachingTypes.js';
-import { TeachingError, activeTeachingCourse, addTeachingSubmission, authTeachingSession, closeTeachingCourse, createTeachingActivity, createTeachingCourse, createTeachingSession, createTeachingTask, listTeachingCourses, ownedTeachingCourse, publicTeachingCourse, publicTeachingSession, publicTeachingSubmission, publishTeachingCourse, reviewTeachingSubmission, teachingSubmissions, updateTeachingActivity, updateTeachingCourse } from './teaching.js';
+import { TeachingError, activeTeachingCourse, addTeachingSubmission, authTeachingSession, bindTeachingGradingBasis, closeTeachingCourse, createTeachingActivity, createTeachingCourse, createTeachingSession, createTeachingTask, listTeachingCourses, ownedTeachingCourse, publicTeachingCourse, publicTeachingSession, publicTeachingSubmission, publishTeachingCourse, reviewTeachingSubmission, teachingSubmissions, updateTeachingActivity, updateTeachingCourse, updateTeachingGrading } from './teaching.js';
 import { publicTeachingGameConfig, teachingGameHistory, teachingGameSnapshot, updateTeachingGameConfig } from './teachingGames.js';
 
 type Dependencies = { verifyKey?: (req: Request) => Promise<void> };
@@ -48,7 +48,7 @@ export function installTeachingRoutes(app: Express, keyAuth: readonly RequestHan
   }));
   app.get(base, ...keyAuth, route(async (req, res) => res.json({ courses: listTeachingCourses(await store.read(), scope(req)) })));
   app.post(base, ...keyAuth, route(async (req, res) => {
-    await verify(req); const course = await store.mutate(db => createTeachingCourse(db, scope(req), req.body)); return res.status(201).json({ course });
+    await verify(req); const result = await store.mutate(db => { const owned = scope(req), previous = new Set(listTeachingCourses(db, owned).map(course => course.id)), course = createTeachingCourse(db, owned, req.body); return { course, duplicate: previous.has(course.id) }; }); return res.status(result.duplicate ? 200 : 201).json({ course: result.course });
   }));
   app.get(base + '/:id', ...keyAuth, route(async (req, res) => res.json({ course: ownedTeachingCourse(await store.read(), scope(req), String(req.params.id)) })));
   app.patch(base + '/:id', ...keyAuth, route(async (req, res) => {
@@ -66,6 +66,9 @@ export function installTeachingRoutes(app: Express, keyAuth: readonly RequestHan
   app.patch(base + '/:id/activities/:activityId', ...keyAuth, route(async (req, res) => {
     await verify(req); return res.json(await store.mutate(db => updateTeachingActivity(db, scope(req), String(req.params.id), String(req.params.activityId), req.body)));
   }));
+  app.patch(base + '/:id/activities/:activityId/grading', ...keyAuth, route(async (req, res) => {
+    await verify(req); return res.json(await store.mutate(db => updateTeachingGrading(db, scope(req), String(req.params.id), String(req.params.activityId), req.body)));
+  }));
   app.get(base + '/:id/submissions', ...keyAuth, route(async (req, res) => res.json({ submissions: teachingSubmissions(await store.read(), scope(req), String(req.params.id)) })));
   app.post(base + '/:id/submissions', ...keyAuth, route(async (req, res) => {
     await verify(req);
@@ -75,6 +78,10 @@ export function installTeachingRoutes(app: Express, keyAuth: readonly RequestHan
   app.patch(base + '/:id/submissions/:submissionId/review', ...keyAuth, route(async (req, res) => {
     await verify(req);
     return res.json({ submission: await store.mutate(db => reviewTeachingSubmission(db, scope(req), String(req.params.id), String(req.params.submissionId), req.body?.grade)) });
+  }));
+  app.post(base + '/:id/submissions/:submissionId/grading-basis', ...keyAuth, route(async (req, res) => {
+    await verify(req);
+    return res.json({ submission: await store.mutate(db => bindTeachingGradingBasis(db, scope(req), String(req.params.id), String(req.params.submissionId), req.body)) });
   }));
 
   app.get(pub, route(async (req, res) => { classroomRate(req, 'read'); return res.json({ course: publicTeachingCourse(activeTeachingCourse(await store.read(), String(req.params.slug))) }); }));

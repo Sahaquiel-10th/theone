@@ -265,3 +265,25 @@ test('cross-course and cross-workspace data are rejected before any model callba
   await assert.rejects(executeTeachingAi(input({ kind: 'insights', submission: undefined, submissions: [submission(activity(), { workspaceId: 'workspace-b' })] }), { call }), /不属于/);
   assert.equal(calls, 0);
 });
+
+test('attachment-only photographs use the same vision call and keep explicitly unverified visual evidence', async () => {
+  const image = 'data:image/png;base64,aGVsbG8=', result = await executeTeachingAi(input({ submission: submission(activity(), { text: '', attachmentIds: ['own-photo'] }), imageDataUrls: [image], imageAttachmentIds: ['own-photo'] }), { call: async messages => {
+    assert.deepEqual(messages[1].inputImageDataUrls, [image]); assert.doesNotMatch(messages[1].content, /PRIVATE_SESSION_ID|PRIVATE_STUDENT_REF|学生小明|own-photo/);
+    return { content: JSON.stringify({ criteria: [{ criterionId: 'evidence', score: 8, comment: '图中有具体记录', evidence: '可见制茶工具的观察笔记', evidenceImageIndex: 1 }, { criterionId: 'reflection', score: 0, comment: '反思未清晰可见', evidence: '' }], feedback: '请老师结合原图复核。' }), finishReason: 'stop' };
+  } });
+  assert.equal(result.kind, 'grade'); if (result.kind === 'grade') { assert.equal(result.grade.total, 8); assert.match(result.grade.criteria[0].evidence, /^图片1：.*视觉建议，待老师复核/); assert.equal(result.grade.needsReview, true); assert.equal(result.grade.status, 'suggested'); }
+});
+test('foreign or unbound image sources fail before a model call; forged visual index or extra fields fail atomically', async () => {
+  const photo = { submission: submission(activity(), { text: '', attachmentIds: ['own-photo'] }), imageDataUrls: ['data:image/png;base64,aGVsbG8='], imageAttachmentIds: ['own-photo'] }; let calls = 0;
+  const call: TeachingAiCall = async () => { calls++; return { content: '{}' }; };
+  await assert.rejects(executeTeachingAi(input({ ...photo, imageAttachmentIds: ['foreign-photo'] }), { call }), /图片.*附件/);
+  await assert.rejects(executeTeachingAi(input({ ...photo, imageAttachmentIds: [] }), { call }), /图片.*附件/); assert.equal(calls, 0);
+  const valid = { criteria: [{ criterionId: 'evidence', score: 8, comment: '观察', evidence: '图片上可见记录', evidenceImageIndex: 2 }, { criterionId: 'reflection', score: 0, comment: '无反思', evidence: '' }], feedback: '复核' };
+  await assert.rejects(executeTeachingAi(input(photo), { call: json(valid) }), /图片评分依据/);
+  await assert.rejects(executeTeachingAi(input(photo), { call: json({ ...valid, criteria: [{ ...valid.criteria[0], evidenceImageIndex: 1, evidenceAttachmentId: 'foreign' }, valid.criteria[1]] }) }));
+});
+test('grading an explicitly adopted rubric retains the original assignment and never substitutes teacher text for work evidence', async () => {
+  const original = activity({ rubric: [] }), revised = activity({ revision: 5, rubric: [{ id: 'later', label: '后设标准', description: '观察', maxScore: 20 }] });
+  const result = await executeTeachingAi(input({ submission: submission(original, { gradingSnapshot: revised, gradingRevision: 1 }) }), { call: json({ criteria: [{ criterionId: 'later', score: 15, comment: '有观察', evidence: '我看到制茶工具' }], feedback: '请复核' }) });
+  assert.equal(result.kind, 'grade'); if (result.kind === 'grade') assert.equal(result.grade.total, 15);
+});

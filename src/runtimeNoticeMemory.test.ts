@@ -29,6 +29,6 @@ test('fluid contour resize preserves reading position instead of re-following a 
 });
 test('workbench follows the actual outer scroll surface, not its overflow-visible message list', () => {
   const source = readFileSync(new URL('./main.tsx',import.meta.url),'utf8');
-  assert.match(source, /className="studio-surface" ref=\{taskScroll.scroll\} onScroll=\{taskScroll.onScroll\}/);
+  assert.match(source, /className="studio-surface"[^>]*ref=\{taskScroll.scroll\} onScroll=\{taskScroll.onScroll\}/);
   assert.doesNotMatch(source, /className="messages" ref=\{taskScroll.scroll\}/);
 });

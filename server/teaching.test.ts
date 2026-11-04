@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Database } from './types.js';
 import { publicUser } from './serializers.js';
-import { TeachingError, activeTeachingCourse, addTeachingSubmission, authTeachingSession, closeTeachingCourse, createTeachingActivity, createTeachingCourse, createTeachingSession, createTeachingTask, listTeachingCourses, ownedTeachingCourse, publicTeachingCourse, publicTeachingSubmission, publishTeachingCourse, reviewTeachingSubmission, teachingState, updateTeachingActivity, updateTeachingCourse } from './teaching.js';
+import { TeachingError, bindTeachingGradingBasis, activeTeachingCourse, addTeachingSubmission, authTeachingSession, closeTeachingCourse, createTeachingActivity, createTeachingCourse, createTeachingSession, createTeachingTask, listTeachingCourses, ownedTeachingCourse, publicTeachingCourse, publicTeachingSubmission, publishTeachingCourse, reviewTeachingSubmission, teachingState, updateTeachingActivity, updateTeachingCourse, updateTeachingGrading } from './teaching.js';
 
 const a = { workspaceId: 'wa', userId: 'teacher-a' }, b = { workspaceId: 'wb', userId: 'teacher-b' }, same = { workspaceId: 'wa', userId: 'teacher-b' };
 function fixture() {
@@ -79,7 +79,7 @@ test('public teaching projection exposes only the teacher-approved avatar prompt
   // Distinct markers also protect against future accidental rest/spread serializers.
   course.clientDraftId = 'PRIVATE_CLIENT_DRAFT';
   course.knowledgeSources = [{ provider: 'notion', connectionId: 'PRIVATE_CONNECTION', binding: 'PRIVATE_BINDING', scope: 'page', pageId: 'PRIVATE_PAGE', label: 'PRIVATE_LABEL' }];
-  activity.knowledgeSources = structuredClone(course.knowledgeSources); activity.avatarPrompt = 'PUBLIC_TEACHER_ROLE';
+  activity.kind = 'inquiry'; activity.knowledgeSources = structuredClone(course.knowledgeSources); activity.avatarPrompt = 'PUBLIC_TEACHER_ROLE';
   const projection = JSON.stringify(publicTeachingCourse(course));
   assert.match(projection, /PUBLIC_TEACHER_ROLE/);
   assert.doesNotMatch(projection, /PRIVATE_CLIENT_DRAFT|PRIVATE_CONNECTION|PRIVATE_BINDING|PRIVATE_PAGE|PRIVATE_LABEL|knowledgeSources|tokenHash/);
@@ -211,4 +211,96 @@ test('real JSON Store restart preserves private course, student identity, submis
     assert.equal(actual.title, '持久化课程'); assert.equal(actual.material, 'PRIVATE_DURABLE'); assert.equal(actual.snapshot, 'PRIVATE_ANSWER'); assert.equal(actual.total, 7);
     assert.doesNotMatch(JSON.stringify(actual.public), /PRIVATE_ANSWER|PRIVATE_DURABLE|activitySnapshot|tokenHash/);
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('collect first, adopt an explicit rubric later; original snapshot, grading revision and published result stay protected', () => {
+  const db = fixture(), course = createTeachingCourse(db, a, { title: '先收作业' });
+  const { activity } = createTeachingActivity(db, a, course.id, { revision: course.revision, stage: 'after', kind: 'assignment', title: '观察作业', instructions: '原始任务', status: 'published', rubric: [] });
+  publishTeachingCourse(db, a, course.id, { revision: course.revision, confirmed: true });
+  const joined = createTeachingSession(db, course.slug!, { participantName: '一', participantClass: '三年二班', consent: true }), session = authTeachingSession(db, course.slug!, joined.token).session;
+  const { submission } = addTeachingSubmission(db, a, course, { activityId: activity.id, text: '原始作业', operationId: 'collect-first-request', participantClass: '伪造班级' }, session);
+  assert.equal(submission.participantClass, '三年二班'); assert.equal(publicTeachingSubmission(submission).participantClass, '三年二班');
+  const original = structuredClone(submission.activitySnapshot);
+  closeTeachingCourse(db, a, course.id, { revision: course.revision });
+  updateTeachingActivity(db, a, course.id, activity.id, { revision: course.revision, activityRevision: activity.revision, instructions: '后来的任务说明', rubric: [{ id: 'late', label: '观察', description: '有观察', maxScore: 10 }], referenceText: 'PRIVATE_LATE_REFERENCE' });
+  const body = { confirmed: true, submissionActivityRevision: submission.activityRevision, activityRevision: activity.revision, expectedGradingRevision: 0 };
+  fails(() => bindTeachingGradingBasis(db, b, course.id, submission.id, body), 404);
+  fails(() => bindTeachingGradingBasis(db, a, course.id, submission.id, { ...body, confirmed: false }), 400);
+  bindTeachingGradingBasis(db, a, course.id, submission.id, body);
+  assert.equal(submission.gradingRevision, 1); assert.equal(submission.gradingSnapshot?.instructions, '原始任务'); assert.deepEqual(submission.activitySnapshot, original);
+  submission.grade = { criteria: [{ criterionId: 'late', score: 7, comment: '', evidence: '' }], total: 7, feedback: '暂存建议', source: 'ai', status: 'suggested', needsReview: true, gradingRevision: 1 };
+  bindTeachingGradingBasis(db, a, course.id, submission.id, body); assert.equal(submission.gradingRevision, 1); assert.equal(submission.grade.total, 7, 'duplicate adoption cannot delete a newer suggestion');
+  updateTeachingActivity(db, a, course.id, activity.id, { revision: course.revision, activityRevision: activity.revision, rubric: [{ id: 'late', label: '观察', description: '细化标准', maxScore: 10 }] });
+  const next = { ...body, activityRevision: activity.revision, expectedGradingRevision: 1 };
+  bindTeachingGradingBasis(db, a, course.id, submission.id, next); assert.equal(submission.gradingRevision, 2); assert.equal(submission.grade, undefined);
+  const grade = { criteria: [{ criterionId: 'late', score: 8, comment: '确认', evidence: '原始作业' }], total: 8, feedback: '已复核' };
+  fails(() => reviewTeachingSubmission(db, a, course.id, submission.id, { ...grade, gradingRevision: 1 }), 409);
+  reviewTeachingSubmission(db, a, course.id, submission.id, { ...grade, gradingRevision: 2 });
+  const published = structuredClone(submission.grade);
+  reviewTeachingSubmission(db, a, course.id, submission.id, { ...grade, gradingRevision: 2 }); assert.deepEqual(submission.grade, published);
+  fails(() => reviewTeachingSubmission(db, a, course.id, submission.id, { ...grade, feedback: '试图覆盖', gradingRevision: 2 }), 409);
+  fails(() => bindTeachingGradingBasis(db, a, course.id, submission.id, next), 409);
+  assert.doesNotMatch(JSON.stringify(publicTeachingSubmission(submission)), /gradingSnapshot|PRIVATE_LATE_REFERENCE|后来的任务说明/);
+});
+
+test('course creation receipt is scoped, payload-bound, separate from old task drafts and replayed before capacity', () => {
+  const db = fixture(), body = { clientRequestId: 'course-create-original', title: '物理', subject: '科学', budgetMicros: 100 };
+  const first = createTeachingCourse(db, a, body); assert.equal(first.clientCreateKey, body.clientRequestId);
+  updateTeachingCourse(db, a, first.id, { revision: first.revision, title: '后来重命名' });
+  assert.equal(createTeachingCourse(db, a, { ...body, title: ' 物理 ' }).id, first.id, 'normalised original request is replayable even after teacher edits');
+  fails(() => createTeachingCourse(db, a, { ...body, title: '另一门课' }), 409);
+  assert.notEqual(createTeachingCourse(db, b, body).id, first.id);
+  assert.notEqual(createTeachingCourse(db, same, body).id, first.id);
+  const task = createTeachingTask(db, a, { draftId: body.clientRequestId, kind: 'ask' }); assert.notEqual(task.course.id, first.id);
+  while (teachingState(db, a).courses.length < 30) createTeachingCourse(db, a, { title: '另一个课程' });
+  assert.equal(createTeachingCourse(db, a, body).id, first.id);
+  fails(() => createTeachingCourse(db, a, { title: '超出容量', clientRequestId: 'new-create-at-capacity' }), 409);
+  for (const key of ['short', 'https://foreign', 'x'.repeat(121)]) fails(() => createTeachingCourse(db, b, { title: '非法编号', clientRequestId: key }), 400);
+  assert.doesNotMatch(JSON.stringify(publicTeachingCourse(first)), /clientCreateKey|createPayloadHash|course-create-original/);
+});
+
+test('published assignment grading edit is narrowly versioned and preserves student session and immutable submitted contracts', () => {
+  const db = fixture(), course = createTeachingCourse(db, a, { title: '收件后设标准' });
+  const { activity } = createTeachingActivity(db, a, course.id, { revision: course.revision, stage: 'after', kind: 'assignment', title: '原作业', instructions: '只需提交观察记录', status: 'published', rubric: [] });
+  publishTeachingCourse(db, a, course.id, { revision: course.revision, confirmed: true });
+  const joined = createTeachingSession(db, course.slug!, { participantName: '原学生', participantClass: '一班', consent: true });
+  const { submission } = addTeachingSubmission(db, a, course, { activityId: activity.id, operationId: 'private-grading-submit', text: '我的观察' }, authTeachingSession(db, course.slug!, joined.token).session);
+  const snapshot = structuredClone(submission.activitySnapshot), slug = course.slug!, sharedAt = course.updatedAt, revision = course.revision, activityRevision = activity.revision;
+  const body = { revision, activityRevision, rubric: [{ id: 'observation', label: '观察', description: '有具体观察', maxScore: 10 }], referenceText: 'PRIVATE_REFERENCE_AFTER_COLLECTION', avatarPrompt: '按标准严格核对' };
+  fails(() => updateTeachingGrading(db, b, course.id, activity.id, body), 404);
+  fails(() => updateTeachingGrading(db, same, course.id, activity.id, body), 404);
+  for (const extra of [{ title: 'changed' }, { instructions: 'changed' }, { questions: [] }, { scenes: [] }, { status: 'closed' }, { materialText: 'changed' }]) fails(() => updateTeachingGrading(db, a, course.id, activity.id, { ...body, ...extra }), 400);
+  fails(() => updateTeachingGrading(db, a, course.id, activity.id, { ...body, activityRevision: undefined }), 409);
+  fails(() => updateTeachingGrading(db, a, course.id, activity.id, { ...body, revision: revision - 1 }), 409);
+  for (const foreign of [{ sourceAttachmentIds: ['foreign-file'] }, { knowledgeSources: [{ connectionId: 'missing', scope: 'connection', confirmed: true }] }]) {
+    db.knowledgeConnections ??= [];
+    assert.throws(() => updateTeachingGrading(db, a, course.id, activity.id, { ...body, ...foreign })); assert.equal(course.revision, revision); assert.equal(activity.revision, activityRevision);
+  }
+  updateTeachingGrading(db, a, course.id, activity.id, body);
+  assert.equal(course.status, 'published'); assert.equal(course.slug, slug); assert.equal(course.updatedAt, sharedAt); assert.equal(course.revision, revision + 1); assert.equal(activity.revision, activityRevision + 1); assert.equal(activity.title, '原作业'); assert.equal(activity.instructions, '只需提交观察记录'); assert.equal(activity.status, 'published');
+  assert.deepEqual(submission.activitySnapshot, snapshot); assert.equal(submission.gradingSnapshot, undefined); assert.equal(authTeachingSession(db, slug, joined.token).session.id, joined.sessionId);
+  bindTeachingGradingBasis(db, a, course.id, submission.id, { confirmed: true, activityRevision: activity.revision, submissionActivityRevision: submission.activityRevision, expectedGradingRevision: 0 });
+  reviewTeachingSubmission(db, a, course.id, submission.id, { gradingRevision: 1, criteria: [{ criterionId: 'observation', score: 8, comment: '已核对', evidence: '我的观察' }], feedback: '老师反馈' });
+  const grade = structuredClone(submission.grade);
+  updateTeachingGrading(db, a, course.id, activity.id, { ...body, revision: course.revision, activityRevision: activity.revision, rubric: [{ id: 'new', label: '新版', description: '', maxScore: 100 }] });
+  assert.deepEqual(submission.grade, grade); assert.deepEqual(submission.activitySnapshot, snapshot);
+  fails(() => bindTeachingGradingBasis(db, a, course.id, submission.id, { confirmed: true, activityRevision: activity.revision, submissionActivityRevision: submission.activityRevision, expectedGradingRevision: 1 }), 409);
+  assert.equal(authTeachingSession(db, slug, joined.token).session.id, joined.sessionId);
+  const publicData = JSON.stringify(publicTeachingCourse(course)); assert.doesNotMatch(publicData, /PRIVATE_REFERENCE_AFTER_COLLECTION|sourceAttachmentIds|knowledgeSources/);
+});
+
+test('independent grading route cannot edit a quiz or bypass a revoked teacher membership', () => {
+  const { db, course, activity } = setup();
+  fails(() => updateTeachingGrading(db, a, course.id, activity.id, { revision: course.revision, activityRevision: activity.revision, rubric: [] }), 400);
+  db.workspaceMembers.find(member => member.workspaceId === a.workspaceId && member.userId === a.userId)!.status = 'disabled';
+  fails(() => updateTeachingGrading(db, a, course.id, activity.id, { revision: course.revision, activityRevision: activity.revision, rubric: [] }), 403);
+});
+
+
+test('student public activities expose only inquiry and game roles, never assessment grading prompts', () => {
+  const db = fixture(), course = createTeachingCourse(db, a, { title: '公开数据边界' });
+  for (const kind of ['inquiry', 'game', 'scenario', 'assignment', 'quiz'] as const) createTeachingActivity(db, a, course.id, { revision: course.revision, stage: kind === 'inquiry' ? 'before' : 'after', kind, title: kind, instructions: '学生可见任务', status: 'published', avatarPrompt: `ROLE_${kind}`, referenceText: `PRIVATE_REF_${kind}` });
+  const dto = publicTeachingCourse(course);
+  for (const activity of dto.activities) assert.equal(activity.avatarPrompt, ['inquiry','game'].includes(activity.kind) ? `ROLE_${activity.kind}` : '');
+  assert.doesNotMatch(JSON.stringify(dto), /ROLE_assignment|ROLE_quiz|ROLE_scenario|PRIVATE_REF/);
 });

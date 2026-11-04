@@ -319,6 +319,20 @@ skill 元信息仅提取简单顶层 name/description/license 字符串和折叠
 
 所有接口沿用 ONE Key 会话与服务端 Workspace membership 校验，记录和文件均限定当前空间及本人。客户端不能指定他人所有权或模型凭据。
 
+课程教学沿用 `/api/teaching/courses` 课程管理、课程内活动、`/learn/:slug` 学生入口与提交接口。学生身份接口新增 `participantClass`；学生提交仅使用服务端绑定的本人名字、班级与会话，不允许凭请求指定他人的提交者。
+
+| 教学新增接口 | 用途 |
+|---|---|
+| `GET /api/teaching/courses/:courseId/uploads` | 教师查看自己上传到该课程的文件摘要 |
+| `GET /api/teaching/public/:slug/uploads` | 学生凭自己的 Bearer 会话只查看自己上传的摘要 |
+| `DELETE /api/teaching/courses/:courseId/uploads/:id` | 教师清理本人未被课程、活动、提交或操作引用的上传 |
+| `DELETE /api/teaching/public/:slug/uploads/:id` | 学生清理本人尚未被记录引用的上传 |
+| `GET /api/teaching/courses/:courseId/uploads/:id/content` | 教师下载本人该课程原件；学生提交原件沿用已提交作业附件下载接口 |
+| `PATCH /api/teaching/courses/:courseId/activities/:activityId/grading` | 只改作业评分项、教师参考与评阅引导，允许在学生入口开放时保存；校验课程/活动版本，不改题目、学生作业要求、分享链接或会话撤销水印 |
+| `POST /api/teaching/courses/:courseId/submissions/:submissionId/grading-basis` | 教师明确 `confirmed`、原提交活动版本、当前活动版本和 `expectedGradingRevision` 后，为未发布成绩的作业采用当前评分标准；保留原提交快照 |
+
+活动分享链接支持 `?activityId=…` 定位本课程已开放活动；该参数不赋予跨课程或私人内容访问权。取消上传停止本地后续分片与轮询，不自动提交；已提交原件受引用保护。
+
 | 接口 | 用途 |
 |---|---|
 | `GET /api/industry/config` | 当前已发布零售计价与能力可用性，不返回供应商成本或凭据 |

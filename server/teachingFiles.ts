@@ -35,6 +35,10 @@ export function installTeachingFileRoutes(app: Express, auth: readonly RequestHa
   for (const publicRoute of [false, true]) {
     const prefix = publicRoute ? '/public/:slug' : '/courses/:courseId';
     const middleware = publicRoute ? [] : [...auth];
+    router.get(`${prefix}/uploads`, ...middleware, asyncRoute(async (req, res) => {
+      const a = await access(req, publicRoute), db = await store.read();
+      res.json({ attachments: db.attachments.filter(file => file.workspaceId === a.scope.workspaceId && file.userId === a.fileUserId && file.conversationId === teachingConversationId(a.course.id)).map(publicAttachmentSummary) });
+    }));
     router.post(`${prefix}/uploads`, ...middleware, asyncRoute(async (req, res) => {
       const a = await access(req, publicRoute), body = req.body ?? {};
       if (typeof body.name !== 'string' || body.name.length > 180 || !Number.isSafeInteger(body.size) || body.size < 1 || body.size > ATTACHMENT_MAX_BYTES) throw new TeachingError('请选择不超过 200 MB 的作业文件');
@@ -101,6 +105,26 @@ export function installTeachingFileRoutes(app: Express, auth: readonly RequestHa
     router.get(`${prefix}/uploads/:id`, ...middleware, asyncRoute(async (req, res) => {
       const a = await access(req, publicRoute);
       res.json({ attachment: publicAttachmentSummary(currentFile(await store.read(), a, String(req.params.id))) });
+    }));
+    router.delete(`${prefix}/uploads/:id`, ...middleware, asyncRoute(async (req, res) => {
+      const a = await access(req, publicRoute);
+      const file = await store.mutate(db => {
+        if (publicRoute) authTeachingSession(db, String(req.params.slug), token(req));
+        else ownedTeachingCourse(db, a.scope, a.course.id);
+        const current = currentFile(db, a, String(req.params.id)), state = teachingState(db, a.scope), course = ownedTeachingCourse(db, a.scope, a.course.id);
+        const references = (activity: TeachingCourse['activities'][number]) => activity.sourceAttachmentIds?.includes(current.id);
+        if (course.materialAttachmentIds.includes(current.id) || course.activities.some(references)
+          || state.submissions.some(submission => submission.courseId === course.id && (submission.attachmentIds.includes(current.id) || references(submission.activitySnapshot) || submission.gradingSnapshot && references(submission.gradingSnapshot)))
+          || state.operations.some(operation => operation.courseId === course.id && operation.attachmentIds?.includes(current.id))) throw new TeachingError('附件已被课程、作业或学习记录使用，请保留原件', 409, 'TEACHING_FILE_REFERENCED');
+        db.attachments = db.attachments.filter(value => value.id !== current.id); return current;
+      });
+      await removeAttachmentFiles(file.storagePath); res.json({ ok: true });
+    }));
+    if (!publicRoute) router.get(`${prefix}/uploads/:id/content`, ...middleware, asyncRoute(async (req, res) => {
+      const a = await access(req, false), file = currentFile(await store.read(), a, String(req.params.id));
+      if (file.status !== 'ready') throw new TeachingError('附件尚未处理完成', 404);
+      res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
+      res.download(file.storagePath, file.originalName);
     }));
     router.get(`${prefix}/submissions/:submissionId/attachments/:attachmentId/content`, ...middleware, asyncRoute(async (req, res) => {
       const a = await access(req, publicRoute), db = await store.read();

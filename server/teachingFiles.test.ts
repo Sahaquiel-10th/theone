@@ -12,6 +12,7 @@ import { installTeachingFileRoutes } from './teachingFiles.js';
 import { installTeachingRoutes } from './teachingRoutes.js';
 import { authTeachingSession, closeTeachingCourse, createTeachingActivity, createTeachingCourse, createTeachingSession, publishTeachingCourse, teachingState } from './teaching.js';
 import type { TeachingScope } from './teachingTypes.js';
+import {uploadTeachingFile,type TeachingRequest} from '../src/teachingUploads.js';
 
 const teacher = { workspaceId: 'files-wa', userId: 'teacher-a' }, same = { workspaceId: 'files-wa', userId: 'teacher-b' }, other = { workspaceId: 'files-wb', userId: 'teacher-c' };
 const ownerHeaders = { 'Content-Type': 'application/json', 'x-teacher': teacher.userId };
@@ -128,4 +129,47 @@ test('upload and metadata responses never reveal private storage paths or file c
   const response = await fetch(`${f.base}/courses/${course.id}/uploads/${result.id}`, { headers: ownerHeaders }); assert.equal(response.status, 200);
   const text = await response.text(); assert.doesNotMatch(text, /storagePath|PRIVATE_ORIGINAL_VIDEO_BYTES|workspaceId|userId|\/tmp\/|one-teaching-file-http/);
   const file = f.db.attachments.find(value => value.id === result.id)!; assert.equal(file.originalName, 'private-name.mp4'); assert.equal(path.dirname(file.storagePath), f.directory);
+});
+
+test('upload inventory, cleanup and teacher material download use exact course/session ownership; submitted originals cannot be deleted', async t => {
+  const f = await fixture(t), { course, activity } = addCourse(f.db), second = addCourse(f.db), foreign = addCourse(f.db, other);
+  const one = createTeachingSession(f.db, course.slug!, { participantName: '一', participantClass: '三年二班', consent: true }), two = createTeachingSession(f.db, course.slug!, { participantName: '二', consent: true });
+  const prefix = `/public/${course.slug}`, own = headers(one.token), their = headers(two.token);
+  const uploaded = await f.upload(prefix, video, own, 'student-one.mp4'), extra = await f.upload(prefix, video, own, 'student-two.mp4');
+  assert.equal(uploaded.completed.status, 200); assert.equal(extra.completed.status, 200);
+  const teacherFile = await f.upload(`/courses/${course.id}`, video, ownerHeaders, 'teacher-original.mp4'); assert.equal(teacherFile.completed.status, 200);
+  const ownList = await (await fetch(f.base + prefix + '/uploads', { headers: own })).json() as any;
+  assert.deepEqual(ownList.attachments.map((file: any) => file.id).sort(), [uploaded.id, extra.id].sort());
+  assert.doesNotMatch(JSON.stringify(ownList), /storagePath|workspaceId|userId|PRIVATE_ORIGINAL_VIDEO_BYTES|teacher-original/);
+  const theirList = await (await fetch(f.base + prefix + '/uploads', { headers: their })).json() as any; assert.deepEqual(theirList.attachments, []);
+  const teacherList = await (await fetch(`${f.base}/courses/${course.id}/uploads`, { headers: ownerHeaders })).json() as any; assert.deepEqual(teacherList.attachments.map((file: any) => file.id), [teacherFile.id]);
+  assert.equal((await fetch(f.base + prefix + '/uploads')).status, 401);
+  assert.equal((await fetch(f.base + prefix + `/uploads/${uploaded.id}`, { method: 'DELETE', headers: their })).status, 404);
+  assert.equal((await fetch(`${f.base}/courses/${course.id}/uploads/${uploaded.id}`, { method: 'DELETE', headers: ownerHeaders })).status, 404);
+  for (const [url, access] of [[`/courses/${second.course.id}`, ownerHeaders], [`/courses/${course.id}`, { ...ownerHeaders, 'x-teacher': same.userId }], [`/courses/${course.id}`, { ...ownerHeaders, 'x-teacher': other.userId }], [`/courses/${foreign.course.id}`, { ...ownerHeaders, 'x-teacher': other.userId }]] as const) {
+    assert.equal((await fetch(f.base + url + `/uploads/${teacherFile.id}/content`, { headers: access })).status, 404);
+    assert.equal((await fetch(f.base + url + `/uploads/${teacherFile.id}`, { method: 'DELETE', headers: access })).status, 404);
+  }
+  assert.equal((await fetch(`${f.base}/courses/${course.id}/uploads/${teacherFile.id}/content`, { headers: own })).status, 401);
+  assert.equal((await fetch(f.base + prefix + `/uploads/${teacherFile.id}/content`, { headers: own })).status, 404);
+  const content = await fetch(`${f.base}/courses/${course.id}/uploads/${teacherFile.id}/content`, { headers: ownerHeaders }); assert.equal(content.status, 200); assert.deepEqual(Buffer.from(await content.arrayBuffer()), video);
+  const response = await f.post(prefix + '/submissions', { activityId: activity.id, operationId: 'multi-attachment-only', attachmentIds: [uploaded.id, extra.id], participantClass: 'SPOOF' }, own); assert.equal(response.status, 201, await response.clone().text());
+  const saved = (await response.json() as any).submission; assert.equal(saved.text, ''); assert.equal(saved.participantClass, '三年二班'); assert.equal(saved.attachmentIds.length, 2);
+  assert.equal((await fetch(f.base + prefix + `/uploads/${uploaded.id}`, { method: 'DELETE', headers: own })).status, 409);
+  assert.equal((await f.post(prefix + '/submissions', { activityId: activity.id, operationId: 'multi-attachment-only', attachmentIds: [uploaded.id, extra.id] }, own)).status, 200);
+  const delegate = await f.post(`/courses/${course.id}/submissions`, { activityId: activity.id, operationId: 'teacher-delegate-file', participantName: '代传同学', participantClass: '四年一班', attachmentIds: [teacherFile.id] }); assert.equal(delegate.status, 201); assert.equal((await delegate.json() as any).submission.participantClass, '四年一班');
+  const disposable = await f.upload(prefix, video, own, 'remove-unused.mp4'); assert.equal(disposable.completed.status, 200);
+  const diskPath = f.db.attachments.find(file => file.id === disposable.id)!.storagePath;
+  assert.equal((await fetch(f.base + prefix + `/uploads/${disposable.id}`, { method: 'DELETE', headers: own })).status, 200);
+  assert.equal((await fetch(f.base + prefix + `/uploads/${disposable.id}`, { headers: own })).status, 404); await assert.rejects(fs.access(diskPath), /ENOENT/);
+});
+
+test('six explicitly cancelled allocations release the active quota and a later original can still be submitted', async t => {
+  const f = await fixture(t), { course, activity } = addCourse(f.db), joined = createTeachingSession(f.db, course.slug!, { participantName: '取消测试', consent: true });
+  const prefix = `/public/${course.slug}`, h = headers(joined.token);
+  const request: TeachingRequest = async <T>(url: string, options: RequestInit = {}) => { const response = await fetch(f.base + url, { ...options, headers: { ...h, ...options.headers } }); const payload = await response.json(); if (!response.ok) throw new Error(`HTTP ${response.status}`); return payload as T; };
+  for (let index = 0; index < 6; index++) { const controller = new AbortController(); await assert.rejects(uploadTeachingFile(request, prefix, new File([video], 'cancel.mp4', { type: 'video/mp4' }), () => {}, { signal: controller.signal, onCreated: () => controller.abort() }), { name: 'AbortError' }); }
+  assert.equal(f.db.attachments.length, 0); assert.deepEqual(await fs.readdir(f.directory), []);
+  const uploaded = await f.upload(prefix, video, h); assert.equal(uploaded.completed.status, 200);
+  assert.equal((await f.post(prefix + '/submissions', { activityId: activity.id, operationId: 'after-cancel-submit01', attachmentIds: [uploaded.id] }, h)).status, 201);
 });

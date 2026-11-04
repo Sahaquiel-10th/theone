@@ -4,7 +4,7 @@ import type {TeachingActivity,TeachingSubmission} from '../server/teachingTypes'
 import {activityDraft,activityDraftKey,applyPreparation,canApplyTeachingPreparation,draftChanged,editableGrade,newActivityDraft,publicSessionStorageKey,stageKinds,teachingCsv,teachingScoreTotal} from './teachingState';
 
 test('each phase offers only its relevant tools; phase drafts cannot collide across courses or activities',()=>{
-  assert.deepEqual(stageKinds('before'),['inquiry']);assert.deepEqual(stageKinds('during'),['scenario','inquiry']);assert.deepEqual(stageKinds('after'),['assignment','quiz']);
+  assert.deepEqual(stageKinds('before'),['inquiry']);assert.deepEqual(stageKinds('during'),['inquiry','game','scenario']);assert.deepEqual(stageKinds('after'),['assignment','quiz']);
   assert.equal(new Set([activityDraftKey('a','before'),activityDraftKey('a','after'),activityDraftKey('b','before'),activityDraftKey('a','before','saved')]).size,4);
 });
 test('a prepared activity is a reviewable draft and cannot overwrite title, phase or private reference inputs',()=>{

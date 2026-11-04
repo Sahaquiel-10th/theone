@@ -3,6 +3,7 @@ import {OneFluidSurface,getFluidLayout,type FluidFrame as FluidProgress} from ".
 import {useFluidActivityHeight} from './fluid/useFluidActivityHeight';
 import {useFluidContentFlow} from './fluid/contentFlow';
 import {useFluidPanels} from "./fluid/useFluidPanels";
+import {fluidWorkbenchInsets} from './fluid/workbenchLayout';
 import { CompanyPanel } from "./CompanyPanel";
 import {AdminPowerControls} from './AdminPowerControls';
 import {StaticPreviewPanel} from './StaticPreviewPanel';
@@ -1020,10 +1021,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     onAutoCollapse:kind=>restoreFluidFocus(kind)
   });
   useLayoutEffect(()=>{
-    const canvas=fluidCanvasRef.current;if(!canvas||!fluidEnabled||industryPage.open)return;
+    const canvas=fluidCanvasRef.current;if(!canvas||!fluidEnabled)return;
     const measure=()=>{const rect=canvas.getBoundingClientRect();if(!rect.width||!rect.height)return;setFluidSize(old=>old.width===rect.width&&old.height===rect.height?old:{...old,width:rect.width,height:rect.height});};
     measure();const observer=new ResizeObserver(measure);observer.observe(canvas);return()=>observer.disconnect();
-  },[fluidEnabled,industryPage.open]);
+  },[fluidEnabled]);
   useEffect(()=>{if(fluidEnabled&&activeId)fluidPanels.open('activity');},[fluidEnabled,activeId]);
   const [fluidAccent,setFluidAccent]=useState<'solar'|'iris'|'jade'>(()=>{const value=new URLSearchParams(window.location.search).get('accent');return value==='iris'||value==='jade'?value:'solar';});
   useEffect(()=>{const update=()=>{const value=new URLSearchParams(window.location.search).get('accent');setFluidAccent(value==='iris'||value==='jade'?value:'solar');};window.addEventListener('one-fluid-accent-preview',update);return()=>window.removeEventListener('one-fluid-accent-preview',update);},[]);
@@ -1036,10 +1037,17 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const activityContentHeight=useFluidActivityHeight(fluidCanvasRef,{enabled:fluidEnabled&&fluidDesktop,canvasHeight:Math.max(560,fluidSize.height)});
   const fluidSizing = {activityHeight:activityContentHeight,localHeight:runtimeNotice?320:fluidLocalTask?264:224,paired:fluidPanels.activityOpen&&fluidPanels.localOpen};
   const fluidLayout = getFluidLayout(Math.max(1000,fluidSize.width),Math.max(560,fluidSize.height),fluidSizing);
-  const flowFluidContent=useFluidContentFlow(fluidCanvasRef,fluidEnabled&&fluidDesktop,fluidLayout);
-  const fluidStyle = {'--fluid-child-left':`${fluidLayout.activityBounds.left}px`,'--fluid-child-width':`${fluidLayout.activityBounds.width}px`,'--fluid-up-top':`${fluidLayout.activityBounds.top}px`,'--fluid-up-height':`${fluidLayout.activityBounds.height}px`,'--fluid-low-top':`${fluidLayout.localBounds.top}px`,'--fluid-low-height':`${fluidLayout.localBounds.height}px`,'--fluid-safe-right':`${fluidLayout.safeRight}px`,'--fluid-reading-width':`${fluidLayout.mainContentBounds.width}px`,'--fluid-sidebar-travel':`${fluidLayout.sidebarTravel}px`} as React.CSSProperties;
+  const fluidRenderRef=useRef({layout:fluidLayout,desktop:fluidDesktop});fluidRenderRef.current={layout:fluidLayout,desktop:fluidDesktop};
+  const flowFluidContent=useFluidContentFlow(fluidCanvasRef,fluidEnabled&&fluidDesktop,fluidLayout,industryPage.open);
+  const fluidFrameRef=useRef<FluidProgress|null>(null);
+  const workbenchInsets=fluidWorkbenchInsets(fluidLayout,fluidFrameRef.current??{activity:0,local:0,sidebar:0,activityRecoil:0,localRecoil:0,eyeOwner:'main',activityHeight:fluidLayout.activityBounds.height,localHeight:fluidLayout.localBounds.height,localTop:fluidLayout.localBounds.top});
+  const fluidStyle = {'--fluid-child-left':`${fluidLayout.activityBounds.left}px`,'--fluid-child-width':`${fluidLayout.activityBounds.width}px`,'--fluid-up-top':`${fluidLayout.activityBounds.top}px`,'--fluid-up-height':`${fluidLayout.activityBounds.height}px`,'--fluid-low-top':`${fluidLayout.localBounds.top}px`,'--fluid-low-height':`${fluidLayout.localBounds.height}px`,'--fluid-safe-right':`${fluidLayout.safeRight}px`,'--fluid-reading-width':`${fluidLayout.mainContentBounds.width}px`,'--fluid-sidebar-travel':`${fluidLayout.sidebarTravel}px`,'--fluid-workbench-left':`${workbenchInsets.left}px`,'--fluid-workbench-right':`${workbenchInsets.right}px`} as React.CSSProperties;
   const paintFluidContent = useCallback((frame:FluidProgress)=>{
     const canvas=fluidCanvasRef.current;if(!canvas)return;
+    fluidFrameRef.current=frame;
+    const insets=fluidWorkbenchInsets(fluidRenderRef.current.layout,frame);
+    canvas.style.setProperty('--fluid-workbench-left',`${insets.left}px`);
+    canvas.style.setProperty('--fluid-workbench-right',`${insets.right}px`);
     fluidEyeOwnerRef.current=frame.eyeOwner;
     const shift=Number.parseFloat(canvas.style.getPropertyValue('--fluid-sidebar-travel'))||120;
     canvas.style.setProperty('--fluid-sidebar-shift',`${shift*frame.sidebar}px`);
@@ -1048,6 +1056,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     canvas.style.setProperty('--fluid-low-height',`${frame.localHeight}px`);
     canvas.style.setProperty('--fluid-low-top',`${frame.localTop}px`);
     flowFluidContent(frame);
+    if(!fluidRenderRef.current.desktop)return;
     for(const kind of ['activity','local'] as const){
       const progress=frame[kind],visible=progress>.94;
       canvas.style.setProperty(`--fluid-${kind}-reveal`,String(Math.max(0,Math.min(1,(progress-.94)/.057))));
@@ -1083,13 +1092,14 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   });
 
   useLayoutEffect(()=>{
+    if(industryPage.open)return;
     const input=document.getElementById('one-studio-input');
     if(input instanceof HTMLTextAreaElement){
       // Measure from the compact minimum, rather than the legacy 90px height.
       input.style.height=fluidEnabled?'0px':'auto';
       input.style.height=`${Math.max(fluidEnabled?36:0,Math.min(fluidEnabled?156:180,input.scrollHeight))}px`;
     }
-  },[content,view,fluidEnabled,workspaceContentMounted]);
+  },[content,view,fluidEnabled,workspaceContentMounted,industryPage.open]);
   useEffect(() => {
     const previous = motionTasksRef.current; motionTasksRef.current = new Set(executionTasks.map(t=>t.id));
     const eligible=executionTasks.filter(t=>isExecutionRunning(t)&&!stoppedExecutionIdsRef.current.has(t.id)&&!stoppedPreparationIdsRef.current.has(t.dispatchOperationId||'')&&!stoppedPreparationIdsRef.current.has(t.preparationOperationId||''));
@@ -1597,11 +1607,11 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
   function openIndustryPage(workspace:IndustryWorkspaceId|null){
     const page=openIndustryPageNavigation(window,industryScopeKey,workspace,currentOneSurface());
-    setIndustryLocation(page);featurePicker.close();closeWorkLayer();setHistoryOpen(false);setSidebarOpen(false);
+    setIndustryLocation(page);featurePicker.close();closeWorkLayer();setHistoryOpen(false);
   }
   // Restore visible destinations without submitting, selecting a new chat, or discarding its composer.
   applyIndustryLocationRef.current=page=>{
-    setIndustryLocation(page);featurePicker.close();setWorkLayer(null);setHistoryOpen(false);setSidebarOpen(false);
+    setIndustryLocation(page);featurePicker.close();setWorkLayer(null);setHistoryOpen(false);
     if(page.open)return;
     const next=page.surface==='admin'&&user.role!=='admin'||page.surface==='company'&&user.access?.role!=='company_admin'?'chat':page.surface;
     if(preview.enabled&&['features','avatars','account','things','admin','company'].includes(next)){setView('chat');setWorkLayer(next as WorkLayer);}
@@ -1632,7 +1642,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     if(next==='workbenches'){openIndustryPage(null);return;}
     if(next==='admin'&&user.role!=='admin'||next==='company'&&user.access?.role!=='company_admin')return;
     const leavingIndustry=leaveIndustryPage(next==='knowledge'?'account':next);
-    if(leavingIndustry&&next==='chat'){closeWorkLayer();setView('chat');setHistoryOpen(false);setSidebarOpen(false);return;}
+    if(leavingIndustry&&next==='chat'){closeWorkLayer();setView('chat');setHistoryOpen(false);return;}
     if(preview.enabled&&next!=='chat'){
       if(next==='admin'&&user.role!=='admin'||next==='company'&&user.access?.role!=='company_admin')return;
       if(next==='knowledge')setAccountSection('knowledge');
@@ -2521,11 +2531,11 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <button type="button" title="个人账号" aria-label="个人账号" onClick={()=>openSurface('account')}><UserRound size={18}/><span>{profile.displayName||user.username}</span></button>
 </ActionMenu>}</div>
       </aside>:null}
-      <div className={`studio-layout one-background-workspace ${fluidEnabled?'fluid-canvas':''}`} hidden={industryPage.open} inert={industryPage.open} ref={fluidCanvasRef} style={{...(fluidEnabled?fluidStyle:{}),...(industryPage.open?{display:'none'}:{})}}>
-      {fluidEnabled&&fluidDesktop?<div className="fluid-skin"><OneFluidSurface scene={fluidScene} accent={fluidAccent} executionActive={activeExecutionMode} width={fluidSize.width} height={fluidSize.height} sizing={fluidSizing} activityOpen={fluidPanels.activityOpen} localOpen={fluidPanels.localOpen} sidebarOpen={sidebarOpen} onActivityToggle={()=>toggleFluidPanel('activity')} onLocalToggle={()=>toggleFluidPanel('local')} onSidebarToggle={()=>{focusFluid('main');setSidebarOpen(value=>!value);}} attentionTarget={fluidAttention.target} attentionVersion={fluidAttention.version} onEyeReturn={()=>setFluidAttention(old=>({...old,target:'main'}))} onProgress={paintFluidContent}/></div>:null}
+      <div className={`studio-layout one-background-workspace ${fluidEnabled?'fluid-canvas':''}`} ref={fluidCanvasRef} style={fluidEnabled?fluidStyle:undefined}>
+      {fluidEnabled?<div className="fluid-skin"><OneFluidSurface scene={fluidScene} accent={fluidAccent} executionActive={activeExecutionMode} width={fluidSize.width} height={fluidSize.height} sizing={fluidSizing} activityOpen={fluidPanels.activityOpen} localOpen={fluidPanels.localOpen} sidebarOpen={sidebarOpen} onActivityToggle={()=>toggleFluidPanel('activity')} onLocalToggle={()=>toggleFluidPanel('local')} onSidebarToggle={()=>{focusFluid('main');setSidebarOpen(value=>!value);}} attentionTarget={fluidAttention.target} attentionVersion={fluidAttention.version} onEyeReturn={()=>setFluidAttention(old=>({...old,target:'main'}))} onProgress={paintFluidContent}/></div>:null}
       {fluidEnabled&&!fluidDesktop?<div className="fluid-compact-toggle"><button type="button" data-fluid-trigger="activity" aria-expanded={fluidPanels.activityOpen} onClick={()=>toggleFluidPanel('activity')}>任务动态{unviewedResultCount?` · ${unviewedResultCount}`:''}</button><button type="button" data-fluid-trigger="local" aria-expanded={fluidPanels.localOpen} onClick={()=>toggleFluidPanel('local')}>接管任务{executionBusy?' · 执行中':''}</button></div>:null}
 
-      <section className="studio-surface" ref={taskScroll.scroll} onScroll={taskScroll.onScroll} data-fluid-task-detail={fluidEnabled} data-open={Boolean(active)} aria-label={view === "chat" ? "当前任务" : "工作区内容"} hidden={studioIdle||(preview.enabled&&view==='chat'&&!active)}>
+      <section className="studio-surface" data-background-page={industryPage.open} aria-hidden={industryPage.open||undefined} inert={industryPage.open} ref={taskScroll.scroll} onScroll={taskScroll.onScroll} data-fluid-task-detail={fluidEnabled} data-open={Boolean(active)} aria-label={view === "chat" ? "当前任务" : "工作区内容"} hidden={studioIdle||(preview.enabled&&view==='chat'&&!active)}>
       {fluidEnabled&&active?<div className="fluid-detail-toolbar"><span>任务详情</span><button type="button" aria-label="收起任务详情" onClick={()=>openSurface('chat')}><X size={16}/></button></div>:null}
       {view === "things" ? renderThings()
         : view === "company" && user.access?.role === "company_admin" ? (
@@ -2597,7 +2607,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       )}
       </section>
 
-      <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 指挥台" onPointerDownCapture={()=>{if(fluidEnabled)focusFluid('main');}} onFocusCapture={()=>{if(fluidEnabled)focusFluid('main');}}>
+      <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} data-background-page={industryPage.open} aria-hidden={industryPage.open||undefined} inert={industryPage.open} aria-label="ONE 指挥台" onPointerDownCapture={()=>{if(fluidEnabled)focusFluid('main');}} onFocusCapture={()=>{if(fluidEnabled)focusFluid('main');}}>
         {!fluidEnabled?renderAttentionInbox():null}
         {curiousVisible||view==='chat'&&workLayer!=='guide'&&!guideEffectPreview&&(!fluidEnabled||!fluidHasDialogue)&&profileLoaded&&!storyHidden&&storyOpen?renderStory():null}
         {!fluidEnabled?renderGuideDelivery():null}
@@ -2754,8 +2764,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </section>
       </>:null}
       {demo.enabled ? <details className="workspace-preview-debug"><summary>本地调试</summary><p>规则分流 / 合成结果，不调用 AI。自动分流示例：UI、露营；其他内容可手动指定。</p><label>任务等待（秒）<input type="number" min="1" max="120" value={preview.state.workerMs/1000} onChange={event=>preview.dispatch({type:'settings',workerMs:Math.max(1,Math.min(120,Number(event.target.value)||1))*1000})}/></label><label><input type="checkbox" checked={preview.state.manual} onChange={event=>preview.dispatch({type:'settings',manual:event.target.checked})}/>手动结束任务</label>{preview.state.tasks.map(task=><div key={task.id}><button type="button" onClick={()=>void openConversation(conversations.find(item=>item.id===task.id)!)}>{task.title}</button><span>{task.status} · 排队 {task.queue.length}</span><button type="button" disabled={task.status!=='running'} onClick={()=>preview.dispatch({type:'finish',taskId:task.id,round:task.round,now:Date.now()})}>模拟完成</button></div>)}</details> : null}
-      </div>
       {industryVisited?<section className="industry-page-shell" aria-label="行业工作台页面" ref={industryPageShellRef} tabIndex={-1} hidden={!industryPage.open} inert={!industryPage.open} style={!industryPage.open?{display:'none'}:undefined}>{renderIndustryWorkspaces()}</section>:null}
+      </div>
       {preview.enabled?<>
         {visitedLayers.includes('features')||workLayer==='features'?<FluidWorkLayer title="Skills" open={!industryPage.open&&workLayer==='features'} className="fluid-work-layer-features" onClose={closeWorkLayer}>{renderFeatures()}</FluidWorkLayer>:null}
         {visitedLayers.includes('avatars')||workLayer==='avatars'?<FluidWorkLayer title="分身" open={!industryPage.open&&workLayer==='avatars'} className="fluid-work-layer-avatars" onClose={closeWorkLayer}><SharingPanel api={api} models={models} draftScope={{userId:user.id,workspaceId:user.access?.workspaceId??user.defaultWorkspaceId}}/></FluidWorkLayer>:null}

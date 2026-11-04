@@ -18,3 +18,14 @@
 .teaching-ui .teaching-inline-error{font-size:12px;line-height:1.65;color:var(--teach-danger);flex-basis:100%;text-align:left;overflow-wrap:anywhere}.teaching-sheet>footer:has(.teaching-inline-error){flex-wrap:wrap}.teaching-message[role=alert]{scroll-margin-block:32px;outline-offset:3px}
 .teaching-operation>header>div{display:grid;gap:4px}.teaching-citations blockquote{margin:12px 0;padding:12px 16px;border-left:2px solid var(--teach-line);font-size:13px}.teaching-citations blockquote>p{margin-top:8px}
 .teaching-course-confirm{display:grid;gap:16px;padding:24px;margin:0 0 24px;border:1px solid var(--teach-line);border-radius:10px;background:var(--teach-inset)}.teaching-course-confirm>p{font-size:13px;line-height:1.8;max-width:78ch}.teaching-course-confirm>ul{list-style:none;margin:0;padding:0;border-block:1px solid var(--teach-line)}.teaching-course-confirm li{display:flex;align-items:baseline;justify-content:space-between;gap:16px;padding:10px 0;font-size:13px}.teaching-course-confirm li+li{border-top:1px solid var(--teach-line)}.teaching-course-confirm li>strong{font-weight:550}.teaching-course-confirm li>span{font-size:12px;color:var(--teach-muted);flex-shrink:0}.teaching-course-confirm>footer{display:flex;justify-content:flex-end;gap:12px;padding-top:4px}
+
+/* Student uploads can be stopped independently of the disabled answer form. */
+.teaching-public .teaching-public-upload-status{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:16px 0;padding:12px 16px;background:var(--teach-inset);border:1px solid var(--teach-line);border-radius:8px;font-size:13px;overflow-wrap:anywhere}
+.teaching-public .teaching-public-upload-status>span{min-width:0;flex:1}
+.teaching-public .teaching-public-upload-status>button{min-height:44px;flex-shrink:0}
+.teaching-public .teaching-file-list li>button{min-width:44px;min-height:44px}
+@media(max-width:480px){.teaching-public .teaching-public-upload-status{align-items:flex-start;flex-wrap:wrap}.teaching-public .teaching-public-upload-status>button{margin-left:auto}}
+.teaching-public .teaching-public-upload-recovery{display:grid;gap:8px;margin-top:12px}
+.teaching-public .teaching-public-upload-recovery>button{justify-self:start;font-size:12px;border-color:transparent;color:var(--teach-muted)}
+.teaching-public .teaching-public-upload-recovery li{flex-wrap:wrap}
+.teaching-public .teaching-public-upload-recovery li small{display:block;margin-top:4px}

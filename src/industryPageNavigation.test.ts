@@ -108,11 +108,12 @@ test('blocked session storage does not prevent deep links or history navigation'
   back();assert.equal(syncIndustryPageNavigation(browser,'owner').workspace,'image_edit');
 });
 
-test('the application mounts an independent page once and makes the persistent chat inert',()=>{
+test('the application mounts its workbench page once inside the shared shell and makes chat content inert',()=>{
   const main=fs.readFileSync(new URL('./main.tsx',import.meta.url),'utf8');
   assert.match(main,/window\.addEventListener\('popstate',sync\)/);
   assert.match(main,/industryVisited\?<section className="industry-page-shell"[^>]+hidden=\{!industryPage.open\} inert=\{!industryPage.open\}/);
-  assert.match(main,/studio-layout one-background-workspace[^>]+hidden=\{industryPage.open\} inert=\{industryPage.open\}/);
+  assert.match(main,/studio-surface" data-background-page=\{industryPage.open\}[^>]+inert=\{industryPage.open\}/);
+  assert.doesNotMatch(main,/studio-layout one-background-workspace[^>]+hidden=\{industryPage.open\}/);
   assert.doesNotMatch(main,/<FluidWorkLayer title="行业工作台"/);
   assert.doesNotMatch(main,/view === "workbenches"/);
   const navigation=main.slice(main.indexOf('  function currentOneSurface()'),main.indexOf('  function chooseFeature('));
@@ -133,5 +134,6 @@ test('window and visualViewport events resize the full page without a visible ch
   stop();assert.equal(windowListeners.size,0);assert.equal(visualListeners.size,0);assert.equal(updates,3);
   const main=fs.readFileSync(new URL('./main.tsx',import.meta.url),'utf8');
   assert.match(main,/observeWorkspaceViewport\(window,size=>setFluidSize/);
-  assert.match(main,/if\(!canvas\|\|!fluidEnabled\|\|industryPage.open\)return/);
+  assert.match(main,/if\(!canvas\|\|!fluidEnabled\)return/);
+  assert.doesNotMatch(main,/if\(!canvas\|\|!fluidEnabled\|\|industryPage.open\)return/);
 });

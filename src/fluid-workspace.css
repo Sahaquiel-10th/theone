@@ -520,7 +520,7 @@ main.one-fluid-workspace.one-shell.one-studio[data-fluid-desktop="false"] .studi
 }
 main.one-fluid-workspace.one-shell.one-studio[data-fluid-desktop="false"] .fluid-skin { display: none; }
 main.one-fluid-workspace.one-shell.one-studio[data-fluid-desktop="false"] .fluid-compact-toggle { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; order: -4; min-height: 48px; padding: 7px 0; }
-main.one-fluid-workspace.one-shell.one-studio[data-fluid-desktop="false"] .fluid-compact-toggle button { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 7px 12px; border: 1px solid var(--fluid-line); border-radius: 20px; background: transparent; color: var(--fluid-ink); font: inherit; font-size: 12px; cursor: pointer; }
+main.one-fluid-workspace.one-shell.one-studio[data-fluid-desktop="false"] .fluid-compact-toggle button { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 7px 12px; border: 1px solid color-mix(in srgb,var(--fluid-frame-ink) 45%,transparent); border-radius: 24px; background: transparent; color: var(--fluid-frame-ink); font: inherit; font-size: 12px; cursor: pointer; }
 main.one-fluid-workspace.one-shell.one-studio[data-fluid-desktop="false"] .fluid-compact-toggle button[aria-expanded="true"] { background: var(--fluid-accent); border-color: transparent; color: var(--fluid-on-accent); }
 main.one-fluid-workspace.one-shell.one-studio[data-fluid-desktop="false"][data-fluid-scene="graphite"] .fluid-compact-toggle button:not([aria-expanded="true"]) { background: #ffffff09; border-color: #ffffff26; color: #e4e9ec; }
 main.one-fluid-workspace.one-shell.one-studio[data-fluid-desktop="false"] .fluid-canvas > .studio-assistant {

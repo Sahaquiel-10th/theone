@@ -2,9 +2,9 @@ export type CommerceWorkspaceKind='product_creative'|'image_edit'|'review_reply'
 export type IndustryWorkspaceId='teaching'|CommerceWorkspaceKind;
 export type IndustryCategory='all'|'teaching'|'commerce';
 export const primaryWorkspaceNavigation=[{id:'chat',label:'主页'},{id:'things',label:'任务'},{id:'features',label:'Skills'},{id:'workbenches',label:'行业工作台'},{id:'avatars',label:'分身'}] as const;
-export const industryCategories=[{id:'teaching',label:'教学教研',description:'备课、课堂互动与作业批改'},{id:'commerce',label:'电商运营',description:'商品内容、图片修改与买家沟通'}] as const;
+export const industryCategories=[{id:'teaching',label:'教育教学',description:'课程资料、课堂互动与作业批改'},{id:'commerce',label:'电商运营',description:'商品内容、图片修改与买家沟通'}] as const;
 export const industryWorkspaces:{id:IndustryWorkspaceId;category:Exclude<IndustryCategory,'all'>;name:string;description:string;materials:string;keywords:string}[]=[
-  {id:'teaching',category:'teaching',name:'教师工作台',description:'从批改作业、学生提问、在线测验或课堂文字游戏开始，按步骤准备并使用。',materials:'教材 · 学生作业 · 已连接知识库',keywords:'教学 教师 老师 教研 备课 批改 评分 测验 试卷 导学 研学 游戏'},
+  {id:'teaching',category:'teaching',name:'课程教学',description:'围绕一门课管理资料，准备课前问答、课中游戏，收取并批改课后作业。',materials:'课程资料 · 学生提交 · 课前课中课后',keywords:'教学 教师工作台 老师 教育 教研 备课 课程 知识库 批改 作业 评分 测验 试卷 导学 研学 游戏'},
   {id:'product_creative',category:'commerce',name:'主图与标题',description:'放入商品图与卖点，准备商品主图和标题，检查后再使用。',materials:'商品原图 · 卖点与要求',keywords:'电商 商品 主图 标题 创意 产品 卖点 生成'},
   {id:'image_edit',category:'commerce',name:'小修小改',description:'围绕已有图片说明要改的地方，保留商品细节，查看修改结果。',materials:'已有图片 · 修改说明',keywords:'电商 图片 修改 局部 修图 小修小改 编辑'},
   {id:'review_reply',category:'commerce',name:'评价回复',description:'放入买家评价，结合商品与回复要求，准备可检查和复制的回复。',materials:'买家评价 · 商品信息与回复口吻',keywords:'电商 评价 回复 客服 售后 买家 差评 好评'},

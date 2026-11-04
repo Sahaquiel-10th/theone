@@ -131,10 +131,21 @@ function editable(course: TeachingCourse) {
 }
 export function createTeachingCourse(db: Database, scope: TeachingScope, input: unknown) {
   const body = object(input), state = teachingState(db, scope, { create: true });
+  const clientCreateKey = body.clientRequestId === undefined ? undefined : requiredText(body.clientRequestId, '课程创建编号', 120);
+  if (clientCreateKey !== undefined && !/^[A-Za-z0-9_-]{8,120}$/.test(clientCreateKey)) throw new TeachingError('课程创建编号格式不正确');
+  const content = { title: requiredText(body.title, '课程名称', 160), subject: text(body.subject, '学科', 120, ''), description: text(body.description, '课程介绍', 4000, ''), materialText: text(body.materialText, '课程材料', 120000, ''), knowledgeSources: bindTeachingKnowledgeSources(db, scope, body.knowledgeSources), budgetMicros: integer(body.budgetMicros, '教学用量上限', 1_000_000_000, 0) };
+  if (body.materialAttachmentIds !== undefined && strings(body.materialAttachmentIds, '材料附件', 20, 100).length) throw new TeachingError('请先保存课程，再上传并选择课程材料');
+  const createPayloadHash = hash(JSON.stringify(content));
+  if (clientCreateKey) {
+    const existing = state.courses.find(course => course.workspaceId === scope.workspaceId && course.userId === scope.userId && course.clientCreateKey === clientCreateKey);
+    if (existing) {
+      if (existing.createPayloadHash !== createPayloadHash) throw new TeachingError('该创建编号已用于另一份课程内容，请先核对原课程', 409, 'TEACHING_CREATE_CONFLICT');
+      return existing;
+    }
+  }
   if (state.courses.length >= TEACHING_LIMITS.courses) throw new TeachingError('课程数量已达上限，请联系老师管理现有课程', 409, 'TEACHING_CAPACITY');
   const createdAt = now();
-  const course: TeachingCourse = { ...scope, id: id('tc'), revision: 1, title: requiredText(body.title, '课程名称', 160), subject: text(body.subject, '学科', 120, ''), description: text(body.description, '课程介绍', 4000, ''), materialText: text(body.materialText, '课程材料', 120000, ''), materialAttachmentIds: [], knowledgeSources: bindTeachingKnowledgeSources(db, scope, body.knowledgeSources), budgetMicros: integer(body.budgetMicros, '教学用量上限', 1_000_000_000, 0), status: 'draft', activities: [], createdAt, updatedAt: createdAt };
-  if (body.materialAttachmentIds !== undefined && strings(body.materialAttachmentIds, '材料附件', 20, 100).length) throw new TeachingError('请先保存课程，再上传并选择课程材料');
+  const course: TeachingCourse = { ...scope, id: id('tc'), revision: 1, ...content, ...(clientCreateKey ? { clientCreateKey, createPayloadHash } : {}), materialAttachmentIds: [], status: 'draft', activities: [], createdAt, updatedAt: createdAt };
   state.courses.push(course); return course;
 }
 /** One explicit save/upload creates a private task container atomically inside Store.mutate. */
@@ -209,22 +220,42 @@ export function updateTeachingActivity(db: Database, scope: TeachingScope, cours
   Object.assign(activity, activityFields(db, scope, courseId, body, activity), { revision: activity.revision + 1, updatedAt: now() });
   course.revision++; course.updatedAt = activity.updatedAt; return { course, activity };
 }
+/** Private assignment grading can be prepared after collection without rotating
+ * the student entry. Existing submissions adopt it only by explicit confirmation. */
+export function updateTeachingGrading(db: Database, scope: TeachingScope, courseId: string, activityId: string, input: unknown) {
+  const body = object(input), course = ownedTeachingCourse(db, scope, courseId);
+  revision(course, body.revision);
+  const activity = course.activities.find(item => item.id === activityId && item.courseId === courseId && item.workspaceId === scope.workspaceId && item.userId === scope.userId);
+  if (!activity) throw new TeachingError('活动不存在', 404, 'TEACHING_NOT_FOUND');
+  if (activity.kind !== 'assignment') throw new TeachingError('只有作业活动支持单独设置评分要求');
+  if (body.activityRevision !== activity.revision) throw new TeachingError('评分要求已更新，请刷新后再保存', 409, 'TEACHING_REVISION_CONFLICT');
+  const allowed = ['revision', 'activityRevision', 'rubric', 'referenceText', 'sourceAttachmentIds', 'knowledgeSources', 'avatarPrompt'];
+  if (Object.keys(body).some(key => !allowed.includes(key))) throw new TeachingError('此入口只能修改作业评分要求；修改学生任务请先关闭课程入口');
+  const sourceAttachmentIds = strings(body.sourceAttachmentIds, '评分私有材料', 20, 100, activity.sourceAttachmentIds ?? []);
+  validateTeachingAttachments(db, scope, courseId, sourceAttachmentIds);
+  const grading = { rubric: rubric(body.rubric, activity.rubric), referenceText: text(body.referenceText, '评分私有参考材料', 120000, activity.referenceText ?? ''), sourceAttachmentIds, knowledgeSources: bindTeachingKnowledgeSources(db, scope, body.knowledgeSources, activity.knowledgeSources), avatarPrompt: text(body.avatarPrompt, '教学分身提示词', 12000, activity.avatarPrompt ?? '') };
+  Object.assign(activity, grading, { revision: activity.revision + 1, updatedAt: now() });
+  course.revision++;
+  // course.updatedAt is the existing publication/session-revocation watermark.
+  // A private grading-only edit must not revoke the original student identity.
+  return { course, activity };
+}
 
 export function publicTeachingCourse(course: TeachingCourse) {
   return { id: course.id, revision: course.revision, title: course.title, subject: course.subject, description: course.description,
-    activities: course.activities.filter(a => a.status === 'published').map(a => ({ id: a.id, courseId: a.courseId, revision: a.revision, stage: a.stage, kind: a.kind, title: a.title, instructions: a.instructions, avatarPrompt: a.avatarPrompt ?? '', allowStudentPrompt: a.kind === 'game' && a.allowStudentPrompt === true, status: a.status, questions: a.questions.map(q => ({ id: q.id, prompt: q.prompt, type: q.type, options: q.options, points: q.points })), scenes: a.scenes.map(s => ({ id: s.id, title: s.title, content: s.content, choices: s.choices, reflection: '' })), rubric: a.rubric.map(r => ({ id: r.id, label: r.label, description: r.description, maxScore: r.maxScore })), createdAt: a.createdAt, updatedAt: a.updatedAt })) };
+    activities: course.activities.filter(a => a.status === 'published').map(a => ({ id: a.id, courseId: a.courseId, revision: a.revision, stage: a.stage, kind: a.kind, title: a.title, instructions: a.instructions, avatarPrompt: a.kind === 'inquiry' || a.kind === 'game' ? a.avatarPrompt ?? '' : '', allowStudentPrompt: a.kind === 'game' && a.allowStudentPrompt === true, status: a.status, questions: a.questions.map(q => ({ id: q.id, prompt: q.prompt, type: q.type, options: q.options, points: q.points })), scenes: a.scenes.map(s => ({ id: s.id, title: s.title, content: s.content, choices: s.choices, reflection: '' })), rubric: a.rubric.map(r => ({ id: r.id, label: r.label, description: r.description, maxScore: r.maxScore })), createdAt: a.createdAt, updatedAt: a.updatedAt })) };
 }
 export function createTeachingSession(db: Database, slug: string, input: unknown) {
   const body = object(input), course = activeTeachingCourse(db, slug), scope = { workspaceId: course.workspaceId, userId: course.userId };
   if (body.consent !== true) throw new TeachingError('请确认向任课老师提交参与信息及本课程学习记录');
-  const participantName = requiredText(body.participantName, '姓名或昵称', 80), participantRef = text(body.participantRef, '学号或识别信息', 100, '');
+  const participantName = requiredText(body.participantName, '姓名或昵称', 80), participantRef = text(body.participantRef, '学号或识别信息', 100, ''), participantClass = text(body.participantClass, '班级', 100, '');
   const state = teachingState(db, scope, { create: true });
   if (state.sessions.length >= TEACHING_LIMITS.sessions) throw new TeachingError('课程参与人数已达上限，请联系老师', 429, 'TEACHING_CAPACITY');
   const token = randomBytes(32).toString('base64url'), createdAt = now();
-  const session: TeachingSession = { ...scope, id: id('tss'), courseId: course.id, tokenHash: hash(`${slug}:${token}`), participantName, participantRef, consentedAt: createdAt, createdAt, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() };
-  state.sessions.push(session); return { token, sessionId: session.id, participantName, participantRef, expiresAt: session.expiresAt };
+  const session: TeachingSession = { ...scope, id: id('tss'), courseId: course.id, tokenHash: hash(`${slug}:${token}`), participantName, participantRef, participantClass, consentedAt: createdAt, createdAt, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() };
+  state.sessions.push(session); return { token, sessionId: session.id, participantName, participantRef, participantClass, expiresAt: session.expiresAt };
 }
-export function publicTeachingSession(session: TeachingSession) { return { id: session.id, participantName: session.participantName, participantRef: session.participantRef, expiresAt: session.expiresAt }; }
+export function publicTeachingSession(session: TeachingSession) { return { id: session.id, participantName: session.participantName, participantRef: session.participantRef, participantClass: session.participantClass ?? '', expiresAt: session.expiresAt }; }
 function answerValues(value: unknown, activity: TeachingActivity) {
   if (value === undefined) return {} as Record<string, string>;
   const body = object(value), entries = Object.entries(body);
@@ -254,13 +285,14 @@ export function addTeachingSubmission(db: Database, scope: TeachingScope, course
   if (!/^[A-Za-z0-9_-]{8,120}$/.test(operationId)) throw new TeachingError('提交编号格式不正确');
   const answers = answerValues(body.answers, activity), content = text(body.text, '作业内容', 80000, ''), attachmentIds = strings(body.attachmentIds, '作业附件', 10, 100);
   const participantName = session?.participantName ?? requiredText(body.participantName, '学生姓名或昵称', 80), participantRef = session?.participantRef ?? text(body.participantRef, '学生学号或识别信息', 100, '');
+  const participantClass = session ? session.participantClass ?? '' : text(body.participantClass, '班级', 100, '');
   if (!content && !attachmentIds.length && !Object.values(answers).some(Boolean)) throw new TeachingError('请填写答案、学习记录或上传作业');
   validateTeachingAttachments(db, scope, course.id, attachmentIds, session?.id ?? scope.userId);
-  const state = teachingState(db, scope, { create: true }), payloadHash = hash(JSON.stringify({ activityId, activityRevision: activity.revision, participantName, participantRef, text: content, answers: Object.fromEntries(Object.entries(answers).sort()), attachmentIds }));
+  const state = teachingState(db, scope, { create: true }), payloadHash = hash(JSON.stringify({ activityId, activityRevision: activity.revision, participantName, participantRef, ...(participantClass ? { participantClass } : {}), text: content, answers: Object.fromEntries(Object.entries(answers).sort()), attachmentIds }));
   const existing = state.submissions.find(s => s.workspaceId === scope.workspaceId && s.userId === scope.userId && s.courseId === course.id && s.sessionId === session?.id && s.operationId === operationId);
   if (existing) { if (existing.payloadHash !== payloadHash) throw new TeachingError('此提交编号已使用，请刷新确认已提交内容', 409, 'TEACHING_OPERATION_CONFLICT'); return { submission: existing, duplicate: true }; }
   if (state.submissions.length >= TEACHING_LIMITS.submissions) throw new TeachingError('课程提交数量已达上限，请联系老师', 429, 'TEACHING_CAPACITY');
-  const submission: TeachingSubmission = { ...scope, id: id('tsub'), courseId: course.id, activityId, activityRevision: activity.revision, ...(session ? { sessionId: session.id } : {}), participantName, participantRef, operationId, payloadHash, text: content, answers, attachmentIds, activitySnapshot: structuredClone(activity), createdAt: now() };
+  const submission: TeachingSubmission = { ...scope, id: id('tsub'), courseId: course.id, activityId, activityRevision: activity.revision, ...(session ? { sessionId: session.id } : {}), participantName, participantRef, participantClass, operationId, payloadHash, text: content, answers, attachmentIds, activitySnapshot: structuredClone(activity), createdAt: now() };
   state.submissions.push(submission); return { submission, duplicate: false };
 }
 export function teachingSubmissions(db: Database, scope: TeachingScope, courseId: string) {
@@ -270,12 +302,31 @@ export function teachingSubmissions(db: Database, scope: TeachingScope, courseId
 export function publicTeachingSubmission(s: TeachingSubmission) {
   const grade = s.grade?.status === 'published' ? { criteria: s.grade.criteria.map(c => ({ criterionId: c.criterionId, score: c.score, comment: c.comment, evidence: c.evidence })), total: s.grade.total, feedback: s.grade.feedback, source: s.grade.source, status: s.grade.status, needsReview: s.grade.needsReview, reviewedAt: s.grade.reviewedAt, publishedAt: s.grade.publishedAt } : undefined;
   const learningReview = s.activitySnapshot.kind === 'scenario' ? s.activitySnapshot.scenes.filter(scene => !!s.answers[scene.id]).map(scene => ({ title: scene.title, reflection: scene.reflection })) : undefined;
-  return { id: s.id, courseId: s.courseId, activityId: s.activityId, activityRevision: s.activityRevision, operationId: s.operationId, participantName: s.participantName, participantRef: s.participantRef, text: s.text, answers: s.answers, attachmentIds: s.attachmentIds, createdAt: s.createdAt, ...(grade ? { grade } : {}), ...(learningReview ? { learningReview } : {}) };
+  return { id: s.id, courseId: s.courseId, activityId: s.activityId, activityRevision: s.activityRevision, operationId: s.operationId, participantName: s.participantName, participantRef: s.participantRef, participantClass: s.participantClass ?? '', text: s.text, answers: s.answers, attachmentIds: s.attachmentIds, createdAt: s.createdAt, ...(grade ? { grade } : {}), ...(learningReview ? { learningReview } : {}) };
+}
+export function teachingGradingActivity(submission: TeachingSubmission): TeachingActivity { return submission.gradingSnapshot ?? submission.activitySnapshot; }
+export function bindTeachingGradingBasis(db: Database, scope: TeachingScope, courseId: string, submissionId: string, input: unknown) {
+  const body = object(input), course = ownedTeachingCourse(db, scope, courseId), submission = teachingSubmissions(db, scope, courseId).find(row => row.id === submissionId);
+  if (!submission) throw new TeachingError('作业不存在', 404, 'TEACHING_NOT_FOUND');
+  if (body.confirmed !== true) throw new TeachingError('请明确确认采用当前评分标准');
+  if (submission.grade?.status === 'published') throw new TeachingError('成绩已发布，不能更换这份作业的评分依据', 409, 'TEACHING_GRADE_PUBLISHED');
+  const current = course.activities.find(activity => activity.id === submission.activityId && activity.courseId === courseId && activity.workspaceId === scope.workspaceId && activity.userId === scope.userId);
+  if (!current || current.kind !== 'assignment' || submission.activitySnapshot.kind !== 'assignment') throw new TeachingError('只有作业活动可在收件后明确采用新评分标准');
+  if (body.submissionActivityRevision !== submission.activityRevision || body.activityRevision !== current.revision) throw new TeachingError('作业或评分活动版本已变化，请刷新后再确认', 409, 'TEACHING_GRADING_REVISION_CONFLICT');
+  if (!current.rubric.length || current.rubric.some(item => item.maxScore <= 0)) throw new TeachingError('请先保存完整的作业评分标准');
+  validateTeachingAttachments(db, scope, courseId, current.sourceAttachmentIds ?? []);
+  const knowledgeSources = bindTeachingKnowledgeSources(db, scope, undefined, current.knowledgeSources ?? []);
+  const candidate = { ...structuredClone(current), knowledgeSources, questions: structuredClone(submission.activitySnapshot.questions), scenes: structuredClone(submission.activitySnapshot.scenes), instructions: submission.activitySnapshot.instructions };
+  if (submission.gradingSnapshot && JSON.stringify(submission.gradingSnapshot) === JSON.stringify(candidate)) return submission;
+  if ((body.expectedGradingRevision ?? 0) !== (submission.gradingRevision ?? 0)) throw new TeachingError('这份作业已采用另一版评分标准，请刷新后核对', 409, 'TEACHING_GRADING_REVISION_CONFLICT');
+  submission.gradingSnapshot = candidate; submission.gradingRevision = (submission.gradingRevision ?? 0) + 1; submission.gradingBoundAt = now(); delete submission.grade;
+  return submission;
 }
 export function reviewTeachingSubmission(db: Database, scope: TeachingScope, courseId: string, submissionId: string, input: unknown) {
   const submission = teachingSubmissions(db, scope, courseId).find(s => s.id === submissionId);
   if (!submission) throw new TeachingError('作业不存在', 404, 'TEACHING_NOT_FOUND');
-  const body = object(input), rows = boundedRows(body.criteria, '评分项', 40), activity = submission.activitySnapshot;
+  const body = object(input), rows = boundedRows(body.criteria, '评分项', 40), activity = teachingGradingActivity(submission);
+  if ((submission.gradingRevision ?? 0) > 0 && body.gradingRevision !== submission.gradingRevision) throw new TeachingError('评分依据已更新，请重新核对当前版本再发布', 409, 'TEACHING_GRADING_REVISION_CONFLICT');
   const allowed = activity.kind === 'quiz' ? activity.questions.map(q => ({ id: q.id, max: q.points })) : activity.rubric.map(r => ({ id: r.id, max: r.maxScore }));
   const criteria = rows.map(row => {
     const criterionId = requiredText(row.criterionId, '评分项编号', 100), criterion = allowed.find(r => r.id === criterionId);
@@ -286,6 +337,10 @@ export function reviewTeachingSubmission(db: Database, scope: TeachingScope, cou
   const total = Math.round(criteria.reduce((sum, c) => sum + c.score, 0) * 100) / 100;
   if (body.total !== undefined && body.total !== total) throw new TeachingError('总分与分项得分不一致');
   const reviewedAt = now();
-  const grade: TeachingGrade = { criteria, total, feedback: text(body.feedback, '总体反馈', 12000, ''), source: 'teacher', status: 'published', needsReview: false, reviewedAt, publishedAt: reviewedAt };
+  const grade: TeachingGrade = { criteria, total, feedback: text(body.feedback, '总体反馈', 12000, ''), source: 'teacher', status: 'published', needsReview: false, reviewedAt, publishedAt: reviewedAt, gradingRevision: submission.gradingRevision ?? 0 };
+  if (submission.grade?.status === 'published') {
+    if (JSON.stringify({ criteria: submission.grade.criteria, total: submission.grade.total, feedback: submission.grade.feedback }) === JSON.stringify({ criteria, total, feedback: grade.feedback })) return submission;
+    throw new TeachingError('成绩已经发布，不能覆盖已确认的结果', 409, 'TEACHING_GRADE_PUBLISHED');
+  }
   submission.grade = grade; return submission;
 }

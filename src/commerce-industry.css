@@ -16,3 +16,20 @@
 .one-settings-dialog .industry-workspaces .industry-directory-toolbar input:focus{outline:0;box-shadow:none}
 .one-settings-dialog .industry-workspaces .industry-directory-toolbar input:focus-visible{outline:0!important;box-shadow:none}
 .one-settings-dialog .industry-tool-shell .industry-usage>details{background:transparent!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;box-shadow:none;border:0;padding:0}
+
+/* One compact, in-flow setting for the whole tool. Expanding it never covers work. */
+.industry-tool-shell .industry-usage{display:block;padding:8px 32px;border-bottom:1px solid var(--industry-line)}
+.industry-tool-shell .industry-usage>details{width:100%;border:0;background:transparent}
+.industry-tool-shell .industry-usage>details>summary{display:flex;justify-content:flex-start;text-align:left;min-height:44px;gap:10px;padding:0;border:0;background:transparent;color:var(--industry-ink)}
+.industry-tool-shell .industry-usage>details>summary strong{flex:0 0 auto;font-size:12px;font-weight:550}
+.industry-tool-shell .industry-usage>details>summary>svg{flex:0 0 auto}
+.industry-tool-shell .industry-usage>details>summary>span{display:flex;align-items:center;gap:6px;margin-left:auto;color:var(--industry-muted);font-size:12px;font-variant-numeric:tabular-nums}
+.industry-tool-shell .industry-usage>details>summary::-webkit-details-marker{display:none}
+.industry-tool-shell .industry-usage>details>div{position:static;inset:auto;width:min(100%,640px);max-height:none;margin:8px 0 16px auto;padding:20px;box-shadow:none;border-radius:14px;background:var(--fluid-input,var(--industry-paper))}
+.industry-usage>details>div>header{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.industry-tool-shell .industry-usage-close{display:grid;place-items:center;width:44px;height:44px;min-width:44px;padding:0;border:0;border-radius:10px;background:transparent;color:inherit}
+.industry-tool-shell .industry-usage-refresh{display:flex;align-items:center;justify-content:center;width:auto;min-height:44px;gap:8px;padding:8px 12px;border:1px solid var(--industry-line);border-radius:10px}
+.industry-tool-shell .industry-consent-check input{flex:0 0 16px;width:16px;height:16px;padding:0;min-height:0;margin-top:5px}
+.industry-tool-shell button.industry-consent-submit:disabled{background:var(--industry-line);color:var(--industry-muted)!important;opacity:1}
+.industry-tool-shell .industry-token-prices>summary{justify-content:flex-start;min-height:32px;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+@media(max-width:760px){.industry-tool-shell .industry-usage{padding-inline:20px}.industry-tool-shell .industry-usage>details>summary{flex-wrap:wrap;gap:6px 10px}.industry-tool-shell .industry-usage>details>summary>span{font-size:11px}.industry-tool-shell .industry-usage>details>div{width:100%;padding:16px}}

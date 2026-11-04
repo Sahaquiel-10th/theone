@@ -25,11 +25,14 @@ export type TeachingCourse = TeachingScope & {
   materialText: string; materialAttachmentIds: string[]; budgetMicros: number;
   /** Guided tasks use one private course container, created only on an explicit save/upload. */
   clientDraftId?: string; taskKind?: TeachingTaskKind; knowledgeSources?: TeachingKnowledgeSource[];
+  /** Course-centre creation receipt, distinct from legacy task drafts. */
+  clientCreateKey?: string; createPayloadHash?: string;
   status: 'draft' | 'published' | 'closed'; slug?: string; activities: TeachingActivity[];
   createdAt: string; updatedAt: string;
 };
 export type TeachingSession = TeachingScope & {
   id: string; courseId: string; tokenHash: string; participantName: string; participantRef: string;
+  participantClass?: string;
   consentedAt: string; createdAt: string; expiresAt: string;
   gameConfigs?: TeachingGameConfig[];
 };
@@ -41,17 +44,21 @@ export type TeachingGrade = {
   criteria: { criterionId: string; score: number; comment: string; evidence: string }[];
   total: number; feedback: string; source: 'rules' | 'ai' | 'teacher';
   status: 'suggested' | 'published'; needsReview: boolean; reviewedAt?: string; publishedAt?: string;
+  gradingRevision?: number;
 };
 export type TeachingSubmission = TeachingScope & {
   id: string; courseId: string; activityId: string; activityRevision: number; sessionId?: string;
   participantName: string; participantRef: string; operationId: string; payloadHash: string;
+  participantClass?: string;
   text: string; answers: Record<string, string>; attachmentIds: string[];
   activitySnapshot: TeachingActivity; grade?: TeachingGrade; createdAt: string;
+  gradingSnapshot?: TeachingActivity; gradingRevision?: number; gradingBoundAt?: string;
 };
 export type TeachingOperation = TeachingScope & {
   id: string; courseId: string; activityId?: string; submissionId?: string; sessionId?: string;
   operationId: string; payloadHash: string; kind: 'prepare' | 'answer' | 'grade' | 'insights';
   courseRevision?: number; question?: string; attachmentIds?: string[];
+  submissionGradingRevision?: number;
   conversationId?: string; gameRevision?: number; gamePromptSnapshot?: { roleName: string; prompt: string };
   status: 'running' | 'completed' | 'uncertain' | 'failed'; result?: unknown; error?: string;
   createdAt: string; completedAt?: string;

@@ -159,3 +159,7 @@
 `IndustryStore` 在原 Store 事务内将领域集合投影与回写；禁止已存在记录的空间/所有者改绑。附件继续存在 ONE `attachments` 集合，私有 `conversationId=industry:commerce` 标记限定这些工具的素材；业务记录引用阻止通用附件接口误删。用量授权保存用户明确确认的总上限与原 ONE Key 绑定，模型用量仍由现有账本负责。
 
 行业工作台收藏：`User.industry.favorites` 为可选私有数组，每条包含 `workspaceId`、`userId`、白名单 `workbenchId` 和 `updatedAt`。同一用户/空间/工作台仅一条，取消收藏删除该偏好。旧记录无字段时按空收藏读取，不改变其他工作台数据；`PublicUser` 不返回整个 `industry` 字段。
+
+课程教学沿用私有 `User.teaching`：课程持有共同材料、知识库授权引用和课程预算；活动归入课前、课中、课后。学生会话与提交新增兼容旧记录的 `participantClass` 班级；名字、班级由学生自己的课程会话绑定，不接受上传请求伪造另一个学生的身份。
+
+作业原始 `activitySnapshot` 不变。教师在收件后明确采用新版标准时，保存独立 `gradingSnapshot`、递增 `gradingRevision` 及绑定时间，清除尚未发布的旧建议。AI 操作与人工复核核对该版本；晚到的旧评分不覆盖新依据，已发布成绩不能通过换标准改写。私有文件仍通过课程、所有者或学生会话精确鉴权；被课程、作业、原始快照或评阅快照引用的原件不能由上传清理接口删除。

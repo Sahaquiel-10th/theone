@@ -19,7 +19,7 @@ export function flowTextExtent(inkBottom:number,lineHeight:number){
 }
 
 /** DOM measurements remain local; no streamed message or input is re-mounted. */
-export function useFluidContentFlow(canvas:RefObject<HTMLDivElement|null>,enabled:boolean,layout:FluidLayout){
+export function useFluidContentFlow(canvas:RefObject<HTMLDivElement|null>,enabled:boolean,layout:FluidLayout,refreshKey?:boolean|string|number){
   const latest=useRef({layout,phases:{} as FluidPhases});latest.current.layout=layout;
   const refresh=useRef<(()=>void)|null>(null);
   const onFrame=useCallback((frame:FluidFrame)=>{
@@ -106,6 +106,6 @@ export function useFluidContentFlow(canvas:RefObject<HTMLDivElement|null>,enable
     refresh.current=schedule;observe();
     return()=>{disposed=true;cancelAnimationFrame(raf);observer.disconnect();mutations.disconnect();root.removeEventListener('scroll',schedule,true);root.removeEventListener('load',schedule,true);if(managedLog)delete managedLog.dataset.fluidLayoutManaged;refresh.current=null;};
   },[canvas,enabled]);
-  useLayoutEffect(()=>{refresh.current?.();},[layout.width,layout.height,layout.activityBounds.height,layout.localBounds.height]);
+  useLayoutEffect(()=>{refresh.current?.();},[layout.width,layout.height,layout.activityBounds.height,layout.localBounds.height,refreshKey]);
   return onFrame;
 }

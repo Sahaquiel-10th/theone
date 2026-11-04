@@ -1,15 +1,15 @@
 import type {TeachingActivity,TeachingCourse,TeachingGrade,TeachingKind,TeachingOperation,TeachingStage,TeachingSubmission} from '../server/teachingTypes';
 
 export const teachingStages: {id:TeachingStage;title:string;description:string}[] = [
-  {id:'before',title:'课前工具包',description:'了解学情，准备这一堂课'},
-  {id:'during',title:'课中工具包',description:'情境讨论与现场导学'},
-  {id:'after',title:'课后工具包',description:'收取答卷与作业，复核批注'},
+  {id:'before',title:'课前',description:'了解学情，准备这一堂课'},
+  {id:'during',title:'课中',description:'情境讨论与现场导学'},
+  {id:'after',title:'课后',description:'收取答卷与作业，复核批注'},
 ];
-export const teachingKinds:Record<TeachingKind,string>={inquiry:'学情调研 / 现场导学',scenario:'情境活动',quiz:'在线答题',assignment:'作业与批改',game:'课堂文字游戏'};
-export const stageKinds=(stage:TeachingStage):TeachingKind[]=>stage==='before'?['inquiry']:stage==='during'?['scenario','inquiry']:['assignment','quiz'];
-export type ActivityDraft=Pick<TeachingActivity,'title'|'stage'|'kind'|'instructions'|'questions'|'scenes'|'rubric'>&{referenceText:string;sourceAttachmentIds:string[];avatarPrompt?:string;allowStudentPrompt?:boolean};
+export const teachingKinds:Record<TeachingKind,string>={inquiry:'学习助教问答',scenario:'情境活动',quiz:'在线测验',assignment:'作业与批改',game:'课堂文字游戏'};
+export const stageKinds=(stage:TeachingStage):TeachingKind[]=>stage==='before'?['inquiry']:stage==='during'?['inquiry','game','scenario']:['assignment','quiz'];
+export type ActivityDraft=Pick<TeachingActivity,'title'|'stage'|'kind'|'instructions'|'questions'|'scenes'|'rubric'>&{referenceText:string;sourceAttachmentIds:string[];knowledgeSources?:TeachingActivity['knowledgeSources'];avatarPrompt?:string;allowStudentPrompt?:boolean};
 export function newActivityDraft(stage:TeachingStage,kind:TeachingKind=stageKinds(stage)[0]):ActivityDraft{return {title:'',stage,kind,instructions:'',referenceText:'',sourceAttachmentIds:[],questions:[],scenes:[],rubric:[]};}
-export function activityDraft(activity:TeachingActivity):ActivityDraft{return structuredClone({title:activity.title,stage:activity.stage,kind:activity.kind,instructions:activity.instructions,referenceText:activity.referenceText??'',sourceAttachmentIds:activity.sourceAttachmentIds??[],...(activity.avatarPrompt!==undefined?{avatarPrompt:activity.avatarPrompt}:{}),...(activity.allowStudentPrompt!==undefined?{allowStudentPrompt:activity.allowStudentPrompt}:{}),questions:activity.questions,scenes:activity.scenes,rubric:activity.rubric});}
+export function activityDraft(activity:TeachingActivity):ActivityDraft{return structuredClone({title:activity.title,stage:activity.stage,kind:activity.kind,instructions:activity.instructions,referenceText:activity.referenceText??'',sourceAttachmentIds:activity.sourceAttachmentIds??[],...(activity.knowledgeSources!==undefined?{knowledgeSources:structuredClone(activity.knowledgeSources)}:{}),...(activity.avatarPrompt!==undefined?{avatarPrompt:activity.avatarPrompt}:{}),...(activity.allowStudentPrompt!==undefined?{allowStudentPrompt:activity.allowStudentPrompt}:{}),questions:activity.questions,scenes:activity.scenes,rubric:activity.rubric});}
 export const activityDraftKey=(courseId:string,stage:TeachingStage,activityId?:string)=>`${courseId}:${stage}:${activityId??'new'}`;
 export const draftChanged=(draft:ActivityDraft,activity?:TeachingActivity)=>JSON.stringify(draft)!==JSON.stringify(activity?activityDraft(activity):newActivityDraft(draft.stage,draft.kind));
 /** A previously completed draft must not replace a teacher's newer saved activity. */
@@ -22,14 +22,15 @@ export function applyPreparation(draft:ActivityDraft,value:unknown):ActivityDraf
 }
 export function editableGrade(submission:TeachingSubmission):TeachingGrade{
   if(submission.grade)return structuredClone(submission.grade);
-  const criteria=submission.activitySnapshot.kind==='quiz'?submission.activitySnapshot.questions.map(q=>({criterionId:q.id,score:0,comment:'',evidence:''})):submission.activitySnapshot.rubric.map(c=>({criterionId:c.id,score:0,comment:'',evidence:''}));
-  return {criteria,total:0,feedback:'',source:'teacher',status:'suggested',needsReview:true};
+  const basis=submission.gradingSnapshot??submission.activitySnapshot;
+  const criteria=basis.kind==='quiz'?basis.questions.map(q=>({criterionId:q.id,score:0,comment:'',evidence:''})):basis.rubric.map(c=>({criterionId:c.id,score:0,comment:'',evidence:''}));
+  return {criteria,total:0,feedback:'',source:'teacher',status:'suggested',needsReview:true,...(submission.gradingRevision!==undefined?{gradingRevision:submission.gradingRevision}:{})};
 }
 export const teachingScoreTotal=(criteria:{score:number}[])=>Math.round(criteria.reduce((sum,item)=>sum+item.score,0)*100)/100;
 export function teachingCsv(submissions:TeachingSubmission[]):string{
   const cell=(value:unknown)=>{let s=String(value??'');if(/^[\s]*[=+@\-]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};
-  return '\uFEFF'+[['姓名 / 昵称','学号 / 识别码','提交时间','得分','反馈状态','教师反馈'],...submissions.map(s=>[s.participantName,s.participantRef,s.createdAt,s.grade?.total??'',s.grade?.status==='published'?'已发布':s.grade?'待复核':'待批改',s.grade?.feedback??''])].map(row=>row.map(cell).join(',')).join('\r\n');
+  return '\uFEFF'+[['姓名 / 昵称','班级','学号 / 识别码','提交时间','得分','反馈状态','教师反馈'],...submissions.map(s=>[s.participantName,s.participantClass??'',s.participantRef,s.createdAt,s.grade?.total??'',s.grade?.status==='published'?'已发布':s.grade?'待复核':'待批改',s.grade?.feedback??''])].map(row=>row.map(cell).join(',')).join('\r\n');
 }
-export type CourseDraft=Pick<TeachingCourse,'title'|'subject'|'description'|'materialText'|'materialAttachmentIds'|'budgetMicros'>;
+export type CourseDraft=Pick<TeachingCourse,'title'|'subject'|'description'|'materialText'|'materialAttachmentIds'|'budgetMicros'>&{knowledgeSources?:TeachingCourse['knowledgeSources']};
 export const emptyCourseDraft=():CourseDraft=>({title:'',subject:'',description:'',materialText:'',materialAttachmentIds:[],budgetMicros:5_000_000});
 export const publicSessionStorageKey=(slug:string)=>`one-teaching-session:${slug}`;

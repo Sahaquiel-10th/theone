@@ -21,6 +21,10 @@ import { publicModel, publicUsageRecord, publicUser } from '../server/serializer
 import { identityAccess } from '../server/enterprisePolicy.js';
 import { availablePowerMicros } from '../server/powerBilling.js';
 import { reconcileInterruptedBilling } from '../server/modelBilling.js';
+import { installTeachingRoutes } from '../server/teachingRoutes.js';
+import { installTeachingFileRoutes } from '../server/teachingFiles.js';
+import { installTeachingAiRoutes } from '../server/teachingAiRoutes.js';
+import { installTeachingKnowledgeRoutes } from '../server/teachingKnowledgeRoutes.js';
 
 const scope = { userId: 'qa-industry-owner', workspaceId: 'qa-industry-workspace' };
 const actor = { id: scope.userId, workspaceId: scope.workspaceId }, keyId = 'qa-industry-one-key';
@@ -53,7 +57,8 @@ catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw er
 function assertIsolatedState(state: Database) {
   if (state.users.length !== 1 || state.users[0].id !== scope.userId || state.workspaces.length !== 1 || state.workspaces[0].id !== scope.workspaceId
     || state.models.length !== 1 || state.models[0].id !== model.id || state.models[0].apiKey !== model.apiKey || state.models[0].provider !== model.provider || state.knowledgeConnections.length) throw new Error('拒绝加载：QA 文件不是本脚本的单账号合成数据。');
-  for (const file of state.attachments) if (file.workspaceId !== scope.workspaceId || file.userId !== scope.userId || !path.resolve(file.storagePath).startsWith(directory + path.sep)) throw new Error('拒绝加载：QA 附件越出隔离目录或账号。');
+  const studentOwners = new Set((state.users[0].teaching?.sessions ?? []).filter(session=>session.workspaceId===scope.workspaceId&&session.userId===scope.userId&&state.users[0].teaching?.courses.some(course=>course.id===session.courseId&&course.workspaceId===scope.workspaceId&&course.userId===scope.userId)).map(session=>session.id));
+  for (const file of state.attachments) if (file.workspaceId !== scope.workspaceId || file.userId !== scope.userId && !studentOwners.has(file.userId) || !path.resolve(file.storagePath).startsWith(directory + path.sep)) throw new Error('拒绝加载：QA 附件越出隔离目录或账号。');
 }
 assertIsolatedState(db);
 let tail: Promise<unknown> = Promise.resolve();
@@ -118,7 +123,7 @@ function syntheticText(messages: ModelToolMessage[]) {
   if (prompt.startsWith('你是电商运营策划')) return textResult('隔离测试分析：仅借用参考图的信息层级，商品名称、规格和卖点沿用用户明确确认的资料。购买理由与视觉方向需要真实用户验证，不新增价格、功效或赠品承诺。');
   throw new Error('隔离模型尚未支持这类提示词；未连接真实模型。');
 }
-let chatCount = 0, imageCount = 0;
+let chatCount = 0, imageCount = 0, teachingCount = 0;
 const runner = createIndustryModelRunner(new (await import('../server/industryState.js')).IndustryStore(store), {
   imageStorageAvailable: true,
   chatCall: async (_model, messages, tools) => { chatCount++; if (tools.length) throw new Error('隔离模型禁止工具或外部调用'); return syntheticText(messages); },
@@ -144,6 +149,20 @@ await files.recover();
 const industry = installIndustryRoutes(app, [auth], store, files, { verifyKey, storageAvailable: true });
 const commerce = installCommerceRoutes(app, [auth], industry, { runModel: runner, readImages: readCommerceImages, saveImage: (url, job, variant) => saveCommerceImage(url, job, variant, directory), verifyKey });
 app.use('/api', createReviewReplyRouter(industry, [auth], { runModel: runner, readImages: readCommerceImages, verifyKey }));
+installTeachingRoutes(app, [auth], store, { verifyKey });
+installTeachingFileRoutes(app, [auth], store, directory, files);
+installTeachingKnowledgeRoutes(app, [auth], store, { verifyKey });
+installTeachingAiRoutes(app, [auth], store, { verifyKey, modelCall: async (_model, messages) => {
+  teachingCount++;
+  const instruction = messages.filter(message => message.role === 'system').map(message => message.content).join('\n');
+  const data = JSON.parse(String(messages.find(message => message.role === 'user')?.content ?? '{}')).untrustedTeachingData ?? {};
+  if (instruction.includes('criterionId 必须')) return textResult({criteria:data.criteria.map((criterion:{id:string;maxScore:number})=>({criterionId:criterion.id,score:criterion.maxScore*.8,comment:'隔离模拟建议，需教师复核。',evidence:String(data.work?.text||data.work?.attachmentText||'').slice(0,12)||'合成图片包含ONE QA字样',...(!(data.work?.text||data.work?.attachmentText)&&messages.some(message=>message.inputImageDataUrls?.length)?{evidenceImageIndex:1}:{})})),feedback:'隔离模拟结果，仅验证流程。'});
+  if (instruction.includes('连续文字游戏')) return textResult({answer:'隔离课堂情境：你来到苏堤，请先观察水位再选择行动。',choices:['观察水位','听取居民意见']});
+  if (instruction.includes('群体关注主题')) return textResult({summary:'隔离模拟学情汇总。',topics:[{label:'城市与生活',count:1}],suggestions:['结合课内材料讨论。']});
+  if (instruction.includes('locationCandidates')) return textResult({answer:'课程资料介绍了苏堤与杭州生活的关系。此为隔离模拟回答。',materialInsufficient:false,needsLocationClarification:false,locationCandidates:[],citations:[{source:'material',quote:String(data.materialText).slice(0,24)}]});
+  if (instruction.includes('仅整理老师提供的试卷')) return textResult({instructions:'依据课程材料作答。',questions:[{id:'qa-q1',prompt:'苏堤与哪位人物有关？',type:'single',options:['苏轼','白居易'],answer:'苏轼',points:100,citation:{source:'attachment',quote:'苏堤与哪位人物有关'}}]});
+  return textResult({instructions:'依据课程材料提出一个关于城市生活的问题。'});
+} });
 
 // Explicit bootstrap mocks let '/' load the real main.tsx. These never dispatch work.
 app.get('/api/me', (req, res) => {
@@ -159,7 +178,6 @@ const get = (route: string, result: () => unknown) => app.get(route, auth, (_req
 get('/api/models', () => ({ models: db.models.map(publicModel), defaultModelId: model.id }));
 get('/api/conversations', () => ({ conversations: [], pagination: { page: 1, pageSize: 30, total: 0, hasMore: false } }));
 get('/api/folders', () => ({ folders: [] })); get('/api/agents', () => ({ agents: [] }));
-get('/api/teaching/courses', () => ({ courses: [] }));
 get('/api/capabilities', () => ({ attachments: { enabled: true, maxFiles: 5, maxBytes: 200 * 1024 * 1024, imageMaxBytes: 20 * 1024 * 1024, extensions: ['png', 'jpg', 'jpeg', 'webp', 'pdf', 'docx', 'txt', 'md', 'csv', 'xlsx'] }, webSearch: { enabled: false }, knowledge: { providers: [] } }));
 for (const provider of ['getnote', 'notion', 'yinxiang', 'flowus', 'feishu', 'flomo', 'ima']) get(`/api/knowledge/connections/${provider}`, () => ({ connection: { id: `qa-disconnected-${provider}`, workspaceId: scope.workspaceId, provider, status: 'disconnected', available: false, message: '隔离体验未连接外部账号' }, configured: false }));
 get('/api/runtime/update', () => ({ configured: true, supported: true, current: { platform: 'macos', architecture: 'arm64', version: 'qa-synthetic', updateProtocol: 1 }, latestVersion: 'qa-synthetic', available: false, connectionState: 'connected', confirmation: { requestId: 'qa-synthetic-connection', version: 'qa-synthetic' } }));
@@ -175,7 +193,7 @@ app.get('/api/features', auth, (req, res) => { const query = String(req.query.q 
 get(`/api/features/${feature.id}`, () => feature);
 app.post('/api/features/quote', auth, (req, res) => { if (!Array.isArray(req.body?.featureIds) || req.body.featureIds.some((id: unknown) => id !== feature.id)) { res.status(400).json({ error: '隔离报价只支持合成示例 Skill' }); return; } res.json({ approvalThreshold: 2, features: req.body.featureIds.map(() => ({ id: feature.id, name: feature.name, releaseId: feature.releaseId, version: 1, multiplier: 1 })) }); });
 get('/api/me/billing', () => ({ balanceMicros: db.powerAccounts[0].balanceMicros, reservedMicros: db.powerAccounts[0].reservedMicros || 0, availableMicros: availablePowerMicros(db, scope.workspaceId, scope.userId), ledger: db.powerLedger, orders: [], usage: db.modelUsageRecords.map(publicUsageRecord), rechargeCnyPerPower: 7 }));
-get('/api/qa-industry/state', () => ({ fixture: 'isolated synthetic; no external provider calls or real charges', directory, modelCallsSinceStart: { text: chatCount, image: imageCount }, balanceMicros: db.powerAccounts[0].balanceMicros, reservedMicros: db.powerAccounts[0].reservedMicros || 0, ledger: db.powerLedger, usage: db.modelUsageRecords.map(publicUsageRecord), jobs: industryDatabase(db).commerceJobs.map(job => ({ id: job.id, kind: job.kind, status: job.status, phase: job.phase, variants: job.variants.map(variant => ({ id: variant.id, status: variant.status, imageAttachmentId: variant.imageAttachmentId })) })), reviewRuns: industryDatabase(db).reviewReplyRuns.map(run => ({ id: run.id, status: run.status, completed: run.results.filter(result => result.candidates.length > 0).length, total: run.results.length })), files: db.attachments.map(file => ({ id: file.id, name: file.originalName, status: file.status, bytes: file.size })) }));
+get('/api/qa-industry/state', () => ({ fixture: 'isolated synthetic; no external provider calls or real charges', directory, modelCallsSinceStart: { text: chatCount, image: imageCount, teaching: teachingCount }, balanceMicros: db.powerAccounts[0].balanceMicros, reservedMicros: db.powerAccounts[0].reservedMicros || 0, ledger: db.powerLedger, usage: db.modelUsageRecords.map(publicUsageRecord), jobs: industryDatabase(db).commerceJobs.map(job => ({ id: job.id, kind: job.kind, status: job.status, phase: job.phase, variants: job.variants.map(variant => ({ id: variant.id, status: variant.status, imageAttachmentId: variant.imageAttachmentId })) })), reviewRuns: industryDatabase(db).reviewReplyRuns.map(run => ({ id: run.id, status: run.status, completed: run.results.filter(result => result.candidates.length > 0).length, total: run.results.length })), teaching: {courses:db.users[0].teaching?.courses.map(course=>({id:course.id,status:course.status,activities:course.activities.length,materialFiles:course.materialAttachmentIds.length}))??[],submissions:db.users[0].teaching?.submissions.map(row=>({id:row.id,courseId:row.courseId,activityId:row.activityId,files:row.attachmentIds.length,gradeStatus:row.grade?.status,gradingRevision:row.gradingRevision??0}))??[],operations:db.users[0].teaching?.operations.map(operation=>({id:operation.id,kind:operation.kind,status:operation.status}))??[]}, files: db.attachments.map(file => ({ id: file.id, name: file.originalName, status: file.status, bytes: file.size })) }));
 app.use((req, res) => { process.stderr.write(`[industry-qa unsupported] ${req.method} ${req.path}\n`); res.status(404).json({ error: `隔离 QA fixture 未支持此接口：${req.method} ${req.path}；没有执行真实请求。`, code: 'QA_ROUTE_UNSUPPORTED' }); });
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error instanceof IndustryError ? error.status : 400).json({ error: error instanceof Error ? error.message : '隔离 QA 操作失败', code: error instanceof IndustryError ? error.code : 'QA_FAILED' }); });
 const server = app.listen(apiPort, '127.0.0.1', () => process.stdout.write(`Industry fullscreen QA API http://127.0.0.1:${apiPort}\nQA guide http://127.0.0.1:${uiPort}/scripts/qa-industry.html\nReal main http://127.0.0.1:${uiPort}/\nDirectory http://127.0.0.1:${uiPort}/workbenches\nDeep link http://127.0.0.1:${uiPort}/workbenches/image_edit\nIsolated data ${directory}\nSamples ${directory}/sample-{product,reference,detail}.png\nAll model responses and the 100-power wallet are synthetic. Favorites use the real industry routes.\n`));

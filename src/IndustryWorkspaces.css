@@ -8,21 +8,20 @@
   color:var(--industry-ink);font:inherit;min-width:0;width:100%;box-sizing:border-box;
 }
 .industry-workspaces *{box-sizing:border-box}
-.industry-workspaces [hidden],.industry-page-shell[hidden],.one-background-workspace[hidden]{display:none!important}
+/* The legacy global details glass uses a fixed pale fill. Tool surfaces must
+   follow the current material, including smoke, while ONE owns the outer skin. */
+main.one-fluid-workspace.one-shell.one-studio .industry-page-shell .industry-workspaces details{background:var(--teach-paper,var(--industry-paper));border-color:var(--industry-line);box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}
+main.one-fluid-workspace.one-shell.one-studio .industry-page-shell .industry-usage>details{background:transparent;padding:0;border:0}
+.industry-workspaces [hidden],.industry-page-shell[hidden]{display:none!important}
 .industry-page-shell{
-  position:absolute;inset:76px 16px 16px;min-width:0;min-height:0;overflow:auto;
-  overscroll-behavior:contain;border-radius:28px;background:var(--fluid-material,var(--studio-surface,#fafbf9));
-  color:var(--fluid-ink,var(--studio-ink));box-shadow:inset 0 1px 0 var(--fluid-rim-light,#ffffff80),0 0 0 1px var(--fluid-line,#dce0db);
+  position:absolute;z-index:2;top:24px;bottom:24px;left:var(--fluid-workbench-left,48px);right:var(--fluid-workbench-right,32px);
+  min-width:0;min-height:0;margin:0;overflow:auto;overscroll-behavior:contain;
+  border:0;border-radius:0;background:transparent;box-shadow:none;color:var(--fluid-ink,var(--studio-ink));
   scrollbar-gutter:stable;isolation:isolate;
 }
-main.one-fluid-workspace.one-shell.one-studio[data-fluid-desktop=true]>.industry-page-shell{inset:12px 12px 12px 88px}
-main.one-fluid-workspace.one-shell.one-studio.is-industry-page{--fluid-rail-growth:0px}
-main.one-fluid-workspace.one-shell.one-studio.is-industry-page .fluid-rail{width:64px}
-main.one-fluid-workspace.one-shell.one-studio.is-industry-page .fluid-rail-tasks{display:none}
-main.one-fluid-workspace.one-shell.one-studio.is-industry-page[data-fluid-desktop=true] .fluid-rail button>span{opacity:0}
-main.one-fluid-workspace.one-shell.one-studio.is-industry-page[data-fluid-desktop=false]{display:flex;flex-direction:column}
-main.one-fluid-workspace.one-shell.one-studio[data-fluid-desktop=false]>.industry-page-shell{position:relative;inset:auto;flex:1;min-height:0;width:100%;margin:0;border-radius:24px 24px 0 0;box-shadow:inset 0 1px 0 var(--fluid-rim-light,#ffffff80)}
-main.one-fluid-workspace.one-shell.one-studio.is-industry-page[data-fluid-desktop=false] .fluid-rail{width:100%}
+.one-background-workspace>[data-background-page=true]{visibility:hidden;pointer-events:none}
+main.one-fluid-workspace.one-shell.one-studio[data-fluid-desktop=false] .fluid-canvas>[data-background-page=true]{position:absolute;inset:0;min-height:0}
+main.one-fluid-workspace.one-shell.one-studio[data-fluid-desktop=false] .fluid-canvas>.industry-page-shell{position:relative;inset:auto;flex:1 1 0;min-height:0;width:100%;margin:0;background:var(--fluid-material);color:var(--fluid-ink)}
 .industry-directory{max-width:1536px;margin:0 auto;padding:40px clamp(24px,3vw,48px) 64px}
 .industry-directory-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin:0 0 32px}
 .industry-directory-heading>div>span{font-size:11px;letter-spacing:.12em;color:var(--industry-muted)}
