@@ -1,0 +1,6 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mergeTeachingKnowledgeSelection,teachingKnowledgeSourceSaved,teachingKnowledgePreviewLabel} from './teachingKnowledgeState';
+const source={provider:'ima' as const,connectionId:'connection',binding:'server-binding',scope:'connection' as const,label:'课程资料'};
+test('unsaved explicit connection consent survives picker merging and JSON save payload while prior selection stays intact',()=>{const previous=[{...source,connectionId:'previous'}];const merged=mergeTeachingKnowledgeSelection(previous,{...source,confirmed:true});assert.equal(JSON.parse(JSON.stringify({knowledgeSources:merged})).knowledgeSources[1].confirmed,true);assert.equal(previous.length,1);assert.equal(teachingKnowledgeSourceSaved(source,previous),false);assert.equal(teachingKnowledgeSourceSaved({...source,confirmed:true} as typeof source,[source]),true);assert.equal(teachingKnowledgeSourceSaved({...source,binding:'changed-account'},[source]),false);});
+test('a no-match trial is distinct from a readable preview and an exact saved association',()=>{assert.match(teachingKnowledgePreviewLabel('no_match'),/未找到匹配片段/);assert.doesNotMatch(teachingKnowledgePreviewLabel('no_match'),/连接失败|授权失败/);assert.match(teachingKnowledgePreviewLabel('read'),/可读资料/);assert.equal(teachingKnowledgeSourceSaved(source,[source]),true);});

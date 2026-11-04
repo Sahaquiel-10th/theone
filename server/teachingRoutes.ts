@@ -4,9 +4,10 @@ import { asyncRoute } from './middleware.js';
 import type { TeachingScope } from './teachingTypes.js';
 import { TeachingError, activeTeachingAccess, activeTeachingCourse, addTeachingSubmission, authTeachingSession, bindTeachingGradingBasis, closeTeachingCourse, createTeachingActivity, createTeachingCourse, createTeachingSession, createTeachingTask, listTeachingCourses, ownedTeachingCourse, publicTeachingCourse, publicTeachingSession, publicTeachingSubmission, publishTeachingCourse, reviewTeachingSubmission, teachingSubmissions, teachingState, teachingCourseView, teachingSessionActivity, updateTeachingActivity, updateTeachingCourse, updateTeachingGrading } from './teaching.js';
 import {listTeachingTrash,mutateTeachingTrash,setTeachingActivityOpen} from './teachingLifecycle.js';
+import {cleanTeachingPurgeFiles,commitTeachingPurge,ownedTeachingPurge,previewTeachingPurge,publicTeachingPurge} from './teachingPurge.js';
 import { publicTeachingGameConfig, teachingGameHistory, teachingGameSnapshot, updateTeachingGameConfig } from './teachingGames.js';
 
-type Dependencies = { verifyKey?: (req: Request) => Promise<void> };
+type Dependencies = { verifyKey?: (req: Request) => Promise<void>;directory?:string;purgeRemoveFiles?:(storagePath:string)=>Promise<void> };
 const scope = (req: Request): TeachingScope => {
   if (!req.user?.id || !req.workspaceId) throw new TeachingError('请登录后管理课程', 401, 'TEACHING_AUTH_REQUIRED');
   return { userId: req.user.id, workspaceId: req.workspaceId };
@@ -74,6 +75,13 @@ export function installTeachingRoutes(app: Express, keyAuth: readonly RequestHan
     await verify(req); return res.json(await store.mutate(db=>setTeachingActivityOpen(db,scope(req),String(req.params.id),String(req.params.activityId),req.body,open)));
   }));
   app.get('/api/teaching/trash', ...keyAuth, route(async(req,res)=>res.json(listTeachingTrash(await store.read(),scope(req)))));
+  app.post('/api/teaching/purge/preview',...keyAuth,route(async(req,res)=>res.json(previewTeachingPurge(await store.read(),scope(req),req.body))));
+  app.get('/api/teaching/purge/:requestId',...keyAuth,route(async(req,res)=>res.json({purge:publicTeachingPurge(ownedTeachingPurge(await store.read(),scope(req),String(req.params.requestId)))})));
+  app.post('/api/teaching/purge',...keyAuth,route(async(req,res)=>{
+    await verify(req);const owner=scope(req),receipt=await store.mutate(db=>commitTeachingPurge(db,owner,req.body,{directoryAvailable:Boolean(deps.directory)}));
+    if(receipt.status==='files_pending'&&deps.directory){try{return res.json({purge:await cleanTeachingPurgeFiles(store,owner,receipt.requestId,deps.directory,deps.purgeRemoveFiles)});}catch{/* A durable private journal remains available for explicit reconciliation. */}}
+    return res.json({purge:publicTeachingPurge(ownedTeachingPurge(await store.read(),owner,receipt.requestId))});
+  }));
   for (const restore of [false,true]) {
     app.post('/api/teaching/' + (restore?'restore':'trash'), ...keyAuth, route(async(req,res)=>{ await verify(req); return res.json(await store.mutate(db=>mutateTeachingTrash(db,scope(req),req.body,restore))); }));
     for (const child of [false,true]) {

@@ -12,7 +12,7 @@ export function setTeachingActivityOpen(db: Database, scope: TeachingScope, cour
   const body = bodyOf(input), course = ownedTeachingCourse(db, scope, courseId), activity = ownedTeachingActivity(course, activityId);
   if (body.confirmed !== true) throw new TeachingError('请明确确认活动学生入口的开放状态');
   if (open) {
-    validateTeachingAttachments(db, scope, courseId, course.materialAttachmentIds); validateTeachingAttachments(db, scope, courseId, activity.sourceAttachmentIds ?? []);
+    if(course.sourceMode!=='knowledge')validateTeachingAttachments(db, scope, courseId, course.materialAttachmentIds); validateTeachingAttachments(db, scope, courseId, activity.sourceAttachmentIds ?? []);
     bindTeachingKnowledgeSources(db, scope, undefined, course.knowledgeSources); bindTeachingKnowledgeSources(db, scope, undefined, activity.knowledgeSources);
   }
   if (open && activity.isOpen === true && activity.status === 'published' && activity.slug || !open && activity.isOpen === false && activity.status === 'closed') return { course: teachingCourseView(course), activity };

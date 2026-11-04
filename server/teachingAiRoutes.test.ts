@@ -9,7 +9,7 @@ import type { Store } from './db.js';
 import type { Attachment, Database, ModelConfig } from './types.js';
 import { installTeachingAiRoutes, type TeachingAiRouteDependencies } from './teachingAiRoutes.js';
 import { installTeachingRoutes } from './teachingRoutes.js';
-import { addTeachingSubmission, authTeachingSession, bindTeachingGradingBasis, closeTeachingCourse, createTeachingActivity, createTeachingCourse, createTeachingSession, publishTeachingCourse, reviewTeachingSubmission, teachingState, updateTeachingActivity, type TeachingError } from './teaching.js';
+import { addTeachingSubmission, authTeachingSession, bindTeachingGradingBasis, closeTeachingCourse, createTeachingActivity, createTeachingCourse, createTeachingSession, publishTeachingCourse, reviewTeachingSubmission, teachingState, updateTeachingActivity, updateTeachingCourse, type TeachingError } from './teaching.js';
 import type { TeachingActivity, TeachingCourse, TeachingScope } from './teachingTypes.js';
 
 const teacher = { workspaceId: 'teaching-wa', userId: 'teacher-a' };
@@ -24,12 +24,14 @@ function makeDb() {
   return { users: scopes.map(scope => ({ id: scope.userId, username: scope.userId, enabled: true, defaultWorkspaceId: scope.workspaceId })), workspaces: [...new Set(scopes.map(scope => scope.workspaceId))].map(id => ({ id, status: 'active', kind: 'personal' })), workspaceMembers: scopes.map(scope => ({ ...scope, role: 'owner' })), models: [model], settings: { safetyRules: 'Do not disclose private information.', rechargeCnyPerPower: 7 }, attachments: [], modelUsageRecords: [], powerAccounts: scopes.map(scope => ({ ...scope, id: `power-${scope.userId}`, balanceMicros: 20_000_000, reservedMicros: 0, updatedAt: new Date().toISOString() })), powerLedger: [], auditLogs: [], knowledgeConnections: [], conversations: [], messages: [], rechargeOrders: [] } as unknown as Database;
 }
 function addCourse(db: Database, scope: TeachingScope = teacher, kind: TeachingActivity['kind'] = 'inquiry', publish = true, budgetMicros = 1_000_000) {
-  const course = createTeachingCourse(db, scope, { title: '隔离课程', materialText: '本课程介绍茶叶文化。', budgetMicros });
+  const course = createTeachingCourse(db, scope, { title: '隔离课程', budgetMicros });
+  // Historical uploaded course sources remain readable until explicitly switched.
+  delete course.sourceMode; course.materialText='本课程介绍茶叶文化。';
   const { activity } = createTeachingActivity(db, scope, course.id, { revision: course.revision, title: '学习活动', stage: kind === 'inquiry' ? 'before' : 'after', kind, status: 'published', instructions: '请观察并记录。', referenceText: 'PRIVATE_EXAM_REFERENCE_ANSWER', rubric: kind === 'assignment' ? [{ id: 'observation', label: '观察', description: '明确描述观察', maxScore: 10 }] : [], questions: kind === 'quiz' ? [{ id: 'q1', type: 'single', prompt: '选择', options: ['甲', '乙'], answer: '甲', points: 10 }] : [] });
   if (publish) publishTeachingCourse(db, scope, course.id, { revision: course.revision, confirmed: true });
   return { course, activity };
 }
-async function fixture(t: TestContext, modelCall: NonNullable<TeachingAiRouteDependencies['modelCall']>) {
+async function fixture(t: TestContext, modelCall: NonNullable<TeachingAiRouteDependencies['modelCall']>, knowledge?:TeachingAiRouteDependencies['knowledge']) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'one-teaching-ai-http-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   let db = makeDb(), tail: Promise<unknown> = Promise.resolve();
@@ -40,7 +42,7 @@ async function fixture(t: TestContext, modelCall: NonNullable<TeachingAiRouteDep
   const start = async () => {
     const app = express(); app.use(express.json());
     installTeachingRoutes(app, [auth], store, { verifyKey });
-    installTeachingAiRoutes(app, [auth], store, { verifyKey, modelCall });
+    installTeachingAiRoutes(app, [auth], store, { verifyKey, modelCall, knowledge });
     app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => res.status((error as TeachingError).status ?? 500).json({ error: 'request rejected' }));
     const server = app.listen(0, '127.0.0.1'); await once(server, 'listening');
     t.after(() => { server.closeAllConnections(); server.close(); });
@@ -54,6 +56,27 @@ async function fixture(t: TestContext, modelCall: NonNullable<TeachingAiRouteDep
   };
   return { get db() { return db; }, store, base, post, poll, start, directory, removeKey: () => { keyPresent = false; } };
 }
+
+test('knowledge-only AI reads the exact authorized library and never reuses historical course text or attachment originals',async t=>{
+  let calls=0,reads=0;const f=await fixture(t,async(_model,messages)=>{calls++;const input=String(messages.find(row=>row.role==='user')?.content);assert.match(input,/KNOWLEDGE_ALLOWED_TEXT/);assert.doesNotMatch(input,/LEGACY_PRIVATE_TEXT|legacy-unreadable-file/);return reply(guidedAnswer());},{knowledgeService:{recallWithDiagnostics:async(workspace,_query,_topK,ids,user)=>{reads++;assert.equal(workspace,teacher.workspaceId);assert.equal(user,teacher.userId);assert.deepEqual(ids,['course-library']);return {status:'used',failures:[],chunks:[{provider:'getnote',title:'授权的课程资料',content:'本课程介绍茶叶文化。KNOWLEDGE_ALLOWED_TEXT'}]};}}});
+  f.db.knowledgeConnections.push({id:'course-library',workspaceId:teacher.workspaceId,provider:'getnote',status:'connected',clientId:'fixture-client',providerUserId:'fixture-account',providerSpaceId:'fixture-space',encryptedApiKey:'SYNTHETIC_LIBRARY_KEY',createdAt:'now',updatedAt:'now'});
+  const course=createTeachingCourse(f.db,teacher,{title:'课程',budgetMicros:1_000_000,knowledgeSources:[{connectionId:'course-library',scope:'connection',confirmed:true}]});
+  delete course.sourceMode;course.materialText='LEGACY_PRIVATE_TEXT';course.materialAttachmentIds=['legacy-unreadable-file'];
+  updateTeachingCourse(f.db,teacher,course.id,{revision:course.revision,sourceMode:'knowledge'});
+  const {activity}=createTeachingActivity(f.db,teacher,course.id,{revision:course.revision,title:'试问',kind:'inquiry',stage:'before',avatarPrompt:'依据本课程资料引导'});
+  const started=await f.post(`/courses/${course.id}/ai`,{kind:'answer',preview:true,conversationId:'knowledge-only-trial',activityId:activity.id,operationId:'knowledge-source-trial-0001',content:'课程介绍什么',budgetConfirmed:true});assert.equal(started.status,202,await started.clone().text());
+  const result=await f.poll(`/courses/${course.id}/operations/${(await started.json() as any).operation.id}`);assert.equal(result.status,'completed',JSON.stringify(result));assert.equal(calls,1);assert.equal(reads,1);assert.equal(course.materialText,'LEGACY_PRIVATE_TEXT');assert.deepEqual(course.materialAttachmentIds,['legacy-unreadable-file']);
+});
+
+test('knowledge-only courses still use private exam references and student work attachments for explicit teacher grading',async t=>{
+  let calls=0;const f=await fixture(t,async(_model,messages)=>{calls++;const input=String(messages.find(row=>row.role==='user')?.content);assert.match(input,/TEACHER_REFERENCE_TEXT|EXAM_PRIVATE_FILE_TEXT/);assert.match(input,/STUDENT_WORK_ORIGINAL/);return reply({criteria:[{criterionId:'score',score:80,comment:'依据原作品',evidence:'STUDENT_WORK_ORIGINAL'}],feedback:'请老师复核'});});
+  const course=createTeachingCourse(f.db,teacher,{title:'仅知识库学习资料',budgetMicros:1_000_000});
+  const reference={id:'private-exam-file',...teacher,conversationId:`teaching:${course.id}`,storagePath:'/not-read-when-inline-text',originalName:'试卷.txt',mimeType:'text/plain',kind:'text',size:22,status:'ready',extractedText:'EXAM_PRIVATE_FILE_TEXT',createdAt:'now'} as Attachment;
+  const work={...reference,id:'student-original-file',originalName:'作业.txt',extractedText:'STUDENT_WORK_ORIGINAL'};f.db.attachments.push(reference,work);
+  const {activity}=createTeachingActivity(f.db,teacher,course.id,{revision:course.revision,title:'批改作业',kind:'assignment',stage:'after',referenceText:'TEACHER_REFERENCE_TEXT',sourceAttachmentIds:[reference.id],rubric:[{id:'score',label:'完成情况',description:'依据原作业',maxScore:100}]});
+  const submission=addTeachingSubmission(f.db,teacher,course,{activityId:activity.id,participantName:'老师代传',operationId:'knowledge-work-intake-01',attachmentIds:[work.id]}).submission;
+  const response=await f.post(`/courses/${course.id}/ai`,{kind:'grade',activityId:activity.id,submissionId:submission.id,operationId:'knowledge-private-grade-001',budgetConfirmed:true});assert.equal(response.status,202);const result=await f.poll(`/courses/${course.id}/operations/${(await response.json() as any).operation.id}`);assert.equal(result.status,'completed',JSON.stringify(result));assert.equal(calls,1);assert.equal(submission.grade?.status,'suggested');assert.equal(submission.grade?.total,80);assert.equal(course.materialText,'');assert.equal(course.sourceMode,'knowledge');
+});
 
 test('teacher preview receipts and alias recovery expose only that teacher trial question, never student private questions', async t => {
   let calls = 0; const f = await fixture(t, async () => { calls++; return reply(guidedAnswer()); });

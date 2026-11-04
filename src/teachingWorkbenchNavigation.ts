@@ -11,8 +11,7 @@ export type TeachingWorkbenchRoute=
   |{view:'home'}
   |{view:'select';tool:TeachingTaskKind}
   |{view:'tool';tool:TeachingTaskKind;courseId:string;activityId?:string;step:string}
-  |{view:'courses';mode:TeachingCourseMode;courseId?:string;returnTool?:TeachingTaskKind}
-  |{view:'legacy';draftId?:string};
+  |{view:'courses';mode:TeachingCourseMode;courseId?:string;returnTool?:TeachingTaskKind};
 const keys=['tView','tTool','tCourse','tItem','tStep','tMode','tReturn','tDraft'] as const;
 const tools=teachingTools.map(tool=>tool.kind);
 const id=(value:string|null)=>value&&/^[A-Za-z0-9_-]{1,160}$/.test(value)?value:undefined;
@@ -28,7 +27,6 @@ export function readTeachingWorkbenchRoute(href:string):TeachingWorkbenchRoute{
     const raw=p.get('tMode'),mode:TeachingCourseMode=raw==='create'||raw==='edit'||raw==='trash'?raw:'list',returnTool=tool(p.get('tReturn'));
     return {view:'courses',mode:mode==='edit'&&!courseId?'list':mode,...(mode==='edit'&&courseId?{courseId}:{}),...(returnTool?{returnTool}:{})};
   }
-  if(p.get('tView')==='legacy')return {view:'legacy',...(id(p.get('tDraft'))?{draftId:id(p.get('tDraft'))}:{})};
   return {view:'home'};
 }
 export function clearTeachingWorkbenchParams(url:URL){for(const key of keys)url.searchParams.delete(key);}
@@ -38,7 +36,6 @@ export function teachingWorkbenchHref(href:string,route:TeachingWorkbenchRoute){
   if(route.view==='select'||route.view==='tool')url.searchParams.set('tTool',route.tool);
   if(route.view==='tool'){url.searchParams.set('tCourse',route.courseId);url.searchParams.set('tStep',route.step);if(route.activityId)url.searchParams.set('tItem',route.activityId);}
   if(route.view==='courses'){url.searchParams.set('tMode',route.mode);if(route.courseId)url.searchParams.set('tCourse',route.courseId);if(route.returnTool)url.searchParams.set('tReturn',route.returnTool);}
-  if(route.view==='legacy'&&route.draftId)url.searchParams.set('tDraft',route.draftId);
   return `${url.pathname}${url.search}${url.hash}`;
 }
 

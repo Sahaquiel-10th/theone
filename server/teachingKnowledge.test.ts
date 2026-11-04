@@ -17,8 +17,9 @@ const rejected = (fn: () => unknown, status?: number) => assert.throws(fn, error
 
 test('exact pages are normalized and server-bound; browser credentials and provider names cannot grant access', () => {
   const f = fixture();
-  const sources = bindTeachingKnowledgeSources(f.db, scope, [{ connectionId: 'notion-a', scope: 'page', pageId: `https://www.notion.so/course-${page}?v=${anotherPage}`, provider: 'getnote', binding: 'attacker-binding' }]);
-  assert.equal(sources[0].pageId, page); assert.equal(sources[0].provider, 'notion'); assert.notEqual(sources[0].binding, 'attacker-binding');
+  const sources = bindTeachingKnowledgeSources(f.db, scope, [{ connectionId: 'notion-a', scope: 'page', pageId: `https://www.notion.so/course-${page}?v=${anotherPage}`, provider: 'getnote' }]);
+  assert.equal(sources[0].pageId, page); assert.equal(sources[0].provider, 'notion'); assert.ok(sources[0].binding);
+  rejected(()=>bindTeachingKnowledgeSources(f.db,scope,[{connectionId:'notion-a',scope:'page',pageId:page,binding:'attacker-binding'}]),409);
   assert.doesNotMatch(JSON.stringify(sources), /SYNTHETIC_TOKEN_A|SYNTHETIC_KEY_A/);
   rejected(() => bindTeachingKnowledgeSources(f.db, scope, [{ connectionId: 'notion-b', scope: 'page', pageId: page }]), 403);
   rejected(() => bindTeachingKnowledgeSources(f.db, scope, [{ connectionId: 'notion-a', scope: 'page', pageId: `https://evil.invalid/${page}` }]));
@@ -79,7 +80,7 @@ test('provider failures, wrong-provider results and incomplete pages never fall 
   await assert.rejects(readTeachingKnowledgeSources(f.store, scope, pageSources, '问题', { notion: { readDocument: async () => { throw new Error('SYNTHETIC_TOKEN_A secret provider URL'); } } }), error => error instanceof TeachingError && !error.message.includes('SYNTHETIC_TOKEN_A'));
   await assert.rejects(readTeachingKnowledgeSources(f.store, scope, pageSources, '问题', { notion: { readDocument: async () => ({ text: '<content>不完整</content>', truncated: true }) } }), /无法完整读取/);
   await assert.rejects(readTeachingKnowledgeSources(f.store, scope, connectionSources, '问题', { knowledgeService: { recallWithDiagnostics: async () => ({ chunks: [{ provider: 'notion', title: 'wrong', content: 'not adopted' }], failures: [], status: 'used' }) } }), /范围/);
-  await assert.rejects(readTeachingKnowledgeSources(f.store, scope, connectionSources, '问题', { knowledgeService: { recallWithDiagnostics: async () => ({ chunks: [], failures: [{ provider: 'getnote', code: 'UNAVAILABLE', message: 'private upstream', retryable: true }], status: 'failed' }) } }), /检索暂未完成/);
+  await assert.rejects(readTeachingKnowledgeSources(f.store, scope, connectionSources, '问题', { knowledgeService: { recallWithDiagnostics: async () => ({ chunks: [], failures: [{ provider: 'getnote', code: 'UNAVAILABLE', message: 'private upstream', retryable: true }], status: 'failed' }) } }), /检索未完成/);
 });
 
 test('duplicate provider account rows cannot silently read a different connection', () => {
@@ -107,3 +108,7 @@ test('saving an old selected page after reconnection cannot silently bind it to 
   assert.notEqual(freshlyReviewed[0].binding, oldSources[0].binding);
   assert.deepEqual(bindTeachingKnowledgeSources(f.db, scope, freshlyReviewed, oldSources), freshlyReviewed);
 });
+
+test('a newly previewed source cannot silently rebind on its first save after an account swap',()=>{const f=fixture(),preview=bindTeachingKnowledgeSources(f.db,scope,[{connectionId:'getnote-a',scope:'connection',confirmed:true}])[0];f.db.knowledgeConnections[2].providerUserId='new-account';rejected(()=>bindTeachingKnowledgeSources(f.db,scope,[{...preview,confirmed:true}]),409);});
+
+test('ima course binding includes selected libraries, encrypted client identity and credential owner without expanding the saved grant',()=>{const f=fixture();f.db.knowledgeConnections.push(connection({id:'ima-a',provider:'ima',clientId:'ima-openapi',providerUserId:undefined,providerSpaceId:undefined,encryptedClientId:'SYNTHETIC_CLIENT_A',encryptedApiKey:'SYNTHETIC_API_A',encryptedAccessToken:undefined,credentialOwnerUserId:scope.userId,retrievalScope:{knowledgeBases:[{id:'library-a',name:'讲义'},{id:'library-b',name:'其他资料'}],selectedIds:['library-a'],truncated:false}}));const selectedConnection=f.db.knowledgeConnections.at(-1)!,selected=bindTeachingKnowledgeSources(f.db,scope,[{connectionId:'ima-a',scope:'connection',confirmed:true}]);assertTeachingKnowledgeSources(f.db,scope,selected);selectedConnection.retrievalScope!.selectedIds=['library-b'];rejected(()=>assertTeachingKnowledgeSources(f.db,scope,selected),409);rejected(()=>bindTeachingKnowledgeSources(f.db,scope,[{...selected[0],confirmed:true}],selected),409);selectedConnection.retrievalScope!.selectedIds=['library-a'];selectedConnection.encryptedClientId='OTHER_CLIENT';rejected(()=>assertTeachingKnowledgeSources(f.db,scope,selected),409);selectedConnection.encryptedClientId='SYNTHETIC_CLIENT_A';selectedConnection.credentialOwnerUserId='other-owner';rejected(()=>assertTeachingKnowledgeSources(f.db,scope,selected),409);});

@@ -256,7 +256,7 @@ const localDeviceReadiness=createLocalDeviceReadiness({
 });
 installLocalDeviceReadinessRoute(app,keyAuth,localDeviceReadiness);
 const inspectLocalReadiness=(req:express.Request,options?:{fresh?:boolean})=>localDeviceReadiness.inspect(localDeviceReadinessScope(req),options);
-installTeachingRoutes(app, keyAuth, store, { verifyKey: confirmKeyBeforeModel });
+installTeachingRoutes(app, keyAuth, store, { verifyKey: confirmKeyBeforeModel, directory: uploadDir });
 installTeachingFileRoutes(app, keyAuth, store, uploadDir, attachmentService);
 installTeachingKnowledgeRoutes(app, keyAuth, store, { notion: notionMcpService, knowledgeService, verifyKey: confirmKeyBeforeModel });
 installTeachingAiRoutes(app, keyAuth, store, { verifyKey: confirmKeyBeforeModel, knowledge: { notion: notionMcpService, knowledgeService } });

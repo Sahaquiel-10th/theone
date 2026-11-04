@@ -12,6 +12,7 @@ import { attachmentSegments, prepareAttachmentContext } from './attachmentRetrie
 import { runBilledModel } from './modelBilling.js';
 import { callModelWithTools } from './modelGateway.js';
 import {ownedTeachingActivity} from './teachingLifecycle.js';
+import {teachingCourseUsage} from './teachingUsage.js';
 import { teachingGameSnapshot, teachingGameModelHistory } from './teachingGames.js';
 import { assertTeachingKnowledgeSources, readTeachingKnowledgeSources, type TeachingKnowledgeDependencies } from './teachingKnowledge.js';
 
@@ -129,7 +130,10 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
       const teacher = db.users.find(u => u.id === scope.userId)!;
       const model = candidates.find(m => m.enabled && m.apiKey && m.id === teacher.preferredModelId) ?? candidates.find(m => m.enabled && m.apiKey && m.isDefault) ?? candidates.find(m => m.enabled && m.apiKey) ?? candidates[0];
       if (!model) throw new TeachingError('请先配置可用的教学模型', 409);
-      const courseFiles = course.materialAttachmentIds.map(id => {
+      // Historical originals stay stored for their original submissions, but an
+      // explicitly knowledge-only course never reads them as learning context.
+      if(course.sourceMode==='knowledge')course.materialText='';
+      const courseFiles = (course.sourceMode==='knowledge'?[]:course.materialAttachmentIds).map(id => {
         validateTeachingAttachments(db, scope, course.id, [id]); return db.attachments.find(f => f.id === id)!;
       });
       const courseText = courseFiles.length ? (await prepareAttachmentContext(courseFiles, { ...scope, conversationId: teachingConversationId(course.id) }, operation.question ?? activity?.title ?? '课程材料', 40_000, async () => { throw new TeachingError('请按章节选择课程资料'); })).text : '';
@@ -234,6 +238,10 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
       return publicOperation(operation);
     });
   }
+  router.get('/courses/:courseId/usage', ...auth, asyncRoute(async (req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    res.json({usage:teachingCourseUsage(await store.read(),owner(req),String(req.params.courseId))});
+  }));
   router.post('/courses/:courseId/ai', ...auth, asyncRoute(async (req, res) => {
     if (req.body?.budgetConfirmed !== true || req.body?.kind === 'answer' && req.body?.preview !== true) throw new TeachingError('请确认本次教学 AI 操作和课程费用');
     await deps.verifyKey(req);

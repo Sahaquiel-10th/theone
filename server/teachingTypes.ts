@@ -27,6 +27,9 @@ export type TeachingActivity = TeachingScope & TeachingTrashMetadata & {
 export type TeachingCourse = TeachingScope & TeachingTrashMetadata & {
   id: string; revision: number; title: string; subject: string; description: string;
   materialText: string; materialAttachmentIds: string[]; budgetMicros: number;
+  /** New course learning context is retrieved only from explicitly bound libraries.
+   * Missing mode identifies historical courses; their original fields are retained. */
+  sourceMode?: 'knowledge';
   /** Guided tasks use one private course container, created only on an explicit save/upload. */
   clientDraftId?: string; taskKind?: TeachingTaskKind; knowledgeSources?: TeachingKnowledgeSource[];
   /** Course-centre creation receipt, distinct from legacy task drafts. */
@@ -74,7 +77,12 @@ export type TeachingOperation = TeachingScope & {
 };
 export type TeachingState = {
   courses: TeachingCourse[]; sessions: TeachingSession[]; submissions: TeachingSubmission[]; operations: TeachingOperation[];
+  /** Private deletion receipts and unfinished file cleanup; never a public DTO. */
+  purges?: TeachingPurgeReceipt[];
 };
+export type TeachingPurgeImpact = { courses:number;activities:number;sessions:number;updatedSessions:number;submissions:number;operations:number;files:number;retainedFiles:number;fileBytes:number };
+export type TeachingPurgeFile = { id:string;workspaceId:string;userId:string;courseId:string;storagePath:string };
+export type TeachingPurgeReceipt = TeachingScope & { id:string;requestId:string;requestHash:string;impactHash:string;impact:TeachingPurgeImpact;status:'completed'|'files_pending';pendingFiles:TeachingPurgeFile[];createdAt:string;completedAt?:string };
 export type TeachingPublicActivity = Omit<TeachingActivity, 'workspaceId' | 'userId' | 'questions' | 'referenceText' | 'sourceAttachmentIds' | 'knowledgeSources'> & {
   questions: Omit<TeachingQuestion, 'answer'>[];
 };

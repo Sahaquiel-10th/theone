@@ -149,7 +149,17 @@ export function createTeachingCourse(db: Database, scope: TeachingScope, input: 
   const body = object(input), state = teachingState(db, scope, { create: true });
   const clientCreateKey = body.clientRequestId === undefined ? undefined : requiredText(body.clientRequestId, '课程创建编号', 120);
   if (clientCreateKey !== undefined && !/^[A-Za-z0-9_-]{8,120}$/.test(clientCreateKey)) throw new TeachingError('课程创建编号格式不正确');
-  const content = { title: requiredText(body.title, '课程名称', 160), subject: text(body.subject, '学科', 120, ''), description: text(body.description, '课程介绍', 4000, ''), materialText: text(body.materialText, '课程材料', 120000, ''), knowledgeSources: bindTeachingKnowledgeSources(db, scope, body.knowledgeSources), budgetMicros: integer(body.budgetMicros, '教学用量上限', 1_000_000_000, 0) };
+  const original=clientCreateKey?state.courses.find(course=>course.workspaceId===scope.workspaceId&&course.userId===scope.userId&&course.clientCreateKey===clientCreateKey):undefined;
+  // An old browser can reconcile its original, already-accepted create receipt
+  // without reviving the retired material write API for any new course.
+  if(original&&body.sourceMode===undefined){
+    if(original.deletedAt)throw new TeachingError('原课程已在回收站，请先恢复原课程',409,'TEACHING_TRASHED');
+    const legacy={title:requiredText(body.title,'课程名称',160),subject:text(body.subject,'学科',120,''),description:text(body.description,'课程介绍',4000,''),materialText:text(body.materialText,'课程材料',120000,''),knowledgeSources:bindTeachingKnowledgeSources(db,scope,body.knowledgeSources),budgetMicros:integer(body.budgetMicros,'教学用量上限',1_000_000_000,0)};
+    if(original.createPayloadHash===hash(JSON.stringify(legacy)))return original;
+  }
+  if (body.sourceMode !== undefined && body.sourceMode !== 'knowledge') throw new TeachingError('课程资料只支持关联已授权知识库');
+  if ((body.materialText !== undefined && text(body.materialText, '课程材料', 120000, '')) || (body.materialAttachmentIds !== undefined && strings(body.materialAttachmentIds, '材料附件', 20, 100).length)) throw new TeachingError('课程资料请关联知识库；试卷原件和学生作业请在对应工具中上传',400,'TEACHING_KNOWLEDGE_ONLY');
+  const content = { sourceMode:'knowledge' as const, title: requiredText(body.title, '课程名称', 160), subject: text(body.subject, '学科', 120, ''), description: text(body.description, '课程介绍', 4000, ''), materialText: '', knowledgeSources: bindTeachingKnowledgeSources(db, scope, body.knowledgeSources), budgetMicros: integer(body.budgetMicros, '教学用量上限', 1_000_000_000, 0) };
   if (body.materialAttachmentIds !== undefined && strings(body.materialAttachmentIds, '材料附件', 20, 100).length) throw new TeachingError('请先保存课程，再上传并选择课程材料');
   const createPayloadHash = hash(JSON.stringify(content));
   if (clientCreateKey) {
@@ -195,10 +205,14 @@ export function createTeachingTask(db: Database, scope: TeachingScope, input: un
 }
 export function updateTeachingCourse(db: Database, scope: TeachingScope, courseId: string, input: unknown) {
   const body = object(input), course = ownedTeachingCourse(db, scope, courseId); revision(course, body.revision);
+  if (body.sourceMode !== undefined && body.sourceMode !== 'knowledge') throw new TeachingError('课程资料只支持关联已授权知识库');
+  if (body.materialText !== undefined && text(body.materialText, '课程材料', 120000, '') !== course.materialText) throw new TeachingError('课程原文不再新增或改写，请关联知识库',400,'TEACHING_KNOWLEDGE_ONLY');
   const attachmentIds = strings(body.materialAttachmentIds, '材料附件', 20, 100, course.materialAttachmentIds);
-  validateTeachingAttachments(db, scope, courseId, attachmentIds);
-  const next={ title: body.title === undefined ? course.title : requiredText(body.title, '课程名称', 160), subject: text(body.subject, '学科', 120, course.subject), description: text(body.description, '课程介绍', 4000, course.description), materialText: text(body.materialText, '课程材料', 120000, course.materialText), materialAttachmentIds: attachmentIds, knowledgeSources: bindTeachingKnowledgeSources(db, scope, body.knowledgeSources, course.knowledgeSources), budgetMicros: integer(body.budgetMicros, '教学用量上限', 1_000_000_000, course.budgetMicros) };
-  const material=(row:Pick<TeachingCourse,'title'|'subject'|'description'|'materialText'|'materialAttachmentIds'|'knowledgeSources'>)=>JSON.stringify([row.title,row.subject,row.description,row.materialText,row.materialAttachmentIds,row.knowledgeSources??[]]);
+  if (body.materialAttachmentIds !== undefined && JSON.stringify(attachmentIds)!==JSON.stringify(course.materialAttachmentIds)) throw new TeachingError('课程不再新增或改写教材附件，请关联知识库',400,'TEACHING_KNOWLEDGE_ONLY');
+  const sourceMode=body.sourceMode==='knowledge'?'knowledge' as const:course.sourceMode;
+  if(sourceMode!=='knowledge')validateTeachingAttachments(db, scope, courseId, attachmentIds);
+  const next={ ...(sourceMode?{sourceMode}:{}),title: body.title === undefined ? course.title : requiredText(body.title, '课程名称', 160), subject: text(body.subject, '学科', 120, course.subject), description: text(body.description, '课程介绍', 4000, course.description), materialText: course.materialText, materialAttachmentIds: course.materialAttachmentIds, knowledgeSources: bindTeachingKnowledgeSources(db, scope, body.knowledgeSources, course.knowledgeSources), budgetMicros: integer(body.budgetMicros, '教学用量上限', 1_000_000_000, course.budgetMicros) };
+  const material=(row:Pick<TeachingCourse,'title'|'subject'|'description'|'materialText'|'materialAttachmentIds'|'knowledgeSources'|'sourceMode'>)=>JSON.stringify([row.sourceMode??'legacy',row.title,row.subject,row.description,row.materialText,row.materialAttachmentIds,row.knowledgeSources??[]]);
   const changed=material(course)!==material(next);preserveTeachingAccess(course);if(changed)course.materialRevision=(course.materialRevision??course.revision)+1;
   Object.assign(course,next,{revision:course.revision+1,updatedAt:now()});return course;
 }
@@ -206,7 +220,7 @@ export function publishTeachingCourse(db: Database, scope: TeachingScope, course
   const body = object(input), course = ownedTeachingCourse(db, scope, courseId); revision(course, body.revision);
   if (body.confirmed !== true) throw new TeachingError('请确认课程材料与活动可向学生开放');
   if (!course.activities.some(a => !a.deletedAt && a.status === 'published')) throw new TeachingError('请先将至少一项活动设为向学生开放');
-  validateTeachingAttachments(db, scope, courseId, course.materialAttachmentIds);
+  if(course.sourceMode!=='knowledge')validateTeachingAttachments(db, scope, courseId, course.materialAttachmentIds);
   bindTeachingKnowledgeSources(db, scope, undefined, course.knowledgeSources);
   for (const activity of course.activities.filter(a => !a.deletedAt && a.status === 'published')) {
     validateTeachingAttachments(db, scope, courseId, activity.sourceAttachmentIds ?? []);

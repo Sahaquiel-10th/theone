@@ -8,6 +8,7 @@ import { sourceBinding } from './publicSharing.js';
 import { notionBody, notionFetchedTitle } from './notionDocuments.js';
 import { parseNotionPageLink } from '../src/notionPageLink.js';
 import { TeachingError, teachingMember } from './teaching.js';
+import {createHash} from 'node:crypto';
 
 export type TeachingKnowledgeDependencies = {
   notion?: Pick<NotionMcpService, 'readDocument'>;
@@ -19,7 +20,14 @@ export type TeachingKnowledgeRead = {
   sources: { label: string; title: string; status: 'read' | 'no_match' }[];
 };
 const MAX_SOURCES = 5, MAX_TEXT = 100_000;
-function invalid(message: string, status = 400): never { throw new TeachingError(message, status, 'TEACHING_KNOWLEDGE_INVALID'); }
+function invalid(message: string, status = 400, code = 'TEACHING_KNOWLEDGE_INVALID'): never { throw new TeachingError(message, status, code); }
+/** ima identifies its client with encryptedClientId and limits library searches
+ * to saved selectedIds. Neither may silently change an existing course grant. */
+export function teachingKnowledgeBinding(connection: KnowledgeConnection) {
+  const account=sourceBinding(connection);
+  if(connection.provider!=='ima')return account;
+  return createHash('sha256').update(JSON.stringify([account,connection.encryptedClientId,connection.credentialOwnerUserId,[...new Set(connection.retrievalScope?.selectedIds??[])].sort()])).digest('hex');
+}
 function connection(db: Database, scope: TeachingScope, id: string): KnowledgeConnection {
   teachingMember(db, scope);
   const current = db.knowledgeConnections.find(item => item.id === id && item.workspaceId === scope.workspaceId);
@@ -51,7 +59,8 @@ export function bindTeachingKnowledgeSources(db: Database, scope: TeachingScope,
     if (Object.keys(item).some(name => !['connectionId', 'scope', 'pageId', 'label', 'confirmed', 'binding', 'provider'].includes(name))) return invalid('知识来源包含不支持的配置。');
     if (typeof item.connectionId !== 'string' || item.connectionId.length > 100 || !item.connectionId) return invalid('请选择已连接的知识来源。');
     if (item.scope !== 'page' && item.scope !== 'connection') return invalid('请明确选择具体页面或整个连接范围。');
-    const current = connection(db, scope, item.connectionId), binding = sourceBinding(current);
+    const current = connection(db, scope, item.connectionId), binding = teachingKnowledgeBinding(current);
+    if(item.binding!==undefined&&(typeof item.binding!=='string'||item.binding!==binding))return invalid('该引用的账号或范围无法按原授权核对，请重新选择并明确确认后保存。',409,'TEACHING_KNOWLEDGE_BINDING_CHANGED');
     if (item.label !== undefined && (typeof item.label !== 'string' || item.label.length > 160 || /\0/.test(item.label))) return invalid('知识来源名称最多 160 字。');
     const selectedPage = item.scope === 'page' ? pageId(item.pageId) : undefined;
     if (item.scope === 'page' && current.provider !== 'notion') return invalid('这个知识库暂不支持精确选页；可明确授权该连接范围，或上传选定材料。');
@@ -75,7 +84,7 @@ export function assertTeachingKnowledgeSources(db: Database, scope: TeachingScop
   if (!Array.isArray(sources) || sources.length > MAX_SOURCES) return invalid('已保存的知识来源配置无效，请老师重新选择。', 409);
   for (const source of sources) {
     const current = connection(db, scope, source.connectionId);
-    if (current.provider !== source.provider || sourceBinding(current) !== source.binding) return invalid('知识授权或账号已变化，请老师重新选择资料并开放任务。', 409);
+    if (current.provider !== source.provider || teachingKnowledgeBinding(current) !== source.binding) return invalid('知识授权或已选范围需要重新核对，请老师重新选择并确认资料。', 409,'TEACHING_KNOWLEDGE_BINDING_CHANGED');
     if (!['page', 'connection'].includes(source.scope) || (source.scope === 'page' && (source.provider !== 'notion' || pageId(source.pageId) !== source.pageId)) || (source.scope === 'connection' && source.pageId)) return invalid('已保存的知识范围无效，请老师重新选择。', 409);
   }
 }
@@ -102,7 +111,15 @@ export async function readTeachingKnowledgeSources(store: Store, scope: Teaching
         if (!deps.knowledgeService) return invalid('知识检索暂不可用，请老师检查连接。', 503);
         const recall = await deps.knowledgeService.recallWithDiagnostics(scope.workspaceId, query.trim() || '课程资料', 5, [source.connectionId], scope.userId, { retry: false });
         await verify();
-        if (recall.failures.length || ['failed', 'not_connected', 'partial'].includes(recall.status)) return invalid(`${source.label}知识检索暂未完成，请老师检查授权或稍后重试。`, 502);
+        if (recall.failures.length || ['failed', 'not_connected', 'partial'].includes(recall.status)) {
+          const failure=recall.failures[0];
+          if(failure?.reason==='scope_required')return invalid('ima 连接已保存，但尚未选择可检索的知识库文件范围。请到知识连接中刷新并选择知识库，再回来试搜；这不代表库内没有内容。',409,'TEACHING_KNOWLEDGE_SCOPE_REQUIRED');
+          if(failure?.reason==='content_unavailable')return invalid('ima 已命中资料，但本次未取得可读正文。请到知识连接查看文件读取诊断，或换一个具体问题重试；这些标题尚不能作为回答依据。',422,'TEACHING_KNOWLEDGE_CONTENT_UNAVAILABLE');
+          if(failure?.code==='AUTHORIZATION_REQUIRED')return invalid('所选知识连接的授权已失效，请重新连接后再试搜。',403,'TEACHING_KNOWLEDGE_AUTH_REQUIRED');
+          if(failure?.code==='PERMISSION_REQUIRED')return invalid('所选资料读取权限不足，请在知识连接中核对账号和资料范围。',403,'TEACHING_KNOWLEDGE_PERMISSION_REQUIRED');
+          if(failure?.code==='RATE_LIMITED')return invalid('所选知识库的调用频率已达上限，请稍后再试搜。',429,'TEACHING_KNOWLEDGE_RATE_LIMITED');
+          return invalid('本次知识检索未完成。可以重试当前问题；若仍失败，请在知识连接中检查读取诊断。',502,'TEACHING_KNOWLEDGE_SEARCH_FAILED');
+        }
         const chunks = recall.chunks;
         if (chunks.some(chunk => chunk.provider && chunk.provider !== source.provider)) return invalid('知识返回范围与本次授权不符，未采用这些资料。', 409);
         if (chunks.some(chunk => typeof chunk.content !== 'string' || chunk.content.length > 24_000 || typeof chunk.title !== 'string' || chunk.title.length > 300)) return invalid('知识返回内容超出本次处理范围，请缩小查询。', 422);

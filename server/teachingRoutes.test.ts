@@ -23,7 +23,7 @@ test('HTTP teacher and student flow keeps ownership, identities, answers, grades
     return { status: response.status, body: await response.json(), cacheControl: response.headers.get('Cache-Control') };
   };
   assert.equal((await request('/courses', 'GET', undefined, {})).status, 428);
-  let result = await request('/courses', 'POST', { title: '通用教学', materialText: 'PRIVATE_MATERIAL', workspaceId: 'wb', userId: 'teacher-b' });
+  let result = await request('/courses', 'POST', { title: '通用教学', sourceMode:'knowledge', workspaceId: 'wb', userId: 'teacher-b' });
   assert.equal(result.status, 201); let course = result.body.course;
   const cid = course.id;
   assert.equal(course.workspaceId, 'wa'); assert.equal(course.userId, 'teacher-a');
