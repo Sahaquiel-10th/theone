@@ -5,6 +5,8 @@ export type WorkRun = {
   /** Exact original input is bound by the server, never copied by the router. */
   inputSource?:import('./taskInputSource.js').TaskInputSourceReference;
   materialScope?:'current'|'conversation';
+  /** Only a server-routed task supplement shares its original cap with routing. */
+  budgetIncludesRouting?:true;
   /** The selected material revision survives short later instructions. */
   materialSource?:import('./taskInputSource.js').TaskInputSourceReference;
   /** A multi-goal batch keeps its scoped brief; its full raw message is

@@ -11,6 +11,7 @@ import {receiptMayBeMissing} from './responseProgressState';
 import {applyReviewedReceipts} from './taskTransferLifecycle';
 import {mergeCoordinatorMessages, mergeCoordinatorLinks, mergeCoordinatorReceipt, seedCoordinatorReceipt, coordinatorHistoryCursor, coordinatorReceiptFailure, isCoordinatorReceipt, type CoordinatorReceipt} from './coordinatorHistory';
 import {invalidCoordinatorReceipt,recoverCoordinatorSubmission,unacceptedCoordinatorFailure} from './coordinatorSubmissionRecovery';
+import {coordinatorDirectSubmissionAccepted} from './coordinatorDirectRecovery';
 import {coordinatorDrafts,coordinatorSubmissionPayload,saveCoordinatorDraft,forgetCoordinatorDraft,markCoordinatorDraft} from './coordinatorDrafts';
 import {coordinatorPendingKey,coordinatorRequest, createCoordinatorRefreshQueue, forgetStoredCoordinatorOperation} from './coordinatorTransport';
 import {useCoordinatorScopedState} from './coordinatorScopedState';
@@ -73,6 +74,7 @@ type Job = {
   notionReceipt?:import('./taskRecovery').NotionReceiptView;
   id: string;
   operationId: string;
+  submissionOperationId?: string;
   state: string;
   inputMessageId: string;
   instruction?: string;
@@ -485,7 +487,7 @@ export function useCoordinator(
       }
     }catch(e){
       if(!isCurrent())throw e;
-      if(e instanceof ApiError&&e.failure){
+      if(e instanceof ApiError&&e.failure&&(e.code==='COORDINATOR_DIRECT_FAILED'||e.failure.stage!=='receipt'||unacceptedCoordinatorFailure(e))){
         // A saved failed handoff is not a successful continuation of the old
         // task. Keep its concrete reply and the caller's draft; partial/unknown
         // outcomes retain the same ID so a click cannot buy a second execution.
@@ -495,7 +497,7 @@ export function useCoordinator(
         throw e;
       }
       let accepted=false;
-      try{const detail=await load(id,true);accepted=detail.jobs.some(job=>job.operationId===operationId);}catch{/* Keep the original request identifier when its outcome is unknown. */}
+      try{const detail=await load(id,true);accepted=coordinatorDirectSubmissionAccepted(detail,{userId,workspaceId,taskId:id,operationId:operationId!});}catch{/* Keep the original request identifier when its outcome is unknown. */}
       if(!isCurrent())throw e;
       if(!accepted){
         const message='这次续写是否收到还没确认，原话和原提交都保留着；先查看任务进展，不用重发。';

@@ -1,4 +1,5 @@
 import { canReadKnowledge } from "./enterprisePolicy.js";
+import {needsBoundMaterialDecision} from './boundMaterialDecision.js';
 import type { Store } from "./db.js";
 import { executionReceipts, executionDeliveryPending, executionTerminal } from "./executionService.js";
 import {executionNeedsReview} from '../src/executionReview.js';
@@ -285,6 +286,7 @@ function spent(db: Database, s: WorkScope, requestId: string) {
   const op=db.chatOperations?.find(o=>own(o,s)&&o.requestId===requestId);
   const group=op?.workRun?.parentOperationId;
   const requests=group?new Set((db.chatOperations??[]).filter(o=>own(o,s)&&o.workRun&&(o.operationId===group||o.workRun.parentOperationId===group)).map(o=>o.requestId)):new Set([requestId]);
+  if(group&&op?.workRun?.budgetIncludesRouting){const parent=db.chatOperations?.find(o=>own(o,s)&&o.operationId===group);if(parent)requests.add(parent.requestId);}
   const uncertain=(db.chatOperations??[]).filter(o=>own(o,s)&&requests.has(o.requestId))
     .reduce((sum,o)=>sum+Object.values(o.workRun?.textModelAttempts??{}).reduce((n,a)=>n+(Number.isSafeInteger(a.uncertainMicros)&&a.uncertainMicros>0?a.uncertainMicros:0),0),0);
   return uncertain+db.modelUsageRecords
@@ -373,6 +375,8 @@ function assertWorkBindings(db:Database,s:WorkScope,job:WorkRun,cid:string){
 /** Single-process modular-monolith runner. Persistent operations own the queue;
  * process memory only caps concurrent calls, never owns a user's task data. */
 export class CoordinatorService {
+  /** Opaque server entry proof. Browser JSON cannot opt into shared routing budgets. */
+  private boundMaterialRoutingInputs=new WeakSet<object>();
   private localRetries=new Map<string,Promise<{taskId:string;status:string;message?:string}>>();
   private active = new Set<string>();
   private recoveryWakes = new Map<string,{at:number;timer:ReturnType<typeof setTimeout>}>();
@@ -664,6 +668,7 @@ export class CoordinatorService {
           id: o.id,
           updatedAt:o.updatedAt,
           operationId: o.operationId,
+          submissionOperationId:o.workRun!.parentOperationId&&(db.chatOperations??[]).some(parent=>own(parent,s)&&parent.operationId===o.workRun!.parentOperationId)?o.workRun!.parentOperationId:o.operationId,
           state: o.workRun!.state,
           failure:parseCoordinatorFailure(o.failure),
           toolRecovery:parseToolRecoveryDiagnostic(o.workRun!.toolRecovery)??workflowToolRecoveryDiagnostic(o.workRun!.workflow,o.workRun!.steps,{...s,operationId:o.id}),
@@ -850,6 +855,7 @@ export class CoordinatorService {
     localDevice?:LocalDispatchDevice,
   ) {
     const attachments = ids(input.attachmentIds, 5);
+    const budgetIncludesRouting=this.boundMaterialRoutingInputs.has(input);
     if (input.outputDestination !== undefined && !['chat', 'notion','local'].includes(input.outputDestination)) throw new CoordinatorError('保存位置无效', 400);
     // WorkRun's local execution mode owns its delivery. Do not pass a new
     // destination string into the independent Notion save/write contract.
@@ -917,6 +923,8 @@ export class CoordinatorService {
     const existingAttempt=db.chatOperations?.find(o=>own(o,s)&&o.operationId===input.operationId);
     if(requestedLocalAction&&!existingAttempt)await checkLocal();
     if (input.boundTaskId) taskOf(db, s, input.boundTaskId);
+    const boundMaterialRun=input.boundTaskId?(db.chatOperations??[]).filter(op=>own(op,s)&&op.conversationId===input.boundTaskId&&op.workRun).at(-1)?.workRun:undefined;
+    const materialDecisionRequired=Boolean(!answerOnly&&!requestedLocalAction&&input.boundTaskId&&needsBoundMaterialDecision({...s,taskId:input.boundTaskId,text:content,attachmentIds:attachments,run:boundMaterialRun}));
     for (const id of features) availableFeature(db, s, id);
     requireFeatureApproval(db,s,features.map(id=>{const f=availableFeature(db,s,id);return {id,name:f.version.values.name,releaseId:f.record.release!.id,version:f.version.version,multiplier:featureMultiplier(f.version.values)};}),input.featureApprovals);
     const cid = await this.main(s, config.model.id),
@@ -1168,7 +1176,7 @@ export class CoordinatorService {
           features:selectedFeatures,requiredFeatureIds:v.featureIds??[], sources:selectedSources,knowledge:v.knowledgeSourceIds?.length?'all':v.knowledge,requiredTools:v.requiredTools,budget: workerBudget, webSearch: webPermission,
           confirmedExternal: Boolean(v.featureIds?.length)||input.confirmedExternal === true, featureApprovals: input.featureApprovals,
           originConversationId: cid, originMessageId: mid, attachmentIds: attachments,
-          localExecution: localForThisCall, localExecutionBinding:localForThisCall&&localDevice?{...localDevice,targetName:localReadiness?.folder.targetName}:undefined,outputDestination: documentDestination, parentOperationId: input.operationId,includeCurrentMaterial:Boolean(v.materialScope)||content.length>800||attachments.length>0||newTaskOnly,materialScope:v.materialScope,workflow:localForThisCall?undefined:v.workflow,notionArticleRead:v.taskId?undefined:inspectedInlineArticleRead,notionArticleConversationId:v.taskId?undefined:inspectedInlineArticle?.conversationId,notionArticleMessageId:v.taskId?undefined:inspectedInlineArticle?.messageId,notionArticleMessageDigest:v.taskId?undefined:inspectedInlineArticle?.messageDigest }, verifyKey);
+          localExecution: localForThisCall, localExecutionBinding:localForThisCall&&localDevice?{...localDevice,targetName:localReadiness?.folder.targetName}:undefined,outputDestination: documentDestination, parentOperationId: input.operationId,budgetIncludesRouting:budgetIncludesRouting?true:undefined,includeCurrentMaterial:Boolean(v.materialScope)||content.length>800||attachments.length>0||newTaskOnly,materialScope:v.materialScope,workflow:localForThisCall?undefined:v.workflow,notionArticleRead:v.taskId?undefined:inspectedInlineArticleRead,notionArticleConversationId:v.taskId?undefined:inspectedInlineArticle?.conversationId,notionArticleMessageId:v.taskId?undefined:inspectedInlineArticle?.messageId,notionArticleMessageDigest:v.taskId?undefined:inspectedInlineArticle?.messageDigest }, verifyKey);
         await recordDelegatedPublicSearch(dispatched,childOperation);
         dispatchedTasks.push(dispatched); childOperations.push(childOperation);
         const childKnowledge=knowledgePolicy(fresh,s,v.instruction,selectedSources,v.knowledgeSourceIds?.length?'all':v.knowledge);
@@ -1264,6 +1272,7 @@ export class CoordinatorService {
             }
             if(v.capabilityIds!==undefined&&(!Array.isArray(v.capabilityIds)||v.capabilityIds.length>8||v.capabilityIds.some(id=>typeof id!=='string'||!id)))throw new OrchestrationInputError('capabilityIds 必须是最多八个真实能力编号的数组；不要填写能力名称。');
             if(v.materialScope!==undefined&&!['current','conversation'].includes(v.materialScope))throw new OrchestrationInputError('材料范围只能选择current或conversation，不能传任意来源编号。');
+            if(materialDecisionRequired&&v.materialScope===undefined)throw new OrchestrationInputError('本轮提供了可能改变当前材料的新内容。请结合用户原话，明确填写 materialScope: current（只用本次材料）或 conversation（合并/沿用已授权历史材料）；不能默认继承旧材料，也不要复制正文。尚未创建新一轮任务。');
             if(v.workflow)v.workflow=validateWorkflowSpec(v.workflow);
             // Normalize the public alias but retain a server-owned mode proof;
             // otherwise a natural local request silently becomes cloud work.
@@ -1346,7 +1355,7 @@ export class CoordinatorService {
       let delegatedKnowledge=false;
       const batchTool:OrchestrationTool={name:'delegate_tasks',description:'批量结构仅传 tasks 数组，每项含 taskId/title/instruction/executorId/outputKind/featureIds/dependsOn；一项也可用此数组。与 delegate_task 的单项字段结构不同。安排可单独跟进的交付任务，一件任务可以组合多个功能。featureIds 填本任务确定要用的功能，只有可选的不要填。图片使用 image_generation，写作使用 writing，分析使用 logic，本机文件使用 local_special。独立任务同时处理；dependsOn只填写前面任务的数组下标。',run:async()=>{},structured:{schema:structuredClone(dispatchPlanSchema),validate:value=>{
         if(value&&typeof value==='object'&&!Array.isArray(value)&&!Object.hasOwn(value,'tasks'))throw new OrchestrationInputError('delegate_tasks 顶层只接收 tasks 数组，不能直接放单项字段。每项提供 taskId、title、instruction、executorId、outputKind、featureIds、dependsOn；若使用单项字段请调用 delegate_task。');
-        try{return validateDispatchPlan(value);}catch(error){
+        try{const plan=validateDispatchPlan(value);if(materialDecisionRequired&&plan.tasks.some(task=>task.materialScope===undefined))throw new OrchestrationInputError('本轮需要明确材料选择。每项任务必须填写 materialScope: current（本次材料）或 conversation（合并/沿用历史材料）；不得默认继承旧材料。尚未创建新一轮任务。');return plan;}catch(error){
           // This validator has only code-owned local format errors, never a
           // provider/auth exception or an external operation to replay.
           if(error instanceof CoordinatorError&&error.status===400)throw new OrchestrationInputError(error.message);
@@ -1416,7 +1425,7 @@ export class CoordinatorService {
           if(isLocal)localRequested=true;
           const executorId=t.executorId==='direct'?'general':t.executorId==='local_special'||t.executorId==='image_generation'?resolveRoutingExecutorId(current,'logic'):t.executorId;
           const selectedSources=selectedTaskSources(t,fresh),selectedKnowledge=t.knowledgeSourceIds?.length?'all':t.knowledge;
-          const taskId=await this.enqueue(s,{operationId,parentOperationId:input.operationId,text:content,instruction:t.instruction,title:t.title,taskId:t.taskId??undefined,executorId,features:t.featureIds.length?t.featureIds:features,requiredFeatureIds:t.featureIds,sources:selectedSources,budget:workerBudget,webSearch:webPermission,confirmedExternal:true,featureApprovals:input.featureApprovals,originConversationId:cid,originMessageId:mid,attachmentIds:attachments,localExecution:isLocal,localExecutionBinding:isLocal&&localDevice?{...localDevice,targetName:localReadiness?.folder.targetName}:undefined,outputDestination:documentDestination,dependsOnOperationIds:dependencies,expectedOutput:t.outputKind,knowledge:selectedKnowledge,requiredTools:t.requiredTools,directVisual:t.direct,includeCurrentMaterial:plan.tasks.length===1,materialScope:t.materialScope,workflow:isLocal?undefined:t.workflow,notionArticleRead:t.taskId?undefined:inspectedInlineArticleRead,notionArticleConversationId:t.taskId?undefined:inspectedInlineArticle?.conversationId,notionArticleMessageId:t.taskId?undefined:inspectedInlineArticle?.messageId,notionArticleMessageDigest:t.taskId?undefined:inspectedInlineArticle?.messageDigest},verifyKey);
+          const taskId=await this.enqueue(s,{operationId,parentOperationId:input.operationId,text:content,instruction:t.instruction,title:t.title,taskId:t.taskId??undefined,executorId,features:t.featureIds.length?t.featureIds:features,requiredFeatureIds:t.featureIds,sources:selectedSources,budget:workerBudget,webSearch:webPermission,confirmedExternal:true,featureApprovals:input.featureApprovals,originConversationId:cid,originMessageId:mid,attachmentIds:attachments,localExecution:isLocal,localExecutionBinding:isLocal&&localDevice?{...localDevice,targetName:localReadiness?.folder.targetName}:undefined,outputDestination:documentDestination,dependsOnOperationIds:dependencies,expectedOutput:t.outputKind,knowledge:selectedKnowledge,requiredTools:t.requiredTools,directVisual:t.direct,budgetIncludesRouting:budgetIncludesRouting?true:undefined,includeCurrentMaterial:plan.tasks.length===1,materialScope:t.materialScope,workflow:isLocal?undefined:t.workflow,notionArticleRead:t.taskId?undefined:inspectedInlineArticleRead,notionArticleConversationId:t.taskId?undefined:inspectedInlineArticle?.conversationId,notionArticleMessageId:t.taskId?undefined:inspectedInlineArticle?.messageId,notionArticleMessageDigest:t.taskId?undefined:inspectedInlineArticle?.messageDigest},verifyKey);
           await recordDelegatedPublicSearch(taskId,operationId);
           const childKnowledge=knowledgePolicy(current,s,t.instruction,selectedSources,selectedKnowledge);
           if(!isLocal&&childKnowledge.required&&!childKnowledge.missing.length&&!mainKnowledge.missing.length&&mainKnowledge.sourceIds.every(id=>childKnowledge.sourceIds.includes(id)))delegatedKnowledge=true;
@@ -1576,6 +1585,11 @@ export class CoordinatorService {
         messages.splice(1,0,{role:'system',content:'本轮可加载的工具索引（不是额外授权；仅加载后才可调用）：'+JSON.stringify(allTools.filter(t=>!loadedTools.has(t.name)).map(t=>({name:t.name,use:(t.description??t.label??t.name).slice(0,100)})))});
       }
       messages.splice(1,0,{role:'system',content:'分派参数只写短执行摘要（建议800字以内）与必要步骤。当前用户原话及本次附件已由服务端保存，会按同账号、同消息精确交给执行模型；不要复制文章、剧本、代码或长材料进 instruction/workflow。用户改用、缩短或重新粘贴材料时 materialScope 填 current，只用本次材料；明确延用原附件则填 conversation。read_task 只是读取旧任务，不代表已把当前补充交给它；资料足够时仍须用同一 taskId 分派本轮最新要求。'});
+      if(materialDecisionRequired){
+        (tool.structured!.schema as {required?:string[]}).required=[...new Set([...(tool.structured!.schema as {required?:string[]}).required??[],'materialScope'])];
+        (batchTool.structured!.schema as typeof dispatchPlanSchema).properties.tasks.items.required.push('materialScope');
+        messages.splice(1,0,{role:'system',content:'当前任务此前已选定一份材料，本次出现新附件或正文，需要你根据最新用户原话决定材料关系。只更新绑定的同一taskId；delegate_task(s)必须显式填写materialScope。current表示仅本次材料，conversation表示明确合并或沿用历史材料。材料长短只触发本次判断，不代表用户要求替换；不要因新内容更长或更短而自行决定，禁止省略scope后沿用旧材料。'});
+      }
       const compiledMessages=compileOneContext(messages);
       sections = inputTrace(compiledMessages);
       const routingSteps=structuredClone(current.chatOperations?.find(o=>own(o,s)&&o.operationId===input.operationId)?.routingSteps??[]);
@@ -1917,6 +1931,7 @@ export class CoordinatorService {
     await verifyKey();
     const db = await this.store.read(),
       c = taskOf(db, s, taskId);
+    const existingSubmission=db.chatOperations?.find(op=>own(op,s)&&op.operationId===input.operationId);
     const previousContinuation=db.chatOperations?.find(op=>own(op,s)&&op.operationId===input.operationId&&op.conversationId===taskId&&op.requestId.startsWith('continue_'));
     if(!input.attachmentIds?.length&&input.outputDestination!=='local'&&(previousContinuation||selectNotionLinkRecovery(db,s,{text:input.text,boundTaskId:taskId}).kind!=='none'||selectConnectionRecovery(db,s,input.text,taskId).kind!=='none')){
       const requestId=uid('continue'),scope={...s,operationId:input.operationId};
@@ -1951,6 +1966,16 @@ export class CoordinatorService {
       const result=await this.dispatch(s,{...input,boundTaskId:taskId,outputDestination:'local'},verifyKey,undefined,executeLocal,undefined,inspectLocalReadiness,localDevice);
       return {taskId:result.taskId??taskId,status:result.failure?'failed' as const:'accepted' as const,
         failure:result.failure,message:result.message,operationId:input.operationId};
+    }
+    const latestMaterialRun=(db.chatOperations??[]).filter(op=>own(op,s)&&op.conversationId===taskId&&op.workRun).at(-1)?.workRun;
+    // A previously accepted worker keeps its exact original enqueue path.
+    // A routed parent keeps its dispatch path even after the selected material
+    // changes, so the same operation cannot change payload kind or buy twice.
+    if(existingSubmission?.requestId.startsWith('coord_')||!existingSubmission&&needsBoundMaterialDecision({...s,taskId,text:input.text,attachmentIds:input.attachmentIds,run:latestMaterialRun})){
+      const routingInput={...input,boundTaskId:taskId,routeBudget:budget(input.budget)};
+      this.boundMaterialRoutingInputs.add(routingInput);
+      const result=await this.dispatch(s,routingInput,verifyKey,undefined,executeLocal,undefined,inspectLocalReadiness,localDevice);
+      return {taskId:result.taskId??taskId,status:result.failure?'failed' as const:'accepted' as const,failure:result.failure,message:result.message,operationId:input.operationId};
     }
     return {
       taskId: await this.enqueue(
@@ -2279,6 +2304,7 @@ export class CoordinatorService {
       onboardingPractice?:WorkRun['onboardingPractice'];
       workflow?:WorkflowSpec;
       materialScope?:'current'|'conversation';
+      budgetIncludesRouting?:true;
       includeCurrentMaterial?:boolean;
       retrySourceJobId?: string;
       retrySourceVersion?: {state:string;updatedAt:string;taskUpdatedAt:string};
@@ -2446,7 +2472,7 @@ export class CoordinatorService {
       input={...input,budget:Math.min(input.budget??previous!.budget,previous!.budget)};
       if(spent(db,s,previousOperation!.requestId)>=Math.floor(input.budget*1e6))throw new CoordinatorError('原任务剩余额度不足，请先明确确认新的电力上限；不会重新生成已经完成的稿件。',402);
     }
-    const suppliedMaterial=Boolean(supplement&&!supplementSource&&((input.attachmentIds?.length??0)>0||/(?:素材|材料|正文|原话|原文)(?:如下|是|为)?\s*[:：][\s\S]{12,}/.test(input.text)));
+    const suppliedMaterial=Boolean(supplement&&!supplementSource&&(input.materialScope==='current'||(input.attachmentIds?.length??0)>0||/(?:素材|材料|正文|原话|原文)(?:如下|是|为)?\s*[:：][\s\S]{12,}/.test(input.text)));
     const plainContinue=Boolean(supplement&&plainTaskContinuation(input.text));
     const reuseKnowledge=Boolean(supplement&&previous&&!suppliedMaterial&&!namedSupplement?.requested.length&&(plainContinue||workflowKnowledgeReadUnchanged(input.text))&&workflowSourceBindingsMatch(previous.sources,sources));
     const supplementTime=supplement?runtimeContext(db,s,undefined,previous?.runtimeContext?.timeZone):undefined;
@@ -2661,6 +2687,7 @@ export class CoordinatorService {
         const materialSource=materialScope==='current'?(retainedMaterial?resolveTaskInputSource(d,s,retainedMaterial,{taskId:c.id,inputMessageId:retainedMaterial.inputMessageId}).reference:inputSource):undefined;
         op.workRun = {
           materialScope,
+          budgetIncludesRouting:input.budgetIncludesRouting,
           materialSource,
           inputContentMode:input.includeCurrentMaterial===true||!input.originConversationId?'material':'brief',
           inputSource,
@@ -2689,7 +2716,7 @@ export class CoordinatorService {
           inputMessageId: mid,
           originConversationId: input.originConversationId,
           originMessageId: input.originMessageId,
-          parentOperationId: templatePlan?(previous!.parentOperationId||previousOperation!.operationId):input.parentOperationId,
+          parentOperationId: input.budgetIncludesRouting?input.parentOperationId:templatePlan?(previous!.parentOperationId||previousOperation!.operationId):input.parentOperationId,
           dependsOnOperationIds: input.dependsOnOperationIds,
           expectedOutput: input.expectedOutput,
           budget: input.budget,
@@ -3192,7 +3219,8 @@ export class CoordinatorService {
           });
       });
       const dependencyContext=(job.dependsOnOperationIds??[]).map(operationId=>{const parent=resolveWorkDependency(db,s,operationId);const task=db.conversations.find(c=>own(c,s)&&c.id===parent?.conversationId);const message=task?.messages.find(m=>m.id===parent?.workRun?.resultMessageId);return {taskId:task?.id,title:task?.title,content:job.onboardingPractice?.stage==='web'?practiceWebReference(db,s,job.onboardingPractice.id,operationId):message?.content.slice(0,6000),imageUrl:message?.imageUrl};});
-      const workerHistory=previous.filter(message=>job.materialScope!=='current'||message.role==='assistant').map((message) => {
+      const materialBoundary=job.materialScope==='current'?c.messages.findIndex(message=>message.id===(materialSource?.reference.inputMessageId??job.inputMessageId)):-1;
+      const workerHistory=previous.filter(message=>job.materialScope!=='current'||message.role==='assistant'&&materialBoundary>=0&&c.messages.indexOf(message)>=materialBoundary).map((message) => {
           const handoff = message.role === 'user' ? db.chatOperations?.find(operation =>
             own(operation, s) && operation.conversationId === cid && operation.workRun?.inputMessageId === message.id,
           )?.workRun : undefined;
