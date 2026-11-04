@@ -22,6 +22,7 @@ export function installTeachingKnowledgeRoutes(app: Express, auth: readonly Requ
       }) });
     } catch (error) { next(error); }
   });
+  router.post('/select', ...auth, async(req,res,next)=>{try{await deps.verifyKey(req);const raw=req.body?.source;const source=bindTeachingKnowledgeSources(await store.read(),scope(req),[raw])[0];res.json({source:{...source,...(source.scope==='connection'&&raw?.confirmed===true?{confirmed:true}:{})}});}catch(error){next(error);}});
   router.post('/preview', ...auth, async (req, res, next) => {
     try {
       await deps.verifyKey(req);

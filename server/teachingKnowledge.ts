@@ -1,3 +1,4 @@
+import {teachingSearchQueries} from './teachingSearchQueries.js';
 import type { Store } from './db.js';
 import type { Database, KnowledgeConnection } from './types.js';
 import type { TeachingKnowledgeSource, TeachingScope } from './teachingTypes.js';
@@ -109,7 +110,15 @@ export async function readTeachingKnowledgeSources(store: Store, scope: Teaching
         title = notionFetchedTitle(fetched)?.slice(0, 300) || source.label;
       } else {
         if (!deps.knowledgeService) return invalid('知识检索暂不可用，请老师检查连接。', 503);
-        const recall = await deps.knowledgeService.recallWithDiagnostics(scope.workspaceId, query.trim() || '课程资料', 5, [source.connectionId], scope.userId, { retry: false });
+        let recall = await deps.knowledgeService.recallWithDiagnostics(scope.workspaceId, query.trim() || '课程资料', 5, [source.connectionId], scope.userId, { retry: false });
+        if(source.provider==='ima'&&!recall.chunks.length&&!recall.failures.length&&recall.status==='no_match'){
+          for(const term of teachingSearchQueries(query).slice(1)){
+            await verify();
+            recall=await deps.knowledgeService.recallWithDiagnostics(scope.workspaceId,term,5,[source.connectionId],scope.userId,{retry:false});
+            await verify();
+            if(recall.chunks.length||recall.failures.length||recall.status!=='no_match')break;
+          }
+        }
         await verify();
         if (recall.failures.length || ['failed', 'not_connected', 'partial'].includes(recall.status)) {
           const failure=recall.failures[0];
