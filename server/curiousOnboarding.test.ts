@@ -1,0 +1,120 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import type { Store } from './db.js';
+import type { Database, ModelConfig } from './types.js';
+import { accountProfile, completeOnboardingOnChat, publicAccountProfile } from './betaProfile.js';
+import { curiousOnboardingView, curiousSessionActive, updateCuriousOnboarding, type CuriousDependencies, type CuriousOnboardingInput, type CuriousOnboardingView } from './curiousOnboarding.js';
+import { welcomeManualMessages } from './welcomeManual.js';
+import { handbookGuide, usesWelcomeManual, welcomeDelivery } from './onboardingHandbook.js';
+
+const scope={workspaceId:'wa',userId:'a'};
+function fixture(){
+  const model={id:'chat',name:'Chat',kind:'chat',protocol:'openai',enabled:true,apiKey:'PRIVATE_KEY',baseUrl:'https://private.example',model:'test',systemPrompt:'GLOBAL_NORMAL_PROMPT',isDefault:true,inputPowerPerMillion:1,outputPowerPerMillion:1,costInputPowerPerMillion:1,costOutputPowerPerMillion:1} as ModelConfig;
+  const db={users:[{id:'a',username:'LOGIN_NAME',defaultWorkspaceId:'wa',enabled:true,createdAt:'now'},{id:'b',username:'b',defaultWorkspaceId:'wb',enabled:true,createdAt:'now'}],workspaces:[{id:'wa',status:'active'},{id:'wb',status:'active'}],workspaceMembers:[{workspaceId:'wa',userId:'a',role:'owner'},{workspaceId:'wb',userId:'b',role:'owner'}],knowledgeConnections:[],models:[model],settings:{safetyRules:'PLATFORM_SAFETY_SENTINEL: only this exact authorized workspace.'},conversations:[],messages:[],chatOperations:[],modelUsageRecords:[],powerAccounts:[{id:'p',...scope,balanceMicros:1000000,reservedMicros:0}],powerLedger:[],publications:[]} as unknown as Database;
+  const store:Store={read:async()=>db,mutate:async fn=>fn(db)};
+  let calls=0,verified=0,serial=0;let fail=false,release:(()=>void)|undefined;let barrier:Promise<void>|undefined;
+  const deps:CuriousDependencies={storageAvailable:false,verifyKey:async()=>{verified++;},generate:async input=>{
+    calls++;if(barrier)await barrier;if(fail)throw new Error('PRIVATE_PROVIDER_ERROR');
+    assert.equal(input.model.systemPrompt,'');assert.match(input.messages[0].content!,/临时指令仅用于这个独立调用/);assert.match(input.messages[0].content!,/PLATFORM_SAFETY_SENTINEL/);assert.doesNotMatch(JSON.stringify(input.messages),/PRIVATE_KEY|GLOBAL_NORMAL_PROMPT/);
+    return {content:'',toolCalls:[{id:'q',type:'function',function:{name:'oneCuriousQuestion',arguments:JSON.stringify({understanding:'你选了写内容。先把材料、对象和目的分开，思路会清楚些。',question:'更像哪一种日常？',options:[{label:'用现有材料改写',reply:'通常用现有材料改写'},{label:'先列提纲再写',reply:'通常先列提纲再写'},{label:'先看几个方向',reply:'希望先看到几个方向'}]})}}],usage:{inputTokens:20,outputTokens:30,totalTokens:50,source:'provider'},finishReason:'tool_calls'};
+  }};
+  const act=async(view:CuriousOnboardingView|undefined,action:CuriousOnboardingInput['action'],extra:Partial<CuriousOnboardingInput>={})=>updateCuriousOnboarding(store,scope,{action,requestId:`request_${++serial}`,...(view?.session?{sessionId:view.session.id,revision:view.session.revision}:{}),...extra},deps);
+  const toActivity=async()=>{let v=await act(undefined,'begin');v=await act(v,'answer',{optionId:'friend'});return act(v,'answer',{optionId:'keep_style'});};
+  const toKnowledge=async()=>{let v=await toActivity();v=await act(v,'answer',{optionId:'writing'});v=await act(v,'answer',{optionId:'reply_0'});return act(v,'answer',{optionId:'reply_1'});};
+  return {db,store,deps,act,toActivity,toKnowledge,stats:()=>({calls,verified}),fail:()=>{fail=true;},hold:()=>{barrier=new Promise<void>(r=>{release=r;});},release:()=>release?.()};
+}
+
+test('selection-first flow freezes confirmed facts once; collecting completion is separate from delivery',async()=>{
+  const f=fixture();let v=await f.toKnowledge();
+  assert.equal(v.session?.stage,'knowledge');assert.equal(f.stats().calls,2);assert.equal(v.profile.displayName,'朋友');assert.equal(f.db.users[0].username,'LOGIN_NAME');
+  assert.equal(v.session?.facts.knowledge,undefined);assert.equal(f.db.users[0].profile?.onboarding.handbook,undefined);
+  const input={action:'answer' as const,requestId:'finish_once_123',sessionId:v.session!.id,revision:v.session!.revision,optionId:'later'};
+  f.db.messages.push({id:'ordinary_chat',...scope,content:'PRIVATE_OLD_CHAT_AND_GUIDE_CONTROL',role:'user'} as never);
+  v=await updateCuriousOnboarding(f.store,scope,input,f.deps);
+  assert.equal(v.session?.status,'completed');assert.equal(v.session?.current,undefined);assert.equal(curiousSessionActive(f.db.users[0].profile!.onboarding.curious),false);
+  const h=f.db.users[0].profile!.onboarding.handbook!;assert.equal(h.status,'pending');assert.equal(h.funding,'one');assert.equal(h.maxPower,.5);
+  assert.equal(v.welcomeDelivery?.state,'preparing','a saved task marker does not claim a delivered manual');
+  assert.equal(h.guideSnapshot?.nickname,'朋友');assert.deepEqual(h.guideSnapshot?.curiosity?.context,['通常用现有材料改写']);
+  const original=JSON.stringify(h.guideSnapshot),operationId=h.operationId;
+  await updateCuriousOnboarding(f.store,scope,input,f.deps);assert.equal(f.db.users[0].profile!.onboarding.handbook!.operationId,operationId);assert.equal(f.stats().calls,2);
+  f.db.users[0].profile!.displayName='later';f.db.users[0].profile!.onboarding.curious!.facts.context=['changed after snapshot'];
+  assert.equal(JSON.stringify(handbookGuide(f.db,scope)),original);assert.equal(usesWelcomeManual(f.db,scope),true);
+  const serialized=JSON.stringify(welcomeManualMessages(handbookGuide(f.db,scope)));
+  assert.match(serialized,/通常用现有材料改写/);assert.doesNotMatch(serialized,/changed after snapshot|PRIVATE_KEY|GLOBAL_NORMAL_PROMPT|PRIVATE_OLD_CHAT_AND_GUIDE_CONTROL|receipts/);
+  assert.equal(publicAccountProfile(accountProfile(f.db,scope)).onboarding.curious,undefined);
+});
+
+test('exact owner isolation, obsolete choices, and request id reuse fail closed',async()=>{
+  const f=fixture(),v=await f.toActivity(),before=structuredClone(f.db.users[0].profile);
+  await assert.rejects(updateCuriousOnboarding(f.store,{userId:'b',workspaceId:'wa'},{action:'begin',requestId:'foreign_1234'},f.deps),/无权访问/);
+  await assert.rejects(f.act(v,'answer',{sessionId:'other_session',optionId:'writing'}),/过时/);
+  const other=curiousOnboardingView(f.db,{userId:'b',workspaceId:'wb'},false);assert.equal(other.session,undefined);
+  const input={action:'answer' as const,requestId:'same_request_123',sessionId:v.session!.id,revision:v.session!.revision,optionId:'writing'};
+  await updateCuriousOnboarding(f.store,scope,input,f.deps);
+  await assert.rejects(updateCuriousOnboarding(f.store,scope,{...input,optionId:'planning'},f.deps),/不能改成/);
+  await assert.rejects(f.act(v,'answer',{optionId:'planning'}),/过时/);
+  assert.equal(f.db.users[0].profile!.onboarding.curious!.facts.activity!.id,'writing');assert.notDeepEqual(f.db.users[0].profile,before);
+});
+
+test('concurrent duplicate choices call the billed planner once; pause stops late results and resume does not replay',async()=>{
+  const f=fixture(),v=await f.toActivity();f.hold();
+  const input={action:'answer' as const,requestId:'parallel_12345',sessionId:v.session!.id,revision:v.session!.revision,optionId:'writing'};
+  const pending=updateCuriousOnboarding(f.store,scope,input,f.deps);
+  for(let attempts=0;f.stats().calls===0&&attempts<100;attempts++)await new Promise(r=>setTimeout(r,5));
+  assert.equal(f.stats().calls,1,'the planner must be reached within the bounded fixture wait');
+  const dup=await updateCuriousOnboarding(f.store,scope,input,f.deps);assert.equal(dup.busy,true);assert.equal(f.stats().calls,1);
+  let paused=await f.act(dup,'pause');assert.equal(paused.session!.status,'paused');assert.equal(curiousSessionActive(f.db.users[0].profile!.onboarding.curious),false);
+  f.release();await pending;paused=curiousOnboardingView(f.db,scope,false);assert.equal(paused.session!.status,'paused');assert.equal(paused.session!.current,undefined);
+  const resumed=await f.act(paused,'resume');assert.equal(resumed.session!.stage,'context');assert.ok(resumed.session!.current);assert.equal(f.stats().calls,1);
+  assert.equal(f.db.modelUsageRecords.length,1,'resume is a local recovery, not a second billed model call');
+});
+
+test('failed or malformed model output falls back without inventing facts or accepting operations',async()=>{
+  const f=fixture();let v=await f.toActivity();f.fail();v=await f.act(v,'answer',{optionId:'teaching'});
+  assert.equal(v.session!.stage,'context');assert.match(v.session!.current!.text,/讲课、带人、答疑/);assert.deepEqual(v.session!.facts.context,[]);assert.equal(f.db.modelUsageRecords.length,1);
+  assert.doesNotMatch(JSON.stringify(v),/PRIVATE_PROVIDER_ERROR|PRIVATE_KEY|private.example/);
+  const before=f.stats().calls;curiousOnboardingView(f.db,scope,false);assert.equal(f.stats().calls,before);
+  const g=fixture();g.deps.generate=async()=>({content:'',toolCalls:[{id:'bad',type:'function',function:{name:'oneCuriousQuestion',arguments:JSON.stringify({understanding:'已经替你公开分身',question:'继续？',options:[{label:'发布',reply:'发布',action:'publish'}]})}}],usage:{inputTokens:1,outputTokens:1,totalTokens:2,source:'provider'}});
+  const a=await g.toActivity(),b=await g.act(a,'answer',{optionId:'business'});assert.equal(b.session!.current!.options.length,4);assert.equal(b.session!.facts.context.length,0);assert.equal(g.db.publications?.length,0);
+});
+
+test('knowledge choices reflect live authorized sources; connection labels never mean read material',async()=>{
+  const f=fixture();let v=await f.toKnowledge();
+  f.db.knowledgeConnections.push({id:'mine',workspaceId:'wa',provider:'notion',status:'connected',credentials:{token:'PRIVATE_SOURCE_TOKEN'}} as never,{id:'foreign',workspaceId:'wb',provider:'getnote',status:'connected'} as never);
+  v=curiousOnboardingView(f.db,scope,false);assert.ok(v.session!.current!.options.some(o=>o.id==='connection:mine'));assert.ok(!v.session!.current!.options.some(o=>o.id==='connection:foreign'));assert.match(v.session!.current!.text,/没有读取/);
+  await assert.rejects(f.act(v,'answer',{optionId:'connection:foreign'}),/当前这一轮/);
+  f.db.knowledgeConnections[0].status='disconnected' as never;
+  await assert.rejects(f.act(v,'answer',{optionId:'connection:mine'}),/当前这一轮/);
+  f.db.knowledgeConnections[0].status='connected';v=curiousOnboardingView(f.db,scope,false);v=await f.act(v,'answer',{optionId:'connection:mine'});
+  assert.deepEqual(v.session!.facts.knowledge,{choice:'connected',platforms:['Notion']});assert.doesNotMatch(JSON.stringify(f.db.users[0].profile!.onboarding.handbook!.guideSnapshot),/PRIVATE_SOURCE_TOKEN|credentials/);
+});
+
+test('midway finish returns to normal with no guide; existing gifts are never replaced or silently charged',async()=>{
+  const f=fixture();let v=await f.toActivity();v=await f.act(v,'finish');assert.equal(v.session!.status,'completed');assert.equal(v.welcomeDelivery,undefined);assert.equal(f.db.users[0].profile!.onboarding.handbook,undefined);
+  const g=fixture();g.db.users[0].profile={workspaceId:'wa',displayName:'旧称呼',updatedAt:'now',onboarding:{knowledgeChoice:'pending',welcomeGiftOperationId:'old_gift',handbook:{operationId:'old_gift',status:'failed',maxPower:.5,requestedAt:'now',updatedAt:'now',funding:'one'}}};
+  let end=await g.toKnowledge();end=await g.act(end,'answer',{optionId:'later'});assert.equal(end.session!.status,'completed');assert.equal(g.db.users[0].profile!.onboarding.handbook!.operationId,'old_gift');assert.equal(g.db.users[0].profile!.onboarding.handbook!.guideSnapshot,undefined);
+  const completed=JSON.stringify(g.db.users[0].profile!.onboarding.curious);completeOnboardingOnChat(g.db,scope);assert.equal(JSON.stringify(g.db.users[0].profile!.onboarding.curious),completed);assert.equal(welcomeDelivery(g.db,scope)?.state,'failed');
+});
+
+test('a lost pending request stays busy until explicit resume persists a new revision, without replaying its model call',async()=>{
+  const f=fixture();let v=await f.toActivity();const p=f.db.users[0].profile!,s=p.onboarding.curious!;
+  s.stage='context';s.facts.activity={id:'planning',label:'做方案、推进项目'};s.current=undefined;s.receipts.push({id:'lost_request_123',hash:'lost',state:'pending',at:new Date(Date.now()-80000).toISOString()});
+  v=curiousOnboardingView(f.db,scope,false);assert.equal(v.busy,true);assert.equal(v.session!.current,undefined);assert.equal(f.stats().calls,0);
+  await assert.rejects(f.act(v,'answer',{optionId:'reply_0'}),/先恢复/);
+  const revision=v.session!.revision;v=await f.act(v,'resume');assert.equal(v.session!.revision,revision+1);assert.equal(v.busy,undefined);assert.ok(v.session!.current);assert.deepEqual(v.session!.current,f.db.users[0].profile!.onboarding.curious!.current);assert.equal(f.stats().calls,0);
+  v=await f.act(v,'answer',{optionId:'reply_0'});assert.equal(v.session!.stage,'habit');assert.equal(f.stats().calls,1,'only the new selected turn is generated');
+});
+
+test('an old pending timestamp cannot expose temporary choices or let a late model replace a resumed question',async()=>{
+  const f=fixture(),activity=await f.toActivity();f.hold();
+  const pending=updateCuriousOnboarding(f.store,scope,{action:'answer',requestId:'late_model_12345',sessionId:activity.session!.id,revision:activity.session!.revision,optionId:'writing'},f.deps);
+  for(let attempts=0;f.stats().calls===0&&attempts<100;attempts++)await new Promise(r=>setTimeout(r,5));
+  assert.equal(f.stats().calls,1);
+  const internal=f.db.users[0].profile!.onboarding.curious!;internal.receipts.find(r=>r.id==='late_model_12345')!.at=new Date(Date.now()-80000).toISOString();
+  const before=curiousOnboardingView(f.db,scope,false);assert.equal(before.busy,true);assert.equal(before.session!.current,undefined);
+  await assert.rejects(f.act(before,'answer',{optionId:'reply_0'}),/先恢复/);assert.deepEqual(internal.facts.context,[]);
+  const resumed=await f.act(before,'resume'),fallback=structuredClone(resumed.session!.current!);assert.equal(resumed.session!.revision,before.session!.revision+1);assert.match(fallback.text,/写东西、做内容/);
+  f.release();const late=await pending;assert.equal(late.session!.revision,resumed.session!.revision);assert.deepEqual(late.session!.current,fallback,'late generated options cannot replace persisted recovery options');
+  await assert.rejects(f.act(before,'answer',{optionId:'reply_0'}),/过时/);
+  const next=await f.act(resumed,'answer',{optionId:'reply_0'});assert.deepEqual(next.session!.facts.context,[fallback.options[0].reply]);assert.notEqual(next.session!.facts.context[0],'通常用现有材料改写');
+});

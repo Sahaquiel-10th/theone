@@ -1,7 +1,9 @@
 import type { Database, User } from "./types.js";
 import { uid } from "./security.js";
+import { validateCompanion, type CompanionPreferences } from './oneCompanion.js';
 
 export type OnboardingHandbook = {
+  guideSnapshot?:import('./welcomeGuide.js').WelcomeGuideFacts;
   fixedWorkflow?:import('./fixedWorkflows.js').FixedWorkflowInvocation;
   funding?: 'one' | 'customer';
   operationId: string;
@@ -23,6 +25,7 @@ export type AccountProfile = {
   displayName: string;
   /** Account-bound appearance, independent of the temporary execution state. */
   appearance?: AccountAppearance;
+  companion?: CompanionPreferences;
   onboarding: {
     nameSetAt?: string;
     knowledgeChoice: "pending" | "connected" | "skipped";
@@ -35,6 +38,7 @@ export type AccountProfile = {
     journey?: import('./onboardingJourney.js').OnboardingJourney;
     journeyHistory?: import('./onboardingJourney.js').OnboardingJourney[];
     practice?: import('./onboardingPractice.js').OnboardingPractice;
+    curious?: import('./curiousOnboarding.js').CuriousSession;
   };
   updatedAt: string;
 };
@@ -43,6 +47,7 @@ export type AccountScope = { userId: string; workspaceId: string };
 export type ProfilePatch = {
   displayName?: unknown;
   appearance?: unknown;
+  companion?: unknown;
   onboardingAction?: unknown;
   handbookChoice?: unknown;
   handbookBudgetPower?: unknown;
@@ -69,8 +74,11 @@ export function accountProfile(db: Database, scope: AccountScope): AccountProfil
 
 /** Practice metadata contains private source/goal information. It is available
  * only through the current owner's dedicated, live-verified practice API. */
-export function publicAccountProfile(profile:AccountProfile):AccountProfile{
-  const safe=structuredClone(profile);delete safe.onboarding.practice;return safe;
+export function publicAccountProfile(profile:AccountProfile, options?:{owner?:boolean}):AccountProfile{
+  const safe=structuredClone(profile);delete safe.onboarding.practice;delete safe.onboarding.curious;
+  for(const handbook of [safe.onboarding.handbook,safe.onboarding.journey?.handbook,...(safe.onboarding.journeyHistory??[]).map(journey=>journey.handbook)])if(handbook)delete handbook.guideSnapshot;
+  if(!options?.owner&&safe.companion)delete safe.companion.custom;
+  return safe;
 }
 
 export function onboardingStep(profile: AccountProfile): "name" | "knowledge" | "ready" | "complete" {
@@ -85,6 +93,7 @@ export function completeOnboardingOnChat(db: Database, scope: AccountScope, time
   const user = accountInScope(db, scope);
   const profile = accountProfile(db, scope);
   if (profile.onboarding.completedAt) return;
+  if (profile.onboarding.curious?.status === 'active') return;
   if (profile.onboarding.journey?.experience === 5 && profile.onboarding.journey.stage !== 'complete') return;
   profile.onboarding.completedAt = timestamp;
   profile.updatedAt = timestamp;
@@ -94,7 +103,7 @@ export function completeOnboardingOnChat(db: Database, scope: AccountScope, time
 export function updateAccountProfile(db: Database, scope: AccountScope, patch: ProfilePatch, currentTime = new Date().toISOString()) {
   const user = accountInScope(db, scope);
   const profile = accountProfile(db, scope);
-  if (!patch || typeof patch !== "object") throw new BetaInputError("请填写要更新的资料");
+  if (!patch || typeof patch !== "object" || Array.isArray(patch) || ![Object.prototype,null].includes(Object.getPrototypeOf(patch)) || Reflect.ownKeys(patch).some(key=>typeof key!=='string'||!['displayName','appearance','companion','onboardingAction','handbookChoice','handbookBudgetPower'].includes(key))) throw new BetaInputError("请填写有效的资料字段");
   if (patch.displayName !== undefined) {
     if (typeof patch.displayName !== "string") throw new BetaInputError("请填写你的称呼");
     const name = patch.displayName.normalize("NFC").trim();
@@ -111,7 +120,9 @@ export function updateAccountProfile(db: Database, scope: AccountScope, patch: P
     }
     profile.appearance = { scene: value.scene };
   }
+  if (patch.companion !== undefined) profile.companion = validateCompanion(patch.companion);
   if (patch.onboardingAction !== undefined) {
+    if(patch.onboardingAction==='complete'&&profile.onboarding.curious?.status==='active')throw new BetaInputError('请在当前聊天引导中完成，或明确选择先跳过。',409);
     if(patch.onboardingAction==='complete'&&profile.onboarding.journey&&profile.onboarding.journey.stage!=='complete')throw new BetaInputError('请从当前新手引导的最后一步完成。',409);
     if (typeof patch.onboardingAction !== "string" || !["knowledge_connected", "knowledge_skipped", "complete"].includes(patch.onboardingAction)) {
       throw new BetaInputError("引导步骤无效");
@@ -141,7 +152,7 @@ export function updateAccountProfile(db: Database, scope: AccountScope, patch: P
   }
   if (patch.handbookChoice !== undefined && patch.onboardingAction !== "complete") throw new BetaInputError("图片指南只会在首次引导完成时安排");
   if (patch.handbookBudgetPower !== undefined && (patch.onboardingAction !== "complete" || patch.handbookChoice !== "create")) throw new BetaInputError("图片指南的额度上限只用于这次首次引导");
-  if (patch.displayName === undefined && patch.onboardingAction === undefined && patch.appearance === undefined) throw new BetaInputError("没有要更新的资料");
+  if (patch.displayName === undefined && patch.onboardingAction === undefined && patch.appearance === undefined && patch.companion === undefined) throw new BetaInputError("没有要更新的资料");
   profile.updatedAt = currentTime;
   user.profile = profile;
   return structuredClone(profile);

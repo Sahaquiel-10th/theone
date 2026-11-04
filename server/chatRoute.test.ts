@@ -27,14 +27,14 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
   gateway.listen(0, "127.0.0.1"); await once(gateway, "listening");
   const gatewayPort = (gateway.address() as { port: number }).port;
   const model = { id: "model", name: "Fixture", provider: "gateway", kind: "chat", protocol: "openai", baseUrl: `http://127.0.0.1:${gatewayPort}/v1`, apiKey: "fixture-only-not-a-provider-key", model: "fixture", systemPrompt: "", enabled: true, isDefault: true, inputPowerPerMillion: 1, outputPowerPerMillion: 1, costInputPowerPerMillion: 1, costOutputPowerPerMillion: 1, createdAt: timestamp };
-  const users = ["a", "b"].map(id => ({ id, username: `fixture-${id}`, passwordHash: "unused", role: "user", defaultWorkspaceId: `space-${id}`, enabled: true, createdAt: timestamp }));
+  const users = ["a", "b"].map(id => ({ id, username: `fixture-${id}`, passwordHash: "unused", role: "user", defaultWorkspaceId: `space-${id}`, enabled: true, createdAt: timestamp, profile:{workspaceId:`space-${id}`,displayName:`PRIVATE_NAME_${id}`,companion:{persona:id==='a'?'strategist':'puppy',intensity:'wild',custom:`PRIVATE_STYLE_${id}`},onboarding:{knowledgeChoice:'pending'},updatedAt:timestamp} }));
   await fs.writeFile(path.join(directory, "db.json"), JSON.stringify({
     users, workspaces: users.map(user => ({ id: user.defaultWorkspaceId, name: user.id, slug: user.id, status: "active", createdAt: timestamp, updatedAt: timestamp })),
     workspaceMembers: users.map(user => ({ id: `member-${user.id}`, userId: user.id, workspaceId: user.defaultWorkspaceId, role: "owner", createdAt: timestamp })),
     models: [model], oneKeyDevices: ["a", "b"].map(userId => ({ id: userId === "a" ? "key" : "key-b", serialNumber: `fixture-key-${userId}`, workspaceId: `space-${userId}`, userId, status: "active", publicKey: pair.publicKey.export({ type: "spki", format: "pem" }).toString(), createdAt: timestamp })),
     knowledgeConnections: ["a", "b"].map(id => ({ id: `flomo-${id}`, workspaceId: `space-${id}`, provider: "flomo", status: "pending", clientId: `client-${id}`, encryptedAccessToken: "PRIVATE_FIXTURE_TOKEN", providerSpaceName: `flomo-owner-${id}`, createdAt: timestamp, updatedAt: timestamp })),
     conversations: [], messages: [], attachments: [], settings: { safetyRules: "Fixture safety", rechargeCnyPerPower: 7,
-      aiTasks: { chat: { revision: 1, draft: { modelId: "", prompt: "DRAFT_NOT_LIVE", tools: [], maxSteps: 1 }, history: [], published: { modelId: "", prompt: "PUBLISHED_TASK_INSTRUCTION", tools: [], maxSteps: 1, version: 1, publishedBy: "fixture-admin", publishedAt: timestamp } } } }
+      aiTasks: { chat: { revision: 1, draft: { modelId: "", prompt: "DRAFT_NOT_LIVE", tools: [], maxSteps: 1 }, history: [], published: { modelId: "", prompt: "PUBLISHED_TASK_INSTRUCTION", tools: [], maxSteps: 1, version: 1, publishedBy: "fixture-admin", publishedAt: timestamp } },orchestrator:{revision:1,history:[],draft:{},published:{enabled:true,modelId:'',prompt:'ORCHESTRATOR_SHARED_PROMPT',tools:[],maxSteps:1,version:1,publishedBy:'fixture-admin',publishedAt:timestamp}} } }
   }));
   let app: ChildProcess | undefined;
   const sockets: WebSocket[] = [];
@@ -115,10 +115,12 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
   assert.equal(modelCalls, 1); assert.match(inputs[0], /PRIVATE_FIXTURE_DOCUMENT/);
   assert.match(inputs[0], /PUBLISHED_TASK_INSTRUCTION/);
   assert.doesNotMatch(inputs[0], /DRAFT_NOT_LIVE/);
+  assert.match(inputs[0],/PRIVATE_NAME_a/);assert.match(inputs[0],/古风军师/);assert.match(inputs[0],/PRIVATE_STYLE_a/);assert.doesNotMatch(inputs[0],/PRIVATE_NAME_b|PRIVATE_STYLE_b/);
   const billed = JSON.parse(await fs.readFile(path.join(directory, "db.json"), "utf8"));
   assert.equal(billed.modelUsageRecords[0].aiTaskVersion, 1);
   assert.equal(billed.modelUsageRecords[0].finishReason, "length");
   assert.equal(billed.users.find((u: any) => u.id === "b").profile?.onboarding.completedAt, undefined);
+  assert.equal(billed.models[0].systemPrompt,'');
   const duplicate = await post("/api/chat", input, cookie); assert.equal(duplicate.status, 200); assert.equal(modelCalls, 1);
   assert.equal(((await duplicate.json()) as any).message.id, answer.message.id);
   socketA.close(); await once(socketA, "close");
@@ -127,8 +129,11 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
   assert.equal((await post("/api/chat", input, cookie)).status, 428); assert.equal(modelCalls, 1);
   await connect(computerA);
   assert.equal((await post("/api/chat", input, cookie)).status, 200); assert.equal(modelCalls, 1);
+  const profileSaved=await fetch(`${base}/api/me/profile`,{method:'PATCH',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({displayName:'UPDATED_PRIVATE_NAME_A',companion:{persona:'robot',intensity:'reserved',custom:'UPDATED_PRIVATE_STYLE_A'}})});
+  assert.equal(profileSaved.status,200);assert.equal(((await profileSaved.json()) as any).profile.companion.custom,'UPDATED_PRIVATE_STYLE_A');
   const followup = await post("/api/chat", { ...input, operationId: crypto.randomUUID(), conversationId: answer.conversation.id, content: "Explain that file again", attachmentIds: [] }, cookie);
   assert.equal(followup.status, 200); assert.equal(modelCalls, 2); assert.match(inputs[1], /PRIVATE_FIXTURE_DOCUMENT/);
+  assert.match(inputs[1],/UPDATED_PRIVATE_NAME_A/);assert.match(inputs[1],/赛博机器人/);assert.match(inputs[1],/UPDATED_PRIVATE_STYLE_A/);assert.doesNotMatch(inputs[1],/PRIVATE_NAME_b|PRIVATE_STYLE_b/);
   const billing = await (await get("/api/me/billing", cookie)).json() as any;
   assert.equal(billing.usage.length, 2); assert.equal(billing.ledger.filter((row: any) => row.type === "usage").length, 2);
   const stale = await fetch(`${base}/api/conversations`, { headers: { Cookie: cookie, "X-ONE-User": "b" } });
@@ -168,4 +173,6 @@ test("real chat HTTP route: Key gating, durable replay, attachment followup and 
   const callCount = modelCalls;
   await get(`/api/chat/operations/${longOperation}`, cookie);
   assert.equal(modelCalls, callCount);
+  const toolChat=await post('/api/chat',{operationId:crypto.randomUUID(),content:'你好，普通工具聊天',modelId:'model',attachmentIds:[],webSearch:false},cookie);
+  assert.equal(toolChat.status,200,await toolChat.clone().text());assert.match(inputs.at(-1)!,/ORCHESTRATOR_SHARED_PROMPT/);assert.match(inputs.at(-1)!,/UPDATED_PRIVATE_NAME_A/);assert.match(inputs.at(-1)!,/UPDATED_PRIVATE_STYLE_A/);assert.doesNotMatch(inputs.at(-1)!,/PRIVATE_NAME_b|PRIVATE_STYLE_b/);
 });

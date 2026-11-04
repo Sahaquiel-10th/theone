@@ -4,6 +4,7 @@ import { accountInScope, accountProfile, publicAccountProfile, updateAccountProf
 import { asyncRoute } from "./middleware.js";
 import { onboardingHandbookOffer, resolvedOnboardingHandbookProfile, startOnboardingHandbook, welcomeDelivery, type OnboardingImageInput } from "./onboardingHandbook.js";
 import { updateJourney, welcomeContext, type LocalWelcomeState } from './onboardingJourney.js';
+import { installCuriousOnboardingRoutes } from './curiousOnboardingRoutes.js';
 
 export type OnboardingProfileDependencies = {
   storageAvailable: boolean;
@@ -11,6 +12,7 @@ export type OnboardingProfileDependencies = {
   enqueueImage: (scope: AccountScope, input: OnboardingImageInput, verifyKey: () => Promise<void>) => Promise<string>;
   resume: (scope: AccountScope, verifyKey: () => Promise<void>) => Promise<unknown>;
   inspectLocal?: (req: express.Request) => Promise<LocalWelcomeState>;
+  curiousGenerate?: import('./curiousOnboarding.js').CuriousDependencies['generate'];
 };
 
 /** The middleware supplies the exact authenticated account; bodies cannot
@@ -22,7 +24,7 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
   const scope = (req: express.Request): AccountScope => ({ userId: req.user!.id, workspaceId: req.workspaceId! });
   router.get("/", asyncRoute(async (req, res) => {
     const db = await store.read(), current = resolvedOnboardingHandbookProfile(db, scope(req));
-    res.json({ profile: publicAccountProfile(current.profile), welcomeContext: welcomeContext(db,scope(req)), welcomeDelivery:welcomeDelivery(db,scope(req)), handbookNotice: current.notice, handbookOffer: onboardingHandbookOffer(db, deps.storageAvailable,scope(req)) });
+    res.json({ profile: publicAccountProfile(current.profile,{owner:true}), welcomeContext: welcomeContext(db,scope(req)), welcomeDelivery:welcomeDelivery(db,scope(req)), handbookNotice: current.notice, handbookOffer: onboardingHandbookOffer(db, deps.storageAvailable,scope(req)) });
   }));
   router.post('/onboarding',asyncRoute(async(req,res)=>{
     const s=scope(req),input=req.body??{};
@@ -64,11 +66,12 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
       }
     }
     const db=await store.read(),current=resolvedOnboardingHandbookProfile(db,s);
-    res.json({profile:publicAccountProfile(current.profile),welcomeContext:welcomeContext(db,s),welcomeDelivery:welcomeDelivery(db,s),handbookOffer:onboardingHandbookOffer(db,deps.storageAvailable,s),handbookNotice:notice||current.notice});
+    res.json({profile:publicAccountProfile(current.profile,{owner:true}),welcomeContext:welcomeContext(db,s),welcomeDelivery:welcomeDelivery(db,s),handbookOffer:onboardingHandbookOffer(db,deps.storageAvailable,s),handbookNotice:notice||current.notice});
   }));
   router.patch("/", asyncRoute(async (req, res) => {
     const s = scope(req), body = req.body ?? {};
-    const savedProfile = await store.mutate(db => updateAccountProfile(db, s, { displayName: body.displayName, appearance: body.appearance, onboardingAction: body.onboardingAction, handbookChoice: body.handbookChoice, handbookBudgetPower: body.handbookBudgetPower }));
+    // Identity and unknown fields are ignored; only middleware establishes the owner scope.
+    const savedProfile = await store.mutate(db => updateAccountProfile(db, s, { displayName: body.displayName, appearance: body.appearance, companion:body.companion, onboardingAction: body.onboardingAction, handbookChoice: body.handbookChoice, handbookBudgetPower: body.handbookBudgetPower }));
     let handbookNotice: string | undefined;
     if (body.onboardingAction === "complete" && body.handbookChoice === "create") {
       try {
@@ -97,7 +100,8 @@ export function installOnboardingProfileRoutes(app: Express, keyAuth: readonly R
       }
     }
     const db = await store.read(), current = resolvedOnboardingHandbookProfile(db, s);
-    res.json({ profile: publicAccountProfile(current.profile), handbookNotice: handbookNotice || current.notice, handbookOffer: onboardingHandbookOffer(db, deps.storageAvailable,s) });
+    res.json({ profile: publicAccountProfile(current.profile,{owner:true}), handbookNotice: handbookNotice || current.notice, handbookOffer: onboardingHandbookOffer(db, deps.storageAvailable,s) });
   }));
   app.use("/api/me/profile", router);
+  installCuriousOnboardingRoutes(app,keyAuth,store,deps);
 }

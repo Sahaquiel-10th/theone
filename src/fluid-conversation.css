@@ -348,3 +348,9 @@ main.one-fluid-workspace.one-shell.one-studio .coordinator-answer-actions { max-
 main.one-fluid-workspace.one-shell.one-studio .coordinator-answer-actions .message-result-toolbar { margin-top: 0; }
 main.one-fluid-workspace.one-shell.one-studio .coordinator-answer-actions .one-beta-feedback-actions button:hover,
 main.one-fluid-workspace.one-shell.one-studio .coordinator-answer-actions .one-beta-feedback-actions button[aria-pressed="true"] { border-color: var(--fluid-line); background: var(--fluid-hover); color: var(--fluid-ink); }
+
+/* ONE remains the same visible conversation partner during and after setup. */
+.coordinator-conversation .coordinator-message.assistant{position:relative;margin-left:44px;max-width:calc(100% - 44px)}
+.coordinator-one-avatar{position:absolute;left:-40px;top:0;width:28px;height:32px;display:grid;place-items:center}
+.studio-composer[hidden]{display:none!important}
+@media(max-width:600px){.coordinator-conversation .coordinator-message.assistant{margin-left:36px;max-width:calc(100% - 36px)}.coordinator-one-avatar{left:-36px;width:28px}}

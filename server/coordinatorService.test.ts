@@ -18,10 +18,32 @@ import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
 import {runtimeContext,knowledgeRecallOptions} from './runtimeContext.js';
 import {sourceBinding} from './publicSharing.js';
 import {localExecutionCapabilityGuidance} from './localDocumentPolicy.js';
+import {updateAccountProfile} from './betaProfile.js';
 import {LocalExecutionNotStartedError} from './localExecutionAdmission.js';
 import {taskRecovery as recoveryForSteps} from '../src/taskRecovery.js';
 import JSZip from 'jszip';
 import XLSX from 'xlsx';
+
+for(const contextMode of ['legacy','adaptive'] as const)test(`companion preferences reach every ${contextMode} coordinator round without entering shared prompts or other owners`,async()=>{
+  const f=fixture();
+  await f.store.mutate(db=>{
+    updateAccountProfile(db,a,{displayName:'小马',companion:{persona:'strategist',intensity:'wild',custom:'只用这个用户的文风'}});
+    updateAccountProfile(db,b,{displayName:'FOREIGN_PRIVATE_NAME',companion:{persona:'puppy',intensity:'normal',custom:'FOREIGN_PRIVATE_STYLE'}});
+  });
+  const captured:ModelToolMessage[][]=[];
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{contextMode,modelCall:async(_model,messages)=>{captured.push(structuredClone(messages));return answer('我在。');}});
+  const before=(await f.store.read()).models.map(model=>model.systemPrompt);
+  await service.dispatch(a,input(`companion_${contextMode}_round_01`,'你好'),key);
+  const first=JSON.stringify(captured[0]);assert.match(first,/小马/);assert.match(first,/古风军师/);assert.match(first,/只用这个用户的文风/);assert.doesNotMatch(first,/FOREIGN_PRIVATE/);
+  assert.ok(captured[0].some(message=>message.role==='system'&&message.cacheScope!=='stable'&&message.content?.includes('ONE 的当前交流风格')));
+  assert.doesNotMatch(captured[0].filter(message=>message.cacheScope==='stable').map(message=>message.content).join('\n'),/小马|只用这个用户/);
+  await f.store.mutate(db=>{updateAccountProfile(db,a,{displayName:'马先生',companion:{persona:'robot',intensity:'reserved',custom:'新文风'}});});
+  await service.dispatch(a,input(`companion_${contextMode}_round_02`,'你好'),key);
+  const second=JSON.stringify(captured[1]);assert.match(second,/马先生/);assert.match(second,/赛博机器人/);assert.match(second,/收敛表达/);assert.doesNotMatch(second,/小马|只用这个用户|FOREIGN_PRIVATE/);
+  const after=await f.store.read();assert.deepEqual(after.models.map(model=>model.systemPrompt),before);
+  assert.equal(after.conversations.find(conversation=>conversation.coordinatorMain&&conversation.userId==='a')!.messages.some(message=>message.role==='system'),false);
+  await assert.rejects(()=>service.dispatch({...a,workspaceId:'wb'},input(`companion_${contextMode}_foreign_01`,'你好'),key));
+});
 
 test('a missing mandatory PPT is repaired before queueing; one office bundle saves and reads back all real formats',async()=>{
  const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-office-bundle-'));let route=0;
@@ -641,8 +663,8 @@ function fixture() {
   );
   let db = {
     users: [
-      { id: "a", enabled: true, role: "admin" },
-      { id: "b", enabled: true, role: "user" },
+      { id: "a", enabled: true, role: "admin", defaultWorkspaceId:"wa", createdAt:"now" },
+      { id: "b", enabled: true, role: "user", defaultWorkspaceId:"wb", createdAt:"now" },
     ],
     workspaces: [
       { id: "wa", status: "active" },

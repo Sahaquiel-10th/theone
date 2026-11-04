@@ -6,7 +6,8 @@ import {renderVisualPage,renderVisualDiagram,type VisualDocument} from './visual
 import {publicSharingAllowed} from './enterprisePolicy.js';
 import type {PracticeGuideFacts} from './practiceWelcomeGuide.js';
 
-export type WelcomeGuideFacts={version:1;nickname:string;purposes:string[];platforms:string[];localReady:boolean;features:{name:string;description:string}[];manual?:VisualDocument;avatarAllowed?:boolean;avatars?:string[];sponsored?:boolean;practice?:PracticeGuideFacts};
+export type CuriosityGuideFacts={sessionId:string;activity:{id:string;label:string};context:string[];habits:string[];knowledge:{choice:'connected'|'later';platforms:string[]}};
+export type WelcomeGuideFacts={version:1;nickname:string;purposes:string[];platforms:string[];localReady:boolean;features:{name:string;description:string}[];manual?:VisualDocument;avatarAllowed?:boolean;avatars?:string[];sponsored?:boolean;practice?:PracticeGuideFacts;curiosity?:CuriosityGuideFacts};
 export function welcomeGuideFacts(db:Database,scope:AccountScope,journey?:OnboardingJourney):WelcomeGuideFacts {
   const p=accountProfile(db,scope),j=journey??p.onboarding.journey,c=welcomeContext(db,scope);
   const avatarAllowed=Array.isArray(db.publications)&&publicSharingAllowed(db,scope.workspaceId);
@@ -14,8 +15,11 @@ export function welcomeGuideFacts(db:Database,scope:AccountScope,journey?:Onboar
   // metadata after a connector is disconnected; no knowledge body is exported.
   const practiced=j?.experience===5&&p.onboarding.practice?.journeyId===j.id&&p.onboarding.practice.completedAt?p.onboarding.practice:undefined;
   const practice:PracticeGuideFacts|undefined=practiced?{sourceTitle:practiced.source.title,platform:practiced.source.platform,sample:practiced.source.sample,goal:practiced.goal,topic:practiced.topic,firstPrompt:practiced.prompt,webPrompt:practiced.webPrompt,hasWeb:!!practiced.web&&!practiced.skipWeb,firstTaskId:practiced.first.taskId}:undefined;
-  return {version:1,nickname:p.displayName||'你',purposes:onboardingPurposes.filter(x=>j?.purposeIds?.includes(x.id)).map(x=>x.title),platforms:c.platforms,avatarAllowed,
-    ...(practice?{practice}:{}),
+  const cs=p.onboarding.curious,cf=cs?.facts;
+  const curiosity:CuriosityGuideFacts|undefined=cs?.status==='completed'&&cs.completedAt&&cf?.activity&&cf.context.length&&cf.habits.length&&cf.knowledge?{sessionId:cs.id,activity:structuredClone(cf.activity),context:cf.context.slice(0,4),habits:cf.habits.slice(0,4),knowledge:structuredClone(cf.knowledge)}:undefined;
+  return {version:1,nickname:p.displayName||'你',purposes:curiosity?[curiosity.activity.label]:onboardingPurposes.filter(x=>j?.purposeIds?.includes(x.id)).map(x=>x.title),platforms:c.platforms,avatarAllowed,
+    ...(curiosity?{curiosity}:{}),
+    ...(practice&&!curiosity?{practice}:{}),
     avatars:avatarAllowed?db.publications!.filter(x=>x.workspaceId===scope.workspaceId&&x.userId===scope.userId&&x.status==='active'&&Date.parse(x.expiresAt)>Date.now()).slice(0,3).map(x=>x.name):[],
     localReady:j?.localChoice==='checked'&&!!j.local?.connected&&!!j.local.folderSelected&&!!j.local.executorReady,
     features:[...c.features.filter(f=>j?.featureIds.includes(f.id)),...c.features.filter(f=>!j?.featureIds.includes(f.id))].slice(0,60).map(({name,description})=>({name,description}))};

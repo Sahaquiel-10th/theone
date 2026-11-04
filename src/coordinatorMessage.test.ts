@@ -55,7 +55,7 @@ test('user text remains literal while the assistant keeps direct Markdown block 
   {id:'markdown',role:'assistant',text:'## 回复标题\n\n清楚的段落。\n\n- 一项\n- 二项'},
  ],tasks:[],pending:false,onOpen:()=>{}}));
  assert.match(html,/<p class="coordinator-user-text"># 我的原话\n\*\*这不是格式指令\*\*<\/p>/);
- assert.match(html,/data-task-return-anchor=""><h2>回复标题<\/h2>\n<p>清楚的段落。<\/p>\n<ul>/);
+ assert.match(html,/data-task-return-anchor="">.*?<h2>回复标题<\/h2>\n<p>清楚的段落。<\/p>\n<ul>/);
 });
 test('main Markdown images use private attachment routes while retaining a download for an inline result',()=>{
  const html=renderToStaticMarkup(createElement(CoordinatorConversation,{messages:[{id:'private-inline',role:'assistant',text:'![图片](/api/attachments/owned-picture/content)\n\n![远程](https://example.com/tracker.png)\n\n![本地](/Users/me/private.png)',imageUrl:'/api/attachments/owned-picture/content'}],tasks:[],pending:false,onOpen:()=>{}}));

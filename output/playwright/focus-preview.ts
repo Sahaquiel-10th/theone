@@ -2,10 +2,12 @@ import {createStatusAuditFixture} from './status-audit-fixture';
 // Local visual fixture only. All API calls are intercepted; no keys, models or production data.
 const stamp=new Date().toISOString();
 const fixtureParams=new URLSearchParams(location.search);
+const curiousPreview=fixtureParams.get('curiousPreview')==='1';
 const startupAudit=fixtureParams.get('startupAudit')==='1';
 const uxAudit=fixtureParams.get('uxAudit')==='1'||startupAudit;
 const statusAudit=fixtureParams.get('statusAudit')==='1';
 const profile:any={workspaceId:'preview',displayName:'小马',onboarding:{completedAt:stamp,knowledgeChoice:'skipped'},updatedAt:stamp};
+if(curiousPreview){delete profile.onboarding.completedAt;profile.companion={persona:'puppy',intensity:'normal'};}
 const profileStorageKey='one-focus-preview-profile:v1:preview:preview';
 try{const saved=JSON.parse(localStorage.getItem(profileStorageKey)||'null');if(saved?.appearance?.scene==='silver'||saved?.appearance?.scene==='graphite')profile.appearance={scene:saved.appearance.scene};if(typeof saved?.displayName==='string'&&saved.displayName.trim())profile.displayName=saved.displayName.trim().slice(0,40);}catch{/* Private browser storage is optional. */}
 const user:any={id:'preview',username:'preview',role:'user',enabled:true,defaultWorkspaceId:'preview',createdAt:stamp,profile};
@@ -94,6 +96,41 @@ const fixtureModels=[{id:'preview-model',name:'演示模型（不计费）',kind
 const fixtureMetrics={asOf:stamp,definitions:{scope:'仅本地合成数据，不代表真实运营指标。'},excludedUserIds:[],daily:[],users:{items:[],total:0},summary:{accounts:2,selfRegistered:0,provisioned:2,dau:1,wau:2,mau:2,newAccounts30:2,newAccounts7:2,activated:1,d1:{rate:null,retained:0,eligible:0},d7:{rate:null,retained:0,eligible:0},lowBalance:0,atRisk:0,dormant:0,neverActivated:1,rechargeCny30:0,payingUsers30:0,payingUsersEver:0,repeatPayers:0,consumedMicros30:120000,costMicros30:0,stickiness:.5,anonymousQuestions30:0,excludedAccounts:0}};
 let fixtureGuideBeginFailed=false;
 const fixtureWelcome=()=>({profile,welcomeContext:{platforms:uxAudit&&fixtureKnowledge.get('notion')?.status==='connected'?['Notion']:[],features:features.map(({id,name,description})=>({id,name,description}))},handbookOffer:{available:false},handbookNotice:'本地引导演示，不会生成说明或使用电力。'});
+// Opt-in visual fixture: synthetic replies, no model, queue, billing or private sources.
+let curiousSession:any;
+const curiousReceipts=new Set<string>();
+function fixtureCurious(body:any,method:string){
+ const message=(role:string,content:string)=>curiousSession.messages.push({id:crypto.randomUUID(),role,content});
+ const setQuestion=(text:string,replies:string[],allowText=false,actions:Record<string,string>={})=>{
+  curiousSession.current={id:crypto.randomUUID(),text,allowText,options:replies.map((label,i)=>({id:`option_${i}`,label,reply:label,...(actions[String(i)]?{action:actions[String(i)]}:{})}))};message('assistant',text);
+ };
+ const view=()=>({profile,session:curiousSession,context:{platforms:[],features:[]},handbookOffer:{available:false,firstGift:true},billingNotice:'本地合成演示：不调用模型、不制作说明书、不计费。',...(curiousSession?.status==='completed'?{notice:'本地合成演示已走完；正式环境会交给独立说明书任务。'}:{})});
+ if(method==='GET')return {status:200,value:view()};
+ if(curiousReceipts.has(body.requestId))return {status:200,value:view()};
+ if(body.action==='begin'){
+  if(!curiousSession){curiousSession={id:'fixture-curious-'+crypto.randomUUID(),revision:1,status:'active',stage:'name',messages:[],facts:{context:[],habits:[]},startedAt:stamp};setQuestion('好耶，等到你了！我是 ONE，以后就是你的 AI 搭档啦。怎么称呼你？',[`就叫我${profile.displayName}`,'先叫我朋友'],true);}
+ }else{
+  if(body.sessionId!==curiousSession?.id||body.revision!==curiousSession.revision)return{status:409,value:{error:'合成选项已变化，请刷新'}};
+  if(body.action==='pause'){curiousSession.status='paused';curiousSession.current=undefined;}
+  else if(body.action==='resume'){curiousSession.status='active';setQuestion('接着认识你：你平时最常忙哪类事？',['写东西、做内容','做方案、推进项目','学习研究、整理资料','做生意、服务客户','讲课、带人、答疑','生活、兴趣、随便聊']);curiousSession.stage='activity';}
+  else if(body.action==='finish'){curiousSession.status='completed';curiousSession.current=undefined;profile.onboarding.completedAt=stamp;message('assistant','这会儿我对你的日常有点数了。我们可以继续正常聊天。这里是合成演示，尚未安排真实说明书。');}
+  else if(body.action==='answer'){
+   const option=curiousSession.current?.options.find((o:any)=>o.id===body.optionId),reply=body.text||option?.reply;
+   if(!reply)return{status:400,value:{error:'请选择当前回复'}};
+   message('user',reply);
+   if(curiousSession.stage==='name'){profile.displayName=body.text|| (reply==='先叫我朋友'?'朋友':profile.displayName);curiousSession.facts.name=profile.displayName;curiousSession.stage='style';setQuestion(`收到收到，${profile.displayName}！我就是这股热乎劲儿，喜欢这个口气吗？`,['就这个口气','换一种试试','自己挑'],false,{'1':'change_style','2':'choose_style'});}
+   else if(curiousSession.stage==='style'){
+    if(option?.action){profile.companion.persona=body.personaId||'scientist';setQuestion('有意思，新搭档入组！先观察你的日常，再决定一起试什么。这个口气喜欢吗？',['就这个口气','换一种试试','自己挑'],false,{'1':'change_style','2':'choose_style'});}
+    else{curiousSession.stage='activity';setQuestion('你平时都在忙些什么？先挑一个最常碰到的，我想认识认识你的日常。',['写东西、做内容','做方案、推进项目','学习研究、整理资料','做生意、服务客户','讲课、带人、答疑','生活、兴趣、随便聊']);}
+   }else if(curiousSession.stage==='activity'){curiousSession.facts.activity={id:'planning',label:reply};curiousSession.stage='context';setQuestion(`「${reply}」，收到。我想先认识这些事情里的另一个人：你的成果通常给谁看？`,['客户、合作方','老板、同事','学员、社群','主要自己用'],true);}
+   else if(curiousSession.stage==='context'){curiousSession.facts.context.push(reply);curiousSession.stage='habit';setQuestion(`主要给「${reply}」看。先搭个小骨架：遇到了什么 → 建议怎么做 → 怎么落地。你平时怎么跟他们讲？`,['发文档，让对方自己看','开会时，边讲边看','发链接，随时能看','还没有固定方式'],true);}
+   else if(curiousSession.stage==='habit'){curiousSession.facts.habits.push(reply);curiousSession.stage='knowledge';setQuestion('你平时积累的资料也能派上用场。需要时，我可以从已连接的资料中查找并附上来源。现在也可以先不接，照样聊。',['去连接我的资料','以后再接，先认识到这'],false,{'0':'connect'});}
+   else{curiousSession.facts.knowledge={choice:'later',platforms:[]};curiousSession.status='completed';curiousSession.current=undefined;profile.onboarding.completedAt=stamp;message('assistant','好耶，我记下了：你经常给客户讲方案，喜欢边讲边演示。正式环境会据此整理你的专属使用说明。现在可以照常聊啦。');}
+  }
+  curiousSession.revision++;
+ }
+ curiousReceipts.add(body.requestId);return{status:200,value:view()};
+}
 /** Mirror the forward-only journey contract, without authorization, model or device side effects. */
 function fixtureJourney(body:any):{status?:number;error?:string} {
  if(body.createGuide===true)return{status:400,error:'本地引导不制作说明或调用模型，请选择只保存设置。'};
@@ -138,7 +175,7 @@ function fixtureJourney(body:any):{status?:number;error?:string} {
  profile.updatedAt=now;return{};
 }
 const workflowJobs=new Map<string,any[]>(),workflowOperations=new Map<string,{taskId:string;jobId:string}>();
-if(workflowPreview){
+if(workflowPreview&&!curiousPreview){
  for(const [suffix,title,state,request,response] of [
   ['research','整理项目资料','running','请整理 ONE 的任务、成果与本机执行如何衔接。',''],
   ['outline','改版接入清单','completed','请列出工作台正式接入的核对清单。','## 接入清单\n\n- 主对话与草稿持续保留。\n- 功能选择和独立运行分别接入。\n- 分身分享链接可以找回。\n\n这是合成结果，没有调用模型或读取真实资料。'],
@@ -252,10 +289,12 @@ window.fetch=async(input,options={})=>{
  if(startupAudit&&path==='/api/coordinator'&&statusResult&&fixtureParams.get('startupDisabled')==='1')return reply({...statusResult.body,enabled:false},statusResult.status);
  if(statusResult)return reply(statusResult.body,statusResult.status);
  let result:any={};
+ if(path==='/api/me/profile/curious-onboarding'&&curiousPreview){const next=fixtureCurious(body,method);return reply(next.value,next.status);}
  if(path==='/api/me/profile'){
   if(method==='PATCH'){
    if(body.appearance!==undefined){if(body.appearance?.scene!=='silver'&&body.appearance?.scene!=='graphite')return reply({error:'请选择有效的演示外观'},400);profile.appearance={scene:body.appearance.scene};}
    if(typeof body.displayName==='string')profile.displayName=body.displayName.trim().slice(0,40)||profile.displayName;
+   if(body.companion)profile.companion={...body.companion};
    profile.updatedAt=new Date().toISOString();try{localStorage.setItem(profileStorageKey,JSON.stringify({workspaceId:'preview',displayName:profile.displayName,appearance:profile.appearance}));}catch{}
   }result=fixtureWelcome();
  }

@@ -25,6 +25,8 @@ import {CommerceIndustryTool} from './CommerceIndustryTool';
 import {ThingsPanel} from './ThingsPanel';
 import {TaskReadAllButton} from './TaskReadAllButton';
 import {StoryOnboarding} from './StoryOnboarding';
+import {CuriousOnboarding} from './CuriousOnboarding';
+import {CompanionSettings} from './CompanionSettings';
 import {PracticeResume} from './PracticeResume';
 import {onboardingEffectPreview} from './onboardingPreviewBoundary';
 import {canReceiveGuideDraft,guideDraftText} from './guideDraft';
@@ -149,6 +151,7 @@ import "./one-login.css";
 import "./one-attention.css";
 import "./one-beta.css";
 import "./one-onboarding.css";
+import './curious-onboarding.css';
 import "./one-settings.css";
 import './one-product.css';
 import './account-preferences.css';
@@ -614,6 +617,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const localDeviceDescription=localReadinessStatus(localDevice.value,localDevice.status==='idle'||localDevice.status==='checking',localDevice.error).description;
   const preview = coordinator.enabled ? coordinator : demo;
   const [profile, setProfile] = useState<AccountProfile>(user.profile || { workspaceId: user.defaultWorkspaceId, displayName: "", onboarding: { knowledgeChoice: "pending" }, updatedAt: user.createdAt });
+  const [curiousEntered,setCuriousEntered]=useState(false),[curiousActive,setCuriousActive]=useState(false);
   const [handbookOffer,setHandbookOffer]=useState<OnboardingHandbookOffer>(),[handbookNotice,setHandbookNotice]=useState('');
   const [welcomeContext,setWelcomeContext]=useState<WelcomeContext>(),[profileLoaded,setProfileLoaded]=useState(false),[storyOpen,setStoryOpen]=useState(false),[storyHidden,setStoryHidden]=useState(false),[storyTaskId,setStoryTaskId]=useState('');
   const [delivery,setDelivery]=useState<Delivery>(),[deliveryBusy,setDeliveryBusy]=useState(false),[deliveryError,setDeliveryError]=useState(''),[dismissedDelivery,setDismissedDelivery]=useState('');
@@ -664,13 +668,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   async function startStory() {
     storyRequested.current=true;
     setStoryLaunchError('');setStoryOpen(true);setStoryHidden(false);
-    if(preview.enabled){setWorkLayer('guide');setView('chat');}
-    if(guideEffectPreview)return;
-    if(storyLaunchPending.current)return;
-    storyLaunchPending.current=true;setStoryLaunching(true);
-    try{await saveStory({action:'begin',launchId:crypto.randomUUID(),experience:5});if(storyRequested.current&&!preview.enabled)openSurface('chat');}
-    catch(error){if(storyRequested.current)setStoryLaunchError(error instanceof Error?error.message:'引导暂时没打开，可以重新试一次。');}
-    finally{storyLaunchPending.current=false;setStoryLaunching(false);}
+    const legacy=profile.onboarding.journey;
+    if(guideEffectPreview||legacy&&legacy.stage!=='complete'){
+      if(preview.enabled){setWorkLayer('guide');setView('chat');}else openSurface('chat');
+      return;
+    }
+    setCuriousEntered(true);setWorkLayer(null);setView('chat');setComposeNew(true);
   }
   storyStarter.current=startStory;
   function dismissStory(){storyRequested.current=false;setStoryHidden(true);setStoryOpen(false);closeWorkLayer();}
@@ -916,7 +919,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     || coordinatorMetas.find(t=>t.id===task.taskId)?.updatedAt}));
   // Material-only animation: the coordinator and composer remain mounted in place.
   const fluidEnabled = startup==='workspace' && view === 'chat' && preview.enabled;
-  const fluidHasDialogue = preview.state.dialogue.length > 0 || Boolean(preview.state.pending);
+  const legacyGuidePending=!!profile.onboarding.journey&&profile.onboarding.journey.stage!=='complete';
+  const firstCurious=!storyHidden&&!hasSubmittedChat&&!conversations.length&&!profile.onboarding.completedAt&&!preview.state.dialogue.length&&(demo.enabled||coordinator.ready);
+  const curiousVisible=view==='chat'&&workLayer!=='guide'&&!guideEffectPreview&&!legacyGuidePending&&profileLoaded&&(curiousEntered||storyOpen||user.access?.kind!=='company'&&firstCurious);
+  const fluidHasDialogue = preview.state.dialogue.length > 0 || Boolean(preview.state.pending) || curiousVisible;
   const fluidCanvasRef = useRef<HTMLDivElement>(null);
   const fluidEyeOwnerRef = useRef<'main'|'activity'|'local'>('main');
   const [fluidSize,setFluidSize] = useState({width:0,height:0,viewportWidth:0,viewportHeight:0});
@@ -2237,11 +2243,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   function renderGuideDelivery(){return <>
         {view==='chat'&&workLayer!=='guide'&&storyHidden&&profile.onboarding.journey?.experience===5&&profile.onboarding.journey.stage==='ready'?<PracticeResume key={profile.onboarding.journey.id} request={api} refreshKey={coordinator.state.tasks.map(task=>`${task.id}:${task.status}`).join('|')} onResume={()=>void startStory()} onOpenTask={id=>openSurface('things',id)}/>:null}
-        {delivery&&delivery.operationId!==dismissedDelivery&&view==='chat'&&(storyHidden||profile.onboarding.journey?.stage==='complete')?<WelcomeDelivery delivery={delivery} busy={deliveryBusy} error={deliveryError} onOpen={id=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(id)}`).then(result=>openConversation(result.conversation)).catch(e=>setDeliveryError(e.message))} onCheck={()=>void checkWelcome()} onRetry={()=>void retryWelcome()} onDismiss={dismissWelcome}/>:null}
-        {!delivery&&handbookNotice && view==='chat' ? <p className="one-onboarding-handbook-notice" role="status">{handbookNotice}{storyTaskId?<button type="button" onClick={()=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(storyTaskId)}`).then(result=>openConversation(result.conversation)).catch(e=>setError(e.message))}>查看任务 ↗</button>:null}<button type="button" onClick={()=>setHandbookNotice('')} aria-label="收起说明">知道了</button></p> : null}
+        {!curiousVisible&&delivery&&delivery.operationId!==dismissedDelivery&&view==='chat'&&(storyHidden||profile.onboarding.journey?.stage==='complete')?<WelcomeDelivery delivery={delivery} busy={deliveryBusy} error={deliveryError} onOpen={id=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(id)}`).then(result=>openConversation(result.conversation)).catch(e=>setDeliveryError(e.message))} onCheck={()=>void checkWelcome()} onRetry={()=>void retryWelcome()} onDismiss={dismissWelcome}/>:null}
+        {!curiousVisible&&!delivery&&handbookNotice && view==='chat' ? <p className="one-onboarding-handbook-notice" role="status">{handbookNotice}{storyTaskId?<button type="button" onClick={()=>void api<{conversation:Conversation}>(`/api/conversations/${encodeURIComponent(storyTaskId)}`).then(result=>openConversation(result.conversation)).catch(e=>setError(e.message))}>查看任务 ↗</button>:null}<button type="button" onClick={()=>setHandbookNotice('')} aria-label="收起说明">知道了</button></p> : null}
     </>;}
 
   function renderStory(){
+    if(!guideEffectPreview&&!legacyGuidePending)return <CuriousOnboarding request={api} refreshKey={workLayer??view} profile={profile} onProfile={next=>{setProfile(next);setCuriousEntered(true);}} onActiveChange={setCuriousActive} onContinueChat={text=>{setCuriousActive(false);setStoryHidden(true);setStoryOpen(false);closeWorkLayer();setView('chat');if(text)setContent(previous=>previous.trim()&&previous!==text?previous+'\n\n'+text:text);requestAnimationFrame(()=>document.getElementById('one-studio-input')?.focus());}} onKnowledge={()=>{storyRequested.current=true;openSurface('knowledge');}} onComplete={()=>{storyRequested.current=false;setStoryHidden(true);setStoryOpen(false);setCuriousActive(false);void checkWelcome();void coordinator.refresh().catch(()=>{});}} onOpenTask={id=>{setStoryHidden(true);setStoryOpen(false);openSurface('things',id);}}/>;
     if(storyLaunching)return <section className="story-launch-status" role="status"><h3>正在打开引导</h3><p>你的对话和草稿会留在这里。</p></section>;
     if(storyLaunchError)return <section className="story-launch-status" role="alert"><h3>引导暂时没打开</h3><p>{storyLaunchError}</p><button type="button" className="primary" onClick={()=>void startStory()}>重新打开引导</button></section>;
     return <StoryOnboarding effectPreview={guideEffectPreview} profile={profile} context={welcomeContext} offer={handbookOffer} request={api} onRefresh={()=>coordinator.refresh()} onOpenTask={id=>{storyRequested.current=false;setStoryHidden(true);setStoryOpen(false);openSurface('things',id);}} onContinueChat={()=>{dismissStory();openSurface('chat');requestAnimationFrame(()=>document.getElementById('one-studio-input')?.focus());}} onBegin={startStory} onAction={saveStory} onKnowledge={()=>{storyRequested.current=false;openSurface('knowledge');}} onDevice={()=>{storyRequested.current=false;setAccountSection('device');openSurface('account');}} onDismiss={dismissStory}/>;
@@ -2492,7 +2499,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
       <aside className={`studio-assistant ${activityExpanded ? "activity-is-open" : ""}`} aria-label="ONE 指挥台" onPointerDownCapture={()=>{if(fluidEnabled)focusFluid('main');}} onFocusCapture={()=>{if(fluidEnabled)focusFluid('main');}}>
         {!fluidEnabled?renderAttentionInbox():null}
-        {view==='chat'&&workLayer!=='guide'&&!guideEffectPreview&&(!fluidEnabled||!fluidHasDialogue)&&profileLoaded&&!storyHidden&&(storyOpen||profile.onboarding.journey?.stage&&profile.onboarding.journey.stage!=='complete'||!hasSubmittedChat&&!conversations.length&&!profile.onboarding.completedAt&&user.access?.kind!=='company')?renderStory():null}
+        {curiousVisible||view==='chat'&&workLayer!=='guide'&&!guideEffectPreview&&(!fluidEnabled||!fluidHasDialogue)&&profileLoaded&&!storyHidden&&(storyOpen||legacyGuidePending)?renderStory():null}
         {!fluidEnabled?renderGuideDelivery():null}
         {!fluidEnabled||!fluidHasDialogue?<div className="studio-presence">
           {!fluidEnabled||!fluidDesktop?<OneHeroEye mood={heroMood} label={view==='features'?'收起功能，回到 ONE':'打开功能'} onActivate={()=>openSurface(view==='features'?'chat':'features')}/>:null}
@@ -2551,7 +2558,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           </div> : null}
         </div>
 
-        <form className="composer studio-composer" data-feature-armed={preview.enabled&&featureForNext.length>0} onSubmit={send} onFocusCapture={()=>setComposerFocused(true)} onBlurCapture={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setComposerFocused(false);}} onKeyDown={event=>{if(event.key==='Escape'&&event.target!==featurePicker.input.current&&!featurePicker.isOpen&&!isComposing){setComposerSuggestionDismiss(value=>value+1);featurePicker.input.current?.focus({preventScroll:true});}}}>
+        <form className="composer studio-composer" hidden={curiousVisible&&curiousActive} data-feature-armed={preview.enabled&&featureForNext.length>0} onSubmit={send} onFocusCapture={()=>setComposerFocused(true)} onBlurCapture={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setComposerFocused(false);}} onKeyDown={event=>{if(event.key==='Escape'&&event.target!==featurePicker.input.current&&!featurePicker.isOpen&&!isComposing){setComposerSuggestionDismiss(value=>value+1);featurePicker.input.current?.focus({preventScroll:true});}}}>
           {coordinator.enabled&&coordinator.state.boundTask&&coordinator.state.boundTask!==activeId?taskPauseNotice(coordinator.state.boundTask):null}
           {!models.length ? <div className="chat-error"><span>模型未就绪，请联系管理员。</span><button type="button" onClick={() => void refresh()}>重试</button></div> : null}
           {pendingRequests.length ? <details className="one-pending-answers"><summary>有 {pendingRequests.length} 条消息待确认 · 查看原结果，不重复扣费</summary>{pendingRequests.map(item => <button type="button" key={item.operationId} onClick={() => void recoverAnswer(item.operationId)}>查看 {dateTime(item.createdAt)} 的结果</button>)}</details> : null}
@@ -2615,7 +2622,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             {!fluidEnabled && active && !composeNew && executionTask && !isExecutionRunning(executionTask) ? <button type="button" className="studio-mode-switch" onClick={() => setComposeMode(mode => mode === "chat" ? "execution" : "chat")}>{composeMode === "execution" ? "切回对话" : "切换到执行"}</button> : executionBusy && composeMode === "chat" ? <p className="studio-context-hint">本机任务仍在执行。</p> : null}
           </div>
         </form>
-          {studioIdle ? (
+          {studioIdle&&!curiousActive ? (
             <div className="studio-suggestions">
               <span>试试这些</span>
               <button type="button" onClick={() => setContent(demo.enabled ? "UI 保留独立输入框，其他事情先收起来" : "帮我回想最近反复提到的重要想法")}><span>{demo.enabled ? '接着上次的 UI 想一想' : '我最近在反复想什么？'}</span><i aria-hidden="true">↗</i></button>
@@ -2973,7 +2980,7 @@ function AccountPage({ user, onLogout, profile, onSaveProfile, onOpenGuide, mode
   const [openingGuide,setOpeningGuide]=useState(false);
   const [passwordOpen,setPasswordOpen]=useState(false);
   const guidePending=!!profile.onboarding.journey&&profile.onboarding.journey.stage!=='complete';
-  const guideButton=<button type="button" disabled={openingGuide} onClick={()=>{setOpeningGuide(true);void onOpenGuide().catch(e=>setNotice(e.message)).finally(()=>setOpeningGuide(false));}}>{openingGuide?'正在打开…':guidePending?'继续新手引导':'重新走一遍引导'}<ArrowUpRight size={15}/></button>;
+  const guideButton=<button type="button" disabled={openingGuide} onClick={()=>{setOpeningGuide(true);void onOpenGuide().catch(e=>setNotice(e.message)).finally(()=>setOpeningGuide(false));}}>{openingGuide?'正在打开…':guidePending?'继续新手引导':'认识 ONE / 查看初次聊天'}<ArrowUpRight size={15}/></button>;
   const [billing, setBilling] = useState<{ balanceMicros: number; reservedMicros?: number; availableMicros?: number; ledger: PowerLedgerEntry[]; orders: RechargeOrder[]; usage: UsageRecord[]; rechargeCnyPerPower: number } | null>(null);
   const [selectedModelId, setSelectedModelId] = useState(defaultModelId);
 
@@ -3024,11 +3031,12 @@ function AccountPage({ user, onLogout, profile, onSaveProfile, onOpenGuide, mode
         {section === "device" ? <LocalDeviceSettings key={user.id} api={api}/> : section === "knowledge" ? <>{knowledge}<FeatureBudgetSettings key={user.id} api={api}/></> : section === "power" ? user.access?.kind === "company" ? <div className="settings-empty"><p>费用由公司按协议对公打款承担，无需个人充值。</p><p>公司可用电力：{((billing?.availableMicros??0)/1e6).toFixed(3)}；个人额度由公司管理员配置。</p></div> : billing ? <PaymentPanel userId={user.id} api={api} rate={billing.rechargeCnyPerPower} balance={billing.balanceMicros} reserved={billing.reservedMicros} onPaid={loadBilling} /> : <p className="settings-empty">正在加载会员与额度…</p> : <>
         <div className="account-profile-grid">
         <AppearanceSettings profile={profile} onSave={onSaveProfile}/>
+        <section className="account-panel account-span-full"><CompanionSettings profile={profile} onSave={onSaveProfile}/></section>
         <section className="account-panel"><h3>个人资料</h3><ProfileNameEditor profile={profile} onSave={onSaveProfile} /></section>
         <ContextSettings key={'context-'+user.id} api={api}/>
         <AttentionSettings key={'attention-'+user.id} api={api} onOpenKnowledge={()=>setSection('knowledge')}/>
         <SavedWelcomeGuides api={api}/>
-        <section className="account-panel story-settings-entry"><h3>新手引导</h3><p className="settings-muted">了解 ONE 的用法，或重新填写偏好。</p>{guideButton}</section>
+        <section className="account-panel story-settings-entry"><h3>新手引导</h3><p className="settings-muted">从聊天认识 ONE；已经聊过的内容会保留。</p>{guideButton}</section>
         <details className="account-panel account-advanced-settings">
           <summary>高级设置 · 默认模型</summary>
           <SearchPicker label="默认模型" value={selectedModelId} onChange={chooseModel} options={models.filter(model => model.kind === "chat").map(model => ({ value: model.id, label: model.name }))} />
