@@ -21,6 +21,7 @@ type Scope = { workspaceId: string; userId: string };
 type Credentials = { clientId: string; apiKey: string };
 type Library = { id: string; name: string };
 type Json = Record<string, unknown>;
+type FileMatch = { title: string; mediaType: number; downloadHost?: string };
 export const imaMaxSelectedLibraries = 5;
 export class ImaError extends Error {
   constructor(readonly code: string, message: string, readonly status = 502) { super(message); }
@@ -243,17 +244,21 @@ export class ImaService {
     if (typeof query !== "string" || !query.trim() || query.trim().length > 400) throw new ImaError("IMA_QUERY_INVALID", "请输入最多 400 字的检索关键词", 400);
     await this.state(scope);
     const snapshot = await this.connected(scope.workspaceId);
-    const chunks = await this.search(scope.workspaceId, query.trim(), 5);
+    const fileMatches: FileMatch[] = [];
+    let chunks: KnowledgeChunk[] = [], contentUnavailable = false;
+    try { chunks = await this.search(scope.workspaceId, query.trim(), 5, match => fileMatches.push(match)); }
+    catch (error) { if (!(error instanceof ImaError) || error.code !== "IMA_CONTENT_UNAVAILABLE") throw error; contentUnavailable = true; }
     await this.current(snapshot);
     const connection = await this.store.mutate(db => {
       owner(db, scope); const target = this.find(db, scope.workspaceId);
-      if (!target || target.status === "revoked" || target.encryptedApiKey !== snapshot.encryptedApiKey || target.encryptedClientId !== snapshot.encryptedClientId || JSON.stringify(target.retrievalScope?.selectedIds) !== JSON.stringify(snapshot.retrievalScope?.selectedIds)) throw new ImaError("IMA_OPERATION_REPLACED", "ima 连接或检索范围已更改，请重试", 409);
+      if (!target || target.id !== snapshot.id || target.status === "revoked" || target.credentialOwnerUserId !== snapshot.credentialOwnerUserId || target.encryptedApiKey !== snapshot.encryptedApiKey || target.encryptedClientId !== snapshot.encryptedClientId || JSON.stringify(target.retrievalScope?.selectedIds) !== JSON.stringify(snapshot.retrievalScope?.selectedIds)) throw new ImaError("IMA_OPERATION_REPLACED", "ima 连接或检索范围已更改，请重试", 409);
+      owner(db, { workspaceId: scope.workspaceId, userId: target.credentialOwnerUserId! });
       target.status = "connected"; target.lastError = undefined; target.lastCheckedAt = new Date().toISOString(); target.updatedAt = target.lastCheckedAt;
       return this.publicConnection(target);
     });
-    return { chunks, count: chunks.length, connection, message: chunks.length ? "已取得 ima 实际返回的资料片段" : "本次关键词没有命中可读资料，不代表知识库不存在相关内容" };
+    return { chunks, count: chunks.length, connection, fileMatches, status: contentUnavailable ? "content_unavailable" : chunks.length ? "used" : "no_match", message: contentUnavailable ? "已命中文件，但尚未取得可读正文；下列标题不能作为原文引用。" : chunks.length ? "已取得 ima 实际返回的资料片段" : "本次关键词没有命中可读资料，不代表知识库不存在相关内容" };
   }
-  async search(workspaceId: string, query: string, topK: number): Promise<KnowledgeChunk[]> {
+  async search(workspaceId: string, query: string, topK: number, onFileMatch?: (match: FileMatch) => void): Promise<KnowledgeChunk[]> {
     if (typeof query !== "string" || !query.trim()) return [];
     const c = await this.connected(workspaceId), release = this.acquire(workspaceId);
     try {
@@ -283,6 +288,14 @@ export class ImaService {
         if (hit.mediaId && !content) {
           const media = await this.call(credentials, paths.media, { media_id: hit.mediaId }, signal);
           if (media.media_type === 11) hit.noteId = identifier(object(media.notebook_ext_info).notebook_id);
+          if (onFileMatch && !hit.noteId) {
+            let downloadHost: string | undefined;
+            try {
+              const url = new URL(String(object(media.url_info).url));
+              if (url.protocol === "https:" && !url.username && !url.password && /^[a-z0-9.-]{1,253}$/.test(url.hostname) && redact(url.hostname, credentials) === url.hostname) downloadHost = url.hostname;
+            } catch { /* Missing/invalid links have no public diagnostic hostname. */ }
+            onFileMatch({ title: hit.title, mediaType: Number.isSafeInteger(media.media_type) ? Number(media.media_type) : 0, ...(downloadHost ? { downloadHost } : {}) });
+          }
           // No arbitrary URL downloads: signed URLs/headers are never sent to a model or another host.
         }
         if (hit.noteId) {

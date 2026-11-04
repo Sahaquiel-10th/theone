@@ -279,12 +279,41 @@ test("ima diagnostic reauthorizes its caller after reading instead of relying on
   assert.equal(f.db.workspaceMembers.find(member => member.userId === "a")!.role, "owner");
 });
 
+test("ima diagnostic atomically rechecks the credential owner before restoring connection health", async () => {
+  const f = fixture(); await f.service.connect(scope, credentials);
+  f.db.workspaceMembers.push({ userId: "b", workspaceId: "a", role: "owner" } as never);
+  f.db.knowledgeConnections[0].status = "error";
+  const originalMutate = f.store.mutate.bind(f.store);
+  f.store.mutate = async fn => {
+    f.db.workspaceMembers.find(member => member.workspaceId === "a" && member.userId === "a")!.role = "member";
+    return originalMutate(fn);
+  };
+  await assert.rejects(f.service.checkSearch({ workspaceId: "a", userId: "b" }, "采购"), /所有者/);
+  assert.equal(f.db.knowledgeConnections[0].status, "error");
+});
+
 test("ima reports matching files without readable excerpts separately from no_match and retains valid credentials", async () => {
   const f = fixture(); await f.service.connect(scope, credentials);
   f.options.override = path => path === "search_note" ? { code: 0, data: { search_note_infos: [] } } : path === "search_knowledge" ? { code: 0, data: { info_list: [{ media_id: "file-only", title: "采购资料.pdf" }] } } : undefined;
-  await assert.rejects(f.service.checkSearch(scope, "采购"), (error: unknown) => error instanceof ImaError && error.code === "IMA_CONTENT_UNAVAILABLE");
+  const check = await f.service.checkSearch(scope, "采购");
+  assert.equal(check.status, "content_unavailable"); assert.equal(check.count, 0);
+  assert.deepEqual(check.fileMatches, [{ title: "采购资料.pdf", mediaType: 1 }]);
   const result = await new KnowledgeService(f.store, new ConnectorRegistry([imaConnector(f.service)])).recallWithDiagnostics("a", "采购", 5);
   assert.equal(result.status, "failed"); assert.match(result.failures[0].message, /已命中资料.*未返回可读正文片段/);
   assert.equal(result.failures[0].authorizationValid, true); assert.equal(f.db.knowledgeConnections[0].status, "connected");
   assert.equal((await f.service.state(scope)).connection.credentialsStored, true);
+});
+
+test("ima file diagnostics expose only a sanitized hostname, never signed URLs or access headers", async () => {
+  const f = fixture(); await f.service.connect(scope, credentials);
+  let fileUrl = "https://files.ima.example/private/document.pdf?token=private-signed-token";
+  f.options.override = path => path === "search_note" ? { code: 0, data: { search_note_infos: [] } } : path === "search_knowledge" ? { code: 0, data: { info_list: [{ media_id: "file-only", title: "采购资料.pdf" }] } } : path === "get_media_info" ? { code: 0, data: { media_type: 1, url_info: { url: fileUrl, headers: { Authorization: "private-header-token" } } } } : undefined;
+  const result = await f.service.checkSearch(scope, "采购");
+  assert.equal(result.fileMatches[0].downloadHost, "files.ima.example");
+  assert.doesNotMatch(JSON.stringify(result), /private-signed-token|private-header-token|document.pdf|https:|Authorization|ima-api-secret-a|client-test-a/);
+  for (const unsafe of ["http://files.ima.example/a", "https://user:secret@files.ima.example/a", `https://${credentials.apiKey}.example/a`]) {
+    fileUrl = unsafe;
+    assert.equal((await f.service.checkSearch(scope, "采购")).fileMatches[0].downloadHost, undefined);
+  }
+  assert.ok(f.calls.every(call => !call.path.includes("document.pdf")));
 });
