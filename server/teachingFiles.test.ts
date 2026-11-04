@@ -5,6 +5,8 @@ import { once } from 'node:events';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
+import ts from 'typescript';
 import type { Database } from './types.js';
 import type { Store } from './db.js';
 import { AttachmentService } from './attachmentService.js';
@@ -53,6 +55,40 @@ async function fixture(t: TestContext) {
   return { get db() { return db; }, store, directory, base, post, upload };
 }
 const headers = (token: string) => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${token}` });
+
+test('the actual tool upload adapter creates its activity before first file allocation and finishes the real upload route', async t => {
+  const f = await fixture(t), course = createTeachingCourse(f.db, teacher, { title: '首上传课程' });
+  const source = ts.createSourceFile('TeachingToolPage.tsx', await fs.readFile(new URL('../src/TeachingToolPage.tsx', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let adapter: ts.ArrowFunction | undefined;
+  const inspect = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'uploadRequest' && node.initializer && ts.isCallExpression(node.initializer) && ts.isArrowFunction(node.initializer.arguments[0])) adapter = node.initializer.arguments[0];
+    ts.forEachChild(node, inspect);
+  };
+  inspect(source); assert.ok(adapter, 'the tool must use its actual upload request adapter');
+  const events: string[] = []; let activityId = '', ensures = 0;
+  const ensureActivity = async () => {
+    ensures++; events.push('ensure-activity');
+    if (!activityId) {
+      const response = await f.post(`/courses/${course.id}/activities`, { revision: course.revision, clientRequestId: 'first-upload-durable-id', stage: 'after', kind: 'quiz', title: '原试卷', status: 'draft' });
+      assert.equal(response.status, 201, await response.clone().text()); activityId = (await response.json() as any).activity.id;
+    }
+  };
+  const request: TeachingRequest = async <T>(url: string, options: RequestInit = {}) => {
+    events.push(`${options.method ?? 'GET'}:${url}`);
+    const response = await fetch(f.base.replace('/api/teaching', '') + url, { ...options, headers: { ...ownerHeaders, ...(options.headers as Record<string, string> | undefined) } });
+    assert.ok(response.ok, await response.clone().text()); return await response.json() as T;
+  };
+  const code = ts.transpileModule(`(${adapter.getText(source)})`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
+  const actualUploadRequest = vm.runInNewContext(code, { courseId: course.id, ensureActivity, request }) as TeachingRequest;
+  const base = `/api/teaching/courses/${course.id}`;
+  const uploaded = await uploadTeachingFile(actualUploadRequest, base, new File(['第一题：杭州的历史。参考答案：课程原文。'], '试卷.txt', { type: 'text/plain' }), () => {});
+  assert.equal(ensures, 1, 'only allocation, not chunking/completion/polling, creates the activity');
+  assert.equal(events[0], 'ensure-activity'); assert.equal(events[1], `POST:${base}/uploads`);
+  assert.ok(activityId); assert.equal(teachingState(f.db, teacher).courses.find(item => item.id === course.id)!.activities.length, 1);
+  const original = f.db.attachments.find(item => item.id === uploaded.id)!;
+  assert.equal(original.status, 'ready'); assert.equal(original.conversationId, `teaching:${course.id}`); assert.equal(original.workspaceId, teacher.workspaceId); assert.equal(original.userId, teacher.userId);
+  await actualUploadRequest(base + '/uploads'); assert.equal(ensures, 1, 'GET file inventory must never create an activity');
+});
 
 test('a submitted video remains its private original; only its student and owning teacher can download it', async t => {
   const f = await fixture(t), { course, activity } = addCourse(f.db), secondCourse = addCourse(f.db), foreignCourse = addCourse(f.db, other);

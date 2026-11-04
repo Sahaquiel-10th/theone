@@ -408,35 +408,48 @@ app.post("/api/attachments/uploads", ...keyAuth, asyncRoute(async (req, res) => 
   res.json({ attachment: attachmentSummary(attachment), chunkBytes: ATTACHMENT_CHUNK_BYTES });
 }));
 let activeAttachmentChunks = 0;
+// Teaching originals remain bound to their exact course, submission and recycle
+// state. Generic attachment routes must never bypass that boundary or purge them.
+const requireGeneralAttachment: RequestHandler = (req, res, next) => {
+  void (async () => {
+    const attachment = ownedAttachment((await store.read()).attachments, { workspaceId: req.workspaceId!, userId: req.user!.id }, String(req.params.id));
+    if (attachment.conversationId?.startsWith('teaching:')) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(403).json({ error: '请在课程工作台中管理或查看教学文件，已提交的原件会继续保留。', code: 'TEACHING_FILE_ROUTE_REQUIRED' });
+      return;
+    }
+    next();
+  })().catch(next);
+};
 const limitAttachmentChunks: RequestHandler = (_req, res, next) => {
   if (activeAttachmentChunks >= 4) { res.status(429).json({ error: "上传繁忙，请稍后重试" }); return; }
   activeAttachmentChunks++;
   res.once("close", () => { activeAttachmentChunks--; });
   next();
 };
-app.put("/api/attachments/:id/chunks", ...keyAuth, limitAttachmentChunks, express.raw({ type: "application/octet-stream", limit: ATTACHMENT_CHUNK_BYTES }), asyncRoute(async (req, res) => {
+app.put("/api/attachments/:id/chunks", ...keyAuth, requireGeneralAttachment, limitAttachmentChunks, express.raw({ type: "application/octet-stream", limit: ATTACHMENT_CHUNK_BYTES }), asyncRoute(async (req, res) => {
   if (!Buffer.isBuffer(req.body)) throw new Error("上传内容无效");
   const uploadedBytes = await attachmentService.chunk({ workspaceId: req.workspaceId!, userId: req.user!.id }, String(req.params.id), Number(req.query.offset), req.body);
   res.json({ uploadedBytes });
 }));
-app.post("/api/attachments/:id/complete", ...keyAuth, asyncRoute(async (req, res) => {
+app.post("/api/attachments/:id/complete", ...keyAuth, requireGeneralAttachment, asyncRoute(async (req, res) => {
   await attachmentService.complete({ workspaceId: req.workspaceId!, userId: req.user!.id }, String(req.params.id));
   res.json({ ok: true });
 }));
-app.post("/api/attachments/:id/retry", ...keyAuth, asyncRoute(async (req, res) => {
+app.post("/api/attachments/:id/retry", ...keyAuth, requireGeneralAttachment, asyncRoute(async (req, res) => {
   await attachmentService.retry({ workspaceId: req.workspaceId!, userId: req.user!.id }, String(req.params.id));
   res.json({ ok: true });
 }));
-app.get("/api/attachments/:id", ...keyAuth, asyncRoute(async (req, res) => {
+app.get("/api/attachments/:id", ...keyAuth, requireGeneralAttachment, asyncRoute(async (req, res) => {
   const attachment = ownedAttachment((await store.read()).attachments, { workspaceId: req.workspaceId!, userId: req.user!.id }, String(req.params.id));
   res.json({ attachment: attachmentSummary(attachment) });
 }));
-app.get("/api/attachments/:id/content", ...keyAuth, asyncRoute(async (req, res) => {
+app.get("/api/attachments/:id/content", ...keyAuth, requireGeneralAttachment, asyncRoute(async (req, res) => {
   const attachment = ownedAttachment((await store.read()).attachments, { workspaceId: req.workspaceId!, userId: req.user!.id }, String(req.params.id));
   if ((attachment.status && attachment.status !== "ready") || !fs.existsSync(attachment.storagePath)) return res.status(404).json({ error: "附件尚未就绪", code: "NOT_FOUND" });
   res.setHeader("Content-Type", attachment.mimeType); res.setHeader("Content-Disposition", `${attachment.officeArtifact==='slides'?'attachment':'inline'}; filename*=UTF-8''${encodeURIComponent(attachment.originalName)}`); fs.createReadStream(attachment.storagePath).on("error", () => res.destroy()).pipe(res);
 }));
-app.delete("/api/attachments/:id", ...keyAuth, asyncRoute(async (req, res) => {
+app.delete("/api/attachments/:id", ...keyAuth, requireGeneralAttachment, asyncRoute(async (req, res) => {
   let storagePath = ""; await store.mutate((db) => { const index = db.attachments.findIndex((item) => item.id === req.params.id && item.workspaceId === req.workspaceId && item.userId === req.user!.id); if (index === -1) throw new Error("附件不存在"); if (db.attachments[index].messageId) throw new Error("对话中的附件不能删除"); if (industryAttachmentReferenced(db, {workspaceId:req.workspaceId!,userId:req.user!.id}, String(req.params.id))) throw new Error("附件仍被行业工作台记录使用，请保留原件"); storagePath = db.attachments[index].storagePath; db.attachments.splice(index, 1); }); if (storagePath) await removeAttachmentFiles(storagePath); res.json({ ok: true });
 }));
 

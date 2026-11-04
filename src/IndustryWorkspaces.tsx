@@ -51,7 +51,7 @@ export function IndustryWorkspaces({api,scopeKey,currentWorkspace,onOpenWorkspac
       {favorites.loading&&!favoritesOnly?<p className="industry-favorites-loading" role="status">正在同步收藏…</p>:null}
     </div>
     {current?<h1 className="industry-sr-only" ref={heading} tabIndex={-1}>{current.name}</h1>:null}
-    {visited.includes('teaching')?<div className="industry-workspace-page" hidden={currentWorkspace!=='teaching'} inert={currentWorkspace!=='teaching'}><TeachingWorkspace api={api}/></div>:null}
+    {visited.includes('teaching')?<div className="industry-workspace-page" hidden={currentWorkspace!=='teaching'} inert={currentWorkspace!=='teaching'}><TeachingWorkspace api={api} active={currentWorkspace==='teaching'}/></div>:null}
     {visited.filter((kind):kind is CommerceWorkspaceKind=>kind!=='teaching').map(kind=><div key={kind} className="industry-workspace-page" hidden={currentWorkspace!==kind} inert={currentWorkspace!==kind}>{renderCommerce(kind,back)}</div>)}
   </section>;
 }
