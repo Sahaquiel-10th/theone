@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import JSZip from "jszip";
-import { imaFileFormat, imaFileMaxBytes, parseImaFile, readImaFile } from "./imaFileReader.js";
+import { imaFileFormat, imaFileIssue, imaFileMaxBytes, parseImaFile, readImaFile } from "./imaFileReader.js";
 
 const input = () => ({ url: "https://pkb.ima.myqcloud.com/official-file", headers: {}, mediaType: 13, title: "资料.txt", query: "杭州", signal: AbortSignal.timeout(20_000) });
 test("ima original-file reader rejects unreviewed destinations, credentials in URLs and unsafe forwarded headers before networking", async () => {
@@ -14,6 +14,13 @@ test("ima original-file reader bounds advertised and streamed bytes and refuses 
   for (const response of [new Response("large", { headers: { "content-length": String(imaFileMaxBytes + 1) } }), new Response(new Uint8Array(imaFileMaxBytes + 1)), new Response("redirect", { status: 302, headers: { location: "http://127.0.0.1/private" } })]) {
     await assert.rejects(readImaFile(input(), (async (_url, init) => { assert.equal(init?.redirect, "error"); assert.equal(init?.method, "GET"); assert.deepEqual([...new Headers(init?.headers).keys()], []); return response; }) as typeof fetch));
   }
+});
+test("ima forwards reviewed COS SSE-C read headers only to the pinned host and never returns secret values", async () => {
+  const headers = { Host: "pkb.ima.myqcloud.com", Date: "Wed, 04 Nov 2026 02:00:00 GMT", Authorization: "object-signature", "x-cos-server-side-encryption-customer-algorithm": "AES256", "x-cos-server-side-encryption-customer-key": "object-only-encryption-key", "x-cos-server-side-encryption-customer-key-MD5": "object-key-md5" };
+  const result = await readImaFile({ ...input(), headers }, (async (_url, init) => { const sent = new Headers(init?.headers); assert.equal(sent.get("host"), null); for (const [name, value] of Object.entries(headers)) if (name !== "Host") assert.equal(sent.get(name), value); return new Response("杭州文件正文"); }) as typeof fetch);
+  assert.equal(result, "杭州文件正文");
+  assert.equal(imaFileIssue(new Error("IMA_FILE_HEADERS_DENIED")), "IMA_FILE_HEADERS_DENIED");
+  assert.equal(imaFileIssue(new Error("private signed URL https://private.test/?token=secret")), "IMA_FILE_DOWNLOAD_OR_PARSE_UNAVAILABLE");
 });
 test("ima text parsing runs in a separate restricted process and returns bounded real excerpts", async () => {
   const text = await parseImaFile(Buffer.from("杭州位于钱塘江下游。\n".repeat(5000)), "txt", "钱塘江", AbortSignal.timeout(20_000));

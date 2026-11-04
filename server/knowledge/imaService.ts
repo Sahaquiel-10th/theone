@@ -6,7 +6,7 @@ import { resolveWorkspaceAccess } from "../workspaceAccess.js";
 import { uid } from "../security.js";
 import { decryptCredential, encryptCredential, knowledgeCredentialContext } from "./credentialCipher.js";
 import type { KnowledgeChunk } from "./provider.js";
-import { imaFileFormat, readImaFile } from "./imaFileReader.js";
+import { imaFileFormat, imaFileIssue, readImaFile } from "./imaFileReader.js";
 
 const origin = "https://ima.qq.com";
 const paths = {
@@ -22,7 +22,7 @@ type Scope = { workspaceId: string; userId: string };
 type Credentials = { clientId: string; apiKey: string };
 type Library = { id: string; name: string };
 type Json = Record<string, unknown>;
-type FileMatch = { title: string; mediaType: number; downloadHost?: string };
+type FileMatch = { title: string; mediaType: number; downloadHost?: string; readIssue?: string; accessHeaderNames?: string[] };
 export const imaMaxSelectedLibraries = 5;
 export class ImaError extends Error {
   constructor(readonly code: string, message: string, readonly status = 502) { super(message); }
@@ -285,22 +285,23 @@ export class ImaService {
     const chunks: KnowledgeChunk[] = []; let unreadable = false, fileReads = 0;
     for (const hit of ordered) {
       if (chunks.length >= limit) break;
-      let content = hit.text;
+      let content = hit.text, readIssue: string | undefined;
       try {
         if (hit.mediaId && !content) {
           if (fileReads >= 2 && chunks.length) continue;
           const media = await this.call(credentials, paths.media, { media_id: hit.mediaId }, signal);
           if (media.media_type === 11) hit.noteId = identifier(object(media.notebook_ext_info).notebook_id);
+          const link = object(media.url_info), headers = object(link.headers), sourceUrl = typeof link.url === "string" ? link.url : "";
+          if (!hit.noteId) readIssue = !imaFileFormat(media.media_type, hit.title) ? "IMA_FILE_FORMAT_UNSUPPORTED" : fileReads >= 2 ? "IMA_FILE_READ_BUDGET" : undefined;
           if (!hit.noteId && fileReads < 2 && imaFileFormat(media.media_type, hit.title)) {
             fileReads++;
-            const link = object(media.url_info), headers = object(link.headers), sourceUrl = typeof link.url === "string" ? link.url : "";
-            // Object-access headers are scoped to a reviewed file host. Never
-            // forward the API Client ID/Key, even if an upstream response echoes them.
-            const echoed = [credentials.clientId, credentials.apiKey].some(secret => sourceUrl.includes(secret) || sourceUrl.includes(encodeURIComponent(secret))) || Object.values(headers).some(value => typeof value === "string" && redact(value, credentials) !== value);
+            // Object grants can contain public identifiers (e.g. COS q-ak).
+            // Never forward the confidential API Key or add API auth headers.
+            const echoed = sourceUrl.includes(credentials.apiKey) || sourceUrl.includes(encodeURIComponent(credentials.apiKey)) || Object.values(headers).some(value => typeof value === "string" && value.includes(credentials.apiKey));
             if (!echoed) {
               try { content = readable(await readImaFile({ url: link.url, headers: link.headers, mediaType: media.media_type, title: hit.title, query: q, signal }, this.fetcher), credentials); }
-              catch (error) { if (error instanceof Error && error.message === "IMA_FILE_BUSY") throw new ImaError("IMA_BUSY", "ima 文件读取请求较多，请稍后重试", 429); /* Keep unreadable files distinct from an empty search. */ }
-            }
+              catch (error) { if (error instanceof Error && error.message === "IMA_FILE_BUSY") throw new ImaError("IMA_BUSY", "ima 文件读取请求较多，请稍后重试", 429); readIssue = imaFileIssue(error); }
+            } else readIssue = "IMA_FILE_API_CREDENTIAL_ECHO";
           }
           if (onFileMatch && !hit.noteId && !content) {
             let downloadHost: string | undefined;
@@ -308,7 +309,8 @@ export class ImaService {
               const url = new URL(String(object(media.url_info).url));
               if (url.protocol === "https:" && !url.username && !url.password && /^[a-z0-9.-]{1,253}$/.test(url.hostname) && redact(url.hostname, credentials) === url.hostname) downloadHost = url.hostname;
             } catch { /* Missing/invalid links have no public diagnostic hostname. */ }
-            onFileMatch({ title: hit.title, mediaType: Number.isSafeInteger(media.media_type) ? Number(media.media_type) : 0, ...(downloadHost ? { downloadHost } : {}) });
+            const accessHeaderNames = Object.keys(headers).filter(name => /^[a-z0-9-]{1,80}$/i.test(name) && redact(name, credentials) === name).map(name => name.toLowerCase()).slice(0, 12);
+            onFileMatch({ title: hit.title, mediaType: Number.isSafeInteger(media.media_type) ? Number(media.media_type) : 0, ...(downloadHost ? { downloadHost } : {}), ...(readIssue ? { readIssue } : {}), accessHeaderNames });
           }
           // Signed URLs/headers stay server-side; unknown hosts are never fetched.
         }

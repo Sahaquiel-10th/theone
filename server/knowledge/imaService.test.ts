@@ -304,7 +304,7 @@ test("ima reports matching files without readable excerpts separately from no_ma
   f.options.override = path => path === "search_note" ? { code: 0, data: { search_note_infos: [] } } : path === "search_knowledge" ? { code: 0, data: { info_list: [{ media_id: "file-only", title: "采购资料.pdf" }] } } : undefined;
   const check = await f.service.checkSearch(scope, "采购");
   assert.equal(check.status, "content_unavailable"); assert.equal(check.count, 0);
-  assert.deepEqual(check.fileMatches, [{ title: "采购资料.pdf", mediaType: 1 }]);
+  assert.deepEqual(check.fileMatches, [{ title: "采购资料.pdf", mediaType: 1, readIssue: "IMA_FILE_HOST_DENIED", accessHeaderNames: ["authorization"] }]);
   const result = await new KnowledgeService(f.store, new ConnectorRegistry([imaConnector(f.service)])).recallWithDiagnostics("a", "采购", 5);
   assert.equal(result.status, "failed"); assert.match(result.failures[0].message, /已命中资料.*本次未取得可读正文片段/);
   assert.equal(result.failures[0].authorizationValid, true); assert.equal(f.db.knowledgeConnections[0].status, "connected");
@@ -328,7 +328,7 @@ test("ima file diagnostics expose only a sanitized hostname, never signed URLs o
 test("ima reads an original file only through a reviewed host and rechecks workspace ownership after parsing", async () => {
   const f = fixture(); await f.service.connect(scope, credentials); let files = 0;
   f.options.file = Buffer.from("杭州位于钱塘江下游，这是文件原文。");
-  f.options.override = path => path === "search_note" ? { code: 0, data: { search_note_infos: [] } } : path === "search_knowledge" ? { code: 0, data: { info_list: [{ media_id: "original-file", title: "杭州.txt" }] } } : path === "get_media_info" ? { code: 0, data: { media_type: 13, url_info: { url: "https://pkb.ima.myqcloud.com/official-file.txt", headers: {} } } } : undefined;
+  f.options.override = path => path === "search_note" ? { code: 0, data: { search_note_infos: [] } } : path === "search_knowledge" ? { code: 0, data: { info_list: [{ media_id: "original-file", title: "杭州.txt" }] } } : path === "get_media_info" ? { code: 0, data: { media_type: 13, url_info: { url: "https://pkb.ima.myqcloud.com/official-file.txt", headers: { Authorization: `object-grant;q-ak=${credentials.clientId}` } } } } : undefined;
   f.options.beforeFile = () => { files++; };
   const result = await f.service.checkSearch(scope, "杭州");
   assert.equal(files, 1); assert.equal(result.status, "used"); assert.match(result.chunks[0].content, /这是文件原文/); assert.deepEqual(result.fileMatches, []);

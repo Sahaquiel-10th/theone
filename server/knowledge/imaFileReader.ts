@@ -7,6 +7,8 @@ import { assertAllowedConnectorUrl } from "../connectors/securityPolicy.js";
 // supplied by the browser, model or a customer can change this list.
 export const imaFileHosts: readonly string[] = ["pkb.ima.myqcloud.com"];
 export const imaFileMaxBytes = 12 * 1024 * 1024;
+const fileIssues = new Set(["IMA_FILE_HEADERS_DENIED", "IMA_FILE_HOST_DENIED", "IMA_FILE_TOO_LARGE", "IMA_FILE_EMPTY", "IMA_FILE_UNAVAILABLE", "IMA_FILE_PARSE_UNAVAILABLE", "IMA_FILE_RUNTIME_UNSUPPORTED", "IMA_FILE_HTTP_401", "IMA_FILE_HTTP_403", "IMA_FILE_HTTP_404", "IMA_FILE_HTTP_429"]);
+export function imaFileIssue(error: unknown) { return error instanceof Error && fileIssues.has(error.message) ? error.message : "IMA_FILE_DOWNLOAD_OR_PARSE_UNAVAILABLE"; }
 let active = 0;
 export type ImaFileFormat = "pdf" | "docx" | "txt";
 export function imaFileFormat(mediaType: unknown, title: string): ImaFileFormat | undefined {
@@ -17,7 +19,7 @@ export function imaFileFormat(mediaType: unknown, title: string): ImaFileFormat 
 
 async function boundedBytes(response: Response): Promise<Buffer> {
   const declared = Number(response.headers.get("content-length"));
-  if (!response.ok || declared > imaFileMaxBytes || !response.body) { await response.body?.cancel(); throw Error("IMA_FILE_UNAVAILABLE"); }
+  if (!response.ok || declared > imaFileMaxBytes || !response.body) { await response.body?.cancel(); throw Error(!response.ok ? `IMA_FILE_HTTP_${response.status}` : declared > imaFileMaxBytes ? "IMA_FILE_TOO_LARGE" : "IMA_FILE_EMPTY"); }
   const reader = response.body.getReader(), chunks: Uint8Array[] = []; let size = 0;
   try {
     for (;;) { const value = await reader.read(); if (value.done) break; size += value.value.byteLength; if (size > imaFileMaxBytes) { await reader.cancel(); throw Error("IMA_FILE_TOO_LARGE"); } chunks.push(value.value); }
@@ -55,11 +57,16 @@ export async function readImaFile(input: { url: unknown; headers: unknown; media
   if (active >= 2) throw Error("IMA_FILE_BUSY");
   const format = imaFileFormat(input.mediaType, input.title);
   if (!format || typeof input.url !== "string") throw Error("IMA_FILE_UNAVAILABLE");
-  const url = assertAllowedConnectorUrl(input.url, imaFileHosts);
+  let url: URL;
+  try { url = assertAllowedConnectorUrl(input.url, imaFileHosts); } catch { throw Error("IMA_FILE_HOST_DENIED"); }
   const headers = new Headers();
   if (input.headers !== undefined && (typeof input.headers !== "object" || input.headers === null || Array.isArray(input.headers))) throw Error("IMA_FILE_HEADERS_DENIED");
-  for (const [name, value] of Object.entries(input.headers ?? {})) {
-    if (!["authorization", "x-cos-security-token"].includes(name.toLowerCase()) || typeof value !== "string" || value.length > 8192 || /[\r\n]/.test(value)) throw Error("IMA_FILE_HEADERS_DENIED");
+  const entries = Object.entries(input.headers ?? {});
+  if (entries.length > 12) throw Error("IMA_FILE_HEADERS_DENIED");
+  for (const [name, value] of entries) {
+    if (typeof value !== "string" || value.length > 8192 || /[\r\n]/.test(value)) throw Error("IMA_FILE_HEADERS_DENIED");
+    if (name.toLowerCase() === "host" && value.toLowerCase() === url.host) continue; // fetch supplies the validated Host itself.
+    if (!["authorization", "date", "content-type", "content-md5", "x-cos-security-token", "x-cos-server-side-encryption-customer-algorithm", "x-cos-server-side-encryption-customer-key", "x-cos-server-side-encryption-customer-key-md5"].includes(name.toLowerCase())) throw Error("IMA_FILE_HEADERS_DENIED");
     headers.set(name, value);
   }
   active++;
