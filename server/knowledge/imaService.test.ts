@@ -15,10 +15,17 @@ function fixture() {
   const db = { users: ["a", "b", "member"].map(id => ({ id, enabled: true, defaultWorkspaceId: id === "member" ? "a" : id })), workspaces: ["a", "b"].map(id => ({ id, status: "active" })), workspaceMembers: [{ userId: "a", workspaceId: "a", role: "owner" }, { userId: "b", workspaceId: "b", role: "owner" }, { userId: "member", workspaceId: "a", role: "member" }], knowledgeConnections: [], auditLogs: [] } as unknown as Database;
   const store = { async read() { return db; }, async mutate<T>(fn: (db: Database) => T) { return fn(db); } } as Store;
   const calls: { path: string; body: Record<string, unknown>; client: string; key: string }[] = [];
-  const options: { libraries?: number; override?: (path: string, body: Record<string, unknown>) => unknown | Promise<unknown> } = {};
+  const options: { libraries?: number; file?: Buffer; beforeFile?: () => void; override?: (path: string, body: Record<string, unknown>) => unknown | Promise<unknown> } = {};
   const fetcher = (async (url, init) => {
+    assert.equal(init?.redirect, "error"); assert.ok(init?.signal);
+    if (init?.method === "GET") {
+      assert.equal(new URL(String(url)).origin, "https://pkb.ima.myqcloud.com");
+      assert.equal(new URL(String(url)).pathname, "/official-file.txt"); assert.ok(options.file);
+      assert.equal(new Headers(init.headers).get("ima-openapi-apikey"), null); assert.equal(new Headers(init.headers).get("ima-openapi-clientid"), null);
+      options.beforeFile?.(); return new Response(new Uint8Array(options.file!));
+    }
     assert.equal(new URL(String(url)).origin, "https://ima.qq.com");
-    assert.equal(init?.redirect, "error"); assert.ok(init?.signal); assert.equal(init?.method, "POST");
+    assert.equal(init?.method, "POST");
     const path = new URL(String(url)).pathname.split("/").at(-1)!, body = JSON.parse(String(init?.body));
     const headers = new Headers(init?.headers); calls.push({ path, body, client: headers.get("ima-openapi-clientid")!, key: headers.get("ima-openapi-apikey")! });
     const override = await options.override?.(path, body);
@@ -79,10 +86,10 @@ test("ima searches only selected libraries and own notes; denied content does no
   await assert.rejects(f.service.search("b", "采购", 5));
 });
 
-test("ima does not follow returned media URLs or forward upstream headers", async () => {
+test("ima does not follow unreviewed returned media URLs or forward upstream headers", async () => {
   const f = fixture(); await f.service.connect(scope, credentials); f.calls.length = 0;
   f.options.override = path => path === "search_note" ? { code: 0, data: { search_note_infos: [] } } : path === "search_knowledge" ? { code: 0, data: { info_list: [{ media_id: "private-file", title: "资料标题" }] } } : undefined;
-  await assert.rejects(f.service.search("a", "资料", 5), /没有可读正文/);
+  await assert.rejects(f.service.search("a", "资料", 5), /未取得可读正文/);
   assert.ok(f.calls.some(c => c.path === "get_media_info"));
   assert.ok(f.calls.every(c => c.client === credentials.clientId && c.key === credentials.apiKey));
 });
@@ -139,7 +146,7 @@ test("ima registration uses the reviewed connector and knowledge recall shares n
   const f = fixture(); await f.service.connect(scope, credentials);
   const adapter = imaConnector(f.service), registry = new ConnectorRegistry([adapter]);
   assert.equal(adapter.manifest.auth, "api_key"); assert.equal(adapter.manifest.security.access, "read_only");
-  assert.deepEqual(adapter.manifest.security.allowedHosts, ["ima.qq.com"]);
+  assert.deepEqual(adapter.manifest.security.allowedHosts, ["ima.qq.com", "pkb.ima.myqcloud.com"]);
   const service = new KnowledgeService(f.store, registry);
   assert.ok((await service.recall("a", "采购", 1)).length === 1);
   f.calls.length = 0; assert.equal((await service.recall("b", "采购", 5)).length, 0); assert.equal(f.calls.length, 0);
@@ -299,7 +306,7 @@ test("ima reports matching files without readable excerpts separately from no_ma
   assert.equal(check.status, "content_unavailable"); assert.equal(check.count, 0);
   assert.deepEqual(check.fileMatches, [{ title: "采购资料.pdf", mediaType: 1 }]);
   const result = await new KnowledgeService(f.store, new ConnectorRegistry([imaConnector(f.service)])).recallWithDiagnostics("a", "采购", 5);
-  assert.equal(result.status, "failed"); assert.match(result.failures[0].message, /已命中资料.*未返回可读正文片段/);
+  assert.equal(result.status, "failed"); assert.match(result.failures[0].message, /已命中资料.*本次未取得可读正文片段/);
   assert.equal(result.failures[0].authorizationValid, true); assert.equal(f.db.knowledgeConnections[0].status, "connected");
   assert.equal((await f.service.state(scope)).connection.credentialsStored, true);
 });
@@ -316,4 +323,27 @@ test("ima file diagnostics expose only a sanitized hostname, never signed URLs o
     assert.equal((await f.service.checkSearch(scope, "采购")).fileMatches[0].downloadHost, undefined);
   }
   assert.ok(f.calls.every(call => !call.path.includes("document.pdf")));
+});
+
+test("ima reads an original file only through a reviewed host and rechecks workspace ownership after parsing", async () => {
+  const f = fixture(); await f.service.connect(scope, credentials); let files = 0;
+  f.options.file = Buffer.from("杭州位于钱塘江下游，这是文件原文。");
+  f.options.override = path => path === "search_note" ? { code: 0, data: { search_note_infos: [] } } : path === "search_knowledge" ? { code: 0, data: { info_list: [{ media_id: "original-file", title: "杭州.txt" }] } } : path === "get_media_info" ? { code: 0, data: { media_type: 13, url_info: { url: "https://pkb.ima.myqcloud.com/official-file.txt", headers: {} } } } : undefined;
+  f.options.beforeFile = () => { files++; };
+  const result = await f.service.checkSearch(scope, "杭州");
+  assert.equal(files, 1); assert.equal(result.status, "used"); assert.match(result.chunks[0].content, /这是文件原文/); assert.deepEqual(result.fileMatches, []);
+  const before = files;
+  await assert.rejects(f.service.checkSearch({ userId: "a", workspaceId: "b" }, "杭州")); assert.equal(files, before);
+  f.options.beforeFile = () => { files++; f.db.workspaceMembers.find(member => member.userId === "a")!.role = "member"; };
+  await assert.rejects(f.service.search("a", "杭州", 5), /所有者/);
+});
+
+test("ima never forwards API credentials echoed into an object URL or access header", async () => {
+  const f = fixture(); await f.service.connect(scope, credentials); let files = 0;
+  f.options.file = Buffer.from("private body"); f.options.beforeFile = () => { files++; };
+  let link = { url: "https://pkb.ima.myqcloud.com/official-file.txt", headers: { Authorization: credentials.apiKey } };
+  f.options.override = path => path === "search_note" ? { code: 0, data: { search_note_infos: [] } } : path === "search_knowledge" ? { code: 0, data: { info_list: [{ media_id: "original-file", title: "杭州.txt" }] } } : path === "get_media_info" ? { code: 0, data: { media_type: 13, url_info: link } } : undefined;
+  assert.equal((await f.service.checkSearch(scope, "杭州")).status, "content_unavailable");
+  link = { url: `https://pkb.ima.myqcloud.com/official-file.txt?key=${credentials.apiKey}`, headers: { Authorization: "object-token" } };
+  assert.equal((await f.service.checkSearch(scope, "杭州")).status, "content_unavailable"); assert.equal(files, 0);
 });

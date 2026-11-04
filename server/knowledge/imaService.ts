@@ -6,6 +6,7 @@ import { resolveWorkspaceAccess } from "../workspaceAccess.js";
 import { uid } from "../security.js";
 import { decryptCredential, encryptCredential, knowledgeCredentialContext } from "./credentialCipher.js";
 import type { KnowledgeChunk } from "./provider.js";
+import { imaFileFormat, readImaFile } from "./imaFileReader.js";
 
 const origin = "https://ima.qq.com";
 const paths = {
@@ -279,16 +280,29 @@ export class ImaService {
       const mediaId = identifier(hit.media_id);
       if (mediaId) candidates.set("media:" + mediaId, { id: "media:" + mediaId, mediaId, title: readable(hit.title, credentials).slice(0, 300) || "ima 资料", text: readable(hit.highlight_content, credentials) });
     }
-    const ordered = [...candidates.values()].sort((a, b) => relevance(b.title + b.text, q) - relevance(a.title + a.text, q)).slice(0, limit * 2);
-    const chunks: KnowledgeChunk[] = []; let unreadable = false;
+    const readCost = (hit: Candidate) => hit.noteId || hit.text ? 0 : /\.docx$/i.test(hit.title) ? 1 : 2;
+    const ordered = [...candidates.values()].sort((a, b) => relevance(b.title + b.text, q) - relevance(a.title + a.text, q) || readCost(a) - readCost(b)).slice(0, limit * 2);
+    const chunks: KnowledgeChunk[] = []; let unreadable = false, fileReads = 0;
     for (const hit of ordered) {
       if (chunks.length >= limit) break;
       let content = hit.text;
       try {
         if (hit.mediaId && !content) {
+          if (fileReads >= 2 && chunks.length) continue;
           const media = await this.call(credentials, paths.media, { media_id: hit.mediaId }, signal);
           if (media.media_type === 11) hit.noteId = identifier(object(media.notebook_ext_info).notebook_id);
-          if (onFileMatch && !hit.noteId) {
+          if (!hit.noteId && fileReads < 2 && imaFileFormat(media.media_type, hit.title)) {
+            fileReads++;
+            const link = object(media.url_info), headers = object(link.headers), sourceUrl = typeof link.url === "string" ? link.url : "";
+            // Object-access headers are scoped to a reviewed file host. Never
+            // forward the API Client ID/Key, even if an upstream response echoes them.
+            const echoed = [credentials.clientId, credentials.apiKey].some(secret => sourceUrl.includes(secret) || sourceUrl.includes(encodeURIComponent(secret))) || Object.values(headers).some(value => typeof value === "string" && redact(value, credentials) !== value);
+            if (!echoed) {
+              try { content = readable(await readImaFile({ url: link.url, headers: link.headers, mediaType: media.media_type, title: hit.title, query: q, signal }, this.fetcher), credentials); }
+              catch (error) { if (error instanceof Error && error.message === "IMA_FILE_BUSY") throw new ImaError("IMA_BUSY", "ima 文件读取请求较多，请稍后重试", 429); /* Keep unreadable files distinct from an empty search. */ }
+            }
+          }
+          if (onFileMatch && !hit.noteId && !content) {
             let downloadHost: string | undefined;
             try {
               const url = new URL(String(object(media.url_info).url));
@@ -296,7 +310,7 @@ export class ImaService {
             } catch { /* Missing/invalid links have no public diagnostic hostname. */ }
             onFileMatch({ title: hit.title, mediaType: Number.isSafeInteger(media.media_type) ? Number(media.media_type) : 0, ...(downloadHost ? { downloadHost } : {}) });
           }
-          // No arbitrary URL downloads: signed URLs/headers are never sent to a model or another host.
+          // Signed URLs/headers stay server-side; unknown hosts are never fetched.
         }
         if (hit.noteId) {
           const body = await this.call(credentials, paths.content, { note_id: hit.noteId, target_content_format: 0 }, signal);
@@ -310,7 +324,7 @@ export class ImaService {
       chunks.push({ provider: "ima", id: crypto.createHash("sha256").update(hit.id).digest("hex").slice(0, 24), title: hit.title, content: excerpt(content, q), sourceUrl: origin });
     }
     await this.current(c);
-    if (!chunks.length && unreadable) throw new ImaError("IMA_CONTENT_UNAVAILABLE", "ima 命中资料但没有可读正文片段，请换用更具体的关键词或检查资料权限");
+    if (!chunks.length && unreadable) throw new ImaError("IMA_CONTENT_UNAVAILABLE", "ima 已命中资料，但本次未取得可读正文片段，请在连接详情查看文件读取诊断");
     if (!chunks.length && !c.retrievalScope?.selectedIds.length) throw new ImaError("IMA_KNOWLEDGE_SCOPE_REQUIRED", "ima 本次只检索了个人笔记，尚未检索知识库内的文件；请在连接详情刷新并选择知识库，不能据此判断库内没有内容", 409);
     return chunks;
     } finally { release(); }
