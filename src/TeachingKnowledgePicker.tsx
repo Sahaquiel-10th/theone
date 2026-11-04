@@ -47,7 +47,7 @@ export function TeachingKnowledgePicker({request,sources,onChange,privateSource,
           {scope==='page'?<label>页面链接或页面 ID<input disabled={disabled||loading} value={pageId} onChange={event=>{setPageId(event.target.value);setPreview(undefined);}} placeholder="粘贴本课程需要引用的具体页面链接"/></label>:<label className="teaching-check"><input type="checkbox" disabled={disabled||loading} checked={confirmed} onChange={event=>setConfirmed(event.target.checked)}/>我确认{privateSource?'教师评阅与试卷整理':'本课学生的助教'}可以检索这个连接的完整已授权范围（包括连接设置中已选的知识库）。</label>}
         </>:null}
       </>:null}
-      {connections.length||sources.length?<label>用本课问题试搜{scope==='page'?'（指定页面可直接读取）':''}<input disabled={disabled||loading} maxLength={6000} value={query} onChange={event=>{setQueryEdited(true);setQuery(event.target.value);setPreview(undefined);}} placeholder="例如：杭州城市形成与西湖文化有什么关系？"/><small>课程名称可作起点；换成具体问题或资料中的词更容易核对检索结果。不会使用知识库名称代替问题。</small></label>:null}
+      {connections.length||sources.length?<label>用本课问题试搜{scope==='page'?'（指定页面可直接读取）':''}<input disabled={disabled||loading} maxLength={6000} value={query} onChange={event=>{setQueryEdited(true);setQuery(event.target.value);setPreview(undefined);}} placeholder="例如：资料中的章节标题或关键词"/><small>课程名称可作起点；换成具体问题或资料中的词更容易核对检索结果。不会使用知识库名称代替问题。</small></label>:null}
       {connection?<button type="button" disabled={disabled||loading||scope==='page'&&!pageId.trim()||scope==='connection'&&(!confirmed||!query.trim())} onClick={()=>void inspect({connectionId,scope,...(scope==='page'?{pageId}:{confirmed})},true)}><Link2 size={15}/>核对并选用这个范围</button>:null}
       {error?<p className="teaching-inline-error" role="alert">{error}</p>:null}
       {notice?<p className="teacher-help" role="status">{notice}</p>:null}

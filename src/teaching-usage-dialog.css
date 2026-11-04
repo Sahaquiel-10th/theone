@@ -5,7 +5,9 @@
 .teaching-usage-dialog button{min-height:44px}.teaching-usage-dialog header>button{width:44px;padding:10px;flex-shrink:0}
 .teaching-usage-metrics{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:28px 0;padding:20px 0;border-block:1px solid var(--teach-line)}
 .teaching-usage-metrics dt{font-size:13px;color:var(--teach-muted)}.teaching-usage-metrics dd{margin:8px 0 0;font-size:26px;font-variant-numeric:tabular-nums}
-.teaching-usage-dialog .teaching-usage-limit{display:grid;gap:10px;font-size:14px;font-weight:600}.teaching-usage-limit input{width:100%;box-sizing:border-box;min-height:48px}
+.teaching-usage-dialog .teaching-usage-limit{display:grid;gap:10px;font-size:14px;font-weight:600}.teaching-usage-limit input,.teaching-usage-limit select{width:100%;box-sizing:border-box;min-height:48px}
 .teaching-usage-available{margin:12px 0 24px;color:var(--teach-muted);font-size:13px}.teaching-usage-dialog .teaching-check{align-items:flex-start;margin:20px 0;font-size:14px;line-height:1.6}
 .teaching-usage-dialog footer{display:flex;justify-content:flex-end;gap:10px;margin-top:28px}.teaching-usage-error{display:grid;gap:10px;padding:12px;margin-bottom:20px;color:var(--teach-ink);background:var(--teach-inset);border-radius:10px;font-size:14px}
 @media(max-width:600px){.teaching-ui .teaching-usage-dialog{padding:22px;border-radius:20px}.teaching-usage-metrics{gap:12px}.teaching-usage-metrics dd{font-size:24px}}
+
+.teaching-usage-dialog form>.teaching-usage-limit+.teaching-usage-limit{margin-top:20px}.teaching-usage-note{margin:10px 0 0;color:var(--teach-muted);font-size:13px;line-height:1.7}

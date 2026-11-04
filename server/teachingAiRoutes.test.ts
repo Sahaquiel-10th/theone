@@ -26,7 +26,7 @@ function makeDb() {
 function addCourse(db: Database, scope: TeachingScope = teacher, kind: TeachingActivity['kind'] = 'inquiry', publish = true, budgetMicros = 1_000_000) {
   const course = createTeachingCourse(db, scope, { title: '隔离课程', budgetMicros });
   // Historical uploaded course sources remain readable until explicitly switched.
-  delete course.sourceMode; course.materialText='本课程介绍茶叶文化。';
+  delete course.sourceMode; delete course.teacherBudgetMode; course.materialText='本课程介绍茶叶文化。';
   const { activity } = createTeachingActivity(db, scope, course.id, { revision: course.revision, title: '学习活动', stage: kind === 'inquiry' ? 'before' : 'after', kind, status: 'published', instructions: '请观察并记录。', referenceText: 'PRIVATE_EXAM_REFERENCE_ANSWER', rubric: kind === 'assignment' ? [{ id: 'observation', label: '观察', description: '明确描述观察', maxScore: 10 }] : [], questions: kind === 'quiz' ? [{ id: 'q1', type: 'single', prompt: '选择', options: ['甲', '乙'], answer: '甲', points: 10 }] : [] });
   if (publish) publishTeachingCourse(db, scope, course.id, { revision: course.revision, confirmed: true });
   return { course, activity };
@@ -57,6 +57,36 @@ async function fixture(t: TestContext, modelCall: NonNullable<TeachingAiRouteDep
   return { get db() { return db; }, store, base, post, poll, start, directory, removeKey: () => { keyPresent = false; } };
 }
 
+test('a balance-backed teacher may run at zero course cap, but wallet limits and all public cumulative caps remain enforced',async t=>{
+  let calls=0;const f=await fixture(t,async()=>{calls++;return reply({answer:'虚构游戏回合。',choices:['观察','提问']});});
+  const course=createTeachingCourse(f.db,teacher,{title:'按账户余额使用'}),activity=createTeachingActivity(f.db,teacher,course.id,{revision:course.revision,title:'试玩',kind:'game',stage:'during',status:'published',avatarPrompt:'引导课堂游戏'}).activity;
+  assert.equal(course.teacherBudgetMode,'balance');assert.equal(course.budgetMicros,0);
+  const body={kind:'answer',preview:true,activityId:activity.id,conversationId:'balance-manual-trial',operationId:'balance-manual-request001',content:'开始',budgetConfirmed:true};
+  const first=await f.post(`/courses/${course.id}/ai`,body);assert.equal(first.status,202);const firstOperation=(await first.json() as any).operation;assert.equal('teacherBudgetModeSnapshot' in firstOperation,false);
+  assert.equal((await f.poll(`/courses/${course.id}/operations/${firstOperation.id}`)).status,'completed');assert.equal(calls,1);
+  assert.equal(teachingState(f.db,teacher).operations.find(row=>row.id===firstOperation.id)?.teacherBudgetModeSnapshot,'balance');
+  const rawBefore=f.db.modelUsageRecords.length;updateTeachingCourse(f.db,teacher,course.id,{revision:course.revision,budgetMicros:1});publishTeachingCourse(f.db,teacher,course.id,{revision:course.revision,confirmed:true});
+  const student=createTeachingSession(f.db,course.slug!,{participantName:'学生',consent:true}),headers={'Content-Type':'application/json',Authorization:`Bearer ${student.token}`};
+  const submitted=await f.post(`/public/${course.slug}/questions`,{activityId:activity.id,operationId:'public-cannot-bypass-cap01',content:'开始游戏',gameRevision:0,teacherBudgetMode:'balance',teacherBudgetModeSnapshot:'balance'},headers);assert.equal(submitted.status,202,await submitted.clone().text());
+  const failed=await f.poll(`/public/${course.slug}/operations/${(await submitted.json() as any).operation.id}`,headers);assert.equal(failed.status,'failed');assert.equal(calls,1);assert.equal(f.db.modelUsageRecords.length,rawBefore);assert.doesNotMatch(JSON.stringify(failed),/teacherBudgetModeSnapshot/);
+  const other=createTeachingCourse(f.db,teacher,{title:'钱包仍保护'}),second=createTeachingActivity(f.db,teacher,other.id,{revision:other.revision,title:'试玩',kind:'game',stage:'during',avatarPrompt:'游戏'}).activity;
+  const account=f.db.powerAccounts.find(row=>row.userId===teacher.userId&&row.workspaceId===teacher.workspaceId)!;account.balanceMicros=0;account.reservedMicros=0;
+  const noFunds=await f.post(`/courses/${other.id}/ai`,{...body,activityId:second.id,conversationId:'no-wallet-trial',operationId:'balance-still-needs-wallet'});assert.equal(noFunds.status,202);assert.equal((await f.poll(`/courses/${other.id}/operations/${(await noFunds.json() as any).operation.id}`)).status,'failed');assert.equal(calls,1);assert.equal(account.balanceMicros,0);assert.equal(account.reservedMicros,0);
+});
+
+test('manual budget authorization snapshots cannot be widened while knowledge retrieval waits, and live course mode can tighten balance requests',async t=>{
+  for(const transition of ['course-to-balance','balance-to-course'] as const){
+    let release!:()=>void,entered!:()=>void,calls=0;const gate=new Promise<void>(resolve=>{release=resolve;}),waiting=new Promise<void>(resolve=>{entered=resolve;});t.after(()=>release());
+    const f=await fixture(t,async()=>{calls++;return reply(guidedAnswer());},{knowledgeService:{recallWithDiagnostics:async()=>{entered();await gate;return {status:'used',failures:[],chunks:[{provider:'getnote',title:'课程资料',content:'本课程介绍茶叶文化。'}]};}}});
+    f.db.knowledgeConnections.push({id:'mode-gate-library',workspaceId:teacher.workspaceId,provider:'getnote',status:'connected',clientId:'fixture',providerUserId:'account',encryptedApiKey:'SYNTHETIC',createdAt:'now',updatedAt:'now'});
+    const initial=transition==='course-to-balance'?'course':'balance',next=initial==='course'?'balance':'course';
+    const course=createTeachingCourse(f.db,teacher,{title:'在途授权',teacherBudgetMode:initial,budgetMicros:1,knowledgeSources:[{connectionId:'mode-gate-library',scope:'connection',confirmed:true}]}),activity=createTeachingActivity(f.db,teacher,course.id,{revision:course.revision,title:'试问',kind:'inquiry',stage:'before'}).activity;
+    const started=await f.post(`/courses/${course.id}/ai`,{kind:'answer',preview:true,activityId:activity.id,conversationId:'mode-gate-conversation',operationId:`mode-gate-${transition}-001`,content:'课程是什么',budgetConfirmed:true});assert.equal(started.status,202);const op=(await started.json() as any).operation;
+    await waiting;assert.equal(teachingState(f.db,teacher).operations.find(row=>row.id===op.id)!.teacherBudgetModeSnapshot,initial);updateTeachingCourse(f.db,teacher,course.id,{revision:course.revision,teacherBudgetMode:next});release();
+    const done=await f.poll(`/courses/${course.id}/operations/${op.id}`);assert.equal(done.status,'failed',JSON.stringify(done));assert.equal(calls,0,`${transition} must not turn an old narrow authorization into a paid request`);assert.equal(f.db.modelUsageRecords.length,0);
+  }
+});
+
 test('knowledge-only AI reads the exact authorized library and never reuses historical course text or attachment originals',async t=>{
   let calls=0,reads=0;const f=await fixture(t,async(_model,messages)=>{calls++;const input=String(messages.find(row=>row.role==='user')?.content);assert.match(input,/KNOWLEDGE_ALLOWED_TEXT/);assert.doesNotMatch(input,/LEGACY_PRIVATE_TEXT|legacy-unreadable-file/);return reply(guidedAnswer());},{knowledgeService:{recallWithDiagnostics:async(workspace,_query,_topK,ids,user)=>{reads++;assert.equal(workspace,teacher.workspaceId);assert.equal(user,teacher.userId);assert.deepEqual(ids,['course-library']);return {status:'used',failures:[],chunks:[{provider:'getnote',title:'授权的课程资料',content:'本课程介绍茶叶文化。KNOWLEDGE_ALLOWED_TEXT'}]};}}});
   f.db.knowledgeConnections.push({id:'course-library',workspaceId:teacher.workspaceId,provider:'getnote',status:'connected',clientId:'fixture-client',providerUserId:'fixture-account',providerSpaceId:'fixture-space',encryptedApiKey:'SYNTHETIC_LIBRARY_KEY',createdAt:'now',updatedAt:'now'});
@@ -70,12 +100,12 @@ test('knowledge-only AI reads the exact authorized library and never reuses hist
 
 test('knowledge-only courses still use private exam references and student work attachments for explicit teacher grading',async t=>{
   let calls=0;const f=await fixture(t,async(_model,messages)=>{calls++;const input=String(messages.find(row=>row.role==='user')?.content);assert.match(input,/TEACHER_REFERENCE_TEXT|EXAM_PRIVATE_FILE_TEXT/);assert.match(input,/STUDENT_WORK_ORIGINAL/);return reply({criteria:[{criterionId:'score',score:80,comment:'依据原作品',evidence:'STUDENT_WORK_ORIGINAL'}],feedback:'请老师复核'});});
-  const course=createTeachingCourse(f.db,teacher,{title:'仅知识库学习资料',budgetMicros:1_000_000});
+  const course=createTeachingCourse(f.db,teacher,{title:'仅知识库学习资料',budgetMicros:0});
   const reference={id:'private-exam-file',...teacher,conversationId:`teaching:${course.id}`,storagePath:'/not-read-when-inline-text',originalName:'试卷.txt',mimeType:'text/plain',kind:'text',size:22,status:'ready',extractedText:'EXAM_PRIVATE_FILE_TEXT',createdAt:'now'} as Attachment;
   const work={...reference,id:'student-original-file',originalName:'作业.txt',extractedText:'STUDENT_WORK_ORIGINAL'};f.db.attachments.push(reference,work);
   const {activity}=createTeachingActivity(f.db,teacher,course.id,{revision:course.revision,title:'批改作业',kind:'assignment',stage:'after',referenceText:'TEACHER_REFERENCE_TEXT',sourceAttachmentIds:[reference.id],rubric:[{id:'score',label:'完成情况',description:'依据原作业',maxScore:100}]});
   const submission=addTeachingSubmission(f.db,teacher,course,{activityId:activity.id,participantName:'老师代传',operationId:'knowledge-work-intake-01',attachmentIds:[work.id]}).submission;
-  const response=await f.post(`/courses/${course.id}/ai`,{kind:'grade',activityId:activity.id,submissionId:submission.id,operationId:'knowledge-private-grade-001',budgetConfirmed:true});assert.equal(response.status,202);const result=await f.poll(`/courses/${course.id}/operations/${(await response.json() as any).operation.id}`);assert.equal(result.status,'completed',JSON.stringify(result));assert.equal(calls,1);assert.equal(submission.grade?.status,'suggested');assert.equal(submission.grade?.total,80);assert.equal(course.materialText,'');assert.equal(course.sourceMode,'knowledge');
+  const response=await f.post(`/courses/${course.id}/ai`,{kind:'grade',activityId:activity.id,submissionId:submission.id,operationId:'knowledge-private-grade-001',budgetConfirmed:true});assert.equal(response.status,202);const result=await f.poll(`/courses/${course.id}/operations/${(await response.json() as any).operation.id}`);assert.equal(result.status,'completed',JSON.stringify(result));assert.equal(calls,1);assert.equal(submission.grade?.status,'suggested');assert.equal(submission.grade?.total,80);assert.equal(course.materialText,'');assert.equal(course.sourceMode,'knowledge');assert.equal(course.teacherBudgetMode,'balance');assert.equal(course.budgetMicros,0);
 });
 
 test('teacher preview receipts and alias recovery expose only that teacher trial question, never student private questions', async t => {

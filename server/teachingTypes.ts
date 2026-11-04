@@ -30,6 +30,9 @@ export type TeachingCourse = TeachingScope & TeachingTrashMetadata & {
   /** New course learning context is retrieved only from explicitly bound libraries.
    * Missing mode identifies historical courses; their original fields are retained. */
   sourceMode?: 'knowledge';
+  /** Missing means the original course cap. Only an explicit teacher choice may
+   * relax an existing course; new courses default to balance-backed manual use. */
+  teacherBudgetMode?: 'course'|'balance';
   /** Guided tasks use one private course container, created only on an explicit save/upload. */
   clientDraftId?: string; taskKind?: TeachingTaskKind; knowledgeSources?: TeachingKnowledgeSource[];
   /** Course-centre creation receipt, distinct from legacy task drafts. */
@@ -69,6 +72,9 @@ export type TeachingOperation = TeachingScope & {
   operationId: string; payloadHash: string; kind: 'prepare' | 'answer' | 'grade' | 'insights';
   courseRevision?: number; question?: string; attachmentIds?: string[];
   materialRevision?: number; activityRevision?: number; preview?: boolean;
+  /** Server snapshot of the manual request's authorization. Never accepted from
+   * the browser or returned in public/student operation receipts. */
+  teacherBudgetModeSnapshot?: 'course'|'balance';
   courseLifecycleRevision?: number; activityLifecycleRevision?: number;
   submissionGradingRevision?: number;
   conversationId?: string; gameRevision?: number; gamePromptSnapshot?: { roleName: string; prompt: string };

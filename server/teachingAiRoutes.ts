@@ -10,6 +10,7 @@ import { asyncRoute } from './middleware.js';
 import { uid } from './security.js';
 import { attachmentSegments, prepareAttachmentContext } from './attachmentRetrieval.js';
 import { runBilledModel } from './modelBilling.js';
+import {PowerAvailabilityError} from './powerBilling.js';
 import { callModelWithTools } from './modelGateway.js';
 import {ownedTeachingActivity} from './teachingLifecycle.js';
 import {teachingCourseUsage} from './teachingUsage.js';
@@ -72,7 +73,7 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
     if (state.operations.length >= 10_000 || mine.filter(o => o.status === 'running').length >= 4 || (sessionId && mine.filter(o => o.status === 'running' && o.sessionId === sessionId).length) || mine.filter(o => Date.now() - Date.parse(o.createdAt) < 60_000).length >= 120) throw new TeachingError('教学 AI 正在处理其他请求，请稍后再试；原有记录已保留', 429);
     const gradingRevision = body.kind === 'grade' ? state.submissions.find(item => item.id === body.submissionId)!.gradingRevision ?? 0 : undefined;
     if (body.kind === 'grade' && body.gradingRevision !== undefined && body.gradingRevision !== gradingRevision) throw new TeachingError('评分依据已变化，请刷新后再评阅', 409, 'TEACHING_GRADING_REVISION_CONFLICT');
-    const operation: TeachingOperation = { ...scope, id: uid('tai'), courseId: course.id, courseRevision: course.revision, courseLifecycleRevision:course.lifecycleRevision??0, activityLifecycleRevision:activity?.lifecycleRevision??0, materialRevision: course.materialRevision??course.revision, activityRevision: activity?.revision, ...(body.preview===true&&!sessionId?{preview:true,conversationId:String(body.conversationId)}:{}), activityId: activity?.id, submissionId: typeof body.submissionId === 'string' ? body.submissionId : undefined, submissionGradingRevision: gradingRevision, sessionId, operationId: body.operationId, payloadHash, kind: body.kind as TeachingOperation['kind'], question: body.kind === 'answer' ? String(body.content) : undefined, attachmentIds: attachmentIds as string[], status: 'running', ...(game ? { conversationId: game.conversationId, gameRevision: game.revision, gamePromptSnapshot: { roleName: game.roleName, prompt: game.prompt } } : {}), createdAt: new Date().toISOString() };
+    const operation: TeachingOperation = { ...scope, id: uid('tai'), courseId: course.id, courseRevision: course.revision, courseLifecycleRevision:course.lifecycleRevision??0, activityLifecycleRevision:activity?.lifecycleRevision??0, materialRevision: course.materialRevision??course.revision, activityRevision: activity?.revision, ...(body.preview===true&&!sessionId?{preview:true,conversationId:String(body.conversationId)}:{}), activityId: activity?.id, submissionId: typeof body.submissionId === 'string' ? body.submissionId : undefined, submissionGradingRevision: gradingRevision, sessionId, operationId: body.operationId, payloadHash, kind: body.kind as TeachingOperation['kind'], question: body.kind === 'answer' ? String(body.content) : undefined, attachmentIds: attachmentIds as string[], status: 'running', ...(game ? { conversationId: game.conversationId, gameRevision: game.revision, gamePromptSnapshot: { roleName: game.roleName, prompt: game.prompt } } : {}), createdAt: new Date().toISOString(), ...(!sessionId?{teacherBudgetModeSnapshot:course.teacherBudgetMode==='balance'?'balance' as const:'course' as const}:{}) };
     state.operations.push(operation); return { operation, created: true };
   }
   async function execute(operation: TeachingOperation, verify: () => Promise<void>) {
@@ -193,7 +194,9 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
           assertSources(fresh);
           assertGame(fresh);
           assertGrading(fresh);
-          if (courseUsage(fresh, ownedTeachingCourse(fresh,scope,course.id)) + amount > ownedTeachingCourse(fresh,scope,course.id).budgetMicros) throw new TeachingError('本次预计用量超过课程额度，请老师调整上限后再试', 402);
+          const liveCourse=ownedTeachingCourse(fresh,scope,course.id);
+          const manualBalance=!operation.sessionId&&operation.teacherBudgetModeSnapshot==='balance'&&liveCourse.teacherBudgetMode==='balance';
+          if (!manualBalance&&courseUsage(fresh,liveCourse)+amount>liveCourse.budgetMicros) throw new TeachingError('本次预计用量超过课程累计保护上限，请老师调整后再试',402);
         } }, snapshot => (deps.modelCall ?? callModelWithTools)(snapshot, inputMessages.map(m => ({ role: m.role, content: m.content, inputImageDataUrls: m.inputImageDataUrls })), [], operation.id, options));
       } });
       await verify();
@@ -212,11 +215,12 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
         saved.result = output; saved.status = 'completed'; saved.completedAt = new Date().toISOString();
       });
     } catch (error) {
+      const definiteFailure=error instanceof TeachingAiError||error instanceof TeachingError||error instanceof PowerAvailabilityError;
       await store.mutate(db => {
         const saved = db.users.find(u => u.id === scope.userId)?.teaching?.operations.find(o => o.id === operation.id && o.workspaceId === scope.workspaceId);
         if (!saved || saved.status !== 'running') return;
-        saved.status = error instanceof TeachingAiError || error instanceof TeachingError ? 'failed' : 'uncertain';
-        saved.error = error instanceof TeachingAiError || error instanceof TeachingError ? error.message : '本次 AI 结果尚未确认，已保留原记录；不会自动重复执行，请先查看用量或联系管理员。';
+        saved.status = definiteFailure ? 'failed' : 'uncertain';
+        saved.error = definiteFailure ? error.message : '本次 AI 结果尚未确认，已保留原记录；不会自动重复执行，请先查看用量或联系管理员。';
         saved.completedAt = new Date().toISOString();
       });
     } finally { running.delete(operation.id); }

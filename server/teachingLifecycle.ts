@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { Database } from './types.js';
 import type { TeachingActivity, TeachingCourse, TeachingScope } from './teachingTypes.js';
 import { bindTeachingKnowledgeSources } from './teachingKnowledge.js';
-import { ownedTeachingCourse, preserveTeachingAccess, teachingCourseView, teachingState, TeachingError, validateTeachingAttachments } from './teaching.js';
+import { ownedTeachingCourse, preserveTeachingAccess, teachingCourseView, teachingState, TeachingError, validateTeachingAttachments,requireTeachingStudentBudget } from './teaching.js';
 
 function bodyOf(value: unknown) { if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TeachingError('请检查操作内容'); return value as Record<string, unknown>; }
 function exactCourse(db: Database, scope: TeachingScope, id: string) { const course = teachingState(db, scope).courses.find(row => row.id === id && row.workspaceId === scope.workspaceId && row.userId === scope.userId); if (!course) throw new TeachingError('课程不存在', 404, 'TEACHING_NOT_FOUND'); return course; }
@@ -12,6 +12,7 @@ export function setTeachingActivityOpen(db: Database, scope: TeachingScope, cour
   const body = bodyOf(input), course = ownedTeachingCourse(db, scope, courseId), activity = ownedTeachingActivity(course, activityId);
   if (body.confirmed !== true) throw new TeachingError('请明确确认活动学生入口的开放状态');
   if (open) {
+    requireTeachingStudentBudget(course,[activity]);
     if(course.sourceMode!=='knowledge')validateTeachingAttachments(db, scope, courseId, course.materialAttachmentIds); validateTeachingAttachments(db, scope, courseId, activity.sourceAttachmentIds ?? []);
     bindTeachingKnowledgeSources(db, scope, undefined, course.knowledgeSources); bindTeachingKnowledgeSources(db, scope, undefined, activity.knowledgeSources);
   }

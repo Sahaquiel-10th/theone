@@ -23,7 +23,7 @@ test('HTTP teacher and student flow keeps ownership, identities, answers, grades
     return { status: response.status, body: await response.json(), cacheControl: response.headers.get('Cache-Control') };
   };
   assert.equal((await request('/courses', 'GET', undefined, {})).status, 428);
-  let result = await request('/courses', 'POST', { title: '通用教学', sourceMode:'knowledge', workspaceId: 'wb', userId: 'teacher-b' });
+  let result = await request('/courses', 'POST', { title: '通用教学', sourceMode:'knowledge',budgetMicros:1_000_000, workspaceId: 'wb', userId: 'teacher-b' });
   assert.equal(result.status, 201); let course = result.body.course;
   const cid = course.id;
   assert.equal(course.workspaceId, 'wa'); assert.equal(course.userId, 'teacher-a');
@@ -88,7 +88,7 @@ test('classroom storage endpoints allow 100 new participants and submissions in 
   const { createTeachingCourse, createTeachingActivity, publishTeachingCourse } = await import('./teaching.js');
   const scope = { workspaceId: 'class-ws', userId: 'class-teacher' };
   const db = { users: [{ id: scope.userId, enabled: true }], workspaces: [{ id: scope.workspaceId, status: 'active' }], workspaceMembers: [{ ...scope, role: 'owner' }], attachments: [] } as unknown as Database;
-  const course = createTeachingCourse(db, scope, { title: '百人课堂' });
+  const course = createTeachingCourse(db, scope, { title: '百人课堂',budgetMicros:1_000_000 });
   const { activity } = createTeachingActivity(db, scope, course.id, { revision: course.revision, stage: 'before', kind: 'inquiry', title: '课前想了解什么', status: 'published' });
   publishTeachingCourse(db, scope, course.id, { revision: course.revision, confirmed: true });
   const store: Store = { read: async () => db, mutate: async fn => fn(db) }, app = express(); app.use(express.json()); installTeachingRoutes(app, [], store);

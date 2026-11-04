@@ -107,7 +107,7 @@ test('public course, student receipt and publicUser project no teacher materials
 });
 
 test('scenario review comes only from the submitted snapshot and only includes scenes this student answered', () => {
-  const db = fixture(), course = createTeachingCourse(db, a, { title: '情境教学' });
+  const db = fixture(), course = createTeachingCourse(db, a, { title: '情境教学',budgetMicros:1_000_000 });
   const { activity } = createTeachingActivity(db, a, course.id, { revision: course.revision, stage: 'during', kind: 'scenario', title: '决策体验', status: 'published', referenceText: 'PRIVATE_REFERENCE', scenes: [{ id: 's1', title: '已体验情境', content: '观察', choices: ['先观察', '直接行动'], reflection: '选择前核对证据' }, { id: 's2', title: '未体验情境', content: '观察', choices: ['继续'], reflection: 'UNANSWERED_PRIVATE_REVIEW' }] });
   publishTeachingCourse(db, a, course.id, { revision: course.revision, confirmed: true });
   assert.doesNotMatch(JSON.stringify(publicTeachingCourse(course)), /选择前核对证据|UNANSWERED_PRIVATE_REVIEW|PRIVATE_REFERENCE/);
