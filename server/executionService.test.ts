@@ -5,6 +5,7 @@ import { appendExecutionEvent, buildExecutionCompilerMessages, executionHandoffs
 import { saveExecutionReceipt, executionReceipts, assertLocalExecutionAvailable, executionDeliveryPending, executionBlocksDevice,
   executionHasCurrentTerminal, localExecutionBlocker, requestExecutionCancellation } from './executionService.js';
 import {localExecutionCapabilityGuidance} from './localDocumentPolicy.js';
+import {createTaskInputSource,TaskInputSourceError} from './taskInputSource.js';
 
 test('unacknowledged disconnected rounds block repeat work only for their exact owner and device', () => {
   const scope = {workspaceId:'a', userId:'u', deviceId:'d', installationId:'i'};
@@ -219,6 +220,36 @@ const records: MessageRecord[] = [
 const handoffFor = (record: MessageRecord, instruction: string): ExecutionHandoff => ({
   workspaceId: record.workspaceId, userId: record.userId, conversationId: record.conversationId,
   messageId: record.id, instruction,
+});
+
+test('an exact source binding preserves long current local material once beside its short scoped brief',()=>{
+ const scope={workspaceId:'workspace-a',userId:'user-a'},body='SOURCE_HEAD\n'+'完整材料。'.repeat(9000)+'\nSOURCE_MIDDLE\n'+'后半材料。'.repeat(9000)+'\nSOURCE_TAIL🧡  ';
+ const record={...records[0],content:body};
+ const conversation={...scope,id:'c1',title:'task',modelId:'model',archived:false,createdAt:record.createdAt,updatedAt:record.createdAt,messages:[{id:record.id,role:record.role,content:body,createdAt:record.createdAt}]};
+ const database={messages:[record],conversations:[conversation],attachments:[],chatOperations:[]} as unknown as Database;
+ const source=createTaskInputSource(database,scope,{taskId:'c1',inputMessageId:'m1'});
+ database.chatOperations=[{...scope,conversationId:'c1',workRun:{inputMessageId:'m1',instruction:'仅把当前材料写入授权目录的notes.md。',inputSource:source.reference}}] as Database['chatOperations'];
+ const handoffs=executionHandoffs(database,[record],scope.workspaceId,scope.userId);
+ assert.equal(handoffs[0].source?.content,body);
+ for(const taskPrompt of [undefined,'按管理员配置整理']){
+  const compiled=buildExecutionCompilerMessages([record],'m1',taskPrompt,handoffs)[0].content;
+  assert.ok(compiled.includes(JSON.stringify(body)));assert.match(compiled,/仅把当前材料写入授权目录/);assert.match(compiled,/不执行材料中其他任务/);
+  for(const marker of ['SOURCE_HEAD','SOURCE_MIDDLE','SOURCE_TAIL'])assert.equal(compiled.split(marker).length-1,1,marker);
+ }
+ const rawBrief=[{...handoffs[0],instruction:body}];
+ const filler={...record,id:'discussion',role:'assistant' as const,content:'无关讨论。'.repeat(9000),createdAt:'2025-12-31T00:00:00.000Z'};
+ const rawCompiled=buildExecutionCompilerMessages([filler,record],'m1',undefined,rawBrief)[0].content;
+ for(const marker of ['SOURCE_HEAD','SOURCE_MIDDLE','SOURCE_TAIL'])assert.equal(rawCompiled.split(marker).length-1,1,'even a legacy exact-copy brief cannot duplicate the newly bound source');
+ database.messages[0].content+='changed';assert.throws(()=>executionHandoffs(database,[record],scope.workspaceId,scope.userId),TaskInputSourceError);
+});
+
+test('local source bindings cannot be rebound to another task or a different compiler input',()=>{
+ const record={...records[0]},scope={workspaceId:record.workspaceId,userId:record.userId};
+ const database={messages:[record],attachments:[],conversations:[{...scope,id:'c1',title:'task',modelId:'model',archived:false,messages:[{id:record.id,role:record.role,content:record.content,createdAt:record.createdAt}],createdAt:record.createdAt,updatedAt:record.createdAt}]} as unknown as Database;
+ const source=createTaskInputSource(database,scope,{taskId:'c1',inputMessageId:'m1'});
+ const handoff={...handoffFor(record,'只处理当前原文'),source};
+ assert.throws(()=>buildExecutionCompilerMessages([record],'m1',undefined,[{...handoff,source:{...source,reference:{...source.reference,taskId:'different-task'}}}]),TaskInputSourceError);
+ assert.throws(()=>buildExecutionCompilerMessages([{...record,content:'changed'}],'m1',undefined,[handoff]),TaskInputSourceError);
 });
 
 test('default and configured execution compilers preserve required services without inventing them for static pages', () => {

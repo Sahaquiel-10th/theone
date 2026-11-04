@@ -67,6 +67,11 @@ export class ModelRequestError extends Error {
     super(`模型服务请求未成功（${status}）：${reason}`);
   }
 }
+/** Sanitized protocol failure: no provider body, prompt, or credential enters
+ * diagnostics. Only a pure model stage may opt into a bounded retry. */
+export class ModelResponseError extends Error {
+  constructor(){super('Local Agent 模型响应格式不正确');}
+}
 // Never persist raw provider bodies, which may echo prompts or credentials.
 export function safeProviderReason(payload:unknown,status:number):string {
   const p=payload as {error?:{message?:unknown}};
@@ -314,7 +319,7 @@ export async function callModelWithTools(
       throw new ModelRequestError(response.status, safeProviderReason(payload,response.status));
     }
     const message = payload?.choices?.[0]?.message;
-    if (!message || (message.content != null && typeof message.content !== "string")) throw new Error("Local Agent 模型响应格式不正确");
+    if (!message || (message.content != null && typeof message.content !== "string")) throw new ModelResponseError();
     const toolCalls: ModelToolCall[] = Array.isArray(message.tool_calls)
       ? message.tool_calls.filter((item: unknown): item is ModelToolCall => {
           if (!item || typeof item !== "object") return false;
@@ -323,6 +328,10 @@ export async function callModelWithTools(
             typeof candidate.function?.name === "string" && typeof candidate.function.arguments === "string";
         })
       : [];
+    const finishReason=modelFinishReason(payload?.choices?.[0]?.finish_reason);
+    // A provider's explicit cutoff/refusal is a real, billable result even
+    // without readable text. Never turn it into an automatic protocol retry.
+    if (!(typeof message.content==='string'&&message.content.trim())&&!toolCalls.length&&!['length','filtered'].includes(finishReason)) throw new ModelResponseError();
     console.log(JSON.stringify({
       event: "local_agent_model_request_completed",
       requestId,
@@ -333,7 +342,7 @@ export async function callModelWithTools(
     return {
       content: typeof message.content === "string" ? message.content : "",
       toolCalls,
-      finishReason: modelFinishReason(payload?.choices?.[0]?.finish_reason),
+      finishReason,
       usage: parseProviderUsage(payload?.usage)
     };
   } catch (error) {
@@ -459,7 +468,8 @@ async function callAnthropicModelWithTools(
         type: "function" as const,
         function: { name: item.name==='one_public_lookup'?'web_search':item.name, arguments: JSON.stringify(item.input ?? {}) }
       }));
-    if (!content && !toolCalls.length) throw new Error("Local Agent 模型响应格式不正确");
+    const finishReason=modelFinishReason(payload?.stop_reason);
+    if (!content.trim() && !toolCalls.length&&!['length','filtered'].includes(finishReason)) throw new ModelResponseError();
     console.log(JSON.stringify({
       event: "local_agent_model_request_completed",
       requestId,
@@ -471,7 +481,7 @@ async function callAnthropicModelWithTools(
     return {
       content,
       toolCalls,
-      finishReason: modelFinishReason(payload?.stop_reason),
+      finishReason,
       usage: parseProviderUsage(payload?.usage),
     };
   } catch (error) {

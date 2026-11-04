@@ -1,3 +1,4 @@
+import {CoordinatorInputError,CoordinatorInputTooLongError,assertCoordinatorInput,COORDINATOR_MAX_INPUT_CHARS} from '../src/coordinatorInput.js';
 import express, { type Express, type RequestHandler } from "express";
 import type { Store } from "./db.js";
 import type { KnowledgeService } from "./knowledge/knowledgeService.js";
@@ -24,7 +25,7 @@ import {coordinatorRecoveryCopy,parseCoordinatorFailure} from '../src/coordinato
 import {installOnboardingPracticeRoutes} from './onboardingPractice.js';
 import type {LocalDeviceReadiness} from '../src/localDeviceReadiness.js';
 import {CoordinatorLocalError} from './coordinatorLocalPolicy.js';
-import {recordCoordinatorRejection} from './coordinatorRejectedHistory.js';
+import {recordCoordinatorRejection,recordCoordinatorInputRejection} from './coordinatorRejectedHistory.js';
 import type {NotionLinkRecoveryRequest} from './notionLinkRecovery.js';
 export function installCoordinatorRoutes(
   app: Express,
@@ -113,6 +114,7 @@ export function installCoordinatorRoutes(
   router.post(
     "/messages",
     asyncRoute(async (req, res) => {
+      if(typeof req.body?.text==='string'&&req.body.text.length>COORDINATOR_MAX_INPUT_CHARS)assertCoordinatorInput(req.body.text);
       const s = scope(req),
         verify = () => verifyKey(req);
       const result = await service.dispatch(s, req.body, verify, () =>
@@ -172,6 +174,7 @@ export function installCoordinatorRoutes(
   router.post(
     "/tasks/:id/messages",
     asyncRoute(async (req, res) => {
+      if(typeof req.body?.text==='string'&&req.body.text.length>COORDINATOR_MAX_INPUT_CHARS)assertCoordinatorInput(req.body.text);
       const s = scope(req),
         verify = () => verifyKey(req);
       res
@@ -292,16 +295,33 @@ export function installCoordinatorRoutes(
       }catch{/* A failed receipt lookup is uncertainty, never evidence of no admission. */}
     }
     const persisted=parseCoordinatorFailure(ownedOperation?.failure);
-    const failure=persisted??classifyCoordinatorFailure(e,{stage:req.method==='GET'?'receipt':'accepting',outcome:req.method==='GET'||!receiptChecked||ownedOperation?'unknown':'not_started'});
+    let failure=persisted??classifyCoordinatorFailure(e,{stage:req.method==='GET'?'receipt':'accepting',outcome:req.method==='GET'||!receiptChecked||ownedOperation?'unknown':'not_started'});
     const adminValidation=req.baseUrl==='/api/admin/executors'&&(e instanceof CoordinatorError||e instanceof ChatOperationError||e instanceof FeatureConfigError||e instanceof TaskResultInboxError||e instanceof ImageTaskConfigurationError);
-    const accepted=req.method==='POST'&&(req.path==='/messages'||/^\/tasks\/[^/]+\/messages$/.test(req.path))&&receiptChecked&&!ownedOperation?false:undefined;
+    let accepted=req.method==='POST'&&(req.path==='/messages'||/^\/tasks\/[^/]+\/messages$/.test(req.path))&&receiptChecked&&!ownedOperation?false:undefined;
     let historySaved=false;
-    if(accepted===false&&req.path==='/messages'){
-      try{historySaved=await recordCoordinatorRejection(store,scope(req),req.body,failure,res.locals.requestId);}
-      catch{/* Failed history persistence never changes the original controlled refusal. */}
+    if(accepted===false){
+      if(e instanceof CoordinatorInputTooLongError){
+        try{
+          const directTask=/^\/tasks\/([^/]+)\/messages$/.exec(req.path)?.[1];
+          const recorded=await recordCoordinatorInputRejection(store,scope(req),directTask?{...req.body,boundTaskId:decodeURIComponent(directTask)}:req.body,res.locals.requestId);
+          if(recorded)console.warn(JSON.stringify({event:'coordinator_input_rejected',requestId:res.locals.requestId,workspaceId:req.workspaceId,userId:req.user!.id,operationId:req.body.operationId,code:'input_too_long',inputChars:e.inputChars,maxInputChars:e.maxInputChars}));
+        }catch{/* A diagnostic write cannot replace the controlled refusal. */}
+      }else if(req.path==='/messages'){
+        try{historySaved=await recordCoordinatorRejection(store,scope(req),req.body,failure,res.locals.requestId);}
+        catch{/* Failed history persistence never changes the original controlled refusal. */}
+      }
+      // A concurrent acceptance may win while the rejection is being recorded.
+      // Never attest not-started based only on the earlier read.
+      try{
+        const fresh=await store.read();
+        const acceptedOperation=fresh.chatOperations?.find(o=>o.workspaceId===req.workspaceId&&o.userId===req.user!.id&&o.operationId===req.body.operationId);
+        if(acceptedOperation){ownedOperation=acceptedOperation;accepted=undefined;historySaved=false;failure=parseCoordinatorFailure(acceptedOperation.failure)??{...failure,outcome:'unknown'};}
+      }catch{accepted=undefined;failure={...failure,outcome:'unknown'};}
     }
     const body={error:adminValidation?e.message:coordinatorRecoveryCopy(failure),failure,
-      ...(accepted===false?{accepted:false,...(req.path==='/messages'?{historySaved}:{})}:{}),requestId:res.locals.requestId};
+      ...(accepted===false?{accepted:false,...(req.path==='/messages'?{historySaved}:{})}:{}),
+      ...(e instanceof CoordinatorInputTooLongError?{code:e.code,inputChars:e.inputChars,maxInputChars:e.maxInputChars}:{}),requestId:res.locals.requestId};
+    if(e instanceof CoordinatorInputError||e instanceof CoordinatorInputTooLongError){res.status(e.status).json(body);return;}
     if(e instanceof ImageTaskConfigurationError){res.status(428).json(body);return;}
     if (e instanceof CoordinatorError || e instanceof CoordinatorLocalError || e instanceof ChatOperationError || e instanceof FeatureConfigError || e instanceof TaskResultInboxError) {
       res.status(e.status).json(body);

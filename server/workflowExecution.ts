@@ -11,6 +11,8 @@ import {parseWorkflowModelOutcome} from './workflowModelResult.js';
 import {parseToolRecoveryDiagnostic,toolRecoveryDiagnostic,toolRecoveryMessage,type ToolRecoveryDiagnostic} from './toolRecovery.js';
 import {notionVerificationPresentation} from '../src/taskRecovery.js';
 import {validOperationEvidence,readAttempt,readFailureRecovery,transientReadFailure,type OperationEvidence,type OperationRecovery} from './operationRecovery.js';
+import {classifyCoordinatorFailure} from './coordinatorFailures.js';
+import {coordinatorRecoveryCopy} from '../src/coordinatorRecovery.js';
 
 export type WorkflowExecutionInput={
  binding:WorkflowBinding;run:WorkflowRun;goal:string;modelSystemPrompt:string;
@@ -274,7 +276,17 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
   await save(step,'started',{workflow:marker(step),outcome:'waiting',...(priorReceipt?.checkpointKey?{priorNotionCheckpointKey:priorReceipt.checkpointKey}:{})});
   let value:unknown;
   if(step.kind==='model'){
-   const called=await input.callModel(structuredClone(step),selected.messages);await verify();
+   let called:ToolChatResult;
+   try{called=await input.callModel(structuredClone(step),selected.messages);}
+   catch(error){
+    // A model-only node cannot have written a file or a remote page. Retain
+    // its precise sanitized failure instead of turning every known timeout,
+    // authorization or budget failure into an unknown external operation.
+    await verify();
+    const failure=classifyCoordinatorFailure(error,{stage:'model',outcome:'failed'});
+    return saveResult(step,{status:'failed',failure},{state:'failed',outcome:'failed',summary:coordinatorRecoveryCopy(failure)});
+   }
+   await verify();
    const answer=parseWorkflowModelOutcome(called.content,step.title),invalid=called.toolCalls.length>0||called.finishReason==='filtered'||!called.content.trim();
    value={...answer,...(called.finishReason?{finishReason:called.finishReason}:{})};
    const classification=invalid?{state:'failed' as const,outcome:'failed' as const,summary:'这一步没有返回可直接使用的正文。'}:called.finishReason==='length'?{state:'failed' as const,outcome:'partial' as const,summary:'正文还没有完整返回，已返回的内容会保留。'}:classify(step,value);

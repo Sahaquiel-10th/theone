@@ -1,5 +1,9 @@
+import {AttachmentPreparationError} from './attachmentPreparation.js';
+import {TextModelRecoveryError} from './modelStepRecovery.js';
+import {TaskInputSourceError} from './taskInputSource.js';
+import {CoordinatorInputError,CoordinatorInputTooLongError} from '../src/coordinatorInput.js';
 import type {CoordinatorFailure,CoordinatorFailureCode,CoordinatorFailureStage} from '../src/coordinatorRecovery.js';
-import {ModelRequestError} from './modelGateway.js';
+import {ModelRequestError,ModelResponseError} from './modelGateway.js';
 import {orchestrationFailureCode,OrchestrationInputError} from './taskOrchestrator.js';
 import {OneKeyPresenceError} from './oneKeyPresence.js';
 import {CoordinatorError} from './executorProfiles.js';
@@ -23,11 +27,17 @@ const orchestrationCodes:Record<string,CoordinatorFailureCode>={
 export function classifyCoordinatorFailure(error:unknown,context:FailureContext={}):CoordinatorFailure {
   error=trustedWorkflowFailureCause(error);
   const make=(code:CoordinatorFailureCode,stage:CoordinatorFailureStage=context.stage??'planning'):CoordinatorFailure=>({code,stage,outcome:context.outcome??'unknown'});
+  if(error instanceof CoordinatorInputTooLongError)return make('input_too_long','accepting');
+  if(error instanceof CoordinatorInputError)return make('submission_invalid','accepting');
+  if(error instanceof TaskInputSourceError)return make('submission_invalid','planning');
+  if(error instanceof TextModelRecoveryError)return make('model_invalid_response','model');
+  if(error instanceof AttachmentPreparationError)return make(error.code==='result_incomplete'?'model_incomplete':error.code==='result_unknown'?'model_invalid_response':'submission_invalid',error.code==='binding_invalid'?'planning':'model');
   if(error instanceof LocalExecutionNotStartedError){
     const safe=parseCoordinatorFailure(error.failure);
     if(safe)return{...safe,outcome:'not_started'};
   }
   if(error instanceof CoordinatorLocalError)return make(error.code,error.code==='dispatch_not_started'||error.code==='local_tool_invalid'?'planning':'tool');
+  if(error instanceof ModelResponseError)return make('model_invalid_response','model');
   if(error instanceof ModelRequestError){
     const code=error.status===408||error.status===504?'model_timeout':error.status===401||error.status===403?'model_auth':error.status===429?'model_rate_limited':error.status>=400&&error.status<500?'model_request_rejected':'model_unavailable';
     return make(code,'model');

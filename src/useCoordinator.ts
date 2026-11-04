@@ -1,3 +1,4 @@
+import {assertCoordinatorInput} from './coordinatorInput';
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { api as Api } from "./oneApi";
 import { ApiError } from "./oneApi";
@@ -382,6 +383,7 @@ export function useCoordinator(
     finally{if(isCurrent())setLoadingHistory(false);}
   }
   async function submit(input: CoordinatorSubmission) {
+    assertCoordinatorInput(input.text);
     if (
       sending.current ||
       pendingRef.current ||
@@ -448,6 +450,7 @@ export function useCoordinator(
     attachmentIds: string[] = [],
     outputDestination?: 'chat' | 'notion' | 'local',
   ) {
+    assertCoordinatorInput(text);
     submissionError.current='';setError("");
     const receiptKey = JSON.stringify([userId,workspaceId,id,text,attachmentIds,outputDestination]);
     const featureApprovals=await approveFeaturePrices(boundedApi,[],id);

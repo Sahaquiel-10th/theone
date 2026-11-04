@@ -1,3 +1,4 @@
+import {coordinatorInputFeedback,coordinatorInputHint} from './coordinatorInput';
 import {OneEye,type OneEyeMood} from './OneEye';
 import {OneFluidSurface,getFluidLayout,type FluidFrame as FluidProgress} from "./fluid/OneFluidSurface";
 import {useFluidActivityHeight} from './fluid/useFluidActivityHeight';
@@ -1899,6 +1900,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     // Preserve specialized image and newly selected personal-assistant routes.
     // Neither is silently reinterpreted as a generic coordinator request.
     if(coordinator.enabled && currentModel?.kind !== 'image' && !(composeNew && draftAgentId)){
+      const inputError=coordinatorInputFeedback(rawText);
+      if(inputError){setError(inputError);return false;}
       if(uploadingAttachments||pendingAttachments.some(a=>a.status&&a.status!=='ready')){setError('请等待附件解析完成');return;}
       if(coordinator.state.pending||(!rawText.trim()&&!pendingAttachments.length))return;
       const text=rawText.trim()||(pendingAttachments.length?'请分析上传的附件。':''),files=[...pendingAttachments],features=[...featureForNext];
@@ -2705,6 +2708,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <div className="composer-energy-shell" data-armed={preview.enabled&&featureForNext.length>0}>
             {preview.enabled?<FeatureArmedRim armed={featureForNext.length>0}/>:null}
             {featureForNext.length>0?<div className="selected-feature-list" aria-label="下次回复将使用的 Skills"><small>下一条使用 Skills：</small>{featureForNext.map(feature=><button key={feature.id} type="button" className="selected-feature-chip" aria-label={`取消 Skill：${feature.name}`} onClick={()=>chooseFeature(feature)}><Sparkles size={13}/><span>{feature.name}</span><X size={12}/></button>)}</div>:null}
+          {coordinator.enabled&&composeMode==='chat'&&currentModel?.kind!=='image'&&!(composeNew&&draftAgentId)&&coordinatorInputHint(content)?<small id="one-studio-input-length" className="hint" role={coordinatorInputFeedback(content)?'status':undefined}>{coordinatorInputHint(content)}</small>:null}
           <div className="composer-row">
             <textarea
               id="one-studio-input"
@@ -2713,6 +2717,8 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
               aria-expanded={featurePicker.isOpen}
               aria-activedescendant={featurePicker.activeOption}
               aria-label="给 ONE 发消息"
+              aria-describedby={coordinator.enabled&&composeMode==='chat'&&currentModel?.kind!=='image'&&!(composeNew&&draftAgentId)&&coordinatorInputHint(content)?'one-studio-input-length':undefined}
+              aria-invalid={coordinator.enabled&&composeMode==='chat'&&currentModel?.kind!=='image'&&!(composeNew&&draftAgentId)&&Boolean(coordinatorInputFeedback(content))||undefined}
               value={content}
               onChange={(event) => {setContent(event.target.value);setComposerCursor(event.target.selectionStart);if(preview.enabled&&composeMode==="chat")featurePicker.update(event.target.value,event.target.selectionStart);}}
               onSelect={event=>setComposerCursor(event.currentTarget.selectionStart)}

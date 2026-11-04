@@ -1,3 +1,4 @@
+import {assertCoordinatorInput,CoordinatorInputTooLongError} from './coordinatorInput';
 import test,{type TestContext} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -34,7 +35,7 @@ function fixture(t:TestContext){
   const userId=randomUUID(),workspaceId='workspace';const state:Record<string,any>={outgoing:null,progress:null,failure:null,settlement:null,snapshot:null};
   const setter=(key:string)=>(action:any)=>{state[key]=typeof action==='function'?action(state[key]):action;if(key==='snapshot')context.snapshotRef.current=state[key];};
   let postResult:unknown=new TypeError('Failed to fetch'),readResult:unknown=new TypeError('Failed to fetch'),postCount=0,readCount=0;let afterRefresh:(()=>void)|undefined;
-  const context:Record<string,any>={ApiError,coordinatorRecoveryCopy,parseCoordinatorFailure,coordinatorDialogue,coordinatorDrafts,coordinatorRequest,forgetStoredCoordinatorOperation,mergeCoordinatorReceipt,seedCoordinatorReceipt,isCoordinatorReceipt,coordinatorReceiptFailure,invalidCoordinatorReceipt,recoverCoordinatorSubmission,unacceptedCoordinatorFailure,chatSubmission,forgetChatSubmission,coordinatorSubmissionPayload,saveCoordinatorDraft,forgetCoordinatorDraft,markCoordinatorDraft,
+  const context:Record<string,any>={assertCoordinatorInput,ApiError,coordinatorRecoveryCopy,parseCoordinatorFailure,coordinatorDialogue,coordinatorDrafts,coordinatorRequest,forgetStoredCoordinatorOperation,mergeCoordinatorReceipt,seedCoordinatorReceipt,isCoordinatorReceipt,coordinatorReceiptFailure,invalidCoordinatorReceipt,recoverCoordinatorSubmission,unacceptedCoordinatorFailure,chatSubmission,forgetChatSubmission,coordinatorSubmissionPayload,saveCoordinatorDraft,forgetCoordinatorDraft,markCoordinatorDraft,
     userId,workspaceId,submissionScope:`coordinator:${userId}:workspace`,scope:{},sending:{current:null},pendingRef:{current:null},snapshotRef:{current:null},submissionError:{current:''},settledReceipts:new Map(),receivedReceipts:new Map(),missingReceipts:new Set(),localStorage:storage,pendingKey:()=>`pending:${userId}`,isCurrent:()=>true,useCallback:(fn:unknown)=>fn,
     setOutgoing:setter('outgoing'),setProgress:setter('progress'),setFailureReply:setter('failure'),setSettlement:setter('settlement'),setSnapshot:setter('snapshot'),setError:setter('error'),setCurrentPending:(value:string|null)=>{context.pendingRef.current=value;},
     refresh:async()=>{afterRefresh?.();},api:async(_path:string,options?:RequestInit)=>{const result=options?.method==='POST'?(postCount++,postResult):(readCount++,readResult);if(result instanceof Error)throw result;return result;},
@@ -82,7 +83,7 @@ test('a restart-interrupted receipt retains transport uncertainty rather than cl
   await f.submit(f.input);assert.equal(f.state.settlement.status,'interrupted');assert.doesNotMatch(f.state.failure.text,/嗯，回复停下来了/);assert.equal(coordinatorDrafts(f.context.userId,f.context.workspaceId)[0].state,'review');
 });
 
-for(const status of [400,403,409,428])test(`a confirmed ${status} pre-acceptance rejection retains its reason and draft without a GET that can replace it`,async t=>{
+for(const status of [400,403,409,413,428])test(`a confirmed ${status} pre-acceptance rejection retains its reason and draft without a GET that can replace it`,async t=>{
  const f=fixture(t);f.post=new ApiError('本轮附件暂不支持，请先保留附件再继续。 · 编号 req-safe', 'req-safe',status,'LOCAL_REJECTED',false,{code:'submission_invalid',stage:'accepting',outcome:'not_started'},false);
  f.read=new ApiError('消息不存在',undefined,404);const operation=await f.submit({...f.input,outputDestination:'local'});
  assert.equal(f.writes,1);assert.equal(f.reads,0);assert.equal(f.context.pendingRef.current,null);assert.match(f.state.failure.text,/本轮附件暂不支持.*req-safe/);
@@ -114,4 +115,16 @@ test('the actual hook keeps two rejected originals and safe replies when a later
  assert.equal(state().dialogue.filter((message:{role:string})=>message.role==='assistant').length,2);
  const noop=()=>{};makeRestore({...f.context,useEffect:(effect:()=>void)=>effect(),detailsRef:{current:{}},selectedRef:{current:null},pageRef:{current:1},resumeKey:{current:''},setReady:noop,setDetails:noop,setSelected:noop,setBound:noop,setPending:noop,setHistoryError:noop,setLoadingHistory:noop,setPage:noop});
  assert.equal(state().dialogue.length,4);assert.equal(coordinatorDrafts(f.context.userId,f.context.workspaceId).length,2);assert.notEqual(first,second);
+});
+
+test('an oversized submit never creates an outgoing turn, pending ID or transport request and retains the caller input',async t=>{
+ const f=fixture(t),input={...f.input,text:'首'+'中'.repeat(32000)+'尾'};
+ const before=structuredClone(input);
+ await assert.rejects(f.submit(input),CoordinatorInputTooLongError);
+ assert.equal(f.writes,0);assert.equal(f.reads,0);assert.equal(f.context.pendingRef.current,null);assert.equal(f.context.sending.current,null);
+ assert.equal(f.state.outgoing,null);assert.equal(f.state.progress,null);assert.deepEqual(input,before);assert.equal(coordinatorDrafts(f.context.userId,f.context.workspaceId).length,0);
+});
+test('a completion observed before an oversized server rejection still wins over the length feedback',async t=>{
+ const f=fixture(t);f.context.api=async()=>{f.context.acceptReceipt(f.context.pendingRef.current,f.completed());throw new ApiError('超过32,000个字符',undefined,413,'COORDINATOR_INPUT_TOO_LONG',false,{code:'input_too_long',stage:'accepting',outcome:'not_started'},false);};
+ await f.submit(f.input);assert.equal(f.state.settlement.status,'completed');assert.equal(f.state.failure,null);assert.equal(f.context.pendingRef.current,null);
 });

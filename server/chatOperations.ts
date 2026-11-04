@@ -14,6 +14,8 @@ export type ChatOperation = {
     limitations: string; chargedMicros: number; heldMicros: number;
   };
   runtimeContext?:import('./runtimeContext.js').RuntimeContext;
+  /** Private same-submission control budget; not an execution receipt. */
+  routingSteps?:import('./taskSteps.js').TaskStep[];
   executionCancelled?: boolean;
   workRun?: import('./coordinatorTypes.js').WorkRun; dispatchedTaskId?: string; dispatchedTaskIds?: string[];
   id: string; workspaceId: string; userId: string; operationId: string;

@@ -37,9 +37,15 @@ test('knowledge reuse is limited to writing clarification; new dates, objects an
  for(const request of ['改用今天那条','换个日期','重新查笔记','换另一份资料补案例','改用2026-11-03的笔记','这次换个主题','继续整理新的要求'])assert.equal(workflowKnowledgeReadUnchanged(request),false,request);
 });
 
-test('a single model or required feature retains the short path and available web is not a search requirement',()=>{
- assert.equal(resolveTaskWorkflow(base({tools:['web_search']})),undefined);
+test('plain text uses one standard model node while selected features retain their runner and available web grants no search',()=>{
+ for(const instruction of ['分析这份剧本的结构。','评价两篇论文的论证。','解释合同条款。','写一封信。']){
+  const resolved=resolveTaskWorkflow(base({instruction,tools:['web_search','knowledge_search']}))!;
+  assert.deepEqual(resolved.steps.map(s=>s.kind),['model']);assert.equal(resolved.steps[0].historyCount,0);assert.deepEqual(resolved.steps[0].inputs,[]);
+ }
  assert.equal(resolveTaskWorkflow(base({features:[{id:'custom',name:'已选单功能'}],requiredFeatureIds:['custom'],executorIds:[]})),undefined);
+ assert.equal(resolveTaskWorkflow(base({features:[{id:'custom',name:'已选可选功能'}],requiredFeatureIds:[],executorIds:[]})),undefined);
+ assert.throws(()=>resolveTaskWorkflow(base({requiredTools:['oneWorkbook']})),reason('required_tool'));
+ assert.throws(()=>resolveTaskWorkflow(base({executorIds:[]})),reason('executor'));
 });
 test('required knowledge uses the complete actual topic as its query rather than a generic instruction',()=>{
  const instruction='从得到大脑查找 ONE-WORKFLOW青色42 会议材料，按原资料写完整方案，不公开，不分享。',spec=resolveTaskWorkflow(base({instruction,requiredKnowledge:true,tools:['knowledge_search','web_search']}))!;

@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {COORDINATOR_MAX_INPUT_CHARS} from '../src/coordinatorInput.js';
 import type {Store} from './db.js';
 import type {Message} from './types.js';
 import {featureMember} from './featureRuns.js';
@@ -11,7 +12,7 @@ import {coordinatorRecoveryCopy,parseCoordinatorFailure,type CoordinatorFailure}
 export async function recordCoordinatorRejection(store:Store,scope:{workspaceId:string;userId:string},body:unknown,failure:CoordinatorFailure,requestId?:string):Promise<boolean>{
  const safe=parseCoordinatorFailure(failure),input=body as {operationId?:unknown;text?:unknown;attachmentIds?:unknown;modelId?:unknown;boundTaskId?:unknown};
  if(!safe||safe.outcome!=='not_started'||!input||typeof input.operationId!=='string'||!/^[A-Za-z0-9_-]{16,100}$/.test(input.operationId)
-   ||typeof input.text!=='string'||!input.text.trim()||input.text.length>8000)return false;
+   ||typeof input.text!=='string'||!input.text.trim()||input.text.length>COORDINATOR_MAX_INPUT_CHARS)return false;
  const ids=input.attachmentIds??[];
  if(!Array.isArray(ids)||ids.length>5||ids.some(id=>typeof id!=='string'||!id||id.length>100))return false;
  const operationId=input.operationId,text=input.text.trim(),owned=(x:{workspaceId:string;userId:string})=>x.workspaceId===scope.workspaceId&&x.userId===scope.userId;
@@ -40,6 +41,27 @@ export async function recordCoordinatorRejection(store:Store,scope:{workspaceId:
   for(const message of messages){main.messages.push(message);db.messages.push({...message,id:message.id!,...scope,conversationId:main.id,attachmentIds:message.attachments?.map(a=>a.id)});}
   for(const file of files)if(!file.conversationId){file.conversationId=main.id;file.messageId=userId;}
   main.updatedAt=messages[1].createdAt;
+  return true;
+ });
+}
+
+/** A rejected oversized body is never copied into logs/history. Keep only the
+ * authenticated owner's length facts. A real accepted operation always wins. */
+export async function recordCoordinatorInputRejection(store:Store,scope:{workspaceId:string;userId:string},body:unknown,requestId?:string):Promise<boolean>{
+ const input=body as {operationId?:unknown;text?:unknown;attachmentIds?:unknown;boundTaskId?:unknown};
+ if(!input||typeof input.operationId!=='string'||!/^[A-Za-z0-9_-]{16,100}$/.test(input.operationId)||typeof input.text!=='string'||input.text.length<=COORDINATOR_MAX_INPUT_CHARS)return false;
+ const operationId=input.operationId,inputChars=input.text.length;
+ const attachmentCount=Array.isArray(input.attachmentIds)?input.attachmentIds.length:0;
+ const id='aud_input_'+createHash('sha256').update(JSON.stringify([scope.workspaceId,scope.userId,operationId,'input_too_long'])).digest('hex');
+ return store.mutate(db=>{
+  featureMember(db,scope);
+  if(db.chatOperations?.some(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.operationId===operationId))return false;
+  if(input.boundTaskId!==undefined&&!db.conversations.some(c=>c.workspaceId===scope.workspaceId&&c.userId===scope.userId&&c.id===input.boundTaskId&&!c.archived))return false;
+  db.auditLogs??=[];
+  if(db.auditLogs.some(log=>log.id===id))return false;
+  db.auditLogs.push({id,workspaceId:scope.workspaceId,actorUserId:scope.userId,action:'coordinator.input_rejected',targetType:'coordinator_submission',targetId:operationId,
+   ...(typeof requestId==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(requestId)?{requestId}:{}),
+   details:{code:'input_too_long',inputChars,maxInputChars:COORDINATOR_MAX_INPUT_CHARS,attachmentCount},createdAt:new Date().toISOString()});
   return true;
  });
 }

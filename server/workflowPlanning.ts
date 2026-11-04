@@ -129,10 +129,11 @@ export function resolveTaskWorkflow(input:ResolveTaskWorkflowInput):WorkflowSpec
  if(write&&features.length&&!terminalHtmlFeatures.has(features[0]))fail('ambiguous','保存与这个功能的先后关系尚未明确，尚未执行。请先明确哪些成果先生成、哪些后保存。');
  const sources=sourceRequirements(input);
  if(sources.includes('web_search'))fail('public_query','本轮需要明确的公开搜索关键词，尚未执行。请在显式流程中填写搜索词，不把完整私人任务发到公开搜索。');
- // Preserve the established single-model and single-feature short path.
+ // Selected features retain their reviewed runner. A plain-text result needs
+ // no open-ended tool planner: its standard model node owns the final body.
  if(!sources.length&&!write){
   if((input.requiredTools??[]).some(name=>!readTools.includes(name as WorkflowTool)&&name!=='save_notion_draft')&&!features.length)fail('required_tool','必需工具尚未归属明确的功能，尚未执行。');
-  return undefined;
+  if(input.features.length)return undefined;
  }
  const steps:WorkflowStep[]=sources.map((source,index)=>({id:'source_'+(index+1),title:source==='knowledge_search'?'查找任务资料':'读取现有原文',kind:'tool',tool:source,instruction:source==='knowledge_search'?(input.knowledgeQuery??input.instruction):'实际读取本任务已绑定的 Notion 原文，保留全文与原页入口；不要修改。',inputs:[],required:true,historyCount:0}));
  const sourceIds=steps.map(step=>step.id);

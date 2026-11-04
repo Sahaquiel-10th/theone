@@ -71,3 +71,10 @@ test('only an explicit reviewed not-started rejection bypasses receipt recovery'
  assert.deepEqual(unacceptedCoordinatorFailure(new ApiError('rejected',undefined,428,'REJECTED',false,failure,false)),failure);
  for(const value of [new ApiError('unknown',undefined,428,'REJECTED',false,failure),new ApiError('unknown',undefined,409,'REJECTED',false,{...failure,outcome:'unknown'},false),new ApiError('unknown',undefined,502,'REJECTED',false,failure,false),new ApiError('unknown',undefined,400,'REJECTED',false,undefined,false),new Error('not started')])assert.equal(unacceptedCoordinatorFailure(value),undefined);
 });
+
+test('an explicitly unaccepted 413 length refusal is actionable, while unknown or accepted 413 stays subject to reconciliation',()=>{
+ const failure={code:'input_too_long' as const,stage:'accepting' as const,outcome:'not_started' as const};
+ assert.deepEqual(unacceptedCoordinatorFailure(new ApiError('too long','req_safe',413,'COORDINATOR_INPUT_TOO_LONG',false,failure,false)),failure);
+ for(const accepted of [undefined,true])assert.equal(unacceptedCoordinatorFailure(new ApiError('too long',undefined,413,'COORDINATOR_INPUT_TOO_LONG',false,failure,accepted)),undefined);
+ assert.equal(unacceptedCoordinatorFailure(new ApiError('too long',undefined,413,'COORDINATOR_INPUT_TOO_LONG',false,{...failure,outcome:'unknown'},false)),undefined);
+});

@@ -9,6 +9,18 @@ test('batch plans preserve independent tasks and reject cyclic or duplicate-task
   assert.throws(()=>validateDispatchPlan({tasks:Array(5).fill(task)}));
   assert.throws(()=>validateDispatchPlan({tasks:[{...task,knowledgeSourceIds:['foreign']}]}),'server-only resolved bindings cannot be supplied by the model');
 });
+test('short handoff guidance preserves the existing dispatch instruction compatibility boundary',()=>{
+ assert.equal(validateDispatchPlan({tasks:[{...task,instruction:'文'.repeat(4000)}]}).tasks[0].instruction.length,4000);
+ assert.throws(()=>validateDispatchPlan({tasks:[{...task,instruction:'文'.repeat(4001)}]}));
+});
+test('material scope can select current material without accepting arbitrary source references',()=>{
+ for(const materialScope of ['current','conversation'] as const){
+  const result=validateDispatchPlan({tasks:[{...task,materialScope}]});assert.equal(result.tasks[0].materialScope,materialScope);
+ }
+ assert.equal(validateDispatchPlan({tasks:[task]}).tasks[0].materialScope,undefined,'omission retains legacy selection');
+ for(const materialScope of ['all','foreign-message',null,{},['current'],true])assert.throws(()=>validateDispatchPlan({tasks:[{...task,materialScope}]}));
+ for(const key of ['sourceId','sourceIds','messageId','attachmentIds'])assert.throws(()=>validateDispatchPlan({tasks:[{...task,materialScope:'current',[key]:'foreign-source'}]}));
+});
 test('legacy refusal is a returned answer, never a fabricated successful deliverable',()=>{
   assert.equal(parseTaskOutcome('当前没有绘图工具，无法生成图片').outcome,'returned');
   assert.equal(parseTaskOutcome(JSON.stringify({outcome:'needs_input',content:'请补充目标',summary:'缺少目标'})).outcome,'needs_input');

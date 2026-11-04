@@ -21,6 +21,7 @@ import {localExecutionCapabilityGuidance} from './localDocumentPolicy.js';
 import {updateAccountProfile} from './betaProfile.js';
 import {LocalExecutionNotStartedError} from './localExecutionAdmission.js';
 import {taskRecovery as recoveryForSteps} from '../src/taskRecovery.js';
+import {resolveTaskInputSource} from './taskInputSource.js';
 import JSZip from 'jszip';
 import XLSX from 'xlsx';
 
@@ -1024,7 +1025,7 @@ for(const delegate of ['delegate_task','delegate_tasks'] as const)test(`an expli
   await before?.();assert.deepEqual([ws,connection,grant,user],['wa','fresh-notion','fresh-grant','a']);if(name==='notion-update-page'){updates++;assert.fail('old page must not be updated');}assert.equal(name,'notion-create-pages');creates++;title=args.pages[0].properties.title;savedBody=args.pages[0].content;return {pages:[{id:newPage}]};
  }} as unknown as NotionMcpService;
  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge was authorized')},{contextMode:'adaptive',notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages)=>{
-  if(model.id!=='router'){drafts++;assert.ok(JSON.stringify(messages).includes(newTitle),'the complete current goal reaches the model');return answer(JSON.stringify({outcome:'completed',content:body,summary:'新稿已完成'}));}
+  if(model.id!=='router'){drafts++;assert.ok(JSON.stringify(messages).includes(newTitle),'the complete current goal reaches the model');assert.equal(scriptReliabilitySource(messages),request,'the actual fresh-task model receives this accepted user request rather than the inspected old goal');return answer(JSON.stringify({outcome:'completed',content:body,summary:'新稿已完成'}));}
   router++;
   if(router===1)return invoke('read_task',{taskId:old.taskId});
   if(router===2){assert.ok(messages.at(-1)!.content!.includes(oldTitle));return invoke(delegate,delegate==='delegate_task'?plan(old.taskId!):{tasks:[{...plan(old.taskId!),outputKind:'text',dependsOn:[]}]});}
@@ -1035,7 +1036,7 @@ for(const delegate of ['delegate_task','delegate_tasks'] as const)test(`an expli
  assert.ok(result.taskId);assert.notEqual(result.taskId,old.taskId);assert.deepEqual(result.taskIds,[result.taskId]);assert.equal(router,3,'correction is automatic in the same user turn');
  const admitted=await f.store.read(),child=admitted.chatOperations!.find(op=>op.conversationId===result.taskId&&op.workRun)!;
  assert.equal(admitted.conversations.find(c=>c.id===result.taskId)!.title,newTitle,'an explicit fixed title outranks the model old title');
- assert.ok(child.workRun!.instruction.includes(request),'the current complete user instruction cannot be replaced by old handoff prose');assert.equal(child.workRun!.notionTarget!.pageId,undefined);assert.equal(child.workRun!.notionReceipt,undefined);assert.equal(child.workRun!.steps!.length,0);
+ const admittedSource=resolveTaskInputSource(admitted,a,child.workRun!.inputSource,{taskId:result.taskId!,inputMessageId:child.workRun!.inputMessageId});assert.equal(admittedSource.content,request,'the exact accepted fresh request is retained independently of the compact handoff');assert.equal(admittedSource.reference.origin!.messageId,child.workRun!.originMessageId);assert.equal(child.workRun!.notionTarget!.pageId,undefined);assert.equal(child.workRun!.notionReceipt,undefined);assert.equal(child.workRun!.steps!.length,0);
  await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='completed');
  const final=await f.store.read(),updatedOld=final.chatOperations!.find(op=>op.id===oldJob.id)!;
  assert.equal(drafts,1);assert.equal(creates,1);assert.equal(updates,0);assert.equal(title,newTitle);assert.equal(updatedOld.workRun!.instruction,oldJob.workRun!.instruction);assert.deepEqual(updatedOld.workRun!.notionReceipt,oldJob.workRun!.notionReceipt);assert.deepEqual(final.conversations.find(c=>c.id===old.taskId)!.messages,oldConversation.messages);
@@ -1688,8 +1689,9 @@ for(const outcome of ['failed','needs_input','legacy_missing_web'] as const)test
   const supplement={operationId:`operation_case_supplement_${outcome}`,text:'公开案例我是让你自己想，不是找工具，可以上网搜'};
   await f.service.direct(a,r.taskId!,supplement,key);
   const queued=await f.store.read(),jobs=queued.chatOperations!.filter(o=>o.conversationId===r.taskId&&o.workRun),next=jobs.at(-1)!.workRun!;
-  assert.equal(jobs.length,2);assert.equal(queued.conversations.find(c=>c.id===r.taskId)!.workPaused,false);assert.equal(next.state,'queued');assert.equal(next.webSearch,true);assert.deepEqual(next.notionTarget,target);assert.ok(next.instruction.includes(oldInstruction));assert.match(next.instruction,/公开案例我是让你自己想/);assert.deepEqual(next.sources,old.workRun!.sources);assert.equal(next.workflow!.steps[0].state,'completed');
+  assert.equal(jobs.length,2);assert.equal(queued.conversations.find(c=>c.id===r.taskId)!.workPaused,false);assert.equal(next.state,'queued');assert.equal(next.webSearch,true);assert.deepEqual(next.notionTarget,target);assert.ok(next.instruction.includes(oldInstruction));assert.equal(resolveTaskInputSource(queued,a,next.inputSource,{taskId:r.taskId!,inputMessageId:next.inputMessageId}).content,supplement.text);assert.deepEqual(next.sources,old.workRun!.sources);assert.equal(next.workflow!.steps[0].state,'completed');
   await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,r.taskId!)).jobs.at(-1)!.state==='completed');
+  assert.ok(f.calls.some(call=>call.modelId!=='router'&&scriptReliabilitySource(call.messages)===supplement.text),'the resumed execution model receives the exact case clarification');
   assert.deepEqual([f.counts.retrieval,f.counts.draft,f.counts.create,f.counts.update,f.counts.feature],[1,legacy?1:2,1,0,2]);assert.equal(f.body(),f.firstBody);
   const done=await f.store.read();assert.equal(done.conversations.filter(c=>!c.coordinatorMain&&c.executorProfileId).length,1);assert.equal(done.chatOperations!.find(o=>o.id===old.id)!.workRun!.state,'failed');assert.equal(done.chatOperations!.filter(o=>o.conversationId===r.taskId&&o.workRun).at(-1)!.workRun!.notionReceipt!.state,'verified');
   await f.service.direct(a,r.taskId!,supplement,key);await f.service.resume(a,key);assert.deepEqual([f.counts.retrieval,f.counts.draft,f.counts.create,f.counts.feature],[1,legacy?1:2,1,2]);await assert.rejects(()=>f.service.direct(b,r.taskId!,{...supplement,operationId:'operation_foreign_supplement'},key));
@@ -1720,11 +1722,11 @@ test('cross-day clarification keeps the original yesterday anchor, while new mat
    await f.store.mutate(d=>{const op=d.chatOperations!.find(o=>o.conversationId===r.taskId&&o.workRun)!;op.createdAt=originalTime.at;op.workRun!.runtimeContext=structuredClone(originalTime);op.workRun!.instruction='从得到大脑查找昨天的青色42产品笔记，写方法论专栏并补案例保存到Notion。';});
    await f.service.direct(a,r.taskId!,{operationId:`operation_day_anchor_follow_${index}`,text},key);
    const jobs=(await f.store.read()).chatOperations!.filter(o=>o.conversationId===r.taskId&&o.workRun),next=jobs.at(-1)!.workRun!,read=next.workflow!.spec.steps.find(step=>step.tool==='knowledge_search')!;
-   assert.equal(jobs.at(-1)!.createdAt,'2026-11-03T01:00:00.000Z');if(index===1||index===5)assert.equal(next.runtimeContext!.today,'2026-11-03');else assert.deepEqual(next.runtimeContext,originalTime);assert.match(next.instruction,/昨天的青色42产品笔记/);assert.match(next.instruction,new RegExp(text));
+   assert.equal(jobs.at(-1)!.createdAt,'2026-11-03T01:00:00.000Z');if(index===1||index===5)assert.equal(next.runtimeContext!.today,'2026-11-03');else assert.deepEqual(next.runtimeContext,originalTime);assert.match(next.instruction,/昨天的青色42产品笔记/);assert.equal(resolveTaskInputSource(await f.store.read(),a,next.inputSource,{taskId:r.taskId!,inputMessageId:next.inputMessageId}).content,text);
    if(index===0){assert.equal(knowledgeRecallOptions(next.instruction,next.runtimeContext!).dateRange!.from,'2026-11-01');assert.equal(next.workflow!.steps[0].state,'completed');assert.equal(f.counts.retrieval,1);}
    else{assert.equal(next.workflow!.steps[0].state,'queued');assert.equal(next.steps!.filter(cp=>cp.effect==='read'&&cp.state==='completed').length,0);assert.ok(read.instruction.includes(text),'fresh read uses the new request, not the old completed query');}
    if(index===0||index===1||index===5){
-    await f.service.resume(a,key);await waitFor(async()=>['completed','failed'].includes((await f.service.task(a,r.taskId!)).jobs.at(-1)!.state));const latest=(await f.service.task(a,r.taskId!)).jobs.at(-1)!;assert.equal(latest.state,'completed',JSON.stringify({index,latest,recalls:f.recalls,metrics:f.metrics()}));assert.equal(f.counts.create,1);
+    await f.service.resume(a,key);await waitFor(async()=>['completed','failed'].includes((await f.service.task(a,r.taskId!)).jobs.at(-1)!.state));const latest=(await f.service.task(a,r.taskId!)).jobs.at(-1)!;assert.equal(latest.state,'completed',JSON.stringify({index,latest,recalls:f.recalls,metrics:f.metrics()}));assert.equal(f.counts.create,1);assert.ok(f.calls.some(call=>call.modelId!=='router'&&scriptReliabilitySource(call.messages)===text),'the actual cross-day execution consumes the exact new user clarification');
     if(index===0)assert.equal(f.counts.retrieval,1,'dated source gate consumes the exact reused notes without another lookup');
     else{assert.equal(f.counts.retrieval,2);assert.match(f.recalls.at(-1)!.query,/2026-11-03/);assert.equal((f.recalls.at(-1)!.options as any).dateRange.from,'2026-11-03');assert.equal((f.recalls.at(-1)!.options as any).dateRange.to,'2026-11-03');assert.equal((f.recalls.at(-1)!.options as any).dateRange.anchorAt,'2026-11-03T01:00:00.000Z');}
    }
@@ -4978,4 +4980,228 @@ for(const outcome of ['failed','partial','needs_input','completed'] as const)tes
   const cp=job.steps!.find(cp=>(cp.output as any)?.workflow?.stepId==='draft')!;assert.match((cp.output as any).result.content,/"outcome"/,'the untrusted result remains private diagnostic data');
   const messages=db.conversations.filter(c=>c.id===result.taskId||c.coordinatorMain).flatMap(c=>c.messages.filter(m=>m.role==='assistant').map(m=>m.content)).join('\n');assert.doesNotMatch(messages,/"outcome"|"summary"|```json|已保存到 Notion/);
  }finally{f.cleanup();}
+});
+
+// These acceptance cases exercise the real service queue, provenance, billing
+// and workflow runner. Model/connector boundaries remain synthetic.
+function scriptReliabilityHandoff(taskId:string|null,instruction:string,materialScope?:'current'|'conversation'):ToolChatResult{
+ return {...answer(''),toolCalls:[{id:'script-reliability-handoff',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId,title:'完整材料分析',instruction,executorId:'general',featureIds:[],...(materialScope?{materialScope}:{})})}}]};
+}
+function scriptReliabilityLoadRouting(tools:ModelToolDefinition[]):ToolChatResult|undefined{
+ if(tools.some(tool=>tool.function.name==='delegate_task'))return;
+ return {...answer(''),toolCalls:[{id:'script-reliability-load',type:'function',function:{name:'load_tools',arguments:JSON.stringify({names:['delegate_task']})}}]};
+}
+function scriptReliabilitySource(messages:ModelToolMessage[]):string|undefined{
+ for(const message of messages){
+  if(!message.content)continue;
+  try{
+   const envelope=JSON.parse(message.content);
+   if(typeof envelope.source?.content==='string')return envelope.source.content;
+   if(typeof envelope.goal==='string'){
+    const handoff=JSON.parse(envelope.goal.split('\n任务日期参考：')[0]);
+    if(typeof handoff.source?.content==='string')return handoff.source.content;
+   }
+  }catch{/* Other system/history messages are ordinary prose, not this input. */}
+ }
+}
+
+test('script reliability: a ten-thousand-character source reaches one tool-free worker with exact provenance',async()=>{
+ const f=fixture(),head='请完整分析下面的材料，只返回分析正文，不联网、不查知识库、不生成文件。\n材料如下：\nSOURCE_10K_HEAD\n'+'甲'.repeat(4900)+'\nSOURCE_10K_MIDDLE\n  内部缩进\t保留  \n\n',tail='\nSOURCE_10K_TAIL🧡  ';
+ const request=head+'乙'.repeat(10000-head.length-tail.length)+tail;assert.equal(request.length,10000);
+ const workerInputs:{messages:ModelToolMessage[];tools:ModelToolDefinition[]}[]=[];
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge was authorized')},{contextMode:'adaptive',modelCall:async(model,messages,tools)=>{
+  if(model.id==='router')return scriptReliabilityHandoff(null,'完整分析当前原始材料，只交付正文，不联网、不生成文件。','current');
+  workerInputs.push({messages:structuredClone(messages),tools:structuredClone(tools)});
+  return answer(JSON.stringify({outcome:'completed',content:'针对完整材料的实际合成分析。',summary:'完整分析完成。'}));
+ }});
+ const accepted=await service.dispatch(a,input('script_reliability_inline_10k',request),key);assert.ok(accepted.taskId,JSON.stringify(accepted));
+ await service.resume(a,key);await waitFor(async()=>['completed','failed'].includes((await service.task(a,accepted.taskId!)).jobs[0].state));
+ const db=await f.store.read(),op=db.chatOperations!.find(operation=>operation.conversationId===accepted.taskId&&operation.workRun)!;
+ assert.equal(op.workRun!.state,'completed',op.workRun!.error);assert.equal(workerInputs.length,1);assert.deepEqual(workerInputs[0].tools,[]);
+ const actualSource=scriptReliabilitySource(workerInputs[0].messages);assert.ok(actualSource);
+ // Submission has always trimmed outer whitespace. Preserve every accepted
+ // message byte after that boundary, including interior spacing/newlines.
+ const sourceReference=op.workRun!.inputSource!,storedSource=db.messages.find(message=>message.conversationId===sourceReference.origin!.conversationId&&message.id===sourceReference.origin!.messageId)!;
+ assert.ok(storedSource);assert.equal(createHash('sha256').update(storedSource.content).digest('hex'),createHash('sha256').update(request.trim()).digest('hex'));
+ assert.equal(createHash('sha256').update(actualSource).digest('hex'),createHash('sha256').update(storedSource.content).digest('hex'),'the actual provider input preserves the accepted full source, interior whitespace and emoji');
+ assert.equal(op.workRun!.workflow!.spec.steps.length,1);assert.equal(op.workRun!.workflow!.spec.steps[0].kind,'model');
+ assert.equal(op.workRun!.inputSource!.inputMessageId,op.workRun!.inputMessageId);assert.equal(op.workRun!.inputSource!.taskId,accepted.taskId);
+ assert.equal(op.workRun!.inputSource!.origin!.messageId,op.workRun!.originMessageId);
+ assert.equal(createHash('sha256').update(db.conversations.find(conversation=>conversation.id===accepted.taskId)!.messages.find(message=>message.id===op.workRun!.inputMessageId)!.content).digest('hex'),createHash('sha256').update(storedSource.content).digest('hex'));
+ await assert.rejects(()=>service.task(b,accepted.taskId!));await assert.rejects(()=>service.task({...a,workspaceId:'wb'},accepted.taskId!));
+ await service.resume(a,key);assert.equal(workerInputs.length,1,'completed material analysis is not repurchased by polling');
+});
+
+test('script reliability: replacing an old attachment with current pasted material does not rerun or resend the old body',async()=>{
+ const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-script-replacement-')),oldBody='OLD_ATTACHMENT_BODY_MUST_NOT_REENTER：这是上一版已解析材料。';
+ const filePath=path.join(directory,'previous.txt');writeFileSync(filePath,oldBody);
+ await f.store.mutate(db=>{db.attachments.push({...a,id:'script-old-attachment',originalName:'previous.txt',mimeType:'text/plain',kind:'text',size:Buffer.byteLength(oldBody),storagePath:filePath,extractedText:oldBody,status:'ready',createdAt:'2026-11-04T00:00:00Z'});});
+ const head='继续同一分析，但改用下面缩短的新材料，只用这次粘贴的内容，不读旧附件，不联网、不查知识库。材料如下：\nNEW_SOURCE_HEAD\n',tail='\nNEW_SOURCE_TAIL';
+ const newRequest=head+'新'.repeat(1666-head.length-tail.length)+tail;assert.equal(newRequest.length,1666);
+ let taskId:string|undefined,routerRound=0;const inputs:{messages:ModelToolMessage[];tools:ModelToolDefinition[]}[]=[];
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge was authorized')},{contextMode:'adaptive',modelCall:async(model,messages,tools)=>{
+  if(model.id==='router'){
+   routerRound++;
+   if(!taskId)return scriptReliabilityHandoff(null,'只分析当前上传附件并返回初步结论。','current');
+   if(routerRound===2)return {...answer(''),toolCalls:[{id:'read-before-replacement',type:'function',function:{name:'read_task',arguments:JSON.stringify({taskId})}}]};
+   return scriptReliabilityHandoff(taskId,'改用本轮新材料完成分析，只交付正文；不使用此前旧附件。','current');
+  }
+  inputs.push({messages:structuredClone(messages),tools:structuredClone(tools)});
+  return answer(JSON.stringify(inputs.length===1?{outcome:'needs_input',content:'初步材料已读到。请给出要采用的新版本，再继续分析。',summary:'等待新版本材料。'}:{outcome:'completed',content:'仅依据本轮新材料完成的分析。',summary:'新版本分析完成。'}));
+ }});
+ try{
+  const initial=await service.dispatch(a,{...input('script_reliability_old_attachment','请先完整分析上传的材料，只返回正文，不联网、不查知识库。'),attachmentIds:['script-old-attachment']},key);taskId=initial.taskId;assert.ok(taskId,JSON.stringify(initial));
+  await service.resume(a,key);await waitFor(async()=>['failed','completed'].includes((await service.task(a,taskId!)).jobs[0].state));
+  assert.equal(inputs.length,1);assert.match(JSON.stringify(inputs[0].messages),/OLD_ATTACHMENT_BODY_MUST_NOT_REENTER/);
+  const before=(await f.store.read()).chatOperations!.find(operation=>operation.conversationId===taskId&&operation.workRun)!;
+  const follow=await service.dispatch(a,{...input('script_reliability_new_material',newRequest),boundTaskId:taskId},key);assert.equal(follow.taskId,taskId,JSON.stringify(follow));
+  await service.resume(a,key);await waitFor(async()=>{const jobs=(await service.task(a,taskId!)).jobs;return jobs.length===2&&['completed','failed'].includes(jobs[1].state);});
+  const db=await f.store.read(),jobs=db.chatOperations!.filter(operation=>operation.conversationId===taskId&&operation.workRun),latest=jobs[1].workRun!;
+  assert.equal(latest.state,'completed',latest.error);assert.equal(inputs.length,2,'the original job is not rerun');assert.deepEqual(inputs[1].tools,[]);
+  assert.equal(scriptReliabilitySource(inputs[1].messages),newRequest);assert.doesNotMatch(JSON.stringify(inputs[1].messages),/OLD_ATTACHMENT_BODY_MUST_NOT_REENTER/);
+  assert.equal(latest.materialScope,'current');assert.notEqual(latest.inputMessageId,before.workRun!.inputMessageId);assert.equal(latest.inputSource!.inputMessageId,latest.inputMessageId);assert.deepEqual(latest.inputSource!.attachmentIds,[]);
+  assert.equal(db.conversations.find(conversation=>conversation.id===taskId)!.messages.find(message=>message.id===latest.inputMessageId)!.content,newRequest);
+  assert.equal(jobs[0].id,before.id);assert.equal(jobs[0].workRun!.inputMessageId,before.workRun!.inputMessageId);
+  await service.resume(a,key);assert.equal(inputs.length,2);await assert.rejects(()=>service.task(b,taskId!));
+ }finally{rmSync(directory,{recursive:true,force:true});}
+});
+
+test('script reliability: a read then truncated native delegate recovers once and queues exactly one complete new input',async()=>{
+ const f=fixture(),taskId='script-existing-task',originId='script-existing-origin',createdAt='2026-11-04T00:00:00Z';
+ await f.store.mutate(db=>{
+  const message={id:originId,role:'user' as const,content:'原有短分析目标。',createdAt};
+  db.conversations.push({...a,id:taskId,title:'完整材料分析',modelId:'worker',executorProfileId:'general',archived:false,messages:[message],createdAt,updatedAt:createdAt});
+  db.messages.push({...message,...a,conversationId:taskId});
+ });
+ const head='继续这个分析，按本次完整材料输出正文，不联网、不查知识库。材料如下：\nREPAIRED_SOURCE_HEAD\n',tail='\nREPAIRED_SOURCE_TAIL';
+ const request=head+'新'.repeat(1666-head.length-tail.length)+tail;assert.equal(request.length,1666);
+ let routes=0,workers=0;let workerMessages:ModelToolMessage[]=[];
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge was authorized')},{contextMode:'adaptive',modelCall:async(model,messages,tools)=>{
+  if(model.id!=='router'){workers++;workerMessages=structuredClone(messages);assert.deepEqual(tools,[]);return answer(JSON.stringify({outcome:'completed',content:'修复后的完整材料分析。',summary:'分析完成。'}));}
+  routes++;
+  if(routes===1)return {...answer(''),toolCalls:[{id:'read-first',type:'function',function:{name:'read_task',arguments:JSON.stringify({taskId})}}]};
+  if(routes===2)return {...answer('UNVERIFIED_ALREADY_DISPATCHED_PREAMBLE'),finishReason:'length',toolCalls:[{id:'cut-delegate',type:'function',function:{name:'delegate_task',arguments:'{"taskId":"script-existing-task","instruction":"PRIVATE_CUT_ARGUMENT'}}],usage:{inputTokens:10,outputTokens:3000,totalTokens:3010,source:'provider'}};
+  assert.equal(routes,3,'only one compact routing repair is allowed');assert.doesNotMatch(JSON.stringify(messages),/PRIVATE_CUT_ARGUMENT|UNVERIFIED_ALREADY_DISPATCHED_PREAMBLE/);
+  return scriptReliabilityHandoff(taskId,'分析当前完整新材料，不重做其他任务，只返回正文。','current');
+ }});
+ const accepted=await service.dispatch(a,{...input('script_reliability_cut_delegate',request),boundTaskId:taskId},key);assert.equal(accepted.taskId,taskId,JSON.stringify(accepted));
+ const queued=(await f.store.read()).chatOperations!.filter(operation=>operation.workRun);assert.equal(queued.length,1);assert.equal(routes,3);assert.equal(queued[0].workRun!.parentOperationId,'script_reliability_cut_delegate');
+ await service.resume(a,key);await waitFor(async()=>['completed','failed'].includes((await service.task(a,taskId)).jobs[0].state));
+ const db=await f.store.read(),job=db.chatOperations!.find(operation=>operation.workRun)!;
+ assert.equal(job.workRun!.state,'completed',job.workRun!.error);assert.equal(workers,1);assert.equal(scriptReliabilitySource(workerMessages),request);
+ assert.equal(db.chatOperations!.filter(operation=>operation.workRun).length,1);assert.doesNotMatch(accepted.message.content,/UNVERIFIED_ALREADY_DISPATCHED_PREAMBLE|PRIVATE_CUT_ARGUMENT/);
+ await service.resume(a,key);assert.equal(workers,1);await assert.rejects(()=>service.task(b,taskId));
+});
+
+test('script reliability: a lost final routing response cannot duplicate an already accepted child',async()=>{
+ const f=fixture();let routes=0,workers=0;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge was authorized')},{contextMode:'legacy',modelCall:async(model)=>{
+  if(model.id!=='router'){workers++;return answer(JSON.stringify({outcome:'completed',content:'已接到任务的实际结果。',summary:'完成。'}));}
+  routes++;if(routes===1)return scriptReliabilityHandoff(null,'分析本轮短材料，只返回正文。','current');throw new ModelRequestError(503,'synthetic final acknowledgement failure');
+ }});
+ const request=input('script_reliability_lost_final','请分析这份短材料，只返回正文，不联网、不查知识库。材料：一个可核对的合成例子。');
+ const accepted=await service.dispatch(a,request,key);assert.ok(accepted.taskId,JSON.stringify(accepted));assert.equal(routes,2);
+ const replay=await service.dispatch(a,request,key);assert.equal(replay.taskId,accepted.taskId);assert.equal(routes,2);
+ await service.resume(a,key);await waitFor(async()=>['completed','failed'].includes((await service.task(a,accepted.taskId!)).jobs[0].state));
+ assert.equal(workers,1);assert.equal((await f.store.read()).chatOperations!.filter(operation=>operation.workRun).length,1);
+ await service.resume(a,key);assert.equal(workers,1);
+});
+
+test('script reliability: an unknown timeout reservation consumes the model retry ceiling before another provider call',async()=>{
+ const f=fixture(),cap=.02;let providers=0,firstHold=0;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge was authorized')},{contextMode:'adaptive',modelCall:async(model,_messages,tools)=>{
+  if(model.id==='router')return scriptReliabilityLoadRouting(tools)??scriptReliabilityHandoff(null,'分析当前短材料，只返回正文。','current');
+  providers++;const row=(await f.store.read()).modelUsageRecords.find(usage=>usage.modelId===model.id&&usage.status==='pending')!;firstHold=row.reservedMicros!;
+  throw new ModelRequestError(408,'synthetic unknown timeout');
+ }});
+ const accepted=await service.dispatch(a,{...input('script_reliability_unknown_cap','请分析这份合成材料，只返回正文，不联网、不查知识库。材料：第一部分明确，第二部分待评估。'),budget:cap},key);assert.ok(accepted.taskId,JSON.stringify(accepted));
+ await service.resume(a,key);await waitFor(async()=>providers===1);await new Promise(resolve=>setTimeout(resolve,1150));
+ await waitFor(async()=>(await service.task(a,accepted.taskId!)).jobs[0].state==='failed');
+ const db=await f.store.read(),job=db.chatOperations!.find(operation=>operation.workRun)!.workRun!,attempts=Object.values(job.textModelAttempts??{});
+ assert.equal(providers,1,'retry admission must include the unknown first reservation');assert.ok(firstHold>0&&firstHold<=cap*1e6);assert.ok(firstHold*2>cap*1e6,'this cap admits one complete call but not two');
+ assert.equal(attempts.length,1);assert.equal(attempts[0].uncertainMicros,firstHold);assert.equal(attempts[0].state,'exhausted');
+ assert.equal(db.modelUsageRecords.filter(row=>row.activity==='task_worker').length,1);assert.equal(job.failureCode,'task_budget_limit',JSON.stringify({failureCode:job.failureCode,error:job.error,resultOutcome:job.resultOutcome,operationFailure:db.chatOperations!.find(operation=>operation.workRun)!.failure}));
+ await service.resume(a,key);assert.equal(providers,1);await assert.rejects(()=>service.task(b,accepted.taskId!));
+});
+
+for(const mode of ['recover','exhaust','unauthorized','length'] as const)test(`script reliability: pure model ${mode} has bounded same-run recovery and preserves real partial text`,async()=>{
+ const f=fixture();let providers=0;const partial='READABLE_PARTIAL_HEAD\n'+ '已返回正文。'.repeat(400)+'\nREADABLE_PARTIAL_TAIL  ';
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge was authorized')},{contextMode:'adaptive',modelCall:async(model,_messages,tools)=>{
+  if(model.id==='router')return scriptReliabilityLoadRouting(tools)??scriptReliabilityHandoff(null,'分析当前材料，只返回正文。','current');
+  providers++;assert.deepEqual(tools,[]);
+  if(mode==='unauthorized')throw new ModelRequestError(401,'synthetic unauthorized');
+  if(mode==='length')return {...answer(partial),finishReason:'length'};
+  if(providers===1||mode==='exhaust')throw new ModelRequestError(503,'synthetic temporary failure');
+  return answer(JSON.stringify({outcome:'completed',content:'第二次模型调用成功的合成正文。',summary:'完成。'}));
+ }});
+ const accepted=await service.dispatch(a,input(`script_reliability_model_${mode}`,'请分析本轮合成材料，只返回正文，不联网、不查知识库。材料：比较两个可行方案。'),key);assert.ok(accepted.taskId,JSON.stringify(accepted));
+ await service.resume(a,key);await waitFor(async()=>providers===1);
+ if(mode==='recover'||mode==='exhaust')await new Promise(resolve=>setTimeout(resolve,1150));
+ await waitFor(async()=>['completed','failed'].includes((await service.task(a,accepted.taskId!)).jobs[0].state));
+ const db=await f.store.read(),op=db.chatOperations!.find(operation=>operation.workRun)!,job=op.workRun!;
+ assert.equal(providers,mode==='recover'||mode==='exhaust'?2:1);assert.equal(db.chatOperations!.filter(operation=>operation.workRun).length,1,'the recovery stays inside the original workRun');
+ assert.equal(job.state,mode==='recover'?'completed':'failed',job.error);
+ const attempt=Object.values(job.textModelAttempts??{})[0];assert.ok(attempt);assert.equal(attempt.attempt,providers);
+ assert.equal(attempt.state,mode==='recover'||mode==='length'?'completed':'exhausted');
+ if(mode==='length'){assert.ok(db.conversations.find(conversation=>conversation.id===accepted.taskId)!.messages.some(message=>message.role==='assistant'&&message.content.includes(partial)));assert.equal(job.resultOutcome,'partial');}
+ await service.resume(a,key);assert.equal(providers,mode==='recover'||mode==='exhaust'?2:1,'polling never starts another paid attempt');await assert.rejects(()=>service.task(b,accepted.taskId!));
+});
+
+test('script reliability: current replacement excludes long old inline text embedded in a prior instruction',async()=>{
+ const f=fixture(),oldBody='OLD_INLINE_BODY：'+ '旧版待替换正文。'.repeat(100);
+ const head='继续这件分析，但改用下面缩短的新材料，只根据本次材料分析，不延续旧正文，不联网、不查知识库。材料如下：\nCURRENT_INLINE_HEAD\n',tail='\nCURRENT_INLINE_TAIL';
+ const current=head+'新'.repeat(1666-head.length-tail.length)+tail;assert.equal(current.length,1666);
+ let taskId:string|undefined,routes=0;const inputs:ModelToolMessage[][]=[];
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge was authorized')},{contextMode:'adaptive',modelCall:async(model,messages,tools)=>{
+  if(model.id==='router'){
+   routes++;if(!taskId)return scriptReliabilityHandoff(null,'完整分析以下旧材料，只返回正文。\n'+oldBody,'conversation');
+   if(routes===2)return {...answer(''),toolCalls:[{id:'read-old-inline-job',type:'function',function:{name:'read_task',arguments:JSON.stringify({taskId})}}]};
+   return scriptReliabilityHandoff(taskId,'改用本轮提供的新材料完成分析，只返回分析正文。','current');
+  }
+  inputs.push(structuredClone(messages));assert.deepEqual(tools,[]);
+  return answer(JSON.stringify(inputs.length===1?{outcome:'needs_input',content:'原版本已读到。请提供最终采用的材料，再继续分析。',summary:'等待最终材料。'}:{outcome:'completed',content:'只根据当前版本得到的分析。',summary:'当前版本分析完成。'}));
+ }});
+ const first=await service.dispatch(a,input('script_reliability_old_inline','请生成下列旧材料的分析正文，不联网、不查知识库、不生成文件。材料如下：\n'+oldBody),key);taskId=first.taskId;assert.ok(taskId,JSON.stringify(first));
+ await service.resume(a,key);await waitFor(async()=>['failed','completed'].includes((await service.task(a,taskId!)).jobs[0].state));
+ const original=(await f.store.read()).chatOperations!.find(operation=>operation.conversationId===taskId&&operation.workRun)!;
+ assert.match(original.workRun!.instruction,/OLD_INLINE_BODY/);assert.equal(inputs.length,1);
+ const next=await service.dispatch(a,{...input('script_reliability_replace_inline',current),boundTaskId:taskId},key);assert.equal(next.taskId,taskId,JSON.stringify(next));
+ await service.resume(a,key);await waitFor(async()=>{const jobs=(await service.task(a,taskId!)).jobs;return jobs.length===2&&['completed','failed'].includes(jobs[1].state);});
+ const jobs=(await f.store.read()).chatOperations!.filter(operation=>operation.conversationId===taskId&&operation.workRun),latest=jobs[1].workRun!;
+ assert.equal(latest.state,'completed',latest.error);assert.equal(inputs.length,2,'old inline analysis is not rerun');assert.equal(scriptReliabilitySource(inputs[1]),current);
+ assert.doesNotMatch(JSON.stringify(inputs[1]),/OLD_INLINE_BODY|旧版待替换正文/,'the old instruction body cannot reenter through inherited goal or history');
+ assert.equal(jobs[0].id,original.id);assert.match(jobs[0].workRun!.instruction,/OLD_INLINE_BODY/,'historical provenance remains intact');
+ await assert.rejects(()=>service.task(b,taskId!));
+});
+
+test('script reliability: a direct detail request inherits the selected current material without restoring old attachments',async()=>{
+ const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-script-current-inherit-')),oldBody='INHERITED_OLD_ATTACHMENT_BODY：最初的旧材料。';
+ const filePath=path.join(directory,'original.txt');writeFileSync(filePath,oldBody);
+ await f.store.mutate(db=>db.attachments.push({...a,id:'script-inherited-old-file',originalName:'original.txt',mimeType:'text/plain',kind:'text',size:Buffer.byteLength(oldBody),storagePath:filePath,extractedText:oldBody,status:'ready',createdAt:'2026-11-04T00:00:00Z'}));
+ const head='继续同一分析，改用下面缩短的新材料，只用本次材料，不读旧附件，不联网、不查知识库。材料如下：\nINHERITED_CURRENT_HEAD\n',tail='\nINHERITED_CURRENT_TAIL';
+ const current=head+'新'.repeat(1666-head.length-tail.length)+tail;assert.equal(current.length,1666);
+ let taskId:string|undefined,routes=0;const inputs:{messages:ModelToolMessage[];tools:ModelToolDefinition[]}[]=[];
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no knowledge was authorized')},{contextMode:'adaptive',modelCall:async(model,messages,tools)=>{
+  if(model.id==='router'){
+   routes++;if(!taskId)return scriptReliabilityHandoff(null,'分析这次上传的原始材料，只返回正文。','conversation');
+   if(routes===2)return {...answer(''),toolCalls:[{id:'read-before-current-inherit',type:'function',function:{name:'read_task',arguments:JSON.stringify({taskId})}}]};
+   return scriptReliabilityHandoff(taskId,'仅分析本轮粘贴的新材料，不使用此前旧附件，只返回正文。','current');
+  }
+  inputs.push({messages:structuredClone(messages),tools:structuredClone(tools)});
+  return answer(JSON.stringify({outcome:'completed',content:`第${inputs.length}轮的合成分析正文。`,summary:'本轮分析完成。'}));
+ }});
+ try{
+  const first=await service.dispatch(a,{...input('script_reliability_inherit_old','请分析上传的原始材料，写出分析正文，不联网、不查知识库。'),attachmentIds:['script-inherited-old-file']},key);taskId=first.taskId;assert.ok(taskId,JSON.stringify(first));
+  await service.resume(a,key);await waitFor(async()=>['completed','failed'].includes((await service.task(a,taskId!)).jobs[0].state));assert.equal(inputs.length,1);assert.match(JSON.stringify(inputs[0].messages),/INHERITED_OLD_ATTACHMENT_BODY/);
+  const replaced=await service.dispatch(a,{...input('script_reliability_inherit_current',current),boundTaskId:taskId},key);assert.equal(replaced.taskId,taskId,JSON.stringify(replaced));
+  await service.resume(a,key);await waitFor(async()=>{const jobs=(await service.task(a,taskId!)).jobs;return jobs.length===2&&['completed','failed'].includes(jobs[1].state);});assert.equal(inputs.length,2);
+  assert.match(JSON.stringify(inputs[1].messages),/INHERITED_CURRENT_TAIL/);assert.doesNotMatch(JSON.stringify(inputs[1].messages),/INHERITED_OLD_ATTACHMENT_BODY/);
+  const detail='再详细分析一下这份材料';await service.direct(a,taskId!,{operationId:'script_reliability_inherit_detail',text:detail},key);
+  await service.resume(a,key);await waitFor(async()=>{const jobs=(await service.task(a,taskId!)).jobs;return jobs.length===3&&['completed','failed'].includes(jobs[2].state);});
+  const jobs=(await f.store.read()).chatOperations!.filter(operation=>operation.conversationId===taskId&&operation.workRun),latest=jobs[2].workRun!;
+  assert.equal(latest.state,'completed',latest.error);assert.equal(latest.materialScope,'current','omission preserves the last explicit source selection');assert.equal(inputs.length,3);assert.deepEqual(inputs[2].tools,[]);
+  assert.match(JSON.stringify(inputs[2].messages),/INHERITED_CURRENT_HEAD/);assert.match(JSON.stringify(inputs[2].messages),/INHERITED_CURRENT_TAIL/,'a short direct follow-up cannot erase the selected full material');
+  assert.match(JSON.stringify(inputs[2].messages),/再详细分析一下这份材料/);assert.doesNotMatch(JSON.stringify(inputs[2].messages),/INHERITED_OLD_ATTACHMENT_BODY/);
+  assert.equal(jobs[0].workRun!.state,'completed');assert.equal(jobs[1].workRun!.state,'completed');await service.resume(a,key);assert.equal(inputs.length,3);await assert.rejects(()=>service.task(b,taskId!));
+ }finally{rmSync(directory,{recursive:true,force:true});}
 });

@@ -2,9 +2,39 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
-import { callModel, callModelWithTools, fetchWithTimeout, parseProviderUsage, safeProviderReason } from "./modelGateway.js";
+import { callModel, callModelWithTools, fetchWithTimeout, parseProviderUsage, safeProviderReason, ModelResponseError } from "./modelGateway.js";
 import type { ModelConfig } from "./types.js";
 import {runTaskOrchestrator} from './taskOrchestrator.js';
+import {runRecoverableTextModel,type TextModelAttempt} from './modelStepRecovery.js';
+
+for(const protocol of ['openai','anthropic'] as const)for(const terminal of ['length','filtered','stop','invalid_json'] as const)test(`${protocol}: empty ${terminal} keeps the provider outcome and cannot become the wrong kind of retry`,async t=>{
+ let requests=0;
+ const server=createServer((req,res)=>{req.resume();req.on('end',()=>{
+  requests++;res.setHeader('Content-Type','application/json');
+  if(terminal==='invalid_json'){res.end('{invalid PRIVATE_RESPONSE');return;}
+  const reason=protocol==='openai'?(terminal==='filtered'?'content_filter':terminal):(terminal==='filtered'?'refusal':terminal==='length'?'max_tokens':'end_turn');
+  const payload=protocol==='openai'
+   ?{choices:[{message:{content:null,tool_calls:[]},finish_reason:reason}],usage:{prompt_tokens:12,completion_tokens:4,total_tokens:16}}
+   :{content:[],stop_reason:reason,usage:{input_tokens:12,output_tokens:4}};
+  res.end(JSON.stringify(payload));
+ });});
+ server.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>{server.closeAllConnections();server.close();});
+ const model={id:'empty-fixture',kind:'chat',enabled:true,apiKey:'synthetic-only',model:'fixture',protocol,baseUrl:`http://127.0.0.1:${(server.address() as {port:number}).port}`} as ModelConfig;
+ const call=()=>callModelWithTools(model,[{role:'user',content:'合成协议验收'}],[],'empty-terminal-fixture');
+ if(terminal==='length'||terminal==='filtered'){
+  let state:TextModelAttempt|undefined;
+  const result=await runRecoverableTextModel({digest:'a'.repeat(64),verify:async()=>{},load:async()=>state?structuredClone(state):undefined,
+   save:async(expected,next)=>{if(JSON.stringify(state)!==JSON.stringify(expected))return false;state=structuredClone(next);return true;},
+   call:async()=>{state!.reservedMicros=100;return call();},wait:async()=>{},
+  });
+  assert.equal(result.content,'');assert.equal(result.finishReason,terminal);assert.deepEqual(result.toolCalls,[]);
+  assert.deepEqual(result.usage,{inputTokens:12,outputTokens:4,totalTokens:16,source:'provider'});
+  assert.equal(state?.state,'completed');assert.equal(state?.attempt,1);assert.equal(state?.uncertainMicros,0);assert.equal(requests,1,'a provider cutoff/filter must never be purchased again by protocol recovery');
+ }else{
+  await assert.rejects(call,error=>error instanceof ModelResponseError&&!error.message.includes('PRIVATE_RESPONSE'));
+  assert.equal(requests,1);
+ }
+});
 
 test('native correction after assistant prose ends with server continuation, not unsupported assistant prefill',async t=>{
  const requests:any[]=[];

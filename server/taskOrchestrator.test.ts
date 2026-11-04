@@ -13,6 +13,16 @@ test('known orchestration failures have bounded diagnostic codes and unknown sec
  assert.equal(orchestrationFailureCode({message:'调度模型没有返回结果'}),undefined);
 });
 const call = (id: string, query = "project", name = "knowledge_search") => ({ id, type: "function" as const, function: { name, arguments: JSON.stringify({ query }) } });
+test('non-cacheable capability reads stay fresh with a durable routing correction store',async()=>{
+ const steps:TaskStep[]=[];let reads=0,turns=0;
+ const result=await runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:3,beforeStep:async()=>{},
+  checkpoints:{namespace:'routing',scopeId:'owned-operation',steps,save:async cp=>{const index=steps.findIndex(row=>row.key===cp.key);if(index<0)steps.push(cp);else steps[index]=cp;}},
+  tools:[{name:'discover_capabilities',effect:'read',cacheable:false,run:async()=>({available:++reads===1})}],
+  call:async messages=>{turns++;if(turns<3)return {content:'',toolCalls:[call('fresh-'+turns,'same query','discover_capabilities')]};
+   assert.equal(JSON.parse(messages.filter(row=>row.role==='tool').at(-1)!.content!).available,false);return {content:'能力已经停用，没有派出任务。',toolCalls:[]};}
+ });
+ assert.equal(reads,2);assert.deepEqual(result.trace.map(row=>row.status),['returned','returned']);
+});
 test('reviewed structured validation hints permit bounded repair without executing invalid or unavailable tools',async()=>{
  let turns=0,runs=0;
  const result=await runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:3,beforeStep:async()=>{},tools:[{name:'oneFlowchart',run:async()=>{},structured:{schema:{type:'object'},validate:raw=>{if(!(raw as {valid?:boolean}).valid)throw new OrchestrationInputError('使用平铺 version=1 和两个场景');return raw;},run:async()=>{runs++;return {status:'completed'};}}}],call:async messages=>{
@@ -112,6 +122,63 @@ test("truncated answers stay visible but truncated tool instructions never execu
   let invoked = false;
   await assert.rejects(runTaskOrchestrator({ entryPoint: "workspace", messages: [], maxSteps: 2, tools: [{ name: "knowledge_search", run: async () => { invoked = true; return {}; } }], beforeStep: async () => {}, call: async () => ({ content: "", toolCalls: [call("a")], finishReason: "length" }) }), /未完整返回/);
   assert.equal(invoked, false);
+});
+
+test('an explicitly enabled coordinator can replace one truncated handoff with a short complete instruction',async()=>{
+ let calls=0,dispatches=0,reads=0;const steps:TaskStep[]=[];
+ const result=await runTaskOrchestrator({entryPoint:'workspace',messages:[{role:'user',content:'完整新补充：TAIL-1666'}],maxSteps:3,maxCorrections:2,
+  recoverTruncatedRouting:{canRecover:()=>dispatches===0,instruction:'只生成短结构，原始材料由服务端绑定，不复制正文。'},
+  checkpoints:{namespace:'coordinator',scopeId:'routing-a',steps,save:async cp=>{const i=steps.findIndex(old=>old.key===cp.key);if(i<0)steps.push(cp);else steps[i]=cp;}},
+  tools:[{name:'read_task',effect:'read',run:async()=>{reads++;return{id:'task-a',originalRequest:'旧目标'};}},{name:'delegate_task',run:async()=>{},structured:{schema:{},validate:value=>value,run:async()=>{dispatches++;return{taskId:'task-a',status:'queued'};}}}],beforeStep:async()=>{},completeAfterTools:()=>dispatches?'已接到任务。':undefined,
+  call:async(messages,tools)=>{calls++;
+   if(calls===1)return{content:'',toolCalls:[call('read','task-a','read_task')]};
+   if(calls===2)return{content:'UNTRUSTED_TRUNCATED_PREAMBLE',toolCalls:[{id:'cut',type:'function',function:{name:'delegate_task',arguments:'{"taskId":"task-a","instruction":"PRIVATE_CUT'}}],finishReason:'length'};
+   assert.ok(tools.some(tool=>tool.function.name==='delegate_task'));assert.match(JSON.stringify(messages),/只生成短结构/);assert.match(JSON.stringify(messages),/TAIL-1666/);assert.doesNotMatch(JSON.stringify(messages),/PRIVATE_CUT|UNTRUSTED_TRUNCATED_PREAMBLE/);
+   return{content:'',toolCalls:[{id:'fixed',type:'function',function:{name:'delegate_task',arguments:'{"taskId":"task-a","instruction":"分析本轮原文"}'}}]};
+  }});
+ assert.equal(result.content,'已接到任务。');assert.equal(calls,3);assert.equal(reads,1);assert.equal(dispatches,1);
+ const control=steps.find(step=>step.tool==='__argument_repair_budget')!.output as {used:number};assert.equal(control.used,1);
+});
+
+test('a second truncated handoff cannot buy a third call or execute even complete-looking cut JSON',async()=>{
+ let calls=0,runs=0,checks=0;
+ await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:4,maxCorrections:2,recoverTruncatedRouting:{canRecover:()=>{checks++;return true;},instruction:'短结构'},tools:[{name:'delegate_task',run:async()=>{runs++;return{};}}],beforeStep:async()=>{},call:async()=>{calls++;return{content:'',toolCalls:[call(`cut-${calls}`,'完整但截断','delegate_task')],finishReason:'length'};}}),error=>error instanceof OrchestrationResponseError&&error.code==='task_tool_instruction_incomplete');
+ assert.equal(calls,2);assert.equal(runs,0);assert.equal(checks,1);
+});
+
+test('routing recovery is disabled by its caller, shared correction cap, or missing routing tool',async()=>{
+ for(const mode of ['denied','budget-zero','not-routing'] as const){let calls=0,runs=0;
+  await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:4,maxCorrections:mode==='budget-zero'?0:2,recoverTruncatedRouting:{canRecover:()=>mode!=='denied',instruction:'短结构'},tools:[{name:mode==='not-routing'?'knowledge_search':'delegate_task',run:async()=>{runs++;}}],beforeStep:async()=>{},call:async()=>{calls++;return{content:'',toolCalls:[call('cut','x',mode==='not-routing'?'knowledge_search':'delegate_task')],finishReason:'length'};}}));
+  assert.equal(calls,1,mode);assert.equal(runs,0,mode);
+ }
+});
+
+test('a revoked Key or failed control persistence blocks the recovery model purchase',async()=>{
+ for(const mode of ['revoked','persistence'] as const){let calls=0,checks=0;
+  const blocked=Error(mode);
+  await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:4,maxCorrections:2,recoverTruncatedRouting:{canRecover:()=>true,instruction:'短结构'},...(mode==='persistence'?{checkpoints:{namespace:'coordinator',scopeId:'routing-a',steps:[],save:async()=>{throw blocked;}}}:{}),tools:[{name:'delegate_task',run:async()=>assert.fail('cut instruction ran')}],beforeStep:async()=>{if(mode==='revoked'&&++checks>1)throw blocked;},call:async()=>{calls++;return{content:'',toolCalls:[call('cut','x','delegate_task')],finishReason:'length'};}}),error=>error===blocked);
+  assert.equal(calls,1,mode);
+ }
+});
+
+test('coordinator opt-in never retries a readable limited body or a filtered response',async()=>{
+ for(const filtered of [false,true]){let calls=0,checks=0;
+  const run=()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:4,maxCorrections:2,recoverTruncatedRouting:{canRecover:()=>{checks++;return true;},instruction:'短结构'},tools:[{name:'delegate_task',run:async()=>assert.fail('must not dispatch')}],beforeStep:async()=>{},call:async()=>{calls++;return{content:'全部可读正文',toolCalls:[],finishReason:filtered?'filtered' as const:'length' as const};}});
+  if(filtered)await assert.rejects(run);else assert.equal((await run()).content,'全部可读正文');assert.equal(calls,1);assert.equal(checks,0);
+ }
+});
+
+test('a scoped runner restart cannot reset its one truncated-routing recovery',async()=>{
+ const steps:TaskStep[]=[];let calls=0,checks=0;
+ const options={entryPoint:'workspace' as const,messages:[],maxSteps:4,maxCorrections:2,recoverTruncatedRouting:{canRecover:()=>{checks++;return true;},instruction:'短结构'},checkpoints:{namespace:'coordinator',scopeId:'same-routing-operation',steps,save:async(cp:TaskStep)=>{const i=steps.findIndex(old=>old.key===cp.key);if(i<0)steps.push(cp);else steps[i]=cp;}},tools:[{name:'delegate_task',run:async()=>assert.fail('cut instruction ran')}],beforeStep:async()=>{},call:async()=>{calls++;return{content:'',toolCalls:[call(`cut-${calls}`,'x','delegate_task')],finishReason:'length' as const};}};
+ await assert.rejects(()=>runTaskOrchestrator(options));assert.equal(calls,2);assert.equal(checks,1);
+ await assert.rejects(()=>runTaskOrchestrator(options));assert.equal(calls,2);assert.equal(checks,1,'the persisted SHA blocks another model purchase for the same coordinator attempt');
+});
+
+test('truncated routing recovery shares the original two corrections with schema repair',async()=>{
+ let calls=0;const steps:TaskStep[]=[];
+ await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],maxSteps:4,planningSteps:2,maxCorrections:2,recoverTruncatedRouting:{canRecover:()=>true,instruction:'短结构'},checkpoints:{namespace:'coordinator',scopeId:'mixed-repair',steps,save:async cp=>{const i=steps.findIndex(old=>old.key===cp.key);if(i<0)steps.push(cp);else steps[i]=cp;}},tools:[{name:'delegate_task',run:async()=>{},structured:{schema:{},validate:()=>{throw new OrchestrationInputError('缺少任务字段');},run:async()=>assert.fail('invalid tool ran')}}],beforeStep:async()=>{},call:async()=>{calls++;return{content:'',toolCalls:[{id:`attempt-${calls}`,type:'function',function:{name:'delegate_task',arguments:JSON.stringify({invalid:calls})}}],...(calls===2?{finishReason:'length' as const}:{})};}}));
+ assert.equal(calls,3);assert.equal((steps.find(step=>step.tool==='__argument_repair_budget')!.output as {used:number}).used,2);
 });
 
 test('a readable length answer keeps every returned byte and never buys a repair or required-tool call',async()=>{

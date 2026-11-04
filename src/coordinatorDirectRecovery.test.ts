@@ -1,3 +1,4 @@
+import {assertCoordinatorInput,CoordinatorInputTooLongError} from './coordinatorInput';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -10,7 +11,7 @@ const code=ts.transpileModule(source.slice(source.indexOf('async function direct
 const actual=new Function('context',`with(context){${code};return direct;}`);
 function fixture(response:unknown){
  const values=new Map<string,string>(),storage={getItem:(key:string)=>values.get(key)??null,setItem:(key:string,value:string)=>{values.set(key,value);},removeItem:(key:string)=>{values.delete(key);}};
- let writes=0,error='',reads=0;const context={ApiError,parseCoordinatorFailure,coordinatorRecoveryCopy,coordinatorRequest,submissionError:{current:''},setError:(value:string)=>{error=value;},userId:'user',workspaceId:'workspace',boundedApi:async()=>[],approveFeaturePrices:async()=>[],isCurrent:()=>true,directReceipts:{current:new Map<string,string>()},localStorage:storage,api:async()=>{writes++;if(response instanceof Error)throw response;return response;},load:async()=>{reads++;return{jobs:[]};},refresh:async()=>{}};
+ let writes=0,error='',reads=0;const context={assertCoordinatorInput,ApiError,parseCoordinatorFailure,coordinatorRecoveryCopy,coordinatorRequest,submissionError:{current:''},setError:(value:string)=>{error=value;},userId:'user',workspaceId:'workspace',boundedApi:async()=>[],approveFeaturePrices:async()=>[],isCurrent:()=>true,directReceipts:{current:new Map<string,string>()},localStorage:storage,api:async()=>{writes++;if(response instanceof Error)throw response;return response;},load:async()=>{reads++;return{jobs:[]};},refresh:async()=>{}};
  return{context,call:actual(context) as (id:string,text:string,files:string[],destination:string)=>Promise<void>,values,get writes(){return writes;},get error(){return error;},get reads(){return reads;}};
 }
 test('a saved direct handoff failure is not swallowed as a successful 202 or replaced by the old task',async()=>{
@@ -33,4 +34,12 @@ test('a structured pre-acceptance direct rejection keeps its precise cause witho
 test('unknown transport on direct continuation retains its ID for read-only reconciliation',async()=>{
  const f=fixture(new TypeError('Failed to fetch'));await assert.rejects(f.call('task','continue',[],'local'),error=>error instanceof ApiError&&error.code==='COORDINATOR_DIRECT_UNCONFIRMED');
  assert.equal(f.writes,1);assert.equal(f.context.directReceipts.current.size,1);assert.match(f.error,/先查看任务进展/);
+});
+
+test('an oversized direct supplement never requests approval, stores an operation or clears the original text',async()=>{
+ const f=fixture({}),text='首'+'中'.repeat(32000)+'尾',files=['owned-file'];let approvals=0;
+ f.context.approveFeaturePrices=async()=>{approvals++;return[];};
+ await assert.rejects(f.call('task',text,files,'chat'),CoordinatorInputTooLongError);
+ assert.equal(approvals,0);assert.equal(f.writes,0);assert.equal(f.reads,0);assert.equal(f.values.size,0);assert.equal(f.context.directReceipts.current.size,0);
+ assert.equal(text.length,32002);assert.deepEqual(files,['owned-file']);
 });

@@ -6,7 +6,7 @@ export const invalidCoordinatorReceipt=()=>new ApiError('这次返回的进度�
 
 /** A status or an error phrase alone never proves that no work was accepted. */
 export function unacceptedCoordinatorFailure(error:unknown):CoordinatorFailure|undefined{
- if(error instanceof ApiError&&[400,403,409,428].includes(error.status??0)&&error.accepted===false&&error.failure?.outcome==='not_started')return error.failure;
+ if(error instanceof ApiError&&[400,403,409,413,428].includes(error.status??0)&&error.accepted===false&&error.failure?.outcome==='not_started')return error.failure;
 }
 
 /** Reads only: a lost acknowledgement never authorizes another submission. */

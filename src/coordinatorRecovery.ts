@@ -1,3 +1,4 @@
+import {COORDINATOR_INPUT_TOO_LONG_COPY} from './coordinatorInput.js';
 /** Public, reviewed diagnostics only. Never attach raw provider errors or arguments. */
 export const coordinatorFailureCodes = [
   'model_unavailable','model_timeout','model_rate_limited','model_auth','model_request_rejected',
@@ -5,7 +6,7 @@ export const coordinatorFailureCodes = [
   'tool_parameters_failed','input_template_required','tool_configuration_unavailable','tool_effect_unconfirmed',
   'feature_unavailable','model_unconfigured','power_insufficient','budget_exceeded','billing_unavailable',
   'key_required','source_authorization','source_unavailable','notion_authorization','notion_unconfirmed',
-  'local_unavailable','account_unavailable','submission_invalid','conversation_busy','task_not_found','queue_full',
+  'local_unavailable','account_unavailable','submission_invalid','input_too_long','conversation_busy','task_not_found','queue_full',
   'local_device_offline','local_folder_missing','local_folder_denied','local_folder_unavailable','local_executor_unready',
   'local_busy','local_attachments_unsupported','local_tool_unavailable','local_readiness_unknown','local_tool_invalid',
   'local_binding_changed','local_execution_unconfirmed','local_workflow_unsupported',
@@ -70,6 +71,7 @@ const failureCopy:Record<CoordinatorFailureCode,string>={
   local_execution_unconfirmed:'本机要求已经交出去了，但电脑是否收到还没确认。请先核对这一次的原回执，不要重复发送；确认前不会另起一轮改文件。',
   local_workflow_unsupported:'这次计划里，云端步骤和本机操作还不能自动接着跑，计划尚未开始。可以合并成一件本机任务，或明确分阶段处理；不用重新配置连接和工作文件夹。',
   account_unavailable:'当前账号或工作区暂时不可用，这一步还不能继续。请重新登录；如果还是这样，请联系管理员检查账号和工作区。',
+  input_too_long:COORDINATOR_INPUT_TOO_LONG_COPY,
   submission_invalid:'这条要求没能正确提交。请刷新页面，确认文字、附件和所选功能，再发送一次。',
   conversation_busy:'前一条要求还在处理中。先等它返回，或点“停止回复”结束等待，再发送新的要求。',
   task_not_found:'这件任务暂时找不到了。请到任务列表确认它是否还在；需要新做一件事时，直接说明新的要求就好。',

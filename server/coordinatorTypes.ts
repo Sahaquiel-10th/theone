@@ -2,6 +2,16 @@ import type { ExecutorValues } from "./executorProfiles.js";
 import type { OfficialFeatureValues } from "./officialFeatures.js";
 import type { CredentialBinding } from "./featureCredentials.js";
 export type WorkRun = {
+  /** Exact original input is bound by the server, never copied by the router. */
+  inputSource?:import('./taskInputSource.js').TaskInputSourceReference;
+  materialScope?:'current'|'conversation';
+  /** The selected material revision survives short later instructions. */
+  materialSource?:import('./taskInputSource.js').TaskInputSourceReference;
+  /** A multi-goal batch keeps its scoped brief; its full raw message is
+   * provenance, not fresh instructions for every child. */
+  inputContentMode?:'material'|'brief';
+  /** Private model-only retry claims and conservative uncertain-cost bounds. */
+  textModelAttempts?:Record<string,import('./modelStepRecovery.js').TextModelAttempt>;
   /** Server-owned execution identity, never a browser/model parameter. State
    * alone cannot identify local work after a failed admission. */
   executionMode?:'local';

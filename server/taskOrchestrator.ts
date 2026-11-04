@@ -126,6 +126,9 @@ export async function runTaskOrchestrator(input: {
    * the turn return, avoid buying another model round solely to acknowledge it. */
   completeAfterTools?:()=>string|undefined;
   actionRequired?:(content:string)=>string|undefined;
+  /** Coordinator-only opt-in. The caller must freshly prove no durable child
+   * or unknown effect was accepted. Never enabled for ordinary worker output. */
+  recoverTruncatedRouting?:{canRecover:()=>boolean|Promise<boolean>;instruction:string};
   checkpoints?:TaskStepStore;
   requiredTools?:string[]|(()=>string[]);
   beforeStep: () => Promise<void>;
@@ -186,6 +189,8 @@ export async function runTaskOrchestrator(input: {
   const readableBodies:{content:string;kind:OrchestrationPartial['kind']}[]=[];
   let lastReadableFinish:ModelFinishReason|undefined;
   let settledModelCalls=0,modelPending=false;
+  let truncatedRoutingRecoveryUsed=false;
+  const truncatedRoutingFingerprint=taskStepKey('routing','truncated_instruction','short_handoff');
   const recordNoEffectRun=(error:object)=>{
     if(!checkpoints?.scopeId||controls.length>0||modelPending||!settledModelCalls||!input.tools.every(tool=>reviewedNativeEffects.has(tool)||tool.effect==='read'&&!tool.structured?.effect))return;
     const effects=checkpoints.steps.filter(cp=>cp.namespace===checkpoints.namespace&&['artifact','external_write','model'].includes(cp.effect));
@@ -209,6 +214,10 @@ export async function runTaskOrchestrator(input: {
     const error=new OrchestrationEffectNotStartedError(message,systemParameterFault('artifact_validation_failed','exhausted'));
     retainFailureProgress(error,{partial:partial(),completedTools:[...satisfied]});throw error;
   };
+  // This attempt already reserved its sole short-structure recovery before a
+  // prior call/crash. The service reconciles any durable child separately;
+  // restarting this runner cannot reserve another routing call.
+  if(input.entryPoint==='workspace'&&input.recoverTruncatedRouting&&rejectedHashes.has(truncatedRoutingFingerprint))throw responseFailure('task_tool_instruction_incomplete','模型工具指令未完整返回，已停止执行；本次已产生的用量可在账单中查看','length');
   for (let step = 1; step <= steps; step++) {
     await input.beforeStep();
     const active=input.entryPoint==='workspace'&&input.activeTools?input.activeTools():input.tools;
@@ -227,10 +236,27 @@ export async function runTaskOrchestrator(input: {
     }catch(error){retainFailureProgress(error,{partial:partial(),completedTools:[...satisfied]});throw error;}
     if(!validModelResult(result))throw responseFailure('task_invalid_response','模型返回的响应格式无效，尚未执行本轮工具');
     if(result.finishReason==='filtered')throw responseFailure('task_response_filtered','模型本轮内容未通过安全检查，未展示或执行',result.finishReason);
+    const previousReadableFinish=lastReadableFinish;
     if(result.content.trim()){
       readableBodies.push({content:result.content,kind:result.toolCalls.length?'tool_preamble':'body'});lastReadableFinish=result.finishReason;
     }
-    if(result.toolCalls.length&&result.finishReason==='length')throw responseFailure('task_tool_instruction_incomplete','模型工具指令未完整返回，已停止执行；本次已产生的用量可在账单中查看',result.finishReason);
+    if(result.toolCalls.length&&result.finishReason==='length'){
+      // A cut JSON instruction is never parsed, patched or executed, even if
+      // its prefix happens to be syntactically valid. Only the coordinator's
+      // reviewed no-child closure can request one fresh short handoff. This
+      // shares the existing correction/step cap, not an outer retry loop.
+      const recovery=input.recoverTruncatedRouting;
+      if(input.entryPoint==='workspace'&&!truncatedRoutingRecoveryUsed&&!rejectedHashes.has(truncatedRoutingFingerprint)&&recovery&&typeof recovery.instruction==='string'&&recovery.instruction.trim()&&result.toolCalls.length===1&&['delegate_task','delegate_tasks','execute_local_task'].includes(result.toolCalls[0].function.name)&&active.some(tool=>tool.name===result.toolCalls[0].function.name)&&budget.used<correctionLimit&&budget.used<2&&await recovery.canRecover()&&repair(step)){
+        truncatedRoutingRecoveryUsed=true;
+        // The partial response is neither useful material nor a receipt. Do
+        // not feed its private cut args/preamble back into the correction.
+        if(result.content.trim()){readableBodies.pop();lastReadableFinish=previousReadableFinish;}
+        markCorrection(truncatedRoutingFingerprint);
+        messages.push({role:'system',content:recovery.instruction});
+        continue;
+      }
+      throw responseFailure('task_tool_instruction_incomplete','模型工具指令未完整返回，已停止执行；本次已产生的用量可在账单中查看',result.finishReason);
+    }
     if (!result.toolCalls.length) {
       if (!result.content.trim()) throw responseFailure('task_empty_response','调度模型没有返回结果',result.finishReason);
       // An output limit ends this attempt. Preserve every returned body byte;
@@ -297,9 +323,9 @@ export async function runTaskOrchestrator(input: {
         const durableKey=taskStepKey(checkpoints?.namespace??'',tool.name,query);
         const effect=tool.structured?.effect?.(structuredArgs)??tool.effect??'read';completedEffect=effect;
         if(checkpoints?.steps.some(s=>s.namespace===checkpoints.namespace&&s.tool===tool.name&&s.state==='started'&&['artifact','external_write'].includes(s.effect)))throw new Error('上次保存的结果还没确认，请先查看已有文件；不会重复写入。');
-        const previous=(tool.checkpointReuse!=='arguments'?checkpoints?.steps.find(s=>s.namespace===checkpoints.namespace&&sameScope(s,tool)&&s.state==='completed'&&toolSucceeded(s.output)&&s.tool===tool.name&&((effect==='artifact'||effect==='external_write')&&s.effect===effect||checkpoints.namespace==='worker'&&/^feature_\d+$/.test(tool.name))):undefined)??checkpoints?.steps.find(s=>s.key===durableKey&&s.namespace===checkpoints.namespace&&s.tool===tool.name&&sameScope(s,tool));
+        const previous=tool.cacheable===false&&effect==='read'?undefined:((tool.checkpointReuse!=='arguments'?checkpoints?.steps.find(s=>s.namespace===checkpoints.namespace&&sameScope(s,tool)&&s.state==='completed'&&toolSucceeded(s.output)&&s.tool===tool.name&&((effect==='artifact'||effect==='external_write')&&s.effect===effect||checkpoints.namespace==='worker'&&/^feature_\d+$/.test(tool.name))):undefined)??checkpoints?.steps.find(s=>s.key===durableKey&&s.namespace===checkpoints.namespace&&s.tool===tool.name&&sameScope(s,tool)));
         if(previous?.state==='started'&&['artifact','external_write'].includes(previous.effect))throw new Error('上次保存的结果还没确认，请先查看已有文件；不会重复写入。');
-        if(previous?.state==='completed'&&toolSucceeded(previous.output)){output=previous.output;status='reused';checkpoints?.onReuse?.(output);}
+        if(previous?.state==='completed'&&toolSucceeded(previous.output)){if(input.noProgressTools?.includes(tool.name))throw new OrchestrationInputError('这一步反复查到相同内容，仍没有新的进展。要求已保留，请补充关键线索后继续；不会重做已有成果。');output=previous.output;status='reused';checkpoints?.onReuse?.(output);}
         else if (tool.cacheable!==false && cache.has(key)) {
           if(input.noProgressTools?.includes(tool.name))throw new OrchestrationInputError('这一步反复查到相同内容，仍没有新的进展。要求已保留，请补充关键线索后继续；不会重做已有成果。');
           output = cache.get(key); status = "reused";

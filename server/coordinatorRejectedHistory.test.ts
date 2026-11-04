@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type {Database} from './types.js';
-import {recordCoordinatorRejection} from './coordinatorRejectedHistory.js';
+import {recordCoordinatorRejection,recordCoordinatorInputRejection} from './coordinatorRejectedHistory.js';
 import {restoreConversationMessages} from './conversationAttachments.js';
 
 const scope={workspaceId:'wa',userId:'ua'},failure={code:'local_device_offline' as const,stage:'accepting' as const,outcome:'not_started' as const};
@@ -54,4 +54,29 @@ test('unknown outcomes and invalid input do not manufacture unaccepted history',
  assert.equal(await recordCoordinatorRejection(f.store,scope,{operationId:'too_short',text:'原话'},failure),false);
  assert.equal(await recordCoordinatorRejection(f.store,scope,{operationId:'valid_operation_id_001',text:'原话'},{...failure,outcome:'unknown'}),false);
  assert.equal(f.db.messages.length,0);
+});
+
+test('a rejected long input inside the submission limit keeps the complete owner original, not an 8k prefix',async()=>{
+ const f=fixture(),text='首'+'中'.repeat(31998)+'尾';
+ assert.equal(await recordCoordinatorRejection(f.store,scope,{operationId:'long_rejected_operation_01',text},failure),true);
+ assert.equal(f.db.messages[0].content,text);assert.equal(f.db.messages[0].content.length,32000);
+ assert.equal(f.db.modelUsageRecords.length,0);assert.equal(f.db.chatOperations!.length,0);
+});
+test('an oversized refusal stores lengths only, is idempotent and never copies private input or credentials',async()=>{
+ const f=fixture(),body={operationId:'length_rejected_operation_01',text:'PRIVATE_SCRIPT_'+'中'.repeat(32000),attachmentIds:['PRIVATE_FILE'],token:'SECRET'};
+ assert.equal(await recordCoordinatorRejection(f.store,scope,body,failure),false);
+ assert.equal(await recordCoordinatorInputRejection(f.store,scope,body,'req_safe'),true);
+ assert.equal(await recordCoordinatorInputRejection(f.store,scope,body,'req_later'),false);
+ assert.equal(f.db.auditLogs.length,1);assert.deepEqual(f.db.auditLogs[0].details,{code:'input_too_long',inputChars:body.text.length,maxInputChars:32000,attachmentCount:1});
+ assert.doesNotMatch(JSON.stringify(f.db.auditLogs),/PRIVATE_SCRIPT|PRIVATE_FILE|SECRET/);assert.equal(f.db.messages.length,0);assert.equal(f.db.modelUsageRecords.length,0);assert.equal(f.db.chatOperations!.length,0);
+});
+test('a late accepted owner operation wins inside the refusal transaction; foreign owner and task cannot attest its refusal',async()=>{
+ const f=fixture(),body={operationId:'length_race_operation_01',text:'中'.repeat(32001)};
+ const store={read:f.store.read,mutate:async<T>(fn:(d:Database)=>T)=>{f.db.chatOperations!.push({...scope,operationId:body.operationId} as any);return fn(f.db);}};
+ assert.equal(await recordCoordinatorInputRejection(store,scope,body),false);assert.equal((f.db.auditLogs??[]).length,0);
+ const g=fixture();g.db.chatOperations!.push({workspaceId:'wb',userId:'ub',operationId:body.operationId} as any);
+ assert.equal(await recordCoordinatorInputRejection(g.store,scope,body),true,'a foreign operation cannot become this owner receipt');
+ await assert.rejects(()=>recordCoordinatorInputRejection(g.store,{workspaceId:'wb',userId:'ua'},body),/不可用/);
+ assert.equal(await recordCoordinatorInputRejection(g.store,scope,{...body,operationId:'foreign_bound_operation_01',boundTaskId:'foreign-task'}),false);
+ assert.equal(g.db.auditLogs.length,1);assert.equal(g.db.auditLogs[0].workspaceId,'wa');assert.equal(g.db.auditLogs[0].actorUserId,'ua');
 });

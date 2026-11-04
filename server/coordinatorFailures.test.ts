@@ -1,8 +1,9 @@
+import {CoordinatorInputTooLongError,CoordinatorInputError} from '../src/coordinatorInput.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {classifyCoordinatorFailure} from './coordinatorFailures.js';
 import {coordinatorRecoveryCopy} from '../src/coordinatorRecovery.js';
-import {ModelRequestError} from './modelGateway.js';
+import {ModelRequestError,ModelResponseError} from './modelGateway.js';
 import {OneKeyPresenceError} from './oneKeyPresence.js';
 import {CoordinatorError} from './executorProfiles.js';
 import {FeatureConfigError} from './officialFeatures.js';
@@ -119,4 +120,17 @@ test('a reviewed workflow verification wrapper retains Key, budget and source au
  const privateRaw=new Error('password=SECRET');assert.equal(classifyCoordinatorFailure(new TaskWorkflowError('WORKFLOW_VERIFY_FAILED','核对未通过。',privateRaw)).code,'internal_error');
  assert.equal(classifyCoordinatorFailure(new TaskWorkflowError('WORKFLOW_PERSIST_FAILED','保存未确认。',key)).code,'internal_error');
  const cycle=new TaskWorkflowError('WORKFLOW_VERIFY_FAILED','核对未通过。');Object.defineProperty(cycle,'cause',{value:cycle});assert.equal(classifyCoordinatorFailure(cycle).code,'internal_error');
+});
+
+test('typed input length and empty submission refusals never become internal/model failures or echo submitted data',()=>{
+ assert.deepEqual(classifyCoordinatorFailure(new CoordinatorInputTooLongError(32001),{outcome:'not_started'}),{code:'input_too_long',stage:'accepting',outcome:'not_started'});
+ assert.equal(classifyCoordinatorFailure(new CoordinatorInputError()).code,'submission_invalid');
+ const forged=Object.assign(new Error('PRIVATE_SCRIPT'),{code:'COORDINATOR_INPUT_TOO_LONG',status:413,inputChars:32001});
+ assert.equal(classifyCoordinatorFailure(forged).code,'internal_error');
+ assert.doesNotMatch(coordinatorRecoveryCopy(classifyCoordinatorFailure(forged)),/PRIVATE_SCRIPT/);
+});
+
+test('a reviewed unusable provider response remains a model protocol failure',()=>{
+ assert.deepEqual(classifyCoordinatorFailure(new ModelResponseError(),{outcome:'not_started'}),{code:'model_invalid_response',stage:'model',outcome:'not_started'});
+ assert.equal(classifyCoordinatorFailure(new Error('Local Agent 模型响应格式不正确')).code,'internal_error','a matching arbitrary message is not protocol proof');
 });

@@ -4,11 +4,12 @@ import {readFileSync} from 'node:fs';
 import ts from 'typescript';
 import {localDeviceCanRequestExecution,type LocalDeviceReadiness} from './localDeviceReadiness';
 import {coordinatorRestoredLocalIntent} from './coordinatorRestoredLocalIntent';
+import {coordinatorInputFeedback} from './coordinatorInput';
 const source=readFileSync(new URL('./main.tsx',import.meta.url),'utf8');
 const noAttachments={uploadingAttachments:false,pendingAttachments:[],composeMode:'chat'};
 function actual(start:string,end:string,name:string,context:Record<string,unknown>){
  const code=ts.transpileModule(source.slice(source.indexOf(start),source.indexOf(end)),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
- return new Function('context',`with(context){${code};return ${name};}`)(context) as (...args:any[])=>Promise<void>;
+ return new Function('context','coordinatorInputFeedback',`with(context){${code};return ${name};}`)(context,coordinatorInputFeedback) as (...args:any[])=>Promise<void>;
 }
 for(const text of ['为什么一直让我选文件夹？','刚才那篇文章做好了吗？','把这段保存成文档'])test(`local destination does not turn ${text} into an explicit local execution`,async()=>{
  const requests:unknown[]=[],executions:unknown[]=[];

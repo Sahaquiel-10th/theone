@@ -1,3 +1,4 @@
+import {coordinatorInputFeedback,coordinatorInputHint} from './coordinatorInput';
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {useFollowLatest} from './useFollowLatest';
 import { MessageMarkdown, ImagePreview, hasInlineImage } from "./MessageMarkdown";
@@ -222,6 +223,8 @@ export function ThingsPanel({
                   if (!draft.trim() || inFlight.current.has(selected.id) || selected.messagesLoaded === false) return;
                   const id = selected.id,
                     original = draft;
+                  const inputError=coordinatorInputFeedback(original);
+                  if(inputError){setErrors(old=>({...old,[id]:inputError}));return;}
                   inFlight.current.add(id);
                   setSending((old) => [...old, id]);
                   setErrors(old=>({...old,[id]:''}));
@@ -239,6 +242,8 @@ export function ThingsPanel({
                 <textarea
                   rows={2}
                   aria-label="直接继续此任务"
+                  aria-invalid={Boolean(coordinatorInputFeedback(draft))||undefined}
+                  aria-describedby={coordinatorInputHint(draft)?'one-task-input-length':undefined}
                   placeholder="继续此任务…"
                   value={draft}
                   disabled={sending.includes(selected.id) || selected.messagesLoaded === false}
@@ -256,6 +261,7 @@ export function ThingsPanel({
                     }
                   }}
                 />
+                {coordinatorInputHint(draft)?<small id="one-task-input-length" className="hint" role={coordinatorInputFeedback(draft)?'status':undefined}>{coordinatorInputHint(draft)}</small>:null}
                 <div className="things-compose-toolbar">
                 <div className="things-compose-destination">{destinationPicker}</div>
                 <div className="things-compose-actions">
@@ -266,7 +272,7 @@ export function ThingsPanel({
                 >
                   {sending.includes(selected.id) ? "正在发送…" : sendLabel}
                 </button>
-                {onExecuteDraft ? <button className="things-compose-execute" type="button" disabled={!draft.trim()||executionDisabled||executionPreparing||sending.includes(selected.id)||selected.messagesLoaded===false} onClick={event=>{setErrors(old=>({...old,[selected.id]:''}));void onExecuteDraft(selected.id,draft,event.currentTarget).catch(e=>setErrors(old=>({...old,[selected.id]:e instanceof Error?e.message:'执行未确认，草稿已保留'})));}}><Zap size={14} aria-hidden="true"/><span>本机执行</span></button> : null}
+                {onExecuteDraft ? <button className="things-compose-execute" type="button" disabled={!draft.trim()||executionDisabled||executionPreparing||sending.includes(selected.id)||selected.messagesLoaded===false} onClick={event=>{const inputError=coordinatorInputFeedback(draft);if(inputError){setErrors(old=>({...old,[selected.id]:inputError}));return;}setErrors(old=>({...old,[selected.id]:''}));void onExecuteDraft(selected.id,draft,event.currentTarget).catch(e=>setErrors(old=>({...old,[selected.id]:e instanceof Error?e.message:'执行未确认，草稿已保留'})));}}><Zap size={14} aria-hidden="true"/><span>本机执行</span></button> : null}
                 </div>
                 </div>
               </form>

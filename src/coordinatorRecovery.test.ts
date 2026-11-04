@@ -93,3 +93,8 @@ test('system parameter failures do not ask a person to guess schemas or reselect
  const missing=coordinatorRecoveryCopy({code:'input_template_required',stage:'tool',outcome:'not_started'});
  assert.match(missing,/XLSX.*上传|上传.*XLSX/);assert.doesNotMatch(missing,/列名|公式|配置/);
 });
+
+test('oversized input copy explains the limit and attachment path without asking for receipt recovery',()=>{
+ const copy=coordinatorRecoveryCopy({code:'input_too_long',stage:'accepting',outcome:'not_started'});
+ assert.match(copy,/32,000.*附件.*输入框.*保留.*原文.*附件/);assert.doesNotMatch(copy,/管理员|刷新|回执|看看刚才/);
+});
