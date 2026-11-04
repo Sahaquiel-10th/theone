@@ -4,7 +4,6 @@
  */
 import express from 'express';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { AttachmentService } from '../server/attachmentService.js';
@@ -26,7 +25,13 @@ import { reconcileInterruptedBilling } from '../server/modelBilling.js';
 const scope = { userId: 'qa-industry-owner', workspaceId: 'qa-industry-workspace' };
 const actor = { id: scope.userId, workspaceId: scope.workspaceId }, keyId = 'qa-industry-one-key';
 const now = new Date().toISOString();
-const requestedDirectory = process.env.ONE_INDUSTRY_QA_DIR?.trim() || await fs.mkdtemp(path.join(os.tmpdir(), 'one-industry-qa-'));
+function qaPort(name: string, fallback: number) {
+  const value = process.env[name] === undefined ? fallback : Number(process.env[name]);
+  if (!Number.isInteger(value) || value < 1024 || value > 65535) throw new Error(`${name} must be a localhost port from 1024 to 65535`);
+  return value;
+}
+const apiPort = qaPort('ONE_INDUSTRY_QA_API_PORT', 3143), uiPort = qaPort('ONE_INDUSTRY_QA_UI_PORT', 5198);
+const requestedDirectory = process.env.ONE_INDUSTRY_QA_DIR?.trim() || '/private/tmp/one-industry-fullscreen-qa-20261104';
 await fs.mkdir(path.resolve(requestedDirectory), { recursive: true, mode: 0o700 });
 const directory = await fs.realpath(path.resolve(requestedDirectory));
 const statePath = path.join(directory, 'qa-industry-state.json');
@@ -113,10 +118,10 @@ function syntheticText(messages: ModelToolMessage[]) {
   if (prompt.startsWith('你是电商运营策划')) return textResult('隔离测试分析：仅借用参考图的信息层级，商品名称、规格和卖点沿用用户明确确认的资料。购买理由与视觉方向需要真实用户验证，不新增价格、功效或赠品承诺。');
   throw new Error('隔离模型尚未支持这类提示词；未连接真实模型。');
 }
-let imageCount = 0;
+let chatCount = 0, imageCount = 0;
 const runner = createIndustryModelRunner(new (await import('../server/industryState.js')).IndustryStore(store), {
   imageStorageAvailable: true,
-  chatCall: async (_model, messages, tools) => { if (tools.length) throw new Error('隔离模型禁止工具或外部调用'); return syntheticText(messages); },
+  chatCall: async (_model, messages, tools) => { chatCount++; if (tools.length) throw new Error('隔离模型禁止工具或外部调用'); return syntheticText(messages); },
   imageCall: async (_model, messages) => {
     imageCount++; let width = 1024, height = 1024;
     const input = [...messages].reverse().find(message => message.role === 'user')?.inputImageDataUrls?.[0];
@@ -170,9 +175,9 @@ app.get('/api/features', auth, (req, res) => { const query = String(req.query.q 
 get(`/api/features/${feature.id}`, () => feature);
 app.post('/api/features/quote', auth, (req, res) => { if (!Array.isArray(req.body?.featureIds) || req.body.featureIds.some((id: unknown) => id !== feature.id)) { res.status(400).json({ error: '隔离报价只支持合成示例 Skill' }); return; } res.json({ approvalThreshold: 2, features: req.body.featureIds.map(() => ({ id: feature.id, name: feature.name, releaseId: feature.releaseId, version: 1, multiplier: 1 })) }); });
 get('/api/me/billing', () => ({ balanceMicros: db.powerAccounts[0].balanceMicros, reservedMicros: db.powerAccounts[0].reservedMicros || 0, availableMicros: availablePowerMicros(db, scope.workspaceId, scope.userId), ledger: db.powerLedger, orders: [], usage: db.modelUsageRecords.map(publicUsageRecord), rechargeCnyPerPower: 7 }));
-get('/api/qa-industry/state', () => ({ fixture: 'isolated synthetic; no external provider calls or real charges', directory, balanceMicros: db.powerAccounts[0].balanceMicros, reservedMicros: db.powerAccounts[0].reservedMicros || 0, ledger: db.powerLedger, usage: db.modelUsageRecords.map(publicUsageRecord), jobs: industryDatabase(db).commerceJobs.map(job => ({ id: job.id, kind: job.kind, status: job.status, phase: job.phase, variants: job.variants.map(variant => ({ id: variant.id, status: variant.status, imageAttachmentId: variant.imageAttachmentId })) })), reviewRuns: industryDatabase(db).reviewReplyRuns.map(run => ({ id: run.id, status: run.status, completed: run.results.filter(result => result.candidates.length > 0).length, total: run.results.length })), files: db.attachments.map(file => ({ id: file.id, name: file.originalName, status: file.status, bytes: file.size })) }));
+get('/api/qa-industry/state', () => ({ fixture: 'isolated synthetic; no external provider calls or real charges', directory, modelCallsSinceStart: { text: chatCount, image: imageCount }, balanceMicros: db.powerAccounts[0].balanceMicros, reservedMicros: db.powerAccounts[0].reservedMicros || 0, ledger: db.powerLedger, usage: db.modelUsageRecords.map(publicUsageRecord), jobs: industryDatabase(db).commerceJobs.map(job => ({ id: job.id, kind: job.kind, status: job.status, phase: job.phase, variants: job.variants.map(variant => ({ id: variant.id, status: variant.status, imageAttachmentId: variant.imageAttachmentId })) })), reviewRuns: industryDatabase(db).reviewReplyRuns.map(run => ({ id: run.id, status: run.status, completed: run.results.filter(result => result.candidates.length > 0).length, total: run.results.length })), files: db.attachments.map(file => ({ id: file.id, name: file.originalName, status: file.status, bytes: file.size })) }));
 app.use((req, res) => { process.stderr.write(`[industry-qa unsupported] ${req.method} ${req.path}\n`); res.status(404).json({ error: `隔离 QA fixture 未支持此接口：${req.method} ${req.path}；没有执行真实请求。`, code: 'QA_ROUTE_UNSUPPORTED' }); });
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error instanceof IndustryError ? error.status : 400).json({ error: error instanceof Error ? error.message : '隔离 QA 操作失败', code: error instanceof IndustryError ? error.code : 'QA_FAILED' }); });
-const server = app.listen(3142, '127.0.0.1', () => process.stdout.write(`Industry QA API http://127.0.0.1:3142\nUI http://127.0.0.1:5197/scripts/qa-industry.html\nMain http://127.0.0.1:5197/\nIsolated data ${directory}\nSamples ${directory}/sample-{product,reference,detail}.png\nAll model responses and the 100-power wallet are synthetic.\n`));
+const server = app.listen(apiPort, '127.0.0.1', () => process.stdout.write(`Industry fullscreen QA API http://127.0.0.1:${apiPort}\nQA guide http://127.0.0.1:${uiPort}/scripts/qa-industry.html\nReal main http://127.0.0.1:${uiPort}/\nDirectory http://127.0.0.1:${uiPort}/workbenches\nDeep link http://127.0.0.1:${uiPort}/workbenches/image_edit\nIsolated data ${directory}\nSamples ${directory}/sample-{product,reference,detail}.png\nAll model responses and the 100-power wallet are synthetic. Favorites use the real industry routes.\n`));
 server.on('error', error => { process.stderr.write(`QA localhost API could not start: ${error.message}\n`); commerce.close(); process.exitCode = 1; });
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { commerce.close(); server.closeAllConnections(); server.close(() => { process.exitCode = 0; }); });

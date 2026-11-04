@@ -21,6 +21,8 @@ import {WorkspaceStartup} from './WorkspaceStartup';
 import {workspaceStartupMode,workspaceDestinationPending} from './workspaceStartupState';
 import {IndustryWorkspaces} from './IndustryWorkspaces';
 import {primaryWorkspaceNavigation} from './industryWorkspaceState';
+import {exitIndustryPageNavigation,industryWorkspaceFromHref,observeWorkspaceViewport,openIndustryPageNavigation,readIndustryPageNavigation,syncIndustryPageNavigation,type IndustryPageLocation,type OnePageSurface} from './industryPageNavigation';
+import type {IndustryWorkspaceId} from './industryWorkspaceState';
 import {CommerceIndustryTool} from './CommerceIndustryTool';
 import {ThingsPanel} from './ThingsPanel';
 import {TaskReadAllButton} from './TaskReadAllButton';
@@ -666,6 +668,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     return result.profile;
   }
   async function startStory() {
+    if(industryPageRef.current.open)leaveIndustryPage('chat');
     storyRequested.current=true;
     setStoryLaunchError('');setStoryOpen(true);setStoryHidden(false);
     const legacy=profile.onboarding.journey;
@@ -742,8 +745,15 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [loadingByConversation, setLoadingByConversation] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [view, setView] = useState<"chat" | "things" | "admin" | "company" | "account" | "features" | "workbenches" | "avatars" | "agents" | "agentEditor">(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "account" : user.access?.role === "company_admin" ? "company" : user.role === "admin" ? "admin" : "chat"; });
-  type WorkLayer = 'features'|'workbenches'|'avatars'|'account'|'things'|'history'|'admin'|'company'|'guide';
+  const industryScopeKey=`${user.id}:${user.access?.workspaceId??user.defaultWorkspaceId}`;
+  const defaultOneSurface:OnePageSurface=user.access?.role==='company_admin'?'company':user.role==='admin'?'admin':'chat';
+  const [industryPage,setIndustryPage]=useState(()=>readIndustryPageNavigation(window,industryScopeKey,defaultOneSurface).page);
+  const industryPageRef=useRef(industryPage);industryPageRef.current=industryPage;
+  const [industryVisited,setIndustryVisited]=useState(industryPage.open);
+  const industryPageShellRef=useRef<HTMLElement>(null);
+  const applyIndustryLocationRef=useRef<(page:IndustryPageLocation)=>void>(()=>{});
+  const [view, setView] = useState<OnePageSurface>(industryPage.surface);
+  type WorkLayer = 'features'|'avatars'|'account'|'things'|'history'|'admin'|'company'|'guide';
   const [workLayer,setWorkLayer] = useState<WorkLayer|null>(null);
   const [visitedLayers,setVisitedLayers] = useState<WorkLayer[]>([]);
   const [featureOperationId,setFeatureOperationId] = useState('');
@@ -756,7 +766,12 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const knowledgeReturnRef=useRef({notion:new URLSearchParams(window.location.search).get('notion'),provider:new URLSearchParams(window.location.search).get('knowledge'),status:new URLSearchParams(window.location.search).get('status')});
   // A connector callback may arrive before the coordinator finishes loading.
   // Adopt its settings destination without moving or remounting the main chat.
-  useEffect(()=>{if(preview.enabled&&['account','things','features','workbenches','avatars','admin','company'].includes(view)){setWorkLayer(view as WorkLayer);setView('chat');}},[preview.enabled,view]);
+  useEffect(()=>{if(preview.enabled&&['account','things','features','avatars','admin','company'].includes(view)){if(!industryPage.open)setWorkLayer(view as WorkLayer);setView('chat');}},[preview.enabled,view,industryPage.open]);
+  useEffect(()=>{
+    const sync=()=>applyIndustryLocationRef.current(syncIndustryPageNavigation(window,industryScopeKey,defaultOneSurface));
+    sync();window.addEventListener('popstate',sync);
+    return()=>window.removeEventListener('popstate',sync);
+  },[industryScopeKey]);
   const [accountSection, setAccountSection] = useState(() => { const params = new URLSearchParams(window.location.search); return params.has("notion") || params.has("knowledge") ? "knowledge" : "profile"; });
   const eyeMotion = useRef<ReturnType<typeof createEyeMotion> | null>(null);
   if (!eyeMotion.current) eyeMotion.current = createEyeMotion();
@@ -866,12 +881,21 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     return()=>window.removeEventListener('one-welcome-guide-draft',receive);
   });
   const viewedConversationRef = useRef("");
-  viewedConversationRef.current = view === "chat" ? activeId : "";
+  viewedConversationRef.current = !industryPage.open&&view === "chat" ? activeId : "";
 
   // Ref-based layout effects must become enabled in the same commit that
   // mounts their DOM, including initial destination adoption and read retries.
   const startup=workspaceStartupMode({demoEnabled:demo.enabled,coordinatorReady:coordinator.ready,coordinatorEnabled:coordinator.enabled,hasSnapshot:Boolean(coordinator.snapshot),error:coordinator.error,destinationPending:workspaceDestinationPending(preview.enabled,view)});
   const workspaceContentMounted=startup==='workspace'||startup==='legacy';
+  useEffect(()=>{
+    if(!industryPage.open||!workspaceContentMounted)return;
+    const frame=requestAnimationFrame(()=>{
+      const shell=industryPageShellRef.current;
+      const heading=Array.from(shell?.querySelectorAll<HTMLHeadingElement>('h1')??[]).find(element=>!element.closest('[hidden]'));
+      (heading??shell)?.focus({preventScroll:true});
+    });
+    return()=>cancelAnimationFrame(frame);
+  },[industryPage.open,industryPage.workspace,workspaceContentMounted]);
   const active = useMemo(() => conversations.find((item) => item.id === activeId), [activeId, conversations]);
   const targetConversation = preview.enabled || composeNew ? undefined : active;
   const activeModelId = targetConversation?.modelId || draftModelId;
@@ -926,6 +950,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const fluidCanvasRef = useRef<HTMLDivElement>(null);
   const fluidEyeOwnerRef = useRef<'main'|'activity'|'local'>('main');
   const [fluidSize,setFluidSize] = useState({width:0,height:0,viewportWidth:0,viewportHeight:0});
+  useLayoutEffect(()=>observeWorkspaceViewport(window,size=>setFluidSize(old=>old.viewportWidth===size.width&&old.viewportHeight===size.height?old:{...old,viewportWidth:size.width,viewportHeight:size.height})),[]);
   const [fluidAttention,setFluidAttention] = useState<{target:'main'|'activity'|'local';version:number}>({target:'main',version:0});
   function focusFluid(owner:'main'|'activity'|'local'){
     setFluidAttention(old=>({target:owner,version:old.version+1}));
@@ -945,10 +970,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     onAutoCollapse:kind=>restoreFluidFocus(kind)
   });
   useLayoutEffect(()=>{
-    const canvas=fluidCanvasRef.current;if(!canvas||!fluidEnabled)return;
-    const measure=()=>{const rect=canvas.getBoundingClientRect();setFluidSize(old=>old.width===rect.width&&old.height===rect.height&&old.viewportWidth===window.innerWidth&&old.viewportHeight===window.innerHeight?old:{width:rect.width,height:rect.height,viewportWidth:window.innerWidth,viewportHeight:window.innerHeight});};
+    const canvas=fluidCanvasRef.current;if(!canvas||!fluidEnabled||industryPage.open)return;
+    const measure=()=>{const rect=canvas.getBoundingClientRect();if(!rect.width||!rect.height)return;setFluidSize(old=>old.width===rect.width&&old.height===rect.height?old:{...old,width:rect.width,height:rect.height});};
     measure();const observer=new ResizeObserver(measure);observer.observe(canvas);return()=>observer.disconnect();
-  },[fluidEnabled]);
+  },[fluidEnabled,industryPage.open]);
   useEffect(()=>{if(fluidEnabled&&activeId)fluidPanels.open('activity');},[fluidEnabled,activeId]);
   const [fluidAccent,setFluidAccent]=useState<'solar'|'iris'|'jade'>(()=>{const value=new URLSearchParams(window.location.search).get('accent');return value==='iris'||value==='jade'?value:'solar';});
   useEffect(()=>{const update=()=>{const value=new URLSearchParams(window.location.search).get('accent');setFluidAccent(value==='iris'||value==='jade'?value:'solar');};window.addEventListener('one-fluid-accent-preview',update);return()=>window.removeEventListener('one-fluid-accent-preview',update);},[]);
@@ -1037,9 +1062,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   },[models.length,demo.enabled,coordinator.enabled,coordinator.ready]);
   useEffect(()=>{
     if(!coordinator.enabled)return;
-    const id=view==='chat'?(workLayer==='things'?thingId:!workLayer?activeId:''):'';
+    const id=!industryPage.open&&view==='chat'?(workLayer==='things'?thingId:!workLayer?activeId:''):'';
     void coordinator.viewTask(id||null).catch(e=>setError(e instanceof Error?e.message:'暂时无法打开结果'));
-  },[coordinator.enabled,coordinator.viewTask,view,workLayer,thingId,activeId]);
+  },[coordinator.enabled,coordinator.viewTask,view,workLayer,thingId,activeId,industryPage.open]);
   function closeResultLamp() { setResultLampOpen(false); if(coordinator.enabled)void coordinator.acknowledge().catch(e=>setError(e.message)); setDismissedResults(previous=>[...previous,...lampTasks.map(task=>`${task.id}:${task.messages.filter(message=>message.role==='assistant').at(-1)?.id}`)]); }
   async function selectThing(id:string,markRead=true) {
     setThingId(id);
@@ -1511,6 +1536,27 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     setWorkLayer(null);
     knowledgeReturnRef.current={notion:null,provider:null,status:null};
   }
+  function currentOneSurface():OnePageSurface{
+    return workLayer&&['features','avatars','account','things','admin','company'].includes(workLayer)?workLayer as OnePageSurface:view;
+  }
+  function setIndustryLocation(page:IndustryPageLocation){industryPageRef.current=page;setIndustryPage(page);if(page.open)setIndustryVisited(true);}
+  function leaveIndustryPage(next:OnePageSurface){
+    const leaving=industryPageRef.current.open;
+    setIndustryLocation(exitIndustryPageNavigation(window,industryScopeKey,next));
+    return leaving;
+  }
+  function openIndustryPage(workspace:IndustryWorkspaceId|null){
+    const page=openIndustryPageNavigation(window,industryScopeKey,workspace,currentOneSurface());
+    setIndustryLocation(page);featurePicker.close();closeWorkLayer();setHistoryOpen(false);setSidebarOpen(false);
+  }
+  // Restore visible destinations without submitting, selecting a new chat, or discarding its composer.
+  applyIndustryLocationRef.current=page=>{
+    setIndustryLocation(page);featurePicker.close();setWorkLayer(null);setHistoryOpen(false);setSidebarOpen(false);
+    if(page.open)return;
+    const next=page.surface==='admin'&&user.role!=='admin'||page.surface==='company'&&user.access?.role!=='company_admin'?'chat':page.surface;
+    if(preview.enabled&&['features','avatars','account','things','admin','company'].includes(next)){setView('chat');setWorkLayer(next as WorkLayer);}
+    else setView(next);
+  };
   function chooseFeature(feature:FeatureChoice,source?:HTMLElement){
     const maxSkills=!demo.enabled&&(!coordinator.enabled||currentModel?.kind==='image'||Boolean(composeNew&&draftAgentId))?1:8;
     const next=featureSelectionTransition(selectedFeaturesRef.current,feature,maxSkills);
@@ -1525,6 +1571,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     }
   }
   function openHistory(){
+    if(industryPageRef.current.open)leaveIndustryPage('chat');
     if(preview.enabled){setWorkLayer('history');setView('chat');setHistoryOpen(false);}
     else setHistoryOpen(value=>!value);
   }
@@ -1532,6 +1579,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   function openFeatureRun(operationId:string){setFeatureOperationId(operationId);setFeatureOpenRequest(value=>value+1);openSurface('features');}
   function openSurface(next: "chat" | "things" | "admin" | "company" | "knowledge" | "account" | "features" | "workbenches" | "avatars",taskId?:string) {
     featurePicker.close();
+    if(next==='workbenches'){openIndustryPage(null);return;}
+    if(next==='admin'&&user.role!=='admin'||next==='company'&&user.access?.role!=='company_admin')return;
+    const leavingIndustry=leaveIndustryPage(next==='knowledge'?'account':next);
+    if(leavingIndustry&&next==='chat'){closeWorkLayer();setView('chat');setHistoryOpen(false);setSidebarOpen(false);return;}
     if(preview.enabled&&next!=='chat'){
       if(next==='admin'&&user.role!=='admin'||next==='company'&&user.access?.role!=='company_admin')return;
       if(next==='knowledge')setAccountSection('knowledge');
@@ -1583,6 +1634,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
 
   async function openConversation(conversation: Conversation, selectedTaskId = "") {
+    if(industryPageRef.current.open)leaveIndustryPage(preview.enabled?'things':'chat');
     if (preview.enabled) { setTaskScope('tasks');setSelectedExecutionId(selectedTaskId);void selectThing(conversation.id);setWorkLayer('things');setView('chat');setActivityExpanded(false);setHistoryOpen(false);return; }
     switchDraft(conversation.id);
     acknowledgeConversation(conversation.id);
@@ -2354,7 +2406,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     return (<section className="account-page features-page"><header className="admin-header"><div><h2>Skills</h2></div></header><div className="account-body settings-account-body">{featureSelectionNotice?<p className="feature-selection-notice" role="status">{featureSelectionNotice}</p>:null}{preview.enabled?<FeatureShelf api={api} models={models} maxSelected={!demo.enabled&&(!coordinator.enabled||currentModel?.kind==='image'||Boolean(composeNew&&draftAgentId))?1:8} active={workLayer==='features'} onDone={()=>{closeWorkLayer();requestAnimationFrame(()=>featurePicker.input.current?.focus());}} onOperationChange={setViewedFeatureOperation} initialOperationId={featureOperationId||undefined} initialOpenRequest={featureOpenRequest} onRunStarted={run=>{setFeatureOperationId(run.operationId);updateFeatureRun(run);closeWorkLayer();fluidPanels.open('activity');focusFluid('activity');}} onRunStatus={updateFeatureRun} selected={featureForNext.map(item=>item.id)} onChoose={chooseFeature}/>:<FeatureMarketplace api={api} models={models} selected={featureForNext.map(item=>item.id)} onChoose={chooseFeature} initialOperationId={featureOperationId||undefined} initialOpenRequest={featureOpenRequest} onAsk={()=>openSurface('chat')}/>}</div></section>);
   }
   function renderIndustryWorkspaces() {
-    return <IndustryWorkspaces api={api} scopeKey={`${user.id}:${user.access?.workspaceId??user.defaultWorkspaceId}`} renderCommerce={(kind,onBack)=><CommerceIndustryTool kind={kind} onBack={onBack}/>}/>;
+    return <IndustryWorkspaces api={api} scopeKey={industryScopeKey} currentWorkspace={industryPage.workspace} onOpenWorkspace={openIndustryPage} onBackToDirectory={()=>openIndustryPage(null)} onExitToOne={()=>openSurface('chat')} renderCommerce={(kind,onBack)=><CommerceIndustryTool kind={kind} onBack={onBack}/>}/>;
   }
   function renderAccount() {
     return (<AccountPage user={user} onLogout={onLogout} profile={profile} onSaveProfile={async patch=>{const result=await saveProfile(patch);if(patch.appearance)setScenePreview(null);return result;}} onOpenGuide={startStory} models={models} defaultModelId={defaultModelId} onModelChange={refresh} onOpenSidebar={openHistory} section={accountSection} setSection={setAccountSection} knowledge={<KnowledgeConnections api={api} inline={preview.enabled} returnOutcome={knowledgeReturnRef.current} onOpenSidebar={() => setHistoryOpen(true)} onConnectionChange={(next) => next.provider === "notion" ? setNotionConnection(next) : next.provider === "yinxiang" ? setYinxiangConnection(next) : next.provider === "flowus" ? setFlowusConnection(next) : next.provider === "flomo" ? setFlomoConnection(next) : next.provider === "ima" ? setImaConnection(next) : setKnowledgeConnection(next)} />} />);
@@ -2366,13 +2418,13 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   if(startup==='loading'||startup==='retry')return <WorkspaceStartup scene={fluidScene} error={startup==='retry'?coordinator.error:undefined} onRetry={async()=>{await coordinator.refresh();}}/>;
 
   return (
-    <main onClickCapture={event=>{if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;const anchor=event.target instanceof Element?event.target.closest('a[href]'):null;if(!anchor||anchor.hasAttribute('download')||anchor.getAttribute('target')==='_blank')return;const id=internalTaskId(anchor.getAttribute('href')||'',window.location.href);if(id){event.preventDefault();void openLinkedTask(id);}}} onPointerDownCapture={event=>{if(event.target instanceof HTMLElement)executionPointerRef.current={element:event.target,point:{x:event.clientX,y:event.clientY}};else if(event.target instanceof SVGElement)executionPointerRef.current={element:event.target.closest('button')!,point:{x:event.clientX,y:event.clientY}};}} onKeyDownCapture={()=>{executionPointerRef.current=null;}} data-industry-navigation="true" data-fluid-desktop={fluidDesktop} data-fluid-material={fluidMaterial} data-fluid-accent={fluidAccent} data-fluid-scene={fluidScene} data-fluid-dialogue={fluidHasDialogue?'active':'empty'} data-sidebar-open={sidebarOpen} className={`app-shell one-shell one-studio attention-workspace ${fluidEnabled?"one-fluid-workspace":""} ${preview.enabled&&(view==='chat'||view==='features'||view==='account')?`coordinator-preview ${view==='features'?'coordinator-tools-open':view==='account'?'coordinator-settings-open coordinator-task-open':active?'coordinator-task-open':''}`:''} ${view==='things'?'studio-things':''} ${view==='features'?'studio-discover':''} ${studioIdle ? "studio-idle" : "studio-open"} ${focusedTask && view === "chat" && !studioIdle ? "studio-focused" : ""} ${activeExecutionMode ? "execution-shell" : ""}`}>
+    <main onClickCapture={event=>{if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;const anchor=event.target instanceof Element?event.target.closest('a[href]'):null;if(!anchor||anchor.hasAttribute('download')||anchor.getAttribute('target')==='_blank')return;const href=anchor.getAttribute('href')||'',workspace=industryWorkspaceFromHref(href,window.location.href);if(workspace!==undefined){event.preventDefault();openIndustryPage(workspace);return;}const id=internalTaskId(href,window.location.href);if(id){event.preventDefault();void openLinkedTask(id);}}} onPointerDownCapture={event=>{if(event.target instanceof HTMLElement)executionPointerRef.current={element:event.target,point:{x:event.clientX,y:event.clientY}};else if(event.target instanceof SVGElement)executionPointerRef.current={element:event.target.closest('button')!,point:{x:event.clientX,y:event.clientY}};}} onKeyDownCapture={()=>{executionPointerRef.current=null;}} data-industry-navigation="true" data-industry-page={industryPage.open} data-fluid-desktop={fluidDesktop} data-fluid-material={fluidMaterial} data-fluid-accent={fluidAccent} data-fluid-scene={fluidScene} data-fluid-dialogue={fluidHasDialogue?'active':'empty'} data-sidebar-open={sidebarOpen} className={`app-shell one-shell one-studio attention-workspace ${industryPage.open?"is-industry-page":""} ${fluidEnabled?"one-fluid-workspace":""} ${preview.enabled&&(view==='chat'||view==='features'||view==='account')?`coordinator-preview ${view==='features'?'coordinator-tools-open':view==='account'?'coordinator-settings-open coordinator-task-open':active?'coordinator-task-open':''}`:''} ${view==='things'?'studio-things':''} ${view==='features'?'studio-discover':''} ${studioIdle ? "studio-idle" : "studio-open"} ${focusedTask && view === "chat" && !studioIdle ? "studio-focused" : ""} ${activeExecutionMode ? "execution-shell" : ""}`}>
       <header className="one-chrome" hidden={fluidEnabled}>
-        <button className="one-brand-button" type="button" onClick={startNewChat} title="回到 ONE">
+        <button className="one-brand-button" type="button" onClick={()=>industryPage.open?openSurface('chat'):startNewChat()} title="回到 ONE">
           <OneWordmark inverse />
         </button>
         <nav className="studio-navigation" aria-label="工作区导航">
-          {primaryWorkspaceNavigation.map(item=><button type="button" key={item.id} aria-current={view===item.id?'page':undefined} onClick={()=>openSurface(item.id)}>{item.label}{item.id==='things'&&unviewedResultCount?<span className="task-review-dot" aria-label={`${unviewedResultCount} 个结果待确认`}/>:null}</button>)}
+          {primaryWorkspaceNavigation.map(item=><button type="button" key={item.id} aria-current={(industryPage.open?item.id==='workbenches':view===item.id)?'page':undefined} onClick={()=>openSurface(item.id)}>{item.label}{item.id==='things'&&unviewedResultCount?<span className="task-review-dot" aria-label={`${unviewedResultCount} 个结果待确认`}/>:null}</button>)}
         </nav>
         <div className="one-chrome-actions">
           <ActionMenu label="设置与管理"><button type="button" onClick={()=>openSurface('account')}>设置</button>{user.role==='admin'?<button type="button" onClick={()=>openSurface('admin')}>管理</button>:null}{user.access?.role==='company_admin'?<button type="button" onClick={()=>openSurface('company')}>公司管理</button>:null}</ActionMenu>
@@ -2390,9 +2442,9 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         </div>
       </header>
 
-      {!fluidEnabled?renderRuntimeNotices():null}
+      {!fluidEnabled&&!industryPage.open?renderRuntimeNotices():null}
 
-      {historyOpen && !fluidEnabled ? (
+      {historyOpen && !fluidEnabled && !industryPage.open ? (
         <>
           <button className="one-popover-scrim" aria-label="关闭历史对话" onClick={() => setHistoryOpen(false)} />
           {renderHistory()}
@@ -2402,7 +2454,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
 
       {fluidEnabled?<aside className="fluid-rail" aria-label="工作区导航" onPointerDownCapture={()=>focusFluid('main')} onFocusCapture={()=>focusFluid('main')}>
         <div className="fluid-rail-top">
-          {primaryWorkspaceNavigation.map(item=>{const Icon=({chat:MessageSquare,things:Folder,features:Sparkles,workbenches:LayoutGrid,avatars:Users})[item.id];return <button type="button" key={item.id} title={item.label} aria-label={item.label} aria-current={(item.id==='chat'?!workLayer:workLayer===item.id)?'page':undefined} onClick={()=>openSurface(item.id)}><Icon size={19}/><span>{item.label}</span>{item.id==='things'&&fluidReminderCount?<i className="fluid-task-dot" aria-label={`${fluidReminderCount} 条待查看动态`}/>:null}</button>;})}
+          {primaryWorkspaceNavigation.map(item=>{const Icon=({chat:MessageSquare,things:Folder,features:Sparkles,workbenches:LayoutGrid,avatars:Users})[item.id];return <button type="button" key={item.id} title={item.label} aria-label={item.label} aria-current={(industryPage.open?item.id==='workbenches':item.id==='chat'?!workLayer:workLayer===item.id)?'page':undefined} onClick={()=>openSurface(item.id)}><Icon size={19}/><span>{item.label}</span>{item.id==='things'&&fluidReminderCount?<i className="fluid-task-dot" aria-label={`${fluidReminderCount} 条待查看动态`}/>:null}</button>;})}
         </div>
         <div className="fluid-rail-tasks" aria-label="待处理任务"><small className="fluid-rail-section-label">正在进行与待查看</small>{fluidFeedback.slice(0,4).map(task=><button type="button" key={task.id} title={task.title} onClick={()=>{const item=conversations.find(c=>c.id===task.taskId);if(item)void openConversation(item);}}><span aria-hidden="true">{transferSettled(task.state)?'•':'·'}</span><strong>{task.title}</strong><small>{transferSettled(task.state)?'待查看':'处理中'}</small></button>)}{featureRuns.slice(0,2).map(run=><button type="button" key={`feature:${run.operationId}`} title={run.name} onClick={()=>openFeatureRun(run.operationId)}><span aria-hidden="true">•</span><strong>{run.name}</strong><small>{run.status==='pending'?'处理中':'待查看'}</small></button>)}</div>
         <div className="fluid-rail-bottom">{fluidDesktop?<>
@@ -2419,7 +2471,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <button type="button" title="个人账号" aria-label="个人账号" onClick={()=>openSurface('account')}><UserRound size={18}/><span>{profile.displayName||user.username}</span></button>
 </ActionMenu>}</div>
       </aside>:null}
-      <div className={`studio-layout ${fluidEnabled?'fluid-canvas':''}`} ref={fluidCanvasRef} style={fluidEnabled?fluidStyle:undefined}>
+      <div className={`studio-layout one-background-workspace ${fluidEnabled?'fluid-canvas':''}`} hidden={industryPage.open} inert={industryPage.open} ref={fluidCanvasRef} style={{...(fluidEnabled?fluidStyle:{}),...(industryPage.open?{display:'none'}:{})}}>
       {fluidEnabled&&fluidDesktop?<div className="fluid-skin"><OneFluidSurface scene={fluidScene} accent={fluidAccent} executionActive={activeExecutionMode} width={fluidSize.width} height={fluidSize.height} sizing={fluidSizing} activityOpen={fluidPanels.activityOpen} localOpen={fluidPanels.localOpen} sidebarOpen={sidebarOpen} onActivityToggle={()=>toggleFluidPanel('activity')} onLocalToggle={()=>toggleFluidPanel('local')} onSidebarToggle={()=>{focusFluid('main');setSidebarOpen(value=>!value);}} attentionTarget={fluidAttention.target} attentionVersion={fluidAttention.version} onEyeReturn={()=>setFluidAttention(old=>({...old,target:'main'}))} onProgress={paintFluidContent}/></div>:null}
       {fluidEnabled&&!fluidDesktop?<div className="fluid-compact-toggle"><button type="button" data-fluid-trigger="activity" aria-expanded={fluidPanels.activityOpen} onClick={()=>toggleFluidPanel('activity')}>任务动态{unviewedResultCount?` · ${unviewedResultCount}`:''}</button><button type="button" data-fluid-trigger="local" aria-expanded={fluidPanels.localOpen} onClick={()=>toggleFluidPanel('local')}>接管任务{executionBusy?' · 执行中':''}</button></div>:null}
 
@@ -2433,8 +2485,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
         <AdminPanel actorId={user.id} refreshModels={refresh} onOpenSidebar={() => setHistoryOpen(true)} />
       ) : view === "features" ? (
         renderFeatures()
-      ) : view === "workbenches" ? (
-        renderIndustryWorkspaces()
       ) : view === "avatars" ? (
         <SharingPanel api={api} models={models} draftScope={{userId:user.id,workspaceId:user.access?.workspaceId??user.defaultWorkspaceId}}/>
       ) : view === "account" ? (
@@ -2584,7 +2634,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             </div>
           ) : null}
           {preview.enabled && composeMode==="chat" ? featurePicker.panel : null}
-          <ComposerFeatureSuggestions api={api} scopeKey={`${user.id}:${user.access?.workspaceId??user.defaultWorkspaceId}`} text={content} cursor={composerCursor} enabled={preview.enabled&&composeMode==='chat'} focused={composerFocused&&view==='chat'&&!workLayer} composing={isComposing} pickerOpen={featurePicker.isOpen} dismissVersion={composerSuggestionDismiss} selected={featureForNext.map(feature=>feature.id)} onChoose={(feature,source)=>{chooseFeature(feature,source);featurePicker.input.current?.focus({preventScroll:true});}} onDismiss={()=>featurePicker.input.current?.focus({preventScroll:true})}/>
+          <ComposerFeatureSuggestions api={api} scopeKey={`${user.id}:${user.access?.workspaceId??user.defaultWorkspaceId}`} text={content} cursor={composerCursor} enabled={preview.enabled&&composeMode==='chat'} focused={!industryPage.open&&composerFocused&&view==='chat'&&!workLayer} composing={isComposing} pickerOpen={featurePicker.isOpen} dismissVersion={composerSuggestionDismiss} selected={featureForNext.map(feature=>feature.id)} onChoose={(feature,source)=>{chooseFeature(feature,source);featurePicker.input.current?.focus({preventScroll:true});}} onDismiss={()=>featurePicker.input.current?.focus({preventScroll:true})}/>
           <div className="composer-energy-shell" data-armed={preview.enabled&&featureForNext.length>0}>
             {preview.enabled?<FeatureArmedRim armed={featureForNext.length>0}/>:null}
             {featureForNext.length>0?<div className="selected-feature-list" aria-label="下次回复将使用的 Skills"><small>下一条使用 Skills：</small>{featureForNext.map(feature=><button key={feature.id} type="button" className="selected-feature-chip" aria-label={`取消 Skill：${feature.name}`} onClick={()=>chooseFeature(feature)}><Sparkles size={13}/><span>{feature.name}</span><X size={12}/></button>)}</div>:null}
@@ -2655,16 +2705,16 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       </>:null}
       {demo.enabled ? <details className="workspace-preview-debug"><summary>本地调试</summary><p>规则分流 / 合成结果，不调用 AI。自动分流示例：UI、露营；其他内容可手动指定。</p><label>任务等待（秒）<input type="number" min="1" max="120" value={preview.state.workerMs/1000} onChange={event=>preview.dispatch({type:'settings',workerMs:Math.max(1,Math.min(120,Number(event.target.value)||1))*1000})}/></label><label><input type="checkbox" checked={preview.state.manual} onChange={event=>preview.dispatch({type:'settings',manual:event.target.checked})}/>手动结束任务</label>{preview.state.tasks.map(task=><div key={task.id}><button type="button" onClick={()=>void openConversation(conversations.find(item=>item.id===task.id)!)}>{task.title}</button><span>{task.status} · 排队 {task.queue.length}</span><button type="button" disabled={task.status!=='running'} onClick={()=>preview.dispatch({type:'finish',taskId:task.id,round:task.round,now:Date.now()})}>模拟完成</button></div>)}</details> : null}
       </div>
+      {industryVisited?<section className="industry-page-shell" aria-label="行业工作台页面" ref={industryPageShellRef} tabIndex={-1} hidden={!industryPage.open} inert={!industryPage.open} style={!industryPage.open?{display:'none'}:undefined}>{renderIndustryWorkspaces()}</section>:null}
       {preview.enabled?<>
-        {visitedLayers.includes('features')||workLayer==='features'?<FluidWorkLayer title="Skills" open={workLayer==='features'} className="fluid-work-layer-features" onClose={closeWorkLayer}>{renderFeatures()}</FluidWorkLayer>:null}
-        {visitedLayers.includes('workbenches')||workLayer==='workbenches'?<FluidWorkLayer title="行业工作台" open={workLayer==='workbenches'} className="fluid-work-layer-industry" onClose={closeWorkLayer}>{renderIndustryWorkspaces()}</FluidWorkLayer>:null}
-        {visitedLayers.includes('avatars')||workLayer==='avatars'?<FluidWorkLayer title="分身" open={workLayer==='avatars'} className="fluid-work-layer-avatars" onClose={closeWorkLayer}><SharingPanel api={api} models={models} draftScope={{userId:user.id,workspaceId:user.access?.workspaceId??user.defaultWorkspaceId}}/></FluidWorkLayer>:null}
-        {visitedLayers.includes('account')||workLayer==='account'?<FluidWorkLayer title="设置" open={workLayer==='account'} className="fluid-work-layer-account" onClose={closeWorkLayer}>{renderAccount()}</FluidWorkLayer>:null}
-        {workLayer==='things'?<FluidWorkLayer title="任务与成果" className="fluid-work-layer-things" onClose={closeWorkLayer}>{renderThings()}</FluidWorkLayer>:null}
-        {workLayer==='history'?<FluidWorkLayer title={showArchived?'已归档记录':'历史记录'} className="fluid-work-layer-history" onClose={closeWorkLayer}>{renderHistory()}</FluidWorkLayer>:null}
-        {workLayer==='admin'&&user.role==='admin'?<FluidWorkLayer title="管理" initialMaximized onClose={closeWorkLayer}><AdminPanel actorId={user.id} refreshModels={refresh} onOpenSidebar={openHistory}/></FluidWorkLayer>:null}
-        {workLayer==='company'&&user.access?.role==='company_admin'?<FluidWorkLayer title="公司管理" initialMaximized onClose={closeWorkLayer}><CompanyPanel api={api}/></FluidWorkLayer>:null}
-        {workLayer==='guide'?<FluidWorkLayer title="重新认识 ONE" className="fluid-work-layer-guide" onClose={dismissStory}>{renderStory()}</FluidWorkLayer>:null}
+        {visitedLayers.includes('features')||workLayer==='features'?<FluidWorkLayer title="Skills" open={!industryPage.open&&workLayer==='features'} className="fluid-work-layer-features" onClose={closeWorkLayer}>{renderFeatures()}</FluidWorkLayer>:null}
+        {visitedLayers.includes('avatars')||workLayer==='avatars'?<FluidWorkLayer title="分身" open={!industryPage.open&&workLayer==='avatars'} className="fluid-work-layer-avatars" onClose={closeWorkLayer}><SharingPanel api={api} models={models} draftScope={{userId:user.id,workspaceId:user.access?.workspaceId??user.defaultWorkspaceId}}/></FluidWorkLayer>:null}
+        {visitedLayers.includes('account')||workLayer==='account'?<FluidWorkLayer title="设置" open={!industryPage.open&&workLayer==='account'} className="fluid-work-layer-account" onClose={closeWorkLayer}>{renderAccount()}</FluidWorkLayer>:null}
+        {workLayer==='things'?<FluidWorkLayer title="任务与成果" open={!industryPage.open} className="fluid-work-layer-things" onClose={closeWorkLayer}>{renderThings()}</FluidWorkLayer>:null}
+        {workLayer==='history'?<FluidWorkLayer title={showArchived?'已归档记录':'历史记录'} open={!industryPage.open} className="fluid-work-layer-history" onClose={closeWorkLayer}>{renderHistory()}</FluidWorkLayer>:null}
+        {workLayer==='admin'&&user.role==='admin'?<FluidWorkLayer title="管理" open={!industryPage.open} initialMaximized onClose={closeWorkLayer}><AdminPanel actorId={user.id} refreshModels={refresh} onOpenSidebar={openHistory}/></FluidWorkLayer>:null}
+        {workLayer==='company'&&user.access?.role==='company_admin'?<FluidWorkLayer title="公司管理" open={!industryPage.open} initialMaximized onClose={closeWorkLayer}><CompanyPanel api={api}/></FluidWorkLayer>:null}
+        {workLayer==='guide'?<FluidWorkLayer title="重新认识 ONE" open={!industryPage.open} className="fluid-work-layer-guide" onClose={dismissStory}>{renderStory()}</FluidWorkLayer>:null}
         {featureRuns.filter(run=>run.status==='pending').map(run=><FeatureRunMonitor key={run.operationId} api={api} operationId={run.operationId} enabled={viewedFeatureOperation!==run.operationId} onStatus={updateFeatureRun} onUnavailable={setFeatureRunIssue}/>) }
       </>:null}
       {preview.enabled?<FeatureHandoff transfer={featureTransfer} target={()=>document.querySelector<HTMLElement>('.studio-composer .composer-energy-shell')}  onComplete={()=>setFeatureTransfer(current=>current?.id===featureTransfer?.id?null:current)}/>:null}

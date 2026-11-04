@@ -9,9 +9,9 @@ export const industryWorkspaces:{id:IndustryWorkspaceId;category:Exclude<Industr
   {id:'image_edit',category:'commerce',name:'小修小改',description:'围绕已有图片说明要改的地方，保留商品细节，查看修改结果。',materials:'已有图片 · 修改说明',keywords:'电商 图片 修改 局部 修图 小修小改 编辑'},
   {id:'review_reply',category:'commerce',name:'评价回复',description:'放入买家评价，结合商品与回复要求，准备可检查和复制的回复。',materials:'买家评价 · 商品信息与回复口吻',keywords:'电商 评价 回复 客服 售后 买家 差评 好评'},
 ];
-export type IndustryDirectoryState={category:IndustryCategory;query:string;workspace:IndustryWorkspaceId|null};
-export const emptyIndustryDirectory=():IndustryDirectoryState=>({category:'all',query:'',workspace:null});
-export function filterIndustryWorkspaces(query:string,category:IndustryCategory){const words=query.normalize('NFKC').trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);return industryWorkspaces.filter(entry=>(category==='all'||entry.category===category)&&words.every(word=>`${entry.name} ${entry.description} ${entry.materials} ${entry.keywords}`.normalize('NFKC').toLocaleLowerCase().includes(word)));}
+export type IndustryDirectoryState={category:IndustryCategory;query:string;workspace:IndustryWorkspaceId|null;collection:'all'|'favorites'};
+export const emptyIndustryDirectory=():IndustryDirectoryState=>({category:'all',query:'',workspace:null,collection:'all'});
+export function filterIndustryWorkspaces(query:string,category:IndustryCategory,favorites?:readonly IndustryWorkspaceId[]){const words=query.normalize('NFKC').trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);return industryWorkspaces.filter(entry=>(category==='all'||entry.category===category)&&(!favorites||favorites.includes(entry.id))&&words.every(word=>`${entry.name} ${entry.description} ${entry.materials} ${entry.keywords}`.normalize('NFKC').toLocaleLowerCase().includes(word)));}
 export function industryDirectoryTransition(state:IndustryDirectoryState,action:{type:'open';workspace:IndustryWorkspaceId}|{type:'back'}|{type:'category';category:IndustryCategory}|{type:'query';query:string}):IndustryDirectoryState{
   if(action.type==='open')return industryWorkspaces.some(entry=>entry.id===action.workspace)?{...state,workspace:action.workspace}:state;
   if(action.type==='back')return {...state,workspace:null};
@@ -19,5 +19,5 @@ export function industryDirectoryTransition(state:IndustryDirectoryState,action:
   return {...state,query:action.query};
 }
 export const industryDirectoryStorageKey=(scopeKey:string)=>`one-industry-location:v1:${encodeURIComponent(scopeKey)}`;
-export function decodeIndustryDirectory(value:string|null,scopeKey:string):IndustryDirectoryState{try{const data=JSON.parse(value??'null') as {scopeKey?:string;state?:IndustryDirectoryState}|null,state=data?.state;if(data?.scopeKey!==scopeKey||!state||!['all','teaching','commerce'].includes(state.category)||typeof state.query!=='string'||state.workspace!==null&&!industryWorkspaces.some(entry=>entry.id===state.workspace))return emptyIndustryDirectory();return {...state,query:state.query.slice(0,200)};}catch{return emptyIndustryDirectory();}}
+export function decodeIndustryDirectory(value:string|null,scopeKey:string):IndustryDirectoryState{try{const data=JSON.parse(value??'null') as {scopeKey?:string;state?:IndustryDirectoryState}|null,state=data?.state;if(data?.scopeKey!==scopeKey||!state||!['all','teaching','commerce'].includes(state.category)||typeof state.query!=='string'||state.workspace!==null&&!industryWorkspaces.some(entry=>entry.id===state.workspace)||state.collection!==undefined&&!['all','favorites'].includes(state.collection))return emptyIndustryDirectory();return {category:state.category,workspace:state.workspace,query:state.query.slice(0,200),collection:state.collection??'all'};}catch{return emptyIndustryDirectory();}}
 export const encodeIndustryDirectory=(state:IndustryDirectoryState,scopeKey:string)=>JSON.stringify({scopeKey,state});

@@ -6,7 +6,7 @@ import { asyncRoute } from './middleware.js';
 import { publicAttachmentSummary } from './conversationAttachments.js';
 import { industryRetailPricing } from './industryModel.js';
 import { IndustryError, IndustryStore, INDUSTRY_CID, assertIndustryActor, createIndustryUsageSession, industryScope, industryUsage,
-  privateIndustryState, readIndustryOperation, readIndustryReceipt, recoverIndustryOperations, industryAttachmentReferenced, type IndustryActor } from './industryState.js';
+  privateIndustryState, readIndustryOperation, readIndustryReceipt, recoverIndustryOperations, industryAttachmentReferenced, industryFavorites, setIndustryFavorite, type IndustryActor } from './industryState.js';
 
 const actorOf = (req: Request): IndustryActor => ({ id: req.user!.id, workspaceId: req.workspaceId! });
 export function installIndustryRoutes(app: Express, auth: readonly RequestHandler[], store: Store, files: AttachmentService, options: { verifyKey: (req: Request) => Promise<void>; storageAvailable: boolean }) {
@@ -15,6 +15,25 @@ export function installIndustryRoutes(app: Express, auth: readonly RequestHandle
   router.get('/config', asyncRoute(async (req, res) => {
     const db = await store.read(), actor = actorOf(req); assertIndustryActor(db, actor);
     res.json({ pricing: industryRetailPricing(db, industryScope(actor), options.storageAvailable) });
+  }));
+  router.get('/favorites', asyncRoute(async (req, res) => {
+    res.json(industryFavorites(await store.read(), actorOf(req)));
+  }));
+  router.put('/favorites/:workbenchId', asyncRoute(async (req, res) => {
+    const actor = actorOf(req);
+    assertIndustryActor(await store.read(), actor);
+    await options.verifyKey(req);
+    if (!req.oneKeyDeviceId) throw new IndustryError('请使用 ONE Key 设置收藏', 428, 'ONE_KEY_REQUIRED');
+    const input: unknown = req.body;
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 1 || !('favorite' in input)) throw new IndustryError('请明确设置收藏或取消收藏', 400, 'INDUSTRY_FAVORITE_INVALID');
+    const result = await store.mutate(db => {
+      // Key proof may await an external challenge; recheck the exact live
+      // membership and device binding in the persistence transaction as well.
+      const validKey = db.oneKeyDevices.some(key => key.id === req.oneKeyDeviceId && key.userId === actor.id && key.workspaceId === actor.workspaceId && key.status === 'active');
+      if (!validKey) throw new IndustryError('ONE Key 已失效，请重新进入后设置收藏', 403, 'INDUSTRY_KEY_REVOKED');
+      return setIndustryFavorite(db, actor, String(req.params.workbenchId), input.favorite);
+    });
+    res.json(result);
   }));
   router.post('/usage-sessions', asyncRoute(async (req, res) => {
     await options.verifyKey(req);

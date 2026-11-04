@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import type { Store } from './db.js';
 import type { Database, ModelUsageRecord } from './types.js';
 import { publicUser } from './serializers.js';
-import { IndustryStore, assertIndustryBudget, createIndustryUsageSession, emptyIndustryState, industryDatabase, industryUsage, readIndustryOperation, recoverIndustryOperations, runIndustryOperation } from './industryState.js';
+import { IndustryStore, assertIndustryBudget, createIndustryUsageSession, emptyIndustryState, industryDatabase, industryUsage, readIndustryOperation, recoverIndustryOperations, runIndustryOperation, industryFavorites, setIndustryFavorite } from './industryState.js';
 import { defaultReviewDraft } from './reviewReplyTemplates.js';
 import type { ReviewProfile } from './reviewReplyTypes.js';
 
@@ -27,10 +27,39 @@ test('industry private JSON survives two real ONE JSON Store processes and publi
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'one-industry-restart-')); t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const env = { PATH: process.env.PATH, NODE_ENV: 'test', DB_PROVIDER: 'json', ONE_DATA_DIR: directory, ADMIN_INITIAL_PASSWORD: 'isolated-industry-fixture-password', YYLX_API_KEY: '', PROVIDER_CREDENTIALS_KEY: 'industry-fixture-encryption-key-only' };
   const run = async (script: string) => (await exec(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { cwd: process.cwd(), env, timeout: 120_000 })).stdout;
-  await run(`const {store}=await import('./server/db.ts');const {IndustryStore}=await import('./server/industryState.ts');const {ReviewReplyService,defaultReviewDraft}=await import('./server/reviewReplies.ts');const db=await store.read();const actor={id:db.users[0].id,workspaceId:db.users[0].defaultWorkspaceId};await new ReviewReplyService(new IndustryStore(store)).saveProfile(actor,{...defaultReviewDraft(),shopName:'PRIVATE_RESTART_SHOP'});`);
-  const result = JSON.parse(await run(`const {store}=await import('./server/db.ts');const {IndustryStore}=await import('./server/industryState.ts');const {publicUser}=await import('./server/serializers.ts');const db=await store.read();console.log(JSON.stringify({rows:(await new IndustryStore(store).read()).reviewReplyProfiles,public:publicUser(db.users[0]),userId:db.users[0].id,workspaceId:db.users[0].defaultWorkspaceId}));`));
+  await run(`const {store}=await import('./server/db.ts');const {IndustryStore,setIndustryFavorite}=await import('./server/industryState.ts');const {ReviewReplyService,defaultReviewDraft}=await import('./server/reviewReplies.ts');const db=await store.read();const actor={id:db.users[0].id,workspaceId:db.users[0].defaultWorkspaceId};await store.mutate(db=>{setIndustryFavorite(db,actor,'teaching',true);setIndustryFavorite(db,actor,'review_reply',true);setIndustryFavorite(db,actor,'teaching',false);});await new ReviewReplyService(new IndustryStore(store)).saveProfile(actor,{...defaultReviewDraft(),shopName:'PRIVATE_RESTART_SHOP'});`);
+  const result = JSON.parse(await run(`const {store}=await import('./server/db.ts');const {IndustryStore,industryFavorites}=await import('./server/industryState.ts');const {publicUser}=await import('./server/serializers.ts');const db=await store.read();console.log(JSON.stringify({rows:(await new IndustryStore(store).read()).reviewReplyProfiles,favorites:industryFavorites(db,{id:db.users[0].id,workspaceId:db.users[0].defaultWorkspaceId}),privateFavorites:db.users[0].industry.favorites,public:publicUser(db.users[0]),userId:db.users[0].id,workspaceId:db.users[0].defaultWorkspaceId}));`));
   assert.equal(result.rows.length, 1); assert.equal(result.rows[0].shopName, 'PRIVATE_RESTART_SHOP'); assert.equal(result.rows[0].ownerId, result.userId); assert.equal(result.rows[0].workspaceId, result.workspaceId);
   assert.equal(Object.hasOwn(result.public, 'industry'), false); assert.doesNotMatch(JSON.stringify(result.public), /PRIVATE_RESTART_SHOP|reviewReplyProfiles/);
+  assert.deepEqual(result.favorites, { favoriteIds: ['review_reply'] });
+  assert.equal(result.privateFavorites.length, 1); assert.equal(result.privateFavorites[0].workspaceId, result.workspaceId); assert.equal(result.privateFavorites[0].userId, result.userId);
+  assert.doesNotMatch(JSON.stringify(result.public), /favoriteIds|favorites|workbenchId/);
+});
+
+test('favorites are idempotent private desired states, isolated by user/workspace and preserved by job scatter', async () => {
+  const f = fixture(); delete f.db().users[0].industry!.favorites; delete f.db().users[1].industry;
+  assert.deepEqual(industryFavorites(f.db(), f.actor), { favoriteIds: [] });
+  assert.equal(f.db().users[0].industry!.favorites, undefined); assert.equal(f.db().users[1].industry, undefined);
+  for (const id of ['teaching', 'product_creative', 'image_edit', 'review_reply']) {
+    setIndustryFavorite(f.db(), f.actor, id, true); setIndustryFavorite(f.db(), f.actor, id, true);
+  }
+  assert.equal(f.db().users[0].industry!.favorites!.length, 4);
+  setIndustryFavorite(f.db(), { id: 'a', workspaceId: 'wb' }, 'image_edit', true);
+  setIndustryFavorite(f.db(), { id: 'b', workspaceId: 'wa' }, 'teaching', true);
+  assert.deepEqual(industryFavorites(f.db(), { id: 'a', workspaceId: 'wb' }), { favoriteIds: ['image_edit'] });
+  assert.deepEqual(industryFavorites(f.db(), { id: 'b', workspaceId: 'wa' }), { favoriteIds: ['teaching'] });
+  const before = structuredClone(f.db().users.map(user => user.industry?.favorites));
+  await f.store.mutate(db => { db.reviewReplyProfiles.push(row('favorite-scatter')); });
+  assert.deepEqual(f.db().users.map(user => user.industry?.favorites), before);
+  setIndustryFavorite(f.db(), f.actor, 'teaching', false); setIndustryFavorite(f.db(), f.actor, 'teaching', false);
+  assert.deepEqual(industryFavorites(f.db(), f.actor).favoriteIds, ['product_creative', 'image_edit', 'review_reply']);
+  assert.deepEqual(industryFavorites(f.db(), { id: 'b', workspaceId: 'wa' }), { favoriteIds: ['teaching'] });
+  for (const id of ['https://untrusted.invalid', '/api/admin/users', '__proto__', 'constructor', '', '教师工作台', 'teaching/../review_reply']) assert.throws(() => setIndustryFavorite(f.db(), f.actor, id, true), { code: 'INDUSTRY_FAVORITE_INVALID' });
+  assert.throws(() => setIndustryFavorite(f.db(), f.actor, 'teaching', 'true'), { code: 'INDUSTRY_FAVORITE_INVALID' });
+  f.db().workspaceMembers[0].status = 'disabled';
+  assert.throws(() => setIndustryFavorite(f.db(), f.actor, 'teaching', true), { code: 'INDUSTRY_ACCESS_REVOKED' });
+  assert.throws(() => industryFavorites(f.db(), f.actor), { code: 'INDUSTRY_ACCESS_REVOKED' });
+  assert.equal(f.db().modelUsageRecords.length, 0); assert.equal(f.db().powerLedger.length, 0);
 });
 
 test('flatten/scatter keeps one user\'s workspaces and another user separate; read-only projections create no state', async () => {

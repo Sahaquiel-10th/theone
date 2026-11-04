@@ -5,7 +5,7 @@ import {decodeIndustryDirectory,emptyIndustryDirectory,encodeIndustryDirectory,f
 
 test('both application shells share the required five destinations while Skills keeps its feature identity',()=>{
   assert.deepEqual(primaryWorkspaceNavigation.map(item=>[item.id,item.label]),[['chat','主页'],['things','任务'],['features','Skills'],['workbenches','行业工作台'],['avatars','分身']]);
-  const main=fs.readFileSync(new URL('./main.tsx',import.meta.url),'utf8');assert.equal((main.match(/primaryWorkspaceNavigation.map/g)||[]).length,2);assert.match(main,/visitedLayers.includes\('workbenches'\)/);assert.match(main,/workLayer==='features'/);
+  const main=fs.readFileSync(new URL('./main.tsx',import.meta.url),'utf8');assert.equal((main.match(/primaryWorkspaceNavigation.map/g)||[]).length,2);assert.match(main,/workLayer==='features'/);
 });
 test('the industry directory holds exactly the four real workflows in their industries',()=>{
   assert.deepEqual(filterIndustryWorkspaces('','teaching').map(item=>item.id),['teaching']);
@@ -15,7 +15,7 @@ test('the industry directory holds exactly the four real workflows in their indu
 test('opening and returning preserves the directory filter without any execution state or model operation',()=>{
   const state={...emptyIndustryDirectory(),query:'图片',category:'commerce' as const},original=structuredClone(state);
   const opened=industryDirectoryTransition(state,{type:'open',workspace:'image_edit'});assert.equal(opened.workspace,'image_edit');assert.deepEqual(industryDirectoryTransition(opened,{type:'back'}),state);assert.deepEqual(state,original);
-  assert.deepEqual(Object.keys(opened).sort(),['category','query','workspace']);assert.equal(industryDirectoryTransition(opened,{type:'category',category:'teaching'}).workspace,null);
+  assert.deepEqual(Object.keys(opened).sort(),['category','collection','query','workspace']);assert.equal(industryDirectoryTransition(opened,{type:'category',category:'teaching'}).workspace,null);
 });
 test('restored industry position is account/workspace scoped and validates destinations',()=>{
   const state={...emptyIndustryDirectory(),workspace:'review_reply' as const,category:'commerce' as const};const encoded=encodeIndustryDirectory(state,'user-a:workspace-a');
@@ -29,6 +29,17 @@ test('industry workflows never enter composer selection and both Skills catalogs
   for(const path of ['./preview/FeatureShelf.tsx','./FeatureMarketplace.tsx']){const text=fs.readFileSync(new URL(path,import.meta.url),'utf8');assert.doesNotMatch(text,/TeachingEntry|TeachingWorkspace|teachingOpen|matchesTeachingEntry/);assert.match(text,/onChoose/);}
   const shelf=fs.readFileSync(new URL('./preview/FeatureShelf.tsx',import.meta.url),'utf8');assert.match(shelf,/<FeatureLaunch[^>]* selectionOnly/);
   assert.equal(new Set(industryWorkspaces.map(entry=>entry.id)).size,4);
+});
+
+test('saved favorites intersect search and industry filters without changing catalog order',()=>{
+  assert.deepEqual(filterIndustryWorkspaces('','all',['review_reply','teaching']).map(item=>item.id),['teaching','review_reply']);
+  assert.deepEqual(filterIndustryWorkspaces('回复','commerce',['teaching','review_reply']).map(item=>item.id),['review_reply']);
+  assert.deepEqual(filterIndustryWorkspaces('','teaching',['image_edit']),[]);
+  assert.deepEqual(filterIndustryWorkspaces('','all',[]),[]);
+  const old={category:'commerce',query:'图片',workspace:null};
+  assert.deepEqual(decodeIndustryDirectory(JSON.stringify({scopeKey:'owner',state:old}),'owner'),{...old,collection:'all'});
+  const saved={...emptyIndustryDirectory(),collection:'favorites' as const};
+  assert.deepEqual(decodeIndustryDirectory(encodeIndustryDirectory(saved,'owner'),'owner'),saved);
 });
 
 

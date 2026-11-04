@@ -322,6 +322,8 @@ skill 元信息仅提取简单顶层 name/description/license 字符串和折叠
 | 接口 | 用途 |
 |---|---|
 | `GET /api/industry/config` | 当前已发布零售计价与能力可用性，不返回供应商成本或凭据 |
+| `GET /api/industry/favorites` | 读取本人当前空间收藏的工作台 ID，不返回归属或私人任务数据 |
+| `PUT /api/industry/favorites/:workbenchId` | `{favorite:true|false}` 幂等设置收藏，校验现有目录 ID、Workspace membership 与 ONE Key，不调用模型、不计费 |
 | `POST /api/industry/usage-sessions` | 明确 `confirmed`、工具、稳定 `requestKey` 与本轮 `budgetMicros`，创建绑定 ONE Key 的 24 小时上限 |
 | `GET /api/industry/usage-sessions/:id` | 本轮上限、实际已用与临时预留 |
 | `GET /api/industry/operations/:id` | 本人辅助操作原回执与已完成结果；查询不触发模型 |

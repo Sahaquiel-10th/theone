@@ -4,10 +4,12 @@ import type { Database, User } from './types.js';
 import type { CommerceJob, CommerceSavedProduct, CommerceSavedTemplate } from './commerceTypes.js';
 import type { ReviewProfile, ReviewRun } from './reviewReplyTypes.js';
 import { uid } from './security.js';
+import { industryFavoriteIds, isIndustryFavoriteId, type IndustryFavoriteId } from '../src/industryFavoriteIds.js';
 
 export type IndustryTool = 'product_creative' | 'image_edit' | 'review_reply';
 export type IndustryScope = { workspaceId: string; userId: string };
 export type IndustryActor = { id: string; workspaceId: string };
+export type IndustryFavorite = IndustryScope & { workbenchId: IndustryFavoriteId; updatedAt: string };
 export type IndustryUsageSession = IndustryScope & {
   id: string; tool: IndustryTool; requestKey: string; budgetMicros: number;
   createdAt: string; expiresAt: string; keyDeviceId?: string;
@@ -22,6 +24,8 @@ export type IndustryState = {
   commerceJobs: CommerceJob[]; commerceProducts: CommerceSavedProduct[]; commerceTemplates: CommerceSavedTemplate[];
   reviewReplyProfiles: ReviewProfile[]; reviewReplyRuns: ReviewRun[];
   usageSessions: IndustryUsageSession[]; operations: IndustryOperation[];
+  /** Absent in existing private JSON. Never copied into the flattened job arrays. */
+  favorites?: IndustryFavorite[];
 };
 export type IndustryDatabase = Database & Pick<IndustryState,
   'commerceJobs' | 'commerceProducts' | 'commerceTemplates' | 'reviewReplyProfiles' | 'reviewReplyRuns'>;
@@ -39,12 +43,29 @@ export function assertIndustryActor(db: Database, actor: IndustryActor): User {
 }
 export function industryScope(actor: IndustryActor): IndustryScope { return { userId: actor.id, workspaceId: actor.workspaceId }; }
 export function emptyIndustryState(): IndustryState {
-  return { commerceJobs: [], commerceProducts: [], commerceTemplates: [], reviewReplyProfiles: [], reviewReplyRuns: [], usageSessions: [], operations: [] };
+  return { commerceJobs: [], commerceProducts: [], commerceTemplates: [], reviewReplyProfiles: [], reviewReplyRuns: [], usageSessions: [], operations: [], favorites: [] };
 }
 export function privateIndustryState(db: Database, actor: IndustryActor, create = false): IndustryState | undefined {
   const user = assertIndustryActor(db, actor);
   if (create && !user.industry) user.industry = emptyIndustryState();
   return user.industry;
+}
+export function industryFavorites(db: Database, actor: IndustryActor): { favoriteIds: IndustryFavoriteId[] } {
+  const rows = privateIndustryState(db, actor)?.favorites ?? [];
+  return { favoriteIds: industryFavoriteIds.filter(id => rows.some(row => row.workspaceId === actor.workspaceId && row.userId === actor.id && row.workbenchId === id)) };
+}
+/** Absolute desired state is safe to repeat after a lost response. */
+export function setIndustryFavorite(db: Database, actor: IndustryActor, workbenchId: unknown, favorite: unknown) {
+  assertIndustryActor(db, actor);
+  if (!isIndustryFavoriteId(workbenchId) || typeof favorite !== 'boolean') throw new IndustryError('请从现有工作台设置收藏', 400, 'INDUSTRY_FAVORITE_INVALID');
+  const state = privateIndustryState(db, actor, favorite);
+  if (!state) return { favoriteIds: [] as IndustryFavoriteId[] };
+  const rows = state.favorites ?? [];
+  const mine = (row: IndustryFavorite) => row.workspaceId === actor.workspaceId && row.userId === actor.id && row.workbenchId === workbenchId;
+  if (favorite && rows.filter(mine).length === 1) return industryFavorites(db, actor);
+  state.favorites = rows.filter(row => !mine(row));
+  if (favorite) state.favorites.push({ ...industryScope(actor), workbenchId, updatedAt: new Date().toISOString() });
+  return industryFavorites(db, actor);
 }
 const collections = ['commerceJobs', 'commerceProducts', 'commerceTemplates', 'reviewReplyProfiles', 'reviewReplyRuns'] as const;
 type Collection = typeof collections[number];

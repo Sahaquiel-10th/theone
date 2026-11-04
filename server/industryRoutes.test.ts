@@ -151,3 +151,28 @@ test('receipt retry permission requires a precise terminal failure or exact scop
   const absent = await f.request(`/receipts/receipt-absent-key-0001?${query}`); assert.equal(absent.status, 200); assert.equal((await absent.json()).receipt.retryAllowed, true);
   const wrongLane = await f.request(`/receipts/receipt-aux-completed-0001?${new URLSearchParams({ tool: 'review_reply', path: '/api/review-replies/analyze' })}`); assert.equal((await wrongLane.json()).receipt.retryAllowed, false);
 });
+
+test('favorites HTTP saves explicit desired state with Key and membership, returns only catalog IDs, and never bills', async t => {
+  const f = await fixture(t);
+  const before = await f.request('/favorites'); assert.equal(before.status, 200); assert.equal(before.headers.get('cache-control'), 'no-store'); assert.deepEqual(await before.json(), { favoriteIds: [] });
+  const save = () => f.request('/favorites/teaching', 'PUT', { favorite: true });
+  const first = await save(), duplicate = await save(); assert.equal(first.status, 200); assert.equal(duplicate.status, 200);
+  assert.deepEqual(await first.json(), { favoriteIds: ['teaching'] }); assert.deepEqual(await duplicate.json(), { favoriteIds: ['teaching'] });
+  assert.equal(f.db().users[0].industry!.favorites!.length, 1);
+  for (const headers of [{ 'x-test-user': 'b' }, { 'x-test-workspace': 'wb' }] as Record<string, string>[]) {
+    const response = await f.request('/favorites', 'GET', undefined, headers); assert.equal(response.status, 200); assert.deepEqual(await response.json(), { favoriteIds: [] });
+  }
+  const spoof = await f.request('/favorites/image_edit', 'PUT', { favorite: true, userId: 'b', workspaceId: 'wb' }); assert.equal(spoof.status, 400);
+  for (const [id, body] of [['https%3A%2F%2Funtrusted.invalid', { favorite: true }], ['unknown', { favorite: true }], ['__proto__', { favorite: true }], ['teaching', { favorite: 'true' }], ['teaching', { toggle: true }], ['teaching', {}]] as [string, unknown][]) {
+    assert.equal((await f.request('/favorites/' + id, 'PUT', body)).status, 400);
+  }
+  const noKey = await f.request('/favorites/teaching', 'PUT', { favorite: false }, { 'x-test-key': 'absent' }); assert.equal(noKey.status, 428);
+  const removed = await f.request('/favorites/teaching', 'PUT', { favorite: false }); assert.deepEqual(await removed.json(), { favoriteIds: [] });
+  assert.deepEqual(await (await f.request('/favorites/teaching', 'PUT', { favorite: false })).json(), { favoriteIds: [] });
+  f.db().workspaceMembers[0].status = 'disabled'; assert.equal((await f.request('/favorites')).status, 403); assert.equal((await save()).status, 403);
+  f.db().workspaceMembers[0].status = 'active'; f.removeKey(); assert.equal((await save()).status, 428);
+  assert.equal(f.db().modelUsageRecords.length, 0); assert.equal(f.db().powerLedger.length, 0);
+  for (const [route, method, body] of [['/favorites', 'GET', undefined], ['/favorites/teaching', 'PUT', { favorite: true }]] as [string, string, unknown][]) {
+    const response = await fetch(f.base + route, { method, headers: { 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }); assert.equal(response.status, 401);
+  }
+});

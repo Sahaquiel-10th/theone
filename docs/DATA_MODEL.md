@@ -157,3 +157,5 @@
 `User.industry` 为可选私有状态，包含电商任务、商品资料、模板、评价规则及版本、评价批次、用量授权与辅助操作回执。每条记录带 `workspaceId` 及 `userId` 或 `ownerId`，不因共用公司空间开放私人内容。该字段沿现有 users JSON/关系 payload 事务持久化，不新增顶层未注册集合或 DDL，并从 `PublicUser` 排除。
 
 `IndustryStore` 在原 Store 事务内将领域集合投影与回写；禁止已存在记录的空间/所有者改绑。附件继续存在 ONE `attachments` 集合，私有 `conversationId=industry:commerce` 标记限定这些工具的素材；业务记录引用阻止通用附件接口误删。用量授权保存用户明确确认的总上限与原 ONE Key 绑定，模型用量仍由现有账本负责。
+
+行业工作台收藏：`User.industry.favorites` 为可选私有数组，每条包含 `workspaceId`、`userId`、白名单 `workbenchId` 和 `updatedAt`。同一用户/空间/工作台仅一条，取消收藏删除该偏好。旧记录无字段时按空收藏读取，不改变其他工作台数据；`PublicUser` 不返回整个 `industry` 字段。

@@ -1,22 +1,26 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ONE 行业工作台 · 隔离体验</title></head>
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ONE 全屏工作台 · 隔离 QA 导航</title>
+  <style>
+    :root{font:16px/1.7 system-ui,sans-serif;color:#25343e;background:#f7f8fa}body{max-width:880px;margin:56px auto;padding:0 24px}h1{font-size:30px;line-height:1.3}p{color:#53616b}nav{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:24px 0}a{color:#155f86}nav a{display:block;border:1px solid #dce3e8;border-radius:12px;background:white;padding:16px;text-decoration:none}code{font-size:13px;overflow-wrap:anywhere}.notice{padding:14px 18px;border:1px solid #e7d69c;border-radius:12px;background:#fff7de;color:#675328}
+  </style>
+</head>
 <body>
-<div id="qa-banner" style="padding:12px 20px;background:#fff1c8;color:#483a16;font:14px/1.6 system-ui">隔离体验：仅合成账号、资料、模型与100电力测试钱包，不连接真实AI或外部账号。 <a href="/">打开真实主入口与完整导航</a> · 下载上传样例：<a href="/api/qa-industry/samples/product.png" download>商品图</a> / <a href="/api/qa-industry/samples/reference.png" download>参考图</a> / <a href="/api/qa-industry/samples/detail.png" download>详情图</a></div>
-<div id="root"></div>
-<script type="module">
-import React from 'react';
-import {createRoot} from 'react-dom/client';
-import {IndustryWorkspaces} from '/src/IndustryWorkspaces.tsx';
-import {CommerceIndustryTool} from '/src/CommerceIndustryTool.tsx';
-import {api,expectUser} from '/src/oneApi.ts';
-import '/src/styles.css';
-import '/src/preview/feature-workflow.css';
-expectUser('qa-industry-owner','qa-industry-workspace');
-document.documentElement.dataset.appearance='silver';
-const params=new URLSearchParams(location.search),kind=params.get('tool');
-const direct=['product_creative','image_edit','review_reply'].includes(kind);
-const renderCommerce=(tool,onBack)=>React.createElement(CommerceIndustryTool,{kind:tool,onBack});
-createRoot(document.getElementById('root')).render(React.createElement('main',{style:{maxWidth:1400,margin:'24px auto',padding:'0 24px'}},direct?renderCommerce(kind,()=>{location.href='/scripts/qa-industry.html';}):React.createElement(IndustryWorkspaces,{api,scopeKey:'qa-industry-workspace:qa-industry-owner',renderCommerce})));
-</script>
-</body></html>
+  <h1>全屏工作台 · 隔离 QA</h1>
+  <p class="notice">仅合成账号、资料、模型和 100 电力测试钱包，不连接真实 AI 或外部账号。以下链接全部进入真实主界面；此页不挂载另一套工作台或伪造收藏接口。</p>
+  <nav aria-label="真实主界面与全屏工作台入口">
+    <a href="/">真实主页与左侧导航</a>
+    <a href="/workbenches">行业工作台目录</a>
+    <a href="/workbenches/teaching">教师工作台</a>
+    <a href="/workbenches/product_creative">主图与标题</a>
+    <a href="/workbenches/image_edit">小修小改</a>
+    <a href="/workbenches/review_reply">评价回复</a>
+  </nav>
+  <p>从目录打开卡片，再用浏览器前进、后退和刷新检查地址及页面恢复。收藏和搜索应使用真实目录与 <code>/api/industry/favorites</code> 接口；未保存成功不应显示已收藏。</p>
+  <p>无效地址示例：<a href="/workbenches/not-a-workbench">不存在的工作台</a>。应呈现可读的无效入口说明或回到目录，不发起模型调用。</p>
+  <p>目录导航、收藏和刷新不应改变测试状态中的 <code>modelCallsSinceStart</code>、<code>usage</code> 或钱包；合成状态可由已登录主界面调用 <code>/api/qa-industry/state</code> 读取。</p>
+  <p>需要业务流程验收时，可下载上传样例：<a href="/api/qa-industry/samples/product.png" download>商品图</a> / <a href="/api/qa-industry/samples/reference.png" download>参考图</a> / <a href="/api/qa-industry/samples/detail.png" download>详情图</a>。</p>
+</body>
+</html>

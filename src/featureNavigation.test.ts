@@ -22,7 +22,7 @@ test('avatars and features have independent destinations in both navigation path
  assert.match(marketplace,/<FeatureShelf maxSelected=\{1\} api=\{api\}/);
  assert.equal(primaryWorkspaceNavigation.find(item=>item.id==='avatars')?.label,'分身');
  assert.equal((main.match(/primaryWorkspaceNavigation.map/g)||[]).length,2);
- assert.match(main,/<FluidWorkLayer title="分身" open=\{workLayer==='avatars'\} className="fluid-work-layer-avatars"/);
+ assert.match(main,/<FluidWorkLayer title="分身" open=\{!industryPage.open&&workLayer==='avatars'\} className="fluid-work-layer-avatars"/);
 });
 test("features is a top-level destination; knowledge and OAuth returns live in settings", () => {
   const nav = main.slice(main.indexOf('<nav className="studio-navigation"'), main.indexOf('<div className="one-chrome-actions"'));
