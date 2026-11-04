@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ONE 行业工作台 · 隔离体验</title></head>
+<body>
+<div id="qa-banner" style="padding:12px 20px;background:#fff1c8;color:#483a16;font:14px/1.6 system-ui">隔离体验：仅合成账号、资料、模型与100电力测试钱包，不连接真实AI或外部账号。 <a href="/">打开真实主入口与完整导航</a> · 下载上传样例：<a href="/api/qa-industry/samples/product.png" download>商品图</a> / <a href="/api/qa-industry/samples/reference.png" download>参考图</a> / <a href="/api/qa-industry/samples/detail.png" download>详情图</a></div>
+<div id="root"></div>
+<script type="module">
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {IndustryWorkspaces} from '/src/IndustryWorkspaces.tsx';
+import {CommerceIndustryTool} from '/src/CommerceIndustryTool.tsx';
+import {api,expectUser} from '/src/oneApi.ts';
+import '/src/styles.css';
+import '/src/preview/feature-workflow.css';
+expectUser('qa-industry-owner','qa-industry-workspace');
+document.documentElement.dataset.appearance='silver';
+const params=new URLSearchParams(location.search),kind=params.get('tool');
+const direct=['product_creative','image_edit','review_reply'].includes(kind);
+const renderCommerce=(tool,onBack)=>React.createElement(CommerceIndustryTool,{kind:tool,onBack});
+createRoot(document.getElementById('root')).render(React.createElement('main',{style:{maxWidth:1400,margin:'24px auto',padding:'0 24px'}},direct?renderCommerce(kind,()=>{location.href='/scripts/qa-industry.html';}):React.createElement(IndustryWorkspaces,{api,scopeKey:'qa-industry-workspace:qa-industry-owner',renderCommerce})));
+</script>
+</body></html>

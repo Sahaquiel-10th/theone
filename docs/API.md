@@ -313,3 +313,24 @@ skill 元信息仅提取简单顶层 name/description/license 字符串和折叠
 试行目录：普通 99 元/月、950.40 元/年，每月 20 电力；高级 299 元/月、2870.40 元/年，每月 70 电力。年付 20% OFF，12 次按月发放。999/1299 元 Key 套餐分别附赠 3 个月普通/高级会员，激活后开始。补发设备继续独立处理，149 元并非已发布套餐。
 
 旧充值入口已撤下；POST /api/me/recharge-orders 返回410。此前电力作为不限期额外额度保留，先用会员月额度再用旧额外额度。现有个人账号一次性赠送3个月普通会员，有已购会员则接在已购周期之后；不修改已有会员剩余额度或钱包。以后新注册账号不自动参加此次老用户赠送。分身访客通过自己的登录态访问 /api/visitors/membership 及会员付款，共用同一套餐与钱包规则。月额度不累计，按激活日的日历月更新；1 月 31 日对应 2 月末、3 月 31 日。高级会员暂停普通会员剩余时间；恢复时保留原已用额度，不补满。当前 ×0.6 仍通过已有模型定价发布功能配置，本模块不会把已优惠模型价格再次乘 0.6；图片沿用单次价格。企业费用独立。
+
+
+## 行业工作台（2026-11-04）
+
+所有接口沿用 ONE Key 会话与服务端 Workspace membership 校验，记录和文件均限定当前空间及本人。客户端不能指定他人所有权或模型凭据。
+
+| 接口 | 用途 |
+|---|---|
+| `GET /api/industry/config` | 当前已发布零售计价与能力可用性，不返回供应商成本或凭据 |
+| `POST /api/industry/usage-sessions` | 明确 `confirmed`、工具、稳定 `requestKey` 与本轮 `budgetMicros`，创建绑定 ONE Key 的 24 小时上限 |
+| `GET /api/industry/usage-sessions/:id` | 本轮上限、实际已用与临时预留 |
+| `GET /api/industry/operations/:id` | 本人辅助操作原回执与已完成结果；查询不触发模型 |
+| `GET /api/industry/receipts/:requestKey?tool=…&path=…` | 精确核对本人的辅助或领域任务回执；处理中、已完成和无法精确确认时不开放另开操作 |
+| `POST /api/industry/files/uploads` | 创建私有素材上传，返回 chunk 大小和公开附件摘要 |
+| `PUT /api/industry/files/:id/chunks?offset=N` | 原上传偏移校验与分片写入 |
+| `POST /api/industry/files/:id/complete` | 完成上传并解析 |
+| `GET /api/industry/files/:id` | 读取解析状态 |
+| `GET /api/industry/files/:id/content` | 精确所有者鉴权后读取文件，可带 `download=1` |
+| `DELETE /api/industry/files/:id` | 删除未被记录引用的本人附件 |
+
+业务流程使用 `/api/commerce/*` 与 `/api/review-replies/*`，保留源工具路径以复用业务界面。所有付费动作携带 `usageSessionId` 和稳定 `requestKey`；服务端冻结材料、规则和任务，固定每个模型步骤的账单编号。原请求重放读取原记录，未知结果不得自动重发。客户端预览、ZIP、规则导出均使用带当前身份的私有 blob 请求。详见 `INDUSTRY-WORKSPACES-20261104.md`。

@@ -1,17 +1,6 @@
-import {useState} from 'react';
-import {TeachingWorkspace} from './TeachingWorkspace';
-import {TeachingEntry,matchesTeachingEntry} from './TeachingEntry';
-import {Search} from 'lucide-react';
 import type {api as Api} from './oneApi';
-import {FeatureCatalog} from './FeatureCatalog';
-import {featureCategories} from '../server/featureCategories';
-export function FeatureMarketplace({api,onAsk}:{api:typeof Api;models:{id:string;name:string;kind:string}[];onAsk:()=>void}){
-  const [category,setCategory]=useState('all'),[query,setQuery]=useState('');
-  const [teachingOpen,setTeachingOpen]=useState(false);
-  if(teachingOpen)return <TeachingWorkspace api={api} onClose={()=>setTeachingOpen(false)}/>;
-  return <div className="feature-marketplace">
-    <div className="equipment-toolbar"><h3>功能目录</h3><button type="button" className="equipment-ask" onClick={onAsk}>回到 ONE 对话 <span aria-hidden="true">↗</span></button></div>
-    <div className="equipment-find"><div className="settings-search"><Search size={17} aria-hidden="true"/><input aria-label="搜索功能市场" type="search" placeholder="功能、用途或作者" value={query} onChange={e=>setQuery(e.target.value)}/></div><nav className="market-categories" aria-label="功能分类">{[{id:'all',name:'全部分类'},...featureCategories].map(c=><button type="button" key={c.id} aria-pressed={category===c.id} onClick={()=>setCategory(c.id)}>{c.name}</button>)}</nav>{query||category!=='all'?<button type="button" onClick={()=>{setCategory('all');setQuery('');}}>清除筛选</button>:null}</div>
-    <FeatureCatalog api={api} query={query} category={category} equipment workspaces={matchesTeachingEntry(query,category)?[{category:'teaching',node:<TeachingEntry onOpen={()=>setTeachingOpen(true)}/>}]:[]}/>
-  </div>;
+import {FeatureShelf,type FeatureChoice} from './preview/FeatureShelf';
+/** Both application shells use the same selection-only Skills catalog. */
+export function FeatureMarketplace({api,models,onAsk,selected,onChoose,initialOperationId,initialOpenRequest}:{api:typeof Api;models:{id:string;name:string;kind:string}[];onAsk:()=>void;selected:string[];onChoose:(feature:FeatureChoice,source?:HTMLElement)=>void;initialOperationId?:string;initialOpenRequest?:number}){
+  return <FeatureShelf maxSelected={1} api={api} models={models} selected={selected} onChoose={onChoose} onDone={onAsk} initialOperationId={initialOperationId} initialOpenRequest={initialOpenRequest}/>;
 }

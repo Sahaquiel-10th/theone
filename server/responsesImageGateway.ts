@@ -64,8 +64,9 @@ export function parseChatImageSse(body: string) {
  * AND chat cost, and persist the image privately before exposing it to a client.
  * Never automatically retry an uncertain paid call. Not enabled by model name.
  */
-export async function callChatImage(model: ModelConfig, messages: Message[], options: { imageModel?: string; timeoutMs?: number; retry?: ProviderRetryOptions } = {}) {
+export async function callChatImage(model: ModelConfig, messages: Message[], options: { imageModel?: string; imageSize?: 'auto'; timeoutMs?: number; retry?: ProviderRetryOptions } = {}) {
   if (!model.enabled || model.kind !== 'chat' || model.protocol !== 'openai' || !model.apiKey) throw new ChatImageGatewayError('configuration');
+  if (options.imageSize !== undefined && options.imageSize !== 'auto') throw new ChatImageGatewayError('configuration');
   const inputImages = messages.flatMap(m => m.inputImageDataUrls || []);
   if (inputImages.length > 5 || inputImages.some(url => !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(url) || url.length > 36 * 1024 * 1024)) throw new ChatImageGatewayError('invalid_input_image');
   const endpoint = new URL(`${model.baseUrl.replace(/\/$/,'')}/responses`);
@@ -79,7 +80,7 @@ export async function callChatImage(model: ModelConfig, messages: Message[], opt
         input: [...(model.systemPrompt ? [{ role: 'system', content: model.systemPrompt }] : []), ...messages.map(m => ({ role: m.role,
           content: [{ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: m.content },
             ...(m.role === 'user' ? (m.inputImageDataUrls || []).map(image_url => ({ type: 'input_image', image_url })) : [])] }))],
-        tools: [{ type: 'image_generation', ...(options.imageModel ? { model: options.imageModel } : {}), size: '1024x1024', output_format: 'png' }],
+        tools: [{ type: 'image_generation', ...(options.imageModel ? { model: options.imageModel } : {}), size: options.imageSize ?? '1024x1024', output_format: 'png' }],
         tool_choice: { type: 'image_generation' } }) }, options.retry);
     const reader = response.body?.getReader();
     if (!reader) throw new ChatImageGatewayError('invalid_response',response.status);

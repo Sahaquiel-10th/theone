@@ -168,15 +168,17 @@ function safeGatewayHint(status: number) {
   return "模型服务拒绝了请求，请联系管理员核对接口配置";
 }
 
+export type ImageCallOptions = { imageSize?: 'auto' };
 export async function callModel(
   model: ModelConfig,
   messages: Message[],
   safetyRules = "",
-  requestId = "unknown"
+  requestId = "unknown",
+  options: ImageCallOptions = {},
 ): Promise<ChatResult> {
   if (!model.enabled) throw new Error("模型未启用");
   if (!model.apiKey) throw new Error("模型缺少 API Key");
-  if (model.kind === "image") return callImageModel(model, messages, safetyRules, requestId);
+  if (model.kind === "image") return callImageModel(model, messages, safetyRules, requestId, options);
   if (model.protocol === "anthropic") return callAnthropicModel(model, messages, safetyRules, requestId);
 
   const systemMessages: Message[] = [safetyRules, model.systemPrompt]
@@ -575,17 +577,20 @@ async function callImageModel(
   model: ModelConfig,
   messages: Message[],
   safetyRules = "",
-  requestId = "unknown"
+  requestId = "unknown",
+  options: ImageCallOptions = {},
 ): Promise<ChatResult> {
   const userPrompt = [...messages].reverse().find((message) => message.role === "user")?.content;
   const prompt = [safetyRules, model.systemPrompt, userPrompt].map((item) => item?.trim()).filter(Boolean).join("\n\n");
   if (!prompt) throw new Error("图片提示词不能为空");
 
   const inputImages = [...messages].reverse().find((message) => message.role === "user")?.inputImageDataUrls ?? [];
+  if (options.imageSize !== undefined && options.imageSize !== 'auto') throw new Error('图片尺寸设置无效');
+  const size = options.imageSize ?? '1024x1024';
   const endpoint = `${model.baseUrl.replace(/\/$/, "")}/images/${inputImages.length ? "edits" : "generations"}`;
   const startedAt = Date.now();
   const request = inputImages.length
-    ? imageEditRequest(model, prompt, inputImages)
+    ? imageEditRequest(model, prompt, inputImages, size)
     : {
         method: "POST",
         headers: {
@@ -596,7 +601,7 @@ async function callImageModel(
           model: model.model,
           prompt,
           n: 1,
-          size: "1024x1024"
+          size
         })
       };
   const response = await fetchWithTimeout(endpoint, {
@@ -635,12 +640,12 @@ async function callImageModel(
   };
 }
 
-function imageEditRequest(model: ModelConfig, prompt: string, inputImages: string[]): RequestInit {
+function imageEditRequest(model: ModelConfig, prompt: string, inputImages: string[], size: 'auto'|'1024x1024'): RequestInit {
   const form = new FormData();
   form.append("model", model.model);
   form.append("prompt", prompt);
   form.append("n", "1");
-  form.append("size", "1024x1024");
+  form.append("size", size);
   inputImages.forEach((dataUrl, index) => {
     const match = /^data:(image\/(?:png|jpeg|webp));base64,([\s\S]+)$/i.exec(dataUrl);
     if (!match) throw new Error("图生图输入图片格式不受支持");

@@ -33,7 +33,7 @@ export function FeatureCatalog({api,query:q='',category='all',equipment=false,wo
     {operation?<SettingsDialog title="功能任务" onClose={()=>{setOperation(undefined);setRefresh(n=>n+1);}}><FeatureRunView api={api} operationId={operation}/></SettingsDialog>:null}
   </section>;
 }
-export function FeatureLaunch({api,id,onStarted,inspectFirst=false,hideHeading=false,accessLabel='已为你开放'}:{api:typeof Api;id:string;onStarted:(id:string)=>void;inspectFirst?:boolean;hideHeading?:boolean;accessLabel?:string}) {
+export function FeatureLaunch({api,id,onStarted,inspectFirst=false,hideHeading=false,accessLabel='已为你开放',selectionOnly=false}:{api:typeof Api;id:string;onStarted:(id:string)=>void;inspectFirst?:boolean;hideHeading?:boolean;accessLabel?:string;selectionOnly?:boolean}) {
   const [launch,setLaunch]=useState(!inspectFirst);
   const [taskOpened,setTaskOpened]=useState(!inspectFirst);
   const taskPanelId=useId(),introductionId=useId(),launchTrigger=useRef<HTMLButtonElement>(null),launchHeading=useRef<HTMLHeadingElement>(null),previousLaunch=useRef(launch);
@@ -52,6 +52,7 @@ export function FeatureLaunch({api,id,onStarted,inspectFirst=false,hideHeading=f
     const operationId=attempt?.operationId??crypto.randomUUID();
     try{const featureApprovals=await approveFeaturePrices(api,[id]);setAttempt({operationId,payload});const r=await api<Run>(`/api/features/${id}/runs`,{method:'POST',body:JSON.stringify({...JSON.parse(payload),operationId,featureApprovals})});onStarted(r.operationId);}catch(e){setError(e instanceof Error?e.message:'提交未确认，请查看任务记录；重试保留同一任务编号。');}finally{setBusy(false);}
   }
+  if(selectionOnly)return <div className="feature-launch-workspace feature-skill-information">{feature?<FeatureInformation feature={feature} accessLabel={accessLabel}/>:<p role="status">正在读取 Skill 说明…</p>}{error?<p role="alert">{error}</p>:null}</div>;
   return <div className="feature-launch-workspace" data-feature-stage={launch?'task':'intro'}>{feature?<>
     {!hideHeading?<h3>{feature.name}</h3>:null}
     <section id={introductionId} className="feature-introduction" hidden={launch} aria-label="功能介绍">

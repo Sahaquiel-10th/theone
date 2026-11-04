@@ -47,7 +47,8 @@ test('feature picker only reads the scoped catalog; choosing cannot create a tas
   assert.match(source,/\/api\/features\?scope=mine/);
   assert.doesNotMatch(source,/method:.*POST|\/api\/coordinator|\/api\/chat|\/runs/);
   assert.match(source,/abort\.abort\(\)/);
-  assert.match(source,/selected\.length>=8/);
+  assert.match(source,/maxSelected=8/);
+  assert.match(source,/selected\.length>=maxSelected/);
   assert.match(source,/event\.nativeEvent\.isComposing/);
 });
 test('member state and plan comparison are separate; explanation remains keyboard accessible',()=>{

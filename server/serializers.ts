@@ -3,7 +3,7 @@ import { effectiveModel } from "./modelPricing.js";
 import {publicAccountProfile} from './betaProfile.js';
 
 export function publicUser(user: User): PublicUser {
-  const { passwordHash, featureCredentials, visitorAuthVersion, featureBudgetPolicies, contextPreferences, attentionStates, teaching, ...safe } = user;
+  const { passwordHash, featureCredentials, visitorAuthVersion, featureBudgetPolicies, contextPreferences, attentionStates, teaching, industry, ...safe } = user;
   return {...safe,...(safe.profile?{profile:publicAccountProfile(safe.profile)}:{})};
 }
 

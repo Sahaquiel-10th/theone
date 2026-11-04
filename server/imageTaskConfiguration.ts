@@ -87,10 +87,12 @@ export async function callImageTask(
   requestId = "unknown",
   imageCall?: typeof callModel,
   retry?: ProviderRetryOptions,
+  options: import('./modelGateway.js').ImageCallOptions = {},
 ): Promise<Awaited<ReturnType<typeof callModel>>> {
   if (selectedBillingModel.id !== config.credentialModel.id || selectedBillingModel.kind !== "image")
     throw new ImageTaskConfigurationError("图片执行与计费配置不一致");
-  if (imageCall) return imageCall(selectedBillingModel, messages, safetyRules, requestId);
-  if (config.route === "images") return callModel({ ...selectedBillingModel, model: config.serviceModel }, messages, safetyRules, requestId);
-  return callChatImage({ ...structuredClone(config.credentialModel), systemPrompt: [safetyRules, selectedBillingModel.systemPrompt].filter(Boolean).join("\n\n") }, messages, { imageModel: config.serviceModel, retry });
+  if (options.imageSize !== undefined && options.imageSize !== 'auto') throw new ImageTaskConfigurationError('图片尺寸设置无效');
+  if (imageCall) return imageCall(selectedBillingModel, messages, safetyRules, requestId, options);
+  if (config.route === "images") return callModel({ ...selectedBillingModel, model: config.serviceModel }, messages, safetyRules, requestId, options);
+  return callChatImage({ ...structuredClone(config.credentialModel), systemPrompt: [safetyRules, selectedBillingModel.systemPrompt].filter(Boolean).join("\n\n") }, messages, { imageModel: config.serviceModel, retry, imageSize: options.imageSize });
 }
