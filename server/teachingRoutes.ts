@@ -1,3 +1,4 @@
+import {accountRequiredForCourse} from './studentLearning.js';
 import type { Express, Request, RequestHandler, Response } from 'express';
 import type { Store } from './db.js';
 import { asyncRoute } from './middleware.js';
@@ -105,7 +106,7 @@ export function installTeachingRoutes(app: Express, keyAuth: readonly RequestHan
     return res.json({ submission: await store.mutate(db => bindTeachingGradingBasis(db, scope(req), String(req.params.id), String(req.params.submissionId), req.body)) });
   }));
 
-  app.get(pub, route(async (req, res) => { classroomRate(req, 'read'); const found=activeTeachingAccess(await store.read(),String(req.params.slug)); return res.json({course:publicTeachingCourse(found.course,found.activity?.id)}); }));
+  app.get(pub, route(async (req, res) => { classroomRate(req, 'read');const db=await store.read(),found=activeTeachingAccess(db,String(req.params.slug));if(accountRequiredForCourse(db,found.course,found.course.id)){try{const {session}=authTeachingSession(db,String(req.params.slug),teachingBearer(req));if(!session.studentAccountId)throw new Error('account required');}catch{return res.json({course:{id:found.course.id,title:found.course.title,revision:found.course.revision,subject:found.course.subject,description:'',activities:[],accountLoginRequired:true,...(found.activity?{entryActivityId:found.activity.id}:{})}});}}return res.json({course:publicTeachingCourse(found.course,found.activity?.id)}); }));
   app.post(pub + '/sessions', route(async (req, res) => {
     classroomRate(req, 'sessions');
     return res.status(201).json(await store.mutate(db => createTeachingSession(db, String(req.params.slug), req.body)));

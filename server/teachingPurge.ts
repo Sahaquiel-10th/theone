@@ -1,6 +1,7 @@
 import {createHash,randomBytes} from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type {StudentScriptSubmission} from './studentLearningTypes.js';
 import type {Store} from './db.js';
 import type {Attachment,Database} from './types.js';
 import type {TeachingActivity,TeachingCourse,TeachingOperation,TeachingPurgeFile,TeachingPurgeImpact,TeachingPurgeReceipt,TeachingScope,TeachingSession,TeachingState,TeachingSubmission} from './teachingTypes.js';
@@ -9,7 +10,7 @@ import {removeAttachmentFiles} from './attachmentService.js';
 
 type PurgeItem={courseId:string;revision:number;activityId?:string;activityRevision?:number};
 type Selection={course:TeachingCourse;activity?:TeachingActivity};
-type PurgePlan={items:PurgeItem[];selected:Selection[];courses:TeachingCourse[];activities:TeachingActivity[];sessions:TeachingSession[];updatedSessions:TeachingSession[];submissions:TeachingSubmission[];operations:TeachingOperation[];files:Attachment[];impact:TeachingPurgeImpact;impactHash:string};
+type PurgePlan={items:PurgeItem[];selected:Selection[];courses:TeachingCourse[];activities:TeachingActivity[];sessions:TeachingSession[];updatedSessions:TeachingSession[];submissions:TeachingSubmission[];scriptSubmissions:StudentScriptSubmission[];operations:TeachingOperation[];files:Attachment[];impact:TeachingPurgeImpact;impactHash:string};
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const owned=(value:TeachingScope,scope:TeachingScope)=>value.workspaceId===scope.workspaceId&&value.userId===scope.userId;
 function object(value:unknown){if(!value||typeof value!=='object'||Array.isArray(value))throw new TeachingError('请检查永久删除请求');return value as Record<string,unknown>;}
@@ -69,6 +70,7 @@ export function planTeachingPurge(db:Database,scope:TeachingScope,input:unknown)
   const targetActivity=(courseId:string,activityId:string|undefined)=>fullCourses.has(courseId)||activityId!==undefined&&activityKeys.has(`${courseId}:${activityId}`);
   const courses=state.courses.filter(row=>owned(row,scope)&&fullCourses.has(row.id));
   const activities=state.courses.filter(row=>owned(row,scope)).flatMap(course=>course.activities.filter(activity=>owned(activity,scope)&&targetActivity(course.id,activity.id)));
+  const scriptSubmissions=(state.studentScriptSubmissions??[]).filter(row=>owned(row,scope)&&fullCourses.has(row.courseId));
   const submissions=state.submissions.filter(row=>owned(row,scope)&&targetActivity(row.courseId,row.activityId)),submissionIds=new Set(submissions.map(row=>row.id));
   const sessions=state.sessions.filter(row=>owned(row,scope)&&(fullCourses.has(row.courseId)||row.activityId!==undefined&&targetActivity(row.courseId,row.activityId))),sessionIds=new Set(sessions.map(row=>row.id));
   const operations=state.operations.filter(row=>owned(row,scope)&&(targetActivity(row.courseId,row.activityId)||!!row.submissionId&&submissionIds.has(row.submissionId)||!!row.sessionId&&sessionIds.has(row.sessionId)||courseIds.has(row.courseId)&&row.kind==='insights'&&!row.activityId));
@@ -88,9 +90,9 @@ export function planTeachingPurge(db:Database,scope:TeachingScope,input:unknown)
   const referenced=retainedFileIds(db,ids,state,remaining,scope);
   const files=found.filter(file=>file.workspaceId===scope.workspaceId&&courseIds.has(fileCourseId(file))&&(file.userId===scope.userId||sessionOwnsFile(file))&&!referenced.has(file.id)&&!file.messageId&&!file.sharedConversationIds?.length&&!db.attachments.some(other=>other!==file&&(other.id===file.id||other.storagePath===file.storagePath)));
   if(files.some(file=>file.status==='queued'||file.status==='parsing'))throw new TeachingError('部分原件仍在解析，请处理完成后重新核对永久删除',409,'TEACHING_PURGE_FILES_ACTIVE');
-  const impact:TeachingPurgeImpact={courses:courses.length,activities:activities.length,sessions:sessions.length,updatedSessions:updatedSessions.length,submissions:submissions.length,operations:operations.length,files:files.length,retainedFiles:found.length-files.length,fileBytes:files.reduce((sum,file)=>sum+file.size,0)};
-  const impactHash=digest({scope,items,courses,activities,sessions,updatedSessions,submissions,operations,files:files.map(file=>({...file,extractedText:undefined})),referenced:[...referenced].sort(),impact});
-  return {items,selected,courses,activities,sessions,updatedSessions,submissions,operations,files,impact,impactHash};
+  const impact:TeachingPurgeImpact={courses:courses.length,activities:activities.length,sessions:sessions.length,updatedSessions:updatedSessions.length,submissions:submissions.length,...(scriptSubmissions.length?{scriptSubmissions:scriptSubmissions.length}:{}),operations:operations.length,files:files.length,retainedFiles:found.length-files.length,fileBytes:files.reduce((sum,file)=>sum+file.size,0)};
+  const impactHash=digest({scope,items,courses,activities,sessions,updatedSessions,submissions,scriptSubmissions,operations,files:files.map(file=>({...file,extractedText:undefined})),referenced:[...referenced].sort(),impact});
+  return {items,selected,courses,activities,sessions,updatedSessions,submissions,scriptSubmissions,operations,files,impact,impactHash};
 }
 export function previewTeachingPurge(db:Database,scope:TeachingScope,input:unknown){const plan=planTeachingPurge(db,scope,input);return {impactHash:plan.impactHash,impact:plan.impact};}
 export function publicTeachingPurge(receipt:TeachingPurgeReceipt){return {id:receipt.id,requestId:receipt.requestId,status:receipt.status,impact:receipt.impact,remainingFiles:receipt.pendingFiles.length,createdAt:receipt.createdAt,...(receipt.completedAt?{completedAt:receipt.completedAt}:{})};}
@@ -110,6 +112,7 @@ export function commitTeachingPurge(db:Database,scope:TeachingScope,input:unknow
   for(const course of state.courses)if(owned(course,scope)&&course.activities.some(activity=>removedActivities.has(`${course.id}:${activity.id}`))){preserveTeachingAccess(course);course.activities=course.activities.filter(activity=>!removedActivities.has(`${course.id}:${activity.id}`));course.revision++;course.updatedAt=at;}
   state.sessions=state.sessions.filter(row=>!plan.sessions.includes(row));
   for(const session of plan.updatedSessions){session.gameConfigs=session.gameConfigs?.filter(config=>!removedActivities.has(`${session.courseId}:${config.activityId}`));if(session.activityAccessRevisions)for(const id of Object.keys(session.activityAccessRevisions))if(removedActivities.has(`${session.courseId}:${id}`))delete session.activityAccessRevisions[id];}
+  if(state.studentScriptSubmissions)state.studentScriptSubmissions=state.studentScriptSubmissions.filter(row=>!plan.scriptSubmissions.includes(row));
   state.submissions=state.submissions.filter(row=>!plan.submissions.includes(row));state.operations=state.operations.filter(row=>!plan.operations.includes(row));
   db.attachments=db.attachments.filter(file=>!plan.files.includes(file));
   const pendingFiles:TeachingPurgeFile[]=plan.files.map(file=>({id:file.id,workspaceId:file.workspaceId,userId:file.userId,courseId:file.conversationId!.slice('teaching:'.length),storagePath:file.storagePath}));

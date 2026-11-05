@@ -1,4 +1,5 @@
 import {teachingStoryResearchQuery} from './teachingStoryResearch.js';
+import {assertStudentStoryPermission} from './studentLearning.js';
 import express, { type Express, type Request, type RequestHandler } from 'express';
 import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -62,6 +63,7 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
     if (sessionId && activity) { const session=state.sessions.find(row=>row.id===sessionId&&row.courseId===course.id&&row.workspaceId===scope.workspaceId&&row.userId===scope.userId); if(!session)throw new TeachingError('参与身份不可用',401); teachingSessionActivity(course,session,activity.id); }
     if (old) { if (old.payloadHash !== payloadHash) throw new TeachingError('提交内容已经变化，请重新确认后发起', 409); return { operation: old, created: false }; }
     if (body.kind !== 'insights' && !activity) throw new TeachingError('请先保存并选择教学活动');
+    if(sessionId){const bound=teachingState(db,scope).sessions.find(s=>s.id===sessionId&&s.workspaceId===scope.workspaceId&&s.userId===scope.userId);if(!bound)throw new TeachingError('学习身份不可用',401);assertStudentStoryPermission(db,bound,String(body.kind),body.storyId);if(bound.studentAccountId&&activity?.kind==='game'&&body.kind==='answer')throw new TeachingError('请使用老师布置的课堂游戏',403);}
     if (sessionId && (activity?.status !== 'published' || !['inquiry', 'scenario', 'game'].includes(activity.kind))) throw new TeachingError('这个活动暂未开放导学问答', 403);
     if (body.kind === 'prepare' && activity && (activity.isOpen===true || activity.isOpen===undefined && course.status==='published' && activity.status==='published')) throw new TeachingError('请先关闭这个工具的学生入口，再准备新版活动',409);
     if (body.kind === 'grade' && !state.submissions.some(s => s.id === body.submissionId && s.courseId === course.id && s.activityId === activity?.id && s.workspaceId === scope.workspaceId && s.userId === scope.userId)) throw new TeachingError('未找到本课程的这份作业', 404);
@@ -99,7 +101,7 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
     const operation: TeachingOperation = { ...scope, id: uid('tai'), courseId: course.id, courseRevision: course.revision, courseLifecycleRevision:course.lifecycleRevision??0, activityLifecycleRevision:activity?.lifecycleRevision??0, materialRevision: course.materialRevision??course.revision, activityRevision: activity?.revision, ...(body.preview===true&&!sessionId?{preview:true,conversationId:String(body.conversationId)}:{}), activityId: activity?.id, submissionId: typeof body.submissionId === 'string' ? body.submissionId : undefined, submissionGradingRevision: gradingRevision, sessionId, operationId: body.operationId, payloadHash, kind: body.kind as TeachingOperation['kind'], question: ['answer','script','story_turn'].includes(String(body.kind)) ? String(body.content??'') : undefined, attachmentIds: attachmentIds as string[], ...(isStory?{storyId:typeof body.storyId==='string'?body.storyId:undefined,runId:typeof body.runId==='string'?body.runId:undefined}:{}), status: 'running', ...(game ? { conversationId: game.conversationId, gameRevision: game.revision, gamePromptSnapshot: { roleName: game.roleName, prompt: game.prompt } } : {}), createdAt: new Date().toISOString(), ...(!sessionId?{teacherBudgetModeSnapshot:course.teacherBudgetMode==='balance'?'balance' as const:'course' as const}:{}) };
     state.operations.push(operation); return { operation, created: true };
   }
-  async function execute(operation: TeachingOperation, verify: () => Promise<void>) {
+  async function execute(operation: TeachingOperation, verify: () => Promise<void>,studentAuth?:{slug:string;token:string}) {
     running.add(operation.id);
     const scope = { workspaceId: operation.workspaceId, userId: operation.userId };
     try {
@@ -115,6 +117,8 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
       };
       const assertOperation = (fresh: Awaited<ReturnType<Store['read']>>) => {
         const live=ownedTeachingCourse(fresh,scope,course.id);
+        if(studentAuth)authTeachingSession(fresh,studentAuth.slug,studentAuth.token);
+        if(operation.sessionId){const session=teachingState(fresh,scope).sessions.find(s=>s.id===operation.sessionId&&s.workspaceId===scope.workspaceId&&s.userId===scope.userId);if(!session)throw new TeachingError('学习身份不可用',401);assertStudentStoryPermission(fresh,session,operation.kind,operation.storyId);}
         if(operation.materialRevision!==undefined ? (live.materialRevision??live.revision)!==operation.materialRevision : live.revision!==operation.courseRevision)throw new TeachingError('课程资料已变化，请核对后继续',409);
         const current=operation.activityId?ownedTeachingActivity(live,operation.activityId):undefined;
         if(operation.courseLifecycleRevision!==undefined&&(live.lifecycleRevision??0)!==operation.courseLifecycleRevision||operation.activityLifecycleRevision!==undefined&&(current?.lifecycleRevision??0)!==operation.activityLifecycleRevision)throw new TeachingError('课程或工具曾移入回收站，旧执行不会在恢复后继续挂载',409,'TEACHING_LIFECYCLE_CHANGED');
@@ -323,12 +327,13 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
     const token = tokenOf(req), slug = String(req.params.slug);
     const result = await store.mutate(db => { const { course, session, scope } = authTeachingSession(db, slug, token); return begin(db, scope, course, { ...req.body, kind: ['script','story_turn','story_image'].includes(req.body?.kind)?req.body.kind:'answer' }, session.id); });
     const verify = async () => { authTeachingSession(await store.read(), slug, token); };
-    if (result.created) { running.add(result.operation.id); void execute(result.operation, verify).catch(() => { running.delete(result.operation.id); }); }
+    if (result.created) { running.add(result.operation.id); void execute(result.operation, verify,{slug,token}).catch(() => { running.delete(result.operation.id); }); }
     res.status(result.operation.status === 'running' ? 202 : 200).json({ operation: publicOperation(result.operation) });
   }));
   router.get('/public/:slug/stories/:storyId', asyncRoute(async(req,res)=>{
     const db=await store.read(),{course,session,scope}=authTeachingSession(db,String(req.params.slug),tokenOf(req));
     const activityId=String(req.query.activityId);teachingSessionActivity(course,session,activityId);
+    assertStudentStoryPermission(db,session,'read_story',String(req.params.storyId));
     const {result}=approvedStory(db,scope,course.id,activityId,String(req.params.storyId));
     res.json({story:publicStoryResult(result)});
   }));

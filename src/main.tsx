@@ -3800,10 +3800,12 @@ function App() {
   );
 }
 
+const StudentLearningSpace=React.lazy(()=>import('./StudentLearningSpace'));
+const studentLearningRoot=/^\/learn\/?$/.test(window.location.pathname);
 const sharedSlug = /^\/s\/([A-Za-z0-9_-]{24})\/?$/.exec(window.location.pathname)?.[1];
 const teachingSlug = /^\/learn\/([A-Za-z0-9_-]{20,100})\/?$/.exec(window.location.pathname)?.[1];
 const appRoot = import.meta.hot?.data.appRoot ?? createRoot(document.getElementById("root")!);
 if(import.meta.hot)import.meta.hot.data.appRoot=appRoot;
 const practicePreview=import.meta.env.DEV&&['localhost','127.0.0.1','[::1]'].includes(window.location.hostname)&&new URLSearchParams(window.location.search).get('onboardingPracticePreview')==='1';
 const PracticePreview=import.meta.env.DEV?React.lazy(()=>import('./PracticeOnboardingPreview')):()=>null;
-appRoot.render(practicePreview?<React.Suspense fallback={<div className="boot">正在打开本地体验…</div>}><PracticePreview/></React.Suspense>:teachingSlug ? <TeachingPublicPage slug={teachingSlug}/> : sharedSlug ? <PublicSharingPage slug={sharedSlug}/> : <App />);
+appRoot.render(practicePreview?<React.Suspense fallback={<div className="boot">正在打开本地体验…</div>}><PracticePreview/></React.Suspense>:studentLearningRoot?<React.Suspense fallback={<div className="boot">正在打开学习空间…</div>}><StudentLearningSpace/></React.Suspense>:teachingSlug ? <TeachingPublicPage slug={teachingSlug}/> : sharedSlug ? <PublicSharingPage slug={sharedSlug}/> : <App />);

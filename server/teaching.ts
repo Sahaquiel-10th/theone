@@ -1,3 +1,4 @@
+import {accountRequiredForCourse,validBoundStudentSession} from './studentLearning.js';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Database } from './types.js';
 import type { TeachingActivity, TeachingCourse, TeachingCriterion, TeachingGrade, TeachingQuestion, TeachingScene, TeachingScope, TeachingSession, TeachingState, TeachingSubmission, TeachingTaskKind } from './teachingTypes.js';
@@ -125,8 +126,9 @@ export function authTeachingSession(db: Database, slug: string, token: string) {
   if (!/^[A-Za-z0-9_-]{40,100}$/.test(token)) throw new TeachingError('请先填写参与信息', 401, 'TEACHING_SESSION_REQUIRED');
   const scope = { workspaceId: course.workspaceId, userId: course.userId };
   const state = teachingState(db, scope), tokenHash = hash(`${slug}:${token}`);
-  const session = state.sessions.find(s => s.courseId === course.id && s.workspaceId === scope.workspaceId && s.userId === scope.userId && s.activityId === activity?.id && s.expiresAt > now() && s.tokenHash.length === tokenHash.length && timingSafeEqual(Buffer.from(s.tokenHash), Buffer.from(tokenHash)));
+  const session = state.sessions.find(s => s.courseId === course.id && s.workspaceId === scope.workspaceId && s.userId === scope.userId && s.activityId === activity?.id && s.expiresAt > now() && validBoundStudentSession(db,s,tokenHash));
   if (!session) throw new TeachingError('参与身份已过期，请重新进入课程', 401, 'TEACHING_SESSION_REQUIRED');
+  if(!session.studentAccountId&&accountRequiredForCourse(db,scope,course.id))throw new TeachingError('请使用老师发放的学生账号登录',401,'TEACHING_ACCOUNT_REQUIRED');
   if (session.createdAt < (course.sessionsRevokedAt ?? course.updatedAt)) throw new TeachingError('学习入口已更新，请重新进入', 409, 'TEACHING_SESSION_CHANGED');
   if (activity) teachingSessionActivity(course, session, activity.id);
   return { course, activity, session, scope, state };
@@ -314,14 +316,15 @@ export function publicTeachingCourse(course: TeachingCourse, activityId?: string
   return { id: course.id, revision: course.revision, title: course.title, subject: course.subject, description: course.description,
     activities: course.activities.filter(a => !a.deletedAt && a.status === 'published' && a.isOpen !== false && (!activityId || a.id === activityId)).map(a => ({ id: a.id, courseId: a.courseId, revision: a.publicRevision??a.revision, stage: a.stage, kind: a.kind, title: a.title, instructions: a.instructions, avatarPrompt: a.kind === 'inquiry' || a.kind === 'game' ? a.avatarPrompt ?? '' : '', allowStudentPrompt: a.kind === 'game' && a.allowStudentPrompt === true, status: a.status, questions: a.questions.map(q => ({ id: q.id, prompt: q.prompt, type: q.type, options: q.options, points: q.points })), scenes: a.scenes.map(s => ({ id: s.id, title: s.title, content: s.content, choices: s.choices, reflection: '' })), rubric: a.rubric.map(r => ({ id: r.id, label: r.label, description: r.description, maxScore: r.maxScore })), createdAt: a.createdAt, updatedAt: a.updatedAt })) };
 }
-export function createTeachingSession(db: Database, slug: string, input: unknown) {
+export function createTeachingSession(db: Database, slug: string, input: unknown, binding?:{studentAccountId:string;studentMembershipId:string}) {
   const body = object(input), {course,activity} = activeTeachingAccess(db, slug), scope = { workspaceId: course.workspaceId, userId: course.userId };
+  if(!binding&&accountRequiredForCourse(db,scope,course.id))throw new TeachingError('请使用老师发放的学生账号登录',401,'TEACHING_ACCOUNT_REQUIRED');
   if (body.consent !== true) throw new TeachingError('请确认向任课老师提交参与信息及本课程学习记录');
   const participantName = requiredText(body.participantName, '姓名或昵称', 80), participantRef = text(body.participantRef, '学号或识别信息', 100, ''), participantClass = text(body.participantClass, '班级', 100, '');
   const state = teachingState(db, scope, { create: true });
   if (state.sessions.length >= TEACHING_LIMITS.sessions) throw new TeachingError('课程参与人数已达上限，请联系老师', 429, 'TEACHING_CAPACITY');
   const token = randomBytes(32).toString('base64url'), createdAt = now();
-  const session: TeachingSession = { ...scope, ...(activity ? {activityId:activity.id} : {}), activityAccessRevisions:Object.fromEntries(course.activities.filter(item=>!item.deletedAt&&item.status==='published'&&item.isOpen!==false&&(!activity||item.id===activity.id)).map(item=>[item.id,item.accessRevision??0])), id: id('tss'), courseId: course.id, tokenHash: hash(`${slug}:${token}`), participantName, participantRef, participantClass, consentedAt: createdAt, createdAt, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() };
+  const session: TeachingSession = { ...scope, ...(activity ? {activityId:activity.id} : {}), activityAccessRevisions:Object.fromEntries(course.activities.filter(item=>!item.deletedAt&&item.status==='published'&&item.isOpen!==false&&(!activity||item.id===activity.id)).map(item=>[item.id,item.accessRevision??0])), ...(binding??{}), id: id('tss'), courseId: course.id, tokenHash: hash(`${slug}:${token}`), participantName, participantRef, participantClass, consentedAt: createdAt, createdAt, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() };
   state.sessions.push(session); return { token, sessionId: session.id, participantName, participantRef, participantClass, expiresAt: session.expiresAt };
 }
 export function publicTeachingSession(session: TeachingSession) { return { id: session.id, participantName: session.participantName, participantRef: session.participantRef, participantClass: session.participantClass ?? '', expiresAt: session.expiresAt }; }

@@ -9,6 +9,7 @@ export const teachingTools: {kind:TeachingTaskKind;title:string;stage:TeachingSt
 export type TeachingCourseMode='list'|'create'|'edit'|'trash';
 export type TeachingWorkbenchRoute=
   |{view:'home'}
+  |{view:'students'}
   |{view:'select';tool:TeachingTaskKind}
   |{view:'tool';tool:TeachingTaskKind;courseId:string;activityId?:string;step:string}
   |{view:'courses';mode:TeachingCourseMode;courseId?:string;returnTool?:TeachingTaskKind};
@@ -21,6 +22,7 @@ const steps:Record<TeachingTaskKind,readonly string[]>={ask:['list','setup','pre
 export function readTeachingWorkbenchRoute(href:string):TeachingWorkbenchRoute{
   const url=new URL(href);if(!/^\/workbenches\/teaching\/?$/.test(url.pathname))return {view:'home'};
   const p=url.searchParams,kind=tool(p.get('tTool')),courseId=id(p.get('tCourse'));
+  if(p.get('tView')==='students')return {view:'students'};
   if(p.get('tView')==='select'&&kind)return {view:'select',tool:kind};
   if(p.get('tView')==='tool'&&kind&&courseId){const activityId=id(p.get('tItem')),step=p.get('tStep')??'list';return {view:'tool',tool:kind,courseId,...(activityId?{activityId}:{}),step:steps[kind].includes(step)?step:'list'};}
   if(p.get('tView')==='courses'){

@@ -68,7 +68,7 @@ export async function resolveCourseMaterialSave(request:TeachingRequest,attempt:
 }
 
 export type CoursePurgeItem={courseId:string;revision:number};
-export type CoursePurgeImpact={courses:number;activities:number;sessions:number;submissions:number;operations:number;files:number;retainedFiles:number;fileBytes:number};
+export type CoursePurgeImpact={courses:number;activities:number;sessions:number;submissions:number;scriptSubmissions?:number;operations:number;files:number;retainedFiles:number;fileBytes:number};
 export type CoursePurgePreview={impactHash:string;impact:CoursePurgeImpact};
 export type CoursePurgeAttempt={requestId:string;impactHash:string;items:CoursePurgeItem[];titles:string[];confirmed:true};
 export type CoursePurgeReceipt={id:string;status:'completed'|'files_pending';impact:CoursePurgeImpact;remainingFiles:number};

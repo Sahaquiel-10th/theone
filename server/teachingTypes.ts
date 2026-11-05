@@ -29,7 +29,7 @@ export type TeachingCourse = TeachingScope & TeachingTrashMetadata & {
   materialText: string; materialAttachmentIds: string[]; budgetMicros: number;
   /** New course learning context is retrieved only from explicitly bound libraries.
    * Missing mode identifies historical courses; their original fields are retained. */
-  sourceMode?: 'knowledge';
+  sourceMode?: 'knowledge';studentAccountsOnly?:boolean;
   /** Missing means the original course cap. Only an explicit teacher choice may
    * relax an existing course; new courses default to balance-backed manual use. */
   teacherBudgetMode?: 'course'|'balance';
@@ -47,6 +47,8 @@ export type TeachingSession = TeachingScope & {
   activityId?: string;
   activityAccessRevisions?: Record<string, number>;
   consentedAt: string; createdAt: string; expiresAt: string;
+  studentAccountId?:string; studentMembershipId?:string;
+  studentAccessTokens?:{tokenHash:string;loginId:string;authVersion:number;expiresAt:string}[];
   gameConfigs?: TeachingGameConfig[];
 };
 export type TeachingGameConfig = TeachingScope & {
@@ -86,13 +88,19 @@ export type TeachingState = {
   courses: TeachingCourse[]; sessions: TeachingSession[]; submissions: TeachingSubmission[]; operations: TeachingOperation[];
   /** Private deletion receipts and unfinished file cleanup; never a public DTO. */
   purges?: TeachingPurgeReceipt[];
+  studentPortalSlug?:string;
+  studentAccounts?:import('./studentLearningTypes.js').StudentAccount[];
+  studentClasses?:import('./studentLearningTypes.js').StudentClass[];
+  studentMemberships?:import('./studentLearningTypes.js').StudentMembership[];
+  studentProvisions?:import('./studentLearningTypes.js').StudentProvision[];
+  studentScriptSubmissions?:import('./studentLearningTypes.js').StudentScriptSubmission[];
 };
-export type TeachingPurgeImpact = { courses:number;activities:number;sessions:number;updatedSessions:number;submissions:number;operations:number;files:number;retainedFiles:number;fileBytes:number };
+export type TeachingPurgeImpact = { courses:number;activities:number;sessions:number;updatedSessions:number;submissions:number;scriptSubmissions?:number;operations:number;files:number;retainedFiles:number;fileBytes:number };
 export type TeachingPurgeFile = { id:string;workspaceId:string;userId:string;courseId:string;storagePath:string };
 export type TeachingPurgeReceipt = TeachingScope & { id:string;requestId:string;requestHash:string;impactHash:string;impact:TeachingPurgeImpact;status:'completed'|'files_pending';pendingFiles:TeachingPurgeFile[];createdAt:string;completedAt?:string };
 export type TeachingPublicActivity = Omit<TeachingActivity, 'workspaceId' | 'userId' | 'questions' | 'referenceText' | 'sourceAttachmentIds' | 'knowledgeSources'> & {
   questions: Omit<TeachingQuestion, 'answer'>[];
 };
-export type TeachingPublicCourse = Pick<TeachingCourse, 'id' | 'revision' | 'title' | 'subject' | 'description'> & {
+export type TeachingPublicCourse = {accountLoginRequired?:boolean;entryActivityId?:string} & Pick<TeachingCourse, 'id' | 'revision' | 'title' | 'subject' | 'description'> & {
   activities: TeachingPublicActivity[];
 };

@@ -1,3 +1,4 @@
+import {installStudentLearningRoutes} from './studentLearningRoutes.js';
 import {FeatureConfigError} from './officialFeatures.js';
 import {legacySkillSelectionInput,prepareLegacySkillSelection,verifyLegacySkillSelection,legacySkillContext,legacySkillFeaturePrice,legacySkillKnowledgeScope,requireLegacySkillKnowledge,assertLegacySkillModel,legacySkillTools,LegacySkillSelectionError,type LegacySkillSnapshot} from './legacySkillSelection.js';
 import { identityAccess, companyWorkspace } from "./enterprisePolicy.js";
@@ -257,6 +258,7 @@ const localDeviceReadiness=createLocalDeviceReadiness({
 installLocalDeviceReadinessRoute(app,keyAuth,localDeviceReadiness);
 const inspectLocalReadiness=(req:express.Request,options?:{fresh?:boolean})=>localDeviceReadiness.inspect(localDeviceReadinessScope(req),options);
 installTeachingRoutes(app, keyAuth, store, { verifyKey: confirmKeyBeforeModel, directory: uploadDir });
+installStudentLearningRoutes(app,keyAuth,store,{verifyKey:confirmKeyBeforeModel});
 installTeachingFileRoutes(app, keyAuth, store, uploadDir, attachmentService);
 installTeachingKnowledgeRoutes(app, keyAuth, store, { notion: notionMcpService, knowledgeService, verifyKey: confirmKeyBeforeModel });
 installTeachingAiRoutes(app, keyAuth, store, { verifyKey: confirmKeyBeforeModel, knowledge: { notion: notionMcpService, knowledgeService } });

@@ -1,3 +1,4 @@
+import {installStudentLearningRoutes} from '../server/studentLearningRoutes.js';
 /** Local-only QA: isolated records and a synthetic model. Never imported by the app. */
 import express from 'express';
 import fs from 'node:fs/promises';
@@ -42,6 +43,7 @@ app.get('/api/features',auth,(_req,res)=>res.json({items:[],total:0}));
 app.get('/api/features/runs',auth,(_req,res)=>res.json({items:[],total:0}));
 app.get('/api/teaching/qa-state',auth,(_req,res)=>res.json({courses:db.users[0].teaching?.courses.length??0,submissions:db.users[0].teaching?.submissions.length??0,operations:db.users[0].teaching?.operations.length??0}));
 installTeachingRoutes(app, [auth], store);
+installStudentLearningRoutes(app,[auth],store,{verifyKey:async()=>{}});
 installTeachingKnowledgeRoutes(app,[auth],store,{...knowledge,verifyKey:async()=>{}});
 installTeachingFileRoutes(app, [auth], store, directory, new AttachmentService(store, directory));
 installTeachingAiRoutes(app, [auth], store, { verifyKey: async () => {}, knowledge, modelCall: async (_model, messages) => {
