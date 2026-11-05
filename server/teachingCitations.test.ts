@@ -29,3 +29,9 @@ test('student manuscript review also projects exact server-owned evidence instea
  const result=await reviewStory(async messages=>{if(++calls===2)return response({directorPrompt:'五轮普通人故事'});const data=JSON.parse(messages[1].content).untrustedTeachingData;return response({approved:true,title:'船工',role:'杭州船工',event:'疏浚西湖',feedback:'符合要求',annotations:[],citationIds:[data.citationOptions[0].id]});},course,activity,'苏轼疏浚西湖时，普通船工参与劳动。',original);
  assert.equal(calls,2);assert.deepEqual(result.citations,[{quote:original}]);
 });
+
+test('contents entries and source wrappers cannot displace substantive body evidence and selected IDs remain local and contiguous',()=>{
+ const raw='【已确认连接的检索片段：杭州通论】\n第一节杭州的地理区位与交通..........................................................................1\n第二节杭州的自然与生态……8\n第一节杭州的地理区位与交通\n杭州地处长江三角洲南翼，东滨杭州湾。\n钱塘江蜿蜒流过杭州，京杭运河的船舶从这里启航。';
+ const bank=teachingCitationOptions({material:raw,attachment:''},'杭州的地理位置有什么说法？');
+ assert.ok(bank.length>=2);assert.ok(bank.every(x=>!x.quote.includes('....')&&!x.quote.includes('……')&&!x.quote.startsWith('【')&&!/^第[一二]/u.test(x.quote)));assert.ok(bank.some(x=>x.quote.includes('长江三角洲南翼')));assert.equal(bank[0].id,'M1');assert.ok(bank.every((x,i)=>x.id===`M${i+1}`));
+});

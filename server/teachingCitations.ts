@@ -9,11 +9,14 @@ export function teachingCitationOptions(sources:{material:string;attachment:stri
   let index=0;
   for(const match of sources[source].matchAll(/[^\n。！？]{1,700}[。！？]?/gu)){
    const quote=match[0].trim();if(!quote)continue;
-   const lower=quote.toLowerCase(),rank=terms.reduce((sum,t)=>sum+(lower.includes(t)?t.length:0),0);
+   // A contents entry or transport header cannot substantiate historical facts.
+   if(/(?:[.．·]\s*){4,}|…{2,}|⋯{2,}/u.test(quote)||/^【[^】]{0,500}】$/u.test(quote)||/^#{1,6}\s/u.test(quote)||/^第[一二三四五六七八九十百0-9]+[章节篇卷]/u.test(quote)&&!/[。！？]/u.test(quote)||/^(?:第)?\d+页?$/u.test(quote))continue;
+   const lower=quote.toLowerCase(),near=sources[source].slice(Math.max(0,(match.index??0)-250),(match.index??0)+quote.length+250).toLowerCase(),rank=terms.reduce((sum,t)=>sum+(lower.includes(t)?3*t.length:0)+(near.includes(t)?t.length:0),0);
    options.push({value:{id:`${source==='material'?'M':'A'}${++index}`,source,quote},rank,index:options.length});
   }
  }
- return options.sort((a,b)=>b.rank-a.rank||a.index-b.index).slice(0,24).map(x=>x.value);
+ let materialId=0,attachmentId=0;
+ return options.sort((a,b)=>b.rank-a.rank||a.index-b.index).slice(0,24).map(x=>({...x.value,id:x.value.source==='material'?`M${++materialId}`:`A${++attachmentId}`}));
 }
 export function selectTeachingCitations(ids:unknown,options:TeachingCitationOption[]):{source:'material'|'attachment';quote:string}[]{
  if(!Array.isArray(ids)||ids.length>8||new Set(ids).size!==ids.length)throw new Error('TEACHING_CITATION_INVALID');
