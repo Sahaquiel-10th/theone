@@ -3,7 +3,7 @@ import type { Store } from './db.js';
 import { canReadKnowledge } from './enterprisePolicy.js';
 import { TeachingError, teachingMember, ownedTeachingCourse } from './teaching.js';
 import {ownedTeachingActivity} from './teachingLifecycle.js';
-import { bindTeachingKnowledgeSources, readTeachingKnowledgeSources, type TeachingKnowledgeDependencies } from './teachingKnowledge.js';
+import { assertTeachingKnowledgeSources, bindTeachingKnowledgeSources, readTeachingKnowledgeSources, type TeachingKnowledgeDependencies } from './teachingKnowledge.js';
 
 export type TeachingKnowledgeRouteDependencies = Omit<TeachingKnowledgeDependencies, 'verify'> & { verifyKey: (request: Request) => Promise<void> };
 export function installTeachingKnowledgeRoutes(app: Express, auth: readonly RequestHandler[], store: Store, deps: TeachingKnowledgeRouteDependencies) {
@@ -22,6 +22,12 @@ export function installTeachingKnowledgeRoutes(app: Express, auth: readonly Requ
       }) });
     } catch (error) { next(error); }
   });
+  router.get('/status',...auth,async(req,res,next)=>{try{
+    const owner=scope(req),db=await store.read(),course=ownedTeachingCourse(db,owner,String(req.query.courseId??''));if(req.query.activityId)ownedTeachingActivity(course,String(req.query.activityId));
+    assertTeachingKnowledgeSources(db,owner,course.knowledgeSources??[]);
+    if(req.query.purpose==='script'&&!(course.knowledgeSources??[]).length&&(course.sourceMode==='knowledge'||!course.materialText.trim()&&!course.materialAttachmentIds.length))throw new TeachingError('请先为课程关联可核对的知识库。',409,'TEACHING_KNOWLEDGE_REQUIRED');
+    res.json({valid:true,sourceCount:course.knowledgeSources?.length??0});
+  }catch(error){next(error);}});
   router.post('/select', ...auth, async(req,res,next)=>{try{await deps.verifyKey(req);const raw=req.body?.source;const source=bindTeachingKnowledgeSources(await store.read(),scope(req),[raw])[0];res.json({source:{...source,...(source.scope==='connection'&&raw?.confirmed===true?{confirmed:true}:{})}});}catch(error){next(error);}});
   router.post('/preview', ...auth, async (req, res, next) => {
     try {

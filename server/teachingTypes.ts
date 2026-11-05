@@ -81,7 +81,7 @@ export type TeachingOperation = TeachingScope & {
   courseLifecycleRevision?: number; activityLifecycleRevision?: number;
   submissionGradingRevision?: number;
   conversationId?: string; gameRevision?: number; gamePromptSnapshot?: { roleName: string; prompt: string };
-  status: 'running' | 'completed' | 'uncertain' | 'failed'; result?: unknown; error?: string;
+  status: 'running' | 'completed' | 'uncertain' | 'failed'; result?: unknown; error?: string; errorCode?:string;
   createdAt: string; completedAt?: string;
 };
 export type TeachingState = {

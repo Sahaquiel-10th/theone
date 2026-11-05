@@ -32,7 +32,7 @@ const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(valu
 const tokenOf = (req: Request) => req.headers.authorization?.replace(/^Bearer /, '') ?? '';
 const owner = (req: Request) => ({ workspaceId: req.workspaceId!, userId: req.user!.id });
 function publicOperation(operation: TeachingOperation) {
-  return { id: operation.id, operationId: operation.operationId, courseRevision: operation.courseRevision, activityId: operation.activityId, submissionId: operation.submissionId, conversationId: operation.conversationId, gameRevision: operation.gameRevision, preview: operation.preview, question: operation.question, kind: operation.kind, status: operation.status, result: publicStoryResult(operation.result), error: operation.error, createdAt: operation.createdAt, completedAt: operation.completedAt };
+  return { id: operation.id, operationId: operation.operationId, courseRevision: operation.courseRevision, activityId: operation.activityId, submissionId: operation.submissionId, conversationId: operation.conversationId, gameRevision: operation.gameRevision, preview: operation.preview, question: operation.question, kind: operation.kind, status: operation.status, result: publicStoryResult(operation.result), error: operation.error,errorCode:operation.errorCode, createdAt: operation.createdAt, completedAt: operation.completedAt };
 }
 function courseUsage(db: Awaited<ReturnType<Store['read']>>, course: TeachingCourse) {
   return db.modelUsageRecords.filter(u => u.workspaceId === course.workspaceId && u.userId === course.userId && u.conversationId === teachingConversationId(course.id)).reduce((sum, u) => sum + (u.chargedMicros ?? 0) + (u.reservedMicros ?? 0), 0);
@@ -63,6 +63,8 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
     if (sessionId && activity) { const session=state.sessions.find(row=>row.id===sessionId&&row.courseId===course.id&&row.workspaceId===scope.workspaceId&&row.userId===scope.userId); if(!session)throw new TeachingError('参与身份不可用',401); teachingSessionActivity(course,session,activity.id); }
     if (old) { if (old.payloadHash !== payloadHash) throw new TeachingError('提交内容已经变化，请重新确认后发起', 409); return { operation: old, created: false }; }
     if (body.kind !== 'insights' && !activity) throw new TeachingError('请先保存并选择教学活动');
+    assertTeachingKnowledgeSources(db,scope,course.knowledgeSources??[]);
+    if(body.kind==='prepare')assertTeachingKnowledgeSources(db,scope,activity?.knowledgeSources??[]);
     if(sessionId){const bound=teachingState(db,scope).sessions.find(s=>s.id===sessionId&&s.workspaceId===scope.workspaceId&&s.userId===scope.userId);if(!bound)throw new TeachingError('学习身份不可用',401);assertStudentStoryPermission(db,bound,String(body.kind),body.storyId);if(bound.studentAccountId&&activity?.kind==='game'&&body.kind==='answer')throw new TeachingError('请使用老师布置的课堂游戏',403);}
     if (sessionId && (activity?.status !== 'published' || !['inquiry', 'scenario', 'game'].includes(activity.kind))) throw new TeachingError('这个活动暂未开放导学问答', 403);
     if (body.kind === 'prepare' && activity && (activity.isOpen===true || activity.isOpen===undefined && course.status==='published' && activity.status==='published')) throw new TeachingError('请先关闭这个工具的学生入口，再准备新版活动',409);
@@ -279,6 +281,7 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
         const saved = db.users.find(u => u.id === scope.userId)?.teaching?.operations.find(o => o.id === operation.id && o.workspaceId === scope.workspaceId);
         if (!saved || saved.status !== 'running') return;
         saved.status = definiteFailure ? 'failed' : 'uncertain';
+        if(error instanceof TeachingError)saved.errorCode=error.code;
         saved.error = error instanceof ImageTaskConfigurationError&&operation.sessionId?'本课程暂时无法生成结局插画，请联系老师。文字结局与选择记录已保留。':definiteFailure ? error.message : '本次 AI 结果尚未确认，已保留原记录；不会自动重复执行，请先查看用量或联系管理员。';
         saved.completedAt = new Date().toISOString();
       });

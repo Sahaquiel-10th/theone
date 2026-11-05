@@ -5,11 +5,11 @@ import type {TeachingCourseUsage} from '../server/teachingUsage';
 import type {TeachingRequest} from './teachingUploads';
 import './teaching-usage-dialog.css';
 
-type Props={course:TeachingCourse;request:TeachingRequest;onSaved:(course:TeachingCourse)=>void;onConfirmed:()=>void;onClose:()=>void};
+type Props={course:TeachingCourse;request:TeachingRequest;onSaved:(course:TeachingCourse)=>void;onConfirmed:()=>void;onClose:()=>void;confirmLabel?:string};
 const format=(micros:number)=>new Intl.NumberFormat('zh-CN',{maximumFractionDigits:4}).format(micros/1e6);
 
 /** A native modal keeps the teaching page stationary and contains keyboard focus. */
-export function TeachingUsageDialog({course,request,onSaved,onConfirmed,onClose}:Props){
+export function TeachingUsageDialog({course,request,onSaved,onConfirmed,onClose,confirmLabel}:Props){
   const dialog=useRef<HTMLDialogElement>(null),live=useRef(true),locked=useRef(false),current=useRef(course);
   const [usage,setUsage]=useState<TeachingCourseUsage>(),[loading,setLoading]=useState(true),[error,setError]=useState(''),[busy,setBusy]=useState(false),[ready,setReady]=useState(false);
   const [budget,setBudget]=useState(course.budgetMicros>0?String(course.budgetMicros/1e6):''),[confirmed,setConfirmed]=useState(false),[teacherMode,setTeacherMode]=useState<'course'|'balance'>(course.teacherBudgetMode??'course');
@@ -37,7 +37,7 @@ export function TeachingUsageDialog({course,request,onSaved,onConfirmed,onClose}
       <p className="teaching-usage-note">学生入口始终受此累计上限保护。</p>
       {usage?<p className="teaching-usage-available">此上限内还可使用 <strong>{format(Math.max(0,(valid?Math.round(amount*1e6):0)-usage.spentMicros-usage.reservedMicros))}</strong> 电力</p>:null}
       <label className="teaching-check"><input type="checkbox" checked={confirmed} disabled={busy||!ready||!valid} onChange={event=>setConfirmed(event.target.checked)}/>确认由当前账号支付本课程 AI 费用</label>
-      <footer><button type="button" disabled={busy} onClick={onClose}>取消</button><button type="submit" className="teaching-primary" disabled={busy||!ready||!valid||!confirmed}>{busy?'正在保存…':Math.round(amount*1e6)===current.current.budgetMicros&&teacherMode===(current.current.teacherBudgetMode??'course')?'确认':'保存并确认'}</button></footer>
+      <footer><button type="button" disabled={busy} onClick={onClose}>取消</button><button type="submit" className="teaching-primary" disabled={busy||!ready||!valid||!confirmed}>{busy?'正在保存…':confirmLabel??(Math.round(amount*1e6)===current.current.budgetMicros&&teacherMode===(current.current.teacherBudgetMode??'course')?'确认':'保存并确认')}</button></footer>
     </form>
   </dialog>;
 }

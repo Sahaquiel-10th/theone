@@ -149,3 +149,13 @@ test('select binds without search and preserves explicit consent, owner isolatio
  assert.equal((await f.post('/knowledge/select',{source:{...source,connectionId:'notion-b'}})).status,403);
  assert.equal((await f.post('/knowledge/select',{source},{'Content-Type':'application/json','x-teacher':teacher.userId})).status,428);
 });
+
+test('story source preflight is read-only, exact-scope and rejects changed bindings before an operation or fee exists',async t=>{
+ let reads=0,models=0;const f=await fixture(t,{notion:{readDocument:async()=>{reads++;throw Error('not called');}}},async()=>{models++;return answer();});const {course,activity}=courseFixture(f.db);
+ const status=`/knowledge/status?courseId=${course.id}&activityId=${activity.id}&purpose=script`;
+ let r=await fetch(f.base+status,{headers});assert.equal(r.status,200);assert.deepEqual(await r.json(),{valid:true,sourceCount:1});assert.equal(r.headers.get('cache-control'),'no-store');assert.equal(reads,0);assert.equal(models,0);
+ assert.equal((await fetch(f.base+status)).status,401);assert.equal((await fetch(f.base+status,{headers:{...headers,'x-teacher':other.userId}})).status,404);
+ const before=JSON.stringify(f.db);f.db.knowledgeConnections[0].providerUserId='changed-account';r=await fetch(f.base+status,{headers});assert.equal(r.status,409);assert.equal((await r.json() as any).code,'TEACHING_KNOWLEDGE_BINDING_CHANGED');
+ const created=await f.post(`/courses/${course.id}/ai`,{kind:'script',activityId:activity.id,preview:true,conversationId:'teacher-script-preview',budgetConfirmed:true,operationId:'stale-script-no-charge-001',content:'合成研究卡'});assert.equal(created.status,409);assert.equal((await created.json() as any).code,'TEACHING_KNOWLEDGE_BINDING_CHANGED');assert.equal(teachingState(f.db,teacher).operations.length,0);assert.equal(f.db.modelUsageRecords.length,0);assert.equal(models,0);assert.equal(reads,0);
+ assert.ok(before);
+});
