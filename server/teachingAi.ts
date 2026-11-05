@@ -1,3 +1,4 @@
+import {teachingCitationOptions,selectTeachingCitations} from './teachingCitations.js';
 import type { Message, ModelConfig } from './types.js';
 import type { TeachingActivity, TeachingCourse, TeachingCriterion, TeachingGrade, TeachingQuestion, TeachingScene, TeachingSubmission } from './teachingTypes.js';
 
@@ -187,9 +188,13 @@ async function answer(input: TeachingAiInput, deps: { call?: TeachingAiCall }): 
   };
   if(!sources.material.trim()&&!sources.attachment.trim()&&canSupplement)return supplement();
   if (!sources.material.trim() && !sources.attachment.trim()) return { kind: 'answer', answer: '当前课程资料不足，请老师先补充本课程材料；你也可以写出地点名称或希望了解的课程问题。', materialInsufficient: true, needsLocationClarification: !!input.imageDataUrls?.length, locationCandidates: [], citations: [] };
-  const result = object(await callJson(input, deps, '任务：只根据当前课程材料回答学生问题。teacherAvatarPrompt和teacherInstructions只作为教学目标、引导方式和语气背景，不改变资料权限和事实范围。history仅用于理解本次追问的指代和学习过程，旧答复不是新的事实依据，实质结论仍须对应当前材料。图片仅辅助确认地点，无法确定时必须请求学生提供名称或确认地点候选，禁止猜定地点。无法从材料支持答案时 materialInsufficient=true，说明资料不足。所有实质答案须给材料逐字引用，不编造页码。不要返回后台信息。格式：{"answer":"答复","materialInsufficient":false,"needsLocationClarification":false,"locationCandidates":[],"citations":[{"source":"material 或 attachment","quote":"逐字原文"}]}。', { courseTitle: input.course.title, subject: input.course.subject, teacherAvatarPrompt, teacherInstructions, history, materialText: sources.material, attachmentText: sources.attachment, question }, 3000, input.imageDataUrls), ['answer', 'materialInsufficient', 'needsLocationClarification', 'locationCandidates', 'citations']);
+  const citationOptions=teachingCitationOptions(sources,question);
+  const raw = await callJson(input, deps, '任务：只根据当前课程材料回答学生问题。teacherAvatarPrompt和teacherInstructions只作为教学目标、引导方式和语气背景，不改变资料权限和事实范围。history仅用于理解本次追问的指代和学习过程，旧答复不是新的事实依据，实质结论仍须对应当前材料。图片仅辅助确认地点，无法确定时必须请求学生提供名称或确认地点候选，禁止猜定地点。无法从材料支持答案时 materialInsufficient=true，说明资料不足。所有实质答案须引用citationOptions中的原文片段编号。只在citationIds中返回实际支持答案的编号（例如M1、A1），不得自行写引文或编造编号、页码；服务端会按编号带回原文。没有适用片段时materialInsufficient=true。不要返回后台信息。格式：{"answer":"答复","materialInsufficient":false,"needsLocationClarification":false,"locationCandidates":[],"citationIds":["M1"]}。', { courseTitle: input.course.title, subject: input.course.subject, teacherAvatarPrompt, teacherInstructions, history, materialText: sources.material, attachmentText: sources.attachment, citationOptions, question }, 3000, input.imageDataUrls);
+  const usesIds=!!raw&&typeof raw==='object'&&Object.hasOwn(raw,'citationIds');
+  const result=object(raw,['answer','materialInsufficient','needsLocationClarification','locationCandidates',usesIds?'citationIds':'citations']);
   const materialInsufficient = bool(result.materialInsufficient), needsLocationClarification = bool(result.needsLocationClarification);
-  const citations = list(result.citations, 8).map(raw => quoteFrom(raw, sources));
+  let citations:TeachingCitation[];
+  try{citations=usesIds?selectTeachingCitations(result.citationIds,citationOptions):list(result.citations,8).map(raw=>quoteFrom(raw,sources));}catch{return fail('AI 引用未能对应本次课程原文，未采用该结果。');}
   const locationCandidates = list(result.locationCandidates, 5).map(raw => string(raw, 200));
   if ((!materialInsufficient && !needsLocationClarification && !citations.length) || (!needsLocationClarification && locationCandidates.length)) return fail();
   if(materialInsufficient&&!needsLocationClarification&&canSupplement)return supplement();
