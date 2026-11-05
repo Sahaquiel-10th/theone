@@ -347,3 +347,14 @@ test("ima never forwards API credentials echoed into an object URL or access hea
   link = { url: `https://pkb.ima.myqcloud.com/official-file.txt?key=${credentials.apiKey}`, headers: { Authorization: "object-token" } };
   assert.equal((await f.service.checkSearch(scope, "杭州")).status, "content_unavailable"); assert.equal(files, 0);
 });
+
+test('a matched PDF lecture is not starved by cheaper outline and map files',async()=>{
+ const f=fixture();await f.service.connect(scope,credentials);
+ f.options.override=(path,body)=>{
+  if(path==='search_note')return {code:0,data:{search_note_infos:[],is_end:true}};
+  if(path==='search_knowledge')return {code:0,data:{info_list:[{media_id:'outline',title:'杭州教学大纲.docx'},{media_id:'map',title:'杭州地图.docx'},{media_id:'lecture',title:'教学团队编写《杭州通论》讲义.pdf'}],is_end:true}};
+  if(path==='get_media_info')return {code:0,data:{media_type:11,notebook_ext_info:{notebook_id:String(body.media_id)}}};
+  if(path==='get_doc_content')return {code:0,data:{content:body.note_id==='lecture'?'杭州地处长江三角洲南翼，东滨杭州湾。':'杭州课程安排'}};
+ };
+ const chunks=await f.service.search('a','杭州',1);assert.equal(chunks.length,1);assert.match(chunks[0].title,/讲义.pdf/);assert.match(chunks[0].content,/长江三角洲南翼/);
+});

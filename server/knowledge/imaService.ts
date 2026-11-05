@@ -281,7 +281,11 @@ export class ImaService {
       if (mediaId) candidates.set("media:" + mediaId, { id: "media:" + mediaId, mediaId, title: readable(hit.title, credentials).slice(0, 300) || "ima 资料", text: readable(hit.highlight_content, credentials) });
     }
     const readCost = (hit: Candidate) => hit.noteId || hit.text ? 0 : /\.docx$/i.test(hit.title) ? 1 : 2;
-    const ordered = [...candidates.values()].sort((a, b) => relevance(b.title + b.text, q) - relevance(a.title + a.text, q) || readCost(a) - readCost(b)).slice(0, limit * 2);
+    // At equal search relevance, read substantive teaching materials before
+    // ancillary outlines/maps, regardless of format. The file-read budget must
+    // not silently let two inexpensive Word files starve a matched PDF lecture.
+    const teachingMaterial=(hit:Candidate)=>/讲义|教材|课本/.test(hit.title)?1:0;
+    const ordered = [...candidates.values()].sort((a, b) => relevance(b.title + b.text, q) - relevance(a.title + a.text, q) || teachingMaterial(b)-teachingMaterial(a) || readCost(a) - readCost(b)).slice(0, limit * 2);
     const chunks: KnowledgeChunk[] = []; let unreadable = false, fileReads = 0;
     for (const hit of ordered) {
       if (chunks.length >= limit) break;

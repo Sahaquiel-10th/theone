@@ -287,3 +287,17 @@ test('grading an explicitly adopted rubric retains the original assignment and n
   const result = await executeTeachingAi(input({ submission: submission(original, { gradingSnapshot: revised, gradingRevision: 1 }) }), { call: json({ criteria: [{ criterionId: 'later', score: 15, comment: '有观察', evidence: '我看到制茶工具' }], feedback: '请复核' }) });
   assert.equal(result.kind, 'grade'); if (result.kind === 'grade') assert.equal(result.grade.total, 15);
 });
+
+test('inquiry with no retrieved material labels general knowledge and never fabricates course citations',async()=>{
+ const r=await executeTeachingAi(input({kind:'answer',activity:activity({kind:'inquiry'}),course:course({materialText:''}),question:'杭州在哪？'}),{call:async messages=>{assert.match(messages[0].content,/允许通用知识补充/);return {content:JSON.stringify({answer:'杭州位于浙江省。'}),finishReason:'stop'};}});
+ assert.equal(r.kind,'answer');if(r.kind==='answer'){assert.equal(r.generalKnowledge,true);assert.equal(r.materialInsufficient,true);assert.deepEqual(r.citations,[]);assert.match(r.answer,/不作为课程原文引用/);}
+});
+test('inquiry first tries materials, then separately labels unsupported general knowledge',async()=>{
+ let calls=0;const r=await executeTeachingAi(input({kind:'answer',activity:activity({kind:'inquiry'}),question:'杭州地理位置？'}),{call:async()=>({content:JSON.stringify(++calls===1?{answer:'资料不足',materialInsufficient:true,needsLocationClarification:false,locationCandidates:[],citations:[]}:{answer:'杭州位于浙江。'}),finishReason:'stop'})});assert.equal(calls,2);assert.equal(r.kind,'answer');if(r.kind==='answer')assert.equal(r.generalKnowledge,true);
+});
+
+test('general supplement retains teacher guidance and never guesses an unidentified image',async()=>{
+ let calls=0;const a=activity({kind:'inquiry',instructions:'先提问引导学生思考'});
+ await executeTeachingAi(input({kind:'answer',activity:a,course:course({materialText:''}),question:'杭州在哪？'}),{call:async messages=>{calls++;assert.match(messages[1].content,/先提问引导学生思考/);return {content:JSON.stringify({answer:'先想想杭州位于哪个省？'}),finishReason:'stop'};}});
+ const r=await executeTeachingAi(input({kind:'answer',activity:a,course:course({materialText:''}),question:'图片里是哪里？',imageDataUrls:['data:image/png;base64,YQ==']}),{call:async()=>{calls++;throw Error('must not guess');}});assert.equal(calls,1);if(r.kind==='answer'){assert.equal(r.needsLocationClarification,true);assert.equal(r.generalKnowledge,undefined);}
+});
