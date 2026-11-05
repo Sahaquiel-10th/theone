@@ -1,3 +1,4 @@
+import {teachingStoryResearchQuery} from './teachingStoryResearch.js';
 import {teachingCitationOptions,selectTeachingCitations} from './teachingCitations.js';
 import type {Database, Message} from './types.js';
 import type {TeachingActivity, TeachingCourse, TeachingOperation, TeachingScope} from './teachingTypes.js';
@@ -20,7 +21,7 @@ export const STORY_TURN_PROMPT=`主持五次关键决策的历史互动。openin
 async function json(call:TeachingAiCall,prompt:string,data:unknown,maxOutputTokens=3500){const now=new Date().toISOString();const messages:Message[]=[{role:'system',content:ROOT+'\n'+prompt,createdAt:now},{role:'user',content:JSON.stringify({untrustedTeachingData:data}),createdAt:now}];const r=await call(messages,{maxOutputTokens});if(r.finishReason&&!['stop','end_turn','stop_sequence'].includes(r.finishReason))return bad();try{return record(JSON.parse(r.content));}catch{return bad();}}
 export async function reviewStory(call:TeachingAiCall,course:TeachingCourse,activity:TeachingActivity,script:string,materials:string,onReviewed?:(review:StoryScript)=>Promise<void>):Promise<StoryScript>{
  if(!materials.trim())throw new TeachingAiError('本次没有检索到可核对的课程史料，不能审核发布。请补充事件关键词或请老师检查课程知识来源。');
- const citationOptions=teachingCitationOptions({material:materials,attachment:''},script.slice(0,6000));
+ const citationOptions=teachingCitationOptions({material:materials,attachment:''},teachingStoryResearchQuery(script,course.title));
  const r=await json(call,STORY_REVIEW_PROMPT,{course:course.title,requirements:activity.instructions,script,materials,citationOptions},4500);
  if(Object.hasOwn(r,'citationIds')){try{r.citations=selectTeachingCitations(r.citationIds,citationOptions).map(x=>({quote:x.quote}));}catch{return bad();}}
  if(typeof r.approved!=='boolean'||!Array.isArray(r.annotations)||r.annotations.length>20||!Array.isArray(r.citations)||r.citations.length>10)return bad();

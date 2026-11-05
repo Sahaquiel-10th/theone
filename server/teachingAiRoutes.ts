@@ -1,3 +1,4 @@
+import {teachingStoryResearchQuery} from './teachingStoryResearch.js';
 import express, { type Express, type Request, type RequestHandler } from 'express';
 import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -162,13 +163,18 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
       const courseText = courseFiles.length ? (await prepareAttachmentContext(courseFiles, { ...scope, conversationId: teachingConversationId(course.id) }, operation.question ?? activity?.title ?? '课程材料', 40_000, async () => { throw new TeachingError('请按章节选择课程资料'); })).text : '';
       if (course.materialText.length + courseText.length > 120_000) throw new TeachingError('课程资料较多，请按章节准备活动', 422);
       course.materialText += courseText ? `\n\n${courseText}` : '';
+      let attachmentText = '', imageFiles: Attachment[] = [];
+      if(operation.kind==='script'){
+        validateTeachingAttachments(db,scope,course.id,operation.attachmentIds??[],operation.sessionId??scope.userId);
+        attachmentText=await fullWorkText((operation.attachmentIds??[]).map(id=>db.attachments.find(file=>file.id===id)!));
+        if(![operation.question,attachmentText].some(value=>value?.trim()))throw new TeachingError('这份剧本没有可读取的文字，请上传填写后的TXT、DOCX或文字版PDF',422);
+      }
       let retrieval={selected:courseSources.length,matched:0};
       if (!['insights','story_turn','story_image'].includes(operation.kind) && courseSources.length) {
-        const found = await readTeachingKnowledgeSources(store, scope, courseSources, (operation.kind==='script'?[course.title,activity?.title,operation.question].filter(Boolean).join(' '):(operation.question??activity?.title??'课程资料')).slice(0,6000), { ...deps.knowledge, verify });
+        const found = await readTeachingKnowledgeSources(store, scope, courseSources, (operation.kind==='script'?teachingStoryResearchQuery([operation.question,attachmentText].filter(Boolean).join('\n'),course.title):(operation.question??activity?.title??'课程资料')).slice(0,6000), { ...deps.knowledge, verify });
         retrieval.matched=found.sources.filter(s=>s.status==='read').length;
         course.materialText += found.text ? `\n\n${found.text}` : '';
       }
-      let attachmentText = '', imageFiles: Attachment[] = [];
       if (operation.kind === 'prepare' && activity) {
         const ids = activity.sourceAttachmentIds ?? [];
         validateTeachingAttachments(db, scope, course.id, ids);
@@ -190,7 +196,7 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
         const files = submission.attachmentIds.map(id => db.attachments.find(f => f.id === id)!);
         attachmentText = await fullWorkText(files);
         imageFiles = files.filter(f => f.kind === 'image');
-      } else if (operation.kind === 'answer' || operation.kind === 'script') {
+      } else if (operation.kind === 'answer') {
         validateTeachingAttachments(db, scope, course.id, operation.attachmentIds ?? [], operation.sessionId ?? scope.userId);
         const files = (operation.attachmentIds ?? []).map(id => db.attachments.find(f => f.id === id)!);
         attachmentText = await fullWorkText(files); imageFiles = files.filter(f => f.kind === 'image');
