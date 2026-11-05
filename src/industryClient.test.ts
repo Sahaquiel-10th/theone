@@ -4,16 +4,11 @@ import { createIndustryClient, industryFilePath, industryPaidPath, readIndustryP
 
 function storage() { const values = new Map<string, string>(); return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } }; }
 const session = (id: string) => ({ id, tool: 'image_edit' as const, budgetMicros: 10e6, createdAt: '', expiresAt: '2099-01-01T00:00:00Z' });
-test('preparing profiles is free; every model action requires explicit use authorization before HTTP', async () => {
-  let calls = 0, asked = 0;
-  const request: IndustryRequest = async <T,>() => { calls++; return { profile: {} } as T; };
-  const client = createIndustryClient(request, { tool: 'review_reply', storage: storage(), storageKey: 'owner:a:review', session: () => undefined, onBudgetRequired: () => { asked++; }, onPending: () => {} });
-  await client.request('/api/review-replies/profiles', { method: 'POST', body: '{"draft":{}}' });
-  await assert.rejects(client.request('/api/review-replies/runs', { method: 'POST', body: '{}' }), /确认本轮/);
-  assert.equal(calls, 1); assert.equal(asked, 1); assert.equal(client.pending().length, 0);
-  assert.equal(industryPaidPath('/api/commerce/materials/recognize', 'POST'), true);
-  assert.equal(industryPaidPath('/api/commerce/jobs/one/download'), false);
-  assert.equal(industryFilePath('/api/attachments/owned/content?download=1'), '/api/industry/files/owned/content?download=1');
+test('preparing profiles is free; model actions initialize an accounting context without spending confirmation',async()=>{
+ let calls=0,initialized=0;const request:IndustryRequest=async<T,>()=>{calls++;return {} as T;};
+ const client=createIndustryClient(request,{tool:'review_reply',storage:storage(),storageKey:'owner:a:review',session:()=>undefined,ensureSession:async()=>{initialized++;return {...session('auto-accounting'),tool:'review_reply'};},onPending:()=>{}});
+ await client.request('/api/review-replies/profiles',{method:'POST',body:'{}'});assert.equal(initialized,0);
+ await client.request('/api/review-replies/runs',{method:'POST',body:'{}'});assert.equal(initialized,1);assert.equal(calls,2);assert.equal(client.pending().length,0);
 });
 test('lost responses persist the exact original key and budget across reload and a newly confirmed session', async () => {
   const disk = storage(), bodies: Record<string, unknown>[] = [];
@@ -35,7 +30,7 @@ test('only an explicit new attempt can replace the original key and authorizatio
   const client = createIndustryClient(request, { tool: 'image_edit', storage: storage(), storageKey: 'a:b:edit', session: () => grant, onBudgetRequired: () => {}, onPending: () => {} });
   const input = { method: 'POST', body: '{"requestKey":"form-original-request-001","instruction":"69"}' };
   await assert.rejects(client.request('/api/commerce/edits', input));
-  grant = session('second-grant'); client.prepareExplicitRetry(client.pending()[0].requestKey);
+  grant = session('second-grant'); await client.prepareExplicitRetry(client.pending()[0].requestKey);
   await assert.rejects(client.request('/api/commerce/edits', input));
   assert.notEqual(bodies[0].requestKey, bodies[1].requestKey); assert.equal(bodies[1].usageSessionId, 'second-grant');
   await assert.rejects(client.request('/api/commerce/edits', input));
@@ -71,4 +66,11 @@ test('multipart source workflows use ONE chunk/parse routes and snapshot files b
   const result = await client.request<{ attachments: { id: string }[] }>('/api/attachments', { method: 'POST', body: form });
   assert.equal(result.attachments.length, 2); assert.equal(calls.filter(call => call.path.includes('/chunks?')).length, 4);
   assert.ok(calls.every(call => call.path.startsWith('/api/industry/files/'))); assert.equal(client.pending().length, 0);
+});
+
+test('concurrent clicks during lazy initialization retain one original operation ID',async()=>{
+ const bodies:Record<string,unknown>[]=[];let release!:(s:ReturnType<typeof session>)=>void;const ready=new Promise<ReturnType<typeof session>>(resolve=>{release=resolve;});
+ const request:IndustryRequest=async<T,>(_path:string,init?:RequestInit)=>{bodies.push(JSON.parse(String(init?.body)));return {} as T;};
+ const client=createIndustryClient(request,{tool:'image_edit',storage:storage(),storageKey:'concurrent-auto-session',session:()=>undefined,ensureSession:()=>ready,onPending:()=>{}});
+ const input={method:'POST',body:JSON.stringify({instruction:'同一张图改成69'})};const one=client.request('/api/commerce/edits',input),two=client.request('/api/commerce/edits',input);release(session('lazy-session'));await Promise.all([one,two]);assert.equal(bodies.length,1);assert.ok(bodies[0].requestKey);assert.equal(bodies[0].usageSessionId,'lazy-session');
 });

@@ -37,10 +37,10 @@ test('scope isolation includes platform admins and private company/global featur
   f.db.workspaceMembers[0].status='disabled';assert.throws(()=>verifyLegacySkillSelection(f.db,f.scope,selected),/账号或空间不可用/);
 });
 test('published price and approval remain exact and a new threshold or price cannot reuse old consent',()=>{
-  const f=fixture({usageMultiplier:3});assert.throws(()=>prepareLegacySkillSelection(f.db,f.scope,f.body),/超过/);
-  const price={id:'writer',releaseId:'release_writer',version:1,multiplier:3};assert.throws(()=>prepareLegacySkillSelection(f.db,f.scope,{...f.body,featureApprovals:[{...price,releaseId:'old'}]}),/超过/);
+  const f=fixture({usageMultiplier:3});assert.doesNotThrow(()=>prepareLegacySkillSelection(f.db,f.scope,f.body));
+  const price={id:'writer',releaseId:'release_writer',version:1,multiplier:3};assert.doesNotThrow(()=>prepareLegacySkillSelection(f.db,f.scope,{...f.body,featureApprovals:[{...price,releaseId:'old'}]}));
   const selected=prepareLegacySkillSelection(f.db,f.scope,{...f.body,featureApprovals:[price]});assert.deepEqual(legacySkillFeaturePrice(selected),{...price,name:'写作助手'});
-  const normal=fixture(),normalSelected=prepareLegacySkillSelection(normal.db,normal.scope,normal.body);normal.db.users[0].featureBudgetPolicies=[{...normal.scope,approvalThreshold:.5,updatedAt:'now'}];assert.throws(()=>verifyLegacySkillSelection(normal.db,normal.scope,normalSelected),/超过/);
+  const normal=fixture(),normalSelected=prepareLegacySkillSelection(normal.db,normal.scope,normal.body);normal.db.users[0].featureBudgetPolicies=[{...normal.scope,approvalThreshold:.5,updatedAt:'now'}];assert.doesNotThrow(()=>verifyLegacySkillSelection(normal.db,normal.scope,normalSelected));
 });
 test('knowledge context binds only currently readable exact-workspace sources and rejects required missing results',()=>{
   const f=fixture({knowledgeMode:'required'}),selected=prepareLegacySkillSelection(f.db,f.scope,f.body);assert.deepEqual(legacySkillKnowledgeScope(selected),{required:true,sourceIds:['ka']});

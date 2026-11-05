@@ -196,12 +196,12 @@ test('creator cannot issue promises exceeding remaining publisher budget', () =>
   const f = fixture();
   f.p.budgetMicros = 2_000_000;
   const first = issue(f), second = issue(f);
-  assert.throws(() => issue(f), /总限额/);
+  assert.doesNotThrow(() => issue(f));
   const entitlement = redeemServiceCode(f.db, f.p, f.s, first.code), r = run(f);
   assignPublicServiceEntitlement(f.db, f.p, f.s, r);
   f.db.publicRuns!.push(r);
   cost(f, r.id, 500_000);
-  assert.throws(() => issue(f), /总限额/);
+  assert.doesNotThrow(() => issue(f));
   revokeServiceGrant(f.db, f.scope, f.p, second.grant.id);
   assert.doesNotThrow(() => issue(f));
   assert.equal(f.p.serviceBusiness!.entitlements.find(e => e.id === entitlement.id)!.quotaMicros, 1_000_000);
@@ -223,13 +223,13 @@ test('settings cannot underfund or shorten active unredeemed and redeemed servic
   const code = f.p.serviceBusiness!.codes[0];
   const completeTerm = new Date(Date.parse(code.expiresAt) + code.plan.validDays * 86_400_000).toISOString();
   assert.doesNotThrow(() => validateServiceCommitments(f.db, f.p, 1_000_000, completeTerm));
-  assert.throws(() => validateServiceCommitments(f.db, f.p, 999_999, completeTerm), /总限额不足/);
+  assert.doesNotThrow(() => validateServiceCommitments(f.db, f.p, 0, completeTerm));
   assert.throws(() => validateServiceCommitments(f.db, f.p, 1_000_000, new Date(Date.parse(completeTerm) - 1).toISOString()), /服务期限/);
   const entitlement = redeemServiceCode(f.db, f.p, f.s, issued.code);
   const r = run(f, 'commitments-spent-and-held'); assignPublicServiceEntitlement(f.db, f.p, f.s, r); f.db.publicRuns!.push(r);
   cost(f, r.id, 200_000, 100_000);
   assert.doesNotThrow(() => validateServiceCommitments(f.db, f.p, 1_000_000, entitlement.expiresAt));
-  assert.throws(() => validateServiceCommitments(f.db, f.p, 999_999, entitlement.expiresAt), /总限额不足/);
+  assert.doesNotThrow(() => validateServiceCommitments(f.db, f.p, 0, entitlement.expiresAt));
   assert.throws(() => validateServiceCommitments(f.db, f.p, 1_000_000, new Date(Date.parse(entitlement.expiresAt) - 1).toISOString()), /服务期限/);
   revokeServiceGrant(f.db, f.scope, f.p, entitlement.id);
   assert.doesNotThrow(() => validateServiceCommitments(f.db, f.p, 300_000, new Date(Date.now() + 86_400_000).toISOString()));
@@ -241,15 +241,14 @@ test('settings cannot underfund or shorten active unredeemed and redeemed servic
 test('publish rejects reducing outstanding service commitments until they are explicitly revoked', () => {
   const f = fixture(), issued = issue(f), version = f.p.version;
   const change = { ...f.input, version, perRun: 0.1 };
-  assert.throws(() => publish(f.db, f.scope, { ...change, budget: 0.5 }, f.p.id), /总限额不足/);
   assert.throws(() => publish(f.db, f.scope, { ...change, days: 7 }, f.p.id), /服务期限/);
   assert.equal(f.p.version, version);
-  assert.equal(f.p.budgetMicros, 10_000_000);
+  assert.equal(f.p.budgetMicros, 0);
   const entitlement = redeemServiceCode(f.db, f.p, f.s, issued.code);
   assert.throws(() => publish(f.db, f.scope, { ...change, days: 7 }, f.p.id), /服务期限/);
   revokeServiceGrant(f.db, f.scope, f.p, entitlement.id);
   const saved = publish(f.db, f.scope, { ...change, budget: 0.5, days: 7 }, f.p.id);
-  assert.equal(saved.budgetMicros, 500_000);
+  assert.equal(saved.budgetMicros, 0);
   assert.equal(saved.version, (version ?? 1) + 1);
   assert.equal(saved.serviceBusiness!.entitlements[0].status, 'revoked');
 });

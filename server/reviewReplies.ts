@@ -18,7 +18,7 @@ const versionsLimit = 20;
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function usageSession(db: Database, user: User, id: string) {
   const session = assertIndustryBudget(db, { workspaceId: user.workspaceId, userId: user.id }, id, 0, `industry_${id}_review_init`);
-  if (session.tool !== 'review_reply') throw new Error('请先确认评价回复工作台的本轮电力上限');
+  if (session.tool !== 'review_reply') throw new Error('请求不属于评价回复工作台');
   return session;
 }
 

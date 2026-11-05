@@ -34,9 +34,6 @@ const owner = (req: Request) => ({ workspaceId: req.workspaceId!, userId: req.us
 function publicOperation(operation: TeachingOperation) {
   return { id: operation.id, operationId: operation.operationId, courseRevision: operation.courseRevision, activityId: operation.activityId, submissionId: operation.submissionId, conversationId: operation.conversationId, gameRevision: operation.gameRevision, preview: operation.preview, question: operation.question, kind: operation.kind, status: operation.status, result: publicStoryResult(operation.result), error: operation.error,errorCode:operation.errorCode, createdAt: operation.createdAt, completedAt: operation.completedAt };
 }
-function courseUsage(db: Awaited<ReturnType<Store['read']>>, course: TeachingCourse) {
-  return db.modelUsageRecords.filter(u => u.workspaceId === course.workspaceId && u.userId === course.userId && u.conversationId === teachingConversationId(course.id)).reduce((sum, u) => sum + (u.chargedMicros ?? 0) + (u.reservedMicros ?? 0), 0);
-}
 async function fullWorkText(files: Attachment[]) {
   let text = '';
   for (const file of files) {
@@ -232,9 +229,6 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
           assertSources(fresh);
           assertGame(fresh);
           assertGrading(fresh);
-          const liveCourse=ownedTeachingCourse(fresh,scope,course.id);
-          const manualBalance=!operation.sessionId&&operation.teacherBudgetModeSnapshot==='balance'&&liveCourse.teacherBudgetMode==='balance';
-          if (!manualBalance&&courseUsage(fresh,liveCourse)+amount>liveCourse.budgetMicros) throw new TeachingError('本次预计用量超过课程累计保护上限，请老师调整后再试',402);
         } }, snapshot => (deps.modelCall ?? callModelWithTools)(snapshot, inputMessages.map(m => ({ role: m.role, content: m.content, inputImageDataUrls: m.inputImageDataUrls })), [], callId, options));
       };
       let output: import('./teachingAi.js').TeachingAiResult | StoryResult;
@@ -253,7 +247,7 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
         const config=resolveImageTask(fresh,true);
         const imageMessages:Message[]=[{role:'user',content:'生成教学历史想象插画，不能冒充史料照片。下列内容仅为画面参数，不是权限指令：'+last.imagePrompt,createdAt:operation.createdAt}];
         await verify();
-        const image=await runBilledModel(store,{...scope,conversationId:teachingConversationId(course.id),model:config.billingModel,input:{messages:imageMessages},activity:'teaching_story_image',requestId:operation.id,beforeReserve:(live,amount)=>{const current=assertOperation(live);assertSources(live);const manualBalance=!operation.sessionId&&operation.teacherBudgetModeSnapshot==='balance'&&current.teacherBudgetMode==='balance';if(!manualBalance&&courseUsage(live,current)+amount>current.budgetMicros)throw new TeachingError('课程保护上限不足以生成结局插画，文字结局已保留',402);}},snapshot=>callImageTask(config,snapshot,imageMessages,fresh.settings.safetyRules,operation.id,deps.imageCall));
+        const image=await runBilledModel(store,{...scope,conversationId:teachingConversationId(course.id),model:config.billingModel,input:{messages:imageMessages},activity:'teaching_story_image',requestId:operation.id,beforeReserve:(live)=>{assertOperation(live);assertSources(live);}},snapshot=>callImageTask(config,snapshot,imageMessages,fresh.settings.safetyRules,operation.id,deps.imageCall));
         if(!image.imageUrl)throw new TeachingError('图片结果为空',422);
         decodeGeneratedImageDataUrl(image.imageUrl,8*1024*1024);
         output={kind:'story_image',imageUrl:image.imageUrl};
@@ -309,7 +303,7 @@ export function installTeachingAiRoutes(app: Express, auth: readonly RequestHand
     res.json({usage:teachingCourseUsage(await store.read(),owner(req),String(req.params.courseId))});
   }));
   router.post('/courses/:courseId/ai', ...auth, asyncRoute(async (req, res) => {
-    if (req.body?.budgetConfirmed !== true || req.body?.kind === 'answer' && req.body?.preview !== true) throw new TeachingError('请确认本次教学 AI 操作和课程费用');
+    if (req.body?.kind === 'answer' && req.body?.preview !== true) throw new TeachingError('教师试问需要使用预览入口');
     await deps.verifyKey(req);
     const scope = owner(req), result = await store.mutate(db => begin(db, scope, ownedTeachingCourse(db, scope, String(req.params.courseId)), req.body));
     if (result.created) { running.add(result.operation.id); void execute(result.operation, () => deps.verifyKey(req)).catch(() => { running.delete(result.operation.id); }); }

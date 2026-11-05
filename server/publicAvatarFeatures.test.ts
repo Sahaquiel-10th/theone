@@ -48,7 +48,7 @@ test('catalog refuses external dependencies, credentials, images, laptop access 
     const f = fixture(); Object.assign(f.values.tools![0], extra); assert.deepEqual(availablePublicAvatarFeatures(f.db, scope), []);
   }
   const f = fixture(); f.values.knowledgeMode = 'required'; assert.deepEqual(availablePublicAvatarFeatures(f.db, scope), []);
-  delete f.values.knowledgeMode; f.values.usageMultiplier = 3; assert.deepEqual(availablePublicAvatarFeatures(f.db, scope), []);
+  delete f.values.knowledgeMode; f.values.usageMultiplier = 3; assert.equal(availablePublicAvatarFeatures(f.db, scope)[0].usageMultiplier,3);
 });
 
 test('selection binds exact release, rejects duplicates and unreviewed properties without changing old grants', () => {

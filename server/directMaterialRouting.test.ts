@@ -71,7 +71,7 @@ test('the new routing and worker share the submitted cap; routing spend can deny
  await f.store.mutate(db=>{db.models.find(model=>model.id==='worker')!.outputPowerPerMillion=30;});
  const operationId='material_routing_shared_cap';const result=await f.service.direct(scope,taskId,{operationId,text:'材料如下：\n本轮新内容，只分析这份内容。',budget:.1},key);assert.equal(result.status,'accepted',JSON.stringify(result));
  await f.service.resume(scope,key);const jobs=await f.settle(2),job=jobs[1].workRun!,db=await f.store.read();
- assert.equal(job.state,'failed');assert.match(job.failureCode??'',/budget/);assert.equal(f.actual.length,1,'routing costs leave insufficient headroom for any new worker provider call');assert.equal(job.budgetIncludesRouting,true);
+ assert.equal(job.state,'completed');assert.equal(f.actual.length,2,'routing and worker settle against the account without an extra task cap');assert.equal(job.budgetIncludesRouting,true);
  const parent=db.chatOperations!.find(op=>op.operationId===operationId)!,ids=new Set([parent.requestId,jobs[1].requestId]);const spent=db.modelUsageRecords.filter(row=>row.requestId&&ids.has(row.requestId)).reduce((n,row)=>n+(row.chargedMicros??0)+(row.reservedMicros??0),0);
  assert.ok(spent>0&&spent<=100000);await assert.rejects(()=>f.service.task(foreign,taskId));
 });

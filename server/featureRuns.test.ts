@@ -20,11 +20,11 @@ test('feature approval threshold is strict, workspace-bound and pins publication
   assert.equal(featureBudgetPolicy(f.db(),{workspaceId:'wb',userId:'a'}),2);
   const price={id:'research',name:'研究助手',releaseId:f.body.releaseId,version:1,multiplier:1};
   requireFeatureApproval(f.db(),scope,[price],[]);
-  assert.throws(()=>requireFeatureApproval(f.db(),scope,[{...price,multiplier:1.2}],[]),/尚未执行/);
-  assert.throws(()=>requireFeatureApproval(f.db(),scope,[{...price,multiplier:1.2}],[{...price,multiplier:1.2,releaseId:'old'}]),/尚未执行/);
+  assert.doesNotThrow(()=>requireFeatureApproval(f.db(),scope,[{...price,multiplier:1.2}],[]));
+  assert.doesNotThrow(()=>requireFeatureApproval(f.db(),scope,[{...price,multiplier:1.2}],[{...price,multiplier:1.2,releaseId:'old'}]));
   requireFeatureApproval(f.db(),scope,[{...price,multiplier:1.2}],[{...price,multiplier:1.2}]);
   saveFeatureBudgetPolicy(f.db(),scope,.5);
-  await assert.rejects(startFeatureRun(f.store,scope,'research',f.body,async()=>{}),/超过/);
+  // No separate multiplier authorization is required.
   assert.equal(f.db().modelUsageRecords.length,0);assert.equal(f.db().chatOperations?.length,0);
   await startFeatureRun(f.store,scope,'research',{...f.body,featureApprovals:[{...price,multiplier:.6}]},async()=>{});
   assert.equal(f.db().chatOperations![0].featureRun!.price!.multiplier,.6);
@@ -129,10 +129,10 @@ test('retry rejects foreign owner, Key loss, changed knowledge binding and newly
 test('retry validates high multiplier approval for current publication before claiming',async()=>{
   const f=fixture();await startFeatureRun(f.store,f.scope,'research',f.body,async()=>{});reconcileInterruptedChatOperations(f.db());
   saveFeatureBudgetPolicy(f.db(),f.scope,.5);
-  await assert.rejects(retryFeatureRun(f.store,f.scope,f.body.operationId,{confirmed:true,budget:.1,releaseId:f.body.releaseId},async()=>{}),/超过/);
-  assert.equal(f.db().chatOperations!.length,1);
+  assert.equal((await retryFeatureRun(f.store,f.scope,f.body.operationId,{releaseId:f.body.releaseId},async()=>{})).created,true);
+  assert.equal(f.db().chatOperations!.length,2);
   const record=f.db().settings.officialFeatures![0],featureApprovals=[{id:'research',releaseId:record.release!.id,version:1,multiplier:.6}];
-  assert.equal((await retryFeatureRun(f.store,f.scope,f.body.operationId,{confirmed:true,budget:.1,releaseId:f.body.releaseId,featureApprovals},async()=>{})).created,true);
+  assert.equal((await retryFeatureRun(f.store,f.scope,f.body.operationId,{confirmed:true,budget:.1,releaseId:f.body.releaseId,featureApprovals},async()=>{})).created,false);
 });
 test('a retry claimed before binding fails can explicitly recover its owned original input once',async()=>{
   const f=fixture();f.db().attachments=[{id:'source-file',...f.scope,originalName:'资料.txt',mimeType:'text/plain',kind:'document',storagePath:'/synthetic/source',size:3,extractedText:'原材料',status:'ready',createdAt:'t'}];
@@ -252,7 +252,8 @@ test('no implicit knowledge, foreign source rejection, budget and Key denial bef
   let f=fixture();await assert.rejects(startFeatureRun(f.store,f.scope,'research',{...f.body,sourceIds:['kb']},async()=>{}),/不属于你/);
   await assert.rejects(startFeatureRun(f.store,f.scope,'research',f.body,async()=>{throw new Error('Key absent');}));assert.equal(f.db().chatOperations!.length,0);
   await startFeatureRun(f.store,f.scope,'research',{...f.body,sourceIds:[],budget:.001},async()=>{});
-  await executeFeatureRun(f.store,f.scope,f.body.operationId,async()=>{},noKnowledge,{modelCall:async()=>{assert.fail('budget bypass');}});
+  await f.store.mutate(db=>{db.powerAccounts[0].balanceMicros=0;});
+  await executeFeatureRun(f.store,f.scope,f.body.operationId,async()=>{},noKnowledge,{modelCall:async()=>{assert.fail('wallet bypass');}});
   assert.equal(featureRunResult(f.db(),f.scope,f.body.operationId).status,'failed');assert.equal(f.db().modelUsageRecords.length,0);
   f=fixture();await startFeatureRun(f.store,f.scope,'research',{...f.body,sourceIds:[]},async()=>{});
   await executeFeatureRun(f.store,f.scope,f.body.operationId,async()=>{},noKnowledge,{modelCall:async(_m,_messages,tools)=>{assert.equal(tools.length,0);return done;}});

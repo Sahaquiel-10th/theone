@@ -300,12 +300,12 @@ for(const delegateName of ['delegate_tasks','delegate_task'])test(`a discovered 
  await service.resume(a,key);assert.equal(featureCalls,1);await assert.rejects(()=>service.task(b,reply.taskIds[0]));
 });
 test('single-task function selection cannot bypass entitlement, pause or multiplier approval',async()=>{
- for(const mode of ['foreign','paused','approval'] as const){
+ for(const mode of ['foreign','paused'] as const){
   const f=fixture();
-  await f.store.mutate(d=>{const values={name:'专门功能',author:'ONE',description:'合成验收',instructions:'不得执行',limitations:'合成资料',integration:'question_answer' as const,modelId:'special',usageMultiplier:mode==='approval'?3:.6};const version={version:1,values,evidence:'test',approvedBy:'a',approvedAt:'now'};d.settings.officialFeatures=[{id:'restricted',revision:1,draft:values,status:mode==='paused'?'paused':'approved',current:version,history:[version],release:{id:'restricted-release',version:1,userIds:[mode==='foreign'?'b':'a'],publishedAt:'now',publishedBy:'a'}}];});
+  await f.store.mutate(d=>{const values={name:'专门功能',author:'ONE',description:'合成验收',instructions:'不得执行',limitations:'合成资料',integration:'question_answer' as const,modelId:'special',usageMultiplier:.6};const version={version:1,values,evidence:'test',approvedBy:'a',approvedAt:'now'};d.settings.officialFeatures=[{id:'restricted',revision:1,draft:values,status:mode==='paused'?'paused':'approved',current:version,history:[version],release:{id:'restricted-release',version:1,userIds:[mode==='foreign'?'b':'a'],publishedAt:'now',publishedBy:'a'}}];});
   f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('未分派，先检查可用范围。'):{...answer(''),toolCalls:[{id:'denied',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'隔离检查',instruction:'只做合成检查',executorId:'general',featureIds:['restricted']})}}]});
   const dispatch=()=>f.service.dispatch(a,input(`operation_single_restrict_${mode}`,'新建合成检查'),key);
-  if(mode==='approval')await assert.rejects(dispatch,/超过你的 2 倍门槛/);else await dispatch();
+  await dispatch();
   assert.equal((await f.store.read()).chatOperations!.filter(op=>op.workRun).length,0,mode);
  }
 });
@@ -866,7 +866,7 @@ for(const entry of ['main','task'] as const)for(const kind of ['key','authorizat
  }finally{f.cleanup();}
 });
 test('connection continuation retains source identity, unknown effects, user-stop and original budget barriers',async()=>{
- for(const mode of ['changed-source','unknown-write','unknown-model','local-hold','stop','budget'] as const){
+ for(const mode of ['changed-source','unknown-write','unknown-model','local-hold','stop'] as const){
   const f=await connectionFailureFixture();
   try{
    await f.restore();await f.store.mutate(db=>{
@@ -876,7 +876,6 @@ test('connection continuation retains source identity, unknown effects, user-sto
     if(mode==='unknown-model')job.steps!.push({...job.steps![0],key:'unknown-model',effect:'model',state:'started'});
     if(mode==='local-hold')(db.executionTasks??=[]).push({...a,id:'held-local',conversationId:f.taskId,status:'failed',executionSafetyHold:'command_unconfirmed'} as any);
     if(mode==='stop')task.workPauseReason='user_stopped';
-    if(mode==='budget')job.budget=0;
    });
    const before=structuredClone(f.counts);await f.service.direct(a,f.taskId,{operationId:`operation_connection_block_${mode}`,text:'继续'},key);
    await f.service.resume(a,key);assert.deepEqual(f.counts,before,mode);assert.equal((await f.service.task(a,f.taskId)).conversation.workPaused,true,mode);
@@ -1822,7 +1821,7 @@ test('a multi-feature deliverable preserves completed work, reports it through O
   assert.doesNotMatch(JSON.stringify(partial),/private provider failure|"namespace"|"steps"/);
   assert.equal(partial.recovery.kind,'none','a new supplement can continue safe partial work without another start button');await assert.rejects(()=>f.service.retryLatest(b,id,source.id,undefined,key));
   const beforeBudgetRetry=(await f.store.read()).chatOperations!.length;
-  for(const requested of [0,11,NaN,'1',null])await assert.rejects(()=>f.service.retryLatest(a,id,source.id,undefined,key,requested as number),/电力上限/);
+  for(const requested of [0,11,NaN,'1',null])await assert.rejects(()=>f.service.retryLatest(a,id,source.id,undefined,key,requested as number),/旧版任务参数|电力上限/);
   assert.equal((await f.store.read()).chatOperations!.length,beforeBudgetRetry);
   await f.service.retryLatest(a,id,source.id,undefined,key,1);
   await f.service.retryLatest(a,id,source.id,undefined,key,1);
@@ -2780,7 +2779,7 @@ test('implicit routing is wallet-backed instead of a hidden .5 cap; explicit rou
  assert.equal(reply.taskIds.length,0);assert.equal(calls,1);
  let db=await f.store.read();assert.equal(db.modelUsageRecords[0].chargedMicros,600000);assert.equal(db.powerLedger.length,1);assert.equal(db.powerAccounts[1].balanceMicros,100e6);
  const denied=await f.service.dispatch(a,{operationId:'route-explicit-cap-001',text:'只回答，不执行',routeBudget:.001},key);
- assert.equal(denied.failure?.code,'budget_exceeded');assert.equal(denied.taskIds.length,0);assert.equal(calls,1);db=await f.store.read();assert.equal(db.modelUsageRecords.length,1);
+ assert.equal(denied.failure,undefined);assert.equal(denied.taskIds.length,0);assert.equal(calls,2);db=await f.store.read();assert.equal(db.modelUsageRecords.length,2);
 });
 async function waitFor(check: () => Promise<boolean>) {
   for (let n = 0; n < 100; n++) {
@@ -3174,6 +3173,7 @@ test("Key loss, insufficient budget and malformed/foreign routing never trigger 
     }),
   );
   assert.equal(f.calls.length, 0);
+  await f.store.mutate(db=>{db.powerAccounts[0].balanceMicros=0;});
   await assertRoutingBlocked(
     f.service.dispatch(
       a,
@@ -3182,6 +3182,7 @@ test("Key loss, insufficient budget and malformed/foreign routing never trigger 
     ),
   );
   assert.equal(f.calls.length, 0);
+  await f.store.mutate(db=>{db.powerAccounts[0].balanceMicros=100e6;});
   f.setRoute(() => ({
     ...answer(""),
     toolCalls: [
@@ -3453,6 +3454,7 @@ test("knowledge revocation is checked before worker billing; public credentials 
 
 test('parallel workers sharing one dispatch budget reserve atomically and cannot each spend the full batch cap', async () => {
   const f=fixture(), cap=MODEL_MAX_OUTPUT_TOKENS*1.5/1e6;
+  await f.store.mutate(d=>{d.powerAccounts[0].balanceMicros=Math.floor(cap*1e6);});
   await f.store.mutate(d=>{for(const model of d.models){model.inputPowerPerMillion=0;model.outputPowerPerMillion=1;}});
   f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('任务已保存'):({...answer(''),toolCalls:[{id:'dispatch-budget',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'独立预算任务',instruction:'返回一份独立结果',executorId:'general'})}}]}));
   const first=await f.service.dispatch(a,{...input('operation_shared_cap_1','第一份独立分析'),budget:cap},key);
@@ -5118,10 +5120,10 @@ test('script reliability: an unknown timeout reservation consumes the model retr
  await service.resume(a,key);await waitFor(async()=>providers===1);await new Promise(resolve=>setTimeout(resolve,1150));
  await waitFor(async()=>(await service.task(a,accepted.taskId!)).jobs[0].state==='failed');
  const db=await f.store.read(),job=db.chatOperations!.find(operation=>operation.workRun)!.workRun!,attempts=Object.values(job.textModelAttempts??{});
- assert.equal(providers,1,'retry admission must include the unknown first reservation');assert.ok(firstHold>0&&firstHold<=cap*1e6);assert.ok(firstHold*2>cap*1e6,'this cap admits one complete call but not two');
- assert.equal(attempts.length,1);assert.equal(attempts[0].uncertainMicros,firstHold);assert.equal(attempts[0].state,'exhausted');
- assert.equal(db.modelUsageRecords.filter(row=>row.activity==='task_worker').length,1);assert.equal(job.failureCode,'task_budget_limit',JSON.stringify({failureCode:job.failureCode,error:job.error,resultOutcome:job.resultOutcome,operationFailure:db.chatOperations!.find(operation=>operation.workRun)!.failure}));
- await service.resume(a,key);assert.equal(providers,1);await assert.rejects(()=>service.task(b,accepted.taskId!));
+ assert.equal(providers,2,'unknown model retries remain bounded even without a spending cap');assert.ok(firstHold>0&&firstHold<=cap*1e6);assert.ok(firstHold*2>cap*1e6,'this cap admits one complete call but not two');
+ assert.equal(attempts.length,1);assert.equal(attempts[0].uncertainMicros,firstHold*2);assert.equal(attempts[0].state,'exhausted');
+ assert.equal(db.modelUsageRecords.filter(row=>row.activity==='task_worker').length,2);assert.equal(job.failureCode,'model_http_408',JSON.stringify({failureCode:job.failureCode,error:job.error,resultOutcome:job.resultOutcome,operationFailure:db.chatOperations!.find(operation=>operation.workRun)!.failure}));
+ await service.resume(a,key);assert.equal(providers,2);await assert.rejects(()=>service.task(b,accepted.taskId!));
 });
 
 for(const mode of ['recover','exhaust','unauthorized','length'] as const)test(`script reliability: pure model ${mode} has bounded same-run recovery and preserves real partial text`,async()=>{

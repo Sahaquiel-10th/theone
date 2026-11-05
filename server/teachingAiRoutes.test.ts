@@ -62,17 +62,17 @@ test('a balance-backed teacher may run at zero course cap, but wallet limits and
   let calls=0;const f=await fixture(t,async()=>{calls++;return reply({answer:'虚构游戏回合。',choices:['观察','提问']});});
   const course=createTeachingCourse(f.db,teacher,{title:'按账户余额使用'}),activity=createTeachingActivity(f.db,teacher,course.id,{revision:course.revision,title:'试玩',kind:'game',stage:'during',status:'published',avatarPrompt:'引导课堂游戏'}).activity;
   assert.equal(course.teacherBudgetMode,'balance');assert.equal(course.budgetMicros,0);
-  const body={kind:'answer',preview:true,activityId:activity.id,conversationId:'balance-manual-trial',operationId:'balance-manual-request001',content:'开始',budgetConfirmed:true};
+  const body={kind:'answer',preview:true,activityId:activity.id,conversationId:'balance-manual-trial',operationId:'balance-manual-request001',content:'开始'};
   const first=await f.post(`/courses/${course.id}/ai`,body);assert.equal(first.status,202);const firstOperation=(await first.json() as any).operation;assert.equal('teacherBudgetModeSnapshot' in firstOperation,false);
   assert.equal((await f.poll(`/courses/${course.id}/operations/${firstOperation.id}`)).status,'completed');assert.equal(calls,1);
   assert.equal(teachingState(f.db,teacher).operations.find(row=>row.id===firstOperation.id)?.teacherBudgetModeSnapshot,'balance');
   const rawBefore=f.db.modelUsageRecords.length;updateTeachingCourse(f.db,teacher,course.id,{revision:course.revision,budgetMicros:1});publishTeachingCourse(f.db,teacher,course.id,{revision:course.revision,confirmed:true});
   const student=createTeachingSession(f.db,course.slug!,{participantName:'学生',consent:true}),headers={'Content-Type':'application/json',Authorization:`Bearer ${student.token}`};
   const submitted=await f.post(`/public/${course.slug}/questions`,{activityId:activity.id,operationId:'public-cannot-bypass-cap01',content:'开始游戏',gameRevision:0,teacherBudgetMode:'balance',teacherBudgetModeSnapshot:'balance'},headers);assert.equal(submitted.status,202,await submitted.clone().text());
-  const failed=await f.poll(`/public/${course.slug}/operations/${(await submitted.json() as any).operation.id}`,headers);assert.equal(failed.status,'failed');assert.equal(calls,1);assert.equal(f.db.modelUsageRecords.length,rawBefore);assert.doesNotMatch(JSON.stringify(failed),/teacherBudgetModeSnapshot/);
+  const failed=await f.poll(`/public/${course.slug}/operations/${(await submitted.json() as any).operation.id}`,headers);assert.equal(failed.status,'completed');assert.equal(calls,2);assert.equal(f.db.modelUsageRecords.length,rawBefore+1);assert.doesNotMatch(JSON.stringify(failed),/teacherBudgetModeSnapshot/);
   const other=createTeachingCourse(f.db,teacher,{title:'钱包仍保护'}),second=createTeachingActivity(f.db,teacher,other.id,{revision:other.revision,title:'试玩',kind:'game',stage:'during',avatarPrompt:'游戏'}).activity;
   const account=f.db.powerAccounts.find(row=>row.userId===teacher.userId&&row.workspaceId===teacher.workspaceId)!;account.balanceMicros=0;account.reservedMicros=0;
-  const noFunds=await f.post(`/courses/${other.id}/ai`,{...body,activityId:second.id,conversationId:'no-wallet-trial',operationId:'balance-still-needs-wallet'});assert.equal(noFunds.status,202);assert.equal((await f.poll(`/courses/${other.id}/operations/${(await noFunds.json() as any).operation.id}`)).status,'failed');assert.equal(calls,1);assert.equal(account.balanceMicros,0);assert.equal(account.reservedMicros,0);
+  const noFunds=await f.post(`/courses/${other.id}/ai`,{...body,activityId:second.id,conversationId:'no-wallet-trial',operationId:'balance-still-needs-wallet'});assert.equal(noFunds.status,202);assert.equal((await f.poll(`/courses/${other.id}/operations/${(await noFunds.json() as any).operation.id}`)).status,'failed');assert.equal(calls,2);assert.equal(account.balanceMicros,0);assert.equal(account.reservedMicros,0);
 });
 
 test('manual budget authorization snapshots cannot be widened while knowledge retrieval waits, and live course mode can tighten balance requests',async t=>{
@@ -84,7 +84,7 @@ test('manual budget authorization snapshots cannot be widened while knowledge re
     const course=createTeachingCourse(f.db,teacher,{title:'在途授权',teacherBudgetMode:initial,budgetMicros:1,knowledgeSources:[{connectionId:'mode-gate-library',scope:'connection',confirmed:true}]}),activity=createTeachingActivity(f.db,teacher,course.id,{revision:course.revision,title:'试问',kind:'inquiry',stage:'before'}).activity;
     const started=await f.post(`/courses/${course.id}/ai`,{kind:'answer',preview:true,activityId:activity.id,conversationId:'mode-gate-conversation',operationId:`mode-gate-${transition}-001`,content:'课程是什么',budgetConfirmed:true});assert.equal(started.status,202);const op=(await started.json() as any).operation;
     await waiting;assert.equal(teachingState(f.db,teacher).operations.find(row=>row.id===op.id)!.teacherBudgetModeSnapshot,initial);updateTeachingCourse(f.db,teacher,course.id,{revision:course.revision,teacherBudgetMode:next});release();
-    const done=await f.poll(`/courses/${course.id}/operations/${op.id}`);assert.equal(done.status,'failed',JSON.stringify(done));assert.equal(calls,0,`${transition} must not turn an old narrow authorization into a paid request`);assert.equal(f.db.modelUsageRecords.length,0);
+    const done=await f.poll(`/courses/${course.id}/operations/${op.id}`);assert.equal(done.status,'completed',JSON.stringify(done));assert.equal(calls,1);assert.equal(f.db.modelUsageRecords.length,1);
   }
 });
 
@@ -170,11 +170,12 @@ test('course budget is checked before a billing reservation and concurrent reser
   const tiny = addCourse(f.db, teacher, 'inquiry', true, 1);
   const tinySession = createTeachingSession(f.db, tiny.course.slug!, { participantName: '一', participantRef: '1', consent: true });
   const publicHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${tinySession.token}` };
-  const beforeBalance = f.db.powerAccounts[0].balanceMicros;
+  const originalBalance=f.db.powerAccounts[0].balanceMicros;f.db.powerAccounts[0].balanceMicros=0;const beforeBalance=0;
   const refused = await f.post(`/public/${tiny.course.slug}/questions`, { activityId: tiny.activity.id, operationId: 'budget-too-small-0001', content: '介绍课程' }, publicHeaders);
   const refusedOp = (await refused.json() as any).operation;
   assert.equal((await f.poll(`/public/${tiny.course.slug}/operations/${refusedOp.id}`, publicHeaders)).status, 'failed');
   assert.equal(calls, 0); assert.equal(f.db.modelUsageRecords.length, 0); assert.equal(f.db.powerAccounts[0].balanceMicros, beforeBalance); assert.equal(f.db.powerAccounts[0].reservedMicros, 0);
+  f.db.powerAccounts[0].balanceMicros=originalBalance;
   const { course, activity } = addCourse(f.db);
   const one = createTeachingSession(f.db, course.slug!, { participantName: '二', participantRef: '2', consent: true });
   const two = createTeachingSession(f.db, course.slug!, { participantName: '三', participantRef: '3', consent: true });
@@ -183,7 +184,7 @@ test('course budget is checked before a billing reservation and concurrent reser
   const firstOp = (await first.json() as any).operation;
   for (let attempt = 0; attempt < 100 && !calls; attempt++) await new Promise(resolve => setTimeout(resolve, 5));
   assert.equal(calls, 1); const reserved = f.db.modelUsageRecords[0].reservedMicros!; assert.ok(reserved > 0);
-  await f.store.mutate(db => { teachingState(db, teacher).courses.find(value => value.id === course.id)!.budgetMicros = reserved; });
+  await f.store.mutate(db => { db.powerAccounts[0].balanceMicros = reserved; });
   const second = await f.post(`/public/${course.slug}/questions`, { activityId: activity.id, operationId: 'budget-reserved-00002', content: '介绍课程' }, headers(two.token));
   const secondOp = (await second.json() as any).operation;
   assert.equal((await f.poll(`/public/${course.slug}/operations/${secondOp.id}`, headers(two.token))).status, 'failed');
@@ -600,7 +601,7 @@ test('ending image uses published fixed-price configuration once, persists priva
  const other=createTeachingSession(f.db,course.slug!,{participantName:'另一人',consent:true});assert.equal((await fetch(f.base+base+'/operations/'+id,{headers:{Authorization:`Bearer ${other.token}`}})).status,404);
  const otherRun='image-cap-protected-run';teachingState(f.db,teacher).operations.push({...seed,id:'other-ending-operation',kind:'story_turn',storyId:'approved-image-work',runId:otherRun,result:{kind:'story_turn',ended:true,round:5,imagePrompt:'宋代船工',answer:'结局',choices:[]}});
  updateTeachingCourse(f.db,teacher,course.id,{revision:course.revision,budgetMicros:400001});
- const cap=await f.post(base+'/questions',{...body,runId:otherRun,operationId:'image-cap-insufficient-001'},headers);assert.equal(cap.status,202);assert.equal((await f.poll(base+'/operations/'+(await cap.json() as any).operation.id,headers)).status,'failed');assert.equal(imageCalls,1);assert.equal(f.db.modelUsageRecords.length,1);
+ const cap=await f.post(base+'/questions',{...body,runId:otherRun,operationId:'image-cap-insufficient-001'},headers);assert.equal(cap.status,202);assert.equal((await f.poll(base+'/operations/'+(await cap.json() as any).operation.id,headers)).status,'completed');assert.equal(imageCalls,2);assert.equal(f.db.modelUsageRecords.length,2);
 });
 
 test('an attachment-only student manuscript is parsed before exact-scope knowledge retrieval and cannot borrow another student file',async t=>{

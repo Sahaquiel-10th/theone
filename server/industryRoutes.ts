@@ -37,14 +37,14 @@ export function installIndustryRoutes(app: Express, auth: readonly RequestHandle
   }));
   router.post('/usage-sessions', asyncRoute(async (req, res) => {
     await options.verifyKey(req);
-    if (!req.oneKeyDeviceId) throw new IndustryError('请使用 ONE Key 进入并确认用量', 428, 'ONE_KEY_REQUIRED');
+    if (!req.oneKeyDeviceId) throw new IndustryError('请使用 ONE Key 进入工作台', 428, 'ONE_KEY_REQUIRED');
     const session = await store.mutate(db => createIndustryUsageSession(db, actorOf(req), req.body ?? {}, { keyDeviceId: req.oneKeyDeviceId }));
     res.status(201).json({ session: { id: session.id, tool: session.tool, budgetMicros: session.budgetMicros, createdAt: session.createdAt, expiresAt: session.expiresAt }, usedMicros: 0 });
   }));
   router.get('/usage-sessions/:id', asyncRoute(async (req, res) => {
     const db = await store.read(), actor = actorOf(req), scope = industryScope(actor);
     const session = privateIndustryState(db, actor)?.usageSessions.find(item => item.id === req.params.id && item.workspaceId === scope.workspaceId && item.userId === scope.userId);
-    if (!session) throw new IndustryError('未找到本轮用量确认', 404);
+    if (!session) throw new IndustryError('未找到本轮工作台记录', 404);
     res.json({ session: { id: session.id, tool: session.tool, budgetMicros: session.budgetMicros, createdAt: session.createdAt, expiresAt: session.expiresAt }, usedMicros: industryUsage(db, scope, session) });
   }));
   router.get('/operations/:id', asyncRoute(async (req, res) => {

@@ -779,7 +779,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [taskScope,setTaskScope] = useState<'tasks'|'features'>('tasks');
   const [thingDrafts,setThingDrafts] = useState<Record<string,string>>({});
   const [thingDestinations,setThingDestinations] = useState<Record<string,DocumentDestination>>({});
-  const [taskRetryBudgets,setTaskRetryBudgets]=useState<Record<string,string>>({});
   const [resultLampOpen,setResultLampOpen] = useState(false);
   const [dismissedResults,setDismissedResults] = useState<string[]>([]);
   const [previewHome,setPreviewHome] = useState(true);
@@ -1221,9 +1220,6 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     const latest=taskRetryScope(detail?.jobs||[],conversation?.messages.filter(m=>m.role==='user').at(-1)?.content);
     const title=conversation?.title||task?.title||'当前任务';
     const retrying=coordinator.retryingTasks.includes(id);
-    const canAdjustBudget=Boolean(lastJob&&lastJob.kind!=='image'&&recovery?.kind==='retry');
-    const retryBudget=Number(taskRetryBudgets[lastJob?.id??'']??lastJob?.budget??.5);
-    const invalidBudget=canAdjustBudget&&(!Number.isFinite(retryBudget)||retryBudget<.001||retryBudget>10);
     const actionLabel=recovery?.welcomeStep?'继续制作使用说明':recovery?.kind==='review_image'?'重新生成图片':recovery?.kind==='resume'?'开始处理最新要求':lastJob?.progress?.completed.length?'继续未完成的部分':'重新处理最新要求';
     return <section className="task-recovery" role="status">
       <strong>{lastJob?.dependencyBlocked?'等待关联任务完成':recovery?.kind==='connection'?'连接恢复后可以继续':recovery?.kind==='input'?'需要你补充资料':recovery?.kind==='support'?'这一步遇到内部问题':'任务尚未完成'}</strong>
@@ -1232,11 +1228,10 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
       {recovery&&(lastJob?.userReport||error)?<details><summary>查看本次处理记录</summary>{lastJob?.userReport?<p>{lastJob.userReport}</p>:null}{error&&error!==lastJob?.userReport?<p>{error}</p>:null}</details>:null}
       {lastJob?.dependencyBlocked?lastJob.waitingFor?.map(parent=><button type="button" key={parent.taskId} onClick={()=>void selectThing(parent.taskId)}>看看「{parent.title}」</button>):null}
       {recovery&&['retry','resume'].includes(recovery.kind)?<details><summary>查看继续处理的要求</summary><p>{latest}</p></details>:null}
-      {canAdjustBudget?<label className="task-recovery-budget">本次电力上限<input aria-label="本次恢复电力上限" type="number" min="0.001" max="10" step="0.001" disabled={retrying} value={taskRetryBudgets[lastJob?.id??'']??lastJob?.budget??.5} onChange={e=>setTaskRetryBudgets(old=>({...old,[lastJob!.id]:e.target.value}))}/><small>仅计算这次继续的用量，按实际使用结算。</small></label>:null}
-      {recovery&&['retry','resume','review_image'].includes(recovery.kind)?<button type="button" disabled={retrying||Boolean(invalidBudget)} onClick={()=>{
+      {recovery&&['retry','resume','review_image'].includes(recovery.kind)?<button type="button" disabled={retrying} onClick={()=>{
         const price=detail?.jobs.at(-1)?.retryPower;
         if(recovery.kind==='review_image'&&!(typeof price==='number'&&(price>0||price===0&&recovery.welcomeStep==='page'))){setError('这次图片价格还没确认，请稍后刷新任务再试。');return;}
-        if(confirm(`${actionLabel} · ${title}\n本轮范围：${latest.slice(0,480)}\n${recovery.welcomeStep?`只补未完成的步骤，最多使用 ${price!.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力，按实际用量结算；已保存的说明和图片会复用。`:recovery.kind==='review_image'?`这次新生成一张图片，使用 ${price!.toLocaleString('zh-CN',{maximumFractionDigits:6})} 电力；已有结果和历史都会保留。`:canAdjustBudget?`本次继续最多使用 ${retryBudget} 电力，不含以前已用的电力，按实际用量结算。将沿用原附件和功能，只补未完成部分。`:'沿用原上限开始处理最新要求，不重复已有成果。'}`))void coordinator.retryTask(id,canAdjustBudget?retryBudget:undefined,lastJob?.id).then(()=>refresh()).catch(e=>setError(e.message));
+        void coordinator.retryTask(id,undefined,lastJob?.id).then(()=>refresh()).catch(e=>setError(e.message));
       }}>{retrying?'正在恢复…':actionLabel}</button>:null}
       {recovery?.kind==='review_notion'?<NotionReceiptNotice api={api} taskId={id} {...notionRecoveryProps(id)} reviewWorkflow={notionWorkflowNeedsReview(detail?.jobs||[])} onRefresh={()=>coordinator.load(id,true)} />:null}
 {localNeedsAction?<><p>{local.status==='cancelled'?'这轮已经停下，不会自己再启动。':'这轮本机操作还没完成。'}先看看操作记录；想接着做，可以回到这件事补一句要求，ONE 会先核对已有结果。</p><button type="button" onClick={()=>{setSelectedExecutionId(local.id);setExpandedExecutionId(local.id);setRevealExecutionId(local.id);void loadLatestExecution(id,local.id);}}>查看本轮操作</button><button type="button" onClick={()=>prepareTaskReview(id)}>核对后继续这件事</button></>:null}

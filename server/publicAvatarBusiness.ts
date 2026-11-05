@@ -120,11 +120,6 @@ export function validateServiceCommitments(db: Database, supplied: Publication, 
   const activeCodes = state.codes.filter(c => scoped(p, c) && c.status === 'active' && Date.parse(c.expiresAt) > Date.now());
   const activeEntitlements = state.entitlements.filter(e => scoped(p, e) && e.status === 'active' && Date.parse(e.expiresAt) > Date.now());
   if (!activeCodes.length && !activeEntitlements.length) return;
-  const runIds = new Set((db.publicRuns ?? []).filter(r => r.workspaceId === p.workspaceId && r.publicationId === p.id).map(r => r.id));
-  const spentAndHeld = db.modelUsageRecords.filter(r => r.workspaceId === p.workspaceId && r.userId === p.userId && runIds.has(r.conversationId)).reduce((n, r) => n + (r.chargedMicros ?? 0) + (r.reservedMicros ?? 0), 0);
-  const minimumBudget = spentAndHeld + activeCodes.reduce((n, c) => n + c.plan.quotaMicros, 0)
-    + activeEntitlements.reduce((n, e) => n + entitlementView(db, p, e).remainingMicros, 0);
-  if (!Number.isSafeInteger(nextBudgetMicros) || nextBudgetMicros < minimumBudget) throw new SharingError('总限额不足以保留已发出的服务资格；请保留相应额度，或先明确撤销不再提供的资格', 409);
   const promisedUntil = Math.max(...activeCodes.map(c => Date.parse(c.expiresAt) + c.plan.validDays * day), ...activeEntitlements.map(e => Date.parse(e.expiresAt)));
   if (!Number.isFinite(Date.parse(nextExpiresAt)) || Date.parse(nextExpiresAt) < promisedUntil) throw new SharingError('分身有效期不能短于已发出的服务期限；请保留完整期限，或先明确撤销相关资格', 409);
 }
@@ -164,7 +159,6 @@ export function issueServiceCode(db: Database, scope: VisitorIdentity, supplied:
   const spentAndHeld = db.modelUsageRecords.filter(r => r.workspaceId === p.workspaceId && r.userId === p.userId && runIds.has(r.conversationId)).reduce((n, r) => n + (r.chargedMicros ?? 0) + (r.reservedMicros ?? 0), 0);
   const committed = state.codes.filter(c => scoped(p, c) && c.status === 'active' && Date.parse(c.expiresAt) > Date.now()).reduce((n, c) => n + c.plan.quotaMicros, 0)
     + state.entitlements.filter(e => scoped(p, e) && e.status === 'active' && Date.parse(e.expiresAt) > Date.now()).reduce((n, e) => n + entitlementView(db, p, e).remainingMicros, 0);
-  if (spentAndHeld + committed + plan.quotaMicros > p.budgetMicros) throw new SharingError('已安排的服务额度接近分身总限额，请先提高总限额或减少新资格额度', 402);
   const code = randomBytes(32).toString('base64url');
   const grant: AvatarRedemptionCode = { id: uid('asc'), workspaceId: p.workspaceId, userId: p.userId, publicationId: p.id, tokenHash: hash(code), plan: structuredClone(plan), source: input.source as AvatarRedemptionCode['source'], status: 'active', createdAt: now(), expiresAt: new Date(Math.min(latestRedemptionAt, Date.now() + Number(expiresDays) * day)).toISOString() };
   state.codes.push(grant);

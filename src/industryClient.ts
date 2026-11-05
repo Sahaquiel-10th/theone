@@ -26,12 +26,13 @@ async function fingerprint(path: string, value: Record<string, unknown>) {
   const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([path, body])));
   return Array.from(new Uint8Array(bytes), n => n.toString(16).padStart(2, '0')).join('');
 }
-/** UI request keys and the original budget grant survive lost responses. */
+/** UI request keys and the original accounting context survive lost responses. */
 export function createIndustryClient(request: IndustryRequest, options: {
   tool: IndustryTool; storage: Storage; storageKey: string; session: () => IndustryClientSession | undefined;
-  onBudgetRequired: () => void; onPending: (items: PendingIndustryRequest[]) => void; onActivity?: () => void;
+  ensureSession?: () => Promise<IndustryClientSession>; onBudgetRequired?: () => void; onPending: (items: PendingIndustryRequest[]) => void; onActivity?: () => void;
 }) {
   let pending = readIndustryPending(options.storage, options.storageKey);
+  const inFlight=new Map<string,Promise<unknown>>();
   const save = () => { try { options.storage.setItem(options.storageKey, JSON.stringify(pending)); } catch { /* This page still keeps original request IDs in memory. */ } options.onPending([...pending]); };
   const invoke: IndustryRequest = async <T,>(path: string, init: RequestInit = {}) => {
     if (path === '/api/attachments' && init.body instanceof FormData) {
@@ -59,13 +60,18 @@ export function createIndustryClient(request: IndustryRequest, options: {
     }
     if (!industryPaidPath(path, init.method)) return request<T>(path, init);
     const body = typeof init.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {};
+    const {usageSessionId:_session,requestKey:_request,...business}=body;
+    const flightKey=JSON.stringify([path,business]);
+    const existing=inFlight.get(flightKey);if(existing)return existing as Promise<T>;
+    const execute=async():Promise<T>=>{
     const hash = await fingerprint(path, body);
     // A remounted form may invent a new key. Until the earlier receipt is
-    // reconciled, the same business action must keep its original grant/key.
-    const original = pending.find(item => item.fingerprint === hash && item.path === path);
-    const session = options.session();
+    // reconciled, the same business action must keep its original context/key.
+    let original = pending.find(item => item.fingerprint === hash && item.path === path);
+    const session = original ? undefined : options.session() ?? await options.ensureSession?.();
+    original ??= pending.find(item => item.fingerprint === hash && item.path === path);
     const usageSessionId = original?.usageSessionId ?? (typeof body.usageSessionId === 'string' && body.usageSessionId ? body.usageSessionId : session?.id);
-    if (!usageSessionId) { options.onBudgetRequired(); throw new Error('请先在上方确认本轮 AI 用量上限，再继续这一步。准备资料和上传文件不会扣电力。'); }
+    if (!usageSessionId) { throw new Error('工作台暂时未能连接，请重试原操作。'); }
     const entry: PendingIndustryRequest = original ?? { fingerprint: hash, path,
       requestKey: typeof body.requestKey === 'string' && body.requestKey ? body.requestKey : crypto.randomUUID(), usageSessionId, createdAt: Date.now() };
     if (!original) { pending.push(entry); save(); }
@@ -76,10 +82,13 @@ export function createIndustryClient(request: IndustryRequest, options: {
       options.onActivity?.();
       throw error;
     }
+    };
+    const current=execute();inFlight.set(flightKey,current);
+    try{return await current;}finally{if(inFlight.get(flightKey)===current)inFlight.delete(flightKey);}
+
   };
-  return { request: invoke, pending: () => [...pending], prepareExplicitRetry: (key: string) => {
-    const session = options.session();
-    if (!session) { options.onBudgetRequired(); throw new Error('请先明确确认新一轮用量，再重新执行'); }
-    pending = pending.map(item => item.requestKey === key ? { ...item, sourceRequestKey: item.sourceRequestKey ?? item.requestKey, requestKey: crypto.randomUUID(), usageSessionId: session.id, createdAt: Date.now() } : item); save();
+  return { request: invoke, pending: () => [...pending], prepareExplicitRetry: async (key: string) => {
+    const session = options.session() ?? await options.ensureSession?.();
+    pending = pending.map(item => item.requestKey === key ? { ...item, sourceRequestKey: item.sourceRequestKey ?? item.requestKey, requestKey: crypto.randomUUID(), usageSessionId: session?.id ?? item.usageSessionId, createdAt: Date.now() } : item); save();
   } };
 }

@@ -85,10 +85,6 @@ export function PracticeOnboarding({journeyId,request=api,defaultGoal='article',
     if(!p||!view?.webFeature)return;
     await mutate('web',async()=>{
       const price=view.webFeature!,controller=new AbortController();confirming.current=controller;let featureApprovals:FeatureApproval[]=[];
-      if(price.multiplier>view.approvalThreshold){
-        const accepted=await confirmAction({title:'确认本次网页功能费用',message:`${price.name}的费用倍率为 ${price.multiplier} 倍，高于你设置的 ${view.approvalThreshold} 倍。`,details:['只使用刚才这份实际成果。','按实际用量计费，本次确认不会修改默认费用设置。'],confirmLabel:'确认使用',cancelLabel:'暂不制作'},controller.signal);
-        if(!accepted||controller.signal.aborted)return;featureApprovals=[{id:price.id,releaseId:price.releaseId,version:price.version,multiplier:price.multiplier}];
-      }
       const operationId=p.web?.operationId??await operation('web',{practiceId:p.id});
       const next=await request<PracticeView>(endpoint+'/web',{method:'POST',body:JSON.stringify({operationId,featureApprovals,journeyId,practiceId:p.id})});
       if(mounted.current)setView(next);notify();

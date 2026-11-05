@@ -80,7 +80,7 @@ test('future publication needs review and admin but no account list; price confi
   assert.equal(availableFeature(db,scope,feature.id).record.release?.audience,'all');
   assert.deepEqual(feature.release!.userIds,[]);
   assert.equal(feature.current!.values.usageMultiplier,.6);
-  assert.throws(()=>requireFeatureApproval(db,scope,[{id:feature.id,name:feature.current!.values.name,releaseId:feature.release!.id,version:1,multiplier:3}],[]),/超过/);
+  assert.doesNotThrow(()=>requireFeatureApproval(db,scope,[{id:feature.id,name:feature.current!.values.name,releaseId:feature.release!.id,version:1,multiplier:3}],[]));
   releaseFeature(db,feature.id,{revision:feature.revision,action:'unpublish'},'admin');
   openPublishedOfficialFeatures(db);assert.throws(()=>availableFeature(db,scope,feature.id));
 });

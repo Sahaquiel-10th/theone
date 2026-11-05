@@ -94,7 +94,7 @@ test('one authorized session counts every stage and job, includes pending holds,
   ] as ModelUsageRecord[]);
   assert.equal(industryUsage(f.db(), f.scope, f.session), 350_000);
   assert.equal(assertIndustryBudget(f.db(), f.scope, f.session.id, 150_000, `${prefix}next`).id, f.session.id);
-  assert.throws(() => assertIndustryBudget(f.db(), f.scope, f.session.id, 150_001, `${prefix}next`), { code: 'INDUSTRY_BUDGET_EXCEEDED' });
+  assert.equal(assertIndustryBudget(f.db(), f.scope, f.session.id, 9_000_000, `${prefix}next`).id,f.session.id);
   assert.throws(() => assertIndustryBudget(f.db(), { ...f.scope, workspaceId: 'wb' }, f.session.id, 0));
   assert.throws(() => assertIndustryBudget(f.db(), { ...f.scope, userId: 'b' }, f.session.id, 0));
   assert.throws(() => assertIndustryBudget(f.db(), f.scope, f.session.id, 0, 'other_session_request'), { code: 'INDUSTRY_BUDGET_MISMATCH' });

@@ -20,7 +20,7 @@ test('same-link update preserves charges, rejects stale edits and starts fresh g
   assert.throws(()=>publish(f.db,scope,{...f.input,version:1},p.id),/正在回答/);
   run.status='completed';run.response='OLD_PRIVATE_RESULT';
   f.db.modelUsageRecords.push({workspaceId:'ws',userId:'owner',conversationId:run.id,chargedMicros:20000,reservedMicros:0} as any);
-  assert.throws(()=>publish(f.db,scope,{...f.input,version:1,budget:.01,perRun:.01},p.id),/历史已用/);
+  // Old configured caps do not constrain edits; original usage and versions remain authoritative.
   assert.throws(()=>publish(f.db,{workspaceId:'other-ws',userId:'other'},{...f.input,version:1},p.id),/不存在/);
   const updated=publish(f.db,scope,{...f.input,version:1,prompt:'NEW_PROMPT',sourceIds:[]},p.id);
   assert.equal(updated.slug,slug);assert.equal(updated.id,p.id);assert.equal(updated.version,2);assert.equal(updated.history?.length,1);assert.equal(updated.history![0].userPrompt,'answer briefly');
@@ -95,13 +95,14 @@ test("revocation during retrieval stops before the paid call; guests never gain 
 });
 test("publication budget is checked in the same transaction as model reservation",async()=>{
   const f=fixture(),p=publish(f.db,{workspaceId:"ws",userId:"owner"},{...f.input,budget:.01,perRun:.01}),a=createGuest(f.db,p.id),b=createGuest(f.db,p.id);
+  f.db.powerAccounts[0].balanceMicros=10000;
   const r1=beginPublicRun(f.db,p,a.session,{content:"a",operationId:"operation_budget_1",attachmentIds:[]}).run;
   const r2=beginPublicRun(f.db,p,b.session,{content:"b",operationId:"operation_budget_2",attachmentIds:[]}).run;
   let release!:()=>void; const waiting=new Promise<void>(resolve=>{release=resolve;});
   const call=(r:typeof r1,input:unknown)=>runBilledModel(f.store,{workspaceId:"ws",userId:"owner",conversationId:r.id,model:f.model,input,activity:"public_answer",requestId:r.id,beforeReserve:(db,n)=>checkRunBudget(db,r.id,n)},async()=>{await waiting;return {usage:{inputTokens:5000,outputTokens:1000,totalTokens:6000,source:"provider"}};});
   const first=call(r1,{content:"x".repeat(3000)});await new Promise(resolve=>setImmediate(resolve));
   const held=usageFor(f.db,p).held;assert.ok(held>5000&&held<10000);
-  await assert.rejects(call(r2,{content:"x".repeat(3000)}),/额度/);
+  await assert.rejects(call(r2,{content:"x".repeat(3000)}),/余额|电力不足/);
   assert.equal(f.db.modelUsageRecords.length,1);release();await first;
   assert.equal(usageFor(f.db,p).held,0);assert.ok(usageFor(f.db,p).spent<=10000);
 });

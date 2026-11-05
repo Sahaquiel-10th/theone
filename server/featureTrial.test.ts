@@ -35,8 +35,10 @@ test("budget and Key failures prevent model calls; mutations cancel further exec
   const f = fixture(); let calls = 0;
   await assert.rejects(runFeatureTrial(f.store, f.scope, "test-agent", f.body, async () => { throw new Error("Key removed"); }, { modelCall: async () => { assert.fail(); } }), /Key removed/);
   assert.equal(f.db().chatOperations?.length, 0);
-  await assert.rejects(runFeatureTrial(f.store, f.scope, "test-agent", { ...f.body, budget: .001 }, async () => {}, { modelCall: async () => { calls++; assert.fail(); } }), /上限/);
+  await f.store.mutate(db=>{db.powerAccounts[0].balanceMicros=0;});
+  await assert.rejects(runFeatureTrial(f.store, f.scope, "test-agent", { ...f.body, budget: .001 }, async () => {}, { modelCall: async () => { calls++; assert.fail(); } }));
   assert.equal(calls, 0); assert.equal(f.db().modelUsageRecords.length, 0);
+  await f.store.mutate(db=>{db.powerAccounts[0].balanceMicros=1_000_000;});
   await assert.rejects(runFeatureTrial(f.store, f.scope, "test-agent", { ...f.body, operationId: "trial_other123456789" }, async () => {}, { modelCall: async () => { await f.store.mutate(db => { db.settings.officialFeatures![0].revision++; }); return { content: "", usage, toolCalls: [{ id: "x", type: "function", function: { name: "sandboxLookup", arguments: '{"topic":"meeting"}' } }] }; }, transport: async () => { assert.fail("revoked tool ran"); } }), /配置已变化/);
 });
 test("tool definitions reject endpoint injection and preserve legacy metadata", () => {
@@ -48,6 +50,7 @@ test("tool definitions reject endpoint injection and preserve legacy metadata", 
 
 test("HTTP trial results enforce admin, Key and own workspace; failed runs remain queryable", async t => {
   const f = fixture();
+  await f.store.mutate(db=>{db.powerAccounts[0].balanceMicros=0;});
   await assert.rejects(runFeatureTrial(f.store, f.scope, "test-agent", { ...f.body, budget: .001 }, async () => {}, { modelCall: async () => { assert.fail(); } }));
   const app = express(); app.use(express.json());
   installFeatureTrialRoutes(app, [(req, res, next) => {

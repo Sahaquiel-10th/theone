@@ -224,12 +224,10 @@ export function updateTeachingCourse(db: Database, scope: TeachingScope, courseI
   const changed=material(course)!==material(next);preserveTeachingAccess(course);if(changed)course.materialRevision=(course.materialRevision??course.revision)+1;
   Object.assign(course,next,...(body.teacherBudgetMode!==undefined?[{teacherBudgetMode:body.teacherBudgetMode as 'course'|'balance'}]:[]),{revision:course.revision+1,updatedAt:now()});return course;
 }
-export function requireTeachingStudentBudget(course:Pick<TeachingCourse,'budgetMicros'>,activities:readonly Pick<TeachingActivity,'kind'>[]){if(activities.some(activity=>['inquiry','game','scenario'].includes(activity.kind))&&course.budgetMicros<=0)throw new TeachingError('学生 AI 入口需要大于 0 的课程累计保护上限，请先设置并保存',400,'TEACHING_STUDENT_BUDGET_REQUIRED');}
 export function publishTeachingCourse(db: Database, scope: TeachingScope, courseId: string, input: unknown) {
   const body = object(input), course = ownedTeachingCourse(db, scope, courseId); revision(course, body.revision);
   if (body.confirmed !== true) throw new TeachingError('请确认课程材料与活动可向学生开放');
   if (!course.activities.some(a => !a.deletedAt && a.status === 'published')) throw new TeachingError('请先将至少一项活动设为向学生开放');
-  requireTeachingStudentBudget(course,course.activities.filter(activity=>!activity.deletedAt&&activity.status==='published'));
   if(course.sourceMode!=='knowledge')validateTeachingAttachments(db, scope, courseId, course.materialAttachmentIds);
   bindTeachingKnowledgeSources(db, scope, undefined, course.knowledgeSources);
   for (const activity of course.activities.filter(a => !a.deletedAt && a.status === 'published')) {

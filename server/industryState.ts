@@ -130,30 +130,29 @@ export function industryUsage(db: Database, scope: IndustryScope, session: Indus
 export function assertIndustryBudget(db: Database, scope: IndustryScope, sessionId: string, amountMicros: number, requestId?: string): IndustryUsageSession {
   const state = privateIndustryState(db, { id: scope.userId, workspaceId: scope.workspaceId });
   const session = state?.usageSessions.find(item => item.id === sessionId && item.workspaceId === scope.workspaceId && item.userId === scope.userId);
-  if (!session || session.expiresAt <= new Date().toISOString()) throw new IndustryError('请先确认本轮工作台的 AI 用量上限', 409, 'INDUSTRY_BUDGET_REQUIRED');
+  if (!session || session.expiresAt <= new Date().toISOString()) throw new IndustryError('工作台请求归属已失效，请重新进入工作台', 409, 'INDUSTRY_BUDGET_REQUIRED');
   if (session.keyDeviceId && !db.oneKeyDevices.some(key => key.id === session.keyDeviceId && key.userId === scope.userId && key.workspaceId === scope.workspaceId && key.status === 'active')) {
-    throw new IndustryError('本轮授权使用的 ONE Key 已失效，请重新进入并确认用量', 403, 'INDUSTRY_KEY_REVOKED');
+    throw new IndustryError('本轮使用的 ONE Key 已失效，请重新进入工作台', 403, 'INDUSTRY_KEY_REVOKED');
   }
   if (requestId !== undefined && !requestId.startsWith(industryUsagePrefix(session.id))) throw new IndustryError('本次用量归属不一致', 409, 'INDUSTRY_BUDGET_MISMATCH');
-  if (!Number.isSafeInteger(amountMicros) || amountMicros < 0 || industryUsage(db, scope, session) + amountMicros > session.budgetMicros) {
-    throw new IndustryError('本轮工作台用量已接近上限，请核对用量后明确开启新一轮', 402, 'INDUSTRY_BUDGET_EXCEEDED');
+  if (!Number.isSafeInteger(amountMicros) || amountMicros < 0) {
+    throw new IndustryError('本次用量参数无效', 402, 'INDUSTRY_BUDGET_EXCEEDED');
   }
   return session;
 }
 export function createIndustryUsageSession(db: Database, actor: IndustryActor, input: Record<string, unknown>, authorization: { keyDeviceId?: string } = {}) {
-  if (input.confirmed !== true || !validIndustryKey(input.requestKey) || !['product_creative', 'image_edit', 'review_reply'].includes(String(input.tool))
-    || !Number.isSafeInteger(input.budgetMicros) || Number(input.budgetMicros) < 100_000 || Number(input.budgetMicros) > 10_000_000_000) {
-    throw new IndustryError('请确认本轮 AI 用量与电力上限');
+  if (!validIndustryKey(input.requestKey) || !['product_creative', 'image_edit', 'review_reply'].includes(String(input.tool))) {
+    throw new IndustryError('工作台请求参数无效');
   }
   const state = privateIndustryState(db, actor, true)!;
   const old = state.usageSessions.find(item => item.workspaceId === actor.workspaceId && item.userId === actor.id && item.requestKey === input.requestKey);
   if (old) {
-    if (old.tool !== input.tool || old.budgetMicros !== input.budgetMicros || old.keyDeviceId !== authorization.keyDeviceId) throw new IndustryError('用量确认内容已变化，请重新确认', 409);
+    if (old.tool !== input.tool || old.keyDeviceId !== authorization.keyDeviceId) throw new IndustryError('请求归属已变化，请重新进入工作台', 409);
     return old;
   }
   if (state.usageSessions.length >= 2000) throw new IndustryError('工作台用量记录已达上限，请联系管理员', 429);
   const session: IndustryUsageSession = { id: uid('ibus'), ...industryScope(actor), requestKey: input.requestKey,
-    tool: input.tool as IndustryTool, budgetMicros: Number(input.budgetMicros), createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 24 * 3600_000).toISOString(), keyDeviceId: authorization.keyDeviceId };
+    tool: input.tool as IndustryTool, budgetMicros: 0, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 24 * 3600_000).toISOString(), keyDeviceId: authorization.keyDeviceId };
   state.usageSessions.push(session);
   return session;
 }

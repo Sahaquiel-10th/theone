@@ -163,10 +163,19 @@ export class ImaService {
       return await this.store.mutate(db => {
         owner(db, scope); const c = this.find(db, scope.workspaceId);
         if (c?.credentialUpdateId !== operation) throw new ImaError("IMA_OPERATION_REPLACED", "这次连接已取消或被替换，请重新确认", 409);
+        // Rechecking identical credentials must not invalidate saved course grants
+        // through fresh encryption nonces or silently add newly visible libraries.
+        let unchanged=false;
+        if(c.credentialOwnerUserId===scope.userId){try{const saved=this.credentials(c);unchanged=saved.clientId===credentials.clientId&&saved.apiKey===credentials.apiKey;}catch{/* A missing/invalid prior credential cannot establish continuity. */}}
+        const selectedIds=unchanged&&c.retrievalScope
+          ? c.retrievalScope.selectedIds.filter(id=>available.knowledgeBases.some(base=>base.id===id))
+          : available.knowledgeBases.length<=imaMaxSelectedLibraries?available.knowledgeBases.map(base=>base.id):[];
         c.status = "connected"; c.clientId = "ima-openapi"; c.credentialOwnerUserId = scope.userId;
-        c.encryptedClientId = encryptCredential(credentials.clientId, knowledgeCredentialContext(scope.workspaceId, "ima", "client_id"));
-        c.encryptedApiKey = encryptCredential(credentials.apiKey, knowledgeCredentialContext(scope.workspaceId, "ima", "api_key"));
-        c.retrievalScope = { ...available, selectedIds: available.knowledgeBases.length <= imaMaxSelectedLibraries ? available.knowledgeBases.map(b => b.id) : [] };
+        if(!unchanged){
+          c.encryptedClientId = encryptCredential(credentials.clientId, knowledgeCredentialContext(scope.workspaceId, "ima", "client_id"));
+          c.encryptedApiKey = encryptCredential(credentials.apiKey, knowledgeCredentialContext(scope.workspaceId, "ima", "api_key"));
+        }
+        c.retrievalScope = { ...available, selectedIds };
         c.lastError = undefined; c.lastCheckedAt = new Date().toISOString(); c.updatedAt = c.lastCheckedAt; c.credentialUpdateId = undefined;
         db.auditLogs.push({ id: uid("aud"), workspaceId: scope.workspaceId, actorUserId: scope.userId, action: "knowledge.ima.connected", targetType: "knowledge_connection", targetId: c.id, createdAt: c.updatedAt });
         return { connection: this.publicConnection(c) };

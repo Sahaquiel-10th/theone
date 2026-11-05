@@ -44,7 +44,7 @@ export function verifyRunCommerce(db:Database,p:Publication,r:PublicRun,amount:n
 export function grantSponsorship(db:Database,scope:VisitorIdentity,id:string,input:any){
   const p=ownedPublication(db,scope.workspaceId,scope.userId,id),username=typeof input?.username==='string'?input.username.trim().toLowerCase():'';
   const u=db.users.find(u=>u.enabled&&u.username.toLowerCase()===username),budget=Math.round(input?.budget*1e6);
-  if(!u||typeof input.budget!=='number'||!Number.isSafeInteger(budget)||budget<10000||budget>p.budgetMicros||input.confirmed!==true)throw new SharingError('请输入已注册账号、有效使用额度并确认费用');
+  if(!u||typeof input.budget!=='number'||!Number.isSafeInteger(budget)||budget<10000||input.confirmed!==true)throw new SharingError('请输入已注册账号、有效使用额度并确认费用');
   if((p.sponsorships??[]).length>=100)throw new SharingError('每个分身最多 100 项赠送记录');
   if(p.sponsorships?.some(g=>g.visitorUserId===u.id&&g.status==='active'))throw new SharingError('该账号已有赠送额度，请先撤销旧额度');
   const grant={id:uid('spg'),workspaceId:p.workspaceId,userId:p.userId,visitorUserId:u.id,name:u.username,budgetMicros:budget,status:'active' as const,createdAt:new Date().toISOString()};p.sponsorships=[...(p.sponsorships??[]),grant];

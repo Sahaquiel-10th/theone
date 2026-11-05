@@ -92,11 +92,9 @@ export function publish(db: Database, scope: { workspaceId: string; userId: stri
     assertPublicationVersion(old,input.version);
     assertPublicationIdle(db,old);
   }
-  if (input.confirmed !== true || !Array.isArray(input.sourceIds) || input.sourceIds.length > 5 || input.sourceIds.some(x => typeof x !== "string")) throw new SharingError("请确认分享范围与费用");
+  if (input.confirmed !== true || !Array.isArray(input.sourceIds) || input.sourceIds.length > 5 || input.sourceIds.some(x => typeof x !== "string")) throw new SharingError("请确认分享范围");
   const config = publicationModel(db, input.modelId);
-  const budgetMicros = power(input.budget), perRunMicros = power(input.perRun);
-  if(old){const used=usageFor(db,old);if(budgetMicros<used.spent+used.held)throw new SharingError('总额度不能低于历史已用和预留电力');}
-  if (perRunMicros > budgetMicros) throw new SharingError("单次限额不能大于总限额");
+  const budgetMicros = old?.budgetMicros ?? 0, perRunMicros = old?.perRunMicros ?? 0;
   const days = input.days;
   if (!Number.isInteger(days) || Number(days) < 1 || Number(days) > 90) throw new SharingError("有效期应为 1 至 90 天");
   const expiresAt=new Date(Date.now() + Number(days) * 86400000).toISOString();
@@ -123,7 +121,7 @@ export function publish(db: Database, scope: { workspaceId: string; userId: stri
 /** Explicit activation is separate from a private configuration save. */
 export function activateSavedPublication(db:Database,scope:{workspaceId:string;userId:string},id:string,input:Record<string,unknown>) {
   const p=ownedPublication(db,scope.workspaceId,scope.userId,id);
-  if(input.confirmed!==true)throw new SharingError('请确认开放的知识范围与费用规则');
+  if(input.confirmed!==true)throw new SharingError('请确认开放的知识范围');
   const previous=p.history?.at(-1),activationReceipt=p.status==='active'&&!!previous&&['draft','closed'].includes(previous.status)&&input.version===(previous.version??1)&&(p.version??1)===(previous.version??1)+1;
   if(p.status==='active'&&(input.version===(p.version??1)||activationReceipt))return activePublication(db,p.id); // A lost activation receipt is safe to query again.
   if(input.version!==(p.version??1))throw new SharingError('分身配置已变化，请重新核对后开放分享',409);
@@ -216,12 +214,11 @@ export function usageFor(db: Database, p: Publication, runId?: string) {
 export function checkRunBudget(db: Database, runId: string, amount: number) {
   const r = db.publicRuns?.find(r => r.id === runId);
   if (!r || r.status !== "running") throw new SharingError("任务已停止", 409);
-  const p = activePublication(db, r.publicationId), all = usageFor(db, p), own = usageFor(db, p, r.id);
+  const p = activePublication(db, r.publicationId);
   if((r.publicationVersion??1)!==(p.version??1))throw new SharingError('分身版本已变化，请重新开始',409);
   if(r.apiGrantId){const g=p.apiGrants?.find(g=>g.id===r.apiGrantId&&g.workspaceId===p.workspaceId&&g.userId===p.userId);if(!g)throw new SharingError('API 授权不可用',403);checkApiBudget(db,p,g,r.id,amount);}
   verifyRunCommerce(db,p,r,amount);
   checkPublicServiceBudget(db,p,r,amount);
-  if (all.spent + all.held + amount > p.budgetMicros || own.spent + own.held + amount > p.perRunMicros) throw new SharingError("本次问题预计用量超过分享额度，请缩小问题范围或联系发布者", 402);
 }
 export function beginPublicRun(db: Database, p: Publication, s: PublicSession, input: Record<string, unknown>) {
   p=activePublication(db, p.id);
@@ -243,7 +240,6 @@ export function beginPublicRun(db: Database, p: Publication, s: PublicSession, i
   run.apiGrantId=s.apiGrantId;run.entryPoint=s.apiGrantId?'published_api':'published_web';
   run.commerce=runCommerce(db,p,s);
   assignPublicServiceEntitlement(db,p,s,run);
-  if((run.commerce?.multiplier??0)>0&&(input.confirmedPriceVersion!==(p.version??1)||input.confirmedPayment!==true))throw new SharingError('请确认当前版本的访客费用',409);
   db.publicRuns!.push(run); checkRunBudget(db, run.id, 1); return { run, created: true };
 }
 export function publicRun(run: PublicRun,db?:Database) {

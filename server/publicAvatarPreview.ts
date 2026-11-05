@@ -19,7 +19,7 @@ type PreviewInput = { content: string; config: Record<string, unknown>; history:
 const plain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
 function validateInput(raw: unknown): PreviewInput & {operationId: string} {
-  if (!plain(raw) || raw.confirmed !== true) throw new SharingError('请确认测试回答会使用你自己的电力', 400, 'AVATAR_PREVIEW_CONSENT_REQUIRED');
+  if (!plain(raw)) throw new SharingError('请检查试聊内容', 400, 'AVATAR_PREVIEW_INVALID');
   if (typeof raw.operationId !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(raw.operationId)) throw new SharingError('测试提交标识无效', 400);
   if (typeof raw.content !== 'string' || !raw.content.trim() || raw.content.length > 2000 || !plain(raw.config)) throw new SharingError('请输入 2000 字以内的测试问题并选择模型');
   const history = raw.history ?? [];

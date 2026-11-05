@@ -90,7 +90,6 @@ function RealStoryOnboarding({profile,context,offer,onBegin,onAction,onKnowledge
   useEffect(()=>{card.current?.scrollIntoView({block:'start',behavior:'auto'});},[stage,j?.id]);
   async function generationChoice(signal:AbortSignal){
     if(!canDraw)return {createGuide:false,choice:'without_image'};
-    if(!offer?.firstGift&&!await confirmAction({title:'再做一份使用说明？',message:`这次会整理说明并配图，最多使用 ${price} 电力，按实际用量结算。`,details:['之前的说明会保留。','也可以只保存设置，不重新制作。'],confirmLabel:'确认制作',cancelLabel:'只保存设置'},signal))return {createGuide:false,choice:'without_image'};
     return {createGuide:true,budgetPower:offer?.firstGift?undefined:price};
   }
   async function act(input:JourneyInput){if(busy)return;setBusy(true);setError('');try{await onAction({...input,journeyId:j?.id});}catch(e){setError(e instanceof Error?e.message:'这一步没保存好，再试一次？');}finally{setBusy(false);}}

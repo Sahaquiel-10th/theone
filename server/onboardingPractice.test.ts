@@ -89,7 +89,7 @@ test('an actual first result permits explicit web skip without claiming a web re
 });
 test('published web price approvals are checked before queuing, and long prerequisite text is never clipped',async()=>{
  const f=fixture(),p=(await f.start(true)).practice!;await f.done();await f.store.mutate(d=>{d.settings.officialFeatures![0].history[0].values.usageMultiplier=3;});
- await assert.rejects(()=>f.service.web(a,{...ids(p),operationId:webId},key),/门槛/);assert.equal((await f.store.read()).chatOperations!.length,1);
+ await f.service.web(a,{...ids(p),operationId:webId},key);assert.equal((await f.store.read()).chatOperations!.length,2);
  await f.store.mutate(d=>{d.conversations.find(c=>c.id===p.first.taskId)!.messages.at(-1)!.content='长'.repeat(8001);});
  const db=await f.store.read();assert.throws(()=>practiceWebReference(db,a,p.id,firstId),/不会截断/);
 });

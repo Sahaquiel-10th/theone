@@ -59,11 +59,11 @@ test('atomic step receipt prevents concurrent duplicate paid calls and subsequen
 });
 
 test('concurrent jobs share the authorized session ceiling including pending reservations', async () => {
-  const f = fixture('image_edit', 400_000); let calls = 0, release!: () => void, started!: () => void;
+  const f = fixture('image_edit', 1); f.db().powerAccounts[0].balanceMicros=400_000; let calls = 0, release!: () => void, started!: () => void;
   const gate = new Promise<void>(r => { release = r; }), began = new Promise<void>(r => { started = r; });
   const run = createIndustryModelRunner(f.store, { imageStorageAvailable: true, imageCall: async () => { calls++; started(); await gate; return { content: 'image', imageUrl: 'fixture' }; } });
   const first = run(f.scope, f.input); await began;
-  await assert.rejects(run(f.scope, { ...f.input, operationId: 'second-job' }), { code: 'INDUSTRY_BUDGET_EXCEEDED' });
+  await assert.rejects(run(f.scope, { ...f.input, operationId: 'second-job' }), /余额|电力不足/);
   release(); await first;
   assert.equal(calls, 1); assert.equal(f.db().modelUsageRecords.length, 1);
 });

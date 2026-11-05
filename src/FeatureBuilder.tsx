@@ -31,17 +31,15 @@ export function FeatureBuilder({ api, values, onChange, disabled }: { api: typeo
   </fieldset>;
 }
 export function FeatureTrial({ api, id, revision, disabled, usageMultiplier=.6 }: { api: typeof Api; id: string; revision: number; disabled: boolean; usageMultiplier?:number }) {
-  const [prompt, setPrompt] = useState(""), [budget, setBudget] = useState("0.5"), [busy, setBusy] = useState(false), [error, setError] = useState(""), [result, setResult] = useState<Result>(), [operationId, setOperationId] = useState("");
+  const [prompt, setPrompt] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState(""), [result, setResult] = useState<Result>(), [operationId, setOperationId] = useState("");
   async function execute(recover = false) {
-    if (!recover && !confirm(`此功能使用倍率 ${usageMultiplier} 倍。试运行会从你的账户扣除实际用量，本次上限 ${budget} 电力。继续？`)) return;
     setBusy(true); setError(""); if (!recover) setResult(undefined);
     const key = recover ? operationId : crypto.randomUUID(); setOperationId(key);
-    try { setResult(await api<Result>(`/api/admin/official-features/${id}/trial${recover ? `/${key}` : ""}`, recover ? {} : { method: "POST", body: JSON.stringify({ revision, operationId: key, prompt, budget: Number(budget), confirmed: true }) })); }
+    try { setResult(await api<Result>(`/api/admin/official-features/${id}/trial${recover ? `/${key}` : ""}`, recover ? {} : { method: "POST", body: JSON.stringify({ revision, operationId: key, prompt }) })); }
     catch (e) { setError(e instanceof Error ? e.message : "试运行失败"); } finally { setBusy(false); }
   }
   return <details><summary>试运行智能体</summary><div className="sharing-form">
     <label>测试任务<textarea rows={3} maxLength={4000} value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="例如：会议室能预约多久？白板笔还有多少？"/></label>
-    <label>本次电力上限<input type="number" min="0.001" max="10" step="0.001" value={budget} onChange={e => setBudget(e.target.value)}/></label>
     <p className="hint">只用已保存配置。试运行按实际模型用量计费，不会自动发布。</p>
     <button type="button" className="primary" disabled={busy || disabled || !prompt.trim()} onClick={() => void execute()}>{busy ? "执行中…" : "试运行"}</button>
     {operationId ? <button type="button" disabled={busy} onClick={() => void execute(true)}>查看本次结果（不重新执行）</button> : null}

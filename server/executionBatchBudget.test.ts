@@ -51,13 +51,14 @@ test('one usage row associated by snapshot and cloud request counts once; unrela
     { ...row, ...b, id: 'foreign-usage', chargedMicros: 999999 },
     { ...row, id: 'other-batch-same-conversation', requestId: 'another', conversationId: 'same-project', chargedMicros: 999999, batchBudget: { ...f.snapshot, parentOperationId: 'other' } });
   assert.deepEqual(reserveExecutionBatchBudget(db, a, 'compile', 7000, f.snapshot), f.snapshot);
-  assert.throws(() => reserveExecutionBatchBudget(db, a, 'compile', 7001, f.snapshot), /达到已授权预算/);
+  assert.deepEqual(reserveExecutionBatchBudget(db, a, 'compile', 7001, f.snapshot),f.snapshot);
   const restored = JSON.parse(JSON.stringify(db)) as Database;
-  assert.throws(() => reserveExecutionBatchBudget(restored, a, 'gateway', 7001, f.snapshot), /达到已授权预算/);
+  assert.deepEqual(reserveExecutionBatchBudget(restored, a, 'gateway', 7001, f.snapshot),f.snapshot);
 });
 
 test('cloud and two local stages compete for one atomic budget and rejected reservations never invoke or charge the provider', async () => {
   const hold = MODEL_MAX_OUTPUT_TOKENS * 2, f = fixture(hold * 1.5 / 1e6);
+  await f.store.mutate(db=>{db.powerAccounts[0].balanceMicros=hold;});
   let release!: (value: { usage: typeof usage }) => void, calls = 0;
   const blocked = new Promise<{ usage: typeof usage }>(resolve => { release = resolve; });
   const outcomes: string[] = [];
@@ -65,7 +66,7 @@ test('cloud and two local stages compete for one atomic budget and rejected rese
   const compile = runBilledModel(f.store, { ...a, model: f.model, input: {}, activity: 'execution_compile', requestId: 'compile-one', batchBudget: f.snapshot }, async () => { calls++; return blocked; });
   const gateway = runBilledModel(f.store, { ...a, model: f.model, input: {}, activity: 'codex_execution', requestId: 'gateway-two', batchBudget: f.snapshot }, async () => { calls++; return blocked; });
   const attempts = [cloud, compile, gateway].map(promise => promise.then(() => { outcomes.push('success'); }, error => {
-    assert.match(error.message, /达到已授权预算/); outcomes.push('rejected');
+    assert.match(error.message, /余额|电力不足/); outcomes.push('rejected');
   }));
   try {
     await waitFor(() => outcomes.filter(outcome => outcome === 'rejected').length === 2);
@@ -79,6 +80,7 @@ test('cloud and two local stages compete for one atomic budget and rejected rese
   assert.equal(outcomes.filter(outcome => outcome === 'success').length, 1);
   assert.equal(f.db().powerLedger.filter(row => row.workspaceId === 'wa').length, 1);
   assert.equal(f.db().powerAccounts[0].reservedMicros, 0);
+  await f.store.mutate(db=>{db.powerAccounts[0].balanceMicros=100e6;});
   await runBilledModel(f.store, { ...a, model: f.model, input: {}, activity: 'local_agent', requestId: 'explicit-next-stage', batchBudget: f.snapshot }, async () => ({ usage }));
   assert.ok(f.db().modelUsageRecords.filter(row => row.workspaceId === 'wa').reduce((n, row) => n + (row.chargedMicros ?? 0) + (row.reservedMicros ?? 0), 0) <= Math.floor(f.snapshot.budget * 1e6));
 });

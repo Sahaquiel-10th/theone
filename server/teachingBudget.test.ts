@@ -28,14 +28,10 @@ test('pre-mode knowledge course create receipts replay their original nonce with
   assert.equal(existing.teacherBudgetMode,undefined);assert.equal(data.users[0].teaching!.courses.length,1);
 });
 
-test('student AI entries require a positive cumulative cap even for balance teachers; pure submissions do not',()=>{
-  for(const kind of ['inquiry','game','scenario','quiz','assignment'] as const){
-    const data=db(),course=createTeachingCourse(data,scope,{title:'零上限',teacherBudgetMode:'balance'}),activity=createTeachingActivity(data,scope,course.id,{revision:course.revision,title:'入口',kind,stage:kind==='inquiry'?'before':'after',status:'published'}).activity;
-    const open=()=>setTeachingActivityOpen(data,scope,course.id,activity.id,{revision:course.revision,activityRevision:activity.revision,confirmed:true},true);
-    if(['inquiry','game','scenario'].includes(kind)){
-      assert.throws(open,/学生 AI 入口/);assert.throws(()=>publishTeachingCourse(data,scope,course.id,{revision:course.revision,confirmed:true}),/学生 AI 入口/);
-      updateTeachingCourse(data,scope,course.id,{revision:course.revision,budgetMicros:100});assert.doesNotThrow(open);
-    }else assert.doesNotThrow(open);
-    assert.doesNotMatch(JSON.stringify(publicTeachingCourse(course)),/teacherBudgetMode/);
-  }
+test('all student tools open with zero course cap; teacher and source authorization remain separate',()=>{
+ for(const kind of ['inquiry','game','scenario','quiz','assignment'] as const){
+ const data=db(),course=createTeachingCourse(data,scope,{title:'无课程上限'}),activity=createTeachingActivity(data,scope,course.id,{revision:course.revision,title:'入口',kind,stage:kind==='inquiry'?'before':'after',status:'published'}).activity;
+ assert.doesNotThrow(()=>setTeachingActivityOpen(data,scope,course.id,activity.id,{revision:course.revision,activityRevision:activity.revision,confirmed:true},true));assert.equal(course.budgetMicros,0);
+ assert.doesNotMatch(JSON.stringify(publicTeachingCourse(course)),/teacherBudgetMode/);
+ }
 });

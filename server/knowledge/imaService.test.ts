@@ -358,3 +358,13 @@ test('a matched PDF lecture is not starved by cheaper outline and map files',asy
  };
  const chunks=await f.service.search('a','杭州',1);assert.equal(chunks.length,1);assert.match(chunks[0].title,/讲义.pdf/);assert.match(chunks[0].content,/长江三角洲南翼/);
 });
+
+test('reconnecting identical ima credentials keeps course bindings and selected libraries stable without widening access',async()=>{
+ const {teachingKnowledgeBinding}=await import('../teachingKnowledge.js');
+ const f=fixture();await f.service.connect(scope,credentials);await f.service.updateScope(scope,['kb-1']);
+ const c=f.db.knowledgeConnections[0],binding=teachingKnowledgeBinding(c),cipher=[c.encryptedClientId,c.encryptedApiKey];
+ f.options.libraries=3;await f.service.connect(scope,credentials);
+ assert.deepEqual([c.encryptedClientId,c.encryptedApiKey],cipher);assert.deepEqual(c.retrievalScope?.selectedIds,['kb-1']);assert.equal(teachingKnowledgeBinding(c),binding);
+ assert.equal(c.retrievalScope?.knowledgeBases.length,3);await assert.rejects(f.service.connect({workspaceId:'b',userId:'a'},credentials));assert.equal(teachingKnowledgeBinding(c),binding);
+ await f.service.connect(scope,{...credentials,apiKey:'a-different-synthetic-api-key'});assert.notEqual(teachingKnowledgeBinding(c),binding);assert.notEqual(c.encryptedApiKey,cipher[1]);
+});

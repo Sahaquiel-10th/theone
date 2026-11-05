@@ -54,7 +54,7 @@ export function reserveExecutionBatchBudget(db: Database, scope: Scope, requestI
   const used = db.modelUsageRecords.filter(row => own(row, scope) && Date.parse(row.createdAt) >= start
     && (requests.has(row.requestId ?? '') || (row.batchBudget?.parentOperationId === snapshot.parentOperationId && row.batchBudget.startedAt === snapshot.startedAt)))
     .reduce((total, row) => total + (row.chargedMicros ?? 0) + (row.reservedMicros ?? 0), 0);
-  if (!Number.isSafeInteger(amountMicros) || amountMicros < 0 || used + amountMicros > Math.floor(snapshot.budget * 1e6))
+  if (!Number.isSafeInteger(amountMicros) || amountMicros < 0)
     throw new ExecutionBatchBudgetError();
   return structuredClone(snapshot);
 }

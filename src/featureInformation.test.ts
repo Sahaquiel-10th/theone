@@ -31,7 +31,7 @@ test('access status keeps the full entitlement label once in visible content wit
     const html = renderToStaticMarkup(createElement(FeatureInformation, { feature, accessLabel }));
     const visibleText = html.replace(/<[^>]*>/g, '');
     assert.equal(visibleText.split(accessLabel).length - 1, 1);
-    assert.match(visibleText, /费用用量倍率0.6 倍按实际用量扣除/);
+    assert.match(visibleText, /费用用量倍率0.6 倍按实际用量从账户余额扣除/);
     assert.doesNotMatch(visibleText, /免费使用|不扣费/);
   }
 });

@@ -19,7 +19,7 @@ export function FeatureInformation({ feature, accessLabel = '已为你开放' }:
       {feature.limitations.trim() ? <section className="feature-information-section"><h4>限制与注意</h4><p>{feature.limitations}</p></section> : null}
     </div>
     <aside className="feature-information-facts" aria-label="费用与使用范围">
-      <section className="feature-information-section"><h4>费用</h4><dl><div><dt>用量倍率</dt><dd>{feature.usageMultiplier ?? .6} 倍</dd></div></dl><p>按实际用量扣除，创建任务前可设置电力上限。</p></section>
+      <section className="feature-information-section"><h4>费用</h4><dl><div><dt>用量倍率</dt><dd>{feature.usageMultiplier ?? .6} 倍</dd></div></dl><p>按实际用量从账户余额扣除。</p></section>
       <section className="feature-information-section"><h4>知识来源</h4><p>{knowledge}</p>{feature.knowledgeMode !== 'none' ? <small>仅使用你为本次任务选择的已授权连接。</small> : null}</section>
       <section className="feature-information-section"><h4>工具范围</h4>{feature.destinations.length ? <details className="feature-tool-scope"><summary>{feature.destinations.length} 个外部只读接口</summary><ul>{feature.destinations.map(destination => <li key={destination}>{destination}</li>)}</ul></details> : <p>不使用外部数据接口</p>}</section>
     </aside>

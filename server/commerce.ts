@@ -68,7 +68,7 @@ export function assertCommerceTool(db: Database, user: User, agentId = COMMERCE_
   return { id: agentId };
 }
 const fingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-const sessionId = (value: unknown) => { if (typeof value !== "string" || !/^[\w-]{8,160}$/.test(value)) throw new CommerceError("请先确认本次任务的电力上限"); return value; };
+const sessionId = (value: unknown) => { if (typeof value !== "string" || !/^[\w-]{8,160}$/.test(value)) throw new CommerceError("工作台请求归属无效，请重新进入工作台"); return value; };
 export function commerceRequestActor(req: {user?:{id:string};workspaceId?:string}): User {
   if (!req.user?.id || !req.workspaceId) throw new CommerceError("请登录后使用工作台",401,"COMMERCE_AUTH_REQUIRED");
   return { id:req.user.id, workspaceId:req.workspaceId };

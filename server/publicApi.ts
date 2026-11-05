@@ -10,9 +10,9 @@ export function apiGrantView(db:Database,p:Publication,g:PublicApiGrant){
 }
 export function issueApiGrant(db:Database,scope:{workspaceId:string;userId:string},id:string,input:any){
   const p=ownedPublication(db,scope.workspaceId,scope.userId,id);activePublication(db,p.id);
-  if(input?.confirmed!==true||typeof input.name!=='string'||!input.name.trim()||input.name.length>60||input.version!==(p.version??1))throw new SharingError('请检查名称、版本并确认 API 费用');
-  const budget=Math.round(input.budget*1e6),perRun=Math.round(input.perRun*1e6);
-  if(typeof input.budget!=='number'||typeof input.perRun!=='number'||!Number.isSafeInteger(budget)||!Number.isSafeInteger(perRun)||budget<10000||budget>p.budgetMicros||perRun<10000||perRun>budget||perRun>p.perRunMicros||!Number.isInteger(input.days)||input.days<1||input.days>90)throw new SharingError('API 额度不能超过分身额度，有效天数为 1–90');
+  if(input?.confirmed!==true||typeof input?.name!=='string'||!input.name.trim()||input.name.length>60||input.version!==(p.version??1))throw new SharingError('请检查 API 名称和版本');
+  const budget=0,perRun=0;
+  if(!Number.isInteger(input.days)||input.days<1||input.days>90)throw new SharingError('有效天数为 1–90');
   if((p.apiGrants??[]).length>=50)throw new SharingError('每个分身最多 50 个 API 密钥，请创建新的分身继续管理');
   const token=`one_api_${randomBytes(32).toString('base64url')}`,createdAt=new Date().toISOString();
   const {session}=createGuest(db,p.id,undefined,true);
@@ -35,6 +35,4 @@ export function authenticateApi(db:Database,token:string){
 }
 export function checkApiBudget(db:Database,p:Publication,g:PublicApiGrant,runId:string,amount:number){
   if(g.status!=='active'||g.publicationVersion!==(p.version??1)||Date.parse(g.expiresAt)<=Date.now())throw new SharingError('API 授权已停止',403);
-  const used=apiGrantView(db,p,g),run=usageFor(db,p,runId);
-  if(used.spent+used.held+amount>g.budgetMicros||run.spent+run.held+amount>g.perRunMicros)throw new SharingError('API 额度不足',402);
 }
