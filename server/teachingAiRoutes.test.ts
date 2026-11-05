@@ -8,6 +8,7 @@ import path from 'node:path';
 import type { Store } from './db.js';
 import type { Attachment, Database, ModelConfig } from './types.js';
 import { installTeachingAiRoutes, type TeachingAiRouteDependencies } from './teachingAiRoutes.js';
+import {defaultTaskValues,updateTaskConfig} from './aiTaskConfig.js';
 import { installTeachingRoutes } from './teachingRoutes.js';
 import { addTeachingSubmission, authTeachingSession, bindTeachingGradingBasis, closeTeachingCourse, createTeachingActivity, createTeachingCourse, createTeachingSession, publishTeachingCourse, reviewTeachingSubmission, teachingState, updateTeachingActivity, updateTeachingCourse, type TeachingError } from './teaching.js';
 import type { TeachingActivity, TeachingCourse, TeachingScope } from './teachingTypes.js';
@@ -31,7 +32,7 @@ function addCourse(db: Database, scope: TeachingScope = teacher, kind: TeachingA
   if (publish) publishTeachingCourse(db, scope, course.id, { revision: course.revision, confirmed: true });
   return { course, activity };
 }
-async function fixture(t: TestContext, modelCall: NonNullable<TeachingAiRouteDependencies['modelCall']>, knowledge?:TeachingAiRouteDependencies['knowledge']) {
+async function fixture(t: TestContext, modelCall: NonNullable<TeachingAiRouteDependencies['modelCall']>, knowledge?:TeachingAiRouteDependencies['knowledge'],imageCall?:TeachingAiRouteDependencies['imageCall']) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'one-teaching-ai-http-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   let db = makeDb(), tail: Promise<unknown> = Promise.resolve();
@@ -42,7 +43,7 @@ async function fixture(t: TestContext, modelCall: NonNullable<TeachingAiRouteDep
   const start = async () => {
     const app = express(); app.use(express.json());
     installTeachingRoutes(app, [auth], store, { verifyKey });
-    installTeachingAiRoutes(app, [auth], store, { verifyKey, modelCall, knowledge });
+    installTeachingAiRoutes(app, [auth], store, { verifyKey, modelCall, knowledge, imageCall });
     app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => res.status((error as TeachingError).status ?? 500).json({ error: 'request rejected' }));
     const server = app.listen(0, '127.0.0.1'); await once(server, 'listening');
     t.after(() => { server.closeAllConnections(); server.close(); });
@@ -108,7 +109,7 @@ test('knowledge-only courses still use private exam references and student work 
   const response=await f.post(`/courses/${course.id}/ai`,{kind:'grade',activityId:activity.id,submissionId:submission.id,operationId:'knowledge-private-grade-001',budgetConfirmed:true});assert.equal(response.status,202);const result=await f.poll(`/courses/${course.id}/operations/${(await response.json() as any).operation.id}`);assert.equal(result.status,'completed',JSON.stringify(result));assert.equal(calls,1);assert.equal(submission.grade?.status,'suggested');assert.equal(submission.grade?.total,80);assert.equal(course.materialText,'');assert.equal(course.sourceMode,'knowledge');assert.equal(course.teacherBudgetMode,'balance');assert.equal(course.budgetMicros,0);
 });
 
-test('teacher preview receipts and alias recovery expose only that teacher trial question, never student private questions', async t => {
+test('each caller can recover their own chat bubbles while teacher and student histories remain isolated', async t => {
   let calls = 0; const f = await fixture(t, async () => { calls++; return reply(guidedAnswer()); });
   const { course, activity } = addCourse(f.db);
   const body = { kind: 'answer', preview: true, activityId: activity.id, conversationId: 'teacher-trial-original', operationId: 'teacher-trial-receipt-001', content: 'TEACHER_OWN_PREVIEW_QUESTION', budgetConfirmed: true };
@@ -122,9 +123,9 @@ test('teacher preview receipts and alias recovery expose only that teacher trial
   for (const scope of [sameWorkspace, otherWorkspace]) assert.equal((await fetch(`${f.base}/courses/${course.id}/operations/${body.operationId}`, { headers: { ...ownerHeaders, 'x-teacher': scope.userId } })).status, 404);
   const student = createTeachingSession(f.db, course.slug!, { participantName: '学生', consent: true }), headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${student.token}` };
   const submitted = await f.post(`/public/${course.slug}/questions`, { activityId: activity.id, operationId: 'student-private-question-001', preview: true, conversationId: body.conversationId, content: 'STUDENT_PRIVATE_QUESTION' }, headers);
-  assert.equal(submitted.status, 202); const studentInitial = (await submitted.json() as any).operation; assert.equal(Object.hasOwn(studentInitial, 'question'), false);
-  const studentDone = await f.poll(`/public/${course.slug}/operations/${studentInitial.id}`, headers); assert.equal(Object.hasOwn(studentDone, 'question'), false);
-  const ownStudentHistory = await fetch(`${f.base}/public/${course.slug}/operations`, { headers }); assert.doesNotMatch(await ownStudentHistory.text(), /STUDENT_PRIVATE_QUESTION|TEACHER_OWN_PREVIEW_QUESTION/);
+  assert.equal(submitted.status, 202); const studentInitial = (await submitted.json() as any).operation; assert.equal(studentInitial.question, 'STUDENT_PRIVATE_QUESTION');
+  const studentDone = await f.poll(`/public/${course.slug}/operations/${studentInitial.id}`, headers); assert.equal(studentDone.question, 'STUDENT_PRIVATE_QUESTION');
+  const ownStudentHistory = await fetch(`${f.base}/public/${course.slug}/operations`, { headers }); const studentText=await ownStudentHistory.text();assert.match(studentText,/STUDENT_PRIVATE_QUESTION/);assert.doesNotMatch(studentText,/TEACHER_OWN_PREVIEW_QUESTION/);const teacherHistory=await fetch(`${f.base}/courses/${course.id}/operations`,{headers:ownerHeaders});assert.doesNotMatch(await teacherHistory.text(),/STUDENT_PRIVATE_QUESTION/);
   assert.equal((await f.post(`/courses/${course.id}/ai`, body)).status, 200); assert.equal(calls, 2, 'receipt recovery and replay never create a third paid call');
 });
 
@@ -543,4 +544,61 @@ test('the private grading endpoint rechecks ONE Key before mutating a published 
   f.removeKey();
   const response = await fetch(`${f.base}/courses/${course.id}/activities/${activity.id}/grading`, { method: 'PATCH', headers: ownerHeaders, body: JSON.stringify({ revision, activityRevision, referenceText: 'must not save' }) }); assert.equal(response.status, 428);
   assert.equal(course.revision, revision); assert.equal(activity.revision, activityRevision); assert.notEqual(activity.referenceText, 'must not save');
+});
+
+test('student script -> shared work -> five choices is billed, private, recoverable and isolated across students/workspaces',async t=>{
+ let calls=0;const f=await fixture(t,async(_model,messages)=>{
+  calls++;const instruction=messages.filter(m=>m.role==='system').map(m=>m.content).join('\n'),data=JSON.parse(String(messages.find(m=>m.role==='user')?.content)).untrustedTeachingData;
+  if(instruction.includes('审核学生历史剧本'))return reply({approved:true,title:'船工的抉择',role:'杭州船工',event:'苏轼疏浚西湖',feedback:'通过，注意区分虚构人物。',annotations:[],citations:[{quote:'苏轼疏浚西湖'}]});
+  if(instruction.includes('编译为五轮'))return reply({directorPrompt:'DIRECTOR_SECRET_STAYS_SERVER'});
+  assert.match(instruction,/五次关键决策/);return reply({answer:'【虚构】船工的一次选择。',choices:data.round===5?[]:['帮助邻居','先去工地'],historyExplanation:data.round===5?'历史事实：苏轼疏浚西湖；船工为虚构。':'',reflection:data.round===5?'个人处境怎样影响选择？':'',imagePrompt:data.round===5?'宋代杭州船工在暮色中的湖畔':''});
+ },{knowledgeService:{recallWithDiagnostics:async()=>({status:'used',failures:[],chunks:[{provider:'getnote',title:'讲义',content:'苏轼疏浚西湖'}]})}});
+ f.db.knowledgeConnections.push({id:'story-library',workspaceId:teacher.workspaceId,provider:'getnote',status:'connected',clientId:'fixture',providerUserId:'owner',encryptedApiKey:'SYNTHETIC',createdAt:'now',updatedAt:'now'});
+ const course=createTeachingCourse(f.db,teacher,{title:'杭州通论',budgetMicros:1_000_000,knowledgeSources:[{connectionId:'story-library',scope:'connection',confirmed:true}]}),activity=createTeachingActivity(f.db,teacher,course.id,{revision:course.revision,title:'课前入口',kind:'inquiry',stage:'before',status:'published'}).activity;
+ publishTeachingCourse(f.db,teacher,course.id,{revision:course.revision,confirmed:true});
+ const author=createTeachingSession(f.db,course.slug!,{participantName:'作者',consent:true}),player=createTeachingSession(f.db,course.slug!,{participantName:'玩家',consent:true});
+ const headers=(token:string)=>({'Content-Type':'application/json',Authorization:`Bearer ${token}`}),base=`/public/${course.slug}`;
+ const payload={kind:'script',activityId:activity.id,operationId:'student-script-unique-001',content:'宋代杭州船工参与疏浚。RAW_MANUSCRIPT_PRIVATE'};
+ const posted=await f.post(base+'/questions',payload,headers(author.token));assert.equal(posted.status,202);const id=(await posted.json() as any).operation.id;
+ const approved=await f.poll(base+'/operations/'+id,headers(author.token));assert.equal(approved.status,'completed',JSON.stringify(approved));assert.equal(calls,2);assert.doesNotMatch(JSON.stringify(approved),/DIRECTOR_SECRET/);
+ assert.equal((await f.post(base+'/questions',payload,headers(author.token))).status,200);assert.equal(calls,2);
+ assert.equal((await fetch(f.base+base+'/operations/'+id,{headers:headers(player.token)})).status,404);
+ const shared=await fetch(f.base+base+`/stories/${id}?activityId=${activity.id}`,{headers:headers(player.token)});assert.equal(shared.status,200);assert.doesNotMatch(await shared.text(),/RAW_MANUSCRIPT_PRIVATE|DIRECTOR_SECRET|participantName|sessionId|workspaceId/);
+ const runId='independent-player-run-001';let final:any;
+ for(let round=0;round<=5;round++){
+  const body={kind:'story_turn',activityId:activity.id,storyId:id,runId,operationId:`student-story-round-${round}`,content:round?'帮助邻居':'开始',round:99};
+  const started=await f.post(base+'/questions',body,headers(player.token));assert.equal(started.status,202,await started.clone().text());final=await f.poll(base+'/operations/'+(await started.json() as any).operation.id,headers(player.token));assert.equal(final.status,'completed',JSON.stringify(final));assert.equal(final.result.round,round);assert.equal(final.result.choices.length,round===5?0:2);
+  assert.equal((await f.post(base+'/questions',body,headers(player.token))).status,200);
+  if(round===0){const invalid=await f.post(base+'/questions',{...body,operationId:'invented-choice-request01',content:'我要改写历史'},headers(player.token));assert.equal(invalid.status,409);}
+ }
+ assert.equal(calls,8);assert.equal(f.db.modelUsageRecords.length,8);assert.equal(final.result.ended,true);
+ const seventh=await f.post(base+'/questions',{kind:'story_turn',activityId:activity.id,storyId:id,runId,operationId:'too-many-rounds-request01',content:'帮助邻居'},headers(player.token));assert.equal(seventh.status,409);assert.equal(calls,8);
+ const authoredHistory=await fetch(f.base+base+`/operations?runId=${runId}`,{headers:headers(author.token)});assert.deepEqual((await authoredHistory.json() as any).operations,[]);
+ const image=await f.post(base+'/questions',{kind:'story_image',activityId:activity.id,storyId:id,runId,operationId:'missing-image-config-001'},headers(player.token));assert.equal(image.status,202);const imageFailed=await f.poll(base+'/operations/'+(await image.json() as any).operation.id,headers(player.token));assert.equal(imageFailed.status,'failed');assert.match(imageFailed.error,/插画/);assert.equal(calls,8);
+ // A separate owner's open entry cannot read this work even with its valid student token.
+ const foreign=addCourse(f.db,otherWorkspace,'game');const guest=createTeachingSession(f.db,foreign.course.slug!,{participantName:'其他空间',consent:true});
+ assert.equal((await fetch(f.base+`/public/${foreign.course.slug}/stories/${id}?activityId=${foreign.activity.id}`,{headers:headers(guest.token)})).status,404);
+});
+
+test('ending image uses published fixed-price configuration once, persists private pixels and enforces the live course cap',async t=>{
+ let imageCalls=0,release!:()=>void,entered!:()=>void;const gate=new Promise<void>(r=>release=r),waiting=new Promise<void>(r=>entered=r);t.after(()=>release());
+ const pixels='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8V8AAAAASUVORK5CYII=';
+ const f=await fixture(t,async()=>assert.fail('image must not invoke chat'),undefined,async()=>{imageCalls++;entered();await gate;return {content:'',imageUrl:pixels,finishReason:'stop',usage:{inputTokens:1,outputTokens:1,totalTokens:2,source:'provider'}};});
+ const values={...defaultTaskValues('image_generation'),modelId:f.db.models[0].id,imageRoute:'images' as const,imageServiceModel:'gpt-image-2',imagePowerPerCall:.4,costImagePowerPerCall:.04};
+ updateTaskConfig(f.db.settings,f.db.models,'image_generation',{revision:0,action:'draft',values},'admin','t1');updateTaskConfig(f.db.settings,f.db.models,'image_generation',{revision:1,action:'publish'},'admin','t2');
+ const {course,activity}=addCourse(f.db,teacher,'game'),guest=createTeachingSession(f.db,course.slug!,{participantName:'玩家',consent:true}),headers={'Content-Type':'application/json',Authorization:`Bearer ${guest.token}`},base=`/public/${course.slug}`,runId='ending-image-private-run';
+ const state=teachingState(f.db,teacher),now=new Date().toISOString();
+ const seed={...teacher,courseId:course.id,activityId:activity.id,sessionId:guest.sessionId,operationId:'seed',payloadHash:'seed',status:'completed' as const,createdAt:now};
+ state.operations.push({...seed,id:'approved-image-work',kind:'script',result:{kind:'script',approved:true,directorPrompt:'private',title:'船工',role:'船工',event:'西湖',feedback:'通过',annotations:[],citations:[{quote:'苏轼'}]}});
+ state.operations.push({...seed,id:'ending-operation',kind:'story_turn',storyId:'approved-image-work',runId,result:{kind:'story_turn',ended:true,round:5,imagePrompt:'宋代杭州船工的结局',answer:'结局',choices:[],historyExplanation:'史实',reflection:'反思'}});
+ const body={kind:'story_image',activityId:activity.id,storyId:'approved-image-work',runId,operationId:'ending-image-once-only'};
+ const start=await f.post(base+'/questions',body,headers);assert.equal(start.status,202);const id=(await start.json() as any).operation.id;await waiting;
+ const account=f.db.powerAccounts.find(p=>p.userId===teacher.userId)!;assert.equal(account.reservedMicros,400000);
+ assert.equal((await f.post(base+'/questions',body,headers)).status,202);assert.equal((await f.post(base+'/questions',{...body,operationId:'image-different-id-block'},headers)).status,409);assert.equal(imageCalls,1);
+ release();const result=await f.poll(base+'/operations/'+id,headers);assert.equal(result.status,'completed',JSON.stringify(result));assert.equal(result.result.imageUrl,pixels);assert.equal(f.db.powerAccounts.find(p=>p.userId===teacher.userId)!.reservedMicros,0);assert.equal(f.db.modelUsageRecords[0].chargedMicros,400000);
+ assert.equal((await f.post(base+'/questions',body,headers)).status,200);assert.equal(imageCalls,1);
+ const other=createTeachingSession(f.db,course.slug!,{participantName:'另一人',consent:true});assert.equal((await fetch(f.base+base+'/operations/'+id,{headers:{Authorization:`Bearer ${other.token}`}})).status,404);
+ const otherRun='image-cap-protected-run';teachingState(f.db,teacher).operations.push({...seed,id:'other-ending-operation',kind:'story_turn',storyId:'approved-image-work',runId:otherRun,result:{kind:'story_turn',ended:true,round:5,imagePrompt:'宋代船工',answer:'结局',choices:[]}});
+ updateTeachingCourse(f.db,teacher,course.id,{revision:course.revision,budgetMicros:400001});
+ const cap=await f.post(base+'/questions',{...body,runId:otherRun,operationId:'image-cap-insufficient-001'},headers);assert.equal(cap.status,202);assert.equal((await f.poll(base+'/operations/'+(await cap.json() as any).operation.id,headers)).status,'failed');assert.equal(imageCalls,1);assert.equal(f.db.modelUsageRecords.length,1);
 });

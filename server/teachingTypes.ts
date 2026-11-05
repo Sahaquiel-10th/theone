@@ -69,7 +69,8 @@ export type TeachingSubmission = TeachingScope & {
 };
 export type TeachingOperation = TeachingScope & {
   id: string; courseId: string; activityId?: string; submissionId?: string; sessionId?: string;
-  operationId: string; payloadHash: string; kind: 'prepare' | 'answer' | 'grade' | 'insights';
+  operationId: string; payloadHash: string; kind: 'prepare' | 'answer' | 'grade' | 'insights' | 'script' | 'story_turn' | 'story_image';
+  storyId?: string; runId?: string;
   courseRevision?: number; question?: string; attachmentIds?: string[];
   materialRevision?: number; activityRevision?: number; preview?: boolean;
   /** Server snapshot of the manual request's authorization. Never accepted from

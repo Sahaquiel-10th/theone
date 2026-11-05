@@ -13,7 +13,7 @@ export function activityMatchesTool(activity:Pick<TeachingActivity,'kind'>,tool:
 export function newToolActivity(tool:TeachingTaskKind):ActivityDraft{
   const value=newActivityDraft(tool==='grade'||tool==='quiz'?'after':tool==='game'?'during':'before',tool==='ask'?'inquiry':tool==='grade'?'assignment':tool);
   if(tool==='ask')value.avatarPrompt='依据本课程允许学生学习的资料回答。通过简短追问帮助学生理解，资料不足时明确说明，不编造事实。';
-  if(tool==='game'){value.avatarPrompt='担任课堂文字游戏的引导者，先介绍情境与玩家角色，每轮根据玩家行动推进故事，并给出可行动的选择。虚构情节不得冒充史实。';value.allowStudentPrompt=true;}
+  if(tool==='game'){value.avatarPrompt='以杭州普通人的生计、制度阻力和人情往来构建紧凑的历史悬疑。主角必须是当时可能存在的小人物。五轮决策，每轮两个有代价的选择，玩家选择后再生成后果。同一剧本允许不同个人命运，历史大事件的基本史实不可改写。结局解释个人选择如何参与大历史，并区分史实与虚构。';value.allowStudentPrompt=true;}
   return value;
 }
 export type TeachingToolDraft={draftId:string;activityId?:string;activityRevision?:number;activity:ActivityDraft;conversationId:string;createPayload?:string};

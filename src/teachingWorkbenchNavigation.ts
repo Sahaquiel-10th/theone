@@ -2,7 +2,7 @@ import type {TeachingStage, TeachingTaskKind} from '../server/teachingTypes';
 
 export const teachingTools: {kind:TeachingTaskKind;title:string;stage:TeachingStage;description:string;result:string}[] = [
   {kind:'ask',title:'知识问答辅导',stage:'before',description:'用课程资料回答学生问题，按你的引导帮助他们理解。',result:'试问满意后，分享学生提问链接'},
-  {kind:'game',title:'文字游戏构建',stage:'during',description:'设置故事背景、角色和规则，把课堂知识放进文字游戏。',result:'先试玩，再让学生进入游戏'},
+  {kind:'game',title:'文字游戏构建',stage:'during',description:'学生上传普通人剧本，AI核对史实后生成五轮历史情境。',result:'下载模板、上传审核，分享可玩的作品'},
   {kind:'quiz',title:'上传试卷',stage:'after',description:'上传你已有的试卷，整理并校对题目、答案和分值。',result:'发布在线测验，查看学生答卷'},
   {kind:'grade',title:'批改作业',stage:'after',description:'发链接收作业，或由老师批量上传，再按评分要求批改。',result:'AI 提出建议，老师复核后发布成绩'},
 ];
