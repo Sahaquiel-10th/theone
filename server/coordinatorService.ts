@@ -74,6 +74,7 @@ import fs from "node:fs/promises";
 import {createHash} from 'node:crypto';
 import { NotionDocuments, NotionDocumentError, writingTarget } from './notionDocuments.js';
 import {verifiedNotionCompletion,notionDeliveryNote,notionRetryCheckpointPlan,notionRevisionRequested,notionWriteAcknowledged} from './notionCompletion.js';
+import {existingNotionArticle} from './notionArticleSource.js';
 import {
   publicAttachmentSummary,
   selectConversationAttachments,
@@ -189,10 +190,16 @@ function publicNotionReceipt(receipt:WorkRun['notionReceipt'],pageLinkOffered=fa
 }
 /** One derived recovery projection shared by main-task cards and details.
  * This is an explanation, not fresh authorization to execute an action. */
-function taskRecoveryView(db:Database,s:WorkScope,task:Conversation,jobs:ChatOperation[]):TaskRecovery{
+function taskRecoveryView(db:Database,s:WorkScope,task:Conversation,jobs:ChatOperation[],activeOperations?:ReadonlySet<string>):TaskRecovery{
  const latest=jobs.at(-1),run=latest?.workRun;
  const generic=()=>taskRecovery(jobs.map(op=>({id:op.id,...op.workRun!,notionReceipt:publicNotionReceipt(op.workRun!.notionReceipt,Boolean(notionLinkRecoveryOffer(db,s,op)),op.id),verificationPending:selectedNotionVerification(op)||op.status==='pending'&&op.workRun!.failureCode==='notion_verification_pending'})));
  if(!latest||!run)return generic();
+ // A started checkpoint is normal while this process still owns the exact
+ // pending run. Persisted running state alone cannot conceal an old effect
+ // after a restart, cancellation or user stop.
+ if(activeOperations?.has(latest.id)&&own(latest,s)&&own(task,s)&&latest.conversationId===task.id
+  &&latest.status==='pending'&&run.state==='running'&&!latest.executionCancelled
+  &&!task.archived&&!task.workPaused&&task.workPauseReason!=='user_stopped')return generic();
  const fault=parseToolRecoveryDiagnostic(run.toolRecovery)??workflowToolRecoveryDiagnostic(run.workflow,run.steps,{...s,operationId:latest.id});
  // Unknown writes and active readback retain their connector-owned actions.
  if(run.notionReceipt?.state!=='verified'&&run.notionReceipt&&!['not_sent','rejected'].includes(run.notionReceipt.delivery??''))return generic();
@@ -213,30 +220,7 @@ function text(value: unknown, max: number, label: string) {
   return value.trim();
 }
 const articleHash=(value:string)=>createHash('sha256').update(value).digest('hex');
-/** Exact stored text, not a summary selected by another model. Only the known
- * server-appended delivery suffix is separated from the authored content. */
-function existingNotionArticle(db:Database,s:WorkScope,conversationId:string,source?:WorkRun['notionArticleSource'],selectedMessageId?:string):{source:NonNullable<WorkRun['notionArticleSource']>;content:string}|undefined{
-  const conversation=db.conversations.find(c=>own(c,s)&&c.id===conversationId&&!c.archived);
-  if(!conversation)throw new CoordinatorError('原文章不属于当前账号或已不可用，尚未保存。',403);
-  const operations=(db.chatOperations??[]).filter(op=>own(op,s)&&op.conversationId===conversationId);
-  const eligible=operations.filter(op=>!op.failure&&(
-    op.workRun?.resultMessageId&&['completed','failed'].includes(op.workRun.state)&&['completed','partial','returned'].includes(op.workRun.resultOutcome??'')
-    ||!op.workRun&&op.status==='completed'&&op.assistantMessageId&&!op.dispatchedTaskId&&!op.dispatchedTaskIds?.length));
-  const selected=conversation.coordinatorMain?(selectedMessageId?eligible.filter(op=>op.assistantMessageId===selectedMessageId):eligible):eligible;
-  if(!source&&conversation.coordinatorMain&&selected.length>1)throw new OrchestrationInputError('主对话中有多份已有回复，不能猜哪一份是要保存的文章。请先用 read_context 的 messageId 读取那条原文，再交接保存；不要复制最近的普通答复或用摘要代替。');
-  const operation=source?operations.find(op=>op.id===source.operationId):selected.at(-1);
-  if(!operation)return;
-  if(operation.workRun?.notionArticleSource&&!source)return existingNotionArticle(db,s,operation.workRun.notionArticleSource.conversationId,operation.workRun.notionArticleSource);
-  const messageId=operation.workRun?.resultMessageId??operation.assistantMessageId;
-  const message=conversation.messages.find(message=>message.id===messageId&&message.role==='assistant'&&!message.imageUrl&&!message.attachments?.length&&message.finishReason!=='length'&&message.finishReason!=='filtered');
-  if(!message?.content.trim()||message.content.length>50000)return;
-  let content=message.content;
-  if(operation.workRun?.notionTarget){const suffix=notionDeliveryNote(operation.workRun.notionReceipt,operation.workRun.notionTarget.pageId);if(content.endsWith(suffix))content=content.slice(0,-suffix.length);}
-  if(!content.trim())return;
-  const binding={conversationId,operationId:operation.id,messageId:message.id!,messageDigest:articleHash(message.content),digest:articleHash(content)};
-  if(source&&(Object.keys(binding) as (keyof typeof binding)[]).some(key=>binding[key]!==source[key]))throw new CoordinatorError('原文章或来源已变化，尚未保存。请先核对最新原文。',409);
-  return {source:binding,content};
-}
+
 function ids(value: unknown, max: number): string[] {
   if (value === undefined) return [];
   if (
@@ -611,7 +595,7 @@ export class CoordinatorService {
       const waiting = jobs.some(o => ['queued','prepared'].includes(o.workRun!.state) && dependencyState(db,s,o.workRun!.dependsOnOperationIds)!=='ready');
       const recovery=latest?.workRun?pendingWorkflowRecovery(latest.workRun.workflow,latest.workRun.steps??[],{...s,operationId:latest.id}):undefined;
       return { id: task.id, title: task.title, executorId: task.executorProfileId, updatedAt: task.updatedAt,
-        recovery:taskRecoveryView(db,s,task,jobs),
+        recovery:taskRecoveryView(db,s,task,jobs,this.active),
         workflow:latest?ownerWorkflowProgress(db,s,latest):undefined,
         phase:recovery?'正在自动恢复':latest?.workRun?.dependencyBlocked?'等待前面的结果':running&&latest?.workRun?.retryProgress?'正在自动恢复':!running&&reconciling?saveVerified?'正在整理结果':'正在核对保存结果':undefined,
         paused: task.workPaused === true, queued, running, reconciling, localPrepared,
@@ -657,7 +641,7 @@ export class CoordinatorService {
     const localReview=localWork(latest)&&latest?.state!=='prepared'&&!(latest?.state==='failed'&&latest.failureCode==='task_local_not_started'&&latest.localExecution&&!localRecord);
     return {
       conversation: c,
-      recovery: localReview?{kind:'review_local' as const,message:localTaskStatus(db,s,id,latest)??'请先核对原本机执行的回执和文件，不会自动重新启动。'}:taskRecoveryView(db,s,c,jobs),
+      recovery: localReview?{kind:'review_local' as const,message:localTaskStatus(db,s,id,latest)??'请先核对原本机执行的回执和文件，不会自动重新启动。'}:taskRecoveryView(db,s,c,jobs,this.active),
       jobs: (db.chatOperations ?? [])
         .filter((o) => own(o, s) && o.conversationId === id && o.workRun)
         .slice(-50)

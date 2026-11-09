@@ -10,12 +10,13 @@ import { NotionWriteError, type NotionMcpService } from './knowledge/notionMcpSe
 import {parseNotionPageLink} from '../src/notionPageLink.js';
 import {freshDocumentReadRequested} from './executionIntent.js';
 import {taskStepKey} from './taskSteps.js';
-import {notionHash as hash,legacyNotionNormalized as normalized,canonicalNotionDigest,type NotionCanonicalVersion} from './notionCanonical.js';
+import {notionHash as hash,legacyNotionNormalized as normalized,canonicalNotionDigest,CURRENT_NOTION_CANONICAL_VERSION,type NotionCanonicalVersion} from './notionCanonical.js';
 import {projectNotionLeadingTitle,notionProjectedSource,type NotionTitleProjection} from './notionTitleProjection.js';
 import type {ChatOperation} from './chatOperations.js';
 import {parseTaskOutcome} from './dispatchPlan.js';
 import {notionLinkRecoveryOffer,notionLinkRecoveryTitle,type NotionLinkRecoveryRequest} from './notionLinkRecovery.js';
 import {notionWriteAcknowledged} from './notionCompletion.js';
+import {existingNotionArticle} from './notionArticleSource.js';
 
 const readOnlyRequest=(text:string)=>freshDocumentReadRequested(text)&&/只读|(?:不|不要)(?:修改|保存|写入)/.test(text);
 
@@ -133,10 +134,10 @@ function compareNotionBody(receipt:Receipt,body:string,title:string|undefined,no
 /** A new comparison may prove an old write only from its exact persisted
  * source and write checkpoint. It never infers text from the fetched page. */
 function exactLatestSourceDigest(db:Database,s:WorkScope,op:ChatOperation,receipt:Receipt):string|undefined{
- if(receipt.canonicalVersion===10||!receipt.expectedDigest||!receipt.checkpointKey||!op.workRun?.steps?.some(step=>step.key===receipt.checkpointKey&&step.scopeId===op.id&&step.namespace==='worker'&&step.tool==='save_notion_draft'&&step.effect==='external_write'))return;
+ if(receipt.canonicalVersion===CURRENT_NOTION_CANONICAL_VERSION||!receipt.expectedDigest||!receipt.checkpointKey||!op.workRun?.steps?.some(step=>step.key===receipt.checkpointKey&&step.scopeId===op.id&&step.namespace==='worker'&&step.tool==='save_notion_draft'&&step.effect==='external_write'))return;
  // A v8 write already persisted all three source proofs. Missing/corrupt
  // evidence cannot be replaced by the fetched page or a legacy downgrade.
- if([8,9].includes(receipt.canonicalVersion??0)&&(!receipt.expectedRawDigest||!receipt.expectedCanonicalDigest||receipt.expectedLength===undefined))return;
+ if([8,9,10].includes(receipt.canonicalVersion??0)&&(!receipt.expectedRawDigest||!receipt.expectedCanonicalDigest||receipt.expectedLength===undefined))return;
  const candidates:string[]=[];
  const accept=(body:unknown,exactArguments=false)=>{
   if(typeof body!=='string'||!body.trim()||body.length>50000||hash(normalized(body))!==receipt.expectedDigest)return;
@@ -155,6 +156,20 @@ function exactLatestSourceDigest(db:Database,s:WorkScope,op:ChatOperation,receip
   }
  }
  const workflow=op.workRun.workflow;
+ const articleSource=op.workRun.notionArticleSource;
+ if(articleSource&&workflow&&workflow.binding.workspaceId===s.workspaceId&&workflow.binding.userId===s.userId&&workflow.binding.operationId===op.id&&workflow.spec.steps.length===1){
+  const step=workflow.spec.steps[0];
+  if(step.id==='save_existing'&&step.kind==='notion'&&step.inputs.length===0){
+   const namespace=`workflow:${workflow.id}`,tool=`workflow:${workflow.id}:${step.id}`,key=taskStepKey(namespace,tool,JSON.stringify({revision:workflow.revision,instruction:step.instruction,inputs:step.inputs}));
+   const checkpoints=op.workRun.steps.filter(checkpoint=>checkpoint.key===key),checkpoint=checkpoints.length===1?checkpoints[0]:undefined;
+   const value=checkpoint?.output as {workflow?:{version?:number;runId?:string;revision?:number;stepId?:string};sourceArtifact?:{id?:string;ref?:string;originOperationId?:string;bodyDigest?:string}}|undefined;
+   const marker=value?.workflow,artifact=value?.sourceArtifact;
+   if(checkpoint?.scopeId===op.id&&checkpoint.namespace===namespace&&checkpoint.tool===tool&&checkpoint.effect==='external_write'&&['started','failed','completed'].includes(checkpoint.state)&&marker?.version===1&&marker.runId===workflow.id&&marker.revision===workflow.revision&&marker.stepId===step.id&&Object.keys(marker).sort().join()==='revision,runId,stepId,version'
+    &&artifact?.id==='existing_article'&&artifact.ref===articleSource.messageId&&artifact.originOperationId===articleSource.operationId&&artifact.bodyDigest===articleSource.digest&&Object.keys(artifact).sort().join()==='bodyDigest,id,originOperationId,ref'){
+    try{accept(existingNotionArticle(db,s,articleSource.conversationId,articleSource)?.content);}catch{/* Missing or changed original binding cannot be reconstructed from the page. */}
+   }
+  }
+ }
  if(workflow&&workflow.binding.workspaceId===s.workspaceId&&workflow.binding.userId===s.userId&&workflow.binding.operationId===op.id&&receipt.expectedRawDigest){
   for(const [index,step] of workflow.spec.steps.entries()){
    if(!['model','feature'].includes(step.kind)||workflow.steps[index]?.state!=='completed')continue;
@@ -166,7 +181,7 @@ function exactLatestSourceDigest(db:Database,s:WorkScope,op:ChatOperation,receip
    accept(value.result.content);accept(parseTaskOutcome(value.result.content).content);
   }
  }
- const unique=[...new Set(candidates)];return unique.length===1?canonicalNotionDigest(unique[0],10):undefined;
+ const unique=[...new Set(candidates)];return unique.length===1?canonicalNotionDigest(unique[0],CURRENT_NOTION_CANONICAL_VERSION):undefined;
 }
 function quotedReplacement(request: string) {
   // Only an unambiguous, explicitly quoted replacement in the real user turn.
@@ -306,7 +321,7 @@ export class NotionDocuments {
     if(comparison.kind!=='matched'){
       const latest=await this.store.read(),current=assertCurrent(latest);
       latestExpected=exactLatestSourceDigest(latest,s,current,snapshot);
-      if(latestExpected)comparison=compareNotionBody(snapshot,body,actualTitle,this.now(),{version:10,expectedDigest:latestExpected});
+      if(latestExpected)comparison=compareNotionBody(snapshot,body,actualTitle,this.now(),{version:CURRENT_NOTION_CANONICAL_VERSION,expectedDigest:latestExpected});
     }
     if(comparison.kind!=='matched')throw new NotionDocumentError('这页正文与本轮拟保存的全文不同，不能确认本次保存。原文没有改动，请核对是否给了另一版文章。',409);
     await verify();
@@ -417,7 +432,7 @@ export class NotionDocuments {
     const presentation=!matchedOriginal&&claimed.presentationUpgrade&&body!==undefined&&snapshot.expectedCanonicalDigest?compareNotionBody(snapshot,body,fetchedTitle,this.now(),{version:5,expectedDigest:snapshot.expectedCanonicalDigest}):undefined;
     const matchedPresentation=presentation?.kind==='matched';
     if(matchedPresentation)comparison=presentation;
-    const reproof=!matchedOriginal&&!matchedPresentation&&body!==undefined&&claimed.latestExpected?compareNotionBody(snapshot,body,fetchedTitle,this.now(),{version:10,expectedDigest:claimed.latestExpected}):undefined;
+    const reproof=!matchedOriginal&&!matchedPresentation&&body!==undefined&&claimed.latestExpected?compareNotionBody(snapshot,body,fetchedTitle,this.now(),{version:CURRENT_NOTION_CANONICAL_VERSION,expectedDigest:claimed.latestExpected}):undefined;
     if(reproof)comparison=reproof;
     const matched=matchedOriginal||matchedPresentation||reproof?.kind==='matched';
     return this.store.mutate(db=>{
@@ -505,7 +520,7 @@ export class NotionDocuments {
           const projected=!target.pageId&&options.projectLeadingTitle?projectNotionLeadingTitle(expected):undefined;
           const titleProjection:NotionTitleProjection|undefined=projected?{version:1,title:projected.title,prefix:projected.prefix}:undefined;
           const createTitle=projected?.title??v.title,createBody=projected?.content??v.content;
-          const expectedReceipt:Receipt={state:'pending',delivery:'not_sent',pageId:target.pageId,url:target.url,expectedDigest:hash(normalized(expected)),expectedRawDigest:hash(expected),expectedLength:expected.length,expectedCanonicalDigest:canonicalNotionDigest(expected,10),canonicalVersion:10,checkpointKey:taskStepKey('worker','save_notion_draft',JSON.stringify(v)),...(!target.pageId?{expectedPageTitle:createTitle}:{}),titleProjection,final:v.final===true};
+          const expectedReceipt:Receipt={state:'pending',delivery:'not_sent',pageId:target.pageId,url:target.url,expectedDigest:hash(normalized(expected)),expectedRawDigest:hash(expected),expectedLength:expected.length,expectedCanonicalDigest:canonicalNotionDigest(expected,CURRENT_NOTION_CANONICAL_VERSION),canonicalVersion:CURRENT_NOTION_CANONICAL_VERSION,checkpointKey:taskStepKey('worker','save_notion_draft',JSON.stringify(v)),...(!target.pageId?{expectedPageTitle:createTitle}:{}),titleProjection,final:v.final===true};
           // Persist before sending. Duplicate calls, disconnects and restarts
           // cannot turn a possibly-applied write into an automatic retry.
           await this.store.mutate(d => {

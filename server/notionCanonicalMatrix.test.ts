@@ -128,3 +128,105 @@ test('v2 through v9 stored digest semantics remain stable after v10',()=>{
  assert.equal(rows.length,64);
  assert.equal(notionHash(JSON.stringify(rows)),'e9c460b776444fadea72c6312de8ab2c23eb57d3b0a2c6dbb6fb138b2caaddc7');
 });
+
+const acceptedQaSource='一个假设小组把工作拆成准备、执行和验收，每一步留下可以回读的成果。\n\n原样标记 {紫色_42}，金额 3200 元。\n\n**保留代码 `KEEP_紫色42`**，以及 **[格式说明](https://developers.notion.com/guides/data-apis/enhanced-markdown)**。\n\n| 阶段 | 结果 |\n| --- | --- |\n| 写稿 | 完整正文 |\n| 保存 | 同一稿件 |\n\n自然结尾 END_青色42。';
+const acceptedQaReadback='一个假设小组把工作拆成准备、执行和验收，每一步留下可以回读的成果。\n\n原样标记 \\{紫色\\_42\\}，金额 3200 元。\n\n<b>保留代码 </b><b><code>KEEP_紫色42</code></b>，以及 [<b>格式说明</b>](https://developers.notion.com/guides/data-apis/enhanced-markdown)。\n\n| 阶段 | 结果 |\n| --- | --- |\n| 写稿 | 完整正文 |\n| 保存 | 同一稿件 |\n\n自然结尾 END\\_青色42。';
+const latestDigest=(body:string)=>canonicalNotionDigest(body,11);
+
+test('v11 verifies the recorded synthetic Notion rich-text split and link-label style placement',()=>{
+ assert.equal(latestDigest(acceptedQaSource),latestDigest(acceptedQaReadback));
+ // This v10 receipt already exists. Its comparison meaning remains exact.
+ assert.equal(canonicalNotionDigest(acceptedQaSource,10),'411198a215fbfd922dc53457f0bb993d027862616ca76732b4d5baec92a4cec9');
+ assert.equal(canonicalNotionDigest(acceptedQaReadback,10),'2a5ddc6ae1aef8a9b334cf9042109bee649c986985601bf28a7742e7087c2d2a');
+ for(const changed of [
+  acceptedQaReadback.replace('3200','3201'),
+  acceptedQaReadback.replace('KEEP_紫色42','KEEP_紫色43'),
+  acceptedQaReadback.replace('/enhanced-markdown','/another-document'),
+  acceptedQaReadback.replace('<b><code>KEEP_紫色42</code></b>','<code>KEEP_紫色42</code>'),
+  acceptedQaReadback.replace('[<b>格式说明</b>]','[<b>格式</b>说明]'),
+  acceptedQaReadback.replace('| 写稿 | 完整正文 |','| 写稿 | 部分正文 |'),
+  acceptedQaReadback.replace('END\\_青色42','END\\_青色43'),
+ ])assert.notEqual(latestDigest(acceptedQaSource),latestDigest(changed));
+});
+
+function stylePermutations(prefix:string[]=[],remaining=['b','i','s','u']):string[][]{
+ return remaining.flatMap((style,index)=>{
+  const current=[...prefix,style],rest=remaining.filter((_item,at)=>at!==index);
+  return [current,...stylePermutations(current,rest)];
+ });
+}
+const wrapStyles=(body:string,styles:readonly string[])=>styles.reduceRight((content,style)=>`<${style}>${content}</${style}>`,body);
+
+test('v11 style coverage matrix preserves 320 independent rich-text split and link-boundary presentations',()=>{
+ const styles=stylePermutations();assert.equal(styles.length,64);
+ let checks=0;
+ for(const selected of styles){
+  const reverse=[...selected].reverse(),target='https://example.test/a_b?x=1&y=2';
+  const pairs:[string,string][]=[
+   [wrapStyles('前段 {甲} 与 后段 [乙]',selected),wrapStyles('前段 \\{甲\\} 与 ',selected)+wrapStyles('后段 \\[乙\\]',reverse)],
+   [wrapStyles('保留代码 `KEEP_42`',selected),wrapStyles('保留代码 ',selected)+wrapStyles('<code>KEEP_42</code>',reverse)],
+   [wrapStyles(`[资料 {甲}](${target})`,selected),`[${wrapStyles('资料 \\{甲\\}',reverse)}](${target})`],
+   [wrapStyles(`[资料 \`KEEP_42\`](${target})`,selected),`[${wrapStyles('资料 ',selected)}${wrapStyles('<code>KEEP_42</code>',reverse)}](${target})`],
+   [wrapStyles('前段 '+wrapStyles('后段 {甲}',['u']),selected),wrapStyles('前段 ',selected)+wrapStyles('后段 \\{甲\\}',[...reverse,'u'])],
+  ];
+  for(const [source,serialized] of pairs){assert.equal(latestDigest(source),latestDigest(serialized),JSON.stringify({selected,source,serialized}));checks++;}
+ }
+ assert.equal(checks,320);
+});
+
+test('v11 style coverage matrix retains changed code, link targets, numbers and partial ranges',()=>{
+ let checks=0;
+ for(const selected of stylePermutations()){
+  const target='https://example.test/a_b?x=1&y=2';
+  const pairs:[string,string][]=[
+   [wrapStyles('保留代码 `KEEP_42`',selected),wrapStyles('保留代码 ',selected)+wrapStyles('<code>KEEP_43</code>',selected)],
+   [wrapStyles(`[资料](${target})`,selected),`[${wrapStyles('资料',selected)}](https://example.test/a_b?x=1&y=3)`],
+   [wrapStyles('金额 3200 元。',selected),wrapStyles('金额 3201 元。',selected)],
+   [wrapStyles('前段 `KEEP_42`',selected),wrapStyles('前段 ',selected)+wrapStyles('<code>KEEP_42</code>',selected.slice(1))],
+   [wrapStyles(`[资料](${target})`,selected),`[${wrapStyles('资',selected)}${wrapStyles('料',selected.slice(1))}](${target})`],
+  ];
+  for(const [source,changed] of pairs){assert.notEqual(latestDigest(source),latestDigest(changed),JSON.stringify({selected,source,changed}));checks++;}
+ }
+ assert.equal(checks,320);
+});
+
+test('v11 nested link-label code proof keeps exact bytes, tag closure and code style coverage',()=>{
+ const target='https://example.test/a_b';
+ const source=`**[资料 \`KEEP_42\`](${target})**`;
+ const serialized=`[<b>资料 </b><b><code>KEEP_42</code></b>](${target})`;
+ assert.equal(latestDigest(source),latestDigest(serialized));
+ for(const changed of [
+  serialized.replace('KEEP_42','KEEP_43'),
+  serialized.replace('KEEP_42','KEEP\\_42'),
+  serialized.replace('KEEP_42','KEEP&#95;42'),
+  serialized.replace('<code>','<code class="x">'),
+  serialized.replace('KEEP_42','KEEP_\n42'),
+  serialized.replace('<b><code>KEEP_42</code></b>','<code>KEEP_42</code>'),
+  serialized.replace('</code></b>','</b></code>'),
+  serialized.replace('KEEP_42</code>','KEEP_42</code>tail</code>'),
+ ])assert.notEqual(latestDigest(source),latestDigest(changed),changed);
+ const fakeClosingSource=`**[资料 \`KEEP_42</code>tail\`](${target})**`;
+ assert.notEqual(latestDigest(fakeClosingSource),latestDigest(serialized.replace('KEEP_42</code>','KEEP_42</code>tail</code>')));
+});
+
+test('v11 retains the prior common-format and conservative structure matrix',()=>{
+ for(const [label,source,serialized] of equivalentFormats)assert.equal(latestDigest(source),latestDigest(serialized),label);
+ for(const [label,source,changed] of distinctFormats)assert.notEqual(latestDigest(source),latestDigest(changed),label);
+});
+
+test('v2 through v10 persisted digest meanings remain unchanged after leaf-style coverage',()=>{
+ const samples=[
+  '普通 {价格} [标签] $3000 a|b a~b a^b。',
+  '普通 \\{价格\\} \\[标签\\] \\$3000 a\\|b a\\~b a\\^b。',
+  'A &amp; B &#123; &#x7D;',
+  '<b>标题</b>与 `one_qa`',
+  '正文\n<empty-block/>\n下一段',
+  '正文\n<p />\n下一段',
+  '[资料](https://example.test/a_b?q=1&amp;x=2)',
+  '```text\n{literal} &amp;\n```',
+ ];
+ const versions:NotionCanonicalVersion[]=[2,3,4,5,6,7,8,9,10];
+ const rows=samples.flatMap(sample=>versions.map(version=>canonicalNotionDigest(sample,version)));
+ assert.equal(rows.length,72);
+ assert.equal(notionHash(JSON.stringify(rows)),'7a64f465293f8106234c649af8fb1f6df2a9a4a7aa25081b62f6f6decab0ce76');
+});

@@ -13,6 +13,7 @@ import { CoordinatorService } from "./coordinatorService.js";
 import {ChatImageGatewayError} from './responsesImageGateway.js';
 import {OneKeyPresenceError} from './oneKeyPresence.js';
 import { NotionDocuments } from './notionDocuments.js';
+import {canonicalNotionDigest} from './notionCanonical.js';
 import { NotionWriteError, type NotionMcpService } from './knowledge/notionMcpService.js';
 import { defaultTaskValues, updateTaskConfig } from "./aiTaskConfig.js";
 import {runtimeContext,knowledgeRecallOptions} from './runtimeContext.js';
@@ -24,6 +25,73 @@ import {taskRecovery as recoveryForSteps} from '../src/taskRecovery.js';
 import {resolveTaskInputSource} from './taskInputSource.js';
 import JSZip from 'jszip';
 import XLSX from 'xlsx';
+
+async function activeModelProjectionFixture(){
+ const f=fixture();let release!:(result:ToolChatResult)=>void,started!:()=>void;
+ const pending=new Promise<ToolChatResult>(resolve=>release=resolve),entered=new Promise<void>(resolve=>started=resolve);
+ f.setRoute(messages=>messages.at(-1)?.role==='tool'?answer('已接到合成写作要求。'):{...answer(''),toolCalls:[{id:'active-projection',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'运行中的合成写作',instruction:'依据本轮合成资料写完整短文，直接返回正文。',executorId:'general',featureIds:[],workflow:{version:1,steps:[{id:'draft',title:'整理完整成果',kind:'model',instruction:'依据本轮合成资料写完整短文。',inputs:[]}]}})}}]});
+ f.setWorker(async()=>{started();return pending;});
+ const result=await f.service.dispatch(a,input('operation_live_checkpoint_001','请根据合成材料写一篇短文。'),key);
+ await f.service.resume(a,key);await entered;
+ const operation=(await f.store.read()).chatOperations!.find(operation=>operation.conversationId===result.taskId&&operation.workRun)!;
+ return {...f,taskId:result.taskId!,operationId:operation.id,release};
+}
+
+test('a live workflow model checkpoint projects running work consistently in snapshot and detail until it completes',async()=>{
+ const f=await activeModelProjectionFixture();
+ try{
+  const operation=(await f.store.read()).chatOperations!.find(operation=>operation.id===f.operationId)!;
+  assert.equal(operation.status,'pending');assert.equal(operation.workRun!.state,'running');
+  assert.ok(operation.workRun!.steps!.some(step=>step.state==='started'&&step.effect==='model'));
+  const snapshot=await f.service.state(a),meta=snapshot.tasks.find(task=>task.id===f.taskId)!;
+  assert.equal(meta.running,true);assert.equal(meta.recovery.kind,'none');assert.equal(meta.workflow!.steps[0].state,'running');
+  assert.equal(snapshot.transfers.find(task=>task.id===f.taskId)!.recovery.kind,'none');
+  assert.equal((await f.service.task(a,f.taskId)).recovery.kind,'none');
+  await assert.rejects(()=>f.service.task(b,f.taskId));assert.equal((await f.service.state(b)).tasks.length,0);
+
+  const restarted=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('read-only projection cannot retrieve knowledge')},{modelCall:async()=>assert.fail('read-only projection cannot buy a model')});
+  assert.equal((await restarted.task(a,f.taskId)).recovery.kind,'support','persisted running alone cannot hide an unconfirmed old effect');
+  assert.equal((await restarted.state(a)).tasks.find(task=>task.id===f.taskId)!.recovery.kind,'support');
+
+  f.release(answer(JSON.stringify({outcome:'completed',content:'合成短文已经完整返回。',summary:'合成短文完成。'})));
+  await waitFor(async()=>(await f.service.task(a,f.taskId)).jobs[0].state==='completed');
+  const done=await f.service.task(a,f.taskId);assert.equal(done.recovery.kind,'none');assert.equal(done.jobs[0].workflow!.phase,'completed');
+  assert.equal((await f.service.state(a)).tasks.find(task=>task.id===f.taskId)!.running,false);
+ }finally{f.release(answer('结束合成等待。'));}
+});
+
+for(const stopped of ['cancelled','user_stopped'] as const)test(`an active model does not hide an actual ${stopped} task behind running feedback`,async()=>{
+ const f=await activeModelProjectionFixture();
+ try{
+  await f.store.mutate(db=>{
+   const operation=db.chatOperations!.find(operation=>operation.id===f.operationId)!,task=db.conversations.find(task=>task.id===f.taskId)!;
+   if(stopped==='cancelled')operation.executionCancelled=true;
+   else{task.workPaused=true;task.workPauseReason='user_stopped';}
+  });
+  assert.equal((await f.service.task(a,f.taskId)).recovery.kind,'support');
+  assert.equal((await f.service.state(a)).tasks.find(task=>task.id===f.taskId)!.recovery.kind,'support');
+ }finally{
+  await f.service.cancelTask(a,f.taskId,key);f.release(answer('取消后的合成晚到正文。'));
+ }
+});
+
+test('one owner live model cannot suppress another owner unconfirmed persisted checkpoint',async()=>{
+ const f=await activeModelProjectionFixture(),foreignTaskId='foreign-stale-model-task';
+ try{
+  await f.store.mutate(db=>{
+   const original=db.chatOperations!.find(operation=>operation.id===f.operationId)!,task=db.conversations.find(task=>task.id===f.taskId)!;
+   db.conversations.push({...structuredClone(task),...b,id:foreignTaskId,title:'另一空间的旧任务'});
+   const copy={...structuredClone(original),...b,id:'foreign-stale-model-operation',operationId:'foreign_stale_model_operation',conversationId:foreignTaskId};
+   copy.workRun!.workflow=undefined;copy.workRun!.inputSource=undefined;copy.workRun!.materialSource=undefined;copy.workRun!.materialSources=undefined;
+   copy.workRun!.steps=[{key:'foreign-checkpoint',namespace:'worker',tool:'model',label:'旧模型步骤',scopeId:copy.id,effect:'model',state:'started',updatedAt:original.updatedAt}];
+   db.chatOperations!.push(copy);
+  });
+  assert.equal((await f.service.task(b,foreignTaskId)).recovery.kind,'support');
+  assert.equal((await f.service.state(b)).tasks.find(task=>task.id===foreignTaskId)!.recovery.kind,'support');
+  await assert.rejects(()=>f.service.task(a,foreignTaskId));
+  assert.equal((await f.service.task(a,f.taskId)).recovery.kind,'none');
+ }finally{await f.service.cancelTask(a,f.taskId,key);f.release(answer('结束合成等待。'));}
+});
 
 for(const contextMode of ['legacy','adaptive'] as const)test(`companion preferences reach every ${contextMode} coordinator round without entering shared prompts or other owners`,async()=>{
   const f=fixture();
@@ -4417,8 +4485,56 @@ async function lateSaveFixture(options:{partial?:boolean;fromMain?:boolean;artic
   if(messages.at(-1)?.role==='tool')return answer('我来保存这篇原文。');
   return {...answer(''),toolCalls:[{id:'late-save',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:options.fromMain?null:taskId,title:'保存合成原文',instruction:options.handoffInstruction??'把这篇现有原文保存到 Notion，不重写，不查知识库。',executorId:'general',featureIds:[],workflow:options.workflow})}}]};
  }});
- return {...f,service,article,expectedBody:article.replace(/^# [^\n]+\n\n/,''),taskId,sourceId,pageId,counts:()=>({title,body,writes,workerCalls,routeCalls})};
+ return {...f,service,mcp,article,expectedBody:article.replace(/^# [^\n]+\n\n/,''),taskId,sourceId,pageId,counts:()=>({title,body,writes,workerCalls,routeCalls})};
 }
+
+test('save_existing without a save trace rechecks an exact bound prior article before v10-to-v11 read-only recovery',async()=>{
+ const article='# 保存已有稿样式验收\n\n**保留代码 `KEEP_紫色42`**\n\n**[格式说明](https://example.test/notion-format)**\n\n自然结尾。';
+ const serialized='<b>保留代码 </b><b><code>KEEP_紫色42</code></b>\n\n[<b>格式说明</b>](https://example.test/notion-format)\n\n自然结尾。';
+ for(const mutation of ['none','source_message','source_binding','foreign_source_operation','missing_message','archived_source','source_artifact','actual_body','actual_code','actual_link'] as const){
+  const f=await lateSaveFixture({fromMain:true,article});let returnActual=false;
+  f.mcp.readDocument=async(workspace,id)=>{
+   assert.equal(workspace,a.workspaceId);
+   if(id!==f.pageId)return {text:'保存目录'};
+   if(!returnActual)throw Error('initial read unavailable');
+   const actual=mutation==='actual_body'?serialized.replace('自然结尾','另一种结尾'):mutation==='actual_code'?serialized.replace('KEEP_紫色42','KEEP_紫色43'):mutation==='actual_link'?serialized.replace('notion-format','another-page'):serialized;
+   return {title:f.counts().title,text:actual};
+  };
+  const accepted=await f.service.dispatch(a,{...input(`operation_save_existing_v11_${mutation}`,'把这篇已有文章原样保存到 Notion，不重写。'),outputDestination:'chat'},key);
+  await f.service.resume(a,key);
+  await waitFor(async()=>(await f.store.read()).chatOperations!.some(operation=>operation.conversationId===accepted.taskId&&operation.workRun?.failureCode==='notion_verification_pending'));
+  let operationId='',originalReceipt:NonNullable<import('./coordinatorTypes.js').WorkRun['notionReceipt']>;
+  await f.store.mutate(db=>{
+   const operation=db.chatOperations!.find(operation=>operation.conversationId===accepted.taskId&&operation.workRun)!,run=operation.workRun!,receipt=run.notionReceipt!;
+   operationId=operation.id;operation.status='completed';run.state='failed';run.resultOutcome='partial';run.failureCode='notion_verification_exhausted';
+   receipt.canonicalVersion=10;receipt.expectedCanonicalDigest=canonicalNotionDigest(article,10);receipt.verification!.state='exhausted';receipt.verification!.attempt=3;receipt.verification!.lastReason='mismatch';
+   run.workflow!.steps[0]={id:'save_existing',state:'failed',summary:'原页待核对'};run.workflow!.phase='failed';
+   const stage=run.steps!.find(step=>(step.output as any)?.workflow?.stepId==='save_existing')!;stage.state='failed';stage.operation={version:1,execution:'succeeded',verification:'failed'};(stage.output as any).outcome='failed';
+   db.contextTraces=[];
+   const source=run.notionArticleSource!,sourceTask=db.conversations.find(task=>task.id===source.conversationId)!,origin=db.chatOperations!.find(operation=>operation.id===source.operationId)!;
+   assert.equal(run.workflow!.spec.steps.length,1);assert.equal(run.workflow!.spec.steps[0].id,'save_existing');assert.equal(source.operationId,f.sourceId);
+   if(mutation==='source_message')sourceTask.messages.find(message=>message.id===source.messageId)!.content+='改动';
+   if(mutation==='source_binding')source.messageDigest='f'.repeat(64);
+   if(mutation==='foreign_source_operation'){origin.workspaceId='wb';origin.userId='b';}
+   if(mutation==='missing_message')sourceTask.messages=sourceTask.messages.filter(message=>message.id!==source.messageId);
+   if(mutation==='archived_source')sourceTask.archived=true;
+   if(mutation==='source_artifact')(stage.output as any).sourceArtifact.bodyDigest='f'.repeat(64);
+   originalReceipt=structuredClone(receipt);
+  });
+  returnActual=true;const before=f.counts();
+  if(mutation==='none'){
+   assert.equal((await f.service.verifyNotionResult(a,accepted.taskId!,key)).state,'verified');
+   const latest=(await f.store.read()).chatOperations!.find(operation=>operation.id===operationId)!.workRun!;
+   assert.equal(latest.state,'completed');assert.equal(latest.workflow!.phase,'completed');assert.equal(latest.notionReceipt!.comparison!.comparatorVersion,11);
+  }else{
+   await assert.rejects(()=>f.service.verifyNotionResult(a,accepted.taskId!,key));
+   assert.equal((await f.store.read()).chatOperations!.find(operation=>operation.id===operationId)!.workRun!.notionReceipt!.state,'uncertain',mutation);
+  }
+  const after=(await f.store.read()).chatOperations!.find(operation=>operation.id===operationId)!.workRun!.notionReceipt!;
+  for(const field of ['canonicalVersion','expectedCanonicalDigest','expectedRawDigest','expectedDigest','expectedLength','checkpointKey','writeAcknowledgement'] as const)assert.deepEqual(after[field],originalReceipt![field],mutation+'/'+field);
+  assert.deepEqual(f.counts(),before);assert.equal(f.counts().writes,1);assert.equal(f.counts().workerCalls,0);
+ }
+});
 
 for(const selected of ['chat','notion'] as const)test(`late Notion save reuses exact existing text without rewriting; picker=${selected}`,async()=>{
  const f=await lateSaveFixture({partial:true});

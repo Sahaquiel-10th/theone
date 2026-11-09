@@ -4,7 +4,8 @@ import {gfm} from 'micromark-extension-gfm';
 import {gfmFromMarkdown} from 'mdast-util-gfm';
 
 export const notionHash=(body:string)=>createHash('sha256').update(body).digest('hex');
-export type NotionCanonicalVersion=2|3|4|5|6|7|8|9|10;
+export const CURRENT_NOTION_CANONICAL_VERSION=11 as const;
+export type NotionCanonicalVersion=2|3|4|5|6|7|8|9|10|11;
 /** Persisted v1 receipts retain this exact comparison, never silently upgrade. */
 export function legacyNotionNormalized(body:string){
  const literalCode=/`|~~~|^(?: {4}|\t)|<(?:pre|code)\b/im.test(body);
@@ -25,7 +26,9 @@ export function legacyNotionNormalized(body:string){
  * admits underscore-containing identifiers only when the HTML parser proves
  * one exact plain text child inside attribute-free inline code. v10 uses
  * Markdown text-node values for proven character escapes and entities, and
- * recognizes attribute-free, standalone Notion empty-paragraph markers. */
+ * recognizes attribute-free, standalone Notion empty-paragraph markers. v11
+ * compares inline style coverage on leaves, independent of how one rich-text
+ * range was split or whether its style wrapper sits around a link label. */
 export function canonicalNotionBody(body:string,version:NotionCanonicalVersion=5){
  if(version>=6){
   const protectedBody=protectNotionCode(body,version);
@@ -104,6 +107,36 @@ function typedNotionInlineStyles(nodes:MarkdownNode[]):MarkdownNode[]{
  }
  return frames.length===1?frames[0].children:nodes;
 }
+type CanonicalNode={type:string;children?:CanonicalNode[];styles?:string[];value?:unknown;[key:string]:unknown};
+/** Rich-text styles affect visible leaves. Link containers retain every
+ * destination field while only their labels inherit style coverage. */
+function canonicalInlineStyleCoverage(tree:CanonicalNode):CanonicalNode{
+ const normalize=(nodes:CanonicalNode[],inherited:readonly string[]):CanonicalNode[]=>{
+  const result:CanonicalNode[]=[];
+  const append=(node:CanonicalNode)=>{
+   const previous=result.at(-1);
+   if(previous?.type==='text'&&node.type==='text'&&typeof previous.value==='string'&&typeof node.value==='string'){
+    const {value:previousValue,...previousMetadata}=previous;
+    const {value,...metadata}=node;
+    if(JSON.stringify(previousMetadata)===JSON.stringify(metadata)){previous.value=previousValue+value;return;}
+   }
+   result.push(node);
+  };
+  for(const node of nodes){
+   if(node.type==='notionInlineStyles'){
+    const styles=[...new Set([...inherited,...(node.styles??[])])].sort();
+    for(const child of normalize(node.children??[],styles))append(child);
+   }else{
+    const normalized={...node};
+    if(node.children)normalized.children=normalize(node.children,inherited);
+    else if(inherited.length)normalized.styles=[...inherited];
+    append(normalized);
+   }
+  }
+  return result;
+ };
+ return {...tree,children:normalize(tree.children??[],[])};
+}
 /** Parse with original paragraph boundaries. Literal punctuation may use its
  * escaped spelling, but strong/emphasis/table/list structure is never erased.
  * Raw code and link targets additionally bind syntax the parser would decode. */
@@ -120,7 +153,11 @@ function canonicalTextLiterals(body:string,protectedRanges:ProtectedRange[],vers
   if(['code','inlineCode','html','image','imageReference'].includes(node.type)&&raw!==undefined)result.raw=raw;
   if(version>=7&&node.type==='inlineCode'){
    const literal=protectedRanges.find(range=>range.kind==='code'&&range.start===start&&range.end===end&&range.inlineValue!==undefined);
-   if(literal){result.value=literal.inlineValue;delete result.raw;parsedInlineCodes.add(literal);}
+   // A protected link includes its label. Nested code therefore has no
+   // separate outer range, but its exact parsed plain spelling is still proof.
+   const nestedValue=version>=11&&typeof node.value==='string'&&raw===`\`${node.value}\``&&plainInlineCode(node.value,version)?node.value:undefined;
+   const value=literal?.inlineValue??nestedValue;
+   if(value!==undefined){result.value=value;delete result.raw;if(literal)parsedInlineCodes.add(literal);}
   }
   if(['link','linkReference','definition'].includes(node.type)&&start!==undefined&&end!==undefined){
    const literal=protectedRanges.find(range=>range.start<=start&&range.end>=end);
@@ -142,11 +179,13 @@ function canonicalTextLiterals(body:string,protectedRanges:ProtectedRange[],vers
     const opening=nodes[index],text=nodes[index+1],closing=nodes[index+2];
     const tag=version<10&&opening.type==='html'&&/^<(b|i)>$/.exec(String(opening.value));
     const start=text?.position?.start.offset,end=text?.position?.end.offset,plain=start===undefined||end===undefined?'':body.slice(start,end);
-    const code=version>=7&&opening.type==='html'&&opening.value==='<code>'&&text?.type==='text'&&closing?.type==='html'&&closing.value==='</code>'?protectedRanges.find(range=>range.kind==='code'&&range.start===opening.position?.start.offset&&range.end===closing.position?.end.offset&&range.inlineValue===plain):undefined;
+    const exactCodeTags=version>=7&&opening.type==='html'&&opening.value==='<code>'&&text?.type==='text'&&closing?.type==='html'&&closing.value==='</code>';
+    const code=exactCodeTags?protectedRanges.find(range=>range.kind==='code'&&range.start===opening.position?.start.offset&&range.end===closing.position?.end.offset&&range.inlineValue===plain):undefined;
+    const codeValue=code?.inlineValue??(version>=11&&exactCodeTags&&text.value===plain&&plainInlineCode(plain,version)?plain:undefined);
     // Exact balanced plain HTML emphasis is a typed node. Synthesizing **/*
     // here would incorrectly turn real emphasis into visible stars whenever
     // punctuation makes the generated Markdown delimiter non-flanking.
-    if(code){children.push({type:'inlineCode',value:code.inlineValue});parsedInlineCodes.add(code);index+=2;}
+    if(codeValue!==undefined){children.push({type:'inlineCode',value:codeValue});if(code)parsedInlineCodes.add(code);index+=2;}
     else if(tag&&text?.type==='text'&&closing?.type==='html'&&closing.value===`</${tag[1]}>`&&plain&&plain===plain.trim()&&!/[\\*_~\[\]<>\r\n]/u.test(plain)){
      children.push({type:tag[1]==='b'?'strong':'emphasis',children:[clean(text)]});index+=2;
     }else children.push(clean(opening));
@@ -163,7 +202,8 @@ function canonicalTextLiterals(body:string,protectedRanges:ProtectedRange[],vers
   }
   return result;
  };
- const tree=clean(fromMarkdown(body,{extensions:[gfm()],mdastExtensions:[gfmFromMarkdown()]}));
+ const parsed=clean(fromMarkdown(body,{extensions:[gfm()],mdastExtensions:[gfmFromMarkdown()]}));
+ const tree=version>=11?canonicalInlineStyleCoverage(parsed as CanonicalNode):parsed;
  return {tree,protected:protectedRanges.filter(range=>range.kind==='code'&&!parsedInlineCodes.has(range)||range.kind==='url'&&!parsedUrls.has(range)).map(range=>({kind:range.kind,raw:body.slice(range.start,range.end)}))};
 }
 

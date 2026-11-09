@@ -30,8 +30,8 @@ async function fixture(content?:string){
  return {db,store,op,job,docs,mcp,args,input,reads,page,parent,writes:()=>writes,advance:()=>now+=1000,check:()=>docs.reconcile(scope,'task',async()=>{},input)};
 }
 
-test('link recovery supports immutable v9 and new v10 exact receipts while rejecting unknown comparator versions before reads',async()=>{
- for(const version of [9,10] as const){
+test('link recovery supports immutable v9/v10 and new v11 exact receipts while rejecting unknown comparator versions before reads',async()=>{
+ for(const version of [9,10,11] as const){
   const f=await fixture(),receipt=f.job.notionReceipt!;
   receipt.canonicalVersion=version;receipt.expectedCanonicalDigest=canonicalNotionDigest(f.args.content,version);
   const original=structuredClone(receipt);
@@ -39,7 +39,7 @@ test('link recovery supports immutable v9 and new v10 exact receipts while rejec
   assert.equal((await f.check()).state,'verified');assert.equal(f.writes(),1);assert.deepEqual(f.reads,[parentId,pageId]);
   for(const field of ['canonicalVersion','expectedCanonicalDigest','expectedDigest','expectedRawDigest','expectedLength','checkpointKey'] as const)assert.deepEqual(receipt[field],original[field]);
  }
- const future=await fixture();future.job.notionReceipt!.canonicalVersion=11 as any;
+ const future=await fixture();future.job.notionReceipt!.canonicalVersion=12 as any;
  assert.equal(notionLinkRecoveryOffer(future.db,scope,future.op),undefined);
  assert.equal(selectNotionLinkRecovery(future.db,scope,{text:'原页链接是 '+url,boundTaskId:'task'}).kind,'unavailable');
  await assert.rejects(future.check);assert.equal(future.reads.length,0);assert.equal(future.writes(),1);assert.equal(future.job.notionReceipt!.state,'uncertain');
@@ -73,13 +73,35 @@ test('an original-page link can reprove v9 escapes only with its exact original 
   }
   const original=structuredClone(receipt);assert.ok(notionLinkRecoveryOffer(f.db,scope,f.op));
   if(proof==='trace'||proof==='workflow'){
-   assert.equal((await f.check()).state,'verified');assert.equal(receipt.comparison!.kind,'matched');assert.equal(receipt.comparison!.comparatorVersion,10);
+   assert.equal((await f.check()).state,'verified');assert.equal(receipt.comparison!.kind,'matched');assert.equal(receipt.comparison!.comparatorVersion,11);
    assert.equal(receipt.pageId,pageId);assert.equal(receipt.linkRecovery!.selectionId,f.input.selectionId);
   }else{
    await assert.rejects(f.check,/正文|原稿证据/);assert.equal(receipt.state,'uncertain');assert.equal(receipt.pageId,undefined);assert.equal(f.job.steps![0].state,'started');
   }
   for(const field of ['canonicalVersion','expectedCanonicalDigest','expectedRawDigest','expectedDigest','expectedLength','checkpointKey'] as const)assert.deepEqual(receipt[field],original[field],proof+'/'+field);
   assert.equal(receipt.writeAcknowledgement,undefined);assert.equal(f.writes(),1);assert.deepEqual(f.reads,[parentId,pageId]);
+ }
+});
+
+test('an old v10 unknown-page style receipt needs exact original source before a supplied link can use v11',async()=>{
+ const source='**保留代码 `KEEP_紫色42`**\n\n**[格式说明](https://example.test/notion-format)**\n\n自然结尾。';
+ const serialized='<b>保留代码 </b><b><code>KEEP_紫色42</code></b>\n\n[<b>格式说明</b>](https://example.test/notion-format)\n\n自然结尾。';
+ assert.notEqual(canonicalNotionDigest(source,10),canonicalNotionDigest(serialized,10));
+ for(const proof of ['exact','missing','foreign','changed_code','changed_link','missing_raw'] as const){
+  const f=await fixture(source),receipt=f.job.notionReceipt!;receipt.canonicalVersion=10;receipt.expectedCanonicalDigest=canonicalNotionDigest(source,10);
+  if(proof!=='missing')f.db.contextTraces.push({...scope,workspaceId:proof==='foreign'?'foreign':scope.workspaceId,conversationId:'task',requestId:f.op.requestId,executionSteps:[{tool:'save_notion_draft',query:JSON.stringify(f.args)}]} as any);
+  if(proof==='missing_raw')delete receipt.expectedRawDigest;
+  f.mcp.readDocument=async(_ws,id)=>{
+   f.reads.push(id);if(id===parentId)return f.parent();
+   const actual=proof==='changed_code'?serialized.replace('KEEP_紫色42','KEEP_紫色43'):proof==='changed_link'?serialized.replace('notion-format','another-page'):serialized;
+   return {...f.page(),text:`<page><content>\n${actual}\n</content></page>`};
+  };
+  const original=structuredClone(receipt);
+  if(proof==='exact'){
+   assert.equal((await f.check()).state,'verified');assert.equal(receipt.comparison!.comparatorVersion,11);
+  }else{await assert.rejects(f.check);assert.equal(receipt.state,'uncertain');assert.equal(receipt.pageId,undefined);}
+  for(const field of ['canonicalVersion','expectedCanonicalDigest','expectedRawDigest','expectedDigest','expectedLength','checkpointKey'] as const)assert.deepEqual(receipt[field],original[field],proof+'/'+field);
+  assert.equal(receipt.writeAcknowledgement,undefined);assert.equal(f.writes(),1);
  }
 });
 
