@@ -59,7 +59,7 @@ test('workflow create saves authored H1 in page title, verifies original full-so
  assert.deepEqual(f.calls[0].args.pages,[{properties:{title:'ONE-QA-LATE-1029-A'},content:'青色42\n先写好原文，再单独补存。'}]);
  const receipt=f.job.notionReceipt!;
  assert.equal(receipt.expectedDigest,notionHash(legacyNotionNormalized(source)));
- assert.equal(receipt.expectedRawDigest,notionHash(source));assert.equal(receipt.expectedCanonicalDigest,canonicalNotionDigest(source,9));
+ assert.equal(receipt.expectedRawDigest,notionHash(source));assert.equal(receipt.expectedCanonicalDigest,canonicalNotionDigest(source,10));
  assert.equal(receipt.checkpointKey,taskStepKey('worker','save_notion_draft',JSON.stringify(args)));
  assert.equal(result.currentDocument,f.actual().body);assert.equal(receipt.digest,notionHash(f.actual().body));
  assert.deepEqual(receipt.titleProjection,{version:1,title:'ONE-QA-LATE-1029-A',prefix:'# ONE-QA-LATE-1029-A\n'});
@@ -94,7 +94,7 @@ for(const mutation of ['missing-title','changed-title','conflicting-title','chan
   if(mutation==='missing-title')return {text:f.actual().body};
   const fetched=await read(...params) as {text:string};return mutation==='conflicting-title'?{...fetched,title:'矛盾标题'}:fetched;
  };
- const tool=f.tool();await assert.rejects(()=>tool.run(tool.validate(args)),/保存未确认/);
+ const tool=f.tool();await assert.rejects(()=>tool.run(tool.validate(args)),/正文完整性尚未确认/);
  assert.equal(f.calls.length,1);assert.equal(f.job.notionReceipt!.state,'uncertain');assert.equal(f.job.notionReceipt!.failureCode,'readback_mismatch');
 });
 
@@ -131,49 +131,90 @@ async function oldV4ItalicFixture(expected=italicSource){
  f.mcp.readDocument=async()=>f.fetchResult();return f;
 }
 
-test('new v9 write verifies plain italic readback immediately without a second write or source change',async()=>{
+test('new v10 write verifies plain italic readback immediately without a second write or source change',async()=>{
  const f=fixture(),read=f.mcp.readDocument.bind(f.mcp);
  f.mcp.readDocument=async(...params)=>{f.setBody(f.actual().body.replace('*保留原来的主题和完整结尾。*','<i>保留原来的主题和完整结尾。</i>'));return read(...params);};
  const tool=f.tool(),result=await tool.run(tool.validate({...args,content:italicSource})) as any;
- assert.equal(result.state,'verified');assert.equal(f.calls.length,1);assert.equal(f.job.notionReceipt!.canonicalVersion,9);assert.equal(f.job.notionReceipt!.expectedRawDigest,notionHash(italicSource));
+ assert.equal(result.state,'verified');assert.equal(f.calls.length,1);assert.equal(f.job.notionReceipt!.canonicalVersion,10);assert.equal(f.job.notionReceipt!.expectedRawDigest,notionHash(italicSource));
 });
 
-test('new v9 writes compare rich formatting beside exact code and retain visible escaped literal stars',async()=>{
+test('new v10 writes compare rich formatting beside exact code and retain visible escaped literal stars',async()=>{
  const source='# 组合专栏\n\n**重点**与 `ONE`。\n\n> 引用原话\n\n|项目|费用|\n|:----|-----:|\n|场地|-100|\n\n\\*\\*字面星号\\*\\*';
  const f=fixture(),read=f.mcp.readDocument.bind(f.mcp);
  f.mcp.readDocument=async(...params)=>{f.setBody(f.actual().body.replace('**重点**','<b>重点</b>').replace('> 引用原话','<quote>\n引用原话\n</quote>').replace('|:----|-----:|','| --- | --- |'));return read(...params);};
  const tool=f.tool(),result=await tool.run(tool.validate({...args,content:source})) as any;
- assert.equal(result.state,'verified');assert.equal(f.calls.length,1);assert.equal(f.job.notionReceipt!.canonicalVersion,9);assert.equal(f.job.notionReceipt!.expectedRawDigest,notionHash(source));assert.equal(f.job.notionReceipt!.comparison?.kind,'matched');assert.equal(f.job.notionReceipt!.comparison?.comparatorVersion,9);assert.ok(f.actual().body.includes('\\*\\*字面星号\\*\\*'));
+ assert.equal(result.state,'verified');assert.equal(f.calls.length,1);assert.equal(f.job.notionReceipt!.canonicalVersion,10);assert.equal(f.job.notionReceipt!.expectedRawDigest,notionHash(source));assert.equal(f.job.notionReceipt!.comparison?.kind,'matched');assert.equal(f.job.notionReceipt!.comparison?.comparatorVersion,10);assert.ok(f.actual().body.includes('\\*\\*字面星号\\*\\*'));
 });
 
-test('new v9 save verifies an exact plain HTML inline code readback without rewriting or changing its original source',async()=>{
+test('new v10 save verifies an exact plain HTML inline code readback without rewriting or changing its original source',async()=>{
  const original='# 合成验收\n\n**保留重点**与 `ONE-QA`。\n\n|项目|费用|\n|---|---:|\n|测试|100|';
  for(const changed of [false,true]){
   const f=fixture(),read=f.mcp.readDocument.bind(f.mcp);
   f.mcp.readDocument=async(...params)=>{f.setBody(f.actual().body.replace('**保留重点**','<b>保留重点</b>').replace('`ONE-QA`',changed?'<code>ONE-QB</code>':'<code>ONE-QA</code>'));return read(...params);};
   const tool=f.tool(),save=()=>tool.run(tool.validate({...args,content:original}));
-  if(changed)await assert.rejects(save,/保存未确认/);else assert.equal((await save() as any).state,'verified');
+  if(changed)await assert.rejects(save,/正文完整性尚未确认/);else assert.equal((await save() as any).state,'verified');
   const receipt=f.job.notionReceipt!;
-  assert.equal(receipt.canonicalVersion,9);assert.equal(receipt.expectedRawDigest,notionHash(original));assert.equal(receipt.expectedCanonicalDigest,canonicalNotionDigest(original,9));assert.equal(receipt.comparison?.kind,changed?'body_mismatch':'matched');assert.equal(f.calls.length,1);
+  assert.equal(receipt.canonicalVersion,10);assert.equal(receipt.expectedRawDigest,notionHash(original));assert.equal(receipt.expectedCanonicalDigest,canonicalNotionDigest(original,10));assert.equal(receipt.comparison?.kind,changed?'body_mismatch':'matched');assert.equal(f.calls.length,1);
  }
 });
 
-test('new v9 save verifies exact UTF-8 URL serialization and keeps the authored visible punctuation',async()=>{
+test('new v10 save verifies exact UTF-8 URL serialization and keeps the authored visible punctuation',async()=>{
  const original='# 合成URL专栏\n\n**重点**与 `ONE-QA`。\n\n参考：https://example.test/reference）',url='https://example.test/reference）';
  const f=fixture(),read=f.mcp.readDocument.bind(f.mcp);
  f.mcp.readDocument=async(...params)=>{f.setBody(f.actual().body.replace('**重点**','<b>重点</b>').replace('`ONE-QA`','<code>ONE-QA</code>').replace(url,`[${url}](https://example.test/reference%EF%BC%89)`));return read(...params);};
  const tool=f.tool(),saved=await tool.run(tool.validate({...args,content:original})) as any,receipt=f.job.notionReceipt!;
- assert.equal(saved.state,'verified');assert.equal(receipt.canonicalVersion,9);assert.equal(receipt.expectedRawDigest,notionHash(original));assert.equal(receipt.comparison?.comparatorVersion,9);assert.equal(receipt.comparison?.kind,'matched');assert.ok(f.actual().body.includes('reference）]'));assert.equal(f.calls.length,1);
+ assert.equal(saved.state,'verified');assert.equal(receipt.canonicalVersion,10);assert.equal(receipt.expectedRawDigest,notionHash(original));assert.equal(receipt.comparison?.comparatorVersion,10);assert.equal(receipt.comparison?.kind,'matched');assert.ok(f.actual().body.includes('reference）]'));assert.equal(f.calls.length,1);
 });
 
-test('new identifier-code writes verify their complete projected source immediately with one v9 write',async()=>{
+test('new identifier-code writes verify their complete projected source immediately with one v10 write',async()=>{
  const original='# 合成标识符专栏\n\n**重点**与 `one_qa_probe`。\n\n|项目|步骤|\n|---|---:|\n|验证|1|',f=fixture(),read=f.mcp.readDocument.bind(f.mcp);
  f.mcp.readDocument=async(...params)=>{f.setBody(f.actual().body.replace('**重点**','<b>重点</b>').replace('`one_qa_probe`','<code>one_qa_probe</code>').replace('|---|---:|','| --- | --- |'));return read(...params);};
  const tool=f.tool(),saved=await tool.run(tool.validate({...args,content:original})) as any,receipt=f.job.notionReceipt!;
- assert.equal(saved.state,'verified');assert.equal(receipt.canonicalVersion,9);assert.equal(receipt.expectedRawDigest,notionHash(original));assert.equal(receipt.expectedDigest,notionHash(legacyNotionNormalized(original)));assert.equal(receipt.comparison?.comparatorVersion,9);assert.equal(receipt.comparison?.kind,'matched');assert.equal(f.calls.length,1);
+ assert.equal(saved.state,'verified');assert.equal(receipt.canonicalVersion,10);assert.equal(receipt.expectedRawDigest,notionHash(original));assert.equal(receipt.expectedDigest,notionHash(legacyNotionNormalized(original)));assert.equal(receipt.comparison?.comparatorVersion,10);assert.equal(receipt.comparison?.kind,'matched');assert.equal(f.calls.length,1);
 });
 
-test('explicit v9 reproof of an immutable v8 receipt requires exact original hashes and same-operation evidence',async()=>{
+test('new v10 write verifies platform escapes, entities, empty paragraphs and combined inline styles once',async()=>{
+ const original='# 合成格式验收\n\n方法 {开始}与价格 $3000。\n\n**[资料 {甲}](https://example.test/a_b)**，以及 ***A & More*** 和 `one_qa`。';
+ const serialized='方法 \\{开始\\}与价格 \\$3000。\n<p />\n<b>[资料 \\{甲\\}](https://example.test/a_b)</b>，以及 <i><b>A &amp; More</b></i> 和 <code>one_qa</code>。';
+ const f=fixture();
+ f.mcp.readDocument=async()=>{f.setBody(serialized);return f.fetchResult();};
+ const tool=f.tool(),result=await tool.run(tool.validate({...args,content:original})) as any;
+ assert.equal(result.state,'verified');assert.equal(f.calls.length,1);
+ assert.equal(f.calls[0].args.pages[0].content,projectNotionLeadingTitle(original)!.content);
+ assert.equal(f.job.notionReceipt!.expectedRawDigest,notionHash(original));
+ assert.equal(f.job.notionReceipt!.comparison?.comparatorVersion,10);
+ assert.equal(f.job.notionReceipt!.comparison?.kind,'matched');
+});
+
+test('manual v10 reproof of a v9 escape mismatch requires exact owned source and preserves the original receipt',async()=>{
+ const original='# 旧版格式验收\n\n金额 {甲}为 $3000，下一步 [乙]。',value={...args,content:original};
+ for(const mutation of ['none','foreign-trace','missing-raw','changed-source','changed-body'] as const){
+  const f=fixture();f.mcp.readDocument=async()=>{throw Error('initial unavailable');};
+  const tool=f.tool();await assert.rejects(()=>tool.run(tool.validate(value)));f.stopped();
+  const receipt=f.job.notionReceipt!;
+  receipt.canonicalVersion=9;receipt.expectedCanonicalDigest=canonicalNotionDigest(original,9);
+  const query=JSON.stringify(mutation==='changed-source'?{...value,content:original+'额外文字'}:value);
+  f.job.steps!.push({key:receipt.checkpointKey!,scopeId:'op',namespace:'worker',tool:'save_notion_draft',effect:'external_write',state:'started',label:'保存',updatedAt:'now'});
+  f.db.contextTraces.push({...scope,workspaceId:mutation==='foreign-trace'?'wb':scope.workspaceId,conversationId:'task',requestId:'synthetic',executionSteps:[{tool:'save_notion_draft',query}]} as any);
+  f.setBody('金额 \\{甲\\}为 \\$3000，下一步 \\[乙\\]。');
+  if(mutation==='missing-raw')delete receipt.expectedRawDigest;
+  if(mutation==='changed-body')f.setBody(f.actual().body.replace('3000','3001'));
+  f.mcp.readDocument=async()=>f.fetchResult();const prior=structuredClone(receipt);
+  f.advance();assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'scheduled');
+  assert.equal(receipt.comparison?.comparatorVersion,9);
+  assert.equal(receipt.state,'uncertain');
+  if(mutation==='none'){
+   assert.equal((await f.docs.reconcile(scope,'task',async()=>{})).state,'verified');
+   assert.equal(receipt.comparison?.comparatorVersion,10);assert.equal(receipt.comparison?.kind,'matched');
+  }else{
+   await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));assert.equal(receipt.state,'uncertain');
+  }
+  for(const key of ['canonicalVersion','expectedRawDigest','expectedDigest','expectedCanonicalDigest','expectedLength','checkpointKey'] as const)assert.equal(receipt[key],prior[key]);
+  assert.equal(f.calls.length,1);
+ }
+});
+
+test('explicit v10 reproof of an immutable v8 receipt requires exact original hashes and same-operation evidence',async()=>{
  const original='# 合成旧稿\n\n**重点**与 `one_qa_probe`。\n\n|项目|步骤|\n|---|---:|\n|验证|1|',value={...args,content:original},raw=JSON.stringify(value);
  for(const evidence of ['trace','workflow'] as const)for(const mutation of ['none','wrong-raw','missing-raw','wrong-normalized','wrong-old-canonical','missing-old-canonical','wrong-length','missing-length','missing-worker','foreign-owner','wrong-marker','changed-source','changed-code','changed-body','missing-title','revoked','stopped'] as const){
   const f=fixture();f.mcp.readDocument=async()=>{throw Error('initial unavailable');};const tool=f.tool();await assert.rejects(()=>tool.run(tool.validate(value)));f.stopped();
@@ -193,7 +234,7 @@ test('explicit v9 reproof of an immutable v8 receipt requires exact original has
   if(mutation==='revoked')f.db.knowledgeConnections[0].status='revoked';if(mutation==='stopped')f.db.conversations[0].workPauseReason='user_stopped';
   if(mutation==='none'){
    f.advance();assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'scheduled');assert.equal(receipt.comparison?.comparatorVersion,8);assert.equal(receipt.state,'uncertain','automatic polling keeps old v8 proof semantics');
-   assert.equal((await f.docs.reconcile(scope,'task',async()=>{})).state,'verified');assert.equal(receipt.comparison?.comparatorVersion,9);assert.equal(receipt.comparison?.kind,'matched');
+   assert.equal((await f.docs.reconcile(scope,'task',async()=>{})).state,'verified');assert.equal(receipt.comparison?.comparatorVersion,10);assert.equal(receipt.comparison?.kind,'matched');
   }else if(mutation==='stopped'){
    assert.equal((await f.docs.reconcile(scope,'task',async()=>{})).state,'verified','an explicit readonly check may inspect the old page');assert.equal(f.job.notionVerificationSelection,undefined);assert.equal(f.job.state,'failed');assert.equal(f.db.conversations[0].workPauseReason,'user_stopped');
   }else{await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}),`${evidence}:${mutation}`);assert.equal(receipt.state,'uncertain',`${evidence}:${mutation}`);}
@@ -201,7 +242,7 @@ test('explicit v9 reproof of an immutable v8 receipt requires exact original has
  }
 });
 
-test('manual v9 reproof of a v7 URL receipt requires the exact owned manuscript and preserves all original hashes',async()=>{
+test('manual v10 reproof of a v7 URL receipt requires the exact owned manuscript and preserves all original hashes',async()=>{
  const original='# 合成原题\n\n正文与 `ONE-QA`。\n\n参考：https://example.test/reference）',value={...args,content:original};
  for(const mutation of ['none','wrong-raw','wrong-old-canonical','missing-worker','foreign-model','changed-source','changed-target','changed-label','double-encoding','changed-code','missing-title'] as const){
   const f=fixture();f.mcp.readDocument=async()=>{throw Error('initial unavailable');};const tool=f.tool();await assert.rejects(()=>tool.run(tool.validate(value)));f.stopped();
@@ -219,7 +260,7 @@ test('manual v9 reproof of a v7 URL receipt requires the exact owned manuscript 
   f.mcp.readDocument=async()=>mutation==='missing-title'?{text:f.actual().body}:f.fetchResult();const prior=structuredClone(receipt);
   if(mutation==='none'){
    f.advance();assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'scheduled');assert.equal(receipt.comparison?.comparatorVersion,7);assert.equal(receipt.state,'uncertain');
-   assert.equal((await f.docs.reconcile(scope,'task',async()=>{})).state,'verified');assert.equal(receipt.comparison?.comparatorVersion,9);assert.equal(receipt.comparison?.kind,'matched');
+   assert.equal((await f.docs.reconcile(scope,'task',async()=>{})).state,'verified');assert.equal(receipt.comparison?.comparatorVersion,10);assert.equal(receipt.comparison?.kind,'matched');
   }else{await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));assert.equal(receipt.state,'uncertain');}
   for(const key of ['canonicalVersion','expectedRawDigest','expectedDigest','expectedCanonicalDigest','expectedLength'] as const)assert.equal(receipt[key],prior[key]);assert.equal(f.calls.length,1);
  }
@@ -237,14 +278,14 @@ for(const [mutation,kind] of [['missing-title','title_missing'],['changed-title'
  };
  const tool=f.tool();await assert.rejects(()=>tool.run(tool.validate(args)));
  const receipt=f.job.notionReceipt!,comparison=receipt.comparison!;
- assert.equal(receipt.expectedRawDigest,notionHash(source));assert.equal(receipt.expectedLength,source.length);assert.equal(comparison.kind,kind);assert.equal(comparison.version,1);assert.equal(comparison.comparatorVersion,9);assert.equal(typeof comparison.checkedAt,'string');assert.equal(f.calls.length,1);
+ assert.equal(receipt.expectedRawDigest,notionHash(source));assert.equal(receipt.expectedLength,source.length);assert.equal(comparison.kind,kind);assert.equal(comparison.version,1);assert.equal(comparison.comparatorVersion,10);assert.equal(typeof comparison.checkedAt,'string');assert.equal(f.calls.length,1);
  assert.doesNotMatch(JSON.stringify(comparison),/PRIVATE_COMPARISON|青色42|ONE-QA-LATE/);
  if(['title_missing','title_changed','body_mismatch'].includes(kind)){assert.equal(comparison.actualBodyDigest,notionHash(f.actual().body));assert.equal(comparison.actualBodyLength,f.actual().body.length);}
  if(kind==='title_missing')assert.equal(comparison.actualTitleDigest,undefined);
  if(kind==='title_changed')assert.equal(comparison.actualTitleDigest,notionHash('PRIVATE_COMPARISON_TITLE'));
 });
 
-test('manual v9 reproof requires the exact old write source and never changes v5 or v6 digest meaning or repeats a save',async()=>{
+test('manual v10 reproof requires the exact old write source and never changes v5 or v6 digest meaning or repeats a save',async()=>{
  const original='# 原题\n\n**保留重点**与 `ONE`。\n\n\\*\\*可见字面星号\\*\\*',value={...args,content:original},raw=JSON.stringify(value);
  for(const version of [5,6] as const)for(const mutation of ['none','wrong-raw','wrong-old-canonical','wrong-checkpoint','foreign-trace','changed-code','lost-visible-stars'] as const){
   const f=fixture();f.mcp.readDocument=async()=>{throw Error('initial unavailable');};const tool=f.tool();await assert.rejects(()=>tool.run(tool.validate(value)));f.stopped();
@@ -259,14 +300,14 @@ test('manual v9 reproof requires the exact old write source and never changes v5
   f.mcp.readDocument=async()=>f.fetchResult();const prior=structuredClone(receipt);
   if(mutation==='none'){
    if(version===6){f.advance();assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'scheduled');assert.equal(receipt.comparison?.comparatorVersion,6);assert.equal(receipt.state,'uncertain','automatic old-v6 read cannot silently adopt v7');}
-   assert.equal((await f.docs.reconcile(scope,'task',async()=>{})).state,'verified');assert.equal(receipt.comparison?.comparatorVersion,9);assert.equal(receipt.comparison?.kind,'matched');
+   assert.equal((await f.docs.reconcile(scope,'task',async()=>{})).state,'verified');assert.equal(receipt.comparison?.comparatorVersion,10);assert.equal(receipt.comparison?.kind,'matched');
   }
   else{await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));assert.equal(receipt.state,'uncertain');}
   assert.equal(receipt.canonicalVersion,prior.canonicalVersion);assert.equal(receipt.expectedCanonicalDigest,prior.expectedCanonicalDigest);assert.equal(receipt.expectedRawDigest,prior.expectedRawDigest);assert.equal(receipt.expectedDigest,prior.expectedDigest);assert.equal(f.calls.length,1);
  }
 });
 
-test('manual v9 reproof can use the exact same-operation completed v6 workflow manuscript but never foreign or altered evidence',async()=>{
+test('manual v10 reproof can use the exact same-operation completed v6 workflow manuscript but never foreign or altered evidence',async()=>{
  const original='# 原题\n\n**保留重点**与 `ONE`。',value={...args,content:original};
  for(const mutation of ['none','workflow-owner','checkpoint-owner','marker-step','changed-source'] as const){
   const f=fixture();f.mcp.readDocument=async()=>{throw Error('initial unavailable');};const tool=f.tool();await assert.rejects(()=>tool.run(tool.validate(value)));f.stopped();
@@ -277,7 +318,7 @@ test('manual v9 reproof can use the exact same-operation completed v6 workflow m
    {key:'complete-manuscript',scopeId:mutation==='checkpoint-owner'?'foreign':'op',namespace:`workflow:${workflow.id}`,tool:`workflow:${workflow.id}:draft`,effect:'model',state:'completed',label:'成稿',updatedAt:'now',output:{workflow:{version:1,runId:workflow.id,revision:workflow.revision,stepId:mutation==='marker-step'?'other':'draft'},outcome:'completed',result:{outcome:'completed',content:mutation==='changed-source'?original+'额外文字':original,summary:'成稿'}}}];
   if(mutation==='workflow-owner')workflow.binding.userId='b';
   f.setBody(f.actual().body.replace('**保留重点**','<b>保留重点</b>').replace('`ONE`','<code>ONE</code>'));f.mcp.readDocument=async()=>f.fetchResult();
-  if(mutation==='none'){assert.equal((await f.docs.reconcile(scope,'task',async()=>{})).state,'verified');assert.equal(receipt.comparison?.comparatorVersion,9);}
+  if(mutation==='none'){assert.equal((await f.docs.reconcile(scope,'task',async()=>{})).state,'verified');assert.equal(receipt.comparison?.comparatorVersion,10);}
   else{await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));assert.equal(receipt.state,'uncertain');}
   assert.equal(receipt.canonicalVersion,6);assert.equal(receipt.expectedRawDigest,notionHash(original));assert.equal(receipt.expectedCanonicalDigest,canonicalNotionDigest(original,6));assert.equal(f.calls.length,1);
  }

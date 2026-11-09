@@ -1,10 +1,78 @@
 import {parseTaskOutcome,type TaskOutcome} from './dispatchPlan.js';
 
 const object=(value:unknown):Record<string,unknown>|undefined=>value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:undefined;
+/** Some models emit literal line breaks inside their JSON string values.
+ * Escape only those control characters, preserving every manuscript byte
+ * after JSON decoding. Ambiguous quotes and invalid escapes remain errors. */
+function escapeStringLineBreaks(raw:string):string|undefined{
+ let quoted=false,escaped=false,changed=false,result='';
+ for(const char of raw){
+  if(escaped){result+=char;escaped=false;continue;}
+  if(quoted&&char==='\\'){result+=char;escaped=true;continue;}
+  if(char==='"')quoted=!quoted;
+  if(quoted&&(char==='\n'||char==='\r'||char==='\t')){
+   result+=char==='\n'?'\\n':char==='\r'?'\\r':'\\t';changed=true;
+  }else result+=char;
+ }
+ return changed&&!quoted?result:undefined;
+}
+function guidedEnvelopeShape(raw:string){
+ if(!/^\{\s*"(?:outcome|content|summary)"\s*:/.test(raw)
+  || !/"outcome"\s*:\s*"(?:completed|partial|needs_input|failed)"/.test(raw)
+  || !/"content"\s*:/.test(raw)||!/"summary"\s*:/.test(raw))return false;
+ // Several objects or prose after a result can be an authored example.
+ // Only one outer object belongs to this recovery boundary.
+ let quoted=false,escaped=false,depth=0,closingIndex=-1;
+ for(let index=0;index<raw.length;index++){
+  const char=raw[index];
+  if(closingIndex>=0&&char.trim()){
+   const prefix=raw.slice(0,closingIndex+1);
+   try{JSON.parse(escapeStringLineBreaks(prefix)??prefix);return false;}
+   catch{return true;}
+  }
+  if(escaped){escaped=false;continue;}
+  if(quoted&&char==='\\'){escaped=true;continue;}
+  if(char==='"'){quoted=!quoted;continue;}
+  if(quoted)continue;
+  if(char==='{'||char==='[')depth++;
+  if(char==='}'||char===']'){depth--;if(depth===0)closingIndex=index;}
+ }
+ return true;
+}
+function duplicateOuterKeys(raw:string){
+ const keys=new Set<string>();let depth=0;
+ for(let index=0;index<raw.length;index++){
+  const char=raw[index];
+  if(char==='{'||char==='[')depth++;
+  else if(char==='}'||char===']')depth--;
+  else if(char==='"'){
+   const start=index;let escaped=false;
+   for(index++;index<raw.length;index++){
+    if(escaped){escaped=false;continue;}
+    if(raw[index]==='\\'){escaped=true;continue;}
+    if(raw[index]==='"')break;
+   }
+   if(depth===1&&/^\s*:/.test(raw.slice(index+1))){
+    const key=JSON.parse(raw.slice(start,index+1)) as string;
+    if(keys.has(key))return true;
+    keys.add(key);
+   }
+  }
+ }
+ return false;
+}
 function envelope(raw:string):TaskOutcome|undefined{
  try{
-  const v=object(JSON.parse(raw));
+  let value:unknown,parsedRaw=raw;
+  try{value=JSON.parse(raw);}catch{
+   if(!guidedEnvelopeShape(raw))return;
+   const repaired=escapeStringLineBreaks(raw);
+   if(!repaired)return {outcome:'failed',content:raw,summary:'这一步的正文格式未能解析，已有输出已保留。'};
+   try{value=JSON.parse(repaired);parsedRaw=repaired;}catch{return {outcome:'failed',content:raw,summary:'这一步的正文格式未能解析，已有输出已保留。'};}
+  }
+  const v=object(value);
   if(v&&Object.keys(v).sort().join()==='content,outcome,summary'&&['completed','partial','needs_input','failed'].includes(String(v.outcome))){
+   if(duplicateOuterKeys(parsedRaw))return {outcome:'failed',content:raw,summary:'这一步返回了重复的结果字段，已有输出已保留。'};
    // At this guided boundary the exact reserved shape is a result, not an
    // authored JSON example. Keep malformed payloads as private failed-step
    // diagnostics; never promote them to a completed manuscript.

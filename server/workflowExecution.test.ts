@@ -27,6 +27,79 @@ const references=(messages:Parameters<WorkflowExecutionInput['callModel']>[1])=>
  const text=messages.at(-1)!.content!;return JSON.parse(text.slice(text.indexOf('\n')+1)) as {inputs:WorkflowContextInput[];history:{id:string;content:string}[]};
 };
 
+test('Notion write execution and body verification remain separate across repeat wakes and exhaustion',async()=>{
+ for(const binding of ['exact','foreign_operation','wrong_checkpoint','legacy'] as const){
+  const f=fixture(plan(step('draft'),step('save',['draft'],{kind:'notion'})));
+  f.checkpoints.namespace=`workflow:${f.run.id}`;let saves=0;
+  const first=await f.execute({saveNotion:async(_step,body)=>{
+   saves++;const result=await f.makeProof(body,{verified:false,key:'e'.repeat(64)}),receipt=f.receipt!;
+   receipt.delivery='unknown';receipt.expectedRawDigest=notionHash(body);
+   if(binding!=='legacy')receipt.writeAcknowledgement={version:1,operationId:binding==='foreign_operation'?'foreign':owner.operationId,checkpointKey:binding==='wrong_checkpoint'?'f'.repeat(64):receipt.checkpointKey!,pageId:receipt.pageId!,expectedDigest:receipt.expectedDigest!,expectedRawDigest:receipt.expectedRawDigest,acknowledgedAt:'2026-11-09T00:00:00.000Z'};
+   f.setReceipt(receipt);return result;
+  }});
+  assert.equal(first.waiting,true);const outer=()=>f.steps.find(cp=>(cp.output as any)?.workflow?.stepId==='save')!;
+  assert.equal(outer().operation?.execution,binding==='exact'?'succeeded':'submitted',binding);assert.equal(outer().operation?.verification,'pending');
+  const {publicWorkflowProgress}=await import('./workflowPresentation.js');
+  assert.equal(publicWorkflowProgress({workflow:f.run,steps:f.steps} as WorkRun,owner)!.steps[1].resultAvailable,undefined);
+  const repeat=await f.execute({callModel:async()=>assert.fail('draft repeated'),saveNotion:async()=>assert.fail('write repeated')});
+  assert.equal(repeat.waiting,true);assert.equal(saves,1);
+  const receipt=f.receipt!;receipt.verification!.state='exhausted';receipt.verification!.attempt=3;receipt.verification!.lastReason='mismatch';f.setReceipt(receipt);
+  const final=await f.execute({callModel:async()=>assert.fail('draft repeated'),saveNotion:async()=>assert.fail('write repeated')});
+  assert.equal(final.run.steps[1].state,'failed');assert.equal(outer().operation?.execution,binding==='exact'?'succeeded':'submitted',binding);assert.equal(outer().operation?.verification,'failed');
+  assert.equal(f.receipt!.state,'uncertain');assert.equal(saves,1);
+ }
+});
+
+test('a second save interrupted before sending cannot borrow the first save acknowledgement or verified result',async()=>{
+ const f=fixture(plan(step('draft'),step('save1',['draft'],{kind:'notion'}),step('save2',['draft','save1'],{kind:'notion'})));
+ f.checkpoints.namespace=`workflow:${f.run.id}`;let writes=0;
+ const interrupted=await f.execute({saveNotion:async(_step,body)=>{
+  writes++;if(writes===2)throw Error('interrupted before sending second write');
+  const result=await f.makeProof(body,{key:'e'.repeat(64)}),receipt=f.receipt!;
+  receipt.expectedRawDigest=notionHash(body);receipt.writeAcknowledgement={version:1,operationId:owner.operationId,checkpointKey:receipt.checkpointKey!,pageId:receipt.pageId!,expectedDigest:receipt.expectedDigest!,expectedRawDigest:receipt.expectedRawDigest,acknowledgedAt:new Date().toISOString()};f.setReceipt(receipt);return result;
+ }});
+ assert.equal(interrupted.waiting,true);
+ assert.equal(writes,2);const second=f.steps.find(cp=>(cp.output as any)?.workflow?.stepId==='save2')!;
+ assert.equal((second.output as any).priorNotionCheckpointKey,f.receipt!.checkpointKey);assert.equal(second.operation?.execution,'running');
+ const repeated=await f.execute({callModel:async()=>assert.fail('draft repeated'),saveNotion:async()=>assert.fail('write repeated')});
+ assert.equal(repeated.waiting,true);assert.equal(repeated.run.steps[1].state,'completed');assert.equal(repeated.run.steps[2].state,'waiting');
+ assert.notEqual(f.steps.find(cp=>cp.key===second.key)!.operation?.execution,'succeeded');assert.equal(writes,2);
+});
+
+test('a second save known unsent cannot be completed by the first verified receipt even when the draft is identical',async()=>{
+ const f=fixture(plan(step('draft'),step('save1',['draft'],{kind:'notion'}),step('save2',['draft','save1'],{kind:'notion'})));
+ let calls=0;
+ const result=await f.execute({saveNotion:async(_step,body)=>++calls===1?f.makeProof(body,{key:'e'.repeat(64)}):{status:'failed',saved:false}});
+ assert.equal(result.run.steps[1].state,'completed');assert.equal(result.run.steps[2].state,'failed');assert.equal(result.waiting,false);assert.equal(calls,2);
+});
+
+test('a model result with literal JSON string line breaks saves only the complete manuscript once',async()=>{
+ const content='# 合成文章\n\n正文段落。\n\n## 结尾\n保留最后一句。';
+ const raw=JSON.stringify({outcome:'completed',content,summary:'本步正文已完成。'}).replaceAll('\\n','\n');
+ const f=fixture(plan(step('draft'),step('save',['draft'],{kind:'notion'})));
+ let saves=0;
+ const result=await f.execute({callModel:async()=>({content:raw,toolCalls:[]}),saveNotion:async(_step,body)=>{
+  saves++;assert.equal(body,content);return f.makeProof(body);
+ }});
+ assert.equal(result.outcome,'completed');assert.equal(saves,1);
+ assert.match(result.content,/保留最后一句/);assert.doesNotMatch(result.content,/"outcome"|"summary"/);
+ const again=await f.execute({callModel:async()=>assert.fail('model repeated'),saveNotion:async()=>assert.fail('save repeated')});
+ assert.equal(again.outcome,'completed');assert.equal(saves,1);
+});
+
+test('an ambiguous model control envelope never reaches the Notion save stage',async()=>{
+ for(const raw of [
+  '{"outcome":"completed","content":"正文\n出现"不完整引号"。","summary":"完成"}',
+  '{"outcome":"completed","content":"正文\n出现"不完整}引号"。","summary":"完成"}',
+  '{"outcome":"completed","content":"正文甲","content":"正文乙","summary":"完成"}',
+ ]){
+  const f=fixture(plan(step('draft'),step('save',['draft'],{kind:'notion'})));
+  const result=await f.execute({callModel:async()=>({content:raw,toolCalls:[]}),saveNotion:async()=>assert.fail('invalid result saved')});
+  assert.equal(result.outcome,'failed');assert.equal(result.run.steps[0].state,'failed');
+  assert.equal(result.run.steps[1].state,'waiting');assert.equal(f.saves,0);
+ }
+});
+
 test('optional public lookup missing or empty never blocks the required model and one Notion save',async()=>{
  for(const value of [undefined,{status:'no_match',sources:[]},{status:'unavailable'}]){
   const f=fixture(plan(step('cases',[],{kind:'tool',tool:'web_search',required:false}),step('draft',['cases']),step('save',['draft'],{kind:'notion'})));let models=0;

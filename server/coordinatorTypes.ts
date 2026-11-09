@@ -56,6 +56,9 @@ export type WorkRun = {
    * attempt after delayed proof; never an authorization to replay its work. */
   notionVerificationSelection?:{operationId:string;expectedDigest:string;pageId?:string;asyncTaskId?:string;checkpointKey?:string;version:number;connectionId:string;grantId:string;parentId:string;requestedAt:string};
   notionReceipt?: { state: 'pending' | 'verified' | 'uncertain'; pageId?: string; url?: string; asyncTaskId?: string; expectedDigest?: string; digest?: string;
+    /** A recognized response for this exact write. Body verification remains
+     * separate, and legacy receipts never infer this fact from page existence. */
+    writeAcknowledgement?:{version:1;operationId:string;checkpointKey:string;pageId:string;expectedDigest:string;expectedRawDigest:string;acknowledgedAt:string;asyncTaskId?:string};
     /** The user selected an existing page and it was strictly read back. This
      * proves delivery content, never an acknowledgement of the original write. */
     linkRecovery?:{version:1;source:'user_supplied_page';selectionId:string;pageId:string;parentId:string;connectionId:string;grantId:string;checkpointKey:string;expectedRawDigest:string;expectedDigest:string;expectedCanonicalDigest:string;expectedLength:number;selectedAt:string;verifiedAt:string};

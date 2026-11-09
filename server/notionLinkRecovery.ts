@@ -44,7 +44,7 @@ export function notionLinkRecoveryOffer(db:Database,s:WorkScope,op:ChatOperation
  if(task.notionDocument&&(task.notionDocument.connectionId!==target.connectionId||task.notionDocument.grantId!==target.grantId||task.notionDocument.parentId!==target.parentId))return;
  const latest=(db.chatOperations??[]).filter(other=>own(other,s)&&other.conversationId===op.conversationId&&other.workRun).at(-1);
  if(latest?.id!==op.id)return;
- if(!digest(r.expectedDigest)||!digest(r.expectedRawDigest)||!digest(r.expectedCanonicalDigest)||![2,3,4,5,6,7,8,9].includes(r.canonicalVersion??0)||!Number.isSafeInteger(r.expectedLength)||r.expectedLength!<1||r.expectedLength!>50000||!digest(r.checkpointKey))return;
+ if(!digest(r.expectedDigest)||!digest(r.expectedRawDigest)||!digest(r.expectedCanonicalDigest)||![2,3,4,5,6,7,8,9,10].includes(r.canonicalVersion??0)||!Number.isSafeInteger(r.expectedLength)||r.expectedLength!<1||r.expectedLength!>50000||!digest(r.checkpointKey))return;
  const steps=run.steps?.filter(step=>step.key===r.checkpointKey);
  if(steps?.length!==1||steps[0].scopeId!==op.id||steps[0].namespace!=='worker'||steps[0].tool!=='save_notion_draft'||steps[0].effect!=='external_write'||steps[0].state!=='started')return;
  const connection=db.knowledgeConnections.find(c=>c.workspaceId===s.workspaceId&&c.id===target.connectionId&&c.provider==='notion'&&c.status==='connected');

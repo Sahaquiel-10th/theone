@@ -2,6 +2,24 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {taskRecovery,notionReceiptForReview,notionWorkflowNeedsReview,unstartedLocalInput,notionVerificationActive,notionVerificationPresentation,type NotionReceiptView} from './taskRecovery';
 
+test('acknowledged writes retain their saved fact while body verification recovers or stops',()=>{
+ const base:NotionReceiptView={state:'uncertain',url:'https://www.notion.so/original',delivery:'unknown',writeAcknowledged:true,
+  comparison:{kind:'body_mismatch'},verification:{state:'scheduled',version:1,attempt:1,lastReason:'mismatch'}};
+ const active=notionVerificationPresentation(base);
+ assert.equal(active.active,true);assert.equal(active.canVerify,false);assert.match(active.message,/已存入 Notion.*后台核对/);
+ const stopped={...base,verification:{...base.verification!,state:'exhausted' as const,attempt:3}};
+ const view=notionVerificationPresentation(stopped);
+ assert.match(view.message,/已存入 Notion.*正文核对.*差异.*自动核对已停下/);
+ assert.doesNotMatch(view.message,/没有保存|保存未确认|重新生成/);assert.equal(view.canVerify,true);
+ const recovery=taskRecovery([{id:'save',state:'failed',notionReceipt:stopped}]);
+ assert.equal(recovery.writeAcknowledged,true);assert.equal(recovery.kind,'review_notion');
+ assert.equal(taskRecovery([{id:'save',state:'failed',notionReceipt:{...stopped,writeAcknowledged:undefined}}]).writeAcknowledged,undefined);
+ for(const delivery of ['not_sent','rejected']){
+  const rejected=notionVerificationPresentation({...stopped,delivery});
+  assert.equal(rejected.canVerify,false);assert.doesNotMatch(rejected.message,/已存入/);
+ }
+});
+
 test('only a terminal verified save with unresolved workflow exposes read-only progress repair',()=>{
  const saved={state:'completed',notionReceipt:{state:'verified',url:'https://www.notion.so/original'},workflow:{phase:'failed'}};
  assert.equal(notionWorkflowNeedsReview([saved]),true);

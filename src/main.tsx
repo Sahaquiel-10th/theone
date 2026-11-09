@@ -2682,6 +2682,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             {active && composeNew ? <button type="button" onClick={() => { switchDraft(active.id); setComposeNew(false); }}>回到这件事</button> : active ? <button type="button" onClick={beginNewTask}><Plus size={12} />新事情</button> : null}
           </div> : null}
           {notice ? <div className="notice">{notice}</div> : null}
+          {coordinator.connectionNotice ? <div className="notice" role="status">{coordinator.connectionNotice}</div> : null}
           {error ? (
             <div className="chat-error" role="status">
               <span>{error}</span>

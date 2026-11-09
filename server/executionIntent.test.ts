@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {discussionOnly,freshDocumentReadRequested,notionWriteRequested,notionWriteDeclined,notionDestinationRequested,notionSaveExistingRequested,coordinatorTaskIntent,existingTaskActionRequested,independentTaskRequested,independentTaskTitle} from './executionIntent';
+import {discussionOnly,freshDocumentReadRequested,notionWriteRequested,notionWriteDeclined,notionDestinationRequested,notionSaveExistingRequested,notionMissingSaveFeedback,coordinatorTaskIntent,existingTaskActionRequested,independentTaskRequested,independentTaskTitle} from './executionIntent';
 test('current explicit discussion restrictions do not inherit an old execution request', () => {
   for (const text of ['只回答，不执行。','问问结果，不执行、不重跑。','本轮只讨论，不执行。','先只讨论方案，等我确认。','不执行','不执行  。','不执行\n','Answer only.']) assert.equal(discussionOnly(text),true,text);
   for (const text of ['开始执行这次回读，不执行之前的修改任务。','标题改成 xxx，执行。','我们讨论完了，开搞。','如果用户说“不执行”，怎么办？','读取已有文件并核对，不执行 Git 命令。','只做只读核对，不执行 之前的写入。']) assert.equal(discussionOnly(text),false,text);
@@ -31,6 +31,22 @@ test('save-only intent removes bounded explicitly negated work, including bare �
   for(const text of [live,'把这篇原文保存到Notion，不重写。','把这篇原文保存到Notion，不改写、不重新生成。','保存这篇到Notion，不需要重新生成，不搜索、不检索、不查找资料。','把这篇文章保存到Notion，不用重写也不用重新生成。','把这篇原文保存到Notion，不修改、不润色、不扩写、不续写、不导出、不分享。'])assert.equal(notionSaveExistingRequested(text,selected),true,text);
   for(const text of ['把这篇原文保存到Notion，不要重写但生成封面。','把这篇原文保存到Notion，不改写但导出Word。','把这篇原文保存到Notion，不重新生成文章，但制作封面。','把这篇原文保存到Notion，不搜索但查找今天新闻。','把这篇原文保存到Notion，不重写也要生成图片。','把这篇原文保存到Notion，不需要修改但分享链接。','把这篇原文保存到Notion，不改写，按原文生成网页。','把这篇原文保存到Notion，不得不改写。','把这篇原文保存到Notion，不能不重写。'])assert.equal(notionSaveExistingRequested(text,selected),false,text);
  }
+});
+
+test('missing-save feedback identifies the existing result without becoming write authority',()=>{
+ for(const text of ['没写到notion里啊？','这篇文章，还没有保存到 Notion 呢？','又没存入Notion？']){
+  assert.equal(notionMissingSaveFeedback(text),true,text);
+  assert.equal(notionDestinationRequested(`只回答，${text}`,'notion'),false,text);
+ }
+ for(const text of ['保存到Notion了吗？','只回答，没写到notion里啊？','没有保存到Notion，先不要保存。','没写到Notion里啊？顺便把结尾重写。','他说“没写到Notion里啊？”','> 没写到Notion里啊？','```text\n没写到Notion里啊？\n```'])assert.equal(notionMissingSaveFeedback(text),false,text);
+});
+
+test('a standalone Notion save-status question remains answer-only even with the destination selected',()=>{
+ for(const text of ['保存到notion了么？','这篇文章已经保存到Notion了吗？','帮我看看，Notion保存好了吗？','写入Notion了没？']){
+  assert.equal(notionWriteRequested(text),false,text);assert.equal(notionWriteDeclined(text),true,text);
+  assert.equal(notionDestinationRequested(text,'notion'),false,text);assert.equal(coordinatorTaskIntent(text).answerOnly,true,text);
+ }
+ for(const text of ['保存到Notion了么？没有的话把这篇原文保存到Notion。','把这篇文章保存到Notion。','没写到notion里啊？'])assert.equal(coordinatorTaskIntent(text).answerOnly,false,text);
 });
 
 test('a current unquoted Notion write request is distinct from discussion, payload and retrieval',()=>{

@@ -7,7 +7,7 @@ import { NotionDocuments, notionPageId, notionBody, writingTarget } from './noti
 import { NotionWriteError, type NotionMcpService } from './knowledge/notionMcpService.js';
 import {appendTaskResultReport,pendingConversationTaskResults,pendingTaskResults} from './taskResultInbox.js';
 import {runTaskOrchestrator} from './taskOrchestrator.js';
-import {notionRetryCheckpointPlan,verifiedNotionCompletion} from './notionCompletion.js';
+import {notionRetryCheckpointPlan,verifiedNotionCompletion,notionWriteAcknowledged} from './notionCompletion.js';
 import type {TaskStep,TaskStepStore} from './taskSteps.js';
 const s = { workspaceId: 'wa', userId: 'a' };
 const parentId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', pageId = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -181,7 +181,7 @@ test('plain Notion line-break serialization verifies once without rewriting; lit
   f.mcp.readDocument=async()=>({text:`<page><content>${actual}</content></page>`});
   const tool=f.docs.tool(s,'op','task',job,async()=>{}),args=tool.structured!.validate({title:'测试',content:expected});
   if(valid){const result=await tool.structured!.run(args) as any;assert.equal(result.state,'verified');}
-  else{await assert.rejects(()=>tool.structured!.run(args),/保存未确认/);assert.equal(job.notionReceipt!.state,'uncertain');}
+  else{await assert.rejects(()=>tool.structured!.run(args),/正文完整性尚未确认/);assert.equal(job.notionReceipt!.state,'uncertain');}
   assert.equal(f.calls.length,1);assert.equal(f.calls[0].args.pages[0].content,expected,'never rewrite user text to make a check pass');
  }
 });
@@ -293,6 +293,7 @@ test('Notion timeout never replays, retains uncertain receipt and created-page l
   const receipt=f.db.chatOperations![0].workRun!.notionReceipt!;
   assert.equal(receipt.state,'uncertain');assert.equal(receipt.pageId,pageId);assert.doesNotMatch(JSON.stringify(receipt),/must-not-leak/);
   assert.equal(receipt.failureCode,'readback_failed');
+  assert.equal(notionWriteAcknowledged(receipt,'op'),true);assert.equal(receipt.writeAcknowledgement?.pageId,pageId);
   await assert.rejects(()=>tool.structured!.run({title:'测试',content:'实际已创建'}),/已经提交/);assert.equal(f.calls.length,1);
 });
 test('Notion official flat async task handles are polled once, never treated as page IDs or repeated writes',async()=>{
@@ -309,6 +310,34 @@ test('Notion official flat async task handles are polled once, never treated as 
   const result=await tool.structured!.run({title:'异步合成草稿',content:'正文完整保留'}) as any;
   assert.equal(result.state,'verified');assert.equal(result.pageId,pageId);assert.equal(writes,1);assert.equal(polls,1);
   assert.equal(job.notionReceipt!.asyncTaskId,'task_synthetic');assert.equal(job.notionReceipt!.failureCode,undefined);
+  assert.equal(notionWriteAcknowledged(job.notionReceipt,'op'),true);assert.equal(job.notionReceipt!.writeAcknowledgement!.asyncTaskId,'task_synthetic');
+});
+test('a write success acknowledgement survives delayed body mismatch and never authorizes another write',async()=>{
+ const f=fixture(),job=f.job();f.mcp.readDocument=async()=>({text:'另一份实际正文'});
+ const tool=f.docs.tool(s,'op','task',job,async()=>{}).structured!;
+ await assert.rejects(()=>tool.run(tool.validate({title:'合成稿',content:'应保存的完整正文',final:true})),/写入成功回执/);
+ assert.equal(job.notionReceipt!.state,'uncertain');assert.equal(job.notionReceipt!.comparison!.kind,'body_mismatch');
+ assert.equal(notionWriteAcknowledged(job.notionReceipt,'op'),true);
+ await assert.rejects(()=>tool.run({old_str:'另一份实际正文',new_str:'再次写入',final:true}),/已经提交/);
+ assert.equal(f.calls.length,1);
+});
+test('malformed, conflicting and failed provider responses cannot manufacture write acknowledgement',async()=>{
+ for(const response of [{unexpected:'ignored'},{id:pageId,error:'failure'},{id:pageId,isError:true},{id:pageId,status:'failed'},{pages:[{id:pageId},{id:'c'.repeat(32)}]},{id:pageId,url:`https://www.notion.so/${'c'.repeat(32)}`}]){
+  const f=fixture(),job=f.job();let calls=0;
+  f.mcp.callDocumentTool=async()=>{calls++;return response;};f.mcp.readDocument=async()=>({text:'不同正文'});
+  const tool=f.docs.tool(s,'op','task',job,async()=>{}).structured!;
+  await assert.rejects(()=>tool.run(tool.validate({title:'合成稿',content:'完整正文',final:true})));
+  assert.equal(notionWriteAcknowledged(job.notionReceipt,'op'),false,JSON.stringify(response));assert.equal(job.notionReceipt!.writeAcknowledgement,undefined);assert.equal(calls,1);
+ }
+});
+test('a later write in one operation clears the earlier acknowledgement when its own response is lost',async()=>{
+ const f=fixture(),job=f.job(),tool=f.docs.tool(s,'op','task',job,async()=>{}).structured!;
+ await tool.run(tool.validate({title:'合成稿',content:'第一版',final:true}));assert.equal(notionWriteAcknowledged(job.notionReceipt,'op'),true);
+ const original=structuredClone(job.notionReceipt!.writeAcknowledgement),write=f.mcp.callDocumentTool.bind(f.mcp);
+ f.mcp.callDocumentTool=async(...args)=>{await write(...args);throw Error('lost response');};
+ await assert.rejects(()=>tool.run(tool.validate({old_str:'第一版',new_str:'第二版',final:true})));
+ assert.equal(job.notionReceipt!.writeAcknowledgement,undefined);assert.notEqual(job.notionReceipt!.checkpointKey,original!.checkpointKey);
+ assert.equal(notionWriteAcknowledged(job.notionReceipt,'op'),false);assert.equal(f.calls.length,2);
 });
 test('Notion write and response failures retain only bounded stage codes, not upstream secrets',async()=>{
   for(const malformed of [false,true]){

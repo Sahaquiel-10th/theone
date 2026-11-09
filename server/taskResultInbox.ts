@@ -6,6 +6,7 @@ import { executionExplicitlyUnfinished } from './executionResultState.js';
 import {artifactResultLinks} from './artifactLinks.js';
 import {selectedNotionVerification} from './notionVerificationSelection.js';
 import {notionVerificationPresentation} from '../src/taskRecovery.js';
+import {notionWriteAcknowledged} from './notionCompletion.js';
 import {workflowProgress} from './taskWorkflow.js';
 import type {WorkRun} from './coordinatorTypes.js';
 import {currentCodexGatewayFailure} from './codexGatewayFailure.js';
@@ -138,13 +139,13 @@ function resultBrief(outcome: TaskResultOutcome, primary: string | undefined, co
 /** A failed workflow reports its actual blocked stage, never the opening of
  * an otherwise complete article. Decisions come from persisted owner-scoped
  * state; free-form prose cannot claim a save or an automatic retry. */
-function structuredCloudBrief(run:WorkRun):string|undefined{
+function structuredCloudBrief(run:WorkRun,operationId:string):string|undefined{
   if(['completed','cancelled','interrupted'].includes(run.state))return;
   let progress:ReturnType<typeof workflowProgress>|undefined;
   try{if(run.workflow)progress=workflowProgress(run.workflow);}catch{/* Legacy invalid progress is not new evidence. */}
   const completed=progress?.steps.filter(step=>step.status==='completed').map(step=>step.title).slice(-3)??[];
   const prefix=completed.length?`已完成：${completed.join('、')}。`:'';
-  if(run.notionReceipt&&run.notionReceipt.state!=='verified')return clip(prefix+notionVerificationPresentation(run.notionReceipt).message,340);
+  if(run.notionReceipt&&run.notionReceipt.state!=='verified')return clip(prefix+notionVerificationPresentation({...run.notionReceipt,writeAcknowledged:notionWriteAcknowledged(run.notionReceipt,operationId)}).message,340);
   const blocked=progress?.steps.find(step=>['failed','needs_input','waiting'].includes(step.status));
   const blockedKind=blocked&&run.workflow?.spec.steps[progress!.steps.indexOf(blocked)]?.kind;
   if(run.notionReceipt?.state==='verified'&&progress&&progress.status!=='completed'&&(!blocked||blockedKind==='notion'))return clip(prefix+notionVerificationPresentation(run.notionReceipt,true).message,340);
@@ -225,7 +226,7 @@ function cloudResult(db: Database, scope: TaskResultScope, operation: ChatOperat
   if (!summary) summary = outcome === 'cancelled' ? '本轮已停止，已产生的修改不会自动撤销。' : '未取得可确认的结果，请查看本轮反馈。';
   const receiptId=run.reportRevision?`${operation.id}_r${run.reportRevision}`:operation.id;
   return { id: receiptId, sourceId: operation.id, source: 'cloud', taskId: task.id, title: clip(task.title, 120),
-    outcome, state: outcome, summary, brief: structuredCloudBrief(run)??resultBrief(run.reportRevision?'returned':outcome, run.userReport, result?.content ?? summary, run.error), attemptAt:operation.createdAt, createdAt: run.reportRevisionAt??operation.updatedAt, resultMessageId: run.resultMessageId,
+    outcome, state: outcome, summary, brief: structuredCloudBrief(run,operation.id)??resultBrief(run.reportRevision?'returned':outcome, run.userReport, result?.content ?? summary, run.error), attemptAt:operation.createdAt, createdAt: run.reportRevisionAt??operation.updatedAt, resultMessageId: run.resultMessageId,
     imageUrl, attachments, notionUrl: run.notionReceipt?.state === 'verified' ? run.notionReceipt.url : run.notionReceipt?.verification?.state==='exhausted'&&/^[a-f0-9]{32}$/i.test(run.notionReceipt.pageId?.replaceAll('-','')??'')?`https://www.notion.so/${run.notionReceipt.pageId!.replaceAll('-','')}`:undefined,
     reported: Boolean(run.reportedToCoordinatorAt || marker(db, scope, receiptId)), reviewed: run.unread !== true };
 }

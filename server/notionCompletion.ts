@@ -2,6 +2,20 @@ import type {WorkRun} from './coordinatorTypes.js';
 import {toolSucceeded,type TaskStep} from './taskSteps.js';
 
 const validPageId=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{32}$/i.test(value.replaceAll('-',''));
+/** The containing operation is owner-authorized by the caller. This proof
+ * binds its one write response, never another revision or an existing page. */
+export function notionWriteAcknowledged(receipt:WorkRun['notionReceipt'],operationId:string):boolean{
+ const ack=receipt?.writeAcknowledgement;
+ if(!receipt||!ack||ack.version!==1||!operationId||ack.operationId!==operationId||['not_sent','rejected'].includes(receipt.delivery??''))return false;
+ const keys=Object.keys(ack).sort().join();
+ if(keys!=='acknowledgedAt,checkpointKey,expectedDigest,expectedRawDigest,operationId,pageId,version'&&keys!=='acknowledgedAt,asyncTaskId,checkpointKey,expectedDigest,expectedRawDigest,operationId,pageId,version')return false;
+ return Boolean(validPageId(ack.pageId)&&ack.pageId===receipt.pageId
+  &&typeof ack.checkpointKey==='string'&&/^[a-f0-9]{64}$/i.test(ack.checkpointKey)&&ack.checkpointKey===receipt.checkpointKey
+  &&typeof ack.expectedDigest==='string'&&/^[a-f0-9]{64}$/i.test(ack.expectedDigest)&&ack.expectedDigest===receipt.expectedDigest
+  &&typeof ack.expectedRawDigest==='string'&&/^[a-f0-9]{64}$/i.test(ack.expectedRawDigest)&&ack.expectedRawDigest===receipt.expectedRawDigest
+  &&typeof ack.acknowledgedAt==='string'&&Number.isFinite(Date.parse(ack.acknowledgedAt))
+  &&ack.asyncTaskId===receipt.asyncTaskId);
+}
 /** Deliberately narrow: a read/review is not permission to rewrite the page. */
 export function notionRevisionRequested(request:string){
  if(/只读|(?:不|不要|不用|无需)(?:再)?(?:修改|改写|重写|保存|写入|更新)/.test(request))return false;

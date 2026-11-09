@@ -9,7 +9,7 @@ import { pendingTaskResults, unreviewedTaskResults, appendTaskResultReport, ackn
 import { taskRecovery,type TaskRecovery } from '../src/taskRecovery.js';
 import {latestTaskResults, pendingConversationTaskResults} from './taskResultInbox.js';
 import {ChatImageGatewayError} from './responsesImageGateway.js';
-import {discussionOnly,freshDocumentReadRequested,notionWriteRequested,notionWriteDeclined,notionDestinationRequested,notionSaveExistingRequested,coordinatorTaskIntent,existingTaskRecordReadRequested,coordinatorPositiveRequest,independentTaskRequested,independentTaskTitle} from './executionIntent.js';
+import {discussionOnly,freshDocumentReadRequested,notionWriteRequested,notionWriteDeclined,notionDestinationRequested,notionSaveExistingRequested,notionMissingSaveFeedback,coordinatorTaskIntent,existingTaskRecordReadRequested,coordinatorPositiveRequest,independentTaskRequested,independentTaskTitle} from './executionIntent.js';
 import {dispatchPlanSchema,validateDispatchPlan,isImageInstruction,parseTaskOutcome,taskOutcomeGuidance,type PlannedTask} from './dispatchPlan.js';
 import {routingCapabilities} from './capabilityCatalog.js';
 import {resolveDispatchCapabilities,callableCapabilities} from './dispatchCapabilities.js';
@@ -73,7 +73,7 @@ import type { FeatureRunDependencies } from "./featureRuns.js";
 import fs from "node:fs/promises";
 import {createHash} from 'node:crypto';
 import { NotionDocuments, NotionDocumentError, writingTarget } from './notionDocuments.js';
-import {verifiedNotionCompletion,notionDeliveryNote,notionRetryCheckpointPlan,notionRevisionRequested} from './notionCompletion.js';
+import {verifiedNotionCompletion,notionDeliveryNote,notionRetryCheckpointPlan,notionRevisionRequested,notionWriteAcknowledged} from './notionCompletion.js';
 import {
   publicAttachmentSummary,
   selectConversationAttachments,
@@ -107,6 +107,7 @@ import {reuseCompletedWorkflowReads,workflowSourceBindingsMatch,canResumeWorkflo
 import {templateContinuationPlan,reuseTemplateCompletedStages,templateMaterialReply} from './templateContinuation.js';
 import {connectionRecoveryPlan,selectConnectionRecovery,connectionResumeRequested} from './connectionRecovery.js';
 import {executeWorkflowStages,recoverVerifiedNotionWorkflow,verifiedWorkflowNotionCompletion,pendingWorkflowRecovery,workflowToolRecoveryDiagnostic,workflowFeatureNoEffectInput} from './workflowExecution.js';
+import {parseWorkflowModelOutcome} from './workflowModelResult.js';
 import {parseToolRecoveryDiagnostic,toolRecoveryDiagnostic,toolRecoveryMessage} from './toolRecovery.js';
 import {selectNotionLinkRecovery,notionLinkRecoveryOffer,type NotionLinkRecoveryRequest} from './notionLinkRecovery.js';
 import {publicWorkflowProgress,availableWorkflowResults} from './workflowPresentation.js';
@@ -176,10 +177,11 @@ function localTaskStatus(db:Database,s:WorkScope,taskId:string,latest:WorkRun|un
 }
 const failureFeedback=(failure:CoordinatorFailure,requestId:string)=>coordinatorRecoveryCopy(failure)+(['internal_error','storage_unavailable','billing_unavailable','model_auth','model_request_rejected','tool_parameters_failed','tool_configuration_unavailable','tool_effect_unconfirmed'].includes(failure.code)?`\n\n请求编号：${requestId}`:'');
 const notionVerificationActive=(job:WorkRun|undefined)=>job?.notionReceipt?.state!=='verified'&&!['not_sent','rejected'].includes(job?.notionReceipt?.delivery??'')&&['scheduled','checking'].includes(job?.notionReceipt?.verification?.state??'');
-function publicNotionReceipt(receipt:WorkRun['notionReceipt'],pageLinkOffered=false){
+function publicNotionReceipt(receipt:WorkRun['notionReceipt'],pageLinkOffered=false,operationId?:string){
   if(!receipt)return undefined;
   const {verification}=receipt;
   const result={state:receipt.state,pageId:receipt.pageId,url:receipt.url,error:receipt.error,delivery:receipt.delivery,comparison:receipt.comparison,
+    ...(operationId&&notionWriteAcknowledged(receipt,operationId)?{writeAcknowledged:true}:{}),
     ...(pageLinkOffered?{recoveryInput:'page_url' as const}:{}),...(receipt.linkRecovery?{recoveredFromLink:true}: {})};
   if(!verification)return result;
   const {leaseId:_lease,leaseUntil:_until,...progress}=verification;
@@ -189,7 +191,7 @@ function publicNotionReceipt(receipt:WorkRun['notionReceipt'],pageLinkOffered=fa
  * This is an explanation, not fresh authorization to execute an action. */
 function taskRecoveryView(db:Database,s:WorkScope,task:Conversation,jobs:ChatOperation[]):TaskRecovery{
  const latest=jobs.at(-1),run=latest?.workRun;
- const generic=()=>taskRecovery(jobs.map(op=>({id:op.id,...op.workRun!,notionReceipt:publicNotionReceipt(op.workRun!.notionReceipt,Boolean(notionLinkRecoveryOffer(db,s,op))),verificationPending:selectedNotionVerification(op)||op.status==='pending'&&op.workRun!.failureCode==='notion_verification_pending'})));
+ const generic=()=>taskRecovery(jobs.map(op=>({id:op.id,...op.workRun!,notionReceipt:publicNotionReceipt(op.workRun!.notionReceipt,Boolean(notionLinkRecoveryOffer(db,s,op)),op.id),verificationPending:selectedNotionVerification(op)||op.status==='pending'&&op.workRun!.failureCode==='notion_verification_pending'})));
  if(!latest||!run)return generic();
  const fault=parseToolRecoveryDiagnostic(run.toolRecovery)??workflowToolRecoveryDiagnostic(run.workflow,run.steps,{...s,operationId:latest.id});
  // Unknown writes and active readback retain their connector-owned actions.
@@ -595,7 +597,7 @@ export class CoordinatorService {
     const notices = visibleTaskResultReceipts(db,s,{count:50,totalChars:30_000}).map(result => ({
       id: result.id, sourceId: result.sourceId, taskId: result.taskId, title: result.title, state: result.state,
       outcome: result.outcome, reported: result.reported, read: result.reviewed, updatedAt: result.createdAt, resultMessageId: result.resultMessageId,
-      notionReceipt: publicNotionReceipt(operations.find(o => o.id === result.sourceId)?.workRun?.notionReceipt,Boolean(operations.find(o=>o.id===result.sourceId)&&notionLinkRecoveryOffer(db,s,operations.find(o=>o.id===result.sourceId)!))),
+      notionReceipt: publicNotionReceipt(operations.find(o => o.id === result.sourceId)?.workRun?.notionReceipt,Boolean(operations.find(o=>o.id===result.sourceId)&&notionLinkRecoveryOffer(db,s,operations.find(o=>o.id===result.sourceId)!)),result.sourceId),
     }));
     const metas = tasks.map(task => {
       const jobs = operations.filter(o => o.conversationId === task.id);
@@ -691,7 +693,7 @@ export class CoordinatorService {
           })(),
           features:o.workRun!.skills.map(f=>({id:f.id,name:f.values.name,multiplier:featureMultiplier(f.values)})),
           charges:db.modelUsageRecords.filter(u=>own(u,s)&&u.requestId===o.requestId).map(u=>({feature:u.featurePriceSnapshot,power:(u.chargedMicros??0)/1e6,status:u.status})),
-          notionReceipt: publicNotionReceipt(o.workRun!.notionReceipt,Boolean(notionLinkRecoveryOffer(db,s,o))),
+          notionReceipt: publicNotionReceipt(o.workRun!.notionReceipt,Boolean(notionLinkRecoveryOffer(db,s,o)),o.id),
           inputMessageId: o.workRun!.inputMessageId,
           resultMessageId: o.workRun!.resultMessageId,
         })),
@@ -2346,7 +2348,8 @@ export class CoordinatorService {
       if ((db.chatOperations || []).some(o => own(o, s) && o.conversationId === existing?.id && o.workRun?.notionReceipt && o.workRun.notionReceipt.state !== 'verified' && !['not_sent','rejected'].includes(o.workRun.notionReceipt.delivery || '') && o.workRun.state !== 'running')) throw new NotionDocumentError('前一轮 Notion 保存未确认，请先核对原页面；不会重复创建或修改');
     }
     const currentArticleMaterial=Boolean(input.attachmentIds?.length)||/(?:正文|原文|材料|素材)(?:如下|是|为)?\s*[:：][\s\S]+/u.test(input.text);
-    const saveExisting=Boolean(notionTarget&&!boundRead&&!currentArticleMaterial&&!input.features.length&&!input.requiredFeatureIds?.length&&!(input.requiredTools??[]).some(name=>name!=='save_notion_draft')&&notionSaveExistingRequested(input.text,input.outputDestination));
+    const preserveExisting=notionSaveExistingRequested(input.text,input.outputDestination)||newNotionWrite&&notionMissingSaveFeedback(input.text);
+    const saveExisting=Boolean(notionTarget&&!boundRead&&!currentArticleMaterial&&!input.features.length&&!input.requiredFeatureIds?.length&&!(input.requiredTools??[]).some(name=>name!=='save_notion_draft')&&preserveExisting);
     if(saveExisting&&input.notionArticleRead&&!input.notionArticleMessageId)throw new OrchestrationInputError('本轮历史查找还没有定位到唯一、完整且可用的原文。请用 read_context 的 messageId 核对指定回复，不要改存其他普通答复。');
     const article=saveExisting?existingNotionArticle(db,s,existing?.id??input.notionArticleConversationId??input.originConversationId??'',undefined,input.notionArticleMessageId):undefined;
     if(article&&input.notionArticleMessageId&&(article.source.messageId!==input.notionArticleMessageId||input.notionArticleConversationId&&article.source.conversationId!==input.notionArticleConversationId))throw new OrchestrationInputError('原稿来源已经变化，尚未保存。请重新读取同一条原文后交接；不能用其他消息或任务的同文副本替代已选原稿。');
@@ -3426,6 +3429,13 @@ export class CoordinatorService {
         {failureStage='model';responseFailure={code:result.finishReason==='filtered'?'model_filtered':'model_incomplete',stage:'model',outcome:result.finishReason==='length'&&result.content.trim()?'partial':'failed'};throw new CoordinatorError(result.finishReason==='filtered'?'模型输出被过滤':'任务成果未完整返回');}
       await verify();
       if(datedDraft?.missing)result.content=datedDraft.result();
+      if(!job.workflow){
+        // This worker received the server's result-envelope guidance. Decode
+        // its final response once before treating content as manuscript data.
+        // Plain articles and authored JSON examples retain their raw body.
+        const normalized=parseWorkflowModelOutcome(result.content,c.title);
+        if(normalized.outcome!=='returned')result.content=JSON.stringify(normalized);
+      }
       const parsedOutcome=parseTaskOutcome(result.content);
       const missing=job.workflow||needsInputCanReturn()?[]:[...new Set([...result.requiredMissing,...requiredWorkerTools.filter(name=>!(name==='save_notion_draft'&&datedDraft?.blocked)&&!(name==='knowledge_search'&&datedDraft?.missing)&&!completedSteps(steps).some(step=>step.tool===name))])];
       if(missing.length){

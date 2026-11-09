@@ -20,8 +20,11 @@ export function recoveryGuidance(input:{recovery:TaskRecovery;workflow?:TaskWork
   review_image:{next:'先查看已有图片和用量；重新生成前会确认本次范围与用量。'},
  };
  const selected=actions[kind];
- const statusLabel=automatic?'ONE 正在自动恢复':kind==='connection'?'连接恢复后可继续':kind==='input'?'需要你补充资料':kind==='support'?'内部问题，已停止':kind==='review_notion'?'保存结果待核对':kind==='review_local'?'原电脑结果待核对':'本轮已暂停';
- return {completed:view?.steps.filter(step=>step.state==='completed').map(step=>step.title)??[],step:current?.title,statusLabel,
+ const savedNotion=input.recovery.writeAcknowledged===true&&(kind==='review_notion'||kind==='reconciling');
+ const completed=view?.steps.filter(step=>step.state==='completed').map(step=>step.title)??[];
+ if(savedNotion&&!completed.includes('保存到 Notion'))completed.push('保存到 Notion');
+ const statusLabel=automatic?'ONE 正在自动恢复':kind==='connection'?'连接恢复后可继续':kind==='input'?'需要你补充资料':kind==='support'?'内部问题，已停止':kind==='review_notion'?(savedNotion?'正文待核对':'保存结果待核对'):kind==='review_local'?'原电脑结果待核对':'本轮已暂停';
+ return {completed,step:savedNotion?'核对 Notion 正文':current?.title,statusLabel,
   reason:clean(input.recovery.message,1600),automatic,
   next:automatic?'ONE 正在后台继续核对或恢复，暂时不用你操作。':selected?.next??'查看当前结果；有新的要求可以继续补充。',
   ...(!automatic&&selected?.label?{actionLabel:selected.label}:{})};

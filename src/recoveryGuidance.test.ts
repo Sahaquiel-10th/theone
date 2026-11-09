@@ -11,6 +11,14 @@ const workflow:TaskWorkflowView={version:1,phase:'failed',steps:[
  {id:'draft',title:'写好文章',state:'completed',resultAvailable:true},
  {id:'save',title:'保存并核对',state:'failed'},
 ]};
+test('a confirmed write is completed while its remaining stage is named body verification',()=>{
+ const recovery={kind:'review_notion' as const,message:'已存入 Notion，但正文核对仍有差异。',writeAcknowledged:true};
+ const guide=recoveryGuidance({workflow,recovery});
+ assert.deepEqual(guide.completed,['写好文章','保存到 Notion']);assert.equal(guide.step,'核对 Notion 正文');
+ assert.equal(guide.statusLabel,'正文待核对');assert.equal(guide.automatic,false);
+ const original=recoveryGuidance({workflow,recovery:{...recovery,writeAcknowledged:undefined}});
+ assert.deepEqual(original.completed,['写好文章']);assert.equal(original.step,'保存并核对');
+});
 test('one recovery explanation preserves completed stages and names the actual blocked stage and human action',()=>{
  const guide=recoveryGuidance({workflow,recovery:{kind:'connection',message:'连接在保存前中断，保存尚未发出。'}});
  assert.deepEqual(guide.completed,['写好文章']);assert.equal(guide.step,'保存并核对');

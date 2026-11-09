@@ -1,12 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {verifiedNotionCompletion,notionDeliveryNote,notionRetryCheckpointPlan,notionRevisionRequested} from './notionCompletion.js';
+import {verifiedNotionCompletion,notionDeliveryNote,notionRetryCheckpointPlan,notionRevisionRequested,notionWriteAcknowledged} from './notionCompletion.js';
 import type {WorkRun} from './coordinatorTypes.js';
 import type {TaskStep} from './taskSteps.js';
 const pageId='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const receipt:NonNullable<WorkRun['notionReceipt']>={state:'verified',pageId,digest:'a'.repeat(64),expectedDigest:'a'.repeat(64),url:'https://untrusted.invalid/'};
 const save:TaskStep={key:'save',namespace:'worker',tool:'save_notion_draft',label:'保存',effect:'external_write',state:'completed',output:{state:'verified',pageId},updatedAt:'now'};
 const run=(overrides:Partial<WorkRun>={})=>({notionReceipt:receipt,steps:[save],...overrides} as WorkRun);
+test('write acknowledgement binds the exact operation, page, source and checkpoint without implying verified body',()=>{
+ const pending:NonNullable<WorkRun['notionReceipt']>={state:'uncertain',delivery:'unknown',pageId,checkpointKey:'b'.repeat(64),expectedDigest:'c'.repeat(64),expectedRawDigest:'d'.repeat(64)};
+ pending.writeAcknowledgement={version:1,operationId:'op',pageId,checkpointKey:pending.checkpointKey!,expectedDigest:pending.expectedDigest!,expectedRawDigest:pending.expectedRawDigest!,acknowledgedAt:'2026-11-09T00:00:00.000Z'};
+ assert.equal(notionWriteAcknowledged(pending,'op'),true);assert.equal(pending.state,'uncertain');
+ assert.equal(notionWriteAcknowledged(pending,'foreign-op'),false);
+ for(const key of ['checkpointKey','pageId','expectedDigest','expectedRawDigest','asyncTaskId','delivery'] as const){
+  const changed=structuredClone(pending);(changed as any)[key]=key==='delivery'?'not_sent':key==='pageId'?'e'.repeat(32):'e'.repeat(64);
+  assert.equal(notionWriteAcknowledged(changed,'op'),false,key);
+ }
+ const legacy={...pending,writeAcknowledgement:undefined};assert.equal(notionWriteAcknowledged(legacy,'op'),false);
+ const invalid=structuredClone(pending);invalid.writeAcknowledgement!.acknowledgedAt='invalid';assert.equal(notionWriteAcknowledged(invalid,'op'),false);
+ const extra=structuredClone(pending);(extra.writeAcknowledgement as any).unreviewed=true;assert.equal(notionWriteAcknowledged(extra,'op'),false);
+ const asyncReceipt=structuredClone(pending);asyncReceipt.asyncTaskId='async_original';assert.equal(notionWriteAcknowledged(asyncReceipt,'op'),false);
+ asyncReceipt.writeAcknowledgement!.asyncTaskId='async_original';assert.equal(notionWriteAcknowledged(asyncReceipt,'op'),true);
+});
 test('new material discards the old save but retains its verified page as the revision target',()=>{
  const prior=run({steps:[save,{...save,key:'read',tool:'read_notion_document',effect:'read'}]});
  const plan=notionRetryCheckpointPlan(prior,{newWrite:true,scopeId:'new-attempt'});

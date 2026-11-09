@@ -4,7 +4,7 @@ import {gfm} from 'micromark-extension-gfm';
 import {gfmFromMarkdown} from 'mdast-util-gfm';
 
 export const notionHash=(body:string)=>createHash('sha256').update(body).digest('hex');
-export type NotionCanonicalVersion=2|3|4|5|6|7|8|9;
+export type NotionCanonicalVersion=2|3|4|5|6|7|8|9|10;
 /** Persisted v1 receipts retain this exact comparison, never silently upgrade. */
 export function legacyNotionNormalized(body:string){
  const literalCode=/`|~~~|^(?: {4}|\t)|<(?:pre|code)\b/im.test(body);
@@ -23,7 +23,9 @@ export function legacyNotionNormalized(body:string){
  * emitted by Notion; all other code retains its original byte proof. v8 only
  * folds non-ASCII UTF-8 URL spelling after an unchanged ASCII authority. v9
  * admits underscore-containing identifiers only when the HTML parser proves
- * one exact plain text child inside attribute-free inline code. */
+ * one exact plain text child inside attribute-free inline code. v10 uses
+ * Markdown text-node values for proven character escapes and entities, and
+ * recognizes attribute-free, standalone Notion empty-paragraph markers. */
 export function canonicalNotionBody(body:string,version:NotionCanonicalVersion=5){
  if(version>=6){
   const protectedBody=protectNotionCode(body,version);
@@ -37,7 +39,8 @@ export function canonicalNotionBody(body:string,version:NotionCanonicalVersion=5
  return canonicalMarkdown(body,version);
 }
 function canonicalMarkdown(body:string,version:NotionCanonicalVersion){
- if(version>=6&&(body.match(/<\/?[A-Za-z][^>\n]*>/g)??[]).some(tag=>!/^<\/?(?:b|i|quote)>$|^<br\s*\/?>$/i.test(tag)))return `opaque-markdown\n${body}`;
+ const knownTag=version>=10?/^<\/?(?:b|i|s|u|quote)>$|^<br\s*\/?>$/i:/^<\/?(?:b|i|quote)>$|^<br\s*\/?>$/i;
+ if(version>=6&&(body.match(/<\/?[A-Za-z][^>\n]*>/g)??[]).some(tag=>!knownTag.test(tag)))return `opaque-markdown\n${body}`;
  // Normalize before bold so a nested <i><b>...</b></i> remains conservative.
  // Edge whitespace, attributes, escapes and Markdown controls are not the
  // proven plain-text serialization and must not acquire equivalent meaning.
@@ -81,6 +84,26 @@ function restoreNotionLiterals(text:string,literals:ProtectedLiteral[]){
  if(used.size!==literals.length)return;body+=text.slice(at);return {body,ranges};
 }
 type MarkdownNode={type:string;value?:string;position?:{start:{offset?:number};end:{offset?:number}};children?:MarkdownNode[]};
+const inlineHtmlStyleTypes:Record<string,string>={b:'strong',i:'emphasis',s:'delete',u:'notionUnderline'};
+/** Map balanced, attribute-free inline styles to the same typed nodes as
+ * Markdown. Child positions survive so code and link proofs stay exact. */
+function typedNotionInlineStyles(nodes:MarkdownNode[]):MarkdownNode[]{
+ const frames:{tag?:string;children:MarkdownNode[]}[]=[{children:[]}];
+ for(const node of nodes){
+  const opening=node.type==='html'&&/^<([bisu])>$/.exec(String(node.value));
+  if(opening){frames.push({tag:opening[1],children:[]});continue;}
+  const closing=node.type==='html'&&/^<\/([bisu])>$/.exec(String(node.value));
+  if(closing){
+   const frame=frames.at(-1)!;
+   // A malformed range retains every original tag instead of acquiring a
+   // partially inferred style or losing its visible tag spelling.
+   if(frames.length===1||frame.tag!==closing[1])return nodes;
+   frames.pop();
+   frames.at(-1)!.children.push({type:inlineHtmlStyleTypes[frame.tag],children:frame.children});
+  }else frames.at(-1)!.children.push(node);
+ }
+ return frames.length===1?frames[0].children:nodes;
+}
 /** Parse with original paragraph boundaries. Literal punctuation may use its
  * escaped spelling, but strong/emphasis/table/list structure is never erased.
  * Raw code and link targets additionally bind syntax the parser would decode. */
@@ -90,9 +113,10 @@ function canonicalTextLiterals(body:string,protectedRanges:ProtectedRange[],vers
   const result:Record<string,unknown>={},record=node as unknown as Record<string,unknown>;
   for(const key of Object.keys(record).sort())if(key!=='position'&&key!=='children')result[key]=record[key];
   const start=node.position?.start.offset,end=node.position?.end.offset,raw=start===undefined||end===undefined?undefined:body.slice(start,end);
-  // Only punctuation spellings proved by the Markdown text node are folded.
-  // Entities, unknown escapes and all non-text values retain their spelling.
-  if(node.type==='text'&&raw!==undefined)result.value=raw.replace(/\\([*_])/g,'$1');
+  // The parser proves escapes/entities are literal text before v10 folds
+  // their spelling. Active markup, code, and link targets remain typed or
+  // separately protected. Earlier receipts retain their exact old meaning.
+  if(node.type==='text'&&raw!==undefined)result.value=version>=10?node.value:raw.replace(/\\([*_])/g,'$1');
   if(['code','inlineCode','html','image','imageReference'].includes(node.type)&&raw!==undefined)result.raw=raw;
   if(version>=7&&node.type==='inlineCode'){
    const literal=protectedRanges.find(range=>range.kind==='code'&&range.start===start&&range.end===end&&range.inlineValue!==undefined);
@@ -113,8 +137,10 @@ function canonicalTextLiterals(body:string,protectedRanges:ProtectedRange[],vers
   }
   if(node.children){
    const children:unknown[]=[];
-   for(let index=0;index<node.children.length;index++){
-    const opening=node.children[index],text=node.children[index+1],closing=node.children[index+2],tag=opening.type==='html'&&/^<(b|i)>$/.exec(String(opening.value));
+   const nodes=version>=10?typedNotionInlineStyles(node.children):node.children;
+   for(let index=0;index<nodes.length;index++){
+    const opening=nodes[index],text=nodes[index+1],closing=nodes[index+2];
+    const tag=version<10&&opening.type==='html'&&/^<(b|i)>$/.exec(String(opening.value));
     const start=text?.position?.start.offset,end=text?.position?.end.offset,plain=start===undefined||end===undefined?'':body.slice(start,end);
     const code=version>=7&&opening.type==='html'&&opening.value==='<code>'&&text?.type==='text'&&closing?.type==='html'&&closing.value==='</code>'?protectedRanges.find(range=>range.kind==='code'&&range.start===opening.position?.start.offset&&range.end===closing.position?.end.offset&&range.inlineValue===plain):undefined;
     // Exact balanced plain HTML emphasis is a typed node. Synthesizing **/*
@@ -126,6 +152,14 @@ function canonicalTextLiterals(body:string,protectedRanges:ProtectedRange[],vers
     }else children.push(clean(opening));
    }
    result.children=children;
+  }
+  if(version>=10&&Object.values(inlineHtmlStyleTypes).includes(node.type)){
+   let styles=[node.type],children=result.children as unknown[];
+   const child=children.length===1?children[0] as {type?:unknown;styles?:string[];children?:unknown[]}|undefined:undefined;
+   // Styles commute only when they cover the identical complete subtree.
+   // A partially styled sibling keeps its own range in the child tree.
+   if(child?.type==='notionInlineStyles'&&child.styles&&child.children){styles=[...styles,...child.styles];children=child.children;}
+   return {type:'notionInlineStyles',styles:[...new Set(styles)].sort(),children};
   }
   return result;
  };
@@ -189,6 +223,13 @@ function protectNotionCode(body:string,version:NotionCanonicalVersion):{text:str
   if(autoLink){protect(index+autoLink[0].length,'url');continue;}
   const url=/[hHmM]/.test(body[index])?/^(?:https?:\/\/|mailto:)[^\s<>]+/i.exec(body.slice(index)):null;
   if(url){protect(index+url[0].length,'url');continue;}
+  if(version>=10&&(index===0||body[index-1]==='\n')){
+   // These two documented platform spellings are paragraph separators only
+   // on a line of their own. Fenced/indented code and links were protected
+   // above. Inline, escaped, attributed, or other tags retain their bytes.
+   const empty=/^<(?:empty-block|p)[ \t]*\/>[ \t]*(\r?\n|$)/.exec(body.slice(index));
+   if(empty){text+=empty[1]?'\n':'';index+=empty[0].length;continue;}
+  }
   const tag=body[index]==='<'?/^<(pre|code)\b[^>]*>/i.exec(body.slice(index)):null;
   if(tag&&!escaped(index)){
    const close=new RegExp(`</${tag[1]}\\s*>`,'i'),tail=body.slice(index+tag[0].length),match=close.exec(tail);
@@ -198,7 +239,8 @@ function protectNotionCode(body:string,version:NotionCanonicalVersion):{text:str
   }
   if(body[index]==='<'){
    if(body.startsWith('<!',index)||body.startsWith('<?',index))return;
-   if(/^<\/?[A-Za-z][A-Za-z0-9:-]*(?=[\s/>])/.test(body.slice(index))&&!/^<\/?(?:b|i|quote)>|^<br\s*\/?>/i.test(body.slice(index)))return;
+   const knownTag=version>=10?/^<\/?(?:b|i|s|u|quote)>|^<br\s*\/?>/i:/^<\/?(?:b|i|quote)>|^<br\s*\/?>/i;
+   if(/^<\/?[A-Za-z][A-Za-z0-9:-]*(?=[\s/>])/.test(body.slice(index))&&!knownTag.test(body.slice(index)))return;
   }
   if(body[index]==='`'&&!escaped(index)){
    let width=1;while(body[index+width]==='`')width++;
@@ -206,7 +248,12 @@ function protectNotionCode(body:string,version:NotionCanonicalVersion):{text:str
    while(cursor<body.length){const next=body.indexOf('`',cursor);if(next<0)break;let length=1;while(body[next+length]==='`')length++;
     if(length===width){const value=body.slice(index+width,next),inline=version>=7&&width===1&&plainInlineCode(value,version)?value:undefined;protect(next+length,'code',undefined,inline);closed=true;break;}cursor=next+length;
    }
-   if(!closed)return;
+   if(!closed){
+    if(version<10)return;
+    // An unmatched inline backtick is literal Markdown text. The parsed
+    // node still decides whether its escaped spelling has the same value.
+    text+=body[index++];
+   }
    continue;
   }
   text+=body[index++];

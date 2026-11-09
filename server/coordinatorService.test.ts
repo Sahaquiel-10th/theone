@@ -2800,6 +2800,39 @@ const input = (operationId: string, text: string) => ({
   routeBudget: 0.1,
 });
 
+const legacyEnvelopeManuscript='# 合成旧任务文章\n\n首段保留 {甲}。\n\n## 结尾\n第二行与最后一句。';
+const authoredEnvelopeExample=JSON.stringify({outcome:'completed',content:'这是文章里的 JSON 数据示例。',summary:'示例字段'});
+const legacyEnvelopeCases=[
+ {id:'literal_linebreaks',raw:JSON.stringify({outcome:'completed',content:legacyEnvelopeManuscript,summary:'全文已完成。'}).replaceAll('\\n','\n'),expected:legacyEnvelopeManuscript,outcome:'completed'},
+ {id:'ambiguous_quotes',raw:'{"outcome":"completed","content":"第一行\n引用"未经转义"。\n结尾","summary":"完成。"}',outcome:'failed'},
+ {id:'plain_article',raw:'第一段正文。\n\n第二段保留 {甲} 与 [乙]。\n\n完整结尾。',outcome:'returned'},
+ {id:'json_tutorial',raw:'# JSON 教程\n\n下面是数据示例。\n\n```json\n'+authoredEnvelopeExample+'\n```\n\n这是教程的完整结尾。',outcome:'returned'},
+ {id:'authored_json_data',raw:JSON.stringify({lesson:'结果格式说明',sample:{outcome:'completed',content:'示例内容',summary:'示例摘要'}}),outcome:'returned'},
+ {id:'authored_json_inside_envelope',raw:JSON.stringify({outcome:'completed',content:authoredEnvelopeExample,summary:'JSON 示例已经交付。'}),expected:authoredEnvelopeExample,outcome:'completed'},
+] as const;
+
+for(const scenario of legacyEnvelopeCases)test(`legacy guided worker final result handles ${scenario.id} through the normal service entry`,async()=>{
+ const f=fixture();let workerCalls=0;
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('no retrieval requested')},{
+  contextMode:'legacy',
+  reportCall:async()=>answer('这一步的正文格式还需要处理，已有输出已保留。'),
+  modelCall:async(model,messages)=>{
+   if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('已经交接。'):{...answer(''),toolCalls:[{id:'legacy-envelope-dispatch',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'合成旧任务文章',instruction:'只整理一篇完整正文，保留全部段落和结尾。',executorId:'general',featureIds:[]})}}]};
+   workerCalls++;assert.ok(messages.some(message=>message.role==='system'&&message.content?.includes('最终成果请用 JSON 返回')));
+   return answer(scenario.raw);
+  },
+ });
+ const accepted=await service.dispatch(a,input(`legacy_envelope_${scenario.id}`,'请整理合成旧任务文章，只返回正文。'),key);
+ assert.ok(accepted.taskId);await service.resume(a,key);
+ await waitFor(async()=>['completed','failed'].includes((await service.task(a,accepted.taskId!)).jobs[0].state));
+ const db=await f.store.read(),operation=db.chatOperations!.find(operation=>operation.conversationId===accepted.taskId&&operation.workRun)!;
+ const run=operation.workRun!,message=db.conversations.find(conversation=>conversation.id===accepted.taskId)!.messages.find(message=>message.id===run.resultMessageId)!;
+ assert.equal(run.workflow,undefined);assert.equal(workerCalls,1);assert.equal(run.resultOutcome,scenario.outcome);
+ if(scenario.outcome==='failed')assert.equal(run.state,'failed');
+ else assert.equal(message.content,'expected' in scenario?scenario.expected:scenario.raw);
+ await assert.rejects(()=>service.task(b,accepted.taskId!));
+});
+
 test("HTTP routes require trusted Key/admin gates and isolate task and operation receipts", async () => {
   const f = fixture(),
     app = express();
@@ -4349,7 +4382,7 @@ test('an old verified receipt is not fresh proof when an explicit recheck finds 
  assert.match(detail.conversation.messages.at(-1)!.content,/未能完整核对|没能完整核对/);assert.doesNotMatch(detail.conversation.messages.at(-1)!.content,/已保存到 Notion · 已回读核对|任务已完成/);assert.match(detail.conversation.messages.at(-1)!.content,/打开 Notion 原文/);
 });
 
-async function lateSaveFixture(options:{partial?:boolean;fromMain?:boolean;article?:string;articleRequest?:string}={}){
+async function lateSaveFixture(options:{partial?:boolean;fromMain?:boolean;article?:string;articleRequest?:string;workflow?:import('./taskWorkflow.js').WorkflowSpec}={}){
  const f=fixture(),article=options.article??'# 合成方案\n\n第一段：青色42。\n\n'+('保留原始段落与换行，不要再生成。\n'.repeat(520))+'\n原文结尾。';
  let taskId:string,sourceId:string;
  if(options.fromMain){
@@ -4377,7 +4410,7 @@ async function lateSaveFixture(options:{partial?:boolean;fromMain?:boolean;artic
   if(model.id!=='router'){workerCalls++;assert.fail('saving an existing result must not buy or rewrite with another model');}
   routeCalls++;
   if(messages.at(-1)?.role==='tool')return answer('我来保存这篇原文。');
-  return {...answer(''),toolCalls:[{id:'late-save',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:options.fromMain?null:taskId,title:'保存合成原文',instruction:'把这篇现有原文保存到 Notion，不重写，不查知识库。',executorId:'general',featureIds:[]})}}]};
+  return {...answer(''),toolCalls:[{id:'late-save',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:options.fromMain?null:taskId,title:'保存合成原文',instruction:'把这篇现有原文保存到 Notion，不重写，不查知识库。',executorId:'general',featureIds:[],workflow:options.workflow})}}]};
  }});
  return {...f,service,article,expectedBody:article.replace(/^# [^\n]+\n\n/,''),taskId,sourceId,pageId,counts:()=>({title,body,writes,workerCalls,routeCalls})};
 }
@@ -4392,6 +4425,71 @@ for(const selected of ['chat','notion'] as const)test(`late Notion save reuses e
  assert.deepEqual(latest.workRun!.contract?.requiredTools,['save_notion_draft']);assert.deepEqual(latest.workRun!.sources,[]);assert.equal(latest.workRun!.workflow!.spec.steps.length,1);assert.equal(latest.workRun!.workflow!.spec.steps[0].kind,'notion');assert.equal(latest.workRun!.notionArticleSource?.operationId,f.sourceId);
  assert.equal(detail.jobs.at(-1)!.notionReceipt?.state,'verified');await f.service.resume(a,key);assert.equal(f.counts().writes,1);
  await assert.rejects(()=>f.service.task(b,f.taskId),/不存在/);assert.equal((await f.store.read()).powerAccounts[1].balanceMicros,100e6);
+});
+
+for(const explicit of [false,true])test(`an authorized missing-save report preserves the same complete manuscript; explicit rewrite workflow=${explicit}`,async()=>{
+ const workflow:import('./taskWorkflow.js').WorkflowSpec={version:1,steps:[
+  {id:'draft',title:'整理完整成果',kind:'model',instruction:'复用已经完成的正文，不改写。',inputs:[],required:true},
+  {id:'save',title:'保存到原定位置',kind:'notion',instruction:'保存并完整回读核对。',inputs:['draft'],required:true},
+ ]};
+ const f=await lateSaveFixture({workflow:explicit?workflow:undefined});
+ const r=await f.service.dispatch(a,{...input(`operation_missing_save_${explicit}`,'没写到notion里啊？'),outputDestination:'notion',boundTaskId:f.taskId},key);
+ assert.equal(r.taskId,f.taskId);
+ await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,f.taskId)).jobs.at(-1)!.state==='completed');
+ const db=await f.store.read(),run=db.chatOperations!.filter(op=>op.conversationId===f.taskId&&op.workRun).at(-1)!.workRun!;
+ assert.equal(f.counts().body,f.expectedBody);assert.equal(f.counts().writes,1);assert.equal(f.counts().workerCalls,0);
+ assert.equal(run.notionArticleSource!.operationId,f.sourceId);assert.deepEqual(run.workflow!.spec.steps.map(step=>[step.id,step.kind]),[['save_existing','notion']]);
+ assert.equal(run.notionReceipt!.state,'verified');assert.deepEqual(run.contract!.requiredTools,['save_notion_draft']);
+ await f.service.resume(a,key);assert.equal(f.counts().writes,1);
+});
+
+test('missing-save feedback cannot acquire a Notion grant, another owner or an ambiguous main-chat source',async()=>{
+ const unrelated=await lateSaveFixture();
+ await unrelated.service.dispatch(a,{...input('operation_missing_save_unrelated','这里还有个问题。'),outputDestination:'chat',boundTaskId:unrelated.taskId},key);
+ const queued=(await unrelated.store.read()).chatOperations!.filter(op=>op.conversationId===unrelated.taskId&&op.workRun).at(-1)!.workRun!;
+ assert.equal(queued.notionTarget,undefined);assert.equal(queued.notionArticleSource,undefined);assert.equal(unrelated.counts().writes,0);
+
+ const readonly=await lateSaveFixture();
+ const answerOnly=await readonly.service.dispatch(a,{...input('operation_missing_save_readonly','只回答，没写到notion里啊？不要保存。'),outputDestination:'notion',boundTaskId:readonly.taskId},key);
+ assert.equal(answerOnly.taskIds.length,0);assert.equal(readonly.counts().writes,0);
+
+ const status=await lateSaveFixture();
+ const statusOnly=await status.service.dispatch(a,{...input('operation_missing_save_status_only','保存到notion了么？'),outputDestination:'notion',boundTaskId:status.taskId},key);
+ assert.equal(statusOnly.taskIds.length,0);assert.equal(status.counts().writes,0);assert.equal(status.counts().workerCalls,0);
+
+ const noGrant=await lateSaveFixture();await noGrant.store.mutate(db=>{db.knowledgeConnections.find(connection=>connection.id==='late-notion')!.notionWriting=undefined;});
+ await assert.rejects(()=>noGrant.service.dispatch(a,{...input('operation_missing_save_no_grant','没写到notion里啊？'),outputDestination:'notion',boundTaskId:noGrant.taskId},key),/授权 Notion/);
+ assert.equal(noGrant.counts().writes,0);assert.equal(noGrant.counts().workerCalls,0);
+
+ const foreign=await lateSaveFixture();
+ await foreign.store.mutate(db=>{const connection=structuredClone(db.knowledgeConnections.find(connection=>connection.id==='late-notion')!);connection.id='foreign-own-notion';connection.workspaceId=b.workspaceId;connection.notionWriting!.userId=b.userId;db.knowledgeConnections.push(connection);});
+ await assert.rejects(()=>foreign.service.dispatch(b,{...input('operation_missing_save_foreign','没写到notion里啊？'),outputDestination:'notion',boundTaskId:foreign.taskId},key),/不存在/);
+ assert.equal(foreign.counts().writes,0);
+
+ const ambiguous=await lateSaveFixture({fromMain:true});await ambiguous.store.mutate(db=>{
+  const source=db.chatOperations!.find(op=>op.id===ambiguous.sourceId)!,copy=structuredClone(source),task=db.conversations.find(task=>task.id===ambiguous.taskId)!;
+  copy.id='second-complete-article';copy.operationId='operation_second_article';copy.assistantMessageId='second-article-body';db.chatOperations!.push(copy);
+  task.messages.push({id:'second-article-body',role:'assistant',content:'另一篇完整文章。',createdAt:'now'});
+ });
+ const unclear=await ambiguous.service.dispatch(a,{...input('operation_missing_save_ambiguous','没写到notion里啊？'),outputDestination:'notion'},key);
+ assert.equal(unclear.taskIds.length,0);assert.equal(ambiguous.counts().writes,0);assert.equal(ambiguous.counts().workerCalls,0);
+});
+
+test('a missing-save report with new manuscript material or requested edits retains the creative stage',async()=>{
+ for(const [mode,text] of [['material','没写到notion里啊？正文如下：这次要用新的合成稿。'],['edit','没写到notion里啊？把结尾重写后保存到Notion。']] as const){
+  const f=await lateSaveFixture();
+  const result=await f.service.dispatch(a,{...input(`operation_missing_save_new_${mode}`,text),outputDestination:'notion',boundTaskId:f.taskId},key);
+  assert.equal(result.taskId,f.taskId);
+  const run=(await f.store.read()).chatOperations!.filter(op=>op.conversationId===f.taskId&&op.workRun).at(-1)!.workRun!;
+  assert.equal(run.notionArticleSource,undefined);assert.notEqual(run.workflow?.spec.steps[0].id,'save_existing');
+  assert.equal(f.counts().writes,0);
+ }
+
+ const fresh=await lateSaveFixture({fromMain:true});
+ const result=await fresh.service.dispatch(a,{...input('operation_missing_save_fresh_material','这是独立新任务。根据新素材写一篇文章并保存到Notion。正文如下：全新的合成素材。'),outputDestination:'notion'},key);
+ assert.ok(result.taskId);assert.notEqual(result.taskId,fresh.taskId);
+ const run=(await fresh.store.read()).chatOperations!.find(op=>op.conversationId===result.taskId&&op.workRun)!.workRun!;
+ assert.equal(run.notionArticleSource,undefined);assert.notEqual(run.workflow?.spec.steps[0].id,'save_existing');assert.equal(fresh.counts().writes,0);
 });
 
 test('inline main-chat article can be saved on the next turn without dispatching the whole body through a model',async()=>{

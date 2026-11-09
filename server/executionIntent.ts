@@ -16,6 +16,12 @@ function currentRequest(text:string){
   return currentRequestSource(text).replace(/“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|'[^'\n]*'|`[^`]*`/g,'');
 }
 
+function notionSaveStatusQuery(text:string):boolean {
+  const request=currentRequest(text).trim();
+  return /^[^。；;\n！？?]{0,120}(?:了[吗么]|了没(?:有)?)[？?。！!\s]*$/u.test(request)
+    &&/\bnotion\b/iu.test(request)&&/(?:保存|写入|写到|写进|存到|存入)/u.test(request);
+}
+
 /** Remove declined effects, not their whole clause: “不创建，但保存” still
  * requests saving. Quoted/pasted instructions never supply an action here. */
 export function coordinatorPositiveRequest(text:string){
@@ -46,7 +52,7 @@ export function existingTaskActionRequested(text:string,boundTaskId?:string){
     ||/(?:继续|接着)(?:处理|完成|修改|写|做)?(?:同一(?:件|个)|这(?:件|个)|原(?:来|先)?(?:的)?(?:任务|事情)|已有(?:的)?(?:任务|事情))|(?:修改|更新|修订|编辑|删去|删除|完善|补充)(?:当前|已有|原来|原|这(?:篇|件|个))[^，,。；;\n]{0,12}(?:任务|事情|正文|原文|页面|草稿|文章)/.test(positive);
 }
 export function coordinatorTaskIntent(text:string,boundTaskId?:string){
-  const request=currentRequest(text),onlyAnswer=discussionOnly(request)||existingTaskRecordReadRequested(text);
+  const request=currentRequest(text),onlyAnswer=discussionOnly(request)||existingTaskRecordReadRequested(text)||notionSaveStatusQuery(text);
   const creationBan=/(?:不要|不用|无需|不必|不需要|禁止|别|不)(?:再|重新)?(?:创建|新建|另建|新开|分派|建)(?:一个|新的|独立)?(?:任务|事情)|(?:don't|do not)\s+create\s+(?:a\s+)?task/i.test(request);
   const existingTaskOnly=!onlyAnswer&&creationBan&&existingTaskActionRequested(request,boundTaskId);
   return {answerOnly:onlyAnswer||creationBan&&!existingTaskOnly,existingTaskOnly};
@@ -87,6 +93,7 @@ export function freshDocumentReadRequested(text:string):boolean {
 /** Narrow compatibility signal for a new task's explicitly named destination.
  * Never substitutes for connector ownership, writing grant or configured parent. */
 export function notionWriteRequested(text:string):boolean {
+  if(notionSaveStatusQuery(text))return false;
   // Payloads/quotations are not authority to write. This is intentionally a
   // narrow fallback; ambiguous language stays in chat instead of gaining tools.
   const request=text.split(/(?:正文|原文|引用|示例|材料|附件内容)(?:如下|内容)?\s*[:：]/u)[0]
@@ -108,7 +115,7 @@ export function notionWriteRequested(text:string):boolean {
 export function notionWriteDeclined(text:string):boolean {
   const request=currentRequest(text);
   const action=notionWriteRequested(text);
-  return discussionOnly(request)||!action&&/(?:只|仅)(?:问|想知道|了解)|(?:有没有|是否有|只有|具备).{0,20}(?:写入|保存|创建).{0,8}权限|(?:写入|保存|创建).{0,8}权限.{0,12}[吗么呢？?]|(?:怎么|如何).{0,16}(?:授权|开通|配置)|(?:Notion|notion).{0,12}(?:支持|可以|能).{0,12}(?:保存|写入|创建).{0,8}[吗么？?]/u.test(request)
+  return discussionOnly(request)||notionSaveStatusQuery(text)||!action&&/(?:只|仅)(?:问|想知道|了解)|(?:有没有|是否有|只有|具备).{0,20}(?:写入|保存|创建).{0,8}权限|(?:写入|保存|创建).{0,8}权限.{0,12}[吗么呢？?]|(?:怎么|如何).{0,16}(?:授权|开通|配置)|(?:Notion|notion).{0,12}(?:支持|可以|能).{0,12}(?:保存|写入|创建).{0,8}[吗么？?]/u.test(request)
     ||!action&&/(?:如果|假设|举例|示例|教我|解释|如何|怎么|有没有|能不能|可不可以|要不要)/u.test(request)
     ||/\b(?:do not|don't|never)\s+(?:save|write)\b/iu.test(request)
     ||/(?:^|[，,。；;\n])\s*(?:本轮|这次|请|先)?(?:只读|只核对|只回读)/u.test(request)
@@ -118,6 +125,12 @@ export function notionWriteDeclined(text:string):boolean {
 
 export function notionDestinationRequested(text:string,selected?:'chat'|'notion'):boolean {
   return !notionWriteDeclined(text)&&(selected==='notion'||notionWriteRequested(text));
+}
+
+/** A report about a missing save selects an existing result only after the
+ * caller separately authorizes a new write. This never grants write access. */
+export function notionMissingSaveFeedback(text:string):boolean {
+  return /^(?:(?:这(?:篇|份|段)(?:文章|正文|原文|稿子)?)[，,\s]*)?(?:还|又|还是|好像)?(?:没|没有)(?:保存到|保存进|写到|写进|写入|存到|存入)\s*notion\s*(?:里面|里|中)?(?:啊|呀|呢|吗|么|吧)?[？?！!。\s]*$/iu.test(currentRequest(text).trim());
 }
 
 /** Select an already-authored result only when the human asks to preserve it.

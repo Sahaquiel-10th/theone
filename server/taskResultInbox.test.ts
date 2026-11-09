@@ -9,6 +9,27 @@ import { saveExecutionReceipt } from './executionService.js';
 import {latestTaskResults,pendingConversationTaskResults} from './taskResultInbox.js';
 import {createWorkflowRun} from './taskWorkflow.js';
 
+test('main-conversation reports keep an exact write acknowledgement without promoting body verification',async()=>{
+ const db=fixture(),{task,operation}=cloud(db,'acknowledged-write',a,{state:'failed',outcome:'partial',text:'合成正文'});
+ const run=operation.workRun!,pageId='a'.repeat(32),checkpointKey='b'.repeat(64),expectedDigest='c'.repeat(64),expectedRawDigest='d'.repeat(64);
+ run.notionReceipt={state:'uncertain',delivery:'unknown',pageId,url:`https://www.notion.so/${pageId}`,checkpointKey,expectedDigest,expectedRawDigest,
+  writeAcknowledgement:{version:1,operationId:operation.id,checkpointKey,pageId,expectedDigest,expectedRawDigest,acknowledgedAt:timestamp},
+  verification:{state:'exhausted',version:3,attempt:3,nextCheckAt:timestamp,deadlineAt:timestamp,lastReason:'mismatch'},
+  comparison:{version:1,kind:'body_mismatch',checkedAt:timestamp,comparatorVersion:9}};
+ assert.match(pendingTaskResults(db,a)[0].brief!,/已存入 Notion.*正文核对仍有差异/);
+ assert.equal(pendingTaskResults(db,a)[0].outcome,'partial');assert.equal(pendingTaskResults(db,b).length,0);
+ db.knowledgeConnections=[];db.agents=[];db.modelUsageRecords=[];
+ db.models=[{id:'worker',kind:'chat'} as Database['models'][number]];
+ run.sources=[];run.credentials=[];run.skills=[];
+ const view=await service(db).task(a,task.id);
+ assert.equal(view.jobs[0].notionReceipt?.writeAcknowledged,true);
+ assert.doesNotMatch(JSON.stringify(view.jobs[0].notionReceipt),/writeAcknowledgement|acknowledgedAt|checkpointKey|expectedRawDigest|operationId/);
+ await assert.rejects(()=>service(db).task(b,task.id));
+ run.notionReceipt.writeAcknowledgement!.operationId='foreign';
+ assert.doesNotMatch(pendingTaskResults(db,a)[0].brief!,/已存入 Notion/);
+ assert.equal((await service(db).task(a,task.id)).jobs[0].notionReceipt?.writeAcknowledged,undefined);
+});
+
 test('a written article with exhausted Notion readback reports the actual stage, retry owner and safe action',()=>{
  const db=fixture(),{operation}=cloud(db,'article-readback',a,{state:'failed',outcome:'partial',text:'11月1日下午，我在笔记里写下这么一句话。这是正文，不能当作失败原因。'});
  const run=operation.workRun!;

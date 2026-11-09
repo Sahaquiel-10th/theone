@@ -8,11 +8,13 @@ import {NotionDocuments} from './notionDocuments.js';
 import {notionLinkRecoveryOffer,parseNotionLinkRecovery,selectNotionLinkRecovery,type NotionLinkRecoveryRequest} from './notionLinkRecovery.js';
 import {runTaskOrchestrator} from './taskOrchestrator.js';
 import {taskStepKey,type TaskStepStore} from './taskSteps.js';
+import {canonicalNotionDigest} from './notionCanonical.js';
+import {createWorkflowRun} from './taskWorkflow.js';
 const scope={workspaceId:'wa',userId:'a'},parentId='a'.repeat(32),pageId='b'.repeat(32),otherId='c'.repeat(32);
 const url=`https://www.notion.so/${pageId}`;
-async function fixture(){
+async function fixture(content?:string){
  let now=Date.parse('2026-11-03T01:00:00.000Z'),writes=0;
- const args={title:'合成未知回执',content:'完整正文\n\n**原样** `紫色_42`\n\n|甲|乙|\n|---|---|\n|金额|3200|\n\n自然结尾。',final:true},reads:string[]=[];
+ const args={title:'合成未知回执',content:content??'完整正文\n\n**原样** `紫色_42`\n\n|甲|乙|\n|---|---|\n|金额|3200|\n\n自然结尾。',final:true},reads:string[]=[];
  const db={users:[{id:'a',enabled:true},{id:'b',enabled:true}],workspaces:[{id:'wa',status:'active'},{id:'wb',status:'active'}],workspaceMembers:[scope,{workspaceId:'wb',userId:'b'},{workspaceId:'wa',userId:'b'}],knowledgeConnections:[{id:'notion',workspaceId:'wa',provider:'notion',status:'connected',notionWriting:{grantId:'grant',userId:'a',parentId}}],conversations:[{...scope,id:'task',title:args.title,archived:false,messages:[],notionDocument:{connectionId:'notion',grantId:'grant',parentId}}],chatOperations:[],contextTraces:[]} as unknown as Database;
  const store={read:async()=>structuredClone(db),mutate:async<T>(fn:(d:Database)=>T)=>fn(db)} as Store;
  const job={state:'running',notionTarget:{connectionId:'notion',grantId:'grant',parentId,referenceIds:[]},steps:[],contract:{version:1,requiredFeatureIds:[],requiredTools:['save_notion_draft'],execution:'model'}} as unknown as WorkRun;
@@ -27,6 +29,59 @@ async function fixture(){
  const input:NotionLinkRecoveryRequest={sourceJobId:'op',expectedUpdatedAt:op.updatedAt,pageUrl:url,selectionId:'selection-original'};
  return {db,store,op,job,docs,mcp,args,input,reads,page,parent,writes:()=>writes,advance:()=>now+=1000,check:()=>docs.reconcile(scope,'task',async()=>{},input)};
 }
+
+test('link recovery supports immutable v9 and new v10 exact receipts while rejecting unknown comparator versions before reads',async()=>{
+ for(const version of [9,10] as const){
+  const f=await fixture(),receipt=f.job.notionReceipt!;
+  receipt.canonicalVersion=version;receipt.expectedCanonicalDigest=canonicalNotionDigest(f.args.content,version);
+  const original=structuredClone(receipt);
+  assert.ok(notionLinkRecoveryOffer(f.db,scope,f.op));
+  assert.equal((await f.check()).state,'verified');assert.equal(f.writes(),1);assert.deepEqual(f.reads,[parentId,pageId]);
+  for(const field of ['canonicalVersion','expectedCanonicalDigest','expectedDigest','expectedRawDigest','expectedLength','checkpointKey'] as const)assert.deepEqual(receipt[field],original[field]);
+ }
+ const future=await fixture();future.job.notionReceipt!.canonicalVersion=11 as any;
+ assert.equal(notionLinkRecoveryOffer(future.db,scope,future.op),undefined);
+ assert.equal(selectNotionLinkRecovery(future.db,scope,{text:'原页链接是 '+url,boundTaskId:'task'}).kind,'unavailable');
+ await assert.rejects(future.check);assert.equal(future.reads.length,0);assert.equal(future.writes(),1);assert.equal(future.job.notionReceipt!.state,'uncertain');
+});
+
+test('an original-page link can reprove v9 escapes only with its exact original source and keeps all original receipt hashes',async()=>{
+ const source='方法 {开始}，金额 $3000。\n\n正文 [甲]与 `code_7`。\n\n完整结尾。';
+ const serialized='方法 \\{开始\\}，金额 \\$3000。\n\n正文 \\[甲\\]与 `code_7`。\n\n完整结尾。';
+ for(const proof of ['trace','workflow','missing','foreign_trace','wrong_request','changed_source','changed_body','changed_code','foreign_workflow','removed_during_read','removed_before_adoption'] as const){
+  const f=await fixture(source),receipt=f.job.notionReceipt!;
+  receipt.canonicalVersion=9;receipt.expectedCanonicalDigest=canonicalNotionDigest(source,9);
+  if(proof==='workflow'||proof==='foreign_workflow'){
+   const binding={...scope,operationId:f.op.id},workflow=createWorkflowRun({version:1,steps:[{id:'draft',title:'完整稿',kind:'model',instruction:'撰写完整稿',inputs:[]}]},binding);
+   const step=workflow.spec.steps[0],namespace=`workflow:${workflow.id}`,tool=`workflow:${workflow.id}:${step.id}`,key=taskStepKey(namespace,tool,JSON.stringify({revision:workflow.revision,instruction:step.instruction,inputs:step.inputs}));
+   workflow.steps[0]={id:step.id,state:'completed',checkpointKey:key};workflow.phase='completed';
+   f.job.workflow=workflow;
+   f.job.steps!.push({key,namespace,scopeId:proof==='foreign_workflow'?'foreign-operation':f.op.id,tool,label:'完整稿',effect:'model',state:'completed',updatedAt:'2026-11-03T01:00:00.000Z',output:{workflow:{version:1,runId:workflow.id,revision:workflow.revision,stepId:step.id},outcome:'completed',result:{outcome:'returned',content:source,summary:'完整稿'}}});
+  }else if(proof!=='missing'){
+   const query=JSON.stringify(proof==='changed_source'?{...f.args,content:source+'附加稿'}:f.args);
+   f.db.contextTraces.push({...scope,workspaceId:proof==='foreign_trace'?'foreign-workspace':scope.workspaceId,id:'exact-write',conversationId:'task',requestId:proof==='wrong_request'?'foreign-request':f.op.requestId,executionSteps:[{tool:'save_notion_draft',query}]} as any);
+  }
+  f.mcp.readDocument=async(_ws,id)=>{
+   f.reads.push(id);if(id===parentId)return f.parent();
+   if(proof==='removed_during_read')f.db.contextTraces=[];
+   const body=proof==='changed_body'?serialized.replace('3000','3001'):proof==='changed_code'?serialized.replace('code_7','code_8'):serialized;
+   return {...f.page(),text:`<page><content>\n${body}\n</content></page>`};
+  };
+  if(proof==='removed_before_adoption'){
+   const mutate=f.store.mutate.bind(f.store);
+   f.store.mutate=async fn=>{f.db.contextTraces=[];return mutate(fn);};
+  }
+  const original=structuredClone(receipt);assert.ok(notionLinkRecoveryOffer(f.db,scope,f.op));
+  if(proof==='trace'||proof==='workflow'){
+   assert.equal((await f.check()).state,'verified');assert.equal(receipt.comparison!.kind,'matched');assert.equal(receipt.comparison!.comparatorVersion,10);
+   assert.equal(receipt.pageId,pageId);assert.equal(receipt.linkRecovery!.selectionId,f.input.selectionId);
+  }else{
+   await assert.rejects(f.check,/正文|原稿证据/);assert.equal(receipt.state,'uncertain');assert.equal(receipt.pageId,undefined);assert.equal(f.job.steps![0].state,'started');
+  }
+  for(const field of ['canonicalVersion','expectedCanonicalDigest','expectedRawDigest','expectedDigest','expectedLength','checkpointKey'] as const)assert.deepEqual(receipt[field],original[field],proof+'/'+field);
+  assert.equal(receipt.writeAcknowledgement,undefined);assert.equal(f.writes(),1);assert.deepEqual(f.reads,[parentId,pageId]);
+ }
+});
 
 test('user supplied exact original page confirms body without create/update or altering original source/delivery facts',async()=>{
  const f=await fixture(),r=structuredClone(f.job.notionReceipt!),time=f.job.steps![0].updatedAt;

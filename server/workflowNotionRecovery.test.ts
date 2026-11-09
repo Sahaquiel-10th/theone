@@ -72,10 +72,23 @@ test('one ordinary save may recover an absent link from the exact model body wit
  const f=fixture({multi:true,missingLink:true}),result=recoverVerifiedNotionWorkflow(f.job,owner)!;assert.ok(result);assert.equal(result.complete,false);assert.equal(result.workflow.steps[1].state,'completed');assert.equal(result.workflow.steps[2].state,'waiting');
 });
 
-for(const version of [5,7,8,9] as const)test(`ordinary single-save proof binds raw, normalized and v${version} model body before repairing its absent link`,()=>{
+for(const version of [5,7,8,9,10] as const)test(`ordinary single-save proof binds raw, normalized and v${version} model body before repairing its absent link`,()=>{
  const f=fixture({ordinary:true,missingLink:true}),before=structuredClone(f.job);f.job.notionReceipt!.canonicalVersion=version;f.job.notionReceipt!.expectedCanonicalDigest=canonicalNotionDigest(body,version);
  const result=recoverVerifiedNotionWorkflow(f.job,owner)!;assert.ok(result);assert.equal(result.complete,true);assert.equal(result.workflow.phase,'completed');assert.equal((result.steps.find(cp=>cp.key===f.key(f.save))!.output as any).notionCheckpointKey,f.worker.key);assert.deepEqual(f.job.steps,before.steps);
  assert.ok(verifiedWorkflowNotionCompletion({...f.job,skills:[]},owner,['save_notion_draft']));assert.equal(verifiedWorkflowNotionCompletion({...f.job,skills:[]},owner,['knowledge_search']),undefined,'an omitted contract requirement cannot borrow another checkpoint');
+});
+
+test('an exactly completed plain returned manuscript can recover its own verified save while partial or truncated results cannot',()=>{
+ for(const outcome of ['returned','partial','failed','needs_input'] as const)for(const finishReason of ['stop','length','filtered'] as const){
+  const f=fixture({ordinary:true,missingLink:true}),draft=f.job.steps!.find(cp=>cp.tool.endsWith(':draft'))!;
+  (draft.output as any).result={outcome,content:body,summary:'原稿正文',finishReason};
+  f.job.notionReceipt!.canonicalVersion=9;f.job.notionReceipt!.expectedCanonicalDigest=canonicalNotionDigest(body,9);
+  const proof=recoverVerifiedNotionWorkflow(f.job,owner);
+  if(outcome==='returned'&&finishReason==='stop'){
+   assert.ok(proof);assert.equal(proof.complete,true);assert.equal(proof.workflow.phase,'completed');
+   assert.ok(verifiedWorkflowNotionCompletion({...f.job,skills:[]},owner,['save_notion_draft']));
+  }else assert.equal(proof,undefined,`${outcome}/${finishReason}`);
+ }
 });
 
 for(const mutation of ['null-link','wrong-link','missing-digest','wrong-raw','missing-raw','wrong-length','wrong-canonical','wrong-v7-canonical','wrong-v8-canonical','wrong-v9-canonical','missing-canonical','changed-body','partial-model','truncated-model','foreign-source','duplicate-source','duplicate-worker-key','two-writes','two-stages','prior-write','predates-attempt'] as const)test(`ordinary absent-link recovery refuses ${mutation}`,()=>{

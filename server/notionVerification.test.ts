@@ -8,6 +8,7 @@ import {NotionDocuments} from './notionDocuments.js';
 import {canonicalNotionDigest,legacyNotionNormalized,notionHash} from './notionCanonical.js';
 import {runTaskOrchestrator} from './taskOrchestrator.js';
 import {verifiedNotionCompletion} from './notionCompletion.js';
+import {notionWriteAcknowledged} from './notionCompletion.js';
 import {taskStepKey,type TaskStep,type TaskStepStore} from './taskSteps.js';
 const scope={workspaceId:'wa',userId:'a'},parentId='a'.repeat(32),pageId='b'.repeat(32);
 function fixture(){
@@ -27,6 +28,73 @@ function fixture(){
  }
  return {db,store,job,mcp,docs,args,failWrite,body:()=>body,setBody:(v:string)=>body=v,reads:()=>reads,writes:()=>writes,advance:(n:number)=>now+=n,now:()=>now};
 }
+test('acknowledged writes retain separate readback state across restart, concurrent wake and delayed success',async()=>{
+ const f=fixture();f.mcp.readDocument=async()=>{throw Error('initial unavailable');};await f.failWrite();
+ const ack=structuredClone(f.job.notionReceipt!.writeAcknowledgement);assert.equal(notionWriteAcknowledged(f.job.notionReceipt,'op'),true);
+ let reads=0,release!:()=>void;const gate=new Promise<void>(resolve=>release=resolve);
+ f.mcp.readDocument=async()=>{reads++;await gate;return {text:f.body()};};
+ const restarted=new NotionDocuments(f.store,f.mcp,{now:f.now,delays:[10,20,30],deadlineMs:1000,leaseMs:50});f.advance(10);
+ const first=restarted.reconcileDue(scope,async()=>{});await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(await f.docs.reconcileDue(scope,async()=>{}),[]);release();
+ assert.equal((await first)[0].state,'verified');assert.equal(reads,1);assert.equal(f.writes(),1);
+ assert.deepEqual(f.job.notionReceipt!.writeAcknowledgement,ack);assert.deepEqual(await restarted.reconcileDue(scope,async()=>{}),[]);
+});
+test('an async success acknowledgement is persisted before a failing read and survives the next wake',async()=>{
+ const f=fixture(),write=f.mcp.callDocumentTool.bind(f.mcp);let polls=0;
+ f.mcp.callDocumentTool=async(...args)=>{
+  if(args[4]==='notion-create-pages'){await write(...args);return {object:'async_task',id:'async_same_write',status:'queued'};}
+  assert.equal(args[4],'notion-get-async-task');assert.deepEqual(args[5],{task_id:'async_same_write'});polls++;
+  if(polls===1)throw Error('poll unavailable');
+  return {status:'succeeded',result:{pages:[{id:pageId}]}};
+ };
+ f.mcp.readDocument=async()=>{
+  assert.equal(notionWriteAcknowledged(f.job.notionReceipt,'op'),true,'successful response must be durable before readback starts');
+  throw Error('read unavailable');
+ };
+ await f.failWrite();assert.equal(f.job.notionReceipt!.writeAcknowledgement,undefined);assert.equal(f.job.notionReceipt!.pageId,undefined);
+ f.advance(10);assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'scheduled');
+ assert.equal(f.job.notionReceipt!.state,'uncertain');assert.equal(f.job.notionReceipt!.pageId,pageId);assert.equal(notionWriteAcknowledged(f.job.notionReceipt,'op'),true);
+ assert.deepEqual(await f.docs.reconcileDue(scope,async()=>{}),[]);assert.equal(polls,2);
+ f.mcp.readDocument=async()=>({text:f.body()});f.advance(20);
+ assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'verified');assert.equal(polls,2);assert.equal(f.writes(),1);
+});
+test('old v9 escaped punctuation is reproved only from exact original arguments under a manual read',async()=>{
+ const expected='{"outcome":"completed","content":"合成正文\n完整结尾","summary":"完成"}';
+ const actual='\\'+expected.slice(0,-1)+'\\}';
+ for(const evidence of ['exact','missing','foreign','corrupt_raw'] as const){
+  const f=fixture(),query=JSON.stringify({title:'合成稿',content:expected,final:true}),key=taskStepKey('worker','save_notion_draft',query);
+  f.job.state='failed';f.db.chatOperations![0].status='failed';
+  f.job.steps=[{key,namespace:'worker',scopeId:'op',tool:'save_notion_draft',label:'保存',effect:'external_write',state:'started',updatedAt:new Date(f.now()).toISOString()}];
+  f.job.notionReceipt={state:'uncertain',delivery:'unknown',pageId,checkpointKey:key,canonicalVersion:9,expectedRawDigest:evidence==='corrupt_raw'?'e'.repeat(64):notionHash(expected),expectedLength:expected.length,expectedDigest:notionHash(legacyNotionNormalized(expected)),expectedCanonicalDigest:canonicalNotionDigest(expected,9),final:true};
+  if(evidence!=='missing')f.db.contextTraces.push({...scope,workspaceId:evidence==='foreign'?'foreign':scope.workspaceId,conversationId:'task',requestId:'request',executionSteps:[{tool:'save_notion_draft',query}]} as any);
+  f.mcp.readDocument=async()=>({text:actual});const original=structuredClone(f.job.notionReceipt);
+  if(evidence==='exact'){
+   assert.equal((await f.docs.reconcile(scope,'task',async()=>{})).state,'verified');
+   assert.equal(f.job.notionReceipt!.comparison!.comparatorVersion,10);assert.equal(f.job.notionReceipt!.canonicalVersion,9);
+   assert.equal(f.job.notionReceipt!.expectedRawDigest,original.expectedRawDigest);assert.equal(f.job.notionReceipt!.expectedCanonicalDigest,original.expectedCanonicalDigest);
+  }else{
+   await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));assert.equal(f.job.notionReceipt!.state,'uncertain');
+  }
+  assert.equal(notionWriteAcknowledged(f.job.notionReceipt,'op'),false,'a readback never fabricates a historical write acknowledgement');assert.equal(f.writes(),0);
+ }
+});
+test('manual known-page v10 reproof rechecks the exact old source at its final durable update',async()=>{
+ const expected='方法 {开始}，金额 $3000。',actual='方法 \\{开始\\}，金额 \\$3000。';
+ for(const removal of ['during_read','before_commit'] as const){
+  const f=fixture(),query=JSON.stringify({title:'合成稿',content:expected,final:true}),key=taskStepKey('worker','save_notion_draft',query);
+  f.job.state='failed';f.db.chatOperations![0].status='failed';
+  f.job.steps=[{key,namespace:'worker',scopeId:'op',tool:'save_notion_draft',label:'保存',effect:'external_write',state:'started',updatedAt:new Date(f.now()).toISOString()}];
+  f.job.notionReceipt={state:'uncertain',delivery:'unknown',pageId,checkpointKey:key,canonicalVersion:9,expectedRawDigest:notionHash(expected),expectedLength:expected.length,expectedDigest:notionHash(legacyNotionNormalized(expected)),expectedCanonicalDigest:canonicalNotionDigest(expected,9),final:true};
+  f.db.contextTraces.push({...scope,conversationId:'task',requestId:'request',executionSteps:[{tool:'save_notion_draft',query}]} as any);
+  f.mcp.readDocument=async()=>{if(removal==='during_read')f.db.contextTraces=[];return {text:actual};};
+  if(removal==='before_commit'){
+   let commits=0;const mutate=f.store.mutate.bind(f.store);
+   f.store.mutate=async fn=>{if(++commits===2)f.db.contextTraces=[];return mutate(fn);};
+  }
+  await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));
+  assert.equal(f.job.notionReceipt.state,'uncertain');assert.equal(f.job.notionReceipt.verification!.lastReason,'stale');assert.equal(f.job.steps[0].state,'started');assert.equal(f.writes(),0);
+ }
+});
 test('delayed read confirms the exact single write, repairs only its checkpoint, and reports once without changing write time',async()=>{
  const f=fixture(),read=f.mcp.readDocument.bind(f.mcp);let initial=true;
  f.mcp.readDocument=async(...args)=>{if(initial){initial=false;throw Error('temporary');}return read(...args);};
@@ -92,9 +160,9 @@ test('legacy formatting recovery requires exact owned create arguments and their
   assert.equal(f.writes(),0);
  }
 });
-test('new v9 receipts do not use the permissive legacy whitespace path for literal code',async()=>{
+test('new v10 receipts do not use the permissive legacy whitespace path for literal code',async()=>{
  const f=fixture(),body='```\nx \n\n```';f.mcp.readDocument=async()=>({text:'```\nx\n```'});await f.failWrite({title:'代码',content:body,final:true});
- assert.equal(f.job.notionReceipt!.canonicalVersion,9);assert.equal(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(body,9));f.advance(10);assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'scheduled');assert.equal(f.job.notionReceipt!.state,'uncertain');
+ assert.equal(f.job.notionReceipt!.canonicalVersion,10);assert.equal(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(body,10));f.advance(10);assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'scheduled');assert.equal(f.job.notionReceipt!.state,'uncertain');
 });
 test('manual v2 or v3 create recovery reproves the original body before upgrading to v4 and persists the exact selection before a failed read',async()=>{
  for(const status of ['failed','completed'] as const)for(const version of [2,3] as const){
@@ -121,11 +189,11 @@ test('v2 and v3 updates without original complete create proof keep their own di
  await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));assert.equal(f.job.notionReceipt!.canonicalVersion,version);assert.equal(f.job.notionReceipt!.expectedCanonicalDigest,oldDigest);assert.equal(f.job.notionReceipt!.state,'uncertain');assert.equal(f.job.steps[0].state,'started');assert.equal(f.writes(),0);
  }
 });
-test('a new aligned table save verifies a plain-delimiter readback immediately under v9 without a second write',async()=>{
+test('a new aligned table save verifies a plain-delimiter readback immediately under v10 without a second write',async()=>{
  const f=fixture(),expected='**预算**\n|项目|费用|备注|\n|---|---|---:|\n|场地|-100|+200:结余|',actual='<b>预算</b>\n|项目|费用|备注|\n| --- | --- | --- |\n|场地|-100|+200:结余|';
  f.mcp.readDocument=async()=>({text:actual});const tool=f.docs.tool(scope,'op','task',f.job,async()=>{}).structured!;
  const result=await tool.run(tool.validate({title:'预算',content:expected,final:true})) as {state:string};
- assert.equal(result.state,'verified');assert.equal(f.writes(),1);assert.equal(f.job.notionReceipt!.state,'verified');assert.equal(f.job.notionReceipt!.canonicalVersion,9);assert.equal(f.job.notionReceipt!.verification,undefined);assert.notEqual(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(expected,3));
+ assert.equal(result.state,'verified');assert.equal(f.writes(),1);assert.equal(f.job.notionReceipt!.state,'verified');assert.equal(f.job.notionReceipt!.canonicalVersion,10);assert.equal(f.job.notionReceipt!.verification,undefined);assert.notEqual(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(expected,3));
 });
 
 test('deadline recovery is single-use across restart and concurrent polling, and never resets the total read budget',async()=>{

@@ -15,6 +15,7 @@ import {projectNotionLeadingTitle,notionProjectedSource,type NotionTitleProjecti
 import type {ChatOperation} from './chatOperations.js';
 import {parseTaskOutcome} from './dispatchPlan.js';
 import {notionLinkRecoveryOffer,notionLinkRecoveryTitle,type NotionLinkRecoveryRequest} from './notionLinkRecovery.js';
+import {notionWriteAcknowledged} from './notionCompletion.js';
 
 const readOnlyRequest=(text:string)=>freshDocumentReadRequested(text)&&/只读|(?:不|不要)(?:修改|保存|写入)/.test(text);
 
@@ -100,6 +101,21 @@ type Comparison=NonNullable<Receipt['comparison']>;
 type VerificationResult={operationId:string;conversationId:string;state:'verified'|'scheduled'|'exhausted'|'blocked'};
 type ReconciledNotionResult={state:'verified';url?:string;operationId:string;expectedDigest?:string;digest?:string;checkpointKey?:string};
 type VerificationOptions={now?:()=>number;delays?:number[];deadlineMs?:number;leaseMs?:number};
+/** A successful response must identify exactly the page for this call. Error,
+ * pending-task and ambiguous responses are never acknowledgements of a write. */
+function acknowledgedPage(value:unknown):string|undefined{
+ if(!value||typeof value!=='object'||Array.isArray(value))return;
+ const result=value as Record<string,any>;
+ if(result.isError||result.error||result.success===false||result.async_task||['async_task','error'].includes(result.object)||['async_task','error'].includes(result.type)||result.status!==undefined&&!['succeeded','success','completed'].includes(result.status))return;
+ if(result.pages!==undefined&&(!Array.isArray(result.pages)||result.pages.length!==1))return;
+ const fields=[result.pages?.[0]?.id,result.pages?.[0]?.url,result.page?.id,result.page?.url,result.page_id,result.id,result.url].filter(item=>item!==undefined);
+ if(!fields.length)return;
+ try{const ids=fields.map(notionPageId);return ids.every(id=>id===ids[0])?ids[0]:undefined;}catch{return;}
+}
+function acknowledgement(receipt:Receipt,operationId:string,pageId:string,now:number):Receipt['writeAcknowledgement']{
+ if(!receipt.checkpointKey||!receipt.expectedDigest||!receipt.expectedRawDigest)return;
+ return {version:1,operationId,checkpointKey:receipt.checkpointKey,pageId,expectedDigest:receipt.expectedDigest,expectedRawDigest:receipt.expectedRawDigest,acknowledgedAt:new Date(now).toISOString(),...(receipt.asyncTaskId?{asyncTaskId:receipt.asyncTaskId}:{})};
+}
 const sameReceipt=(a:Receipt,b:Receipt)=>['pageId','asyncTaskId','expectedDigest','expectedCanonicalDigest','expectedRawDigest','expectedLength','expectedPageTitle','canonicalVersion','checkpointKey','final'].every(key=>a[key as keyof Receipt]===b[key as keyof Receipt])&&(['version','title','prefix'] as const).every(key=>a.titleProjection?.[key]===b.titleProjection?.[key]);
 const mayHaveWritten=(receipt?:Receipt)=>Boolean(receipt&&(receipt.state==='verified'||receipt.delivery==='unknown'||receipt.state==='uncertain'&&!['not_sent','rejected'].includes(receipt.delivery??'')));
 function unavailableComparison(receipt:Receipt,kind:'incomplete'|'read_failed',now:number):Comparison{
@@ -116,11 +132,11 @@ function compareNotionBody(receipt:Receipt,body:string,title:string|undefined,no
 }
 /** A new comparison may prove an old write only from its exact persisted
  * source and write checkpoint. It never infers text from the fetched page. */
-function exactV9SourceDigest(db:Database,s:WorkScope,op:ChatOperation,receipt:Receipt):string|undefined{
- if(receipt.canonicalVersion===9||!receipt.expectedDigest||!receipt.checkpointKey||!op.workRun?.steps?.some(step=>step.key===receipt.checkpointKey&&step.scopeId===op.id&&step.namespace==='worker'&&step.tool==='save_notion_draft'&&step.effect==='external_write'))return;
+function exactLatestSourceDigest(db:Database,s:WorkScope,op:ChatOperation,receipt:Receipt):string|undefined{
+ if(receipt.canonicalVersion===10||!receipt.expectedDigest||!receipt.checkpointKey||!op.workRun?.steps?.some(step=>step.key===receipt.checkpointKey&&step.scopeId===op.id&&step.namespace==='worker'&&step.tool==='save_notion_draft'&&step.effect==='external_write'))return;
  // A v8 write already persisted all three source proofs. Missing/corrupt
  // evidence cannot be replaced by the fetched page or a legacy downgrade.
- if(receipt.canonicalVersion===8&&(!receipt.expectedRawDigest||!receipt.expectedCanonicalDigest||receipt.expectedLength===undefined))return;
+ if([8,9].includes(receipt.canonicalVersion??0)&&(!receipt.expectedRawDigest||!receipt.expectedCanonicalDigest||receipt.expectedLength===undefined))return;
  const candidates:string[]=[];
  const accept=(body:unknown,exactArguments=false)=>{
   if(typeof body!=='string'||!body.trim()||body.length>50000||hash(normalized(body))!==receipt.expectedDigest)return;
@@ -150,7 +166,7 @@ function exactV9SourceDigest(db:Database,s:WorkScope,op:ChatOperation,receipt:Re
    accept(value.result.content);accept(parseTaskOutcome(value.result.content).content);
   }
  }
- const unique=[...new Set(candidates)];return unique.length===1?canonicalNotionDigest(unique[0],9):undefined;
+ const unique=[...new Set(candidates)];return unique.length===1?canonicalNotionDigest(unique[0],10):undefined;
 }
 function quotedReplacement(request: string) {
   // Only an unambiguous, explicitly quoted replacement in the real user turn.
@@ -286,11 +302,17 @@ export class NotionDocuments {
     const actualTitle=notionFetchedTitle(fetched);
     if(actualTitle===undefined)throw new NotionDocumentError('这页正文已读到，但实际标题还没完整读到，暂时不能采用；没有重写。');
     if(actualTitle!==title)throw new NotionDocumentError('这页的标题与本轮文稿不一致。请提供本次文章的原页；没有换绑或重写。',409);
-    const comparison=compareNotionBody(snapshot,body,actualTitle,this.now());
+    let comparison=compareNotionBody(snapshot,body,actualTitle,this.now()),latestExpected:string|undefined;
+    if(comparison.kind!=='matched'){
+      const latest=await this.store.read(),current=assertCurrent(latest);
+      latestExpected=exactLatestSourceDigest(latest,s,current,snapshot);
+      if(latestExpected)comparison=compareNotionBody(snapshot,body,actualTitle,this.now(),{version:10,expectedDigest:latestExpected});
+    }
     if(comparison.kind!=='matched')throw new NotionDocumentError('这页正文与本轮拟保存的全文不同，不能确认本次保存。原文没有改动，请核对是否给了另一版文章。',409);
     await verify();
     return this.store.mutate(data=>{
       const current=assertCurrent(data),job=current.workRun!,receipt=job.notionReceipt!,url=`https://www.notion.so/${pageId}`;
+      if(latestExpected&&exactLatestSourceDigest(data,s,current,snapshot)!==latestExpected)throw new NotionDocumentError('本次保存的原稿证据已变化，请重新核对原任务。',409);
       receipt.state='verified';receipt.pageId=pageId;receipt.url=url;receipt.digest=hash(body);receipt.comparison=comparison;receipt.verification=undefined;receipt.error=undefined;receipt.failureCode=undefined;
       receipt.linkRecovery={version:1,source:'user_supplied_page',selectionId:input.selectionId,pageId,parentId:targetSnapshot.parentId,connectionId:targetSnapshot.connectionId,grantId:targetSnapshot.grantId,checkpointKey:snapshot.checkpointKey!,expectedRawDigest:snapshot.expectedRawDigest!,expectedDigest:snapshot.expectedDigest!,expectedCanonicalDigest:snapshot.expectedCanonicalDigest!,expectedLength:snapshot.expectedLength!,selectedAt,verifiedAt:new Date(this.now()).toISOString()};
       // Preserve delivery=unknown and the original expected digests/versions.
@@ -346,11 +368,11 @@ export class NotionDocuments {
       v.state='checking';v.attempt++;v.leaseId=leaseId;v.leaseUntil=new Date(now+(this.verificationOptions.leaseMs??90_000)).toISOString();
       const task=db.conversations.find(c=>c.id===op.conversationId&&c.workspaceId===s.workspaceId&&c.userId===s.userId);
       if(manual&&['failed','completed'].includes(op.status)&&run.state==='failed'&&task&&!task.archived&&task.workPauseReason!=='user_stopped')run.notionVerificationSelection={operationId:op.id,expectedDigest:r.expectedDigest,pageId:r.pageId,asyncTaskId:r.asyncTaskId,checkpointKey:r.checkpointKey,version:v.version,connectionId:target.connectionId,grantId:target.grantId,parentId:target.parentId,requestedAt:new Date(now).toISOString()};
-      return {receipt:structuredClone(r),target:structuredClone(target),conversationId:op.conversationId!,version:v.version,presentationUpgrade,v9Expected:manual?exactV9SourceDigest(db,s,op,r):undefined};
+      return {receipt:structuredClone(r),target:structuredClone(target),conversationId:op.conversationId!,version:v.version,presentationUpgrade,latestExpected:manual?exactLatestSourceDigest(db,s,op,r):undefined};
     });
     if(!claimed)return;
     if('blocked' in claimed)return {operationId:opId,conversationId:claimed.conversationId,state:'exhausted'};
-    const snapshot=claimed.receipt;let pageId=snapshot.pageId,body:string|undefined,fetchedTitle:string|undefined,comparison:Comparison|undefined,reason:'read_failed'|'mismatch'|'incomplete'|'authorization'|'stale'|'no_page'='read_failed';
+    const snapshot=claimed.receipt;let pageId=snapshot.pageId,body:string|undefined,fetchedTitle:string|undefined,comparison:Comparison|undefined,writeAcknowledgement:Receipt['writeAcknowledgement'],reason:'read_failed'|'mismatch'|'incomplete'|'authorization'|'stale'|'no_page'='read_failed';
     const assertSnapshot=(db:Database)=>{
       const op=db.chatOperations?.find(o=>o.id===opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId&&o.conversationId===claimed.conversationId),run=op?.workRun,r=run?.notionReceipt;
       if(!op||!run||!r||r.verification?.version!==claimed.version||r.verification.leaseId!==leaseId||!sameReceipt(r,snapshot)||run.state==='running'||!manual&&['cancelled','interrupted'].includes(run.state)||(db.chatOperations??[]).some(other=>other.id!==op.id&&other.workspaceId===s.workspaceId&&other.userId===s.userId&&other.conversationId===op.conversationId&&mayHaveWritten(other.workRun?.notionReceipt)&&(other.createdAt??'')>(op.createdAt??'')))throw new NotionVerificationChanged();
@@ -358,7 +380,25 @@ export class NotionDocuments {
     };
     try{
       await verify();assertSnapshot(await this.store.read());
-      if(!pageId&&snapshot.asyncTaskId){const result=resultData(await this.mcp.callDocumentTool(s.workspaceId,claimed.target.connectionId,claimed.target.grantId,s.userId,'notion-get-async-task',{task_id:snapshot.asyncTaskId}));if(result?.status==='succeeded'){const value=result.result??result;pageId=notionPageId(value?.pages?.[0]?.id||value?.page?.id||value?.id||value?.url);}else if(result?.status==='failed')reason='no_page';}
+      if(!pageId&&snapshot.asyncTaskId){
+        const result=resultData(await this.mcp.callDocumentTool(s.workspaceId,claimed.target.connectionId,claimed.target.grantId,s.userId,'notion-get-async-task',{task_id:snapshot.asyncTaskId}));
+        if(result?.status==='succeeded'){
+          const value=result.result??result;
+          pageId=acknowledgedPage(value);
+          if(pageId){
+            writeAcknowledgement=acknowledgement(snapshot,opId,pageId,this.now());
+            await verify();
+            await this.store.mutate(db=>{
+              assertSnapshot(db);
+              const current=db.chatOperations!.find(operation=>operation.id===opId&&operation.workspaceId===s.workspaceId&&operation.userId===s.userId)!.workRun!.notionReceipt!;
+              current.pageId=pageId;current.url=`https://www.notion.so/${pageId}`;
+              if(writeAcknowledgement)current.writeAcknowledgement=writeAcknowledgement;
+            });
+            snapshot.pageId=pageId;snapshot.url=`https://www.notion.so/${pageId}`;
+          }
+          else reason='no_page';
+        }else if(result?.status==='failed')reason='no_page';
+      }
       if(pageId){await verify();assertSnapshot(await this.store.read());const fetched=await this.mcp.readDocument(s.workspaceId,pageId);body=notionBody(fetched);fetchedTitle=notionFetchedTitle(fetched);comparison=compareNotionBody(snapshot,body,fetchedTitle,this.now());reason='mismatch';}
       await verify();assertSnapshot(await this.store.read());
     }catch(error){
@@ -377,7 +417,7 @@ export class NotionDocuments {
     const presentation=!matchedOriginal&&claimed.presentationUpgrade&&body!==undefined&&snapshot.expectedCanonicalDigest?compareNotionBody(snapshot,body,fetchedTitle,this.now(),{version:5,expectedDigest:snapshot.expectedCanonicalDigest}):undefined;
     const matchedPresentation=presentation?.kind==='matched';
     if(matchedPresentation)comparison=presentation;
-    const reproof=!matchedOriginal&&!matchedPresentation&&body!==undefined&&claimed.v9Expected?compareNotionBody(snapshot,body,fetchedTitle,this.now(),{version:9,expectedDigest:claimed.v9Expected}):undefined;
+    const reproof=!matchedOriginal&&!matchedPresentation&&body!==undefined&&claimed.latestExpected?compareNotionBody(snapshot,body,fetchedTitle,this.now(),{version:10,expectedDigest:claimed.latestExpected}):undefined;
     if(reproof)comparison=reproof;
     const matched=matchedOriginal||matchedPresentation||reproof?.kind==='matched';
     return this.store.mutate(db=>{
@@ -386,7 +426,9 @@ export class NotionDocuments {
       try{this.assertTarget(db,s,claimed.target);}catch{reason='authorization';}
       const newer=(db.chatOperations??[]).some(other=>other.id!==op.id&&other.workspaceId===s.workspaceId&&other.userId===s.userId&&other.conversationId===op.conversationId&&mayHaveWritten(other.workRun?.notionReceipt)&&(other.createdAt??'')>(op.createdAt??''));
       if(newer)reason='stale';
+      if(reproof?.kind==='matched'&&exactLatestSourceDigest(db,s,op,snapshot)!==claimed.latestExpected)reason='stale';
       r.comparison=comparison;
+      if(writeAcknowledgement&&reason!=='authorization'&&reason!=='stale')r.writeAcknowledgement=writeAcknowledgement;
       if(matched&&reason!=='authorization'&&reason!=='stale'){
         if(matchedPresentation)r.canonicalVersion=5;
         const newlyVerified=r.state!=='verified';r.state='verified';r.pageId=pageId;r.url=`https://www.notion.so/${pageId}`;r.digest=hash(body!);r.error=undefined;r.failureCode=undefined;r.verification=undefined;
@@ -463,7 +505,7 @@ export class NotionDocuments {
           const projected=!target.pageId&&options.projectLeadingTitle?projectNotionLeadingTitle(expected):undefined;
           const titleProjection:NotionTitleProjection|undefined=projected?{version:1,title:projected.title,prefix:projected.prefix}:undefined;
           const createTitle=projected?.title??v.title,createBody=projected?.content??v.content;
-          const expectedReceipt:Receipt={state:'pending',delivery:'not_sent',pageId:target.pageId,url:target.url,expectedDigest:hash(normalized(expected)),expectedRawDigest:hash(expected),expectedLength:expected.length,expectedCanonicalDigest:canonicalNotionDigest(expected,9),canonicalVersion:9,checkpointKey:taskStepKey('worker','save_notion_draft',JSON.stringify(v)),...(!target.pageId?{expectedPageTitle:createTitle}:{}),titleProjection,final:v.final===true};
+          const expectedReceipt:Receipt={state:'pending',delivery:'not_sent',pageId:target.pageId,url:target.url,expectedDigest:hash(normalized(expected)),expectedRawDigest:hash(expected),expectedLength:expected.length,expectedCanonicalDigest:canonicalNotionDigest(expected,10),canonicalVersion:10,checkpointKey:taskStepKey('worker','save_notion_draft',JSON.stringify(v)),...(!target.pageId?{expectedPageTitle:createTitle}:{}),titleProjection,final:v.final===true};
           // Persist before sending. Duplicate calls, disconnects and restarts
           // cannot turn a possibly-applied write into an automatic retry.
           await this.store.mutate(d => {
@@ -538,7 +580,9 @@ export class NotionDocuments {
             if (!pageId) pageId = notionPageId(response?.pages?.[0]?.id || response?.pages?.[0]?.url || response?.page?.id || response?.id || response?.url);
             const url = `https://www.notion.so/${pageId}`;
             // Retain the created page even if readback/cancellation fails.
-            await record({ state: 'pending', pageId, url });
+            const responsePageId=acknowledgedPage(response);
+            const sourceReceipt=job.notionReceipt??expectedReceipt;
+            await record({ state: 'pending', pageId, url,...(responsePageId===pageId?{delivery:'unknown',writeAcknowledgement:acknowledgement(sourceReceipt,opId,pageId,this.now())}:{}) });
             failureCode = 'readback_failed';
             const fetched=await this.mcp.readDocument(s.workspaceId,pageId),actual=notionBody(fetched);comparison=compareNotionBody(expectedReceipt,actual,notionFetchedTitle(fetched),this.now());
             failureCode = 'readback_mismatch';
@@ -555,7 +599,8 @@ export class NotionDocuments {
               throw new NotionDocumentError(message);
             }
             const failure = error instanceof NotionWriteError && failureCode === 'write_unconfirmed' ? error : undefined;
-            const message = failure && failure.delivery !== 'unknown' ? failure.message : 'Notion 保存未确认，可能已写入；请核对原页面，不会自动重跑。';
+            const received=notionWriteAcknowledged((await this.store.read()).chatOperations?.find(o=>o.id===opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId)?.workRun?.notionReceipt,opId);
+            const message = failure && failure.delivery !== 'unknown' ? failure.message : received?'Notion 已返回写入成功回执，正文完整性尚未确认。':'Notion 保存未确认，可能已写入；请核对原页面，不会自动重跑。';
             await record({ state: 'uncertain', pageId, url: pageId ? `https://www.notion.so/${pageId}` : undefined, failureCode, delivery: failure?.delivery ?? 'unknown', diagnostic: failure ? {phase: failure.phase, reason: failure.reason, upstreamCode: failure.upstreamCode} : undefined, error: message,comparison });
             if((pageId||job.notionReceipt?.asyncTaskId)&&!['not_sent','rejected'].includes(failure?.delivery??'unknown'))await this.store.mutate(db=>{
               const op=db.chatOperations?.find(o=>o.id===opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId&&o.conversationId===cid),r=op?.workRun?.notionReceipt,task=db.conversations.find(c=>c.id===cid&&c.workspaceId===s.workspaceId&&c.userId===s.userId);

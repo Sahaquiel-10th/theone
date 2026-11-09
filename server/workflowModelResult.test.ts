@@ -57,3 +57,34 @@ test('a malformed reserved three-field result never becomes an ordinary successf
  }
  for(const summary of [null,{},42])assert.equal(parseWorkflowModelOutcome(JSON.stringify({...value,summary}),title).outcome,'failed');
 });
+
+test('literal newlines and tabs in an exact guided JSON result decode to manuscript bytes',()=>{
+ const content='# 合成文章\n\n段落含中文、"引号"、反斜线 \\ 与制表\t符。\r\n\n自然结尾。';
+ const expected={outcome:'completed' as const,content,summary:'正文完成。'};
+ const raw=JSON.stringify(expected).replaceAll('\\n','\n').replaceAll('\\r','\r').replaceAll('\\t','\t');
+ for(const input of [raw,'```json\n'+raw+'\n```',`这是“${title}”步骤的结果。\n\n\`\`\`json\n${raw}\n\`\`\``]){
+  assert.deepEqual(parseWorkflowModelOutcome(input,title),expected);
+ }
+ for(const outcome of ['failed','partial','needs_input'] as const){
+  const result={...expected,outcome};
+  assert.deepEqual(parseWorkflowModelOutcome(JSON.stringify(result).replaceAll('\\n','\n'),title),result);
+ }
+});
+
+test('ambiguous malformed guided envelopes cannot become a completed manuscript',()=>{
+ for(const raw of [
+  '{"outcome":"completed","content":"段落\n这里有"未转义引号"。","summary":"完成"}',
+  '{"outcome":"completed","content":"段落\n缺少结尾","summary":"完成"',
+  '{"outcome":"completed","content":"段落\n非法转义\\q","summary":"完成"}',
+  '{"outcome":"completed","content":"正文\n出现"不完整}引号"。","summary":"完成"}',
+  '{"outcome":"completed","content":"正文\n出现"不完整]引号"。","summary":"完成"}',
+  '{"outcome":"completed","content":"正文甲","content":"正文乙","summary":"完成"}',
+  '{"outcome":"completed","content":"正文甲","\\u0063ontent":"正文乙","summary":"完成"}',
+ ]){
+  const parsed=parseWorkflowModelOutcome(raw,title);
+  assert.equal(parsed.outcome,'failed');
+  assert.equal(parsed.content,raw,'retain the returned data for review');
+ }
+ const article='# 教程\n\n以下 JSON 示例有未转义换行\n\n{"outcome":"completed","content":"甲\n乙","summary":"例子"}';
+ assert.equal(parseWorkflowModelOutcome(article,title).content,article);
+});
