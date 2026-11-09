@@ -137,6 +137,7 @@ export function notionMissingSaveFeedback(text:string):boolean {
  * This is not evidence that an earlier creative task was completed. */
 export function notionSaveExistingRequested(text:string,selected?:'chat'|'notion'):boolean {
   if(!notionDestinationRequested(text,selected))return false;
+  if(notionMissingSaveFeedback(text))return true;
   // Remove only explicitly declined actions, not the rest of their clause.
   // Bare “不改写/不重新生成” preserves the existing article just as “不要”
   // does; “不要重写但生成封面” still contains positive extra work and must

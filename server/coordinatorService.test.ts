@@ -4382,7 +4382,7 @@ test('an old verified receipt is not fresh proof when an explicit recheck finds 
  assert.match(detail.conversation.messages.at(-1)!.content,/未能完整核对|没能完整核对/);assert.doesNotMatch(detail.conversation.messages.at(-1)!.content,/已保存到 Notion · 已回读核对|任务已完成/);assert.match(detail.conversation.messages.at(-1)!.content,/打开 Notion 原文/);
 });
 
-async function lateSaveFixture(options:{partial?:boolean;fromMain?:boolean;article?:string;articleRequest?:string;workflow?:import('./taskWorkflow.js').WorkflowSpec}={}){
+async function lateSaveFixture(options:{partial?:boolean;fromMain?:boolean;article?:string;articleRequest?:string;workflow?:import('./taskWorkflow.js').WorkflowSpec;expectSaveOnlyPrompt?:boolean;handoffInstruction?:string}={}){
  const f=fixture(),article=options.article??'# 合成方案\n\n第一段：青色42。\n\n'+('保留原始段落与换行，不要再生成。\n'.repeat(520))+'\n原文结尾。';
  let taskId:string,sourceId:string;
  if(options.fromMain){
@@ -4408,9 +4408,14 @@ async function lateSaveFixture(options:{partial?:boolean;fromMain?:boolean;artic
  }} as unknown as NotionMcpService;
  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('saving existing text must not retrieve knowledge again')},{notionDocuments:new NotionDocuments(f.store,mcp),modelCall:async(model,messages)=>{
   if(model.id!=='router'){workerCalls++;assert.fail('saving an existing result must not buy or rewrite with another model');}
+  if(options.expectSaveOnlyPrompt){
+   const capability=messages.find(message=>message.role==='system'&&message.content?.startsWith('Notion 保存能力'))?.content??'';
+   assert.match(capability,/若写作已完成且本轮只保存：先定位同一任务和现有全文，只保存与核对，不重写文章/);
+   assert.doesNotMatch(capability,/新写或续改按本轮目标生成或修改正文/);
+  }
   routeCalls++;
   if(messages.at(-1)?.role==='tool')return answer('我来保存这篇原文。');
-  return {...answer(''),toolCalls:[{id:'late-save',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:options.fromMain?null:taskId,title:'保存合成原文',instruction:'把这篇现有原文保存到 Notion，不重写，不查知识库。',executorId:'general',featureIds:[],workflow:options.workflow})}}]};
+  return {...answer(''),toolCalls:[{id:'late-save',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:options.fromMain?null:taskId,title:'保存合成原文',instruction:options.handoffInstruction??'把这篇现有原文保存到 Notion，不重写，不查知识库。',executorId:'general',featureIds:[],workflow:options.workflow})}}]};
  }});
  return {...f,service,article,expectedBody:article.replace(/^# [^\n]+\n\n/,''),taskId,sourceId,pageId,counts:()=>({title,body,writes,workerCalls,routeCalls})};
 }
@@ -4432,7 +4437,7 @@ for(const explicit of [false,true])test(`an authorized missing-save report prese
   {id:'draft',title:'整理完整成果',kind:'model',instruction:'复用已经完成的正文，不改写。',inputs:[],required:true},
   {id:'save',title:'保存到原定位置',kind:'notion',instruction:'保存并完整回读核对。',inputs:['draft'],required:true},
  ]};
- const f=await lateSaveFixture({workflow:explicit?workflow:undefined});
+ const f=await lateSaveFixture({workflow:explicit?workflow:undefined,expectSaveOnlyPrompt:true});
  const r=await f.service.dispatch(a,{...input(`operation_missing_save_${explicit}`,'没写到notion里啊？'),outputDestination:'notion',boundTaskId:f.taskId},key);
  assert.equal(r.taskId,f.taskId);
  await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,f.taskId)).jobs.at(-1)!.state==='completed');
@@ -4441,6 +4446,20 @@ for(const explicit of [false,true])test(`an authorized missing-save report prese
  assert.equal(run.notionArticleSource!.operationId,f.sourceId);assert.deepEqual(run.workflow!.spec.steps.map(step=>[step.id,step.kind]),[['save_existing','notion']]);
  assert.equal(run.notionReceipt!.state,'verified');assert.deepEqual(run.contract!.requiredTools,['save_notion_draft']);
  await f.service.resume(a,key);assert.equal(f.counts().writes,1);
+});
+
+test('missing-save classification cannot force an existing-article write from a read-only handoff',async()=>{
+ const f=await lateSaveFixture({handoffInstruction:'只检查已完成内容是否存在，返回已有状态，不保存或修改页面。',workflow:{version:1,steps:[
+  {id:'check',title:'检查已有状态',kind:'model',instruction:'只返回已有处理状态。',inputs:[],required:true},
+ ]}});
+ const before=(await f.store.read()).chatOperations!.filter(op=>op.workRun).length;
+ const result=await f.service.dispatch(a,{...input('operation_missing_save_readonly_handoff','没写到notion里啊？'),outputDestination:'notion',boundTaskId:f.taskId},key);
+ // The read-only handoff cannot satisfy the selected Notion destination.
+ // Missing-save classification must not replace it with a deterministic write.
+ assert.equal(result.taskIds.length,0);
+ await f.service.resume(a,key);
+ const operations=(await f.store.read()).chatOperations!.filter(op=>op.workRun);
+ assert.equal(operations.length,before);assert.equal(f.counts().writes,0);assert.equal(f.counts().workerCalls,0);
 });
 
 test('missing-save feedback cannot acquire a Notion grant, another owner or an ambiguous main-chat source',async()=>{

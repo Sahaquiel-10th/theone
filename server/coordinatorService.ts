@@ -2348,8 +2348,7 @@ export class CoordinatorService {
       if ((db.chatOperations || []).some(o => own(o, s) && o.conversationId === existing?.id && o.workRun?.notionReceipt && o.workRun.notionReceipt.state !== 'verified' && !['not_sent','rejected'].includes(o.workRun.notionReceipt.delivery || '') && o.workRun.state !== 'running')) throw new NotionDocumentError('前一轮 Notion 保存未确认，请先核对原页面；不会重复创建或修改');
     }
     const currentArticleMaterial=Boolean(input.attachmentIds?.length)||/(?:正文|原文|材料|素材)(?:如下|是|为)?\s*[:：][\s\S]+/u.test(input.text);
-    const preserveExisting=notionSaveExistingRequested(input.text,input.outputDestination)||newNotionWrite&&notionMissingSaveFeedback(input.text);
-    const saveExisting=Boolean(notionTarget&&!boundRead&&!currentArticleMaterial&&!input.features.length&&!input.requiredFeatureIds?.length&&!(input.requiredTools??[]).some(name=>name!=='save_notion_draft')&&preserveExisting);
+    const saveExisting=Boolean(notionTarget&&!boundRead&&!currentArticleMaterial&&!input.features.length&&!input.requiredFeatureIds?.length&&!(input.requiredTools??[]).some(name=>name!=='save_notion_draft')&&notionSaveExistingRequested(input.text,input.outputDestination)&&(!notionMissingSaveFeedback(input.text)||newNotionWrite));
     if(saveExisting&&input.notionArticleRead&&!input.notionArticleMessageId)throw new OrchestrationInputError('本轮历史查找还没有定位到唯一、完整且可用的原文。请用 read_context 的 messageId 核对指定回复，不要改存其他普通答复。');
     const article=saveExisting?existingNotionArticle(db,s,existing?.id??input.notionArticleConversationId??input.originConversationId??'',undefined,input.notionArticleMessageId):undefined;
     if(article&&input.notionArticleMessageId&&(article.source.messageId!==input.notionArticleMessageId||input.notionArticleConversationId&&article.source.conversationId!==input.notionArticleConversationId))throw new OrchestrationInputError('原稿来源已经变化，尚未保存。请重新读取同一条原文后交接；不能用其他消息或任务的同文副本替代已选原稿。');

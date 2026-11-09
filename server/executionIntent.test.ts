@@ -36,7 +36,9 @@ test('save-only intent removes bounded explicitly negated work, including bare �
 test('missing-save feedback identifies the existing result without becoming write authority',()=>{
  for(const text of ['没写到notion里啊？','这篇文章，还没有保存到 Notion 呢？','又没存入Notion？']){
   assert.equal(notionMissingSaveFeedback(text),true,text);
+  assert.equal(notionSaveExistingRequested(text,'notion'),true,text);
   assert.equal(notionDestinationRequested(`只回答，${text}`,'notion'),false,text);
+  assert.equal(notionSaveExistingRequested(`只回答，${text}`,'notion'),false,text);
  }
  for(const text of ['保存到Notion了吗？','只回答，没写到notion里啊？','没有保存到Notion，先不要保存。','没写到Notion里啊？顺便把结尾重写。','他说“没写到Notion里啊？”','> 没写到Notion里啊？','```text\n没写到Notion里啊？\n```'])assert.equal(notionMissingSaveFeedback(text),false,text);
 });
