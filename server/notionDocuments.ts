@@ -17,7 +17,7 @@ import {parseTaskOutcome} from './dispatchPlan.js';
 import {notionLinkRecoveryOffer,notionLinkRecoveryTitle,type NotionLinkRecoveryRequest} from './notionLinkRecovery.js';
 import {notionWriteAcknowledged,notionDeliveryConfirmed} from './notionCompletion.js';
 import {existingNotionArticle} from './notionArticleSource.js';
-import {checkNotionContentIntegrity} from './notionContentIntegrity.js';
+import {checkNotionContentIntegrity,notionTitleCovered} from './notionContentIntegrity.js';
 
 const readOnlyRequest=(text:string)=>freshDocumentReadRequested(text)&&/只读|(?:不|不要)(?:修改|保存|写入)/.test(text);
 
@@ -131,6 +131,20 @@ function compareNotionBody(receipt:Receipt,body:string,title:string|undefined,no
  return {version:1,kind,checkedAt:new Date(now).toISOString(),comparatorVersion:version,actualBodyDigest:hash(body),actualBodyLength:body.length,
   ...(source!==undefined?{actualSourceDigest:hash(source),actualSourceLength:source.length,actualCanonicalDigest:digest}:{}),...(expected?{expectedCanonicalDigest:expected}:{}),
   ...(projection?{expectedTitleDigest:hash(projection.title)}:{}),...(title!==undefined?{actualTitleDigest:hash(title)}:{})};
+}
+/** Page title and body are separate fetch fields. Same-page updates may
+ * have no write-time projection marker even when the original H1 is now the
+ * safely decorated actual title property. This read-only view never changes source hashes. */
+function documentIntegrity(receipt:Receipt,source:string,body:string,actualTitle:string|undefined):NonNullable<Receipt['integrity']>{
+ const projection=receipt.titleProjection,leading=projectNotionLeadingTitle(source);
+ // An unavailable title cannot prove this source heading is missing. Passing
+ // it separately keeps that case inconclusive until the property is readable.
+ const titleSource=!projection&&leading&&(actualTitle===undefined||notionTitleCovered(leading.title,actualTitle))?leading:undefined;
+ const result=checkNotionContentIntegrity({source:projection?source.slice(projection.prefix.length):titleSource?titleSource.content:source,remote:body,remoteComplete:true,...(titleSource?{sourceTitle:titleSource.title,remoteTitle:actualTitle}:{})});
+ const sourceTitle=projection?.title??leading?.title;
+ if(!sourceTitle)return result;
+ const title=actualTitle===undefined?'unavailable':notionTitleCovered(sourceTitle,actualTitle)?'matched':'different';
+ return {...result,title,...(result.state==='covered'&&title==='different'?{reason:'title_difference' as const}:{})};
 }
 /** A new comparison may prove an old write only from its exact persisted
  * source and write checkpoint. It never infers text from the fetched page. */
@@ -356,15 +370,15 @@ export class NotionDocuments {
       latestExpected=exactLatestSourceDigest(latest,s,current,snapshot);
       if(latestExpected)comparison=compareNotionBody(snapshot,body,actualTitle,this.now(),{version:CURRENT_NOTION_CANONICAL_VERSION,expectedDigest:latestExpected});
     }
-    const sourceSnapshot=exactNotionSource(await this.store.read(),s,op,snapshot),projection=snapshot.titleProjection;
-    const integrity=sourceSnapshot===undefined?undefined:checkNotionContentIntegrity({source:projection?sourceSnapshot.slice(projection.prefix.length):sourceSnapshot,remote:body,remoteComplete:true});
+    const sourceSnapshot=exactNotionSource(await this.store.read(),s,op,snapshot);
+    const integrity=sourceSnapshot===undefined?undefined:documentIntegrity(snapshot,sourceSnapshot,body,actualTitle);
     if(comparison.kind!=='matched'&&integrity?.state!=='covered')throw new NotionDocumentError('这页正文尚不能证明包含本轮完整原稿，暂时没有采用或重写。',409);
     await verify();
     return this.store.mutate(data=>{
       const current=assertCurrent(data),job=current.workRun!,receipt=job.notionReceipt!,url=`https://www.notion.so/${pageId}`;
       if(latestExpected&&exactLatestSourceDigest(data,s,current,snapshot)!==latestExpected)throw new NotionDocumentError('本次保存的原稿证据已变化，请重新核对原任务。',409);
       if(sourceSnapshot!==undefined&&exactNotionSource(data,s,current,snapshot)!==sourceSnapshot)throw new NotionDocumentError('本次保存的原稿证据已变化，请重新核对原任务。',409);
-      receipt.integrity={...integrity,state:'covered',checkedAt:new Date(this.now()).toISOString(),title:actualTitle.includes(title)?'matched':'different',...(actualTitle.includes(title)?{}:{reason:'title_difference'})};
+      receipt.integrity={...integrity,state:'covered',checkedAt:new Date(this.now()).toISOString(),...(!integrity?.title?{title:notionTitleCovered(title,actualTitle)?'matched':'different',...(notionTitleCovered(title,actualTitle)?{}:{reason:'title_difference' as const})}:{})};
       receipt.state='verified';receipt.pageId=pageId;receipt.url=url;receipt.digest=hash(body);receipt.comparison=comparison;receipt.verification=undefined;receipt.error=undefined;receipt.failureCode=undefined;
       receipt.linkRecovery={version:1,source:'user_supplied_page',selectionId:input.selectionId,pageId,parentId:targetSnapshot.parentId,connectionId:targetSnapshot.connectionId,grantId:targetSnapshot.grantId,checkpointKey:snapshot.checkpointKey!,expectedRawDigest:snapshot.expectedRawDigest!,expectedDigest:snapshot.expectedDigest!,expectedCanonicalDigest:snapshot.expectedCanonicalDigest!,expectedLength:snapshot.expectedLength!,selectedAt,verifiedAt:new Date(this.now()).toISOString()};
       // Preserve delivery=unknown and the original expected digests/versions.
@@ -474,15 +488,7 @@ export class NotionDocuments {
     const source=claimed.integritySource;
     let integrity:Receipt['integrity'];
     if(body!==undefined&&source!==undefined){
-      const projection=snapshot.titleProjection;
-      integrity={...checkNotionContentIntegrity({source:projection?source.slice(projection.prefix.length):source,remote:body,remoteComplete:true}),checkedAt:new Date(this.now()).toISOString()};
-      // Same-page updates retain their existing page property. A stale QA
-      // title is a quality issue even when the full authored H1 is in the body.
-      const sourceTitle=projection?.title??projectNotionLeadingTitle(source)?.title;
-      if(sourceTitle){
-        integrity.title=fetchedTitle===undefined?'unavailable':fetchedTitle.includes(sourceTitle)?'matched':'different';
-        if(integrity.state==='covered'&&integrity.title==='different')integrity.reason='title_difference';
-      }
+      integrity={...documentIntegrity(snapshot,source,body,fetchedTitle),checkedAt:new Date(this.now()).toISOString()};
     }else integrity={state:'inconclusive',checkedAt:new Date(this.now()).toISOString(),reason:body===undefined?'read_failed':'source_unavailable'};
     const matched=matchedOriginal||matchedPresentation||reproof?.kind==='matched'||integrity.state==='covered';
     if(matched)integrity={...integrity,state:'covered',reason:integrity.title==='different'?'title_difference':undefined};

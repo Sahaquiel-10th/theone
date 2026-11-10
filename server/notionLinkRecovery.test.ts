@@ -228,3 +228,13 @@ test('ordinary page reads and known-page tasks retain normal routing instead of 
  delete f.job.notionReceipt!.pageId;delete f.job.notionReceipt!.expectedPageTitle;
  assert.equal(selectNotionLinkRecovery(f.db,scope,{text:'原页链接是 '+url,boundTaskId:'task'}).kind,'unavailable','only a relevant incomplete original proof explains recovery unavailability');
 });
+
+for(const decorated of [false,true])test(`user-selected original-page recovery combines a proved source H1 and safe title property; decorated=${decorated}`,async()=>{
+ const source='# 真实原稿标题\n\n正文第一段。\n\n保留完整结尾。',f=await fixture(source);
+ f.db.contextTraces.push({...scope,conversationId:'task',requestId:f.op.requestId,executionSteps:[{tool:'save_notion_draft',query:JSON.stringify(f.args)}]} as any);
+ const original=structuredClone(f.job.notionReceipt!);f.mcp.readDocument=async(_ws,id)=>{
+  f.reads.push(id);return id===parentId?f.parent():{properties:{title:decorated?'2026-11-10 · 真实原稿标题（草稿）':'真实原稿标题'},text:'正文第一段。\n\n保留完整结尾。'};
+ };
+ assert.equal((await f.check()).state,'verified');assert.equal(f.job.notionReceipt!.integrity!.state,'covered');assert.equal(f.job.notionReceipt!.integrity!.sourceBlockCount,3);assert.equal(f.job.notionReceipt!.integrity!.matchedBlockCount,3);assert.equal(f.job.notionReceipt!.integrity!.title,'matched');assert.equal(f.writes(),1);
+ for(const key of ['expectedDigest','expectedRawDigest','expectedCanonicalDigest','canonicalVersion','expectedLength','checkpointKey','titleProjection'] as const)assert.deepEqual(f.job.notionReceipt![key],original[key]);
+});

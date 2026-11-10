@@ -140,7 +140,7 @@ function numericBoundary(source:string,remote:string,start:number){
  return !(/^\d/.test(source)&&/[+\-\d.]/.test(before)||/[\d%]$/.test(source)&&/[\d.%]/.test(after));
 }
 const titleDecoration=(value:string)=>/^(?:(?:草稿|副本|已保存|更新于|创建于)|[+-]?\d+e[+-]?\d+%?|[\s\p{P}\p{S}\d年月日时分秒])*$/u.test(value);
-function decoratedTitle(source:string,remote:string):boolean{
+export function notionTitleCovered(source:string,remote:string):boolean{
  const expected=prose(source),actual=prose(remote);
  if(!expected)return false;
  for(let at=actual.indexOf(expected);at>=0;at=actual.indexOf(expected,at+1)){
@@ -169,7 +169,7 @@ function matches(source:ContentBlock,remote:ContentBlock):Match{
   if(sameTokens(source.tokens,remote.tokens))return 'matched';
   const expected=visibleText(source.tokens),actual=visibleText(remote.tokens);
   if(expected&&actual){
-   if(source.heading&&remote.heading&&decoratedTitle(expected,actual))return 'matched';
+   if(source.heading&&remote.heading&&notionTitleCovered(expected,actual))return 'matched';
    if(textContains(expected,actual))return 'ambiguous';
   }
  }
@@ -222,7 +222,7 @@ function orderedLayoutAtoms(expected:LayoutAtom[],actual:LayoutAtom[]):boolean{
  * consumes every visible source atom in order, preserving duplicates, link
  * targets, literal code and each table row's separate cell values. */
 function possibleLayout(source:ParsedDocument,remote:ParsedDocument,input:NotionContentIntegrityInput){
- const remoteTitle=input.sourceTitle!==undefined&&!decoratedTitle(input.sourceTitle,input.remoteTitle??'')?undefined:input.remoteTitle;
+ const remoteTitle=input.sourceTitle!==undefined&&!notionTitleCovered(input.sourceTitle,input.remoteTitle??'')?undefined:input.remoteTitle;
  return orderedLayoutAtoms(layoutAtoms(source.blocks,input.sourceTitle),layoutAtoms(remote.blocks,remoteTitle));
 }
 
@@ -247,7 +247,7 @@ export function checkNotionContentIntegrity(input:NotionContentIntegrityInput):N
  if(input.sourceTitle!==undefined&&input.remoteTitle===undefined)return inconclusive('title_unavailable');
  const missing:number[]=[];let cursor=0,ambiguous=false;
  if(input.sourceTitle!==undefined){
-  if(decoratedTitle(input.sourceTitle,input.remoteTitle!))stats.matchedBlockCount++;
+  if(notionTitleCovered(input.sourceTitle,input.remoteTitle!))stats.matchedBlockCount++;
   else missing.push(1);
  }
  for(const [index,block] of source.blocks.entries()){

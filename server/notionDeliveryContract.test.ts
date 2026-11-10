@@ -66,3 +66,27 @@ test('async polling with page-shaped payloads but no succeeded status cannot man
  }finally{t.mock.timers.reset();}
  assert.equal(polls,10);assert.equal(f.writes(),1);assert.equal(f.reads(),0);assert.equal(f.job.notionReceipt!.state,'uncertain');assert.equal(f.job.notionReceipt!.writeAcknowledgement,undefined);assert.equal(notionDeliveryConfirmed(f.job.notionReceipt,'operation'),false);assert.equal(f.job.notionReceipt!.pageId,undefined);assert.equal(f.job.steps![0].state,'started');
 });
+
+for(const scenario of ['changed_body','complete','decorated_title','decorated_changed_body','negated_title','wrong_title','unknown_title'] as const)test(`same-page source H1 uses only its safely matching actual title property during background ${scenario} checking`,async()=>{
+ const f=fixture(),title=scenario==='negated_title'?'批准计划':'用户买的从来不是钻头，而是墙上那个洞';
+ const blocks=Array.from({length:38},(_,index)=>`第${index+2}块合成段落，唯一编号${index+2}。`),source=`# ${title}\n\n${blocks.join('\n\n')}`;
+ let actual='旧正文',writes=0;f.job.notionTarget!.pageId=pageId;
+ const actualTitle=scenario==='wrong_title'?'另一个不相符的标题':scenario==='negated_title'?'不'+title:scenario.startsWith('decorated_')?`2026-11-10 · ${title}（草稿）`:title;
+ f.mcp.readDocument=async()=>({text:actual,...(scenario!=='unknown_title'?{properties:{title:actualTitle}}:{})});
+ f.mcp.callDocumentTool=async(_w,_c,_g,_u,name,args:any,before)=>{assert.equal(name,'notion-update-page');await before?.();writes++;assert.equal((f.job.steps![0].output as any).content,source);actual=args.content_updates[0].new_str;return {id:pageId};};
+ const tool=f.docs.tool(scope,'operation','task',f.job,async()=>{},actual).structured!;
+ assert.equal((await tool.run(tool.validate({old_str:actual,new_str:source,final:true})) as any).state,'delivered');
+ f.job.state='completed';f.db.chatOperations![0].status='completed';
+ const {canonicalNotionDigest}=await import('./notionCanonical.js');
+ const receipt=f.job.notionReceipt!;receipt.canonicalVersion=9;receipt.expectedCanonicalDigest=canonicalNotionDigest(source,9);
+ const before=structuredClone(receipt);assert.equal(receipt.titleProjection,undefined,'same-page updates do not invent a historical projection');
+ actual=blocks.map((block,index)=>['changed_body','decorated_changed_body'].includes(scenario)&&[0,37].includes(index)?block.replace('合成段落','用户改过的段落'):block).join('\n\n');
+ f.advance(1);await f.docs.reconcileDue(scope,async()=>{});
+ const integrity=receipt.integrity!;
+ assert.equal(integrity.sourceBlockCount,39);assert.equal(writes,1);assert.equal(receipt.state,'delivered');
+ if(scenario==='changed_body'||scenario==='decorated_changed_body'){assert.equal(integrity.state,'missing');assert.deepEqual(integrity.missingBlockIndexes,[2,39]);assert.equal(integrity.missingBlockCount,2);assert.equal(integrity.title,'matched');}
+ if(scenario==='complete'||scenario==='decorated_title'){assert.equal(integrity.state,'covered');assert.equal(integrity.matchedBlockCount,39);assert.deepEqual(integrity.missingBlockIndexes,[]);}
+ if(scenario==='wrong_title'||scenario==='negated_title'){assert.equal(integrity.state,'missing');assert.deepEqual(integrity.missingBlockIndexes,[1]);assert.equal(integrity.title,'different');}
+ if(scenario==='unknown_title'){assert.equal(integrity.state,'inconclusive');assert.deepEqual(integrity.missingBlockIndexes,[]);assert.equal(integrity.reason,'title_unavailable');assert.equal(integrity.title,'unavailable');}
+ for(const key of ['expectedDigest','expectedRawDigest','expectedCanonicalDigest','canonicalVersion','expectedLength','checkpointKey','titleProjection','writeAcknowledgement','final'] as const)assert.deepEqual(receipt[key],before[key],key+' remains immutable');
+});
