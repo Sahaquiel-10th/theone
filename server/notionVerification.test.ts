@@ -21,15 +21,26 @@ function fixture(){
  const mcp={readDocument:async(ws:string,id:string)=>{assert.equal(ws,scope.workspaceId);assert.equal(id,pageId);reads++;return {text:`<page><content>${body}</content></page>`};},callDocumentTool:async(_ws:string,_c:string,_g:string,_u:string,name:string,value:any,before?:()=>Promise<void>)=>{assert.ok(['notion-create-pages','notion-update-page'].includes(name));await before?.();writes++;body=name==='notion-create-pages'?value.pages[0].content:body.replace(value.content_updates[0].old_str,value.content_updates[0].new_str);return {pages:[{id:pageId}]};}} as unknown as NotionMcpService;
  const docs=new NotionDocuments(store,mcp,{now:()=>now,delays:[10,20,30],deadlineMs:1000,leaseMs:50});
  const steps=job.steps!;const checkpoint:TaskStepStore={namespace:'worker',steps,save:async step=>{const i=steps.findIndex(s=>s.key===step.key);if(i<0)steps.push(step);else steps[i]=step;}};
+ // An explicit unknown-response fixture exercises the legacy/uncertain path.
+ // It must never be confused with a trusted provider success acknowledgement.
  async function failWrite(value:unknown=args,existing=false){
   if(existing)job.notionTarget!.pageId=pageId;
-  await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[docs.tool(scope,'op','task',job,async()=>{},existing?body:undefined)],checkpoints:checkpoint,maxSteps:2,beforeStep:async()=>{},call:async()=>({content:'',toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify(value)}}]})}));
+  const call=mcp.callDocumentTool;
+  mcp.callDocumentTool=async(...params)=>({...await call(...params) as object,status:'accepted'});
+  try{await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[docs.tool(scope,'op','task',job,async()=>{},existing?body:undefined)],checkpoints:checkpoint,maxSteps:2,beforeStep:async()=>{},call:async()=>({content:'',toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify(value)}}]})}));}finally{mcp.callDocumentTool=call;}
   job.state='failed';db.chatOperations![0].status='failed';
  }
- return {db,store,job,mcp,docs,args,failWrite,body:()=>body,setBody:(v:string)=>body=v,reads:()=>reads,writes:()=>writes,advance:(n:number)=>now+=n,now:()=>now};
+ async function saveAcknowledged(value:unknown=args){
+  const query=JSON.stringify(value);
+  await runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[docs.tool(scope,'op','task',job,async()=>{})],checkpoints:checkpoint,maxSteps:2,beforeStep:async()=>{},completeAfterTools:()=> 'done',call:async()=>({content:'',toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:query}}]})});
+  const receipt=job.notionReceipt!,result=steps.find(step=>step.key===receipt.checkpointKey)!.output as {state:string};
+  db.contextTraces.push({...scope,conversationId:'task',requestId:'request',executionSteps:[{tool:'save_notion_draft',query}]} as any);
+  job.state='completed';db.chatOperations![0].status='completed';return result;
+ }
+ return {db,store,job,mcp,docs,args,failWrite,saveAcknowledged,body:()=>body,setBody:(v:string)=>body=v,reads:()=>reads,writes:()=>writes,advance:(n:number)=>now+=n,now:()=>now};
 }
 test('acknowledged writes retain separate readback state across restart, concurrent wake and delayed success',async()=>{
- const f=fixture();f.mcp.readDocument=async()=>{throw Error('initial unavailable');};await f.failWrite();
+ const f=fixture();f.mcp.readDocument=async()=>{throw Error('initial unavailable');};assert.equal((await f.saveAcknowledged()).state,'delivered');assert.equal(f.reads(),0);
  const ack=structuredClone(f.job.notionReceipt!.writeAcknowledgement);assert.equal(notionWriteAcknowledged(f.job.notionReceipt,'op'),true);
  let reads=0,release!:()=>void;const gate=new Promise<void>(resolve=>release=resolve);
  f.mcp.readDocument=async()=>{reads++;await gate;return {text:f.body()};};
@@ -38,6 +49,26 @@ test('acknowledged writes retain separate readback state across restart, concurr
  assert.deepEqual(await f.docs.reconcileDue(scope,async()=>{}),[]);release();
  assert.equal((await first)[0].state,'verified');assert.equal(reads,1);assert.equal(f.writes(),1);
  assert.deepEqual(f.job.notionReceipt!.writeAcknowledgement,ack);assert.deepEqual(await restarted.reconcileDue(scope,async()=>{}),[]);
+});
+test('every trusted ACK completes its write checkpoint before any background read, including intermediate drafts',async()=>{
+ for(const final of [true,false,undefined]){
+  const f=fixture(),value={title:'测试',content:f.args.content,...(final===undefined?{}:{final})};
+  assert.equal((await f.saveAcknowledged(value)).state,'delivered');
+  assert.equal(f.reads(),0);assert.equal(f.job.steps![0].state,'completed');assert.equal(f.job.notionReceipt!.integrity?.state,'pending');assert.equal(f.job.notionReceipt!.verification?.attempt,0);
+  assert.equal(notionWriteAcknowledged(f.job.notionReceipt,'op'),true);
+  f.advance(10);assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'verified');
+  assert.equal(f.job.notionReceipt!.state,'delivered');assert.equal(f.job.notionReceipt!.integrity?.state,'covered');assert.equal(f.writes(),1);
+ }
+});
+test('background missing, incomplete and unavailable reads exhaust three checks without undoing delivery or asking for another write',async()=>{
+ for(const mode of ['missing','incomplete','unavailable'] as const){
+  const f=fixture();await f.saveAcknowledged();const ack=structuredClone(f.job.notionReceipt!.writeAcknowledgement),sourceDigest=f.job.notionReceipt!.expectedRawDigest;
+  let reads=0;f.mcp.readDocument=async()=>{reads++;if(mode==='unavailable')throw Error('PRIVATE_TRANSPORT_ERROR');return {text:mode==='missing'?'另一篇文稿':f.body(),...(mode==='incomplete'?{truncated:true}:{})};};
+  for(const delay of [10,20,30]){f.advance(delay);assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'delivered');}
+  const receipt=f.job.notionReceipt!;assert.equal(reads,3);assert.equal(receipt.verification?.state,'exhausted');assert.equal(receipt.state,'delivered');assert.equal(receipt.integrity?.state,mode==='missing'?'missing':'inconclusive');
+  assert.equal(f.job.state,'completed');assert.equal(f.job.steps![0].state,'completed');assert.deepEqual(receipt.writeAcknowledgement,ack);assert.equal(receipt.expectedRawDigest,sourceDigest);assert.equal(f.writes(),1);
+  assert.deepEqual(await f.docs.reconcileDue(scope,async()=>{}),[]);assert.equal(reads,3);assert.doesNotMatch(JSON.stringify(receipt.integrity),/PRIVATE_TRANSPORT_ERROR|另一篇文稿/);
+ }
 });
 test('an async success acknowledgement is persisted before a failing read and survives the next wake',async()=>{
  const f=fixture(),write=f.mcp.callDocumentTool.bind(f.mcp);let polls=0;
@@ -52,8 +83,8 @@ test('an async success acknowledgement is persisted before a failing read and su
   throw Error('read unavailable');
  };
  await f.failWrite();assert.equal(f.job.notionReceipt!.writeAcknowledgement,undefined);assert.equal(f.job.notionReceipt!.pageId,undefined);
- f.advance(10);assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'scheduled');
- assert.equal(f.job.notionReceipt!.state,'uncertain');assert.equal(f.job.notionReceipt!.pageId,pageId);assert.equal(notionWriteAcknowledged(f.job.notionReceipt,'op'),true);
+ f.advance(10);assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'delivered');
+ assert.equal(f.job.notionReceipt!.state,'delivered');assert.equal(f.job.notionReceipt!.pageId,pageId);assert.equal(notionWriteAcknowledged(f.job.notionReceipt,'op'),true);
  assert.deepEqual(await f.docs.reconcileDue(scope,async()=>{}),[]);assert.equal(polls,2);
  f.mcp.readDocument=async()=>({text:f.body()});f.advance(20);
  assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'verified');assert.equal(polls,2);assert.equal(f.writes(),1);
@@ -193,7 +224,7 @@ test('a new aligned table save verifies a plain-delimiter readback immediately u
  const f=fixture(),expected='**预算**\n|项目|费用|备注|\n|---|---|---:|\n|场地|-100|+200:结余|',actual='<b>预算</b>\n|项目|费用|备注|\n| --- | --- | --- |\n|场地|-100|+200:结余|';
  f.mcp.readDocument=async()=>({text:actual});const tool=f.docs.tool(scope,'op','task',f.job,async()=>{}).structured!;
  const result=await tool.run(tool.validate({title:'预算',content:expected,final:true})) as {state:string};
- assert.equal(result.state,'verified');assert.equal(f.writes(),1);assert.equal(f.job.notionReceipt!.state,'verified');assert.equal(f.job.notionReceipt!.canonicalVersion,11);assert.equal(f.job.notionReceipt!.verification,undefined);assert.notEqual(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(expected,3));
+ assert.equal(result.state,'delivered');assert.equal(f.writes(),1);assert.equal(f.job.notionReceipt!.state,'delivered');assert.equal(f.reads(),0);assert.equal(f.job.notionReceipt!.canonicalVersion,11);assert.equal(f.job.notionReceipt!.verification?.state,'scheduled');f.job.state='completed';f.advance(10);assert.equal((await f.docs.reconcileDue(scope,async()=>{}))[0].state,'verified');assert.equal(f.job.notionReceipt!.state,'delivered');assert.equal(f.job.notionReceipt!.verification,undefined);assert.notEqual(f.job.notionReceipt!.expectedCanonicalDigest,canonicalNotionDigest(expected,3));
 });
 
 test('deadline recovery is single-use across restart and concurrent polling, and never resets the total read budget',async()=>{
@@ -248,9 +279,9 @@ test('incomplete readbacks and unavailable Key never become a successful receipt
  let read=false;f.mcp.readDocument=async()=>{read=true;return {text:f.body()};};
  await assert.rejects(()=>f.docs.reconcileDue(scope,async()=>{throw Error('Key unavailable');}),/Key unavailable/);assert.equal(read,false);assert.equal(f.job.notionReceipt!.state,'uncertain');
 });
-test('a manual check after an external edit does not leave an already verified historical save in an endless scheduled state',async()=>{
- const f=fixture();const tool=f.docs.tool(scope,'op','task',f.job,async()=>{}).structured!;await tool.run(tool.validate(f.args));f.job.state='completed';f.setBody('用户之后手动修改的正文');
- await assert.rejects(()=>f.docs.reconcile(scope,'task',async()=>{}));assert.equal(f.job.notionReceipt!.state,'verified');assert.equal(f.job.notionReceipt!.verification!.state,'exhausted');assert.deepEqual(await f.docs.reconcileDue(scope,async()=>{}),[]);assert.equal(f.writes(),1);
+test('a manual check after an external edit preserves prior delivery and exposes independent background attention',async()=>{
+ const f=fixture();await f.saveAcknowledged();f.advance(10);await f.docs.reconcileDue(scope,async()=>{});f.setBody('用户之后手动修改的正文');
+ assert.equal((await f.docs.reconcile(scope,'task',async()=>{})).state,'delivered');assert.equal(f.job.notionReceipt!.state,'delivered');assert.notEqual(f.job.notionReceipt!.integrity?.state,'covered');assert.equal(f.job.state,'completed');assert.equal(f.writes(),1);
 });
 test('late readback failure never schedules a cancelled, user-stopped or archived write',async()=>{
  for(const mode of ['cancelled','stopped','archived'] as const){
@@ -260,6 +291,7 @@ test('late readback failure never schedules a cancelled, user-stopped or archive
    if(mode==='archived')f.db.conversations[0].archived=true;
    throw Error('late readback failure');
   };
+  const call=f.mcp.callDocumentTool.bind(f.mcp);f.mcp.callDocumentTool=async(...params)=>({...await call(...params) as object,status:'accepted'});
   await assert.rejects(()=>f.docs.tool(scope,'op','task',f.job,async()=>{}).structured!.run(f.args));
   assert.equal(f.writes(),1);assert.equal(f.job.notionReceipt!.state,'uncertain');assert.equal(f.job.notionReceipt!.verification,undefined,mode);assert.deepEqual(await f.docs.reconcileDue(scope,async()=>{}),[]);
   if(mode==='cancelled')assert.equal(f.job.state,'cancelled');if(mode==='stopped')assert.equal(f.db.conversations[0].workPauseReason,'user_stopped');

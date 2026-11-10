@@ -32,3 +32,15 @@ test('execution, validation and public recovery are separate from bodies or prov
  assert.equal(validOperationEvidence({...pending,artifactRef:bodyRef}),false);
  assert.equal(validOperationEvidence({...complete,execution:'failed'}),false);
 });
+
+test('a confirmed artifact remains available through independent background checks',()=>{
+ const artifactRef='b'.repeat(64);
+ for(const verification of ['pending','failed','verified','not_required'] as const){
+  const evidence:OperationEvidence={version:1,execution:'succeeded',verification,artifactRef};
+  assert.equal(validOperationEvidence(evidence),true);
+  assert.deepEqual(operationProgress(evidence),{execution:'succeeded',verification,resultAvailable:true});
+ }
+ for(const execution of ['running','submitted','failed','unknown'] as const){
+  assert.equal(validOperationEvidence({version:1,execution,verification:'pending',artifactRef}),false);
+ }
+});

@@ -5,6 +5,7 @@ import {taskStepKey,type TaskStep} from './taskSteps.js';
 import {pendingWorkflowRecovery} from './workflowExecution.js';
 import {validOperationEvidence} from './operationRecovery.js';
 import {workflowProgress,workflowPhase,type WorkflowStep} from './taskWorkflow.js';
+import {notionDeliveryCheckpoint,notionWriteAcknowledged} from './notionCompletion.js';
 
 const object=(value:unknown):Record<string,unknown>|undefined=>value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:undefined;
 const hash=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{64}$/i.test(value);
@@ -38,17 +39,20 @@ export function canResumeWorkflowAfterRestart(operation:ChatOperation,task:Conve
    const cp=matching[0],v=object(cp.output),marker=object(v?.workflow);
    if(cp.namespace!==namespace||cp.scopeId!==operation.id||cp.tool!==expectedStep.tool||!['read','model','artifact','external_write'].includes(cp.effect)||!['started','completed','failed'].includes(cp.state)||!Number.isFinite(Date.parse(cp.updatedAt))||!marker||Object.keys(marker).sort().join()!=='revision,runId,stepId,version'||marker.version!==1||marker.runId!==run.id||marker.revision!==run.revision||marker.stepId!==step.id)return undefined;
    if(step.kind==='model'&&cp.effect!=='model'||step.kind==='tool'&&cp.effect!=='read'||step.kind==='notion'&&cp.effect!=='external_write')return undefined;
-   if(cp.operation&&(!validOperationEvidence(cp.operation)||cp.operation.artifactRef!==undefined&&cp.operation.artifactRef!==cp.key||cp.state==='completed'&&(cp.operation.execution!=='succeeded'||!cp.operation.artifactRef||step.kind==='notion'&&cp.operation.verification!=='verified')))return undefined;
+   if(cp.operation&&(!validOperationEvidence(cp.operation)||cp.operation.artifactRef!==undefined&&cp.operation.artifactRef!==cp.key||cp.state==='completed'&&(cp.operation.execution!=='succeeded'||!cp.operation.artifactRef||step.kind==='notion'&&!['pending','verified','failed'].includes(cp.operation.verification))))return undefined;
    return {cp,value:v!};
   };
-  const notionVerified=(step:WorkflowStep,cp:TaskStep,value:Record<string,unknown>)=>{
-   const receipt=job.notionReceipt;
-   if(step.kind!=='notion'||cp.state!=='started'||value.outcome!=='waiting'||!hash(value.expectedBodyDigest)||receipt?.state!=='verified'||receipt.verification||receipt.final!==true||!hash(receipt.digest)||receipt.expectedDigest!==value.expectedBodyDigest||!receipt.checkpointKey||!receipt.pageId||!/^[a-f0-9]{32}$/i.test(receipt.pageId.replaceAll('-','')))return false;
+  const notionDelivered=(step:WorkflowStep,cp:TaskStep,value:Record<string,unknown>)=>{
+   const linkedKey=typeof value.notionCheckpointKey==='string'?value.notionCheckpointKey:undefined;
+   const current=linkedKey===undefined||linkedKey===job.notionReceipt?.checkpointKey;
+   const receipt=current?job.notionReceipt:value.notionDeliveryProof as WorkRun['notionReceipt'];
+   const recoverableStage=cp.state==='started'&&value.outcome==='waiting'||cp.state==='completed'&&value.outcome==='completed';
+   if(step.kind!=='notion'||!recoverableStage||!hash(value.expectedBodyDigest)||!receipt||!current&&(cp.state!=='completed'||!notionWriteAcknowledged(receipt,operation.id)))return false;
+   if(receipt.checkpointKey===value.priorNotionCheckpointKey)return false;
    if(value.notionCheckpointKey!==undefined&&value.notionCheckpointKey!==receipt.checkpointKey)return false;
-   const matching=steps.filter(saved=>saved.key===receipt.checkpointKey);
-   if(matching.length!==1)return false;
-   const actual=matching[0],proof=object(actual.output);
-   if(actual.namespace!=='worker'||actual.tool!=='save_notion_draft'||actual.scopeId!==operation.id||actual.effect!=='external_write'||actual.state!=='completed'||proof?.state!=='verified'||proof.pageId!==receipt.pageId||proof.digest!==receipt.digest||proof.expectedDigest!==receipt.expectedDigest||proof.final!==true)return false;
+   const actual=notionDeliveryCheckpoint(receipt,steps,operation.id,linkedKey,value.expectedBodyDigest);
+   if(!actual||!Number.isFinite(Date.parse(actual.updatedAt))||!current&&typeof object(actual.output)?.content!=='string')return false;
+   if(actual.operation&&(!validOperationEvidence(actual.operation)||actual.operation.execution!=='succeeded'||actual.operation.artifactRef!==undefined&&actual.operation.artifactRef!==actual.key))return false;
    // The owner may have crashed after sending but before recording its new
    // exact receipt key in the workflow checkpoint. Time and the prior-key
    // exclusion are additional evidence, never substitutes for the body hash.
@@ -62,11 +66,14 @@ export function canResumeWorkflowAfterRestart(operation:ChatOperation,task:Conve
    }
    if(!found)return false;
    const {cp,value}=found;
+   // A later save may own the current receipt. Earlier ACK-only stages keep
+   // their frozen exact delivery proof and full scoped manuscript worker.
+   if(step.kind==='notion'&&cp.state==='completed'&&value.outcome==='completed'&&cp.operation?.verification!=='verified'&&!notionDelivered(step,cp,value))return false;
    if(state.state==='completed'){
     if(state.checkpointKey!==cp.key||cp.state!=='completed'||value.outcome!=='completed')return false;
    }else if(state.state==='failed'||state.state==='needs_input'){
     if(cp.state!=='failed'||!['failed','partial','needs_input'].includes(String(value.outcome))||state.state==='needs_input'&&value.outcome!=='needs_input')return false;
-   }else if(!(cp.state==='completed'&&value.outcome==='completed')&&!notionVerified(step,cp,value)&&!pendingWorkflowRecovery(run,steps,run.binding,step.id))return false;
+   }else if(!(cp.state==='completed'&&value.outcome==='completed')&&!notionDelivered(step,cp,value)&&!pendingWorkflowRecovery(run,steps,run.binding,step.id))return false;
   }
   // An unrelated or nested unfinished paid/artifact/write checkpoint remains a
   // safety hold even when an outer step says it finished. Read-only leftovers

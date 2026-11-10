@@ -1643,7 +1643,7 @@ async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean
    assert.deepEqual([ws,cid,grant,user],[a.workspaceId,'wf-notion','wf-grant',a.userId]);await beforeSend?.();
    if(name==='notion-create-pages'){counts.create++;assert.equal(args.parent.page_id,parentId);body=args.pages[0].content;if(options.lostSaveAck)throw Error('synthetic lost create acknowledgement');return {pages:[{id:pageId}]};}
    assert.equal(name,'notion-update-page');assert.equal(args.page_id,pageId);counts.update++;
-   for(const update of args.content_updates){assert.equal(update.old_str,body,'each revision replaces the latest verified full body');body=body.replace(update.old_str,update.new_str);}return {};
+   for(const update of args.content_updates){assert.equal(update.old_str,body,'each revision replaces the latest actual full body');body=body.replace(update.old_str,update.new_str);}return {page_id:pageId};
   },
  } as unknown as NotionMcpService;
  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async(ws,query,_top,ids,user,recallOptions)=>{
@@ -1689,15 +1689,16 @@ for(const delayed of [false,true])test(`workflow service retrieval to model to N
  try{
   const result=await f.service.dispatch(a,{...input(`operation_workflow_chain_${delayed}`,'请从得到大脑查找青色42入口方案，写成完整方案保存到Notion并做交互网页。'),sourceIds:['wf-source'],featureIds:['oneHtml'],confirmedExternal:true,outputDestination:'notion'},key);
   assert.ok(result.taskId,'one deliverable task is actually admitted');await f.service.resume(a,key);
-  await waitFor(async()=>{const d=await f.store.read();return d.chatOperations!.some(o=>o.workRun&&o.conversationId===result.taskId&&(delayed?o.workRun.failureCode==='notion_verification_pending':o.workRun.state==='completed'));});
+  await waitFor(async()=>{const d=await f.store.read();return d.chatOperations!.some(o=>o.workRun&&o.conversationId===result.taskId&&o.workRun.state==='completed');});
   const before=await f.store.read(),original=before.chatOperations!.find(o=>o.workRun&&o.conversationId===result.taskId)!;
   if(delayed){
-   assert.equal(f.counts.draft,1);assert.equal(f.counts.feature,0);assert.equal(f.counts.create,1);assert.equal(original.status,'pending');assert.equal((await f.service.state(a)).notices.length,0);
+   assert.equal(f.counts.draft,1);assert.equal(f.counts.feature,2);assert.equal(f.counts.create,1);assert.equal(original.status,'completed');
+   assert.equal(original.workRun!.notionReceipt!.state,'delivered');assert.equal(original.workRun!.notionReceipt!.integrity?.state,'pending');
    f.allowReadback();await f.service.reconcileNotionResults(a,key);await f.service.resume(a,key);
-   await waitFor(async()=>(await f.service.task(a,result.taskId!)).jobs[0].state==='completed');
+   assert.equal((await f.service.task(a,result.taskId!)).jobs[0].state,'completed');
   }
   const db=await f.store.read(),ops=db.chatOperations!.filter(o=>o.workRun&&o.conversationId===result.taskId),op=ops[0],detail=await f.service.task(a,result.taskId!);
-  assert.equal(ops.length,1);assert.equal(op.id,original.id);assert.equal(op.workRun!.notionReceipt!.state,'verified');assert.equal(f.counts.retrieval,1);assert.equal(f.counts.draft,1);assert.equal(f.counts.create,1);assert.equal(f.counts.update,0);assert.equal(f.counts.feature,2);assert.equal(f.body(),f.firstBody);
+  assert.equal(ops.length,1);assert.equal(op.id,original.id);assert.equal(op.workRun!.notionReceipt!.state,'delivered');assert.equal(f.counts.retrieval,1);assert.equal(f.counts.draft,1);assert.equal(f.counts.create,1);assert.equal(f.counts.update,0);assert.equal(f.counts.feature,2);assert.equal(f.body(),f.firstBody);
   assert.ok(op.workRun!.workflow!.steps.every(step=>step.state==='completed'));assert.equal(detail.jobs[0].state,'completed');
   const files=db.attachments.filter(file=>file.conversationId===result.taskId);assert.equal(files.length,1);assert.match(files[0].originalName,/\.html$/);const html=readFileSync(files[0].storagePath,'utf8');assert.match(html,/ONE-WORKFLOW-DRAFT-青色42/);assert.match(html,new RegExp(f.pageId));assert.match(html,/<script>/);assert.ok(detail.conversation.messages.at(-1)!.attachments?.some(file=>file.id===files[0].id));
   const calls=f.calls.length;await f.service.resume(a,key);await f.service.reconcileNotionResults(a,key);assert.equal(f.calls.length,calls);assert.equal(f.counts.create,1);assert.equal((await f.store.read()).attachments.length,1);
@@ -1721,7 +1722,7 @@ test('workflow service second Notion save updates the same page using the newest
  const f=await workflowServiceFixture({twoSaves:true});
  try{
   const r=await f.service.dispatch(a,{...input('operation_workflow_second_save','从得到大脑查找青色42入口方案，写完整方案保存Notion，随后同页修订为橙色17，再做交互网页。'),sourceIds:['wf-source'],featureIds:['oneHtml'],confirmedExternal:true,outputDestination:'notion'},key);assert.ok(r.taskId);await f.service.resume(a,key);
-  await waitFor(async()=>(await f.service.task(a,r.taskId!)).jobs[0].state==='completed');
+  await waitFor(async()=>(await f.service.task(a,r.taskId!)).jobs[0].state==='completed').catch(async error=>{const run=(await f.store.read()).chatOperations!.find(o=>o.workRun&&o.conversationId===r.taskId)!.workRun!;throw new Error(`${error.message}: ${JSON.stringify({state:run.state,phase:run.workflow?.phase,failureCode:run.failureCode,counts:f.counts})}`);});
   const db=await f.store.read(),run=db.chatOperations!.find(o=>o.workRun&&o.conversationId===r.taskId)!.workRun!;
   assert.equal(f.counts.create,1);assert.equal(f.counts.update,1);assert.equal(f.counts.draft,2);assert.equal(f.body(),f.secondBody);assert.equal(run.notionReceipt!.pageId,f.pageId);assert.ok(run.workflow!.steps.every(step=>step.state==='completed'));const file=db.attachments.find(file=>file.conversationId===r.taskId)!;assert.match(readFileSync(file.storagePath,'utf8'),/ONE-WORKFLOW-REVISION-橙色17/);t.diagnostic(JSON.stringify(f.metrics()));
  }finally{f.cleanup();}
@@ -1760,7 +1761,7 @@ for(const outcome of ['failed','needs_input','legacy_missing_web'] as const)test
   await f.service.resume(a,key);await waitFor(async()=>(await f.service.task(a,r.taskId!)).jobs.at(-1)!.state==='completed');
   assert.ok(f.calls.some(call=>call.modelId!=='router'&&scriptReliabilitySource(call.messages)===supplement.text),'the resumed execution model receives the exact case clarification');
   assert.deepEqual([f.counts.retrieval,f.counts.draft,f.counts.create,f.counts.update,f.counts.feature],[1,legacy?1:2,1,0,2]);assert.equal(f.body(),f.firstBody);
-  const done=await f.store.read();assert.equal(done.conversations.filter(c=>!c.coordinatorMain&&c.executorProfileId).length,1);assert.equal(done.chatOperations!.find(o=>o.id===old.id)!.workRun!.state,'failed');assert.equal(done.chatOperations!.filter(o=>o.conversationId===r.taskId&&o.workRun).at(-1)!.workRun!.notionReceipt!.state,'verified');
+  const done=await f.store.read();assert.equal(done.conversations.filter(c=>!c.coordinatorMain&&c.executorProfileId).length,1);assert.equal(done.chatOperations!.find(o=>o.id===old.id)!.workRun!.state,'failed');assert.equal(done.chatOperations!.filter(o=>o.conversationId===r.taskId&&o.workRun).at(-1)!.workRun!.notionReceipt!.state,'delivered');
   await f.service.direct(a,r.taskId!,supplement,key);await f.service.resume(a,key);assert.deepEqual([f.counts.retrieval,f.counts.draft,f.counts.create,f.counts.feature],[1,legacy?1:2,1,2]);await assert.rejects(()=>f.service.direct(b,r.taskId!,{...supplement,operationId:'operation_foreign_supplement'},key));
  }finally{f.cleanup();}
 });
@@ -1848,7 +1849,7 @@ test('workflow service compares a real legacy tool loop and staged service path 
   try{
    const r=await f.service.dispatch(a,{...input(`operation_workflow_comparison_${legacyChain}`,'请从得到大脑查找青色42入口方案，写完整方案保存Notion并做交互网页。'),sourceIds:['wf-source'],featureIds:['oneHtml'],confirmedExternal:true,outputDestination:'notion'},key);assert.ok(r.taskId);await f.service.resume(a,key);
    await waitFor(async()=>['completed','failed'].includes((await f.service.task(a,r.taskId!)).jobs[0].state));const detail=await f.service.task(a,r.taskId!);assert.equal(detail.jobs[0].state,'completed',JSON.stringify(detail));
-   const db=await f.store.read(),run=db.chatOperations!.find(o=>o.workRun&&o.conversationId===r.taskId)!.workRun!,files=db.attachments.filter(file=>file.conversationId===r.taskId);assert.equal(Boolean(run.workflow),!legacyChain);assert.equal(run.notionReceipt!.state,'verified');assert.equal(f.body(),f.firstBody);assert.equal(f.counts.retrieval,1);assert.equal(f.counts.create,1);assert.equal(f.counts.update,0);assert.equal(files.length,1);const html=readFileSync(files[0].storagePath,'utf8');assert.match(html,/ONE-WORKFLOW-DRAFT-青色42/);assert.match(html,new RegExp(f.pageId));
+   const db=await f.store.read(),run=db.chatOperations!.find(o=>o.workRun&&o.conversationId===r.taskId)!.workRun!,files=db.attachments.filter(file=>file.conversationId===r.taskId);assert.equal(Boolean(run.workflow),!legacyChain);assert.equal(run.notionReceipt!.state,'delivered');assert.equal(f.body(),f.firstBody);assert.equal(f.counts.retrieval,1);assert.equal(f.counts.create,1);assert.equal(f.counts.update,0);assert.equal(files.length,1);const html=readFileSync(files[0].storagePath,'utf8');assert.match(html,/ONE-WORKFLOW-DRAFT-青色42/);assert.match(html,new RegExp(f.pageId));
    const execution=f.calls.filter(call=>call.modelId!=='router');metrics.push({mode:legacyChain?'legacy_loop':'staged_workflow',executionCalls:execution.length,executionMessagesBytes:execution.reduce((n,call)=>n+Buffer.byteLength(JSON.stringify(call.messages),'utf8'),0),executionToolsBytes:execution.reduce((n,call)=>n+Buffer.byteLength(JSON.stringify(call.tools),'utf8'),0),...f.metrics()});
   }finally{f.cleanup();}
  }
@@ -2001,7 +2002,7 @@ test('a new Notion draft cannot be completed by a model claim without a verified
   assert.doesNotMatch(task.conversation.messages.at(-1)!.content,/已保存到 Notion/);
   await assert.rejects(()=>service.task(b,r.taskId!));
 });
-test('a verified saved explanation is still needs-input when yesterday material is missing, and main chat reports that fact once', async () => {
+test('an acknowledged saved explanation is still needs-input and main chat reports the missing material once', async () => {
   const f=fixture(), parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', pageId='cccccccccccccccccccccccccccccccc';
   let body='', writes=0, reportCalls=0;
   await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion',workspaceId:'wa',provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:'a',authorizedAt:'now',parentId}}));
@@ -2018,7 +2019,7 @@ test('a verified saved explanation is still needs-input when yesterday material 
   });
   const accepted=await service.dispatch(a,{...input('operation_column_missing_material','请整理合成专栏，结果保存到Notion；不查知识库。'),outputDestination:'notion'},key);
   await service.resume(a,key);await waitFor(async()=>(await service.task(a,accepted.taskId!)).jobs[0].state==='failed');
-  const detail=await service.task(a,accepted.taskId!);assert.equal(detail.jobs[0].notionReceipt?.state,'verified');
+  const detail=await service.task(a,accepted.taskId!);assert.equal(detail.jobs[0].notionReceipt?.state,'delivered');
   const snapshots=await Promise.all([service.state(a),service.state(a)]), db=await f.store.read(), job=db.chatOperations!.find(o=>o.workRun)!;
   assert.equal(job.workRun!.resultOutcome,'needs_input');assert.equal(writes,1);assert.ok(reportCalls<=1,'a failed existing summary call never triggers a report retry');
   const main=snapshots[0].conversation!, report=main.messages.find(m=>m.id===job.workRun!.reportMessageId)!;
@@ -2038,7 +2039,7 @@ for(const recallStatus of ['no_match','failed'] as const)test(`dated retrieval $
       if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('我先查昨天的素材，再写专栏。'):{...answer(''),toolCalls:[{id:'dated-column',type:'function',function:{name:'delegate_tasks',arguments:JSON.stringify({tasks:[{taskId:null,title:'昨天的专栏',instruction:'从Notion检索2026-10-24的会议笔记，依据真实素材写专栏并保存到Notion。',executorId:'general',featureIds:[],knowledge:'notion',requiredTools:['knowledge_search'],outputKind:'text',dependsOn:[]}]})}}]};
       workerCalls++;
       if(messages.at(-1)?.role!=='tool')return {...answer(''),toolCalls:[{id:'dated-search',type:'function',function:{name:'knowledge_search',arguments:JSON.stringify({query:'会议笔记'})}},...(!materials?[{id:'bad-placeholder',type:'function' as const,function:{name:'save_notion_draft',arguments:JSON.stringify({title:'待素材说明',content:'没找到素材，先留下说明。'})}}]:[])]};
-      if(messages.at(-1)?.content?.includes('"state":"verified"'))return answer(JSON.stringify({outcome:'completed',content:'根据真实素材写成的专栏已保存。',summary:'专栏已保存。'}));
+      if(/"state":"(?:verified|delivered)"/.test(messages.at(-1)?.content??''))return answer(JSON.stringify({outcome:'completed',content:'根据真实素材写成的专栏已保存。',summary:'专栏已保存。'}));
       assert.equal(materials,true,'no-match should return needs_input directly without forcing another generation');
       return {...answer(''),toolCalls:[{id:'real-article',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({title:'合成专栏',content:'AI让实现更容易，也让判断更重要。以下依据2026-10-24的会议笔记展开。'})}}]};
     },
@@ -2053,7 +2054,7 @@ for(const recallStatus of ['no_match','failed'] as const)test(`dated retrieval $
   await service.direct(a,accepted.taskId!,{operationId:'operation_material_supplied_followup',text:'请再从Notion检索2026-10-24的会议笔记，按原要求写专栏并保存到Notion。',outputDestination:'notion'},key);
   await service.resume(a,key,accepted.taskId!);await waitFor(async()=>(await service.task(a,accepted.taskId!)).jobs.at(-1)!.state==='completed');
   detail=await service.task(a,accepted.taskId!);snapshot=await service.state(a);
-  assert.equal(writes,1);assert.equal(detail.jobs.at(-1)!.notionReceipt?.state,'verified');assert.match(body,/AI让实现更容易/);assert.doesNotMatch(body,/没找到素材/);
+  assert.equal(writes,1);assert.equal(detail.jobs.at(-1)!.notionReceipt?.state,'delivered');assert.match(body,/AI让实现更容易/);assert.doesNotMatch(body,/没找到素材/);
   assert.match(snapshot.conversation!.messages.at(-1)!.content,/专栏.*已完成/);assert.match(snapshot.conversation!.messages.at(-1)!.content,new RegExp(pageId));
   await assert.rejects(()=>service.task(b,accepted.taskId!));
 });
@@ -2075,7 +2076,7 @@ test('a new explicit Notion task with default chat binds only its own scoped wri
   const r=await service.dispatch(a,{...input(`operation_notion_auto_${batch?'batch':'single'}`,'只在当前已选的 Notion 草稿保存页面下面新建合成便笺，正文只有青色42，保存后回读。不查知识库。另写一句独立短句，只在对话中返回。'),outputDestination:'chat'},key);
   const jobs=(await f.store.read()).chatOperations!.filter(o=>o.workRun);assert.equal(jobs.length,batch?2:1);assert.equal(jobs[0].workRun!.notionTarget?.parentId,parentId);if(batch)assert.equal(jobs[1].workRun!.notionTarget,undefined);
   await service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.filter(o=>o.workRun).every(o=>o.workRun!.state==='completed'));
-  assert.equal(writes,1);assert.equal(body,'青色42');assert.equal((await service.task(a,jobs[0].conversationId!)).jobs[0].notionReceipt?.state,'verified');
+  assert.equal(writes,1);assert.equal(body,'青色42');assert.equal((await service.task(a,jobs[0].conversationId!)).jobs[0].notionReceipt?.state,'delivered');
   await assert.rejects(()=>service.task(b,r.taskId!));assert.equal((await f.store.read()).powerAccounts[1].balanceMicros,100e6);
  }
 });
@@ -2151,7 +2152,7 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
   assert.deepEqual(mutations,['notion-create-pages','notion-update-page']);assert.equal(body,'修改后的第一段。');
   const task=await service.task(a,result.taskId!);
   assert.equal(task.conversation.notionDocument?.pageId,pageId);assert.match(JSON.stringify(task.conversation.messages),/讨论之后请写专栏|修改后的第一段。|已保存到 Notion/);
-  assert.ok(task.jobs.every(j=>j.notionReceipt?.state==='verified'));
+  assert.ok(task.jobs.every(j=>j.notionReceipt?.state==='delivered'));
   await service.direct(a,result.taskId!,{operationId:'operation_notion_readonly',text:'只读核对正文，不修改'},key);
   await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.at(-1)!.state==='completed');
   assert.deepEqual(mutations,['notion-create-pages','notion-update-page'],'ordinary follow-up on the saved draft must not force another write');
@@ -2171,15 +2172,17 @@ test('Notion dispatcher and queued continuation create once, revise the same doc
   failReadSummary=true;await service.resume(a,key);
   await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.at(-1)!.state==='failed');
   const failedSummary=(await service.task(a,result.taskId!)).jobs.at(-1)!;
-  assert.equal(actualReads,readCount+1);assert.equal((await service.task(a,result.taskId!)).recovery.kind,'none','safe summary recovery accepts a new request without a second confirmation');
+  assert.equal(actualReads,readCount+1);assert.equal((await service.task(a,result.taskId!)).recovery.kind,'retry','a completed read with a failed summary exposes the explicit safe read recovery');
   body+='\n新的结尾。';
   await service.retryLatest(a,result.taskId!,failedSummary.id,undefined,key);await service.resume(a,key);
   await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.at(-1)!.state==='completed');
   assert.equal(actualReads,readCount+2,'explicit read recovery must fetch again instead of reusing the old body');
   assert.match((await service.task(a,result.taskId!)).conversation.messages.at(-1)!.content,/新的结尾/);
   await service.direct(a,result.taskId!,{operationId:'operation_notion_read_key_failure',text:'只在这件任务做一次新的只读核对：读取本任务原文，不修改、不保存。'},key);
-  let proofChecks=0;
-  await service.resume(a,async()=>{if(++proofChecks>1)throw new OneKeyPresenceError('fixture disconnected');});
+  await service.resume(a,async()=>{
+   const latest=(await f.store.read()).chatOperations!.filter(operation=>operation.conversationId===result.taskId&&operation.workRun).at(-1)!;
+   if(latest.workRun!.state==='running')throw new OneKeyPresenceError('fixture disconnected');
+  });
   await waitFor(async()=>(await service.task(a,result.taskId!)).jobs.at(-1)!.state==='failed');
   const failedRead=(await service.task(a,result.taskId!)).jobs.at(-1)!;
   assert.equal(failedRead.failureCode,'task_key_required');
@@ -2214,7 +2217,7 @@ test('long Notion article arguments use a document allowance, save once and reta
  }});
  const reply=await service.dispatch(a,{...input('operation_long_notion_article','请写一篇合成长文章并保存。'+(originalDeclines?'不必联网或查知识库。':'')),outputDestination:'notion'},key);
  await service.resume(a,key);await waitFor(async()=>['failed','completed'].includes((await service.task(a,reply.taskId!)).jobs[0].state));
- const task=await service.task(a,reply.taskId!);assert.equal(task.jobs[0].state,'completed');assert.equal(task.jobs[0].notionReceipt?.state,'verified');assert.equal(writes,1);assert.equal(body,article);assert.equal(workerCalls,2);
+ const task=await service.task(a,reply.taskId!);assert.equal(task.jobs[0].state,'completed');assert.equal(task.jobs[0].notionReceipt?.state,'delivered');assert.equal(writes,1);assert.equal(body,article);assert.equal(workerCalls,2);
  const run=(await f.store.read()).chatOperations!.find(o=>o.conversationId===reply.taskId&&o.workRun)!.workRun!;assert.deepEqual(run.contract?.requiredTools,[]);assert.deepEqual(run.sources,[]);
  await assert.rejects(()=>service.task(b,reply.taskId!));
  const usage=(await f.store.read()).modelUsageRecords.filter(u=>u.conversationId===reply.taskId);assert.ok(usage.every(u=>u.reservedMicros===0));
@@ -2236,7 +2239,7 @@ test('a verified new document still completes when the remaining budget cannot r
  // original record at execution time. Current restrictions must still win.
  await f.store.mutate(d=>{const w=d.chatOperations!.find(o=>o.conversationId===result.taskId&&o.workRun)!.workRun!;w.contract!.requiredTools=['knowledge_search'];w.contract!.knowledgeSourceIds=['notion'];});
  await service.resume(a,key);await waitFor(async()=>['completed','failed'].includes((await service.task(a,result.taskId!)).jobs[0].state));
- const task=await service.task(a,result.taskId!);assert.equal(task.jobs[0].state,'completed',JSON.stringify(task.jobs));assert.equal(task.jobs[0].notionReceipt?.state,'verified');assert.equal(writes,1);assert.equal(workerCalls,1);assert.equal(body,article);assert.match(task.conversation.messages.at(-1)!.content,new RegExp(pageId));
+ const task=await service.task(a,result.taskId!);assert.equal(task.jobs[0].state,'completed',JSON.stringify(task.jobs));assert.equal(task.jobs[0].notionReceipt?.state,'delivered');assert.equal(writes,1);assert.equal(workerCalls,1);assert.equal(body,article);assert.match(task.conversation.messages.at(-1)!.content,new RegExp(pageId));
  const rows=(await f.store.read()).modelUsageRecords.filter(u=>u.conversationId===result.taskId);assert.equal(rows.length,1);assert.ok(rows[0].chargedMicros!<=30000);assert.equal(rows[0].reservedMicros,0);await assert.rejects(()=>service.task(b,result.taskId!));
 });
 test('a first-turn truncated Notion instruction has a safe same-task recovery without weakening unknown-write protection',async()=>{
@@ -2254,7 +2257,7 @@ test('a first-turn truncated Notion instruction has a safe same-task recovery wi
  const source=(await f.store.read()).chatOperations!.find(o=>o.conversationId===reply.taskId&&o.workRun)!.workRun!;assert.deepEqual(source.steps,[]);assert.equal(source.notionReceipt,undefined);
  await assert.rejects(()=>service.retryLatest(b,reply.taskId!,failed.jobs[0].id,undefined,key));
  truncate=false;await service.retryLatest(a,reply.taskId!,failed.jobs[0].id,undefined,key);await service.resume(a,key);await waitFor(async()=>(await service.task(a,reply.taskId!)).jobs.at(-1)?.state==='completed');
- const recovered=await service.task(a,reply.taskId!);assert.equal(recovered.conversation.id,reply.taskId);assert.equal(recovered.conversation.notionDocument?.pageId,pageId);assert.equal(writes,1);assert.equal(body,'这是完整的合成文章。');assert.equal(recovered.jobs.at(-1)?.notionReceipt?.state,'verified');
+ const recovered=await service.task(a,reply.taskId!);assert.equal(recovered.conversation.id,reply.taskId);assert.equal(recovered.conversation.notionDocument?.pageId,pageId);assert.equal(writes,1);assert.equal(body,'这是完整的合成文章。');assert.equal(recovered.jobs.at(-1)?.notionReceipt?.state,'delivered');
 });
 test('a proven unsent Notion save can retry on the same task and destination without replaying unknown writes',async()=>{
  const f=fixture(),parentId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',pageId='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -2276,7 +2279,7 @@ test('a proven unsent Notion save can retry on the same task and destination wit
  await assert.rejects(()=>service.retryLatest(b,r.taskId!,detail.jobs[0].id,undefined,key));
  fail=false;await service.retryLatest(a,r.taskId!,detail.jobs[0].id,undefined,key);await service.resume(a,key);
  await waitFor(async()=>(await service.task(a,r.taskId!)).jobs.at(-1)?.state==='completed');
- const done=await service.task(a,r.taskId!);assert.equal(done.jobs.length,2);assert.equal(writes,1);assert.equal(done.jobs.at(-1)?.notionReceipt?.state,'verified');assert.equal(done.conversation.notionDocument?.pageId,pageId);
+ const done=await service.task(a,r.taskId!);assert.equal(done.jobs.length,2);assert.equal(writes,1);assert.equal(done.jobs.at(-1)?.notionReceipt?.state,'delivered');assert.equal(done.conversation.notionDocument?.pageId,pageId);
 });
 const imageFixturePng='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jF1sAAAAASUVORK5CYII=';
 test('image feature uses its image model and own rate, without changing base image price or tenant scope',async()=>{
@@ -4190,7 +4193,7 @@ test('a real partial step-limit with an old verified Notion save resumes on name
  const reply=await service.dispatch(a,{...input('operation_step_material_2','得到大脑有小小启动器内容，按这个写。不要新建重复页面，继续改原文'),boundTaskId:original.taskId,outputDestination:'chat'},key);
  assert.equal(reply.taskId,original.taskId);assert.equal((await service.task(a,original.taskId!)).conversation.workPaused,false);
  await Promise.all([service.resume(a,key),service.resume(a,key)]);await waitFor(async()=>['failed','completed'].includes((await service.task(a,original.taskId!)).jobs.at(-1)!.state));
- const detail=await service.task(a,original.taskId!);assert.equal(detail.jobs.at(-1)!.state,'completed',JSON.stringify({job:detail.jobs.at(-1),writes,recalls,workerCalls,selected,body,trace:(await f.store.read()).contextTraces.at(-1)?.executionSteps}));assert.deepEqual(selected,['getnote-material']);assert.equal(writes,1);assert.equal(body,finalBody);assert.equal(detail.jobs.length,2);assert.equal(detail.jobs[0].state,'failed');assert.equal(detail.jobs.at(-1)!.notionReceipt?.state,'verified');assert.equal(workerCalls,3);
+ const detail=await service.task(a,original.taskId!);assert.equal(detail.jobs.at(-1)!.state,'completed',JSON.stringify({job:detail.jobs.at(-1),writes,recalls,workerCalls,selected,body,trace:(await f.store.read()).contextTraces.at(-1)?.executionSteps}));assert.deepEqual(selected,['getnote-material']);assert.equal(writes,1);assert.equal(body,finalBody);assert.equal(detail.jobs.length,2);assert.equal(detail.jobs[0].state,'failed');assert.equal(detail.jobs.at(-1)!.notionReceipt?.state,'verified','the mock update returns no trusted ACK, so only its strict readback proves this write');assert.equal(workerCalls,3);
  assert.match((await service.state(a)).conversation!.messages.at(-1)!.content,new RegExp(pageId));
 });
 
@@ -4235,7 +4238,7 @@ test('generic missing material in a Notion task returns needs-input once without
  await service.direct(a,accepted.taskId!,{...input('operation_generic_material_2','素材：小小启动器让用户插上就能开始工作，把资料、工具和交付连接起来。按这个写。'),outputDestination:'chat'},key);
  assert.equal((await service.task(a,accepted.taskId!)).conversation.workPaused,false);
  await service.resume(a,key);await waitFor(async()=>(await service.task(a,accepted.taskId!)).jobs.at(-1)!.state==='completed');
- detail=await service.task(a,accepted.taskId!);assert.equal(writes,1);assert.equal(calls,2);assert.equal(detail.jobs.at(-1)!.notionReceipt!.state,'verified');
+ detail=await service.task(a,accepted.taskId!);assert.equal(writes,1);assert.equal(calls,2);assert.equal(detail.jobs.at(-1)!.notionReceipt!.state,'delivered');
 });
 
 async function pendingNotionVerificationFixture(options:{final?:boolean;required?:string[]}={}){
@@ -4278,17 +4281,15 @@ test('connected-Key Notion verification is active until exact readback, then bri
  assert.equal((await service.state(b)).conversation,null);
 });
 
-test('a saved proof waiting for deterministic finalization stays visibly active without a failed main briefing',async()=>{
+test('a saved historical read proof finalizes deterministically without a new read or failure reply',async()=>{
  const f=await pendingNotionVerificationFixture();
  await f.store.mutate(d=>{const run=d.chatOperations!.find(o=>o.id===f.operationId)!.workRun!;run.notionReceipt!.state='verified';run.notionReceipt!.digest=run.notionReceipt!.expectedDigest;run.notionReceipt!.verification=undefined;run.steps![0].state='completed';run.steps![0].output={...run.notionReceipt};});
  const service=verificationService(f,async()=>assert.fail('a complete stored readback does not need another read'));
- const state=await service.state(a),transfer=state.transfers.find(t=>t.id===f.taskId)!;
- assert.equal(transfer.state,'reconciling');assert.equal(transfer.running,false);assert.match(transfer.phase!,/正在整理结果/);assert.equal(state.notices.length,0);
- const detail=await service.task(a,f.taskId);assert.equal(detail.jobs[0].verificationPending,true);assert.equal(detail.recovery.kind,'reconciling');
- await service.reconcileNotionResults(a,key);assert.equal((await service.task(a,f.taskId)).jobs[0].state,'completed');
+ await service.reconcileNotionResults(a,key);
+ const detail=await service.task(a,f.taskId);assert.equal(detail.jobs[0].state,'completed');assert.equal(detail.jobs[0].notionReceipt!.state,'verified');assert.equal(detail.jobs[0].verificationPending,false);assert.equal((await service.state(a)).transfers.some(t=>t.id===f.taskId),false);
 });
 
-test('a real worker write with delayed readback exits to a durable verification phase before any paid progress report',async()=>{
+test('a real worker ACK completes before delayed background reads and never buys a paid progress report',async()=>{
  const f=fixture(),parentId='a'.repeat(32),pageId='f'.repeat(32),clock={now:Date.now()+1000};let writes=0,reads=0,workerCalls=0,body='';
  await f.store.mutate(d=>d.knowledgeConnections.push({id:'notion-real-delayed',workspaceId:a.workspaceId,provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'grant',userId:a.userId,authorizedAt:'now',parentId}}));
  const documents=new NotionDocuments(f.store,{readDocument:async()=>{reads++;if(reads===1)throw Error('eventual-read-timeout');return {text:body};},callDocumentTool:async(_w:string,_c:string,_g:string,_u:string,name:string,args:any,beforeSend?:()=>Promise<void>)=>{assert.equal(name,'notion-create-pages');await beforeSend?.();writes++;body=args.pages[0].content;return {pages:[{id:pageId}]};}} as unknown as NotionMcpService,{now:()=>clock.now,delays:[5,10]});
@@ -4297,13 +4298,15 @@ test('a real worker write with delayed readback exits to a durable verification 
   workerCalls++;assert.equal(workerCalls,1,'a saved write is never regenerated');return {...answer(''),toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify({title:'项目方案',content:'完整合成项目方案。\n自然结尾。',final:true})}}]};
  }});
  const accepted=await service.dispatch(a,{...input('operation_real_delayed_write','请用合成内容写完整项目方案并保存Notion，不查知识库'),outputDestination:'notion'},key);
- await service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.some(o=>o.conversationId===accepted.taskId&&o.workRun?.failureCode==='notion_verification_pending'));
+ await service.resume(a,key);await waitFor(async()=>(await f.store.read()).chatOperations!.some(o=>o.conversationId===accepted.taskId&&o.workRun?.state==='completed'));
  const pending=await f.store.read(),op=pending.chatOperations!.find(o=>o.conversationId===accepted.taskId&&o.workRun)!;
- assert.equal(op.status,'pending');assert.equal(writes,1);assert.equal(reads,1);assert.equal(workerCalls,1);
- assert.equal((await service.state(a)).notices.length,0);assert.equal((await service.task(a,accepted.taskId!)).conversation.messages.filter(m=>m.role==='assistant').length,0);
+ assert.equal(op.status,'completed');assert.equal(op.workRun!.notionReceipt!.state,'delivered');assert.equal(op.workRun!.notionReceipt!.integrity?.state,'pending');assert.equal(writes,1);assert.equal(reads,0);assert.equal(workerCalls,1);
+ assert.equal((await service.task(a,accepted.taskId!)).jobs[0].state,'completed');assert.equal((await service.task(a,accepted.taskId!)).conversation.messages.filter(m=>m.role==='assistant').length,1);
  assert.ok(pending.contextTraces.some(t=>t.requestId===op.requestId&&t.executionSteps?.some(step=>step.tool==='save_notion_draft')),'the original exact write trace remains available for support without generating another report');
  clock.now+=20;await service.reconcileNotionResults(a,key);
- const done=await f.store.read();assert.equal(done.chatOperations!.find(o=>o.id===op.id)!.workRun!.resultOutcome,'completed');assert.equal(done.powerLedger.length,pending.powerLedger.length);assert.equal(done.modelUsageRecords.length,pending.modelUsageRecords.length);assert.equal(writes,1);assert.equal(reads,2);assert.equal(workerCalls,1);
+ assert.equal((await service.task(a,accepted.taskId!)).jobs[0].state,'completed');assert.equal((await f.store.read()).chatOperations!.find(o=>o.id===op.id)!.workRun!.notionReceipt!.integrity?.state,'inconclusive');
+ clock.now+=20;await service.reconcileNotionResults(a,key);
+ const done=await f.store.read();assert.equal(done.chatOperations!.find(o=>o.id===op.id)!.workRun!.notionReceipt!.integrity?.state,'covered');assert.equal(done.chatOperations!.find(o=>o.id===op.id)!.workRun!.resultOutcome,'completed');assert.equal(done.powerLedger.length,pending.powerLedger.length);assert.equal(done.modelUsageRecords.length,pending.modelUsageRecords.length);assert.equal(writes,1);assert.equal(reads,2);assert.equal(workerCalls,1);
 });
 
 for(const kind of ['intermediate','required-source'] as const)test(`delayed ${kind} saving confirms the page but never invents whole-task completion`,async()=>{
@@ -4400,7 +4403,7 @@ test('a delayed manual proof survives the readback/finalization restart gap with
  const service=verificationService(f,async()=>({text:'暂未同步'}));await assert.rejects(()=>service.verifyNotionResult(a,f.taskId,key),/稍后会继续只读核对/);f.clock.now+=10;
  const reader=new NotionDocuments(f.store,{readDocument:async()=>({text:f.body}),callDocumentTool:async()=>assert.fail('readback is not a write')} as unknown as NotionMcpService,{now:()=>f.clock.now,delays:[1,2]});
  await reader.reconcileDue(a,key);await f.store.mutate(d=>reconcileInterruptedChatOperations(d));
- const state=await service.state(a),detail=await service.task(a,f.taskId);assert.equal(detail.jobs[0].notionReceipt!.state,'verified');assert.equal(detail.jobs[0].verificationPending,true);assert.equal(detail.recovery.kind,'reconciling');assert.match(state.transfers.find(t=>t.id===f.taskId)!.phase!,/正在整理结果/);assert.equal(state.notices.length,0);
+ const detail=await service.task(a,f.taskId);assert.equal(detail.jobs[0].notionReceipt!.state,'verified');assert.equal('verification' in detail.jobs[0].notionReceipt!?detail.jobs[0].notionReceipt!.verification:undefined,undefined);assert.equal((await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!.workRun!.notionVerificationSelection!.operationId,f.operationId);
  await service.reconcileNotionResults(a,key);assert.equal((await service.task(a,f.taskId)).jobs[0].state,'completed');
 });
 
@@ -4409,7 +4412,7 @@ test('a manually selected legacy intermediate draft clears its readback selectio
  await f.store.mutate(d=>{const op=d.chatOperations!.find(o=>o.id===f.operationId)!;op.status='failed';op.workRun!.failureCode='task_execution_failed';op.workRun!.notionReceipt!.verification=undefined;});
  const service=verificationService(f,async()=>({text:f.body}));await service.verifyNotionResult(a,f.taskId,key);
  const op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!,detail=await service.task(a,f.taskId);
- assert.equal(op.workRun!.notionReceipt!.state,'verified');assert.equal(op.workRun!.notionVerificationSelection,undefined);assert.equal(op.workRun!.state,'failed');assert.notEqual(op.workRun!.resultOutcome,'completed');assert.equal(detail.conversation.workPaused,true);assert.equal(detail.jobs[0].verificationPending,false);assert.match((await service.state(a)).conversation!.messages.at(-1)!.content,/只确认了保存状态|其余没做完/);
+ assert.equal(op.workRun!.notionReceipt!.state,'verified');assert.equal(op.workRun!.notionVerificationSelection,undefined);assert.equal(op.workRun!.state,'failed');assert.notEqual(op.workRun!.resultOutcome,'completed');assert.equal(detail.conversation.workPaused,true);assert.equal(detail.jobs[0].verificationPending,false);assert.match((await service.state(a)).conversation!.messages.at(-1)!.content,/未完成|只确认了保存状态|其余没做完/);assert.doesNotMatch((await service.state(a)).conversation!.messages.at(-1)!.content,/任务已完成|全部完成了/);
 });
 
 test('an explicitly selected legacy check that exhausts gives one new main next-step report despite an old reported failure',async()=>{
@@ -4439,15 +4442,14 @@ test('automatic exhaustion can be explicitly rechecked, schedule once and later 
  const count=(await service.state(a)).conversation!.messages.length;await service.reconcileNotionResults(a,key);assert.equal((await service.state(a)).conversation!.messages.length,count);assert.equal(reads,4);
 });
 
-test('an old verified receipt is not fresh proof when an explicit recheck finds the page externally edited',async()=>{
+test('an external edit cannot erase a historical delivery or be reported as fresh complete content',async()=>{
  const f=await pendingNotionVerificationFixture();let reads=0;
  await f.store.mutate(d=>{const op=d.chatOperations!.find(o=>o.id===f.operationId)!,run=op.workRun!,r=run.notionReceipt!;op.status='failed';run.failureCode='task_execution_failed';r.state='verified';r.digest=r.expectedDigest;r.verification=undefined;run.steps![0].state='completed';run.steps![0].output={state:'verified',pageId:r.pageId,digest:r.digest,expectedDigest:r.expectedDigest,final:true};});
  const service=verificationService(f,async()=>{reads++;return {text:'用户已经在Notion改过的新正文'};});
- await assert.rejects(()=>service.verifyNotionResult(a,f.taskId,key),/自动核对已停下/);
- await service.reconcileNotionResults(a,key);
- const op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!,detail=await service.task(a,f.taskId);
- assert.equal(op.workRun!.notionReceipt!.state,'verified','historical save evidence is not erased');assert.equal(op.workRun!.notionReceipt!.verification!.state,'exhausted');assert.equal(op.workRun!.state,'failed');assert.equal(op.workRun!.resultOutcome,'partial');assert.equal(op.workRun!.notionVerificationSelection,undefined);assert.equal(reads,1);
- assert.match(detail.conversation.messages.at(-1)!.content,/未能完整核对|没能完整核对/);assert.doesNotMatch(detail.conversation.messages.at(-1)!.content,/已保存到 Notion · 已回读核对|任务已完成/);assert.match(detail.conversation.messages.at(-1)!.content,/打开 Notion 原文/);
+ await service.verifyNotionResult(a,f.taskId,key);
+ for(let check=0;check<3;check++){f.clock.now+=10;await service.reconcileNotionResults(a,key);}
+ const op=(await f.store.read()).chatOperations!.find(o=>o.id===f.operationId)!,receipt=op.workRun!.notionReceipt!;
+ assert.equal(receipt.state,'verified','historical delivery evidence is not erased');assert.notEqual(receipt.integrity?.state,'covered');assert.equal(receipt.comparison?.kind,'body_mismatch');assert.equal(receipt.verification?.state,'exhausted');assert.equal(reads,2);assert.equal(receipt.expectedDigest,createHash('sha256').update(f.body).digest('hex'));
 });
 
 async function lateSaveFixture(options:{partial?:boolean;fromMain?:boolean;article?:string;articleRequest?:string;workflow?:import('./taskWorkflow.js').WorkflowSpec;expectSaveOnlyPrompt?:boolean;handoffInstruction?:string}={}){
@@ -4502,12 +4504,13 @@ test('save_existing without a save trace rechecks an exact bound prior article b
   };
   const accepted=await f.service.dispatch(a,{...input(`operation_save_existing_v11_${mutation}`,'把这篇已有文章原样保存到 Notion，不重写。'),outputDestination:'chat'},key);
   await f.service.resume(a,key);
-  await waitFor(async()=>(await f.store.read()).chatOperations!.some(operation=>operation.conversationId===accepted.taskId&&operation.workRun?.failureCode==='notion_verification_pending'));
+  await waitFor(async()=>(await f.store.read()).chatOperations!.some(operation=>operation.conversationId===accepted.taskId&&operation.workRun?.state==='completed'));
   let operationId='',originalReceipt:NonNullable<import('./coordinatorTypes.js').WorkRun['notionReceipt']>;
   await f.store.mutate(db=>{
    const operation=db.chatOperations!.find(operation=>operation.conversationId===accepted.taskId&&operation.workRun)!,run=operation.workRun!,receipt=run.notionReceipt!;
    operationId=operation.id;operation.status='completed';run.state='failed';run.resultOutcome='partial';run.failureCode='notion_verification_exhausted';
-   receipt.canonicalVersion=10;receipt.expectedCanonicalDigest=canonicalNotionDigest(article,10);receipt.verification!.state='exhausted';receipt.verification!.attempt=3;receipt.verification!.lastReason='mismatch';
+   receipt.state='uncertain';delete receipt.writeAcknowledgement;delete receipt.integrity;receipt.canonicalVersion=10;receipt.expectedCanonicalDigest=canonicalNotionDigest(article,10);receipt.verification={state:'exhausted',version:1,attempt:3,nextCheckAt:new Date(0).toISOString(),deadlineAt:new Date(0).toISOString(),lastReason:'mismatch'};
+   for(const step of run.steps??[])if(step.namespace==='worker'&&step.tool==='save_notion_draft'){step.state='started';step.output=undefined;}
    run.workflow!.steps[0]={id:'save_existing',state:'failed',summary:'原页待核对'};run.workflow!.phase='failed';
    const stage=run.steps!.find(step=>(step.output as any)?.workflow?.stepId==='save_existing')!;stage.state='failed';stage.operation={version:1,execution:'succeeded',verification:'failed'};(stage.output as any).outcome='failed';
    db.contextTraces=[];
@@ -4525,7 +4528,7 @@ test('save_existing without a save trace rechecks an exact bound prior article b
   if(mutation==='none'){
    assert.equal((await f.service.verifyNotionResult(a,accepted.taskId!,key)).state,'verified');
    const latest=(await f.store.read()).chatOperations!.find(operation=>operation.id===operationId)!.workRun!;
-   assert.equal(latest.state,'completed');assert.equal(latest.workflow!.phase,'completed');assert.equal(latest.notionReceipt!.comparison!.comparatorVersion,11);
+   assert.equal(latest.state,'completed',JSON.stringify({phase:latest.workflow?.phase,failureCode:latest.failureCode}));assert.equal(latest.workflow!.phase,'completed');assert.equal(latest.notionReceipt!.comparison!.comparatorVersion,11);
   }else{
    await assert.rejects(()=>f.service.verifyNotionResult(a,accepted.taskId!,key));
    assert.equal((await f.store.read()).chatOperations!.find(operation=>operation.id===operationId)!.workRun!.notionReceipt!.state,'uncertain',mutation);
@@ -4544,7 +4547,7 @@ for(const selected of ['chat','notion'] as const)test(`late Notion save reuses e
  assert.equal(f.counts().body,f.expectedBody,'save the entire body while projecting only the leading H1 into page title, without service status suffix');assert.equal(f.counts().title,'合成方案');assert.equal(f.counts().writes,1);assert.equal(f.counts().workerCalls,0);
  assert.equal(old.workRun!.state,'failed');assert.equal(old.workRun!.resultOutcome,'partial','a new save does not rewrite old creative history as completed');
  assert.deepEqual(latest.workRun!.contract?.requiredTools,['save_notion_draft']);assert.deepEqual(latest.workRun!.sources,[]);assert.equal(latest.workRun!.workflow!.spec.steps.length,1);assert.equal(latest.workRun!.workflow!.spec.steps[0].kind,'notion');assert.equal(latest.workRun!.notionArticleSource?.operationId,f.sourceId);
- assert.equal(detail.jobs.at(-1)!.notionReceipt?.state,'verified');await f.service.resume(a,key);assert.equal(f.counts().writes,1);
+ assert.equal(detail.jobs.at(-1)!.notionReceipt?.state,'delivered');await f.service.resume(a,key);assert.equal(f.counts().writes,1);
  await assert.rejects(()=>f.service.task(b,f.taskId),/不存在/);assert.equal((await f.store.read()).powerAccounts[1].balanceMicros,100e6);
 });
 
@@ -4560,7 +4563,7 @@ for(const explicit of [false,true])test(`an authorized missing-save report prese
  const db=await f.store.read(),run=db.chatOperations!.filter(op=>op.conversationId===f.taskId&&op.workRun).at(-1)!.workRun!;
  assert.equal(f.counts().body,f.expectedBody);assert.equal(f.counts().writes,1);assert.equal(f.counts().workerCalls,0);
  assert.equal(run.notionArticleSource!.operationId,f.sourceId);assert.deepEqual(run.workflow!.spec.steps.map(step=>[step.id,step.kind]),[['save_existing','notion']]);
- assert.equal(run.notionReceipt!.state,'verified');assert.deepEqual(run.contract!.requiredTools,['save_notion_draft']);
+ assert.equal(run.notionReceipt!.state,'delivered');assert.deepEqual(run.contract!.requiredTools,['save_notion_draft']);
  await f.service.resume(a,key);assert.equal(f.counts().writes,1);
 });
 
@@ -4733,7 +4736,7 @@ for(const destination of ['chat','notion'] as const)test(`the actual multi-negat
  assert.deepEqual(run.workflow!.steps.map(step=>[step.id,step.state]),[['save_existing','completed']]);
  assert.deepEqual(run.contract!.requiredTools,['save_notion_draft']);assert.deepEqual(run.sources,[]);
  assert.deepEqual(run.notionArticleSource,{conversationId:f.taskId,operationId:f.sourceId,messageId,messageDigest:createHash('sha256').update(article).digest('hex'),digest:createHash('sha256').update(article).digest('hex')});
- assert.equal(run.notionReceipt?.state,'verified');assert.equal(run.notionReceipt.expectedRawDigest,createHash('sha256').update(article).digest('hex'));assert.deepEqual(run.notionReceipt.titleProjection,{version:1,title:'ONE-QA-LATE-1029-A',prefix:'# ONE-QA-LATE-1029-A\n\n'});assert.equal(writes,1);assert.equal(workerCalls,0);assert.equal(routerCalls,2);
+ assert.equal(run.notionReceipt?.state,'delivered');assert.equal(run.notionReceipt.expectedRawDigest,createHash('sha256').update(article).digest('hex'));assert.deepEqual(run.notionReceipt.titleProjection,{version:1,title:'ONE-QA-LATE-1029-A',prefix:'# ONE-QA-LATE-1029-A\n\n'});assert.equal(writes,1);assert.equal(workerCalls,0);assert.equal(routerCalls,2);
  assert.equal(title,'ONE-QA-LATE-1029-A');assert.equal(body,'青色42\n先写好原文，再单独补存。');
  assert.equal(db.conversations.find(conversation=>conversation.id===f.taskId)!.messages.find(message=>message.id===messageId)!.content,article,'saving does not change the source reply');
  await service.state(a);await service.task(a,result.taskId!);await service.resume(a,key);await service.dispatch(a,args,key);await service.resume(a,key);
@@ -4772,7 +4775,7 @@ test('a complete unique keyword lookup accepts the actual delegate → omitted-q
  const args={...input('operation_live_query_save_repair',request),outputDestination:'chat' as const},result=await service.dispatch(a,args,key);assert.ok(result.taskId);await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='completed');
  const run=(await f.store.read()).chatOperations!.find(op=>op.conversationId===result.taskId&&op.workRun)!.workRun!;
  const db=await f.store.read(),operation=db.chatOperations!.find(op=>op.operationId===args.operationId)!,trace=db.contextTraces.find(trace=>trace.requestId===operation.requestId)!.executionSteps!;assert.equal(trace.filter(step=>step.status==='rejected').length,1,'only the initial unselected delegation needs repair; omitted query is a successful scoped history read');assert.equal(trace.filter(step=>step.tool==='read_context'&&step.status==='returned').length,2);
- assert.deepEqual(run.workflow!.spec.steps.map(step=>step.id),['save_existing']);assert.equal(run.notionArticleSource!.messageId,f.messageId);assert.equal(run.notionArticleSource!.conversationId,f.taskId);assert.equal(run.notionReceipt?.state,'verified');assert.equal(run.notionReceipt?.expectedRawDigest,createHash('sha256').update(f.article).digest('hex'));
+ assert.deepEqual(run.workflow!.spec.steps.map(step=>step.id),['save_existing']);assert.equal(run.notionArticleSource!.messageId,f.messageId);assert.equal(run.notionArticleSource!.conversationId,f.taskId);assert.equal(run.notionReceipt?.state,'delivered');assert.equal(run.notionReceipt?.expectedRawDigest,createHash('sha256').update(f.article).digest('hex'));
  assert.deepEqual(f.counts(),{writes:1,workerCalls:0,title:f.marker,body:'青色42\n只保存这一份。'});assert.equal(calls,4);
  await service.dispatch(a,args,key);await service.state(a);await service.resume(a,key);assert.equal(f.counts().writes,1);assert.equal(calls,4);await assert.rejects(()=>service.task(b,result.taskId!),/不存在/);
 });
@@ -4871,7 +4874,7 @@ for(const alreadyCompleted of [false,true])for(const missingDigest of [false,tru
  });
  const before=await f.store.read(),beforeMain=before.conversations.find(task=>task.id===f.taskId)!.messages.length,beforeTask=before.conversations.find(task=>task.id===accepted.taskId)!.messages.length,counts=f.counts();
  assert.equal((await f.service.task(a,accepted.taskId!)).jobs[0].workflow!.phase,'failed');
- await f.service.reconcileNotionResults(a,key);assert.equal((await f.service.task(a,accepted.taskId!)).jobs[0].workflow!.phase,'failed','ordinary polling does not silently repair old task history');
+ await f.service.reconcileNotionResults(a,key);assert.equal((await f.service.task(a,accepted.taskId!)).jobs[0].workflow!.phase,alreadyCompleted?'completed':'failed','a trusted ACK can synchronize already-delivered workflow metadata without replay');
  await assert.rejects(()=>f.service.verifyNotionResult(b,accepted.taskId!,key),/不存在/);await f.service.verifyNotionResult(a,accepted.taskId!,key);
  const db=await f.store.read(),run=db.chatOperations!.find(op=>op.id===operationId)!.workRun!,detail=await f.service.task(a,accepted.taskId!);
  assert.equal(run.state,'completed');assert.equal(run.resultOutcome,'completed');assert.equal(run.workflow!.phase,'completed');assert.equal(run.workflow!.steps[0].state,'completed');assert.equal(detail.jobs[0].workflow!.phase,'completed');assert.deepEqual(detail.jobs[0].workflow!.steps.map(step=>step.state),['completed']);
@@ -4894,6 +4897,9 @@ test('manual readback repairs only the saved stage, corrects an old false whole-
  await service.verifyNotionResult(a,accepted.taskId!,key);
  const db=await f.store.read(),run=db.chatOperations!.find(op=>op.conversationId===accepted.taskId&&op.workRun)!.workRun!,detail=await service.task(a,accepted.taskId!);
  assert.equal(run.workflow!.steps[1].state,'completed');assert.deepEqual(run.workflow!.steps[2],followup);assert.equal(run.workflow!.phase,'failed');assert.equal(run.state,'failed');assert.equal(run.resultOutcome,'partial');assert.equal(detail.jobs[0].workflow!.steps[1].state,'completed');assert.match(detail.conversation.messages.at(-1)!.content,/还有其他步骤未完成/);assert.equal(writes,1);assert.equal(models,2);assert.equal(detail.conversation.workPaused,true);
+ const original=db.chatOperations!.find(op=>op.conversationId===accepted.taskId&&op.workRun)!;
+ await service.retryLatest(a,accepted.taskId!,original.id,undefined,key);await service.resume(a,key);
+ const unchanged=await service.task(a,accepted.taskId!);assert.equal(unchanged.jobs.length,1);assert.equal(unchanged.jobs[0].state,'failed');assert.equal(writes,1);assert.equal(models,2,'a save ACK does not authorize replaying the unfinished model stage');
 });
 
 for(const mutation of ['none','usable-partial','missing-required','late-read','borrowed-worker-read','borrowed-workflow-read','duplicate-required-read','unknown-effect'] as const)test(`manual ordinary workflow readback respects prefixed knowledge, contract and unknown-effect evidence without replay; mutation=${mutation}`,async()=>{
@@ -4910,9 +4916,9 @@ for(const mutation of ['none','usable-partial','missing-required','late-read','b
   });
   const workCounts=()=>{const {read,...work}=f.counts;return work;};
   const before=await f.store.read(),old=before.chatOperations!.find(op=>op.conversationId===accepted.taskId&&op.workRun)!,receipt=structuredClone(old.workRun!.notionReceipt),counts=workCounts(),reads=f.counts.read,modelCalls=f.calls.length,persistedNames=old.workRun!.steps!.map(cp=>cp.tool);
-  await f.service.reconcileNotionResults(a,key);assert.equal((await f.service.task(a,accepted.taskId!)).jobs[0].state,'failed','polling never repairs a historical terminal attempt');await assert.rejects(()=>f.service.verifyNotionResult(b,accepted.taskId!,key));
+  await f.service.reconcileNotionResults(a,key);assert.equal((await f.service.task(a,accepted.taskId!)).jobs[0].state,['none','usable-partial'].includes(mutation)?'completed':'failed','delivery can repair metadata only when every required step has proof');await assert.rejects(()=>f.service.verifyNotionResult(b,accepted.taskId!,key));
   await f.service.verifyNotionResult(a,accepted.taskId!,key);const db=await f.store.read(),run=db.chatOperations!.find(op=>op.id===old.id)!.workRun!,detail=await f.service.task(a,accepted.taskId!);
-  const complete=['none','usable-partial'].includes(mutation);assert.equal(run.state,complete?'completed':'failed');assert.equal(run.resultOutcome,complete?'completed':'failed');assert.equal(run.workflow!.phase,mutation==='duplicate-required-read'?'failed':'completed');assert.equal(detail.conversation.workPaused,!complete);assert.deepEqual(run.steps!.map(cp=>cp.tool),persistedNames);assert.deepEqual(JSON.parse(JSON.stringify(run.notionReceipt)),JSON.parse(JSON.stringify(receipt)));assert.equal(f.body(),f.firstBody);assert.deepEqual(workCounts(),counts);assert.equal(f.counts.read,reads+1);assert.equal(f.calls.length,modelCalls);if(!mutation.startsWith('borrowed-'))assert.ok(run.steps!.every(cp=>cp.tool!=='knowledge_search'),'completion mapping is never persisted as fake tool evidence');
+  const complete=['none','usable-partial'].includes(mutation);assert.equal(run.state,complete?'completed':'failed');if(complete)assert.equal(run.resultOutcome,'completed');else assert.notEqual(run.resultOutcome,'completed');assert.equal(run.workflow!.phase,mutation==='duplicate-required-read'?'failed':'completed');assert.equal(detail.conversation.workPaused,!complete);assert.deepEqual(run.steps!.map(cp=>cp.tool),persistedNames);for(const field of ['canonicalVersion','expectedCanonicalDigest','expectedDigest','expectedRawDigest','expectedLength','checkpointKey','writeAcknowledgement'] as const)assert.deepEqual(run.notionReceipt?.[field],receipt?.[field]);assert.equal(f.body(),f.firstBody);assert.deepEqual(workCounts(),counts);assert.equal(f.counts.read,reads+1);assert.equal(f.calls.length,modelCalls);if(!mutation.startsWith('borrowed-'))assert.ok(run.steps!.every(cp=>cp.tool!=='knowledge_search'),'completion mapping is never persisted as fake tool evidence');
   const messages=detail.conversation.messages.length;await f.service.verifyNotionResult(a,accepted.taskId!,key);assert.equal((await f.service.task(a,accepted.taskId!)).conversation.messages.length,messages);assert.deepEqual(workCounts(),counts);assert.equal(f.calls.length,modelCalls);
  }finally{f.cleanup();}
 });
@@ -5017,7 +5023,7 @@ for(const scenario of ['上网查','实际联网检索','denied-user','denied-ha
  }
  await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='completed');
  const db=await f.store.read(),run=db.chatOperations!.find(operation=>operation.workRun&&operation.conversationId===result.taskId)!.workRun!;
- assert.equal(db.chatOperations!.filter(operation=>operation.workRun).length,1);assert.equal(recalls,1);assert.equal(searches,1);assert.equal(drafts,1);assert.equal(writes,1);assert.equal(body,article);assert.equal(run.webSearch,true);assert.equal(run.workflow!.phase,'completed');assert.ok(run.workflow!.steps.every(step=>step.state==='completed'));assert.equal(run.notionReceipt!.state,'verified');assert.equal(run.notionReceipt!.final,true);await assert.rejects(()=>service.task(b,result.taskId!));
+ assert.equal(db.chatOperations!.filter(operation=>operation.workRun).length,1);assert.equal(recalls,1);assert.equal(searches,1);assert.equal(drafts,1);assert.equal(writes,1);assert.equal(body,article);assert.equal(run.webSearch,true);assert.equal(run.workflow!.phase,'completed');assert.ok(run.workflow!.steps.every(step=>step.state==='completed'));assert.equal(run.notionReceipt!.state,'delivered');assert.equal(run.notionReceipt!.final,true);await assert.rejects(()=>service.task(b,result.taskId!));
 });
 
 test('knowledge-card delegation cannot widen selected sources, revive an opt-out or revoked source, or grant a worker web tool',async()=>{
@@ -5128,7 +5134,7 @@ test('a new Notion workflow repairs its extra page read and a later single/batch
  const result=await service.dispatch(a,input('operation_f_bounded_readback_repair','从得到大脑查找合成方法论，再上网查公开设计案例，写完整专栏保存到Notion，并完整回读核对标题与正文。'),key);
  assert.equal(result.taskIds.length,1);assert.equal(routes,4);assert.deepEqual(task,original,'only the model supplies the corrected four-step plan');
  await service.resume(a,key);await waitFor(async()=>(await service.task(a,result.taskId!)).jobs[0].state==='completed');
- const jobs=(await f.store.read()).chatOperations!.filter(operation=>operation.workRun);assert.equal(jobs.length,1);assert.equal(jobs[0].workRun!.workflow!.spec.steps.length,4);assert.match(jobs[0].workRun!.workflow!.spec.steps[3].instruction,/完整回读标题与正文/);assert.equal(jobs[0].workRun!.notionReceipt!.state,'verified');assert.equal(recalls,2);assert.equal(searches,1);assert.equal(drafts,1);assert.equal(writes,1);await assert.rejects(()=>service.task(b,result.taskId!));
+ const jobs=(await f.store.read()).chatOperations!.filter(operation=>operation.workRun);assert.equal(jobs.length,1);assert.equal(jobs[0].workRun!.workflow!.spec.steps.length,4);assert.match(jobs[0].workRun!.workflow!.spec.steps[3].instruction,/完整回读标题与正文/);assert.equal(jobs[0].workRun!.notionReceipt!.state,'delivered');assert.equal(recalls,2);assert.equal(searches,1);assert.equal(drafts,1);assert.equal(writes,1);await assert.rejects(()=>service.task(b,result.taskId!));
 });
 
 for(const mode of ['bound','inspected','foreign','no-page'] as const)test(`Notion read schema requires this round's own existing read-only target; mode=${mode}`,async()=>{
@@ -5154,32 +5160,32 @@ for(const mode of ['bound','inspected','foreign','no-page'] as const)test(`Notio
 });
 
 
-test('a generated manuscript is actually readable while destination verification is pending and hidden after source revocation',async()=>{
+test('a delivered manuscript is readable from its result while draft checkpoint previews retain source authorization',async()=>{
  const f=await workflowServiceFixture({delayed:true,noHtml:true});
  try{
   const result=await f.service.dispatch(a,{...input('operation_read_pending_manuscript','从得到大脑查找青色42入口方案，写完整方案并保存到Notion。'),sourceIds:['wf-source'],confirmedExternal:true,outputDestination:'notion'},key);assert.ok(result.taskId);await f.service.resume(a,key);
-  await waitFor(async()=>(f.store.read()).then(d=>d.chatOperations!.some(o=>o.conversationId===result.taskId&&o.workRun?.failureCode==='notion_verification_pending')));
-  const detail=await f.service.task(a,result.taskId!);assert.equal(detail.jobs[0].availableResults?.[0].content,f.firstBody);assert.equal(detail.jobs[0].workflow!.steps[1].resultAvailable,true);
+  await waitFor(async()=>(f.store.read()).then(d=>d.chatOperations!.some(o=>o.conversationId===result.taskId&&o.workRun?.state==='completed')));
+  const detail=await f.service.task(a,result.taskId!);assert.equal(detail.jobs[0].availableResults,undefined,'the delivered result already owns its full manuscript');assert.ok(detail.conversation.messages.some(message=>message.role==='assistant'&&message.content.includes(f.firstBody)));assert.equal(detail.jobs[0].workflow!.steps[1].resultAvailable,true);
   await assert.rejects(()=>f.service.task(b,result.taskId!));
   await f.store.mutate(d=>{d.knowledgeConnections.find(source=>source.id==='wf-source')!.status='revoked';});
   const denied=await f.service.task(a,result.taskId!);assert.equal(denied.jobs[0].availableResults,undefined);assert.equal(denied.jobs[0].workflow!.steps.some(step=>step.resultAvailable),false);assert.equal(f.counts.draft,1);assert.equal(f.counts.create,1);
  }finally{f.cleanup();}
 });
 
-for(const noHtml of [true,false])test(`durable Notion readback timer completes without UI polling or manual continuation; successor=${!noHtml}`,async()=>{
+for(const noHtml of [true,false])test(`durable background integrity timer settles after ACK delivery without UI polling; successor=${!noHtml}`,async()=>{
  const f=await workflowServiceFixture({delayed:true,realClock:true,automaticReadback:true,noHtml});
  try{
   const result=await f.service.dispatch(a,{...input(`operation_notion_automatic_timer_${noHtml}`,'请从得到大脑查找青色42入口方案，写成完整方案保存到Notion。'+(noHtml?'':'随后做交互网页。')),sourceIds:['wf-source'],featureIds:noHtml?[]:['oneHtml'],confirmedExternal:true,outputDestination:'notion'},key);
   assert.ok(result.taskId);await f.service.resume(a,key);
-  await waitFor(async()=>(await f.store.read()).chatOperations!.some(o=>o.conversationId===result.taskId&&o.workRun?.failureCode==='notion_verification_pending'));
+  await waitFor(async()=>(await f.store.read()).chatOperations!.some(o=>o.conversationId===result.taskId&&o.workRun?.state==='completed'));
   const pending=await f.store.read(),op=pending.chatOperations!.find(o=>o.conversationId===result.taskId&&o.workRun)!;
-  assert.equal(f.counts.create,1);assert.equal(f.counts.draft,1);assert.equal(op.status,'pending');assert.equal(f.counts.feature,0);
-  assert.equal(pending.conversations.find(c=>c.id===result.taskId)!.workPaused,false);
+  assert.equal(f.counts.create,1);assert.equal(f.counts.draft,1);assert.equal(op.status,'completed');assert.equal(f.counts.feature,noHtml?0:2);assert.equal(op.workRun!.notionReceipt!.state,'delivered');
+  assert.equal(Boolean(pending.conversations.find(c=>c.id===result.taskId)!.workPaused),false);
   // Deliberately only inspect persisted storage: state()/task()/reconcile()/
   // resume()/continue clicks must not secretly drive this completion.
-  await waitFor(async()=>(await f.store.read()).chatOperations!.find(o=>o.id===op.id)!.workRun!.state==='completed').catch(async error=>{const pending=(await f.store.read()).chatOperations!.find(o=>o.id===op.id)!.workRun!;throw new Error(`${error.message}: ${JSON.stringify({state:pending.state,phase:pending.workflow?.phase,receipt:pending.notionReceipt?.state,verification:pending.notionReceipt?.verification?.state,steps:pending.workflow?.steps.map(step=>({id:step.id,state:step.state})),counts:f.counts})}`);});
+  await waitFor(async()=>(await f.store.read()).chatOperations!.find(o=>o.id===op.id)!.workRun!.notionReceipt!.integrity?.state==='covered').catch(async error=>{const pending=(await f.store.read()).chatOperations!.find(o=>o.id===op.id)!.workRun!;throw new Error(`${error.message}: ${JSON.stringify({state:pending.state,phase:pending.workflow?.phase,receipt:pending.notionReceipt?.state,verification:pending.notionReceipt?.verification?.state,steps:pending.workflow?.steps.map(step=>({id:step.id,state:step.state})),counts:f.counts})}`);});
   const done=await f.store.read(),completed=done.chatOperations!.find(o=>o.id===op.id)!;
-  assert.equal(completed.workRun!.resultOutcome,'completed');assert.equal(completed.workRun!.notionReceipt!.state,'verified');assert.ok(completed.workRun!.workflow!.steps.every(s=>s.state==='completed'));
+  assert.equal(completed.workRun!.resultOutcome,'completed');assert.equal(completed.workRun!.notionReceipt!.state,'delivered');assert.ok(completed.workRun!.workflow!.steps.every(s=>s.state==='completed'));
   assert.equal(f.counts.retrieval,1);assert.equal(f.counts.draft,1);assert.equal(f.counts.create,1);assert.equal(f.counts.update,0);assert.equal(f.counts.feature,noHtml?0:2);assert.ok(f.counts.read>=2);
   const main=done.conversations.find(c=>c.coordinatorMain)!,reports=main.messages.filter(m=>m.role==='assistant'&&m.id===completed.workRun!.reportMessageId);
   assert.ok(completed.workRun!.reportedToCoordinatorAt);assert.equal(reports.length,1);assert.match(reports[0].content,new RegExp(result.taskId!));
@@ -5439,4 +5445,52 @@ test('script reliability: a direct detail request inherits the selected current 
   assert.match(JSON.stringify(inputs[2].messages),/再详细分析一下这份材料/);assert.doesNotMatch(JSON.stringify(inputs[2].messages),/INHERITED_OLD_ATTACHMENT_BODY/);
   assert.equal(jobs[0].workRun!.state,'completed');assert.equal(jobs[1].workRun!.state,'completed');await service.resume(a,key);assert.equal(inputs.length,3);await assert.rejects(()=>service.task(b,taskId!));
  }finally{rmSync(directory,{recursive:true,force:true});}
+});
+
+for(const quality of ['read_failed','covered','missing','title_difference'] as const)test(`final Notion ACK completes the normal workflow before independent ${quality} checks`,async()=>{
+ const f=fixture(),parentId='a'.repeat(32),pageId='a1'.repeat(16),body='# 合成正式文章\n\n金额3000元。\n\n保留最后一段。';
+ let writes=0,reads=0,models=0,remote='';const clock={now:Date.now()};
+ await f.store.mutate(db=>db.knowledgeConnections.push({id:'delivery-notion',workspaceId:a.workspaceId,provider:'notion',status:'connected',clientId:'test',createdAt:'now',updatedAt:'now',notionWriting:{grantId:'delivery-grant',userId:a.userId,authorizedAt:'now',parentId}}));
+ const mcp={
+  readDocument:async(ws:string,id:string)=>{assert.equal(ws,a.workspaceId);assert.equal(id,pageId);reads++;if(quality==='read_failed')throw Error('private upstream secret');return {text:remote,properties:{title:quality==='title_difference'?'ONE-QA-OLD':'合成正式文章'}};},
+  callDocumentTool:async(_w:string,_c:string,_g:string,_u:string,name:string,args:any,before?:()=>Promise<void>)=>{await before?.();assert.equal(name,'notion-create-pages');writes++;remote=args.pages[0].content;return {pages:[{id:pageId}]};}
+ } as unknown as NotionMcpService;
+ const docs=new NotionDocuments(f.store,mcp,{now:()=>clock.now,delays:[1000,2000,3000],deadlineMs:60000});
+ const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('synthetic supplied material needs no knowledge')},{notionDocuments:docs,modelCall:async(model,messages)=>{
+  if(model.id==='router')return messages.at(-1)?.role==='tool'?answer('我来处理。'):{...answer(''),toolCalls:[{id:'delegate-delivery',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'交付独立核对验收',instruction:'使用合成材料写完整文章并保存Notion，不查知识库。',executorId:'general',featureIds:[],workflow:{version:1,steps:[{id:'draft',title:'整理原稿',kind:'model',instruction:'按给定合成材料写完整文章，不查知识库。',inputs:[]},{id:'save',title:'保存文章',kind:'notion',instruction:'保存上一步完整原稿。',inputs:['draft']}]}})}}]};
+  models++;return answer(JSON.stringify({outcome:'completed',content:body,summary:'文章写好了。'}));
+ }});
+ const admitted=await service.dispatch(a,{...input(`normal_delivery_${quality}_001`,'只用合成材料写文章并保存到Notion，不查知识库。'),outputDestination:'notion'},key);
+ await service.resume(a,key);await waitFor(async()=>(await service.task(a,admitted.taskId!)).jobs[0].state==='completed');
+ const first=await service.task(a,admitted.taskId!);assert.equal(first.jobs[0].workflow!.phase,'completed');assert.equal(first.jobs[0].notionReceipt!.state,'delivered');assert.equal(first.jobs[0].notionReceipt!.deliveryConfirmed,true);assert.equal(first.jobs[0].notionReceipt!.integrity!.state,'pending');assert.equal(reads,0,'a successful write is delivered before the first background read');assert.equal(writes,1);assert.equal(models,1);assert.equal(Boolean(first.conversation.workPaused),false);assert.match(first.conversation.messages.at(-1)!.content,/保留最后一段/);assert.match(first.conversation.messages.at(-1)!.content,new RegExp(pageId));
+ const main=await service.state(a);assert.ok(main.conversation!.messages.some(message=>message.content.includes('交付独立核对验收')),'main conversation can immediately brief the delivered task');
+ if(quality==='covered')remote+='\n\n额外的独立说明。';
+ if(quality==='missing')remote=remote.replace('金额3000元。','金额300元。');
+ for(const delay of [1000,2000,3000]){clock.now+=delay;await service.reconcileNotionResults(a,key);}
+ const done=await service.task(a,admitted.taskId!);assert.equal(done.jobs[0].state,'completed');assert.equal(done.jobs[0].workflow!.phase,'completed');assert.equal(done.jobs[0].notionReceipt!.deliveryConfirmed,true);assert.equal(writes,1);assert.equal(models,1);assert.equal(Boolean(done.conversation.workPaused),false);
+ assert.equal(done.jobs[0].notionReceipt!.integrity!.state,quality==='read_failed'?'inconclusive':quality==='missing'?'missing':'covered');
+ if(quality==='title_difference')assert.equal(done.jobs[0].notionReceipt!.integrity!.reason,'title_difference');
+ if(quality==='read_failed'||quality==='missing'){assert.equal(reads,3);assert.equal(('verification' in done.jobs[0].notionReceipt!?done.jobs[0].notionReceipt!.verification?.state:undefined),'exhausted');await service.reconcileNotionResults(a,key);assert.equal(reads,3);}
+ assert.doesNotMatch(JSON.stringify(done.jobs[0].notionReceipt),/private upstream secret|acknowledgement|expectedRawDigest/);
+ await assert.rejects(()=>service.task(b,admitted.taskId!));
+ if(quality==='covered'){
+  const {existingNotionArticle}=await import('./notionArticleSource.js');
+  const source=existingNotionArticle(await f.store.read(),a,admitted.taskId!)!;assert.equal(source.content,body);
+  await f.store.mutate(db=>{const op=db.chatOperations!.find(op=>op.conversationId===admitted.taskId&&op.workRun)!;op.workRun!.notionReceipt!.state='verified';});
+  assert.equal(existingNotionArticle(await f.store.read(),a,admitted.taskId!,source.source)!.content,body,'quality-state changes cannot change the exact saved message/source binding');
+  await f.store.mutate(db=>{
+   const op=db.chatOperations!.find(op=>op.conversationId===admitted.taskId&&op.workRun)!,run=op.workRun!,receipt=run.notionReceipt!,task=db.conversations.find(task=>task.id===admitted.taskId)!;
+   op.status='failed';run.state='failed';run.resultOutcome='partial';run.failureCode='notion_verification_exhausted';receipt.state='uncertain';receipt.integrity=undefined;receipt.verification={state:'exhausted',version:1,attempt:3,nextCheckAt:new Date(clock.now).toISOString(),deadlineAt:new Date(clock.now).toISOString(),lastReason:'mismatch'};
+   const worker=run.steps!.find(cp=>cp.key===receipt.checkpointKey)!,outer=run.steps!.find(cp=>(cp.output as any)?.workflow?.stepId==='save')!;worker.state='started';worker.output=undefined;outer.state='failed';(outer.output as any).outcome='failed';outer.operation={version:1,execution:'succeeded',verification:'failed'};
+   run.workflow!.steps[1]={id:'save',state:'failed',summary:'旧版完整性核对未通过'};run.workflow!.phase='failed';task.workPaused=true;task.workPauseReason='partial';
+  });
+  const beforeMigration=await f.store.read(),oldReceipt=beforeMigration.chatOperations!.find(op=>op.conversationId===admitted.taskId&&op.workRun)!.workRun!.notionReceipt!;
+  const restart=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('ACK migration bought knowledge')},{notionDocuments:docs,modelCall:async()=>assert.fail('ACK migration bought model')});
+  await restart.resume(a,key);
+  const restored=await restart.task(a,admitted.taskId!);assert.equal(restored.jobs[0].state,'completed');assert.equal(restored.jobs[0].workflow!.phase,'completed');assert.equal(restored.jobs[0].notionReceipt!.deliveryConfirmed,true);assert.equal(writes,1);assert.equal(models,1);
+  const migrated=(await f.store.read()).chatOperations!.find(op=>op.conversationId===admitted.taskId&&op.workRun)!.workRun!.notionReceipt!;assert.equal(migrated.expectedRawDigest,oldReceipt.expectedRawDigest);assert.equal(migrated.expectedCanonicalDigest,oldReceipt.expectedCanonicalDigest);assert.equal(migrated.canonicalVersion,oldReceipt.canonicalVersion);assert.deepEqual(migrated.writeAcknowledgement,oldReceipt.writeAcknowledgement);
+  await restart.resume(a,key);assert.equal((await restart.task(a,admitted.taskId!)).jobs.length,1,'repeated state recovery keeps the original attempt');
+ }
+ await service.removeTask(a,admitted.taskId!,key);
+ const persisted=(await f.store.read()).chatOperations!.find(op=>op.conversationId===admitted.taskId&&op.workRun)!;assert.equal(persisted.workRun!.state,'completed','archiving stops quality checks without retracting the delivered task');
 });

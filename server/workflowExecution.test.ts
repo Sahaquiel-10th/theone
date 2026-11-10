@@ -27,7 +27,7 @@ const references=(messages:Parameters<WorkflowExecutionInput['callModel']>[1])=>
  const text=messages.at(-1)!.content!;return JSON.parse(text.slice(text.indexOf('\n')+1)) as {inputs:WorkflowContextInput[];history:{id:string;content:string}[]};
 };
 
-test('Notion write execution and body verification remain separate across repeat wakes and exhaustion',async()=>{
+test('Notion write ACK completes delivery while missing or foreign ACK still waits for proof',async()=>{
  for(const binding of ['exact','foreign_operation','wrong_checkpoint','legacy'] as const){
   const f=fixture(plan(step('draft'),step('save',['draft'],{kind:'notion'})));
   f.checkpoints.namespace=`workflow:${f.run.id}`;let saves=0;
@@ -37,16 +37,14 @@ test('Notion write execution and body verification remain separate across repeat
    if(binding!=='legacy')receipt.writeAcknowledgement={version:1,operationId:binding==='foreign_operation'?'foreign':owner.operationId,checkpointKey:binding==='wrong_checkpoint'?'f'.repeat(64):receipt.checkpointKey!,pageId:receipt.pageId!,expectedDigest:receipt.expectedDigest!,expectedRawDigest:receipt.expectedRawDigest,acknowledgedAt:'2026-11-09T00:00:00.000Z'};
    f.setReceipt(receipt);return result;
   }});
-  assert.equal(first.waiting,true);const outer=()=>f.steps.find(cp=>(cp.output as any)?.workflow?.stepId==='save')!;
-  assert.equal(outer().operation?.execution,binding==='exact'?'succeeded':'submitted',binding);assert.equal(outer().operation?.verification,'pending');
-  const {publicWorkflowProgress}=await import('./workflowPresentation.js');
-  assert.equal(publicWorkflowProgress({workflow:f.run,steps:f.steps} as WorkRun,owner)!.steps[1].resultAvailable,undefined);
+  const delivered=binding==='exact',outer=()=>f.steps.find(cp=>(cp.output as any)?.workflow?.stepId==='save')!;
+  assert.equal(first.waiting,!delivered);assert.equal(outer().operation?.execution,delivered?'succeeded':'submitted',binding);assert.equal(outer().operation?.verification,'pending');
   const repeat=await f.execute({callModel:async()=>assert.fail('draft repeated'),saveNotion:async()=>assert.fail('write repeated')});
-  assert.equal(repeat.waiting,true);assert.equal(saves,1);
-  const receipt=f.receipt!;receipt.verification!.state='exhausted';receipt.verification!.attempt=3;receipt.verification!.lastReason='mismatch';f.setReceipt(receipt);
+  assert.equal(repeat.waiting,!delivered);assert.equal(saves,1);
+  const receipt=f.receipt!;receipt.verification!.state='exhausted';receipt.verification!.attempt=3;receipt.verification!.lastReason='mismatch';receipt.integrity={state:'missing',missingBlockCount:1,missingBlockIndexes:[2]};f.setReceipt(receipt);
   const final=await f.execute({callModel:async()=>assert.fail('draft repeated'),saveNotion:async()=>assert.fail('write repeated')});
-  assert.equal(final.run.steps[1].state,'failed');assert.equal(outer().operation?.execution,binding==='exact'?'succeeded':'submitted',binding);assert.equal(outer().operation?.verification,'failed');
-  assert.equal(f.receipt!.state,'uncertain');assert.equal(saves,1);
+  assert.equal(final.run.steps[1].state,delivered?'completed':'failed');assert.equal(outer().operation?.execution,delivered?'succeeded':'submitted',binding);assert.equal(outer().operation?.verification,delivered?'pending':'failed');assert.equal(saves,1);
+  if(delivered){assert.match(final.content,/完整正文draft/);assert.match(final.content,/已保存到 Notion/);assert.doesNotMatch(final.content,/已回读核对/);}
  }
 });
 
@@ -322,12 +320,11 @@ test('save throw after real write is unknown, but a subsequent exact read-only p
 });
 
 test('verified state alone, wrong checkpoint scope, nonfinal save or mismatched body never proves the workflow write',async()=>{
- for(const scenario of ['no_checkpoint','foreign_checkpoint','not_final','wrong_body','verification_still_active'] as const){
+ for(const scenario of ['no_checkpoint','foreign_checkpoint','not_final','wrong_body'] as const){
   const f=fixture(plan(step('write'),step('save',['write'],{kind:'notion'})));
   const result=await f.execute({saveNotion:async(_s,body)=>{
    const value=await f.makeProof(scenario==='wrong_body'?'另一个正文':body,{scopeId:scenario==='foreign_checkpoint'?'other_op':owner.operationId,final:scenario!=='not_final'});
    if(scenario==='no_checkpoint')f.steps.splice(f.steps.findIndex(cp=>cp.tool==='save_notion_draft'),1);
-   if(scenario==='verification_still_active')f.setReceipt({...f.receipt!,verification:{state:'exhausted',version:1,attempt:3,nextCheckAt:'2026-10-25T01:00:00Z',deadlineAt:'2026-10-25T02:00:00Z',lastReason:'mismatch'}});
    return value;
   }});
   assert.notEqual(result.outcome,'completed',scenario);assert.equal(result.waiting,true,scenario);assert.doesNotMatch(result.content,/已回读核对/,scenario);
@@ -520,4 +517,42 @@ test('a feature stage is known not written only after exact live whole-run proof
   const forged=structuredClone(f.steps);const altered=forged.find(cp=>cp.namespace===f.checkpoints.namespace)!;delete (altered.output as any).toolFailure;
   assert.equal(workflowFeatureNoEffectInput(f.run,forged,owner),undefined,'a model-result-shaped failure alone is not the code-owned stage proof');
  }
+});
+
+async function twoAcknowledgedSaves(){
+ const f=fixture(plan(step('draft'),step('save1',['draft'],{kind:'notion'}),step('revision',['draft','save1']),step('save2',['revision'],{kind:'notion'})));
+ f.checkpoints.namespace=`workflow:${f.run.id}`;let writes=0;
+ const first=await f.execute({saveNotion:async(_step,body)=>{
+  const key=(++writes===1?'e':'f').repeat(64),result=await f.makeProof(body,{key}),receipt=f.receipt!;
+  receipt.state='delivered';receipt.delivery='unknown';receipt.digest=undefined;receipt.expectedRawDigest=notionHash(body);receipt.expectedLength=body.length;
+  receipt.writeAcknowledgement={version:1,operationId:owner.operationId,checkpointKey:key,pageId:receipt.pageId!,expectedDigest:receipt.expectedDigest!,expectedRawDigest:receipt.expectedRawDigest,acknowledgedAt:new Date().toISOString()};
+  receipt.integrity={state:'pending'};f.setReceipt(receipt);
+  const worker=f.steps.find(cp=>cp.key===key)!;worker.output={state:'delivered',content:body,pageId:receipt.pageId,expectedDigest:receipt.expectedDigest,final:true};
+  return {...result,state:'delivered',content:body};
+ }});
+ return {f,first,writes};
+}
+
+test('two sequential ACK saves retain separate immutable delivery proofs through summary and restart',async()=>{
+ const {f,first,writes}=await twoAcknowledgedSaves();assert.equal(first.outcome,'completed');assert.equal(writes,2);
+ const saves=f.steps.filter(cp=>(cp.output as any)?.notionDeliveryProof);assert.equal(saves.length,2);
+ assert.equal((saves[0].output as any).notionDeliveryProof.checkpointKey,'e'.repeat(64));assert.equal((saves[1].output as any).notionDeliveryProof.checkpointKey,'f'.repeat(64));assert.equal(f.receipt!.checkpointKey,'f'.repeat(64));
+ assert.ok(saves.every(cp=>cp.operation?.verification==='pending'),'body integrity never becomes a fabricated verified state');
+ const second=await f.execute({callModel:async()=>assert.fail('restart repeated a model'),saveNotion:async()=>assert.fail('restart repeated a save')});
+ assert.equal(second.outcome,'completed');assert.match(second.content,/完整正文revision/);assert.match(second.content,/已保存到 Notion/);
+ const {canResumeWorkflowAfterRestart}=await import('./workflowRecovery.js');
+ assert.equal(canResumeWorkflowAfterRestart({...owner,id:owner.operationId,operationId:'normal',conversationId:'task',status:'pending',workRun:{state:'queued',workflow:f.run,steps:f.steps,notionReceipt:f.receipt}} as any,{...owner,id:'task',archived:false} as any),true);
+});
+
+for(const mutation of ['operation','source','page','stage_link','expected_body','prior_key','worker_body','read_proof_without_ack'] as const)test(`a prior ACK stage rejects conflicting frozen ${mutation} proof after a later save`,async()=>{
+ const {f}=await twoAcknowledgedSaves(),outer=f.steps.find(cp=>(cp.output as any)?.workflow?.stepId==='save1')!,value=outer.output as any;
+ if(mutation==='operation')value.notionDeliveryProof.writeAcknowledgement.operationId='foreign-operation';
+ if(mutation==='source')value.notionDeliveryProof.expectedRawDigest='1'.repeat(64);
+ if(mutation==='page')value.notionDeliveryProof.pageId='2'.repeat(32);
+ if(mutation==='stage_link')value.notionCheckpointKey='3'.repeat(64);
+ if(mutation==='expected_body')value.expectedBodyDigest='4'.repeat(64);
+ if(mutation==='prior_key')value.priorNotionCheckpointKey=value.notionCheckpointKey;
+ if(mutation==='worker_body')(f.steps.find(cp=>cp.key==='e'.repeat(64))!.output as any).content='不属于这个写入的正文';
+ if(mutation==='read_proof_without_ack'){const worker=f.steps.find(cp=>cp.key==='e'.repeat(64))!,raw=(worker.output as any).content;delete value.notionDeliveryProof.writeAcknowledgement;value.notionDeliveryProof.state='verified';value.notionDeliveryProof.digest=notionHash(raw);(worker.output as any).state='verified';(worker.output as any).digest=notionHash(raw);}
+ await assert.rejects(()=>f.execute({callModel:async()=>assert.fail('invalid proof bought a model'),saveNotion:async()=>assert.fail('invalid proof replayed a save')}));
 });

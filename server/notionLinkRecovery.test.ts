@@ -25,6 +25,8 @@ async function fixture(content?:string){
  const docs=new NotionDocuments(store,mcp,{now:()=>now});
  const steps=job.steps!,checkpoints:TaskStepStore={namespace:'worker',steps,save:async cp=>{const i=steps.findIndex(s=>s.key===cp.key);if(i<0)steps.push(cp);else steps[i]=cp;}};
  await assert.rejects(()=>runTaskOrchestrator({entryPoint:'workspace',messages:[],tools:[docs.tool(scope,'op','task',job,async()=>{})],checkpoints,maxSteps:2,beforeStep:async()=>{},call:async()=>({content:'',toolCalls:[{id:'save',type:'function',function:{name:'save_notion_draft',arguments:JSON.stringify(args)}}]})}));
+ // Historical unknown writes predate the new whole-source snapshot.
+ for(const step of job.steps??[])step.output=undefined;
  job.state='failed';op.status='failed';now+=1000;
  const input:NotionLinkRecoveryRequest={sourceJobId:'op',expectedUpdatedAt:op.updatedAt,pageUrl:url,selectionId:'selection-original'};
  return {db,store,op,job,docs,mcp,args,input,reads,page,parent,writes:()=>writes,advance:()=>now+=1000,check:()=>docs.reconcile(scope,'task',async()=>{},input)};
@@ -128,8 +130,8 @@ test('candidate requires original title, all complete source hashes and exact wo
  assert.ok(notionLinkRecoveryOffer(legacy.db,scope,legacy.op));await legacy.check();
 });
 
-test('wrong title, altered body, incomplete content and wrong parent do not attach even a candidate id',async()=>{
- for(const mode of ['title','missing-title','body','truncated','parent','fake-child-code','fake-child-quote','fake-child-indent','fake-child-inline','parent-truncated'] as const){
+test('altered body, incomplete content and wrong parent do not attach even a candidate id',async()=>{
+ for(const mode of ['missing-title','body','truncated','parent','fake-child-code','fake-child-quote','fake-child-indent','fake-child-inline','parent-truncated'] as const){
   const f=await fixture();f.mcp.readDocument=async(_ws,id)=>{
    f.reads.push(id);if(id===parentId){
     if(mode==='parent')return {text:'<content>\n</content>'};
@@ -141,7 +143,6 @@ test('wrong title, altered body, incomplete content and wrong parent do not atta
     if(mode==='fake-child-inline')return {text:`<content>\n正文举例 ${entry}\n</content>`};
     return f.parent();
    }
-   if(mode==='title')return {...f.page(),properties:{title:'另一篇文章'}};
    if(mode==='missing-title')return {text:f.page().text};
    if(mode==='truncated')return {...f.page(),truncated:true};
    if(mode==='body')return {...f.page(),text:f.page().text.replace('3200','3201')};
@@ -149,6 +150,14 @@ test('wrong title, altered body, incomplete content and wrong parent do not atta
   };
   await assert.rejects(f.check,/标题|正文|位置|列表/);assert.equal(f.job.notionReceipt!.pageId,undefined,mode);assert.equal(f.job.notionTarget!.pageId,undefined);assert.equal(f.db.conversations[0].notionDocument!.pageId,undefined);assert.equal(f.job.steps![0].state,'started');assert.equal(f.writes(),1);
  }
+});
+
+test('an explicit same-parent page with the complete exact manuscript keeps title differences as quality only',async()=>{
+ const f=await fixture(),read=f.mcp.readDocument.bind(f.mcp);
+ f.mcp.readDocument=async(ws,id)=>id===pageId?{...f.page(),properties:{title:'原来的QA编号'}}:read(ws,id);
+ const original=structuredClone(f.job.notionReceipt!);assert.equal((await f.check()).state,'verified');
+ assert.equal(f.job.notionReceipt!.integrity!.state,'covered');assert.equal(f.job.notionReceipt!.integrity!.title,'different');assert.equal(f.job.notionReceipt!.integrity!.reason,'title_difference');assert.equal(f.job.notionReceipt!.writeAcknowledgement,undefined);assert.equal(f.writes(),1);
+ assert.equal(f.job.notionReceipt!.expectedRawDigest,original.expectedRawDigest);assert.equal(f.job.notionReceipt!.canonicalVersion,original.canonicalVersion);
 });
 
 test('known page cannot be replaced and known async task is not bypassed by a user page',async()=>{

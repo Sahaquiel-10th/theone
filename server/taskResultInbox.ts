@@ -6,7 +6,7 @@ import { executionExplicitlyUnfinished } from './executionResultState.js';
 import {artifactResultLinks} from './artifactLinks.js';
 import {selectedNotionVerification} from './notionVerificationSelection.js';
 import {notionVerificationPresentation} from '../src/taskRecovery.js';
-import {notionWriteAcknowledged} from './notionCompletion.js';
+import {notionWriteAcknowledged,notionDeliveryConfirmed} from './notionCompletion.js';
 import {workflowProgress} from './taskWorkflow.js';
 import type {WorkRun} from './coordinatorTypes.js';
 import {currentCodexGatewayFailure} from './codexGatewayFailure.js';
@@ -145,13 +145,14 @@ function structuredCloudBrief(run:WorkRun,operationId:string):string|undefined{
   try{if(run.workflow)progress=workflowProgress(run.workflow);}catch{/* Legacy invalid progress is not new evidence. */}
   const completed=progress?.steps.filter(step=>step.status==='completed').map(step=>step.title).slice(-3)??[];
   const prefix=completed.length?`已完成：${completed.join('、')}。`:'';
-  if(run.notionReceipt&&run.notionReceipt.state!=='verified')return clip(prefix+notionVerificationPresentation({...run.notionReceipt,writeAcknowledged:notionWriteAcknowledged(run.notionReceipt,operationId)}).message,340);
+  if(run.notionReceipt&&run.notionReceipt.state!=='verified'&&!notionDeliveryConfirmed(run.notionReceipt,operationId))return clip(prefix+notionVerificationPresentation({...run.notionReceipt,writeAcknowledged:notionWriteAcknowledged(run.notionReceipt,operationId)}).message,340);
   const blocked=progress?.steps.find(step=>['failed','needs_input','waiting'].includes(step.status));
   const blockedKind=blocked&&run.workflow?.spec.steps[progress!.steps.indexOf(blocked)]?.kind;
   if(run.notionReceipt?.state==='verified'&&progress&&progress.status!=='completed'&&(!blocked||blockedKind==='notion'))return clip(prefix+notionVerificationPresentation(run.notionReceipt,true).message,340);
   if(!blocked)return;
   const next=blocked.status==='needs_input'?'把缺的资料直接发在主对话，我会接着处理。':'本轮已暂停，还没有安排自动重试。可以直接在主对话补充要求，我会保留已完成的步骤。';
-  return clip(`${prefix}${run.notionReceipt?.state==='verified'?'Notion 保存已核对一致。':''}卡在“${blocked.title}”：${blocked.summary}${next}`,340);
+  const saved=run.notionReceipt?.state==='verified'?'Notion 保存已核对一致。':notionDeliveryConfirmed(run.notionReceipt,operationId)?'内容已保存到 Notion。':'';
+  return clip(`${prefix}${saved}卡在“${blocked.title}”：${blocked.summary}${next}`,340);
 }
 function authorize(db: Database, scope: TaskResultScope) {
   if (!db.users.some(user => user.id === scope.userId && user.enabled)
@@ -202,7 +203,11 @@ export function taskResultIsLatestAttempt(db:Database,scope:TaskResultScope,resu
 }
 function cloudResult(db: Database, scope: TaskResultScope, operation: ChatOperation, max: number): TaskResultReceipt | undefined {
   const run = operation.workRun, task = ownedTask(db, scope, operation.conversationId);
-  if (!run || !task || !terminal.has(run.state)||selectedNotionVerification(operation)||operation.status==='pending'&&run.failureCode==='notion_verification_pending'||run.notionReceipt?.state!=='verified'&&['scheduled','checking'].includes(run.notionReceipt?.verification?.state??'')) return;
+  if (!run || !task || !terminal.has(run.state)) return;
+  const deliveryConfirmed=notionDeliveryConfirmed(run.notionReceipt,operation.id);
+  const finalizing=selectedNotionVerification(operation)||operation.status==='pending'&&run.failureCode==='notion_verification_pending';
+  const checking=run.notionReceipt?.state!=='verified'&&['scheduled','checking'].includes(run.notionReceipt?.verification?.state??'');
+  if(finalizing&&run.state!=='completed'||checking&&!deliveryConfirmed)return;
   const result = task.messages.find(message => message.id === run.resultMessageId && message.role === 'assistant');
   const attachments = ownedFiles(db, scope, task, result);
   const imageFile = db.attachments.find(file => own(file, scope) && file.kind === 'image'
@@ -225,9 +230,11 @@ function cloudResult(db: Database, scope: TaskResultScope, operation: ChatOperat
   }
   if (!summary) summary = outcome === 'cancelled' ? '本轮已停止，已产生的修改不会自动撤销。' : '未取得可确认的结果，请查看本轮反馈。';
   const receiptId=run.reportRevision?`${operation.id}_r${run.reportRevision}`:operation.id;
+  const brief=structuredCloudBrief(run,operation.id)??resultBrief(run.reportRevision?'returned':outcome, run.userReport, result?.content ?? summary, run.error);
+  const deliveryBrief=deliveryConfirmed&&run.state!=='completed'&&!brief.includes('Notion')?`已有内容已保存到 Notion。${brief}`:brief;
   return { id: receiptId, sourceId: operation.id, source: 'cloud', taskId: task.id, title: clip(task.title, 120),
-    outcome, state: outcome, summary, brief: structuredCloudBrief(run,operation.id)??resultBrief(run.reportRevision?'returned':outcome, run.userReport, result?.content ?? summary, run.error), attemptAt:operation.createdAt, createdAt: run.reportRevisionAt??operation.updatedAt, resultMessageId: run.resultMessageId,
-    imageUrl, attachments, notionUrl: run.notionReceipt?.state === 'verified' ? run.notionReceipt.url : run.notionReceipt?.verification?.state==='exhausted'&&/^[a-f0-9]{32}$/i.test(run.notionReceipt.pageId?.replaceAll('-','')??'')?`https://www.notion.so/${run.notionReceipt.pageId!.replaceAll('-','')}`:undefined,
+    outcome, state: outcome, summary, brief:deliveryBrief, attemptAt:operation.createdAt, createdAt: run.reportRevisionAt??operation.updatedAt, resultMessageId: run.resultMessageId,
+    imageUrl, attachments, notionUrl: run.notionReceipt?.state === 'verified'||deliveryConfirmed ? run.notionReceipt?.url : run.notionReceipt?.verification?.state==='exhausted'&&/^[a-f0-9]{32}$/i.test(run.notionReceipt.pageId?.replaceAll('-','')??'')?`https://www.notion.so/${run.notionReceipt.pageId!.replaceAll('-','')}`:undefined,
     reported: Boolean(run.reportedToCoordinatorAt || marker(db, scope, receiptId)), reviewed: run.unread !== true };
 }
 function localResult(db: Database, scope: TaskResultScope, execution: ExecutionTask, max: number): TaskResultReceipt | undefined {

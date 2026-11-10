@@ -4,7 +4,7 @@ type Detail={conversation:{updatedAt:string}};
 export type CoordinatorDetailVersion={updatedAt?:string;receipts:string};
 
 export function coordinatorDetailVersion(id:string,tasks:readonly Meta[],notices:readonly Notice[]):CoordinatorDetailVersion{
-  const receipts=notices.filter(notice=>notice.taskId===id).map(notice=>[notice.id,notice.updatedAt,notice.state,notice.outcome,notice.resultMessageId,notice.notionReceipt?.state,notice.notionReceipt?.url,notice.notionReceipt?.error,notice.notionReceipt?.delivery,notice.notionReceipt?.verification?.state,notice.notionReceipt?.verification?.version]).sort((a,b)=>String(a[0]).localeCompare(String(b[0])));
+  const receipts=notices.filter(notice=>notice.taskId===id).map(notice=>[notice.id,notice.updatedAt,notice.state,notice.outcome,notice.resultMessageId,notice.notionReceipt?.state,notice.notionReceipt?.url,notice.notionReceipt?.error,notice.notionReceipt?.delivery,notice.notionReceipt?.deliveryConfirmed,notice.notionReceipt?.integrity,notice.notionReceipt?.verification?.state,notice.notionReceipt?.verification?.version]).sort((a,b)=>String(a[0]).localeCompare(String(b[0])));
   return{updatedAt:tasks.find(task=>task.id===id)?.updatedAt,receipts:JSON.stringify(receipts)};
 }
 

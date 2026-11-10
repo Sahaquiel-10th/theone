@@ -52,3 +52,11 @@ test('readback verification versions refresh details without reviving stable ter
  assert.deepEqual(ids(coordinatorDetailRefreshPlan({...input,tasks:[{...task,reconciling:true}]})),['task'],'readback work stays fresh without pretending the original model is running');
  assert.deepEqual(ids(coordinatorDetailRefreshPlan({...input,notices:[{...notice,notionReceipt:{state:'verified'}}]})),['task']);
 });
+
+test('background integrity updates refresh a completed task without reviving its work',()=>{
+ const notice={...receipt,notionReceipt:{state:'delivered',deliveryConfirmed:true,integrity:{state:'pending' as const}}};
+ const input={selected:null,tasks:[task],notices:[notice],details:{task:{conversation:{updatedAt:task.updatedAt}}},loadedVersions:new Map([['task',coordinatorDetailVersion('task',[task],[notice])]])};
+ assert.deepEqual(ids(coordinatorDetailRefreshPlan(input)),[]);
+ const changed={...notice,notionReceipt:{...notice.notionReceipt,integrity:{state:'missing' as const,missingBlockIndexes:[2]}}};
+ assert.deepEqual(ids(coordinatorDetailRefreshPlan({...input,notices:[changed]})),['task']);
+});

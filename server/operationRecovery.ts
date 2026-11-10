@@ -9,7 +9,9 @@ const failures=['timeout','busy','unavailable','result_unknown'];
 const date=(value:unknown)=>typeof value==='string'&&Number.isFinite(Date.parse(value));
 export function validOperationEvidence(value:unknown):value is OperationEvidence{
  const v=object(value);if(!v||Object.keys(v).some(key=>!['version','execution','verification','artifactRef','recovery'].includes(key))||v.version!==1||!['running','submitted','succeeded','failed','unknown'].includes(String(v.execution))||!['not_required','pending','verified','failed'].includes(String(v.verification))||v.artifactRef!==undefined&&(typeof v.artifactRef!=='string'||!/^[a-f0-9]{64}$/.test(v.artifactRef)))return false;
- if(v.verification==='verified'&&v.execution!=='succeeded'||v.artifactRef!==undefined&&(v.execution!=='succeeded'||!['not_required','verified'].includes(String(v.verification))))return false;
+ // A durable successful result stays available while an independent quality
+ // check is pending or reports a problem. Submission alone supplies no result.
+ if(v.verification==='verified'&&v.execution!=='succeeded'||v.artifactRef!==undefined&&v.execution!=='succeeded')return false;
  if(v.recovery!==undefined){
   const r=object(v.recovery);
   if(!r||Object.keys(r).sort().join()!=='attempt,deadlineAt,firstAttemptAt,maxAttempts,nextRetryAt,reason,state,strategy'||r.strategy!=='retry_read'||!['executing','scheduled','exhausted','finished'].includes(String(r.state))||r.maxAttempts!==3||!Number.isInteger(r.attempt)||Number(r.attempt)<1||Number(r.attempt)>3||!date(r.firstAttemptAt)||!date(r.nextRetryAt)||!date(r.deadlineAt)||!failures.includes(String(r.reason)))return false;

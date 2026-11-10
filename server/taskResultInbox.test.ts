@@ -16,7 +16,7 @@ test('main-conversation reports keep an exact write acknowledgement without prom
   writeAcknowledgement:{version:1,operationId:operation.id,checkpointKey,pageId,expectedDigest,expectedRawDigest,acknowledgedAt:timestamp},
   verification:{state:'exhausted',version:3,attempt:3,nextCheckAt:timestamp,deadlineAt:timestamp,lastReason:'mismatch'},
   comparison:{version:1,kind:'body_mismatch',checkedAt:timestamp,comparatorVersion:9}};
- assert.match(pendingTaskResults(db,a)[0].brief!,/已存入 Notion.*正文核对仍有差异/);
+ assert.match(pendingTaskResults(db,a)[0].brief!,/内容已保存到 Notion/);
  assert.equal(pendingTaskResults(db,a)[0].outcome,'partial');assert.equal(pendingTaskResults(db,b).length,0);
  db.knowledgeConnections=[];db.agents=[];db.modelUsageRecords=[];
  db.models=[{id:'worker',kind:'chat'} as Database['models'][number]];
@@ -26,8 +26,36 @@ test('main-conversation reports keep an exact write acknowledgement without prom
  assert.doesNotMatch(JSON.stringify(view.jobs[0].notionReceipt),/writeAcknowledgement|acknowledgedAt|checkpointKey|expectedRawDigest|operationId/);
  await assert.rejects(()=>service(db).task(b,task.id));
  run.notionReceipt.writeAcknowledgement!.operationId='foreign';
- assert.doesNotMatch(pendingTaskResults(db,a)[0].brief!,/已存入 Notion/);
+ assert.doesNotMatch(pendingTaskResults(db,a)[0].brief!,/文章已保存|内容已保存到 Notion|已存入 Notion/);
  assert.equal((await service(db).task(a,task.id)).jobs[0].notionReceipt?.writeAcknowledged,undefined);
+});
+
+test('a completed exact Notion delivery reports immediately during background checking',()=>{
+ const db=fixture(),{operation}=cloud(db,'delivered-background',a,{state:'completed',outcome:'completed',text:'完整合成文章已保留。'});
+ const run=operation.workRun!,pageId='a'.repeat(32),checkpointKey='b'.repeat(64),expectedDigest='c'.repeat(64),expectedRawDigest='d'.repeat(64);
+ run.notionReceipt={state:'delivered',pageId,url:`https://www.notion.so/${pageId}`,checkpointKey,expectedDigest,expectedRawDigest,final:true,
+  writeAcknowledgement:{version:1,operationId:operation.id,checkpointKey,pageId,expectedDigest,expectedRawDigest,acknowledgedAt:timestamp},
+  integrity:{state:'pending'},verification:{state:'checking',version:1,attempt:1,nextCheckAt:timestamp,deadlineAt:timestamp}};
+ const result=pendingTaskResults(db,a)[0];
+ assert.equal(result.outcome,'completed');assert.equal(result.notionUrl,run.notionReceipt.url);
+ assert.equal(pendingTaskResults(db,b).length,0);
+ run.notionReceipt.integrity={state:'missing',missingBlockIndexes:[2],missingBlockCount:1};
+ run.notionReceipt.verification!.state='exhausted';
+ assert.equal(pendingTaskResults(db,a)[0].outcome,'completed');
+ run.notionReceipt.writeAcknowledgement!.operationId='foreign';run.notionReceipt.verification!.state='checking';
+ assert.equal(pendingTaskResults(db,a).length,0);
+});
+
+test('an acknowledged intermediate save keeps the real request for missing material visible',()=>{
+ const db=fixture(),{operation}=cloud(db,'intermediate-save',a,{state:'failed',outcome:'needs_input',text:'请补充昨天的三句原话，收到后接着写正文。'});
+ const run=operation.workRun!,pageId='a'.repeat(32),checkpointKey='b'.repeat(64),expectedDigest='c'.repeat(64),expectedRawDigest='d'.repeat(64);
+ run.userReport='请补充昨天的三句原话，收到后接着写正文。';
+ run.notionReceipt={state:'delivered',pageId,url:`https://www.notion.so/${pageId}`,checkpointKey,expectedDigest,expectedRawDigest,final:false,
+  writeAcknowledgement:{version:1,operationId:operation.id,checkpointKey,pageId,expectedDigest,expectedRawDigest,acknowledgedAt:timestamp},
+  integrity:{state:'pending'},verification:{state:'checking',version:1,attempt:1,nextCheckAt:timestamp,deadlineAt:timestamp}};
+ const result=pendingTaskResults(db,a)[0];
+ assert.equal(result.outcome,'needs_input');assert.match(result.brief!,/昨天的三句原话/);
+ assert.doesNotMatch(result.brief!,/后台正在检查/);
 });
 
 test('a written article with exhausted Notion readback reports the actual stage, retry owner and safe action',()=>{

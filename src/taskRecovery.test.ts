@@ -1,6 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {taskRecovery,notionReceiptForReview,notionWorkflowNeedsReview,unstartedLocalInput,notionVerificationActive,notionVerificationPresentation,type NotionReceiptView} from './taskRecovery';
+import {taskRecovery,notionReceiptForReview,notionWorkflowNeedsReview,unstartedLocalInput,notionVerificationActive,notionVerificationPresentation,notionDeliveryAvailable,type NotionReceiptView} from './taskRecovery';
+
+test('confirmed delivery stays completed while background integrity checks wait, finish or report missing content',()=>{
+ const base:NotionReceiptView={state:'delivered',url:'https://www.notion.so/original',deliveryConfirmed:true,writeAcknowledged:true};
+ for(const state of ['scheduled','checking','exhausted'] as const){
+  const receipt={...base,verification:{state,version:1,attempt:3,lastReason:'mismatch' as const}};
+  assert.equal(notionDeliveryAvailable(receipt),true);
+  assert.equal(taskRecovery([{id:'save',state:'completed',notionTarget:{},notionReceipt:receipt}]).kind,'none');
+  assert.doesNotMatch(notionVerificationPresentation(receipt).message,/任务尚未完成|本轮已暂停|保存结果还没确认/);
+ }
+ const missing={...base,integrity:{state:'missing' as const,missingBlockIndexes:[2,5]}};
+ assert.match(notionVerificationPresentation(missing).message,/第 2、5 段/);
+ assert.equal(taskRecovery([{id:'save',state:'completed',notionReceipt:missing}]).kind,'none');
+ assert.equal(notionDeliveryAvailable({...base,deliveryConfirmed:undefined}),false);
+ assert.equal(notionDeliveryAvailable({...base,url:undefined}),false);
+ for(const delivery of ['not_sent','rejected'])assert.equal(notionDeliveryAvailable({...base,delivery}),false);
+ const olderUnknown={id:'older',state:'failed',notionReceipt:{state:'uncertain',delivery:'unknown'}};
+ assert.equal(taskRecovery([olderUnknown,{id:'save',state:'completed',notionReceipt:base}]).kind,'review_notion');
+});
 
 test('acknowledged writes retain their saved fact while body verification recovers or stops',()=>{
  const base:NotionReceiptView={state:'uncertain',url:'https://www.notion.so/original',delivery:'unknown',writeAcknowledged:true,
@@ -143,7 +161,7 @@ test('verified save awaiting coordinator finalization stays reconciling without 
  const pending={id:'save',state:'failed',failureCode:'notion_verification_pending',verificationPending:true,notionReceipt:{state:'verified'}};
  const recovery=taskRecovery([pending]);
  assert.equal(recovery.kind,'reconciling');assert.equal(recovery.sourceJobId,undefined);
- assert.equal(recovery.message,'保存已经核对，正在整理结果；不用再次开始。');
+ assert.equal(recovery.message,'文章已保存，正在整理交付结果。');
  assert.equal(taskRecovery([pending,{id:'new-html',state:'running'}]).kind,'none','actual running work still takes precedence');
  assert.equal(taskRecovery([{...pending,failureCode:undefined,verificationPending:false,state:'completed'}]).kind,'none','settled save no longer waits for finalization');
  assert.notEqual(taskRecovery([{...pending,verificationPending:false,state:'cancelled'}]).kind,'reconciling','a retained failure code cannot resurrect a cancelled check');

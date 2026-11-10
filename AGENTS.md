@@ -9,7 +9,7 @@ GetNote is the first Knowledge Connector, not the permanent product center. Cust
 ## Current scope
 
 - Keep chat, attachments, model gateway, web search and the minimum operations surface needed by the MVP.
-- Keep 得到大脑 account-wide semantic search and add Notion as the first official-MCP, read-only Knowledge Connector.
+- Keep 得到大脑 account-wide semantic search and the approved Notion official-MCP Knowledge Connector. Knowledge retrieval is read-only. Separately authorized Notion draft writing uses its own reviewed permission and delivery path.
 - Do not copy or synchronize third-party knowledge into ONE in V0.1; retrieve it on demand.
 - Build ONE Key device challenge, one-time browser login and revocation before Source/Memory/View work.
 - Do not add Bailian, DingTalk, Wanliniu, Alipay, employee surveillance, enterprise data-query features, or knowledge providers beyond the explicitly approved Notion connector.
@@ -27,6 +27,7 @@ GetNote is the first Knowledge Connector, not the permanent product center. Cust
 - Third-party credentials are encrypted at rest and never returned by APIs or written to logs.
 - Database migrations are append-only once shared.
 - Keep the application a modular monolith until scale proves otherwise.
+- Follow `docs/EXTERNAL-DELIVERY-CONTRACT-20261110.md` for external deliverables. Persist the complete ONE artifact, complete an external write only from a scoped successful receipt and exact artifact reference, and run content coverage checks independently in the background. Extra platform content or presentation differences must not revert a confirmed delivery to unfinished. Unknown or queued writes require result recovery, and every retry still enforces authorization, ownership, idempotency and concurrent-edit protection.
 
 ## Commands
 
@@ -64,3 +65,4 @@ If global npm is unavailable in Codex Desktop, load the bundled workspace depend
 - `docs/DATA_MODEL.md`
 - `docs/API.md`
 - `docs/ONE-PROJECT-EXECUTION-CHECKLIST.md`
+- `docs/EXTERNAL-DELIVERY-CONTRACT-20261110.md`

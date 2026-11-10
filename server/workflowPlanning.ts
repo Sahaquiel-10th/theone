@@ -118,7 +118,7 @@ export function resolveTaskWorkflow(input:ResolveTaskWorkflowInput):WorkflowSpec
   if(input.requiredKnowledge||input.requiredFeatureIds.length||(input.requiredTools??[]).some(name=>name!=='save_notion_draft'))fail('ambiguous','本轮不只是保存现有正文，请先明确额外制作或资料读取的安排。');
   // The exact body is held by the server-owned attempt, not copied into a
   // model prompt or the public workflow schema. Saving it requires no model.
-  return preflight(input,validateWorkflowSpec({version:1,steps:[{id:'save_existing',title:'保存现有正文到 Notion',kind:'notion',instruction:'将用户明确选中的现有正文原样保存到本任务已确认的 Notion 目标并回读核对；不重新创作，不据此改变原写作任务的完成情况。',inputs:[],required:true,historyCount:0}]}));
+  return preflight(input,validateWorkflowSpec({version:1,steps:[{id:'save_existing',title:'保存现有正文到 Notion',kind:'notion',instruction:'将用户明确选中的现有完整正文原样保存到本任务已确认的 Notion 目标。可信成功回执确认后交付文章入口，内容完整性由后台独立检查；沿用原稿及原写作任务的完成情况。',inputs:[],required:true,historyCount:0}]}));
  }
  if(input.explicit!==undefined)return preflight(input,validateWorkflowSpec(input.explicit));
  if(input.readOnlyNotion&&(input.requiredTools??[]).includes('save_notion_draft'))fail('readonly','本轮只允许读取 Notion，不能同时要求保存或修改原文。');
@@ -138,7 +138,7 @@ export function resolveTaskWorkflow(input:ResolveTaskWorkflowInput):WorkflowSpec
  const steps:WorkflowStep[]=sources.map((source,index)=>({id:'source_'+(index+1),title:source==='knowledge_search'?'查找任务资料':'读取现有原文',kind:'tool',tool:source,instruction:source==='knowledge_search'?(input.knowledgeQuery??input.instruction):'实际读取本任务已绑定的 Notion 原文，保留全文与原页入口；不要修改。',inputs:[],required:true,historyCount:0}));
  const sourceIds=steps.map(step=>step.id);
  if(write||!features.length)steps.push({id:'draft',title:'整理完整成果',kind:'model',instruction:'依据完整任务目标、全部约束及前置真实资料，形成可直接交付的完整正文；不要把中间片段当成终稿。',inputs:sourceIds,required:true,historyCount:0});
- if(write)steps.push({id:'save',title:'保存到原定位置',kind:'notion',instruction:'使用前置完整正文，保存到本任务已确认的 Notion 目标并回读核对；沿用已绑定原页，不重复新建。',inputs:['draft'],required:true,historyCount:0});
+ if(write)steps.push({id:'save',title:'保存到原定位置',kind:'notion',instruction:'使用前置完整正文，保存到本任务已确认的 Notion 目标。可信成功回执确认后交付文章入口，内容完整性由后台独立检查；沿用已绑定原页。',inputs:['draft'],required:true,historyCount:0});
  if(features.length)steps.push({id:'feature',title:write?'制作交互网页':'完成已选功能',kind:'feature',featureId:features[0],instruction:write?'依据前置完整正文及已确认的原稿入口制作网页，完成原目标要求的交付；不改写或截短前置正文。':'依据完整任务目标、全部约束及前置真实资料，使用本功能完成指定成果。',inputs:write?['draft','save']:sourceIds,required:true,historyCount:0});
  return preflight(input,validateWorkflowSpec({version:1,steps}));
 }

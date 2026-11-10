@@ -3,6 +3,10 @@ import type { Store } from "./db.js";
 import type { Conversation, Database, Message } from "./types.js";
 import {canResumeWorkflowAfterRestart} from './workflowRecovery.js';
 import {parseCoordinatorFailure,type CoordinatorFailure} from '../src/coordinatorRecovery.js';
+import {notionWriteAcknowledged,notionSourceMatchesReceipt} from './notionCompletion.js';
+import {recoverVerifiedNotionWorkflow} from './workflowExecution.js';
+import {workflowProgress,type WorkflowRun} from './taskWorkflow.js';
+import type {TaskStep} from './taskSteps.js';
 
 /** Durable submission records. Ordinary chat keeps compact tombstones;
  * private queued work additionally stores its immutable execution configuration. */
@@ -183,6 +187,36 @@ export async function failChatOperation(store: Store, scope: ChatOperationScope,
   await store.mutate(db => failChatOperationInMutation(db, scope, options));
 }
 
+/** Recover the exact ACK-to-checkpoint metadata gap without executing a call.
+ * Every caller still owns fresh Key, authorization, budget and local holds. */
+export function acknowledgedNotionWorkflowResumeProof(operation:ChatOperation,task:Conversation):{workflow:WorkflowRun;steps:TaskStep[]}|undefined{
+  const job=operation.workRun,receipt=job?.notionReceipt,run=job?.workflow;
+  if(!job||!run||!Array.isArray(job.steps)||!notionWriteAcknowledged(receipt,operation.id)||receipt?.final!==true||['cancelled','interrupted','prepared'].includes(job.state))return;
+  try{
+    workflowProgress(run);
+    if(run.steps.some((state,index)=>['failed','needs_input'].includes(state.state)&&run.spec.steps[index].kind!=='notion'))return;
+    const failedNotion=run.steps.some((state,index)=>['failed','needs_input'].includes(state.state)&&run.spec.steps[index].kind==='notion');
+    if(failedNotion&&!['notion_verification_pending','notion_verification_exhausted'].includes(job.failureCode??''))return;
+    const steps=structuredClone(job.steps),matching=steps.filter(cp=>cp.key===receipt.checkpointKey);
+    if(matching.length!==1)return;
+    const worker=matching[0];
+    if(worker.namespace!=='worker'||worker.scopeId!==operation.id||worker.tool!=='save_notion_draft'||worker.effect!=='external_write'||!['started','completed'].includes(worker.state)||!Number.isFinite(Date.parse(worker.updatedAt)))return;
+    if(worker.state==='started'){
+      const prior=worker.output&&typeof worker.output==='object'&&!Array.isArray(worker.output)?worker.output as Record<string,unknown>:undefined;
+      const content=prior?.content;
+      if(content!==undefined&&!notionSourceMatchesReceipt(content,receipt))return;
+      worker.state='completed';worker.output={state:'delivered',pageId:receipt.pageId,url:receipt.url,expectedDigest:receipt.expectedDigest,final:true,...(typeof content==='string'?{content}:{})};
+      if(worker.operation)worker.operation={version:1,execution:'succeeded',verification:'pending',artifactRef:worker.key};
+    }
+    // Only a failed Notion stage may be repaired by this write proof. Other
+    // failed/needs-input stages remain their original user-visible outcome.
+    const recovered=recoverVerifiedNotionWorkflow({...job,steps},run.binding);
+    if(!recovered)return;
+    const candidate={...operation,status:'pending' as const,workRun:{...job,state:'queued' as const,failureCode:undefined,workflow:recovered.workflow,steps:recovered.steps}};
+    if(canResumeWorkflowAfterRestart(candidate,task))return {workflow:recovered.workflow,steps:recovered.steps};
+  }catch{return;}
+}
+
 /** Startup only. Never expire-and-replay a pending operation: the upstream may already have charged. */
 export function reconcileInterruptedChatOperations(db: ChatOperationDatabase) {
   const timestamp = new Date().toISOString();
@@ -192,8 +226,17 @@ export function reconcileInterruptedChatOperations(db: ChatOperationDatabase) {
     // an explicit Key-verified resume, never auto-replay an in-flight call.
     if (operation.workRun?.state === 'queued') continue;
     const receipt=operation.workRun?.notionReceipt;
+    const workflowTask=db.conversations.find(c=>c.id===operation.conversationId&&c.workspaceId===operation.workspaceId&&c.userId===operation.userId);
+    const localHold=db.executionTasks?.some(t=>t.workspaceId===operation.workspaceId&&t.userId===operation.userId&&t.conversationId===operation.conversationId&&t.executionSafetyHold);
+    const protectedFailure=/^task_(?:(?:key|authorization|budget)_required|budget_limit)$/.test(operation.workRun?.failureCode??'');
+    const delivered=workflowTask&&!localHold&&!protectedFailure?acknowledgedNotionWorkflowResumeProof(operation,workflowTask):undefined;
+    if(delivered){
+      operation.workRun!.workflow=delivered.workflow;operation.workRun!.steps=delivered.steps;
+      operation.workRun!.state='queued';operation.workRun!.failureCode=undefined;operation.workRun!.error=undefined;operation.workRun!.unread=false;
+      workflowTask!.workPaused=false;workflowTask!.workPauseReason=undefined;operation.updatedAt=timestamp;continue;
+    }
     if(operation.workRun?.state==='failed'&&operation.workRun.failureCode==='notion_verification_pending'&&(receipt?.state==='verified'||receipt?.verification?.state==='exhausted'))continue;
-    if(receipt?.state!=='verified'&&['scheduled','checking'].includes(receipt?.verification?.state??'')){
+    if(!notionWriteAcknowledged(receipt,operation.id)&&receipt?.state!=='verified'&&['scheduled','checking'].includes(receipt?.verification?.state??'')){
       // An admitted external write is not replayable work. Its durable
       // read-only verification continues when a fresh Key reconnects.
       operation.workRun!.state='failed';operation.workRun!.failureCode='notion_verification_pending';
@@ -203,8 +246,7 @@ export function reconcileInterruptedChatOperations(db: ChatOperationDatabase) {
       if(task){task.workPaused=true;task.workPauseReason='failed';}
       continue;
     }
-    const workflowTask=db.conversations.find(c=>c.id===operation.conversationId&&c.workspaceId===operation.workspaceId&&c.userId===operation.userId);
-    if(workflowTask&&!db.executionTasks?.some(t=>t.workspaceId===operation.workspaceId&&t.userId===operation.userId&&t.conversationId===operation.conversationId&&t.executionSafetyHold)&&canResumeWorkflowAfterRestart(operation,workflowTask)){
+    if(workflowTask&&!localHold&&canResumeWorkflowAfterRestart(operation,workflowTask)){
       // Only a proven checkpoint gap is resumable. A fresh connected Key must
       // still authorize the normal runner; no provider is called at startup.
       operation.workRun!.state='queued';operation.workRun!.error=undefined;operation.workRun!.unread=false;

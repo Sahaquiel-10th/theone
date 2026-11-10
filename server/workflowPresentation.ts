@@ -2,6 +2,7 @@ import type {WorkRun} from './coordinatorTypes.js';
 import {taskStepKey} from './taskSteps.js';
 import {workflowProgress,type WorkflowBinding} from './taskWorkflow.js';
 import {operationProgress} from './operationRecovery.js';
+import {notionDeliveryCheckpoint,notionWriteAcknowledged,type NotionDeliveryProof} from './notionCompletion.js';
 
 /** One reviewed public projection for both the live rail and task details.
  * Checkpoint content, provider IDs, queries and recovery internals stay private. */
@@ -13,11 +14,18 @@ export function publicWorkflowProgress(job:WorkRun|undefined,binding:WorkflowBin
    const spec=run.spec.steps[index],state=run.steps[index],namespace=`workflow:${run.id}`,tool=`workflow:${run.id}:${spec.id}`;
    const key=taskStepKey(namespace,tool,JSON.stringify({revision:run.revision,instruction:spec.instruction,inputs:spec.inputs}));
    const matches=job!.steps?.filter(cp=>cp.key===key)??[],candidate=matches.length===1?matches[0]:undefined;
-   const cp=candidate?.namespace===namespace&&candidate.scopeId===binding.operationId&&candidate.tool===tool?candidate:undefined,v=cp?.output as {outcome?:string;workflow?:{version?:number;runId?:string;revision?:number;stepId?:string}}|undefined;
+   const cp=candidate?.namespace===namespace&&candidate.scopeId===binding.operationId&&candidate.tool===tool?candidate:undefined,v=cp?.output as {outcome?:string;notionCheckpointKey?:string;priorNotionCheckpointKey?:string;expectedBodyDigest?:string;notionDeliveryProof?:NotionDeliveryProof;workflow?:{version?:number;runId?:string;revision?:number;stepId?:string}}|undefined;
    const marker=v?.workflow,effectValid=spec.kind==='model'?cp?.effect==='model':spec.kind==='tool'?cp?.effect==='read':spec.kind==='notion'?cp?.effect==='external_write':cp?.effect!==undefined;
    const markerValid=marker&&Object.keys(marker).sort().join()==='revision,runId,stepId,version'&&marker.version===1&&marker.runId===run.id&&marker.revision===run.revision&&marker.stepId===spec.id;
    const evidence=markerValid&&effectValid&&(!cp?.operation?.artifactRef||cp.operation.artifactRef===key)?operationProgress(cp?.operation):undefined;
-   const resultAvailable=state.state==='completed'&&cp?.state==='completed'&&v?.outcome==='completed'&&state.checkpointKey===key&&['model','feature','notion'].includes(spec.kind)&&evidence?.resultAvailable===true&&(spec.kind!=='notion'||evidence.verification==='verified');
+   const deliveryProven=(receipt:WorkRun['notionReceipt'],frozen:boolean)=>{
+    if(!v?.notionCheckpointKey||!v.expectedBodyDigest||v.priorNotionCheckpointKey===receipt?.checkpointKey)return false;
+    if(frozen&&!notionWriteAcknowledged(receipt,binding.operationId))return false;
+    const worker=notionDeliveryCheckpoint(receipt,job!.steps??[],binding.operationId,v.notionCheckpointKey,v.expectedBodyDigest);
+    return Boolean(worker&&(!frozen||typeof (worker.output as {content?:unknown}).content==='string'));
+   };
+   const confirmedDelivery=deliveryProven(job?.notionReceipt,false)||deliveryProven(v?.notionDeliveryProof,true);
+   const resultAvailable=state.state==='completed'&&cp?.state==='completed'&&v?.outcome==='completed'&&state.checkpointKey===key&&['model','feature','notion'].includes(spec.kind)&&evidence?.resultAvailable===true&&(spec.kind!=='notion'||evidence.verification==='verified'||confirmedDelivery);
    return {id:String(index),title:step.title,state:step.status,summary:step.summary,...(state.state==='waiting'?{waitingFor:state.waitingFor}:{}),...(evidence?{execution:evidence.execution,verification:evidence.verification,...(evidence.recovery?{recovery:evidence.recovery}:{})}:{}),...(resultAvailable?{resultAvailable:true}:{})};
   }),next:progress.next};
  }catch{return;}

@@ -5,7 +5,8 @@ import type { Conversation, Database, Message } from "./types.js";
 import { beginChatOperation, bindChatOperationConversation, ChatOperationError, completeChatOperation, failChatOperation, failChatOperationInMutation, getChatOperationResult, reconcileInterruptedChatOperations } from "./chatOperations.js";
 import type { ChatOperation } from "./chatOperations.js";
 import {createWorkflowRun} from './taskWorkflow.js';
-import {taskStepKey} from './taskSteps.js';
+import {taskStepKey,type TaskStep} from './taskSteps.js';
+import {notionHash,legacyNotionNormalized,canonicalNotionDigest} from './notionCanonical.js';
 
 test('startup requeues only a proven workflow result gap; unknown attempts, local holds and human stops remain protected',()=>{
  for(const mode of ['proven','unknown','local_hold','user_stop'] as const){
@@ -308,5 +309,76 @@ test('startup requeues persisted safe-read recovery without resetting retries or
   f.db().chatOperations.push(op);reconcileInterruptedChatOperations(f.db());
   assert.equal(op.workRun!.state,mode==='safe_read'?'queued':'interrupted',mode);assert.equal(op.status,mode==='safe_read'?'pending':'interrupted',mode);
   assert.equal(op.workRun!.steps![0].operation?.recovery?.attempt,2);assert.equal(op.workRun!.steps![0].operation?.recovery?.nextRetryAt,'2026-11-03T00:00:10.000Z');assert.equal(f.db().chatOperations.length,1);
+ }
+});
+
+function notionRestartFixture(){
+ const f=fixture(),task=conversation();f.db().conversations.push(task);
+ const binding={workspaceId:task.workspaceId,userId:task.userId,operationId:'acknowledged-startup-op'};
+ const run=createWorkflowRun({version:1,steps:[{id:'save',title:'保存正文',kind:'notion',instruction:'保存本轮完整正文',inputs:[]},{id:'read',title:'读取已交付文章',kind:'tool',tool:'read_notion_document',instruction:'读取同一篇文章',inputs:['save']}]},binding);
+ const namespace=`workflow:${run.id}`,tool=`workflow:${run.id}:save`,key=taskStepKey(namespace,tool,JSON.stringify({revision:1,instruction:run.spec.steps[0].instruction,inputs:[]})),workerKey='a'.repeat(64),expectedDigest='b'.repeat(64),expectedRawDigest='c'.repeat(64),pageId='d'.repeat(32);
+ const outer:TaskStep={key,namespace,tool,scopeId:binding.operationId,label:'保存正文',effect:'external_write',state:'started',updatedAt:'2026-11-10T01:00:00Z',output:{workflow:{version:1,runId:run.id,revision:1,stepId:'save'},outcome:'waiting',expectedBodyDigest:expectedDigest,notionCheckpointKey:workerKey}};
+ const worker:TaskStep={key:workerKey,namespace:'worker',tool:'save_notion_draft',scopeId:binding.operationId,label:'实际保存',effect:'external_write',state:'started',updatedAt:'2026-11-10T01:00:01Z'};
+ run.steps[0]={id:'save',state:'waiting',waitingFor:'result'};run.phase='waiting';
+ const op={...binding,id:binding.operationId,operationId:'acknowledged_startup_submission',conversationId:task.id,status:'pending',createdAt:task.createdAt,updatedAt:task.updatedAt,workRun:{state:'running',workflow:run,steps:[outer,worker],notionReceipt:{state:'delivered',delivery:'unknown',checkpointKey:workerKey,expectedDigest,expectedRawDigest,pageId,final:true,writeAcknowledgement:{version:1,operationId:binding.operationId,checkpointKey:workerKey,expectedDigest,expectedRawDigest,pageId,acknowledgedAt:'2026-11-10T01:00:02Z'},verification:{state:'scheduled',version:17,attempt:1,nextCheckAt:'2026-11-10T01:00:04Z',deadlineAt:'2026-11-10T01:05:02Z'}}}} as unknown as ChatOperation;
+ f.db().chatOperations.push(op);return {...f,task,op,run,outer,worker};
+}
+
+test('startup resolves the exact ACK-to-worker gap into queued metadata while background checks retain their budget',()=>{
+ for(const state of ['scheduled','checking','exhausted'] as const){
+  const f=notionRestartFixture(),receipt=f.op.workRun!.notionReceipt!;receipt.verification!.state=state;
+  const before=structuredClone(receipt);reconcileInterruptedChatOperations(f.db());reconcileInterruptedChatOperations(f.db());
+  assert.equal(f.op.status,'pending');assert.equal(f.op.workRun!.state,'queued');assert.equal(f.op.workRun!.failureCode,undefined);assert.equal(f.task.workPaused,false);
+  const worker=f.op.workRun!.steps!.find(cp=>cp.key===f.worker.key)!;assert.equal(worker.state,'completed');assert.equal((worker.output as any).state,'delivered');
+  assert.deepEqual(f.op.workRun!.notionReceipt,before);assert.equal(f.op.workRun!.workflow!.steps[1].state,'queued');assert.equal(f.db().chatOperations.length,1);assert.equal(f.task.messages.length,0);
+ }
+ const f=notionRestartFixture();f.op.workRun!.state='failed';f.op.workRun!.failureCode='notion_verification_exhausted';f.outer.state='failed';(f.outer.output as any).outcome='failed';f.run.steps[0]={id:'save',state:'failed'};f.run.phase='failed';
+ reconcileInterruptedChatOperations(f.db());assert.equal(f.op.workRun!.state,'queued');assert.equal(f.op.workRun!.workflow!.steps[0].state,'completed');assert.equal(f.op.workRun!.workflow!.steps[1].state,'queued');
+});
+
+function notionRestartWithSourceFixture(){
+ const f=notionRestartFixture(),receipt=f.op.workRun!.notionReceipt!,content='# 已完成文章\n\n这篇完整原稿在发送前已经持久保存。\n\n`literal code` 与[原始链接](https://example.com/article)也保留。';
+ receipt.expectedRawDigest=notionHash(content);receipt.expectedDigest=notionHash(legacyNotionNormalized(content));receipt.expectedLength=content.length;receipt.canonicalVersion=11;receipt.expectedCanonicalDigest=canonicalNotionDigest(content,11);
+ Object.assign(receipt.writeAcknowledgement!,{expectedRawDigest:receipt.expectedRawDigest,expectedDigest:receipt.expectedDigest});(f.outer.output as any).expectedBodyDigest=receipt.expectedDigest;
+ f.worker.output={content,untrustedMetadata:'must not be copied'};return {...f,content};
+}
+
+test('startup preserves only the complete receipt-bound source when finishing the acknowledged worker metadata gap',()=>{
+ const f=notionRestartWithSourceFixture(),before=structuredClone(f.op.workRun!.notionReceipt);reconcileInterruptedChatOperations(f.db());
+ assert.equal(f.op.workRun!.state,'queued');const worker=f.op.workRun!.steps!.find(cp=>cp.key===f.worker.key)!;
+ assert.equal((worker.output as any).content,f.content);assert.equal((worker.output as any).untrustedMetadata,undefined);assert.equal(worker.state,'completed');
+ assert.deepEqual(f.op.workRun!.notionReceipt,before);assert.equal(f.op.workRun!.workflow!.steps[1].state,'queued');assert.equal(f.task.messages.length,0);
+});
+
+test('startup cannot retain a partial, corrupt or differently canonicalized before-send source',()=>{
+ const mutations=[
+  (f:ReturnType<typeof notionRestartWithSourceFixture>)=>{(f.worker.output as any).content=f.content.slice(0,-1);},
+  f=>{(f.worker.output as any).content={text:f.content};},
+  f=>{f.op.workRun!.notionReceipt!.expectedLength!--;},
+  f=>{f.op.workRun!.notionReceipt!.expectedCanonicalDigest='f'.repeat(64);},
+  f=>{f.op.workRun!.notionReceipt!.canonicalVersion=12 as any;},
+  f=>{const receipt=f.op.workRun!.notionReceipt!;receipt.expectedDigest='f'.repeat(64);receipt.writeAcknowledgement!.expectedDigest=receipt.expectedDigest;(f.outer.output as any).expectedBodyDigest=receipt.expectedDigest;},
+ ] satisfies ((f:ReturnType<typeof notionRestartWithSourceFixture>)=>void)[];
+ for(const [index,mutate] of mutations.entries()){
+  const f=notionRestartWithSourceFixture();mutate(f);const original=structuredClone(f.worker);reconcileInterruptedChatOperations(f.db());
+  assert.notEqual(f.op.workRun!.state,'queued',String(index));assert.deepEqual(f.worker,original,String(index));
+ }
+});
+
+test('startup ACK recovery cannot release wrong proofs, protected failures or unrelated effects',()=>{
+ for(const kind of ['wrong_ack','wrong_source','wrong_artifact','wrong_worker','prior_write','duplicate','unknown_model','unknown_artifact','other_failed','stop','cancel','archive','local_hold','key','authorization','budget'] as const){
+  const f=notionRestartFixture(),job=f.op.workRun!;
+  if(kind==='wrong_ack')job.notionReceipt!.writeAcknowledgement!.operationId='another_operation';
+  if(kind==='wrong_source')(f.outer.output as any).expectedBodyDigest='f'.repeat(64);
+  if(kind==='wrong_artifact')(f.outer.output as any).sourceArtifact={id:'existing_article',ref:'another_message',originOperationId:'another_operation',bodyDigest:'f'.repeat(64)};
+  if(kind==='wrong_worker')f.worker.scopeId='foreign';
+  if(kind==='prior_write')(f.outer.output as any).priorNotionCheckpointKey=f.worker.key;
+  if(kind==='duplicate')job.steps!.push(structuredClone(f.worker));
+  if(kind==='unknown_model'||kind==='unknown_artifact')job.steps!.push({key:'another-effect',namespace:'nested',tool:'another_call',scopeId:f.op.id,label:'其他未决效果',effect:kind==='unknown_model'?'model':'artifact',state:'started',updatedAt:f.worker.updatedAt});
+  if(kind==='other_failed'){f.run.steps[1]={id:'read',state:'failed'};f.run.phase='failed';job.steps!.push({...f.outer,key:taskStepKey(`workflow:${f.run.id}`,`workflow:${f.run.id}:read`,JSON.stringify({revision:1,instruction:f.run.spec.steps[1].instruction,inputs:['save']})),tool:`workflow:${f.run.id}:read`,effect:'read',state:'failed',output:{workflow:{version:1,runId:f.run.id,revision:1,stepId:'read'},outcome:'failed'}});}
+  if(kind==='stop')f.task.workPauseReason='user_stopped';if(kind==='cancel')f.op.executionCancelled=true;if(kind==='archive')f.task.archived=true;
+  if(kind==='local_hold')f.db().executionTasks=[{workspaceId:f.task.workspaceId,userId:f.task.userId,conversationId:f.task.id,executionSafetyHold:true} as any];
+  if(['key','authorization','budget'].includes(kind))job.failureCode=`task_${kind}_required`;
+  reconcileInterruptedChatOperations(f.db());assert.notEqual(job.state,'queued',kind);assert.equal(f.db().chatOperations.length,1,kind);assert.equal(f.worker.state,'started',kind);
  }
 });

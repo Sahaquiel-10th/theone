@@ -3,6 +3,7 @@ import type {ChatOperation} from './chatOperations.js';
 import {discussionOnly} from './executionIntent.js';
 import {knowledgeNames} from './taskContract.js';
 import {canContinueKnownFailedWorkflow} from './workflowRecovery.js';
+import {acknowledgedNotionWorkflowResumeProof} from './chatOperations.js';
 
 type Scope={workspaceId:string;userId:string};
 const own=(item:Scope,scope:Scope)=>item.workspaceId===scope.workspaceId&&item.userId===scope.userId;
@@ -19,9 +20,12 @@ export function taskContinuation(db:Database,scope:Scope,task:Conversation){
     const run=op.workRun!;
     if(run.state==='running')return false; // A supplement waits for this round; it never interrupts it.
     const notWritten=['not_sent','rejected'].includes(run.notionReceipt?.delivery??'');
-    if(run.notionTarget&&run.notionReceipt?.state!=='verified'&&!notWritten&&(!Array.isArray(run.steps)||run.steps.some(step=>step.tool==='save_notion_draft'&&step.effect==='external_write')))return true;
-    return run.notionReceipt&&run.notionReceipt.state!=='verified'&&!notWritten||run.steps?.some(step=>['model','artifact','external_write'].includes(step.effect)
-      &&(step.state==='started'||['unknown','submitted'].includes(step.operation?.execution??''))&&!(step.tool==='save_notion_draft'&&notWritten));
+    const delivered=acknowledgedNotionWorkflowResumeProof(op,task),knownSave=run.notionReceipt?.state==='verified'||Boolean(delivered);
+    const confirmedKeys=new Set(delivered?.steps.filter(step=>step.effect==='external_write'&&step.state==='completed').map(step=>step.key));
+    if(run.notionTarget&&!knownSave&&!notWritten&&(!Array.isArray(run.steps)||run.steps.some(step=>step.tool==='save_notion_draft'&&step.effect==='external_write')))return true;
+    return run.notionReceipt&&!knownSave&&!notWritten||run.steps?.some(step=>['model','artifact','external_write'].includes(step.effect)
+      &&(step.state==='started'||['unknown','submitted'].includes(step.operation?.execution??''))&&!(step.tool==='save_notion_draft'&&notWritten)
+      &&!(step.effect==='external_write'&&step.scopeId===op.id&&confirmedKeys.has(step.key)));
   });
   const stopped=task.workPauseReason==='user_stopped'||prior&&['cancelled','interrupted','prepared'].includes(prior.workRun!.state);
   const protectedFailure=prior&&/^task_(?:(?:key|authorization|budget)_required|budget_limit)$/.test(prior.workRun!.failureCode??'');

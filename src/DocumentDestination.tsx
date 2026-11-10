@@ -4,7 +4,7 @@ import { Check, ChevronDown, ChevronRight, FileText, Folder, MessageCircle, Sett
 import type { api as Api } from './oneApi';
 import './document-destination.css';
 import {parseNotionPageLink} from './notionPageLink';
-import {notionVerificationPresentation,type NotionReceiptView} from './taskRecovery';
+import {notionDeliveryAvailable,notionVerificationPresentation,type NotionReceiptView} from './taskRecovery';
 import {verifySelectedNotionPage} from './notionPageRecovery';
 import {useLocalDeviceReadiness} from './useLocalDeviceReadiness';
 import {localReadinessStatus} from './localDeviceReadiness';
@@ -14,7 +14,9 @@ export function NotionReceiptNotice({ api, taskId, receipt, sourceJobId, expecte
   const requestScope=`${taskId}:${sourceJobId??''}:${expectedUpdatedAt??''}`,current=useRef(requestScope),inFlight=useRef(false),selection=useRef<{fingerprint:string;id:string}|undefined>(undefined);
   current.current=requestScope;
   useEffect(()=>{current.current=requestScope;setNotice('');setPageUrl('');setBusy(false);inFlight.current=false;selection.current=undefined;return()=>{current.current='';};},[requestScope]);
-  if (!receipt || receipt.state === 'verified'&&!reviewWorkflow) return null;
+  const titleIssue=receipt?.integrity?.title==='different'||receipt?.integrity?.title==='unavailable';
+  const integrityIssue=receipt?.integrity?.state==='missing'||receipt?.integrity?.state==='inconclusive';
+  if (!receipt || (receipt.state === 'verified'||receipt.integrity?.state==='covered')&&!reviewWorkflow&&!titleIssue&&!integrityIssue) return null;
   const status=notionVerificationPresentation(receipt,reviewWorkflow);
   const canProvidePage=receipt.recoveryInput==='page_url'&&!status.active&&Boolean(sourceJobId&&expectedUpdatedAt);
   async function verifyPage(){
@@ -27,7 +29,7 @@ export function NotionReceiptNotice({ api, taskId, receipt, sourceJobId, expecte
     try{
       const result=await verifySelectedNotionPage(api,taskId,{sourceJobId,expectedUpdatedAt,pageUrl,selectionId:selection.current.id});
       if(current.current!==owned)return;
-      setNotice(result.state==='verified'?'这页正文已全文核对一致，文章没有新建或改写。任务会按实际进展更新。':'正在只读核对这页，不会重新保存。');
+      setNotice(result.state==='verified'?'原稿内容已在这页中检查齐全，任务会按实际进展更新。':'正在读取这页的保存结果。');
       await onRefresh();
     }catch(e){if(current.current===owned)setNotice(e instanceof Error?e.message:'这次没能完成读取，原稿保留，没有新建或改写。');}
     finally{if(current.current===owned){inFlight.current=false;setBusy(false);}}
@@ -39,14 +41,14 @@ export function NotionReceiptNotice({ api, taskId, receipt, sourceJobId, expecte
     try{
       const result=await api<{state?:string}>(`/api/coordinator/tasks/${encodeURIComponent(taskId)}/notion/verify`,{method:'POST'});
       if(current.current!==owned)return;
-      setNotice(result.state==='verified'?'Notion 正文已核对一致；其他步骤的进展会按实际结果更新，文章没有重写。':'正在只读核对保存结果，不会重新写入；确认后会在这里更新。');
+      setNotice(result.state==='verified'?'原稿内容已在 Notion 中检查齐全。':result.state==='delivered'?'文章已保存，检查结果已更新。':'正在读取保存结果，确认后会在这里更新。');
       await onRefresh();
     }catch(e){if(current.current===owned)setNotice(e instanceof Error?e.message:'这次读取没成功，文章没有重写。可以稍后再核对一次。');}
     finally{if(current.current===owned){inFlight.current=false;setBusy(false);}}
   }
-  return <section className="notion-writing-settings" aria-label="Notion 保存进展" aria-busy={status.active||busy}><p role="status">{status.message}</p>{receipt.url ? <a href={receipt.url} target="_blank" rel="noreferrer">打开原页面核对 ↗</a> : !status.active&&!canProvidePage?<p>已保留原保存记录，当前没有可打开的页面入口。</p>:null}
+  return <section className="notion-writing-settings" aria-label="Notion 保存进展" aria-busy={status.active||busy}><p role="status">{status.message}</p>{receipt.url ? <a href={receipt.url} target="_blank" rel="noreferrer">{notionDeliveryAvailable(receipt)?'打开文章 ↗':'打开原页面核对 ↗'}</a> : !status.active&&!canProvidePage?<p>已保留原保存记录，当前没有可打开的页面入口。</p>:null}
     {canProvidePage?<div className="notion-original-page-recovery"><label>已保存的原页链接<input type="text" inputMode="url" aria-label="已保存的 Notion 原页链接" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={pageUrl} disabled={busy} onChange={e=>{setPageUrl(e.target.value);setNotice('');}} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();e.stopPropagation();void verifyPage();}}} placeholder="粘贴这次已保存页面的链接"/></label><button type="button" disabled={busy||!pageUrl.trim()} onClick={()=>void verifyPage()}>{busy?'正在核对这页…':'核对这页（不重写）'}</button></div>:null}
-    {status.canVerify ? <button type="button" disabled={busy} onClick={()=>void verifyReceipt()}>{busy?'正在核对…':reviewWorkflow?'核对任务进度（不重写）':'再核对一次（不重写）'}</button> : null}
+    {status.canVerify ? <button type="button" disabled={busy} onClick={()=>void verifyReceipt()}>{busy?'正在检查…':reviewWorkflow?'核对任务进度（不重写）':notionDeliveryAvailable(receipt)?'检查内容完整性':'再核对一次（不重写）'}</button> : null}
     {notice ? <p role="status">{notice}</p> : null}</section>;
 }
 type WritingSettings = { connected: boolean; writeAuthorized: boolean; ready: boolean; parentId: string; referenceIds: string[] };

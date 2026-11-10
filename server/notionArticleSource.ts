@@ -26,7 +26,22 @@ export function existingNotionArticle(db:Database,s:WorkScope,conversationId:str
   const message=conversation.messages.find(message=>message.id===messageId&&message.role==='assistant'&&!message.imageUrl&&!message.attachments?.length&&message.finishReason!=='length'&&message.finishReason!=='filtered');
   if(!message?.content.trim()||message.content.length>50000)return;
   let content=message.content;
-  if(operation.workRun?.notionTarget){const suffix=notionDeliveryNote(operation.workRun.notionReceipt,operation.workRun.notionTarget.pageId);if(content.endsWith(suffix))content=content.slice(0,-suffix.length);}
+  if(operation.workRun?.notionTarget){
+    // Delivery facts can advance after the message was persisted. Match only
+    // finite server-owned suffixes for this exact page, then let an existing
+    // source binding choose by its immutable original body hash.
+    const pageId=operation.workRun.notionReceipt?.pageId??operation.workRun.notionTarget.pageId;
+    const url=pageId&&/^[a-f0-9]{32}$/i.test(pageId.replaceAll('-',''))?`https://www.notion.so/${pageId.replaceAll('-','')}`:undefined;
+    const suffixes=[notionDeliveryNote(operation.workRun.notionReceipt,operation.workRun.notionTarget.pageId),'\n\n本轮尚未确认保存到 Notion。',...(url?['已保存到 Notion · 已回读核对','已保存到 Notion','打开 Notion 原文'].map(label=>`\n\n[${label}](${url})`):[])];
+    const candidates=[content];
+    // Earlier workflow results could receive the same server link twice.
+    // Bound the compatibility path to those two known append sites.
+    for(let depth=0;depth<2;depth++)for(const candidate of [...candidates])for(const suffix of suffixes)if(candidate.endsWith(suffix)){
+      const stripped=candidate.slice(0,-suffix.length);if(!candidates.includes(stripped))candidates.push(stripped);
+    }
+    if(source){const matches=candidates.filter(candidate=>articleHash(candidate)===source.digest);if(matches.length!==1)throw new CoordinatorError('原文章或来源已变化，尚未保存。请先核对最新原文。',409);content=matches[0];}
+    else content=candidates.at(-1)!;
+  }
   if(!content.trim())return;
   const binding={conversationId,operationId:operation.id,messageId:message.id!,messageDigest:articleHash(message.content),digest:articleHash(content)};
   if(source&&(Object.keys(binding) as (keyof typeof binding)[]).some(key=>binding[key]!==source[key]))throw new CoordinatorError('原文章或来源已变化，尚未保存。请先核对最新原文。',409);

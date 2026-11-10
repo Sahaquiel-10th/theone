@@ -6,6 +6,8 @@ import {publicWorkflowProgress,availableWorkflowResults} from './workflowPresent
 import {readAttempt,readFailureRecovery} from './operationRecovery.js';
 import type {WorkRun} from './coordinatorTypes.js';
 import {taskWorkflowView} from '../src/taskWorkflowView.js';
+import {notionHash} from './notionCanonical.js';
+import {notionWriteDeliveryProof} from './notionCompletion.js';
 
 const owner={workspaceId:'owned_workspace',userId:'owned_user',operationId:'owned_operation'};
 function fixture(kind:'model'|'notion'|'tool'='model'){
@@ -46,9 +48,46 @@ test('wrong or duplicate checkpoint evidence never advertises a reusable result'
  for(const mutate of mutations){const f=fixture();mutate(f);const step=publicWorkflowProgress(f.job,owner)!.steps[0];assert.equal(step.resultAvailable,undefined);assert.equal(step.execution,undefined);}
 });
 
-test('Notion completion needs verified evidence rather than a merely successful operation',()=>{
+test('Notion result availability requires a receipt or an existing verified checkpoint',()=>{
  const f=fixture('notion');assert.equal(publicWorkflowProgress(f.job,owner)!.steps[0].resultAvailable,true);
  f.cp.operation!.verification='not_required';assert.equal(publicWorkflowProgress(f.job,owner)!.steps[0].resultAvailable,undefined);
+});
+
+test('an exact acknowledged Notion result stays available while integrity is pending or failed',()=>{
+ const f=fixture('notion'),pageId='a'.repeat(32),checkpointKey='b'.repeat(64),content='完整原稿',expectedDigest=notionHash(content),expectedRawDigest=notionHash(content);
+ f.job.notionReceipt={state:'delivered',pageId,url:`https://www.notion.so/${pageId}`,checkpointKey,expectedDigest,expectedRawDigest,final:true,
+  writeAcknowledgement:{version:1,operationId:owner.operationId,checkpointKey,pageId,expectedDigest,expectedRawDigest,acknowledgedAt:'2026-11-10T00:00:00Z'}};
+ Object.assign(f.cp.output as object,{notionCheckpointKey:checkpointKey,expectedBodyDigest:expectedDigest});
+ f.job.steps!.push({key:checkpointKey,namespace:'worker',scopeId:owner.operationId,tool:'save_notion_draft',label:'保存原稿',effect:'external_write',state:'completed',updatedAt:'2026-11-10T00:00:00Z',output:{state:'delivered',pageId,expectedDigest,final:true,content}});
+ for(const verification of ['pending','failed'] as const){
+  f.cp.operation!.verification=verification;
+  const view=publicWorkflowProgress(f.job,owner)!;
+  assert.equal(view.steps[0].resultAvailable,true);assert.equal(view.steps[0].verification,verification);
+ }
+ for(const mutate of [
+  (job:WorkRun)=>{job.notionReceipt!.writeAcknowledgement!.operationId='foreign';},
+  (job:WorkRun)=>{job.notionReceipt!.pageId='e'.repeat(32);},
+  (job:WorkRun)=>{(job.steps![0].output as any).expectedBodyDigest='f'.repeat(64);},
+  (job:WorkRun)=>{(job.steps![0].output as any).notionCheckpointKey='f'.repeat(64);},
+ ]){
+  const changed=structuredClone(f.job);mutate(changed);
+  assert.equal(publicWorkflowProgress(changed,owner)!.steps[0].resultAvailable,undefined);
+ }
+ const frozen=structuredClone(f.job);
+ (frozen.steps![0].output as any).notionDeliveryProof=notionWriteDeliveryProof(frozen.notionReceipt,owner.operationId);
+ frozen.notionReceipt={state:'pending',delivery:'not_sent'};
+ assert.equal(publicWorkflowProgress(frozen,owner)!.steps[0].resultAvailable,true);
+ assert.equal(JSON.stringify(publicWorkflowProgress(frozen,owner)).includes('notionDeliveryProof'),false);
+ for(const mutate of [
+  (job:WorkRun)=>{delete (job.steps![1].output as any).content;},
+  (job:WorkRun)=>{(job.steps![1].output as any).content='另一份稿件';},
+  (job:WorkRun)=>{(job.steps![0].output as any).notionDeliveryProof.writeAcknowledgement.operationId='foreign';},
+  (job:WorkRun)=>{const proof=(job.steps![0].output as any).notionDeliveryProof;delete proof.writeAcknowledgement;proof.state='verified';proof.digest='e'.repeat(64);(job.steps![1].output as any).digest=proof.digest;},
+  (job:WorkRun)=>{(job.steps![0].output as any).priorNotionCheckpointKey=checkpointKey;},
+ ]){
+  const changed=structuredClone(frozen);mutate(changed);
+  assert.equal(publicWorkflowProgress(changed,owner)!.steps[0].resultAvailable,undefined);
+ }
 });
 
 test('durable read recovery appears as background work and never as a completed manuscript',()=>{

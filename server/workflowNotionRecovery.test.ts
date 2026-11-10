@@ -29,7 +29,7 @@ for(const missingDigest of [false,true])for(const missingLink of [false,true])te
  const again=recoverVerifiedNotionWorkflow({...f.job,workflow:result.workflow,steps:result.steps},owner)!;assert.equal(again.changed,false);assert.equal(again.workflow.sequence,5);assert.equal(again.complete,true);
 });
 
-for(const mutation of ['owner','workflow-marker','workflow-key','worker-scope','worker-page','worker-digest','worker-final','receipt-final','receipt-pending','link','body-digest','raw-digest','source-ref','source-origin','source-hash','source-extra','missing-raw'] as const)test(`manual recovery refuses conflicting or incomplete ${mutation} evidence`,()=>{
+for(const mutation of ['owner','workflow-marker','workflow-key','worker-scope','worker-page','worker-digest','worker-final','receipt-final','link','body-digest','raw-digest','source-ref','source-origin','source-hash','source-extra','missing-raw'] as const)test(`manual recovery refuses conflicting or incomplete ${mutation} evidence`,()=>{
  const f=fixture({missingDigest:true}),cp=f.job.steps!.find(step=>step.key===f.key(f.save))!,value=cp.output as any;
  if(mutation==='owner')f.job.workflow!.binding.workspaceId='foreign';
  if(mutation==='workflow-marker')value.workflow.revision++;
@@ -39,7 +39,6 @@ for(const mutation of ['owner','workflow-marker','workflow-key','worker-scope','
  if(mutation==='worker-digest')(f.worker.output as any).digest='d'.repeat(64);
  if(mutation==='worker-final')(f.worker.output as any).final=false;
  if(mutation==='receipt-final')f.job.notionReceipt!.final=false;
- if(mutation==='receipt-pending')f.job.notionReceipt!.verification={state:'scheduled',version:1,attempt:0,nextCheckAt:'now',deadlineAt:'later'};
  if(mutation==='link')value.notionCheckpointKey='other-worker-key';
  if(mutation==='body-digest')value.expectedBodyDigest='d'.repeat(64);
  if(mutation==='raw-digest')f.job.notionReceipt!.expectedRawDigest='d'.repeat(64);
@@ -49,6 +48,13 @@ for(const mutation of ['owner','workflow-marker','workflow-key','worker-scope','
  if(mutation==='source-extra')value.sourceArtifact.extra='untrusted';
  if(mutation==='missing-raw')f.job.notionReceipt!.expectedRawDigest=undefined;
  assert.equal(recoverVerifiedNotionWorkflow(f.job,owner),undefined);
+});
+
+test('an exact read-proved delivery remains recoverable with independent background metadata',()=>{
+ const f=fixture({missingDigest:true});
+ f.job.notionReceipt!.verification={state:'scheduled',version:1,attempt:0,nextCheckAt:'2026-11-10T00:00:00Z',deadlineAt:'2026-11-10T00:05:00Z'};
+ const before=structuredClone(f.job.notionReceipt),result=recoverVerifiedNotionWorkflow(f.job,owner);
+ assert.equal(result?.complete,true);assert.deepEqual(f.job.notionReceipt,before);
 });
 
 test('a proved multi-stage save is repaired without completing or executing its queued successor',()=>{

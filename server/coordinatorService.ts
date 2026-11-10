@@ -60,6 +60,7 @@ import { runBilledModel } from "./modelBilling.js";
 import type {ScopedPublicSearch} from './webSearch.js';
 import {
   beginChatOperation,
+  acknowledgedNotionWorkflowResumeProof,
   completeChatOperation,
   failChatOperation,
   failChatOperationInMutation,
@@ -73,7 +74,7 @@ import type { FeatureRunDependencies } from "./featureRuns.js";
 import fs from "node:fs/promises";
 import {createHash} from 'node:crypto';
 import { NotionDocuments, NotionDocumentError, writingTarget } from './notionDocuments.js';
-import {verifiedNotionCompletion,notionDeliveryNote,notionRetryCheckpointPlan,notionRevisionRequested,notionWriteAcknowledged} from './notionCompletion.js';
+import {verifiedNotionCompletion,notionDeliveryNote,notionRetryCheckpointPlan,notionRevisionRequested,notionWriteAcknowledged,notionDeliveryConfirmed} from './notionCompletion.js';
 import {existingNotionArticle} from './notionArticleSource.js';
 import {
   publicAttachmentSummary,
@@ -177,11 +178,12 @@ function localTaskStatus(db:Database,s:WorkScope,taskId:string,latest:WorkRun|un
   return undefined;
 }
 const failureFeedback=(failure:CoordinatorFailure,requestId:string)=>coordinatorRecoveryCopy(failure)+(['internal_error','storage_unavailable','billing_unavailable','model_auth','model_request_rejected','tool_parameters_failed','tool_configuration_unavailable','tool_effect_unconfirmed'].includes(failure.code)?`\n\n请求编号：${requestId}`:'');
-const notionVerificationActive=(job:WorkRun|undefined)=>job?.notionReceipt?.state!=='verified'&&!['not_sent','rejected'].includes(job?.notionReceipt?.delivery??'')&&['scheduled','checking'].includes(job?.notionReceipt?.verification?.state??'');
+const withNotionDeliveryNote=(content:string,receipt:WorkRun['notionReceipt'],pageId?:string)=>{const note=notionDeliveryNote(receipt,pageId);return content.endsWith(note)?content:content+note;};
+const notionVerificationActive=(job:WorkRun|undefined)=>!['not_sent','rejected'].includes(job?.notionReceipt?.delivery??'')&&['scheduled','checking'].includes(job?.notionReceipt?.verification?.state??'');
 function publicNotionReceipt(receipt:WorkRun['notionReceipt'],pageLinkOffered=false,operationId?:string){
   if(!receipt)return undefined;
   const {verification}=receipt;
-  const result={state:receipt.state,pageId:receipt.pageId,url:receipt.url,error:receipt.error,delivery:receipt.delivery,comparison:receipt.comparison,
+  const result={state:receipt.state,pageId:receipt.pageId,url:receipt.url,error:receipt.error,delivery:receipt.delivery,comparison:receipt.comparison,integrity:receipt.integrity?{state:receipt.integrity.state,checkedAt:receipt.integrity.checkedAt,sourceBlockCount:receipt.integrity.sourceBlockCount,matchedBlockCount:receipt.integrity.matchedBlockCount,missingBlockCount:receipt.integrity.missingBlockCount,missingBlockIndexes:receipt.integrity.missingBlockIndexes?.filter(index=>Number.isInteger(index)&&index>0).slice(0,20),sourceChars:receipt.integrity.sourceChars,remoteChars:receipt.integrity.remoteChars,title:receipt.integrity.title,reason:receipt.integrity.reason}:undefined,deliveryConfirmed:Boolean(operationId&&notionDeliveryConfirmed(receipt,operationId)),
     ...(operationId&&notionWriteAcknowledged(receipt,operationId)?{writeAcknowledged:true}:{}),
     ...(pageLinkOffered?{recoveryInput:'page_url' as const}:{}),...(receipt.linkRecovery?{recoveredFromLink:true}: {})};
   if(!verification)return result;
@@ -192,7 +194,7 @@ function publicNotionReceipt(receipt:WorkRun['notionReceipt'],pageLinkOffered=fa
  * This is an explanation, not fresh authorization to execute an action. */
 function taskRecoveryView(db:Database,s:WorkScope,task:Conversation,jobs:ChatOperation[],activeOperations?:ReadonlySet<string>):TaskRecovery{
  const latest=jobs.at(-1),run=latest?.workRun;
- const generic=()=>taskRecovery(jobs.map(op=>({id:op.id,...op.workRun!,notionReceipt:publicNotionReceipt(op.workRun!.notionReceipt,Boolean(notionLinkRecoveryOffer(db,s,op)),op.id),verificationPending:selectedNotionVerification(op)||op.status==='pending'&&op.workRun!.failureCode==='notion_verification_pending'})));
+ const generic=()=>taskRecovery(jobs.map(op=>({id:op.id,...op.workRun!,notionReceipt:publicNotionReceipt(op.workRun!.notionReceipt,Boolean(notionLinkRecoveryOffer(db,s,op)),op.id),verificationPending:!notionDeliveryConfirmed(op.workRun!.notionReceipt,op.id)&&(selectedNotionVerification(op)||op.status==='pending'&&op.workRun!.failureCode==='notion_verification_pending')})));
  if(!latest||!run)return generic();
  // A started checkpoint is normal while this process still owns the exact
  // pending run. Persisted running state alone cannot conceal an old effect
@@ -202,7 +204,7 @@ function taskRecoveryView(db:Database,s:WorkScope,task:Conversation,jobs:ChatOpe
   &&!task.archived&&!task.workPaused&&task.workPauseReason!=='user_stopped')return generic();
  const fault=parseToolRecoveryDiagnostic(run.toolRecovery)??workflowToolRecoveryDiagnostic(run.workflow,run.steps,{...s,operationId:latest.id});
  // Unknown writes and active readback retain their connector-owned actions.
- if(run.notionReceipt?.state!=='verified'&&run.notionReceipt&&!['not_sent','rejected'].includes(run.notionReceipt.delivery??''))return generic();
+ if(run.notionReceipt&&!notionDeliveryConfirmed(run.notionReceipt,jobs.at(-1)!.id)&&!['not_sent','rejected'].includes(run.notionReceipt.delivery??''))return generic();
  const notSent=['not_sent','rejected'].includes(run.notionReceipt?.delivery??'');
  if(run.steps?.some(cp=>['model','artifact','external_write'].includes(cp.effect)&&(cp.state==='started'||['unknown','submitted'].includes(cp.operation?.execution??''))&&!(cp.tool==='save_notion_draft'&&notSent)))return {kind:'support',sourceJobId:latest.id,requestId:latest.requestId,message:'这一步已停止，已有操作的结果还没确认，可能已经留下部分成果。需要 ONE 支持人员检查；你暂时不用操作，可以先看已有成果，不会再制作一遍。'};
  if(fault&&['failed','needs_input','partial'].includes(run.resultOutcome??'')&&run.state==='failed')return {kind:fault.kind==='missing_input'?'input':'support',message:toolRecoveryMessage(fault),sourceJobId:latest.id,requestId:latest.requestId};
@@ -393,7 +395,7 @@ export class CoordinatorService {
       for(const op of d.chatOperations??[])if(own(op,s)&&op.conversationId===id&&op.workRun&&(['queued','running','prepared'].includes(op.workRun.state)||notionVerificationActive(op.workRun)||selectedNotionVerification(op))) {
         op.workRun.notionVerificationSelection=undefined;
         if(op.workRun.notionReceipt?.verification){op.workRun.notionReceipt.verification.state='exhausted';op.workRun.notionReceipt.verification.lastReason='stale';op.workRun.notionReceipt.verification.leaseId=undefined;op.workRun.notionReceipt.verification.leaseUntil=undefined;}
-        op.workRun.state='cancelled';op.workRun.unread=true;op.status='interrupted';op.updatedAt=at();
+        if(op.workRun.state!=='completed'){op.workRun.state='cancelled';op.workRun.unread=true;op.status='interrupted';op.updatedAt=at();}
       }
     });
     return {ok:true};
@@ -411,7 +413,7 @@ export class CoordinatorService {
         if (['queued','running'].includes(op.workRun.state)||notionVerificationActive(op.workRun)||selectedNotionVerification(op)) {
           op.workRun.notionVerificationSelection=undefined;
           if(op.workRun.notionReceipt?.verification){op.workRun.notionReceipt.verification.state='exhausted';op.workRun.notionReceipt.verification.lastReason='stale';op.workRun.notionReceipt.verification.leaseId=undefined;op.workRun.notionReceipt.verification.leaseUntil=undefined;}
-          op.workRun.state = 'cancelled'; op.status = 'interrupted'; op.updatedAt = at();
+          if(op.workRun.state!=='completed'){op.workRun.state = 'cancelled'; op.status = 'interrupted'; op.updatedAt = at();}
         }
         op.workRun.unread = false;
       }
@@ -429,7 +431,7 @@ export class CoordinatorService {
       const jobs=(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===id&&o.workRun).sort((a,b)=>a.createdAt.localeCompare(b.createdAt));
       const latest=jobs.at(-1)?.workRun;
       if(latest?.state==='completed'&&latest.resultOutcome==='completed'&&
-        jobs.every(o=>o.workRun!.state==='completed'&&(!o.workRun!.notionReceipt||o.workRun!.notionReceipt.state==='verified')&&!o.workRun!.steps?.some(step=>step.state==='started'&&['artifact','external_write'].includes(step.effect)))&&
+        jobs.every(o=>o.workRun!.state==='completed'&&(!o.workRun!.notionReceipt||notionDeliveryConfirmed(o.workRun!.notionReceipt,o.id))&&!o.workRun!.steps?.some(step=>step.state==='started'&&['artifact','external_write'].includes(step.effect)))&&
         !(d.executionTasks??[]).some(t=>own(t,s)&&t.conversationId===id))task.workPaused=false;
     });
     return {ok:true};
@@ -456,21 +458,23 @@ export class CoordinatorService {
       const job=op.workRun,task=d.conversations.find(c=>own(c,s)&&c.id===op.conversationId&&!c.archived&&!c.coordinatorMain);
       const automatic=op.status==='pending'&&job?.failureCode==='notion_verification_pending';
       const receipt=job?.notionReceipt;
+      const deliveryConfirmed=notionDeliveryConfirmed(receipt,op.id);
+      const acknowledgedFailure=deliveryConfirmed&&Boolean(job&&['notion_verification_pending','notion_verification_exhausted'].includes(job.failureCode??''));
       const selected=selectedNotionVerification(op)||manual?.operationId===op.id&&['failed','completed'].includes(op.status)&&receipt?.state==='verified'&&receipt.expectedDigest===manual.expectedDigest&&receipt.digest===manual.digest&&receipt.checkpointKey===manual.checkpointKey;
-      // Only this fresh explicit readback may repair an old completed-job /
-      // failed-workflow split. Ordinary polling never scans or rewrites it.
-      const completedWorkflowRepair=Boolean(manual?.operationId===op.id&&job?.state==='completed'&&job.workflow&&job.workflow.phase!=='completed');
-      if(!own(op,s)||!job||!task||job.state!=='failed'&&!completedWorkflowRepair||!automatic&&!selected||task.workPauseReason==='user_stopped'||notionVerificationActive(job)||['scheduled','checking'].includes(receipt?.verification?.state??''))continue;
-      if(!receipt||receipt.state!=='verified'&&receipt.verification?.state!=='exhausted')continue;
+      // Exact ACK evidence may settle an old failed-workflow projection.
+      // Without it, repair still needs the explicit read-only verification.
+      const completedWorkflowRepair=Boolean((manual?.operationId===op.id||deliveryConfirmed)&&job?.state==='completed'&&job.workflow&&job.workflow.phase!=='completed');
+      if(!own(op,s)||!job||!task||job.state!=='failed'&&!completedWorkflowRepair||!automatic&&!selected&&!acknowledgedFailure&&!completedWorkflowRepair||task.workPauseReason==='user_stopped'||!deliveryConfirmed&&(notionVerificationActive(job)||['scheduled','checking'].includes(receipt?.verification?.state??'')))continue;
+      if(!receipt||!deliveryConfirmed&&receipt.verification?.state!=='exhausted')continue;
       const required=[...(job.contract?.requiredTools??[]),...(job.contract?.requiredFeatureIds??[]).map(id=>{const index=job.skills.findIndex(skill=>skill.id===id);return index<0?'unavailable_required_feature':`feature_${index}`;})];
       let authorizationChanged=false;
       try{if(job.notionTarget)this.deps.notionDocuments!.assertTarget(d,s,job.notionTarget);else authorizationChanged=true;}catch{authorizationChanged=true;}
-      const saveConfirmed=receipt.state==='verified'&&!receipt.verification;
+      const saveConfirmed=deliveryConfirmed;
       if(job.workflow&&automatic&&!authorizationChanged&&(saveConfirmed||receipt.verification?.state==='exhausted')){
         // The save may be a middle stage. Resume only this SAME operation so
         // its runner recovers the exact receipt then advances remaining steps.
         // No new handoff, draft model, or write is issued here.
-        job.state='queued';job.failureCode=undefined;job.error=undefined;job.userReport=saveConfirmed?'保存已经核对，正在继续剩余步骤。':'保存核对暂未完成，正在整理已有成果。';
+        job.state='queued';job.failureCode=undefined;job.error=undefined;job.userReport=saveConfirmed?'文章已保存，正在继续剩余步骤。':'保存核对暂未完成，正在整理已有成果。';
         task.workPaused=false;task.workPauseReason=undefined;op.updatedAt=at();continue;
       }
       const workflowProof=job.workflow&&saveConfirmed&&!authorizationChanged?recoverVerifiedNotionWorkflow(job,{...s,operationId:op.id}):undefined;
@@ -496,13 +500,13 @@ export class CoordinatorService {
       const result=completed?parseTaskOutcome(completed):{outcome:'partial' as const,summary:authorizationBlocked?'Notion 连接或保存授权已变化，需要先恢复原连接。':saveConfirmed?'Notion 保存已核对，其余步骤还没有全部完成。':'Notion 保存仍未完整核对，原稿和要求都保留着。',content:authorizationBlocked?'Notion 连接或保存授权已变化，暂时不能继续核对原稿。请先恢复原连接，再核对保存结果；不会重发保存请求。':saveConfirmed?'Notion 里的内容已核对保存，但这件事还有其他步骤未完成。可以接着处理未完成的部分；不会重复新建原稿。':'内容已经交给 Notion，但这轮仍没能完整核对保存结果。请先打开原稿确认内容，再告诉我接着处理哪一部分；不会重复创建或覆盖。'};
       const mid=uid('msg');
       saveMessage(d,s,task,{id:mid,role:'assistant',content:result.content+(!completed?notionDeliveryNote(saveConfirmed?receipt:{...receipt,state:'uncertain'},receipt.pageId):''),createdAt:at()});
-      if(selected&&(!saveConfirmed||job.reportedToCoordinatorAt||job.reportMessageId)){
+      if((selected||completedWorkflowRepair)&&(!saveConfirmed||job.reportedToCoordinatorAt||job.reportMessageId)){
         // The explicit check reached a new terminal fact, not a replay of the
         // historical failure that may already have been briefed.
         job.reportRevision=(job.reportRevision??0)+1;job.reportRevisionAt=at();
         job.reportedToCoordinatorAt=undefined;job.reportMessageId=undefined;
       }
-      if(selected)op.status='pending';
+      if(selected||acknowledgedFailure||completedWorkflowRepair)op.status='pending';
       completeChatOperation(d,{...s,operationId:op.operationId},{conversationId:task.id,assistantMessageId:mid});
       job.state=completed?'completed':'failed';job.resultOutcome=result.outcome;job.userReport=result.summary;job.resultMessageId=mid;job.unread=true;
       job.failureCode=completed?undefined:authorizationBlocked?'task_authorization_required':saveConfirmed?'notion_saved_task_incomplete':'notion_verification_exhausted';
@@ -549,7 +553,7 @@ export class CoordinatorService {
       const latest=await this.store.read();
       for(const operation of latest.chatOperations??[]){
         const receipt=operation.workRun?.notionReceipt,task=latest.conversations.find(task=>own(task,s)&&task.id===operation.conversationId);
-        if(own(operation,s)&&operation.status==='pending'&&!operation.executionCancelled&&task&&!task.archived&&task.workPauseReason!=='user_stopped'&&receipt?.verification&&['scheduled','checking'].includes(receipt.verification.state))this.scheduleRecoveryWake(s,operation.id,verifyKey,receipt.verification.state==='checking'?receipt.verification.leaseUntil??receipt.verification.nextCheckAt:receipt.verification.nextCheckAt);
+        if(own(operation,s)&&(operation.status==='pending'||notionDeliveryConfirmed(receipt,operation.id))&&!operation.executionCancelled&&task&&!task.archived&&task.workPauseReason!=='user_stopped'&&receipt?.verification&&['scheduled','checking'].includes(receipt.verification.state))this.scheduleRecoveryWake(s,operation.id,verifyKey,receipt.verification.state==='checking'?receipt.verification.leaseUntil??receipt.verification.nextCheckAt:receipt.verification.nextCheckAt);
       }
       // Reconciliation can finish after the caller already scanned its queue.
       // Persisted verification wakes the newly ready successor directly;
@@ -588,7 +592,7 @@ export class CoordinatorService {
       const latest = jobs.at(-1), local = (db.executionTasks ?? []).filter(t => own(t, s) && t.conversationId === task.id);
       const activeLocal = local.find(t => ['queued', 'selecting_target', 'running'].includes(t.status));
       const running = jobs.some(o => o.workRun!.state === 'running') || activeLocal?.status === 'running';
-      const reconciling=jobs.some(o=>notionVerificationActive(o.workRun)||selectedNotionVerification(o)||o.status==='pending'&&o.workRun!.failureCode==='notion_verification_pending');
+      const reconciling=jobs.some(o=>!notionDeliveryConfirmed(o.workRun!.notionReceipt,o.id)&&(notionVerificationActive(o.workRun)||selectedNotionVerification(o)||o.status==='pending'&&o.workRun!.failureCode==='notion_verification_pending'));
       const saveVerified=jobs.some(o=>(selectedNotionVerification(o)||o.status==='pending'&&o.workRun!.failureCode==='notion_verification_pending')&&o.workRun!.notionReceipt?.state==='verified');
       const queued = jobs.filter(o => o.workRun!.state === 'queued').length + local.filter(t => ['queued', 'selecting_target'].includes(t.status)).length;
       const localPrepared = latest?.workRun?.state === 'prepared' && !local.some(t => t.sourceMessageId === latest.workRun!.inputMessageId);
@@ -653,7 +657,7 @@ export class CoordinatorService {
           state: o.workRun!.state,
           failure:parseCoordinatorFailure(o.failure),
           toolRecovery:parseToolRecoveryDiagnostic(o.workRun!.toolRecovery)??workflowToolRecoveryDiagnostic(o.workRun!.workflow,o.workRun!.steps,{...s,operationId:o.id}),
-          verificationPending:selectedNotionVerification(o)||o.status==='pending'&&o.workRun!.failureCode==='notion_verification_pending',
+          verificationPending:!notionDeliveryConfirmed(o.workRun!.notionReceipt,o.id)&&(selectedNotionVerification(o)||o.status==='pending'&&o.workRun!.failureCode==='notion_verification_pending'),
           budget:o.workRun!.budget,
           kind:o.workRun!.kind,
           retryPower: o.workRun!.kind==='image'?(()=>{try{return welcomeRetryPower(o.workRun!,resolveImageTask(db,Boolean(this.deps.artifactDirectory)).billingModel.imagePowerPerCall!);}catch{return undefined;}})():undefined,
@@ -785,7 +789,7 @@ export class CoordinatorService {
       const fresh=connectionRecoveryPlan(db,s,current,latest);if('blocked' in fresh)throw new CoordinatorError(fresh.blocked,409);
       assertWorkBindings(db,s,latest.workRun!,task.id);
       if(latest.workRun!.notionTarget)this.deps.notionDocuments?.assertTarget(db,s,latest.workRun!.notionTarget);
-      return {current,latest,workflow:fresh.workflow};
+      return {current,latest,workflow:fresh.workflow,steps:fresh.steps};
     };
     try{
       check(snapshot);await verifyKey();
@@ -794,9 +798,9 @@ export class CoordinatorService {
         // same queue, not another recovery attempt or another paid call.
         const already=db.chatOperations?.find(op=>own(op,s)&&op.id===operation.id);
         if(already?.workRun?.connectionRecoveries?.length&&['queued','running'].includes(already.workRun.state)&&(db.chatOperations??[]).filter(op=>own(op,s)&&op.conversationId===task.id&&op.workRun).at(-1)?.id===already.id)return;
-        const {current,latest,workflow}=check(db),run=latest.workRun!,timestamp=at();
+        const {current,latest,workflow,steps}=check(db),run=latest.workRun!,timestamp=at();
         run.connectionRecoveries=[...(run.connectionRecoveries??[]),{operationId:input.operationId,sourceUpdatedAt:latest.updatedAt,failureCode:run.failureCode!,failure:parseCoordinatorFailure(latest.failure),resultMessageId:run.resultMessageId,resultOutcome:run.resultOutcome,at:timestamp}];
-        run.workflow=workflow;run.state='queued';run.error=undefined;run.failureCode=undefined;run.resultOutcome=undefined;run.resultMessageId=undefined;run.userReport=undefined;run.unread=false;run.reportedToCoordinatorAt=undefined;run.reportMessageId=undefined;
+        run.workflow=workflow;run.steps=steps;run.state='queued';run.error=undefined;run.failureCode=undefined;run.resultOutcome=undefined;run.resultMessageId=undefined;run.userReport=undefined;run.unread=false;run.reportedToCoordinatorAt=undefined;run.reportMessageId=undefined;
         latest.status='pending';latest.failure=undefined;latest.updatedAt=timestamp;
         current.workPaused=false;current.workPauseReason=undefined;current.updatedAt=timestamp;
         db.auditLogs.push({id:uid('aud'),workspaceId:s.workspaceId,actorUserId:s.userId,action:'task.connection_recovered',targetType:'chat_operation',targetId:latest.id,requestId:latest.requestId,details:{continuationOperationId:input.operationId,workflowId:workflow.id,revision:workflow.revision},createdAt:timestamp});
@@ -1532,7 +1536,7 @@ export class CoordinatorService {
         {
           role: "system",
           cacheScope:'stable',
-          content: `${current.settings.safetyRules}\n${config.model.systemPrompt}\n${referenceBoundary}\n${friendlyConversationGuidance}\n${coordinatorGuidance}\n${taskExecutionGuidance}\n${knowledgeGuidance}\n${webGuidance}${adaptive?'\n'+adaptiveGuidance+'\n多步云端任务在 delegate_task(s) 的 workflow 中编排同一任务内的步骤，而不是为每步另建任务：tool 实际检索 → model 创作 → notion 保存并完整回读核对 → feature 制作文件。notion 是保存与完整标题、正文回读核对的同一阶段，只有真实验证回执才能完成，不需要额外 tool 步骤读取刚创建的页面。read_notion_document 仅用于本轮已绑定或 read_task 核对过的同一现有文章，且本轮明确只读；不能用于新建页或其他页面。构思、论证、选取和补充案例直接用 model，不找专用功能。允许联网不等于要求联网；未查证的示例明确标为假设，不冒充真实公开案例。只有用户要求实际检索核实时才将公开搜索设为 required；可选检索明确 required:false，其不可用不应挡住必需正文。tool 只能选本轮 workflow schema 列出的真实可用工具；缺少必需检索不得虚构已查证事实。每步 inputs 引用确实需要的前置成果；默认不读旧历史，需要时才填 historyCount。tool.instruction 必须是可直接检索的具体问题/公开关键词；model/feature.instruction 只写本阶段要求，任务 instruction 只写短目标与约束，当前原文由服务端按消息绑定交付，勿复制正文或重复所有提示词。先发现所需能力、确认可用并补齐依赖，再分派；不把保存/等待/简单判定交给额外模型。只对结果真需判断、创作的阶段安排 model；功能自带生成模型时无需再套一个相同 model 阶段。featureId 只能用已选真实编号，executorId 只选已开放执行器。独立图片、本机和新手引导保留既有固定流程。':''}`,
+          content: `${current.settings.safetyRules}\n${config.model.systemPrompt}\n${referenceBoundary}\n${friendlyConversationGuidance}\n${coordinatorGuidance}\n${taskExecutionGuidance}\n${knowledgeGuidance}\n${webGuidance}${adaptive?'\n'+adaptiveGuidance+'\n多步云端任务在 delegate_task(s) 的 workflow 中编排同一任务内的步骤，而不是为每步另建任务：tool 实际检索 → model 创作 → notion 保存交付 → feature 制作文件。notion 阶段取得最终整稿的真实成功回执即完成交付，完整性在后台检查，不需要等待正文核对或额外 tool 步骤读取刚创建的页面。read_notion_document 仅用于本轮已绑定或 read_task 核对过的同一现有文章，且本轮明确只读；不能用于新建页或其他页面。构思、论证、选取和补充案例直接用 model，不找专用功能。允许联网不等于要求联网；未查证的示例明确标为假设，不冒充真实公开案例。只有用户要求实际检索核实时才将公开搜索设为 required；可选检索明确 required:false，其不可用不应挡住必需正文。tool 只能选本轮 workflow schema 列出的真实可用工具；缺少必需检索不得虚构已查证事实。每步 inputs 引用确实需要的前置成果；默认不读旧历史，需要时才填 historyCount。tool.instruction 必须是可直接检索的具体问题/公开关键词；model/feature.instruction 只写本阶段要求，任务 instruction 只写短目标与约束，当前原文由服务端按消息绑定交付，勿复制正文或重复所有提示词。先发现所需能力、确认可用并补齐依赖，再分派；不把保存/等待/简单判定交给额外模型。只对结果真需判断、创作的阶段安排 model；功能自带生成模型时无需再套一个相同 model 阶段。featureId 只能用已选真实编号，executorId 只选已开放执行器。独立图片、本机和新手引导保留既有固定流程。':''}`,
         },
         {role:'system',content:`本轮授权参考：${JSON.stringify({tasks:adaptive?compactTaskCandidates(candidates,input.text,input.boundTaskId):candidates,selectedFeatures:features,boundTaskId:input.boundTaskId??null,...(newTaskOnly?{taskIdentity:'new_only'}:{}),attachments:main.messages.find(m=>m.id===mid)?.attachments?.map(f=>({name:f.originalName,kind:f.kind})),attachmentsRequireDelegation:attachments.length>0})}`},
         ...(referenceNotionCapability?[{role:'system' as const,content:`Notion 保存能力（服务端本轮核对，不是搜索工具的权限说明）：${JSON.stringify(notionSaving)}。ready 表示当前用户已授权写入且选好保存位置，通过 delegate_task(s) 使用；不要因主对话只提供搜索工具就声称 Notion 只有只读权限。这只是已验证能力状态，不是执行授权；纯权限询问、只读、讨论和否定不分派写入，残留保存选项不能改变本轮原话。${requestedNotionDelivery?(notionSaveExistingRequested(content,documentDestination)?'若写作已完成且本轮只保存：先定位同一任务和现有全文，只保存与核对，不重写文章，不重新查询原素材；主对话原文不唯一时用 read_context 的 messageId 精确定位，不能把最近普通答复冒充文章。':'本轮确实要求写入：新写或续改按本轮目标生成或修改正文，再保存并核对；不要把新写要求误当成仅保存旧稿。'):''}`}]:[]),
@@ -2038,6 +2042,29 @@ export class CoordinatorService {
     const db=await this.store.read(),c=taskOf(db,s,taskId);
     const source=db.chatOperations?.find(o=>own(o,s)&&o.conversationId===taskId&&o.id===sourceJobId&&o.workRun);
     if(!source)throw new CoordinatorError('原要求不可用，请重新打开任务',404);
+    if(!localWork(source.workRun)&&notionDeliveryConfirmed(source.workRun!.notionReceipt,source.id)){
+      const latest=(db.chatOperations??[]).filter(op=>own(op,s)&&op.conversationId===taskId&&op.workRun).at(-1);
+      if(latest?.id!==source.id)throw new CoordinatorError('任务已有新的要求，请查看最新一轮。',409);
+      // A repeat of an already delivered save observes/reconciles this exact
+      // operation. It never copies an ACK to a new paid attempt or page write.
+      await this.resume(s,verifyKey);
+      const fresh=(await this.store.read()).chatOperations?.find(op=>own(op,s)&&op.id===source.id),run=fresh?.workRun;
+      if(!run)throw new CoordinatorError('原要求不可用，请重新打开任务',404);
+      if(run.state==='completed'&&(!run.workflow||run.workflow.phase==='completed'))return {taskId,status:'completed',message:'这份稿件已经保存好了，可以直接查看。'};
+      if(fresh.status==='pending'&&['queued','running'].includes(run.state))return {taskId,status:run.state,message:'保存已完成，正在接着处理原任务的后续步骤。'};
+      const resumed=await this.store.mutate(data=>{
+        const current=data.chatOperations?.find(op=>own(op,s)&&op.id===source.id),task=taskOf(data,s,taskId),job=current?.workRun;
+        if(!current||!job||(data.chatOperations??[]).filter(op=>own(op,s)&&op.conversationId===taskId&&op.workRun).at(-1)?.id!==current.id||/^task_(?:(?:key|authorization|budget)_required|budget_limit)$/.test(job.failureCode??'')||(data.executionTasks??[]).some(local=>own(local,s)&&local.conversationId===taskId&&local.executionSafetyHold))return false;
+        const proof=acknowledgedNotionWorkflowResumeProof(current,task);
+        if(!proof||proof.workflow.phase==='completed'||!proof.workflow.steps.some(step=>step.state==='queued'||step.state==='waiting'&&step.waitingFor==='inputs'))return false;
+        assertWorkBindings(data,s,job,taskId);if(job.notionTarget)this.deps.notionDocuments?.assertTarget(data,s,job.notionTarget);
+        job.workflow=proof.workflow;job.steps=proof.steps;job.state='queued';job.error=undefined;job.failureCode=undefined;current.status='pending';current.failure=undefined;current.updatedAt=at();task.workPaused=false;task.workPauseReason=undefined;
+        return true;
+      });
+      if(resumed){await this.resume(s,verifyKey);return {taskId,status:'queued',message:'保存已完成，正在沿用原成果继续尚未开始的后续步骤。'};}
+      const pending=run.workflow?.steps.find(step=>['failed','needs_input'].includes(step.state)),title=pending&&run.workflow!.spec.steps.find(step=>step.id===pending.id)?.title;
+      return {taskId,status:run.state,message:title?`稿件已保存，“${title.slice(0,120)}”还需要处理。请补充这个步骤需要的资料或修改要求。`:'稿件已保存，这件任务还有其他部分需要处理。请在原任务补充要求。'};
+    }
     if(localWork(source.workRun)){
       assertLocalBinding(source.workRun!.localExecution,localDevice);
       const retryKey=JSON.stringify([s.workspaceId,s.userId,source.id]);
@@ -2067,13 +2094,13 @@ export class CoordinatorService {
     if(jobs.at(-1)?.id!==source.id)throw new CoordinatorError('任务有新的要求，请刷新后处理最新要求');
     if(jobs.some(o=>o.workRun?.state==='running'))throw new CoordinatorError('任务正在处理，无需重复启动');
     const job=source.workRun!;
-    const recovery=taskRecovery(jobs.map(o=>({id:o.id,...o.workRun!})));
+    const recovery=taskRecovery(jobs.map(o=>({id:o.id,...o.workRun!,notionReceipt:publicNotionReceipt(o.workRun!.notionReceipt,false,o.id)})));
     if(recovery.kind==='review_image'){
       const config=resolveImageTask(db,Boolean(this.deps.artifactDirectory));
       const check=(d:Database)=>{
         const task=taskOf(d,s,taskId),current=(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===taskId&&o.workRun);
         featureMember(d,s);
-        if(current.at(-1)?.id!==source.id||current.at(-1)?.updatedAt!==source.updatedAt||task.updatedAt!==c.updatedAt||taskRecovery(current.map(o=>({id:o.id,...o.workRun!}))).kind!=='review_image')throw new CoordinatorError('任务已有新进展，请刷新后再决定是否重新生成',409);
+        if(current.at(-1)?.id!==source.id||current.at(-1)?.updatedAt!==source.updatedAt||task.updatedAt!==c.updatedAt||taskRecovery(current.map(o=>({id:o.id,...o.workRun!,notionReceipt:publicNotionReceipt(o.workRun!.notionReceipt,false,o.id)}))).kind!=='review_image')throw new CoordinatorError('任务已有新进展，请刷新后再决定是否重新生成',409);
         resolveImageTask(d,Boolean(this.deps.artifactDirectory));assertSources(d,s,job.sources);verifyCredentialBindings(d,s,job.credentials);
       };
       const claim=await beginChatOperation(this.store,{...s,operationId,requestId:uid('image'),conversationId:taskId,payload:{kind:'explicit_image_retry',sourceJobId},beforeClaim:check});
@@ -2094,7 +2121,7 @@ export class CoordinatorService {
       await this.store.mutate(d=>{
         const task=taskOf(d,s,taskId);
         const current=(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===taskId&&o.workRun);
-        if(current.at(-1)?.id!==source.id||current.at(-1)?.updatedAt!==source.updatedAt||task.updatedAt!==c.updatedAt||taskRecovery(current.map(o=>({id:o.id,...o.workRun!}))).kind!=='resume')throw new CoordinatorError('任务状态已变化，请刷新后确认最新要求',409);
+        if(current.at(-1)?.id!==source.id||current.at(-1)?.updatedAt!==source.updatedAt||task.updatedAt!==c.updatedAt||taskRecovery(current.map(o=>({id:o.id,...o.workRun!,notionReceipt:publicNotionReceipt(o.workRun!.notionReceipt,false,o.id)}))).kind!=='resume')throw new CoordinatorError('任务状态已变化，请刷新后确认最新要求',409);
         featureMember(d,s);assertSources(d,s,job.sources);verifyCredentialBindings(d,s,job.credentials);
         const prices=job.skills.map(f=>{availableFeature(d,s,f.id,f.releaseId);return{id:f.id,name:f.values.name,releaseId:f.releaseId,version:f.version,multiplier:featureMultiplier(f.values)};});
         requireFeatureApproval(d,s,prices,featureApprovals);
@@ -2329,7 +2356,7 @@ export class CoordinatorService {
     if (notionTarget) {
       if (input.localExecution || !this.deps.notionDocuments) throw new CoordinatorError('Notion 写入尚未连接', 428);
       this.deps.notionDocuments.assertTarget(db, s, notionTarget);
-      if ((db.chatOperations || []).some(o => own(o, s) && o.conversationId === existing?.id && o.workRun?.notionReceipt && o.workRun.notionReceipt.state !== 'verified' && !['not_sent','rejected'].includes(o.workRun.notionReceipt.delivery || '') && o.workRun.state !== 'running')) throw new NotionDocumentError('前一轮 Notion 保存未确认，请先核对原页面；不会重复创建或修改');
+      if ((db.chatOperations || []).some(o => own(o, s) && o.conversationId === existing?.id && o.workRun?.notionReceipt && !notionDeliveryConfirmed(o.workRun.notionReceipt,o.id) && !['not_sent','rejected'].includes(o.workRun.notionReceipt.delivery || '') && o.workRun.state !== 'running')) throw new NotionDocumentError('前一轮 Notion 保存未确认，请先核对原页面；不会重复创建或修改');
     }
     const currentArticleMaterial=Boolean(input.attachmentIds?.length)||/(?:正文|原文|材料|素材)(?:如下|是|为)?\s*[:：][\s\S]+/u.test(input.text);
     const saveExisting=Boolean(notionTarget&&!boundRead&&!currentArticleMaterial&&!input.features.length&&!input.requiredFeatureIds?.length&&!(input.requiredTools??[]).some(name=>name!=='save_notion_draft')&&notionSaveExistingRequested(input.text,input.outputDestination)&&(!notionMissingSaveFeedback(input.text)||newNotionWrite));
@@ -2499,7 +2526,7 @@ export class CoordinatorService {
       const jobs=(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===input.taskId&&o.workRun);
       if(jobs.at(-1)?.id!==input.retrySourceJobId)throw new CoordinatorError('任务已有新的要求或恢复记录，请刷新后处理最新要求',409);
       if(jobs.at(-1)?.workRun?.state!==input.retrySourceVersion?.state||jobs.at(-1)?.updatedAt!==input.retrySourceVersion?.updatedAt||task.updatedAt!==input.retrySourceVersion?.taskUpdatedAt)throw new CoordinatorError('任务状态已变化，请刷新后确认最新要求',409);
-      const recovery=taskRecovery(jobs.map(o=>({id:o.id,...o.workRun!})));
+      const recovery=taskRecovery(jobs.map(o=>({id:o.id,...o.workRun!,notionReceipt:publicNotionReceipt(o.workRun!.notionReceipt,false,o.id)})));
       if(recovery.kind!=='retry')throw new CoordinatorError(recovery.message,409);
     };
     const verifyTemplate=(d:Database)=>{
@@ -2717,6 +2744,8 @@ export class CoordinatorService {
     latestOnly = false,
   ) {
     await verifyKey();
+    await this.deps.notionDocuments?.acknowledgeDeliveries(s,verifyKey);
+    if(this.deps.notionDocuments)await this.store.mutate(db=>this.settleNotionVerification(db,s));
     void this.reconcileNotionResults(s,verifyKey).catch(()=>{});
     if (continueTaskId)
       await this.store.mutate((d) => {
@@ -3306,7 +3335,13 @@ export class CoordinatorService {
             }
           },
           saveNotion:async(_step,body)=>{
-            await verify();const save=tools.find(tool=>tool.name==='save_notion_draft');if(!save?.structured)throw new CoordinatorError('保存位置还没有就位。');
+            await verify();let save=tools.find(tool=>tool.name==='save_notion_draft');if(!save?.structured)throw new CoordinatorError('保存位置还没有就位。');
+            if(job.notionTarget?.pageId){
+              const read=this.deps.notionDocuments!.readTool(s,job,verify).structured!;
+              const current=await read.run(read.validate({})) as {content:string};workflowCurrentDocument=current.content;
+              save=this.deps.notionDocuments!.tool(s,id,cid,job,verify,workflowCurrentDocument,job.instruction,{projectLeadingTitle:true});
+            }
+            if(!save.structured)throw new CoordinatorError('保存位置还没有就位。');
             const args=job.notionTarget?.pageId?{old_str:workflowCurrentDocument,new_str:body,final:true}:{title:c.title,content:body,final:true};
             let value:unknown;
             // Synchronous schema/body validation cannot have sent a write.
@@ -3328,7 +3363,7 @@ export class CoordinatorService {
               throw error;
             }
             const receipt=(await this.store.read()).chatOperations?.find(o=>own(o,s)&&o.id===id)?.workRun?.notionReceipt;
-            cp.state=(returned as {state?:string})?.state==='verified'?'completed':(returned as {saved?:boolean})?.saved===false&&(!receipt||receipt.checkpointKey!==cp.key||['not_sent','rejected'].includes(receipt.delivery??''))?'failed':'started';cp.output=returned;await store.save(cp);
+            cp.state=notionDeliveryConfirmed(receipt,id)?'completed':(returned as {saved?:boolean})?.saved===false&&(!receipt||receipt.checkpointKey!==cp.key||['not_sent','rejected'].includes(receipt.delivery??''))?'failed':'started';cp.output=returned;await store.save(cp);
             if(cp.state==='completed')workflowCurrentDocument=(returned as {currentDocument?:string})?.currentDocument??body;
             return returned;
           }});
@@ -3474,7 +3509,7 @@ export class CoordinatorService {
         saveMessage(d, s, target, {
           id: mid,
           role: "assistant",
-          content: result.content + (job.notionTarget&&!datedDraft?.missing ? notionDeliveryNote(o.workRun!.notionReceipt,notionContext?.pageId) : ''),
+          content: job.notionTarget&&!datedDraft?.missing?withNotionDeliveryNote(result.content,o.workRun!.notionReceipt,notionContext?.pageId):result.content,
           modelId: m.id,
           attachments:outputFiles.length?outputFiles.map(publicAttachmentSummary):undefined,
           imageUrl:outputFiles.find(file=>file.kind==='image')?`/api/attachments/${outputFiles.find(file=>file.kind==='image')!.id}/content`:undefined,
@@ -3506,7 +3541,7 @@ export class CoordinatorService {
           const continuation=taskContinuation(d,s,target);
           if(continuation.canResume&&continuation.queued.some(queued=>(continuation.requiresSubstantiveSupplement?substantiveTaskSupplement:actionableTaskSupplement)(target.messages.find(message=>message.id===queued.workRun!.inputMessageId)?.content??''))){target.workPaused=false;target.workPauseReason=undefined;}
         }
-        const resultMessage=target.messages.find(m=>m.id===mid)!;resultMessage.content=outcome.content+(job.notionTarget&&!datedDraft?.missing?notionDeliveryNote(o.workRun!.notionReceipt,notionContext?.pageId):'');
+        const resultMessage=target.messages.find(m=>m.id===mid)!;resultMessage.content=job.notionTarget&&!datedDraft?.missing?withNotionDeliveryNote(outcome.content,o.workRun!.notionReceipt,notionContext?.pageId):outcome.content;
         const relational=d.messages.find(m=>m.id===mid&&m.conversationId===cid&&own(m,s));if(relational)relational.content=resultMessage.content;
         o.workRun!.resultMessageId = mid;
         o.workRun!.unread = true;
@@ -3552,7 +3587,7 @@ export class CoordinatorService {
         if(retained){this.scheduleRecoveryWake(s,id,verifyKey,recovery.nextRecoveryAt);await this.resume(s,verifyKey).catch(()=>{});}
         return;
       }
-      if(notionVerificationActive(durable)){
+      if(notionVerificationActive(durable)&&!notionDeliveryConfirmed(durable?.notionReceipt,id)){
         // A write has already been sent. Leave its exact receipt to read-only
         // verification, without buying a progress-model call or announcing a
         // false terminal failure. Other independent tasks can keep running.

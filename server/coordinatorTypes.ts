@@ -55,9 +55,13 @@ export type WorkRun = {
   /** Explicit manual read-only authorization to finish only this exact saved
    * attempt after delayed proof; never an authorization to replay its work. */
   notionVerificationSelection?:{operationId:string;expectedDigest:string;pageId?:string;asyncTaskId?:string;checkpointKey?:string;version:number;connectionId:string;grantId:string;parentId:string;requestedAt:string};
-  notionReceipt?: { state: 'pending' | 'verified' | 'uncertain'; pageId?: string; url?: string; asyncTaskId?: string; expectedDigest?: string; digest?: string;
+  notionReceipt?: { state: 'pending' | 'delivered' | 'verified' | 'uncertain'; pageId?: string; url?: string; asyncTaskId?: string; expectedDigest?: string; digest?: string;
+    /** Quality checks run after delivery and never revoke its write receipt. */
+    integrity?:{state:'pending'|'covered'|'missing'|'inconclusive';checkedAt?:string;sourceBlockCount?:number;matchedBlockCount?:number;missingBlockCount?:number;missingBlockIndexes?:number[];sourceChars?:number;remoteChars?:number;title?:'matched'|'different'|'unavailable';reason?:import('./notionContentIntegrity.js').NotionContentIntegrityReason|'source_unavailable'|'read_failed'|'title_difference'};
     /** A recognized response for this exact write. Body verification remains
      * separate, and legacy receipts never infer this fact from page existence. */
+    /** Private de-duplication of terminal quality notices for this write. */
+    integrityNoticeKey?:string;
     writeAcknowledgement?:{version:1;operationId:string;checkpointKey:string;pageId:string;expectedDigest:string;expectedRawDigest:string;acknowledgedAt:string;asyncTaskId?:string};
     /** The user selected an existing page and it was strictly read back. This
      * proves delivery content, never an acknowledgement of the original write. */

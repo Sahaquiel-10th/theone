@@ -14,6 +14,24 @@ let calls=0;
 const api=(async()=>{calls++;throw Error('Rendering must not submit any operation.');}) as typeof Api;
 const render=(receipt:NotionReceiptView,reviewWorkflow=false)=>renderToStaticMarkup(createElement(NotionReceiptNotice,{api,taskId:'owned-task',receipt,reviewWorkflow,onRefresh:async()=>{}}));
 
+test('delivered articles show independent integrity progress and an article link',()=>{
+ const saved:NotionReceiptView={state:'delivered',url:'https://www.notion.so/original',deliveryConfirmed:true};
+ const checking=render({...saved,integrity:{state:'pending'},verification:{state:'checking',version:1,attempt:1}});
+ assert.match(checking,/文章已保存.*后台正在检查/);
+ assert.match(checking,/打开文章/);
+ assert.doesNotMatch(checking,/<button|任务尚未完成|确认继续|再核对一次/);
+ assert.equal(render({...saved,integrity:{state:'covered'}}),'');
+ const title=render({...saved,integrity:{state:'covered',title:'different'}});
+ assert.match(title,/页面标题与原稿标题不同/);assert.doesNotMatch(title,/任务尚未完成|停在/);
+ const missing=render({...saved,integrity:{state:'missing',missingBlockIndexes:[3]}});
+ assert.match(missing,/第 3 段/);assert.match(missing,/检查内容完整性/);
+ assert.doesNotMatch(missing,/任务尚未完成|继续处理/);
+ const legacyProblem=render({state:'verified',url:saved.url,integrity:{state:'inconclusive',reason:'read_failed'}});
+ assert.match(legacyProblem,/暂未确认内容完整性/);assert.doesNotMatch(legacyProblem,/内容已检查齐全/);
+ assert.match(render({state:'verified',url:saved.url,integrity:{state:'missing',missingBlockIndexes:[4]}}),/第 4 段/);
+ assert.equal(calls,0);
+});
+
 test('automatic Notion verification renders live progress without a write, continue or manual readback button',()=>{
  for(const state of ['scheduled','checking'] as const){
   const html=render({state:'uncertain',url:'https://www.notion.so/original',verification:{state,version:2,attempt:1}});

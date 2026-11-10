@@ -3,7 +3,7 @@ import {parseTaskOutcome,type TaskOutcome} from './dispatchPlan.js';
 import type {ModelToolMessage,ToolChatResult} from './modelGateway.js';
 import {featureEffectNotStarted,type OrchestrationTool} from './taskOrchestrator.js';
 import {notionHash,legacyNotionNormalized,canonicalNotionDigest} from './notionCanonical.js';
-import {verifiedNotionCompletion,notionWriteAcknowledged} from './notionCompletion.js';
+import {verifiedNotionCompletion,notionWriteAcknowledged,notionDeliveryConfirmed,notionDeliveryCheckpoint,notionWriteDeliveryProof,type NotionDeliveryProof} from './notionCompletion.js';
 import {taskStepKey,type TaskStep,type TaskStepStore} from './taskSteps.js';
 import {runTaskWorkflow,workflowProgress,workflowPhase,workflowSkippedOptionalRead,type WorkflowBinding,type WorkflowRun,type WorkflowStep,type WorkflowStepResult} from './taskWorkflow.js';
 import {buildWorkflowStepContext,type WorkflowContextInput,type WorkflowHistoryMessage} from './workflowContext.js';
@@ -32,7 +32,7 @@ export type WorkflowExecutionInput={
  retryableReadTools?:readonly string[];now?:()=>number;
 };
 export type WorkflowExecutionResult={run:WorkflowRun;content:string;summary:string;outcome:'completed'|'partial'|'needs_input'|'failed';waiting:boolean;nextRecoveryAt?:string};
-type StoredOutput={toolFailure?:ToolRecoveryDiagnostic;workflow:{version:1;runId:string;revision:number;stepId:string};outcome:'completed'|'partial'|'needs_input'|'failed'|'waiting'|'skipped';result?:unknown;notionCheckpointKey?:string;priorNotionCheckpointKey?:string;expectedBodyDigest?:string;sourceArtifact?:{id:string;ref:string;originOperationId:string;bodyDigest:string}};
+type StoredOutput={toolFailure?:ToolRecoveryDiagnostic;workflow:{version:1;runId:string;revision:number;stepId:string};outcome:'completed'|'partial'|'needs_input'|'failed'|'waiting'|'skipped';result?:unknown;notionCheckpointKey?:string;priorNotionCheckpointKey?:string;expectedBodyDigest?:string;sourceArtifact?:{id:string;ref:string;originOperationId:string;bodyDigest:string};notionDeliveryProof?:NotionDeliveryProof};
 type Classification={state:WorkflowStepResult['state'];outcome:StoredOutput['outcome'];summary:string;body?:string};
 export class WorkflowExecutionError extends Error{constructor(){super('这一步的原结果或授权范围无法确认，先核对已有内容；不会重复执行。');this.name='WorkflowExecutionError';}}
 const object=(value:unknown):Record<string,unknown>|undefined=>value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:undefined;
@@ -43,13 +43,7 @@ const sameEvidence=(value:unknown,expected:Record<string,string|number>|undefine
  const actual=object(value),keys=Object.keys(expected);
  return Boolean(actual&&Object.keys(actual).length===keys.length&&keys.every(key=>Object.hasOwn(actual,key)&&actual[key]===expected[key]));
 };
-function verifiedNotionCheckpoint(receipt:WorkRun['notionReceipt'],steps:TaskStep[],operationId:string,linkedKey?:string,expectedBodyDigest?:string){
- if(receipt?.state!=='verified'||receipt.verification||!receipt.checkpointKey||linkedKey&&linkedKey!==receipt.checkpointKey||!receipt.pageId||!receipt.digest||!receipt.expectedDigest||expectedBodyDigest&&expectedBodyDigest!==receipt.expectedDigest||receipt.final!==true)return undefined;
- const matching=steps.filter(cp=>cp.key===receipt.checkpointKey),actual=matching.length===1?matching[0]:undefined;
- if(!actual||actual.namespace!=='worker'||actual.scopeId!==operationId||actual.tool!=='save_notion_draft'||actual.effect!=='external_write'||actual.state!=='completed')return undefined;
- const value=object(actual.output);
- return value?.state==='verified'&&value.pageId===receipt.pageId&&value.digest===receipt.digest&&value.expectedDigest===receipt.expectedDigest&&value.final===true?actual:undefined;
-}
+const verifiedNotionCheckpoint=notionDeliveryCheckpoint;
 /** Read-only proof repair for the same saved attempt. This never executes a
  * workflow, starts its queued successors, or invents missing stage evidence. */
 export function recoverVerifiedNotionWorkflow(job:Pick<WorkRun,'workflow'|'steps'|'notionReceipt'|'notionArticleSource'>,binding:WorkflowBinding):{workflow:WorkflowRun;steps:TaskStep[];complete:boolean;changed:boolean}|undefined{
@@ -80,7 +74,7 @@ export function recoverVerifiedNotionWorkflow(job:Pick<WorkRun,'workflow'|'steps
   // Their exact server-bound RAW source hash plus exact write link still prove
   // this one original body; no title lookup or guessed content is involved.
   const canonicalSource=workflow.spec.steps.length===1&&step.id==='save_existing'&&step.inputs.length===0&&source&&/^[a-f0-9]{64}$/i.test(source.digest)&&source.digest===receipt!.expectedRawDigest;
-  const uniqueWorkerProof=steps.filter(cp=>cp.namespace==='worker'&&cp.scopeId===binding.operationId&&cp.tool==='save_notion_draft'&&cp.effect==='external_write'&&cp.state==='completed'&&object(cp.output)?.state==='verified').length===1;
+  const uniqueWorkerProof=steps.filter(cp=>cp.namespace==='worker'&&cp.scopeId===binding.operationId&&cp.tool==='save_notion_draft'&&cp.effect==='external_write'&&cp.state==='completed'&&['verified','delivered'].includes(String(object(cp.output)?.state))).length===1;
   // A normal workflow could throw after the actual save but before recording
   // its link. Infer only this one write from the exact selected model body,
   // never from a fetched page, title similarity or another completed draft.
@@ -99,8 +93,9 @@ export function recoverVerifiedNotionWorkflow(job:Pick<WorkRun,'workflow'|'steps
  const changed=next.steps[index].state!=='completed'||next.steps[index].checkpointKey!==key(step)||cp.state!=='completed'||value.outcome!=='completed'||value.notionCheckpointKey!==receipt!.checkpointKey||value.expectedBodyDigest!==receipt!.expectedDigest;
  if(changed){
   const restored=updatedSteps.find(saved=>saved.key===cp.key&&saved.namespace===cp.namespace&&saved.scopeId===cp.scopeId)!;
-  restored.state='completed';restored.operation={version:1,execution:'succeeded',verification:'verified',artifactRef:cp.key};restored.output={...value,outcome:'completed',result:{state:'verified',pageId:receipt!.pageId,url:receipt!.url},notionCheckpointKey:receipt!.checkpointKey,expectedBodyDigest:receipt!.expectedDigest};
-  next.steps[index]={id:step.id,state:'completed',checkpointKey:key(step),summary:'文章已保存到 Notion，正文也已回读核对。'};next.sequence++;next.phase=workflowPhase(next.spec,next.steps);
+  const checked=receipt!.state==='verified';
+  restored.state='completed';restored.operation={version:1,execution:'succeeded',verification:checked?'verified':'pending',artifactRef:cp.key};restored.output={...value,...(notionWriteDeliveryProof(receipt,binding.operationId)?{notionDeliveryProof:notionWriteDeliveryProof(receipt,binding.operationId)}:{}),outcome:'completed',result:{state:checked?'verified':'delivered',pageId:receipt!.pageId,url:receipt!.url},notionCheckpointKey:receipt!.checkpointKey,expectedBodyDigest:receipt!.expectedDigest};
+  next.steps[index]={id:step.id,state:'completed',checkpointKey:key(step),summary:checked?'文章已保存到 Notion，正文也已回读核对。':'文章已保存到 Notion。'};next.sequence++;next.phase=workflowPhase(next.spec,next.steps);
  }
  try{workflowProgress(next);}catch{return undefined;}
  const complete=next.phase==='completed'&&!updatedSteps.some(cp=>cp.state==='started')&&next.spec.steps.every((item,at)=>{if(omitted(item,at))return true;const saved=checkpoint(item,updatedSteps);return next.steps[at].state==='completed'&&next.steps[at].checkpointKey===key(item)&&saved&&completedCheckpoint(item,saved);});
@@ -156,6 +151,7 @@ function classify(step:WorkflowStep,value:unknown):Classification{
 export async function executeWorkflowStages(input:WorkflowExecutionInput):Promise<WorkflowExecutionResult>{
  const {binding,checkpoints}=input,now=input.now??Date.now;
  const initialArtifact=input.initialArtifact?structuredClone(input.initialArtifact):undefined;
+ let currentNotionReceipt=await input.receipt();
  if(initialArtifact&&(
   initialArtifact.workspaceId!==binding.workspaceId||initialArtifact.userId!==binding.userId||initialArtifact.operationId!==binding.operationId||initialArtifact.kind!=='artifact'||initialArtifact.complete!==true||initialArtifact.truncated===true||typeof initialArtifact.content!=='string'||!initialArtifact.content.trim()||typeof initialArtifact.id!=='string'||!initialArtifact.id.trim()||typeof initialArtifact.ref!=='string'||!initialArtifact.ref.trim()||typeof initialArtifact.originOperationId!=='string'||!initialArtifact.originOperationId.trim()
   ||input.run.spec.steps.length!==1||input.run.spec.steps[0].id!=='save_existing'||input.run.spec.steps[0].kind!=='notion'||input.run.spec.steps[0].inputs.length!==0
@@ -167,8 +163,14 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
  const stored=(step:WorkflowStep)=>{
   const matching=checkpoints.steps.filter(cp=>cp.key===key(step));if(matching.length>1)throw new WorkflowExecutionError();const found=matching[0];
   if(found&&(found.namespace!==checkpoints.namespace||found.scopeId!==binding.operationId||found.tool!==name(step)))throw new WorkflowExecutionError();
-  if(found?.operation&&(!validOperationEvidence(found.operation)||found.operation.artifactRef!==undefined&&found.operation.artifactRef!==found.key||found.state==='completed'&&(found.operation.execution!=='succeeded'||!found.operation.artifactRef||step.kind==='notion'&&found.operation.verification!=='verified')))throw new WorkflowExecutionError();
+  if(found?.operation&&(!validOperationEvidence(found.operation)||found.operation.artifactRef!==undefined&&found.operation.artifactRef!==found.key||found.state==='completed'&&(found.operation.execution!=='succeeded'||!found.operation.artifactRef)))throw new WorkflowExecutionError();
   if(found?.output){const v=object(found.output);if(!sameEvidence(v?.workflow,marker(step))||!sameEvidence(v?.sourceArtifact,sourceArtifact))throw new WorkflowExecutionError();}
+  if(found?.state==='completed'&&step.kind==='notion'&&found.operation?.verification!=='verified'){
+   const v=object(found.output),isCurrent=currentNotionReceipt?.checkpointKey===v?.notionCheckpointKey;
+   const receipt=isCurrent?currentNotionReceipt:v?.notionDeliveryProof as WorkRun['notionReceipt'];
+   const worker=verifiedNotionCheckpoint(receipt,checkpoints.steps,binding.operationId,typeof v?.notionCheckpointKey==='string'?v.notionCheckpointKey:undefined,typeof v?.expectedBodyDigest==='string'?v.expectedBodyDigest:undefined);
+   if(v?.notionCheckpointKey===v?.priorNotionCheckpointKey||!worker||!isCurrent&&(!notionWriteAcknowledged(receipt,binding.operationId)||typeof object(worker.output)?.content!=='string'))throw new WorkflowExecutionError();
+  }
   return found;
  };
  const output=(checkpoint:TaskStep):StoredOutput=>{
@@ -202,7 +204,7 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
  context(input.run.spec.steps[0],[]);
  if(new Set(input.tools.map(tool=>tool.name)).size!==input.tools.length)throw new WorkflowExecutionError();
  const verify=async()=>{
-  await input.verify();
+  await input.verify();currentNotionReceipt=await input.receipt();await input.verify();
   for(const state of input.run.steps)if(state.state==='completed'){
    const step=input.run.spec.steps.find(step=>step.id===state.id);if(!step||state.checkpointKey!==key(step))throw new WorkflowExecutionError();proof(state.checkpointKey);
   }
@@ -245,13 +247,16 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
   await verify();const cp=stored(step);if(!cp)return undefined;
   const value=output(cp);
   if(step.kind==='notion'){
+   const frozen=value.notionDeliveryProof;
+   if(cp.state==='completed'&&value.outcome==='completed'&&frozen&&notionWriteAcknowledged(frozen,binding.operationId)&&value.notionCheckpointKey!==value.priorNotionCheckpointKey&&typeof object(verifiedNotionCheckpoint(frozen,checkpoints.steps,binding.operationId,value.notionCheckpointKey,value.expectedBodyDigest)?.output)?.content==='string')return {state:'completed',checkpointKey:cp.key,summary:'文章已保存到 Notion。'};
    const receipt=await input.receipt();await verify();
    const linked=value.notionCheckpointKey;
    // A crash before binding the returned receipt can recover a newly-started
    // exact save, but never an older verified save from this operation.
    const actual=value.expectedBodyDigest?notionProof(receipt,linked,value.expectedBodyDigest):undefined;
    if(actual&&receipt!.checkpointKey!==value.priorNotionCheckpointKey&&(linked===receipt!.checkpointKey||linked===undefined&&Date.parse(actual.updatedAt)>=Date.parse(cp.updatedAt))){
-    return saveResult(step,{state:'verified',pageId:receipt!.pageId,url:receipt!.url}, {state:'completed',outcome:'completed',summary:'文章已保存到 Notion，正文也已回读核对。'},{notionCheckpointKey:receipt!.checkpointKey,expectedBodyDigest:value.expectedBodyDigest});
+    const checked=receipt!.state==='verified';
+    return saveResult(step,{state:checked?'verified':'delivered',pageId:receipt!.pageId,url:receipt!.url}, {state:'completed',outcome:'completed',summary:checked?'文章已保存到 Notion，正文也已回读核对。':'文章已保存到 Notion。'},{notionCheckpointKey:receipt!.checkpointKey,expectedBodyDigest:value.expectedBodyDigest,...(notionWriteDeliveryProof(receipt,binding.operationId)?{notionDeliveryProof:notionWriteDeliveryProof(receipt,binding.operationId)}:{})},{version:1,execution:'succeeded',verification:checked?'verified':'pending',artifactRef:key(step)});
    }
    const writeAcknowledged=notionWriteAcknowledged(receipt,binding.operationId)&&value.expectedBodyDigest===receipt!.expectedDigest
     &&receipt!.checkpointKey!==value.priorNotionCheckpointKey
@@ -303,11 +308,17 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
    const expectedBodyDigest=notionHash(legacyNotionNormalized(body));
    await save(step,'started',{workflow:marker(step),outcome:'waiting',expectedBodyDigest,...(priorReceipt?.checkpointKey?{priorNotionCheckpointKey:priorReceipt.checkpointKey}:{})});
    value=await input.saveNotion(structuredClone(step),body);await verify();const receipt=await input.receipt();await verify();
+   if(notionWriteAcknowledged(receipt,binding.operationId)&&receipt!.expectedRawDigest===notionHash(body)&&receipt!.expectedDigest===expectedBodyDigest&&receipt!.checkpointKey!==priorReceipt?.checkpointKey){
+    const workers=checkpoints.steps.filter(cp=>cp.key===receipt!.checkpointKey&&cp.namespace==='worker'&&cp.scopeId===binding.operationId&&cp.tool==='save_notion_draft'&&cp.effect==='external_write');
+    if(workers.length===1&&workers[0].state==='started')await checkpoints.save({...workers[0],state:'completed',output:{state:'delivered',pageId:receipt!.pageId,url:receipt!.url,expectedDigest:receipt!.expectedDigest,final:receipt!.final===true,content:body}});
+   }
+   currentNotionReceipt=receipt;
    const returned=classify(step,value),v=object(value),knownNotSent=!receipt||['not_sent','rejected'].includes(receipt.delivery??'')||v?.saved===false&&receipt.state==='verified'&&receipt.checkpointKey===priorReceipt?.checkpointKey;
-   const actual=receipt?.checkpointKey!==priorReceipt?.checkpointKey?notionProof(receipt,undefined,expectedBodyDigest):undefined;
-   const classification:Classification=actual?{state:'completed',outcome:'completed',summary:'文章已保存到 Notion，正文也已回读核对。'}:knownNotSent&&(returned.state==='needs_input'||v?.saved===false||['failed','rejected','unavailable','not_configured'].includes(String(v?.status??v?.state??'')))?returned.state==='needs_input'?returned:{state:'failed',outcome:'failed',summary:'这次没有保存到 Notion，已有正文仍保留。'}:receipt&&['not_sent','rejected'].includes(receipt.delivery??'')?{state:'failed',outcome:'failed',summary:'这次没有保存到 Notion，已有正文仍保留。'}:{state:'waiting',outcome:'waiting',summary:'正在核对 Notion 的实际保存结果，不会重复写入。'};
+   const actual=receipt?.checkpointKey!==priorReceipt?.checkpointKey&&(!notionWriteAcknowledged(receipt,binding.operationId)||receipt!.expectedRawDigest===notionHash(body))?notionProof(receipt,undefined,expectedBodyDigest):undefined;
+   const checked=receipt?.state==='verified';
+   const classification:Classification=actual?{state:'completed',outcome:'completed',summary:checked?'文章已保存到 Notion，正文也已回读核对。':'文章已保存到 Notion。'}:knownNotSent&&(returned.state==='needs_input'||v?.saved===false||['failed','rejected','unavailable','not_configured'].includes(String(v?.status??v?.state??'')))?returned.state==='needs_input'?returned:{state:'failed',outcome:'failed',summary:'这次没有保存到 Notion，已有正文仍保留。'}:receipt&&['not_sent','rejected'].includes(receipt.delivery??'')?{state:'failed',outcome:'failed',summary:'这次没有保存到 Notion，已有正文仍保留。'}:{state:'waiting',outcome:'waiting',summary:'正在核对 Notion 的实际保存结果，不会重复写入。'};
    const acknowledged=notionWriteAcknowledged(receipt,binding.operationId)&&receipt!.expectedDigest===expectedBodyDigest&&receipt!.checkpointKey!==priorReceipt?.checkpointKey;
-   return saveResult(step,value,classification,{expectedBodyDigest,...(receipt?.checkpointKey?{notionCheckpointKey:receipt.checkpointKey}:{}),...(priorReceipt?.checkpointKey?{priorNotionCheckpointKey:priorReceipt.checkpointKey}:{})},{version:1,execution:classification.state==='completed'||acknowledged?'succeeded':classification.state==='waiting'?(receipt?.pageId||receipt?.asyncTaskId?'submitted':'unknown'):'failed',verification:classification.state==='completed'?'verified':classification.state==='waiting'?'pending':'not_required',...(classification.state==='completed'?{artifactRef:key(step)}:{})});
+   return saveResult(step,value,classification,{expectedBodyDigest,...(classification.state==='completed'&&notionWriteDeliveryProof(receipt,binding.operationId)?{notionDeliveryProof:notionWriteDeliveryProof(receipt,binding.operationId)}:{}),...(receipt?.checkpointKey?{notionCheckpointKey:receipt.checkpointKey}:{}),...(priorReceipt?.checkpointKey?{priorNotionCheckpointKey:priorReceipt.checkpointKey}:{})},{version:1,execution:classification.state==='completed'||acknowledged?'succeeded':classification.state==='waiting'?(receipt?.pageId||receipt?.asyncTaskId?'submitted':'unknown'):'failed',verification:classification.state==='completed'?checked?'verified':'pending':classification.state==='waiting'?'pending':'not_required',...(classification.state==='completed'?{artifactRef:key(step)}:{})});
   }
   const tool=input.tools.find(tool=>tool.name===(step.kind==='feature'?input.featureTools[step.featureId!]:step.tool));
   if(!tool)return saveResult(step,undefined,step.kind==='tool'&&step.required===false?{state:'skipped',outcome:'skipped',summary:'可选检索暂不可用，未执行；继续必需内容，不据此宣称事实已核实。'}:{state:'failed',outcome:'failed',summary:'这一步需要的能力暂时没有就位，其他独立内容可以继续。'});
@@ -334,7 +345,7 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
   return ['completed','partial'].includes(value.outcome)&&answer?.content.trim()&&answer.outcome!=='needs_input'&&answer.outcome!=='failed'?[answer.content]:[];
  });
  const requests=run.spec.steps.flatMap(step=>{const cp=stored(step);if(!cp)return [];const value=output(cp),answer=parsed(value.result),v=object(value.result);return value.outcome==='needs_input'?[safeQuestion(answer?.content?.trim()?answer.content:answer?.summary??v?.message,run.steps.find(state=>state.id===step.id)?.summary??'还缺完成这一步需要的资料，请补充后接着处理。')]:[];});
- let content=candidates.at(-1)??'',wholeTaskSummary:string|undefined;
+ let content=candidates.at(-1)??initialArtifact?.content??'',wholeTaskSummary:string|undefined;
  const completedFeatures=run.spec.steps.filter((step,index)=>step.kind==='feature'&&run.steps[index].state==='completed');
  if(run.phase==='completed'&&completedFeatures.length>1){
   // A feature speaks only for its own stage (e.g. "I only made the diagram").
@@ -350,8 +361,13 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
  const question=requests.at(-1);
  if(question)content=content&&content!==question?`${content}\n\n还需要你补充：\n${question}`:question;
  const receipt=await input.receipt();await input.verify();
- const verifiedNotionSteps=run.spec.steps.flatMap((step,index)=>{if(step.kind!=='notion'||run.steps[index].state!=='completed')return [];const value=output(proof(key(step)));return notionProof(receipt,value.notionCheckpointKey,value.expectedBodyDigest)?[{id:step.id,summary:run.steps[index].summary}]:[];});
- if(verifiedNotionSteps.length&&receipt?.pageId&&/^[a-f0-9]{32}$/i.test(receipt.pageId.replaceAll('-','')))content+=(content?'\n\n':'')+`[已保存到 Notion · 已回读核对](https://www.notion.so/${receipt.pageId.replaceAll('-','')})`;
+ const verifiedNotionSteps=run.spec.steps.flatMap((step,index)=>{
+  if(step.kind!=='notion'||run.steps[index].state!=='completed')return [];
+  const value=output(proof(key(step))),isCurrent=receipt?.checkpointKey===value.notionCheckpointKey,selected=isCurrent?receipt:value.notionDeliveryProof;
+  if(!isCurrent&&!notionWriteAcknowledged(selected,binding.operationId))return [];
+  return notionProof(selected,value.notionCheckpointKey,value.expectedBodyDigest)?[{id:step.id,summary:run.steps[index].summary}]:[];
+ });
+ if(verifiedNotionSteps.length&&receipt?.pageId&&/^[a-f0-9]{32}$/i.test(receipt.pageId.replaceAll('-','')))content+=(content?'\n\n':'')+`[${receipt.state==='verified'?'已保存到 Notion · 已回读核对':'已保存到 Notion'}](https://www.notion.so/${receipt.pageId.replaceAll('-','')})`;
  const lastActualStep=run.steps.filter(step=>step.state!=='skipped').at(-1);
  const finalNotionSummary=run.phase==='completed'?verifiedNotionSteps.find(step=>step.id===lastActualStep?.id)?.summary:undefined;
  const progress=workflowProgress(run),waiting=run.steps.some(step=>step.state==='running'||step.state==='waiting'&&step.waitingFor==='result');
