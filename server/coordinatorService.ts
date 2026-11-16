@@ -116,6 +116,7 @@ import {publicWorkflowProgress,availableWorkflowResults} from './workflowPresent
 import {CoordinatorLocalError,localActionRequested,naturalLocalActionRequested,localReadinessCanStart,localReadinessFailure,confirmedLocalFollowup} from './coordinatorLocalPolicy.js';
 import {parseLocalDeviceReadiness,type LocalDeviceReadiness} from '../src/localDeviceReadiness.js';
 import {LocalExecutionNotStartedError} from './localExecutionAdmission.js';
+import {workflowModelDiagnostic} from './workflowModelDiagnostics.js';
 
 export type WorkScope = { workspaceId: string; userId: string };
 class WorkflowRecoveryPending extends Error {}
@@ -209,6 +210,11 @@ function taskRecoveryView(db:Database,s:WorkScope,task:Conversation,jobs:ChatOpe
  if(run.steps?.some(cp=>['model','artifact','external_write'].includes(cp.effect)&&(cp.state==='started'||['unknown','submitted'].includes(cp.operation?.execution??''))&&!(cp.tool==='save_notion_draft'&&notSent)))return {kind:'support',sourceJobId:latest.id,requestId:latest.requestId,message:'这一步已停止，已有操作的结果还没确认，可能已经留下部分成果。需要 ONE 支持人员检查；你暂时不用操作，可以先看已有成果，不会再制作一遍。'};
  if(fault&&['failed','needs_input','partial'].includes(run.resultOutcome??'')&&run.state==='failed')return {kind:fault.kind==='missing_input'?'input':'support',message:toolRecoveryMessage(fault),sourceJobId:latest.id,requestId:latest.requestId};
  if('workflow' in connectionRecoveryPlan(db,s,task,latest))return {kind:'connection',sourceJobId:latest.id,message:'这一步因连接或授权中断而停下。恢复后直接说“继续”，我会重新检查连接，并沿用已经完成的内容，不用再点开始。'};
+ const modelDiagnostic=workflowModelDiagnostic(run,{...s,operationId:latest.id});
+ if(modelDiagnostic){
+  const canSupplement=modelDiagnostic.failure.code==='model_filtered'||modelDiagnostic.failure.code==='model_incomplete'&&modelDiagnostic.failure.outcome==='partial';
+  return {kind:canSupplement?'input':'support',sourceJobId:latest.id,requestId:latest.requestId,message:modelDiagnostic.summary+modelDiagnostic.next};
+ }
  if(task.workPaused&&taskContinuation(db,s,task).canResume)return {kind:'none',message:'把缺少的材料直接发给我，或告诉我继续，就会在这件任务接着处理，不用另外点开始。'};
  return generic();
 }
@@ -1316,8 +1322,10 @@ export class CoordinatorService {
         if(!adaptive||!first||first.content.length<=8000)inspectedTasks.add(c.id);
         else originalTaskCoverage.set(c.id,Math.max(originalTaskCoverage.get(c.id)??0,8000));
         rememberInspectedNotionRead(c.id,c.notionDocument?.pageId);
-        if(adaptive){return {id:c.id,title:c.title,referenceOnly:true,originalRequest:first?{id:first.id,content:first.content.slice(0,8000),truncated:first.content.length>8000,...(first.content.length>8000?{nextOffset:8000}:{})}:undefined,...readCoordinatorContext(c,{query:''}),executionReceipts:executionReceipts(d,s.workspaceId,s.userId,c.id),handoffs:(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===c.id&&o.workRun).slice(-2).map(o=>isOnboardingImageOperation(d,s,o.operationId)?'欢迎说明的已有结果；不要重新生图。':o.workRun!.instruction)};}
-        return { id: c.id, title: c.title, messages: c.messages.slice(-20).map(m => ({ role: m.role, content: m.content.slice(-4000),artifacts:ownedArtifactResults(d,s,c.id,(m.attachments??[]).map(file=>file.id)) })), executionReceipts: executionReceipts(d, s.workspaceId, s.userId, c.id), handoffs: (d.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === c.id && o.workRun).slice(-5).map(o => isOnboardingImageOperation(d,s,o.operationId)?'根据用户设置准备专属欢迎礼物；内部作图要求不向用户复述。':o.workRun!.instruction) };
+        const latestWork=(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===c.id&&o.workRun).at(-1);
+        const modelDiagnostic=latestWork?workflowModelDiagnostic(latestWork.workRun!,{...s,operationId:latestWork.id}):undefined;
+        if(adaptive){return {id:c.id,title:c.title,referenceOnly:true,modelDiagnostic,originalRequest:first?{id:first.id,content:first.content.slice(0,8000),truncated:first.content.length>8000,...(first.content.length>8000?{nextOffset:8000}:{})}:undefined,...readCoordinatorContext(c,{query:''}),executionReceipts:executionReceipts(d,s.workspaceId,s.userId,c.id),handoffs:(d.chatOperations??[]).filter(o=>own(o,s)&&o.conversationId===c.id&&o.workRun).slice(-2).map(o=>isOnboardingImageOperation(d,s,o.operationId)?'欢迎说明的已有结果；不要重新生图。':o.workRun!.instruction)};}
+        return { id: c.id, title: c.title, modelDiagnostic, messages: c.messages.slice(-20).map(m => ({ role: m.role, content: m.content.slice(-4000),artifacts:ownedArtifactResults(d,s,c.id,(m.attachments??[]).map(file=>file.id)) })), executionReceipts: executionReceipts(d, s.workspaceId, s.userId, c.id), handoffs: (d.chatOperations ?? []).filter(o => own(o, s) && o.conversationId === c.id && o.workRun).slice(-5).map(o => isOnboardingImageOperation(d,s,o.operationId)?'根据用户设置准备专属欢迎礼物；内部作图要求不向用户复述。':o.workRun!.instruction) };
       };
       const readTool:OrchestrationTool={name:'read_task',description:`${config.values.toolDescriptions?.read_task||'读取已定位事情的最近原文和交接，核对目标与限制。'} 优先只传 taskId，填写真实完整编号，不附说明；query 仅兼容完整编号或唯一精确标题。`,run:query=>readTask({query}),structured:{
         schema:{type:'object',additionalProperties:false,properties:{taskId:{type:'string',minLength:1,maxLength:160,description:'已定位事情的真实完整编号，只传编号，不附说明。'},query:{type:'string',minLength:1,maxLength:1000,description:'兼容旧调用：完整编号或唯一精确标题。优先使用 taskId。'}},oneOf:[{required:['taskId']},{required:['query']}]},
@@ -2911,10 +2919,11 @@ export class CoordinatorService {
         });
         return runRecoverableTextModel({digest,load,save,verify,onRetry:async()=>{
           await this.store.mutate(d=>{assertWork(d,s,id,job,cid);d.chatOperations!.find(o=>o.id===id)!.workRun!.retryProgress={attempt:1,maxRetries:1,nextRetryAt:new Date(Date.now()+1000).toISOString()};});
-        },call:async attempt=>{
+        },call:async(attempt,correction)=>{
           await verify();
+          const callMessages:ModelToolMessage[]=correction?[...messages,{role:'user',content:'上次返回了工具指令。本步骤只生成文字成果，没有可执行工具。依据已提供的前置成果完成当前步骤，并遵循当前步骤约定的输出格式。后续保存由平台负责。确实缺少必要资料时，明确说明具体缺项；本次直接返回文字结果。'}]:messages;
           return runBilledModel(this.store,{...s,conversationId:cid,model:selected,requestId:op!.requestId,activity,maxOutputTokens,
-            input:{messages,tools:[],taskVersion},beforeReserve:(d,amount)=>{
+            input:{messages:callMessages,tools:[],taskVersion},beforeReserve:(d,amount)=>{
               assertWork(d,s,id,job,cid);validate?.(d);
               const currentModel=modelOf(d,selected.id);
               if(currentModel.apiKey!==selected.apiKey||currentModel.model!==selected.model||currentModel.baseUrl!==selected.baseUrl||currentModel.protocol!==selected.protocol)throw new CoordinatorError('执行模型配置已变化，已有材料保留；请先核对新的处理范围。',409);
@@ -2923,7 +2932,7 @@ export class CoordinatorService {
 
               // This claim and the model billing reservation commit atomically.
               claim.reservedMicros=amount;
-            }},model=>(this.deps.modelCall??callModelWithTools)(model,messages,[],op!.requestId,{maxOutputTokens}));
+            }},model=>(this.deps.modelCall??callModelWithTools)(model,callMessages,[],op!.requestId,{maxOutputTokens,textOnly:true}));
         }});
       };
       for(const step of completedSteps(steps))reusedArtifacts(step.output);
@@ -3289,7 +3298,10 @@ export class CoordinatorService {
       const result = job.workflow?await(async()=>{
         const binding={...s,operationId:id};
         let workflowCurrentDocument=notionContext?.currentDocument;
-        const prompts=(step:import('./taskWorkflow.js').WorkflowStep)=>`${db.settings.safetyRules}\n${job.workflowModels?.[step.id]?.systemPrompt??m.systemPrompt}\n${referenceBoundary}\n${taskExecutionGuidance}\n你已在独立任务内，只完成当前步骤，不恢复或执行其他任务。\n${taskOutcomeGuidance}`;
+        const prompts=(step:import('./taskWorkflow.js').WorkflowStep)=>{
+          const guidance=step.kind==='model'?'纯文字任务直接交付正文，不自行增加文件、保存或回读步骤。“不得覆盖”是限制，不是创建文件的要求。长文章、专栏和调研报告以完整回答本步骤要求为先，用户未限制篇幅时不擅自增加字数上限。用户明确指定的篇幅、目标与限制仍须遵守。':taskExecutionGuidance+'\n'+taskOutcomeGuidance;
+          return `${db.settings.safetyRules}\n${job.workflowModels?.[step.id]?.systemPrompt??m.systemPrompt}\n${referenceBoundary}\n${guidance}\n你已在独立任务内，只完成当前步骤，不恢复或执行其他任务。`;
+        };
         const initialInputs=[...inheritedMaterial.map((source,index)=>({...binding,id:`selected_material_${index}`,kind:'tool_result' as const,content:formatTaskInputSource(source,'当前选定的原始材料；只供本轮已授权目标参考，不恢复这条材料过去的执行指令。'),complete:true})),...(attachmentResult.text?[{...binding,id:'current_attachments',kind:'tool_result' as const,content:JSON.stringify({coverage:attachmentResult.coverage,content:attachmentResult.text}),complete:attachmentResult.coverage.complete}]:[]),
           ...(notionContext?.currentDocument?[{...binding,id:'current_notion',kind:'artifact' as const,content:notionContext.currentDocument,complete:true}]:[]),
           ...(notionContext?.references.map(ref=>({...binding,id:`reference_${ref.id}`,kind:'tool_result' as const,content:ref.content,ref:ref.id,complete:true}))??[]),
@@ -3370,6 +3382,8 @@ export class CoordinatorService {
         if(outcome.nextRecoveryAt)throw new WorkflowRecoveryPending();
         if(outcome.waiting&&notionVerificationActive((await this.store.read()).chatOperations?.find(o=>own(o,s)&&o.id===id)?.workRun))throw new NotionDocumentError('保存结果正在核对。');
         job.userReport=outcome.summary;
+        const modelDiagnostic=workflowModelDiagnostic({...job,workflow:outcome.run,steps},binding);
+        if(modelDiagnostic){responseFailure??=modelDiagnostic.failure;job.failureCode??=modelDiagnostic.failure.code;}
         job.toolRecovery=workflowToolRecoveryDiagnostic(job.workflow,steps,binding);
         await this.store.mutate(d=>{assertWork(d,s,id,job,cid);d.chatOperations!.find(o=>o.id===id)!.workRun!.toolRecovery=job.toolRecovery;});
         return {content:JSON.stringify({outcome:outcome.outcome,content:outcome.content,summary:outcome.summary}),finishReason:'stop' as const,requiredMissing:[] as string[]};

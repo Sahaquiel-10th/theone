@@ -6,6 +6,7 @@ import type {TaskStep,TaskStepStore} from './taskSteps.js';
 import type {WorkRun} from './coordinatorTypes.js';
 import {legacyNotionNormalized,notionHash} from './notionCanonical.js';
 import type {WorkflowContextInput,WorkflowHistoryMessage} from './workflowContext.js';
+import type {ToolChatResult} from './modelGateway.js';
 
 const owner:WorkflowBinding={workspaceId:'ws_a',userId:'usr_a',operationId:'op_a'};
 const step=(id:string,inputs:string[]=[],extra:Partial<WorkflowStep>={}):WorkflowStep=>({id,title:`处理${id}`,kind:'model',instruction:`完成${id}`,inputs,...extra});
@@ -200,6 +201,47 @@ test('partial or truncated model body is preserved but cannot satisfy its depend
  const f=fixture(plan(step('write'),step('save',['write'],{kind:'notion'})));
  const result=await f.execute({callModel:async()=>({...answer('已经生成的前半部分'),finishReason:'length'}),saveNotion:async()=>assert.fail('partial manuscript saved as final')});
  assert.equal(result.outcome,'partial');assert.equal(result.content,'已经生成的前半部分');assert.equal(result.run.steps[0].state,'failed');assert.equal(result.run.steps[1].state,'waiting');
+});
+test('model response faults retain their precise private diagnosis without executing tools or promoting prefaces',async()=>{
+ const toolCalls=[{id:'unrequested',type:'function' as const,function:{name:'PRIVATE_TOOL_NAME',arguments:'{"secret":"PRIVATE_ARGUMENT"}'}}];
+ const cases:{called:ToolChatResult;kind:string;code:string;summary:RegExp;outcome:'failed'|'partial'}[]=[
+  {called:{content:'我需要先读取笔记，再开始写作。',toolCalls,finishReason:'tool_calls'},kind:'unexpected_tool_call',code:'model_invalid_response',summary:/写作模型.*工具指令.*正文还没交出来/,outcome:'failed'},
+  {called:{...answer('伪装成已完成的正文'),toolCalls,finishReason:'stop'},kind:'unexpected_tool_call',code:'model_invalid_response',summary:/工具指令/,outcome:'failed'},
+  {called:{content:'I must read the note first.',toolCalls:[],finishReason:'tool_calls'},kind:'unexpected_tool_call',code:'model_invalid_response',summary:/工具指令/,outcome:'failed'},
+  {called:{content:'未放行的正文',toolCalls:[],finishReason:'filtered'},kind:'filtered',code:'model_filtered',summary:/没有放行正文/,outcome:'failed'},
+  {called:{content:'未放行的正文',toolCalls,finishReason:'filtered'},kind:'filtered',code:'model_filtered',summary:/没有放行正文/,outcome:'failed'},
+  {called:{content:'',toolCalls:[],finishReason:'length'},kind:'incomplete',code:'model_incomplete',summary:/达到输出上限.*未返回正文/,outcome:'failed'},
+  {called:{content:'  ',toolCalls:[],finishReason:'stop'},kind:'empty',code:'model_empty',summary:/交了张白卷/,outcome:'failed'},
+  {called:{content:'',toolCalls:[]},kind:'empty',code:'model_empty',summary:/交了张白卷/,outcome:'failed'},
+  {called:{...answer('已经生成的前半部分'),finishReason:'length'},kind:'incomplete',code:'model_incomplete',summary:/正文还没有完整返回/,outcome:'partial'},
+ ];
+ for(const {called,kind,code,summary,outcome} of cases){
+  const f=fixture(plan(step('write'),step('save',['write'],{kind:'notion'})));let calls=0;
+  const first=await f.execute({callModel:async()=>{calls++;return called;},tools:[{name:'PRIVATE_TOOL_NAME',run:async()=>assert.fail('unrequested model tool executed')}],saveNotion:async()=>assert.fail('invalid manuscript saved')});
+  assert.equal(first.outcome,outcome);assert.equal(first.run.steps[0].state,'failed');assert.equal(first.run.steps[1].state,'waiting');assert.match(first.summary,summary);assert.equal(calls,1);
+  if(outcome==='failed')assert.equal(first.content,first.summary);else assert.equal(first.content,'已经生成的前半部分');
+  const saved=f.steps.find(cp=>(cp.output as any)?.workflow?.stepId==='write')!,value=(saved.output as any).result;
+  assert.deepEqual(value.failure,{code,stage:'model',outcome});assert.deepEqual(value.responseDiagnostic,{kind,toolCallCount:called.toolCalls.length,contentChars:called.content.length});assert.equal(value.finishReason,called.finishReason);
+  assert.doesNotMatch(JSON.stringify(saved),/PRIVATE_TOOL_NAME|PRIVATE_ARGUMENT/);assert.doesNotMatch(first.summary,/PRIVATE_|我需要先读取|I must read/);
+  const again=await f.execute({callModel:async()=>assert.fail('known failed model repurchased'),saveNotion:async()=>assert.fail('dependent save resumed')});
+  assert.equal(again.summary,first.summary);assert.equal(again.outcome,outcome);assert.equal(again.content,first.content);
+ }
+});
+test('safe model failure summaries survive checkpoint recovery while unsafe summaries remain private',async()=>{
+ for(const summary of ['访谈结尾缺失，正文暂未完成。','HTTP 500 Bearer PRIVATE_PROVIDER_SECRET']){
+  const f=fixture(plan(step('write'),step('save',['write'],{kind:'notion'})));
+  const first=await f.execute({callModel:async()=>({content:JSON.stringify({outcome:'failed',content:'写作过程记录，尚无完整文章。',summary}),toolCalls:[]})});
+  assert.equal(first.outcome,'failed');assert.equal(first.content,first.summary);assert.equal(f.saves,0);assert.doesNotMatch(first.content,/写作过程记录/);
+  if(summary.startsWith('HTTP'))assert.doesNotMatch(first.summary,/HTTP|Bearer|PRIVATE_/);else assert.equal(first.run.steps[0].summary,summary);
+  const again=await f.execute({callModel:async()=>assert.fail('failed draft regenerated')});assert.equal(again.summary,first.summary);
+ }
+});
+test('a malformed result keeps the parser diagnosis instead of a generic unfinished message',async()=>{
+ const raw='{"outcome":"completed","content":未加引号的正文,"summary":"已写好"}',f=fixture(plan(step('write'),step('save',['write'],{kind:'notion'})));
+ const first=await f.execute({callModel:async()=>({content:raw,toolCalls:[],finishReason:'stop'})});
+ assert.equal(first.outcome,'failed');assert.match(first.summary,/正文格式未能解析/);assert.equal(first.content,first.summary);assert.doesNotMatch(first.content,/未加引号的正文|"outcome"/);assert.equal(f.saves,0);
+ const saved=f.steps.find(cp=>(cp.output as any)?.workflow?.stepId==='write')!;assert.equal((saved.output as any).result.content,raw);
+ const again=await f.execute({callModel:async()=>assert.fail('malformed model reply repurchased')});assert.equal(again.summary,first.summary);
 });
 test('a manuscript stage does not count its later Notion save as unfinished writing',async()=>{
  const f=fixture(plan(step('write',[],{instruction:'撰写完整专栏。'}),step('save',['write'],{kind:'notion',title:'保存到 Notion'})));

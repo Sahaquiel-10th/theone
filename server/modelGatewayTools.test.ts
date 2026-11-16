@@ -82,6 +82,63 @@ for(const protocol of ['openai','anthropic'] as const)test(`${protocol}: final a
  }finally{server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}
 });
 
+for (const protocol of ['openai', 'anthropic'] as const) {
+  test(`${protocol}: text-only generation explicitly forbids tools and retains billable unexpected calls without private diagnostics`, async t => {
+    const requests: any[] = [];
+    const logs: string[] = [];
+    t.mock.method(console, 'log', (message: string) => { logs.push(message); });
+    const content = 'PRIVATE_USER_PROSE 准备写作';
+    const toolName = 'PRIVATE_TOOL_NAME';
+    const toolInput = { private: 'PRIVATE_TOOL_ARGUMENT' };
+    const toolCall = { id: 'private-call', type: 'function' as const, function: { name: toolName, arguments: JSON.stringify(toolInput) } };
+    const server = createServer((request, response) => {
+      let body = '';
+      request.on('data', chunk => { body += chunk; });
+      request.on('end', () => {
+        requests.push(JSON.parse(body));
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify(protocol === 'openai' ? {
+          choices: [{ message: { content, tool_calls: [toolCall] }, finish_reason: 'tool_calls' }],
+          usage: { prompt_tokens: 12, completion_tokens: 7, total_tokens: 19 },
+          private: 'PRIVATE_PROVIDER_BODY'
+        } : {
+          content: [{ type: 'text', text: content }, { type: 'tool_use', id: toolCall.id, name: toolName, input: toolInput }],
+          stop_reason: 'tool_use',
+          usage: { input_tokens: 12, output_tokens: 7 },
+          private: 'PRIVATE_PROVIDER_BODY'
+        }));
+      });
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    t.after(() => { server.closeAllConnections(); server.close(); });
+    const model = {
+      id: 'text-only-fixture', kind: 'chat', enabled: true, apiKey: 'PRIVATE_API_KEY',
+      model: 'fixture', protocol, baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}`
+    } as ModelConfig;
+    const tools = [{ type: 'function' as const, function: { name: 'fixture_tool', description: 'fixture', parameters: { type: 'object' } } }];
+    await assert.rejects(() => callModelWithTools(model, [], tools, 'invalid-text-only', { textOnly: true }), /纯文本生成不能同时配置工具/);
+    await assert.rejects(() => callModelWithTools(model, [], [], 'invalid-text-only', { textOnly: true, requiredTool: 'fixture_tool' }), /纯文本生成不能同时配置工具/);
+    await assert.rejects(() => callModelWithTools(model, [], [], 'invalid-text-only', { textOnly: true, finalSummaryTools: tools }), /纯文本生成不能同时配置工具/);
+    assert.equal(requests.length, 0, 'incompatible call controls must fail before contacting the provider');
+
+    const result = await callModelWithTools(model, [{ role: 'user', content: 'PRIVATE_PROMPT' }], [], 'text-only-wire', { textOnly: true, maxOutputTokens: 12000 });
+    assert.equal(requests.length, 1, 'a returned tool call remains a real response for the recovery owner');
+    assert.equal(requests[0].tools, undefined);
+    assert.deepEqual(requests[0].tool_choice, protocol === 'openai' ? 'none' : { type: 'none' });
+    assert.equal(requests[0].max_tokens, 12000);
+    assert.equal(result.content, content);
+    assert.equal(result.finishReason, 'tool_calls');
+    assert.deepEqual(result.toolCalls, [toolCall]);
+    assert.deepEqual(result.usage, { inputTokens: 12, outputTokens: 7, totalTokens: 19, source: 'provider' });
+    const completed = logs.map(line => JSON.parse(line)).find(line => line.event === 'local_agent_model_request_completed');
+    assert.equal(completed.toolCalls, 1);
+    assert.equal(completed.finishReason, 'tool_calls');
+    assert.equal(completed.contentChars, content.length);
+    assert.doesNotMatch(logs.join('\n'), /PRIVATE_USER_PROSE|PRIVATE_TOOL_NAME|PRIVATE_TOOL_ARGUMENT|PRIVATE_PROVIDER_BODY|PRIVATE_API_KEY|PRIVATE_PROMPT/);
+  });
+}
+
 test("passes OpenAI function tools and returns tool calls", async () => {
   let received: any;
   const server = createServer((request, response) => {

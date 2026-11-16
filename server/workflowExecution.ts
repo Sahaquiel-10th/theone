@@ -12,7 +12,7 @@ import {parseToolRecoveryDiagnostic,toolRecoveryDiagnostic,toolRecoveryMessage,t
 import {notionVerificationPresentation} from '../src/taskRecovery.js';
 import {validOperationEvidence,readAttempt,readFailureRecovery,transientReadFailure,type OperationEvidence,type OperationRecovery} from './operationRecovery.js';
 import {classifyCoordinatorFailure} from './coordinatorFailures.js';
-import {coordinatorRecoveryCopy} from '../src/coordinatorRecovery.js';
+import {coordinatorRecoveryCopy,parseCoordinatorFailure,type CoordinatorFailure} from '../src/coordinatorRecovery.js';
 
 export type WorkflowExecutionInput={
  binding:WorkflowBinding;run:WorkflowRun;goal:string;modelSystemPrompt:string;
@@ -131,6 +131,8 @@ function parsed(value:unknown):TaskOutcome|undefined{
 }
 function classify(step:WorkflowStep,value:unknown):Classification{
  const v=object(value),answer=parsed(value),status=String(v?.status??v?.state??'');
+ const failure=step.kind==='model'?parseCoordinatorFailure(v?.failure):undefined;
+ if(failure)return {state:'failed',outcome:failure.outcome==='partial'?'partial':'failed',summary:safeQuestion(v?.summary,coordinatorRecoveryCopy(failure)),body:answer?.content};
  if(answer?.outcome==='needs_input'||status==='needs_input'){
   const question=safeQuestion(answer?.content?.trim()?answer.content:answer?.summary??v?.message,'还缺完成这一步需要的资料，请补充后接着处理。');
   return {state:'needs_input',outcome:'needs_input',summary:question.length<=240?question:'还缺完成这一步需要的资料，请补充后接着处理。'};
@@ -138,11 +140,20 @@ function classify(step:WorkflowStep,value:unknown):Classification{
  if(['pending','uncertain'].includes(status))return {state:'waiting',outcome:'waiting',summary:'这一步的原结果还在核对，不会重复执行。'};
  if(status==='no_match'||step.kind==='tool'&&step.tool==='knowledge_search'&&(!Array.isArray(v?.chunks)||!v.chunks.some(chunk=>typeof object(chunk)?.content==='string'&&String(object(chunk)!.content).trim()))||step.kind==='tool'&&step.tool==='web_search'&&!(Array.isArray(value)?value.length:Array.isArray(v?.sources)&&v.sources.length))return {state:'needs_input',outcome:'needs_input',summary:'这次没有找到可用的相关资料，请补充线索或素材。'};
  if(status==='partial'&&step.kind==='tool'&&['knowledge_search','web_search'].includes(step.tool!))return {state:'completed',outcome:'completed',summary:'已取得部分可用参考资料，仍有来源没有查完。'};
- if(['failed','rejected','not_connected','unavailable','not_configured','partial','truncated'].includes(status)||['failed','partial'].includes(answer?.outcome??''))return {state:'failed',outcome:answer?.outcome==='partial'||status==='partial'?'partial':'failed',summary:'这一步还没完整做成，已有内容会保留。',body:answer?.content};
+ if(['failed','rejected','not_connected','unavailable','not_configured','partial','truncated'].includes(status)||['failed','partial'].includes(answer?.outcome??''))return {state:'failed',outcome:answer?.outcome==='partial'||status==='partial'?'partial':'failed',summary:step.kind==='model'&&answer?safeQuestion(answer.summary,'这一步还没完整做成，已有内容会保留。'):'这一步还没完整做成，已有内容会保留。',body:answer?.content};
  if(step.kind==='tool'&&step.tool==='read_notion_document'&&(v?.complete!==true||!bodyOf(value).trim()))return {state:'failed',outcome:'failed',summary:'原文还没完整读到，不能当作已经核对。'};
  const artifact=v&&(typeof v.attachmentId==='string'||object(v.file)||Array.isArray(v.files)&&v.files.length||Array.isArray(v.artifacts)&&v.artifacts.length||typeof v.imageUrl==='string');
  if((step.kind==='model'||step.kind==='feature')&&!answer?.content.trim()&&!artifact)return {state:'failed',outcome:'failed',summary:'这一步还没有返回可直接使用的成果。'};
  return {state:'completed',outcome:'completed',summary:step.kind==='tool'?'已取得这一步的实际参考资料。':'这一步已有可用成果。',body:answer?.content};
+}
+
+/** These are response facts, not permission to execute returned tool requests.
+ * Only a nonempty length-limited reply retains the existing partial delivery. */
+function modelResponseFailure(called:ToolChatResult):{kind:'unexpected_tool_call'|'filtered'|'empty'|'incomplete';failure:CoordinatorFailure;summary:string}|undefined{
+ if(called.finishReason==='filtered')return {kind:'filtered',failure:{code:'model_filtered',stage:'model',outcome:'failed'},summary:'模型这次没有放行正文，这一步已停止。可以调整要求后再继续。'};
+ if(called.toolCalls.length||called.finishReason==='tool_calls')return {kind:'unexpected_tool_call',failure:{code:'model_invalid_response',stage:'model',outcome:'failed'},summary:'写作模型这次返回了工具指令，正文还没交出来。这一步已停止。'};
+ if(called.finishReason==='length')return {kind:'incomplete',failure:{code:'model_incomplete',stage:'model',outcome:called.content.trim()?'partial':'failed'},summary:called.content.trim()?'正文还没有完整返回，已返回的内容会保留。':'模型达到输出上限时仍未返回正文，这一步已停止。'};
+ if(!called.content.trim())return {kind:'empty',failure:{code:'model_empty',stage:'model',outcome:'failed'},summary:'模型这次交了张白卷，这一步没有拿到正文。'};
 }
 
 /** The workflow runner owns sequencing. These adapters make one selected
@@ -296,10 +307,12 @@ export async function executeWorkflowStages(input:WorkflowExecutionInput):Promis
     return saveResult(step,{status:'failed',failure},{state:'failed',outcome:'failed',summary:coordinatorRecoveryCopy(failure)});
    }
    await verify();
-   const answer=parseWorkflowModelOutcome(called.content,step.title),invalid=called.toolCalls.length>0||called.finishReason==='filtered'||!called.content.trim();
-   value={...answer,...(called.finishReason?{finishReason:called.finishReason}:{})};
-   const classification=invalid?{state:'failed' as const,outcome:'failed' as const,summary:'这一步没有返回可直接使用的正文。'}:called.finishReason==='length'?{state:'failed' as const,outcome:'partial' as const,summary:'正文还没有完整返回，已返回的内容会保留。'}:classify(step,value);
-   return saveResult(step,value,classification);
+   const answer=parseWorkflowModelOutcome(called.content,step.title),response=modelResponseFailure(called);
+   value={...answer,...(called.finishReason?{finishReason:called.finishReason}:{}),...(response?{
+    outcome:response.failure.outcome==='partial'?answer.outcome:'failed',summary:response.summary,failure:response.failure,
+    responseDiagnostic:{kind:response.kind,toolCallCount:called.toolCalls.length,contentChars:called.content.length},
+   }:{})};
+   return saveResult(step,value,classify(step,value));
   }
   if(step.kind==='notion'){
    const source=[...input.run.spec.steps].reverse().find(source=>step.inputs.includes(source.id)&&['model','feature'].includes(source.kind)&&refs.some(ref=>ref===key(source)));

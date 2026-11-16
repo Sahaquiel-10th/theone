@@ -50,6 +50,8 @@ export type ToolChatResult = {
 export type ToolModelOptions = {
   requiredTool?: string;
   timeoutMs?: number;
+  /** A pure generation stage forbids tools explicitly on the provider wire. */
+  textOnly?: boolean;
   /** Retain native tool history definitions while forbidding new calls. */
   finalSummaryTools?: ModelToolDefinition[];
   maxOutputTokens?: number;
@@ -283,6 +285,7 @@ export async function callModelWithTools(
   if (!model.apiKey) throw new Error("模型缺少 API Key");
   if (model.kind !== "chat") throw new Error("ONE Local Agent 需要支持 function calling 的对话模型");
   outputTokenLimit(options.maxOutputTokens);
+  if (options.textOnly && (tools.length || options.requiredTool || options.finalSummaryTools?.length)) throw new Error('纯文本生成不能同时配置工具');
   if (options.finalSummaryTools && (tools.length || options.requiredTool)) throw new Error('结果汇总不能同时要求执行工具');
   if (options.requiredTool && !tools.some(t => t.function.name === options.requiredTool)) throw new Error("指定工具未授权");
   if (model.protocol === "anthropic") return callAnthropicModelWithTools(model, messages, tools, requestId, options);
@@ -309,7 +312,7 @@ export async function callModelWithTools(
       body: JSON.stringify({
         model: model.model,
         messages: messages.map(({inputImageDataUrls,cacheScope,...message})=>({...message,content:inputImageDataUrls?.length?[{type:'text',text:message.content||''},...inputImageDataUrls.map(url=>({type:'image_url',image_url:{url}}))]:message.content})),
-        ...(definitions.length ? {tools: definitions, tool_choice: options.finalSummaryTools ? 'none' : options.requiredTool ? { type: "function", function: { name: options.requiredTool } } : "auto"} : {}),
+        ...(definitions.length ? {tools: definitions, tool_choice: options.finalSummaryTools ? 'none' : options.requiredTool ? { type: "function", function: { name: options.requiredTool } } : "auto"} : options.textOnly ? {tool_choice:'none'} : {}),
         temperature: 0.2,
         max_tokens: outputTokenLimit(options.maxOutputTokens)
       })
@@ -329,18 +332,21 @@ export async function callModelWithTools(
         })
       : [];
     const finishReason=modelFinishReason(payload?.choices?.[0]?.finish_reason);
+    const content=typeof message.content==='string'?message.content:'';
     // A provider's explicit cutoff/refusal is a real, billable result even
     // without readable text. Never turn it into an automatic protocol retry.
-    if (!(typeof message.content==='string'&&message.content.trim())&&!toolCalls.length&&!['length','filtered'].includes(finishReason)) throw new ModelResponseError();
+    if (!content.trim()&&!toolCalls.length&&!['length','filtered'].includes(finishReason)) throw new ModelResponseError();
     console.log(JSON.stringify({
       event: "local_agent_model_request_completed",
       requestId,
       modelId: model.id,
       durationMs: Date.now() - startedAt,
-      toolCalls: toolCalls.length
+      toolCalls: toolCalls.length,
+      finishReason,
+      contentChars: content.length
     }));
     return {
-      content: typeof message.content === "string" ? message.content : "",
+      content,
       toolCalls,
       finishReason,
       usage: parseProviderUsage(payload?.usage)
@@ -448,7 +454,7 @@ async function callAnthropicModelWithTools(
           description: tool.function.description,
           input_schema: tool.function.parameters
         })) : undefined,
-        tool_choice: definitions.length ? (options.finalSummaryTools ? {type:'none'} : options.requiredTool ? { type: "tool", name: wireName(options.requiredTool), disable_parallel_tool_use: true } : { type: "auto" }) : undefined,
+        tool_choice: options.textOnly ? {type:'none'} : definitions.length ? (options.finalSummaryTools ? {type:'none'} : options.requiredTool ? { type: "tool", name: wireName(options.requiredTool), disable_parallel_tool_use: true } : { type: "auto" }) : undefined,
         max_tokens: outputTokenLimit(options.maxOutputTokens)
       })
     }, options.timeoutMs?Math.min(requestTimeoutMs,Math.max(1000,options.timeoutMs)):requestTimeoutMs);
@@ -476,7 +482,9 @@ async function callAnthropicModelWithTools(
       modelId: model.id,
       protocol: "anthropic",
       durationMs: Date.now() - startedAt,
-      toolCalls: toolCalls.length
+      toolCalls: toolCalls.length,
+      finishReason,
+      contentChars: content.length
     }));
     return {
       content,

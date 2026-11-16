@@ -3,13 +3,14 @@ import {taskStepKey} from './taskSteps.js';
 import {workflowProgress,type WorkflowBinding} from './taskWorkflow.js';
 import {operationProgress} from './operationRecovery.js';
 import {notionDeliveryCheckpoint,notionWriteAcknowledged,type NotionDeliveryProof} from './notionCompletion.js';
+import {workflowModelDiagnostic} from './workflowModelDiagnostics.js';
 
 /** One reviewed public projection for both the live rail and task details.
  * Checkpoint content, provider IDs, queries and recovery internals stay private. */
 export function publicWorkflowProgress(job:WorkRun|undefined,binding:WorkflowBinding){
  const run=job?.workflow;if(!run||run.binding.workspaceId!==binding.workspaceId||run.binding.userId!==binding.userId||run.binding.operationId!==binding.operationId)return;
  try{
-  const progress=workflowProgress(run);
+  const progress=workflowProgress(run),modelDiagnostic=workflowModelDiagnostic(job!,binding);
   return {version:1 as const,phase:run.phase,steps:progress.steps.map((step,index)=>{
    const spec=run.spec.steps[index],state=run.steps[index],namespace=`workflow:${run.id}`,tool=`workflow:${run.id}:${spec.id}`;
    const key=taskStepKey(namespace,tool,JSON.stringify({revision:run.revision,instruction:spec.instruction,inputs:spec.inputs}));
@@ -26,8 +27,8 @@ export function publicWorkflowProgress(job:WorkRun|undefined,binding:WorkflowBin
    };
    const confirmedDelivery=deliveryProven(job?.notionReceipt,false)||deliveryProven(v?.notionDeliveryProof,true);
    const resultAvailable=state.state==='completed'&&cp?.state==='completed'&&v?.outcome==='completed'&&state.checkpointKey===key&&['model','feature','notion'].includes(spec.kind)&&evidence?.resultAvailable===true&&(spec.kind!=='notion'||evidence.verification==='verified'||confirmedDelivery);
-   return {id:String(index),title:step.title,state:step.status,summary:step.summary,...(state.state==='waiting'?{waitingFor:state.waitingFor}:{}),...(evidence?{execution:evidence.execution,verification:evidence.verification,...(evidence.recovery?{recovery:evidence.recovery}:{})}:{}),...(resultAvailable?{resultAvailable:true}:{})};
-  }),next:progress.next};
+   return {id:String(index),title:step.title,state:step.status,summary:modelDiagnostic?.stepId===spec.id?modelDiagnostic.summary:step.summary,...(state.state==='waiting'?{waitingFor:state.waitingFor}:{}),...(evidence?{execution:evidence.execution,verification:evidence.verification,...(evidence.recovery?{recovery:evidence.recovery}:{})}:{}),...(resultAvailable?{resultAvailable:true}:{})};
+  }),next:modelDiagnostic?.next??progress.next};
  }catch{return;}
 }
 

@@ -1610,7 +1610,7 @@ test('HTTP local admission is explicit and a duplicate pending operation is neve
 /** Full service-path fixture: only provider/model transports are synthetic.
  * Admission, workflow persistence, Notion ownership/readback, billing and HTML
  * file generation are the same implementations used by the live routes. */
-async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean;twoSaves?:boolean;adaptiveDefault?:boolean;legacyChain?:boolean;clarification?:'failed'|'needs_input';supplementText?:string;noHtml?:boolean;realClock?:boolean;automaticReadback?:boolean;lostSaveAck?:boolean;modelResult?:{outcome:'completed'|'partial'|'needs_input'|'failed';content:string;summary:string}}={}){
+async function workflowServiceFixture(options:{unexpectedToolResponse?:'recover'|'exhaust';delayed?:boolean;noMatch?:boolean;twoSaves?:boolean;adaptiveDefault?:boolean;legacyChain?:boolean;clarification?:'failed'|'needs_input';supplementText?:string;noHtml?:boolean;realClock?:boolean;automaticReadback?:boolean;lostSaveAck?:boolean;modelResult?:{outcome:'completed'|'partial'|'needs_input'|'failed';content:string;summary:string}}={}){
  const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-workflow-service-'));
  const parentId='1'.repeat(32),pageId='2'.repeat(32),clock={now:Date.now()+1000};
  const source='ONE-WORKFLOW-SOURCE-青色42：插入入口后先找资料，再写完整方案。';
@@ -1650,7 +1650,7 @@ async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean
   recalls.push({query,options:structuredClone(recallOptions)});
   counts.retrieval++;assert.equal(ws,a.workspaceId);assert.equal(user,a.userId);assert.deepEqual(ids,['wf-source']);assert.match(query,/青色42|ONE-WORKFLOW/);
   return {status:options.noMatch?'no_match':'used',chunks:options.noMatch?[]:[{id:'wf-source-body',provider:'getnote',title:'入口方案',content:source}],failures:[],coverage:[{connectionId:'wf-source',provider:'getnote',status:options.noMatch?'no_match':'used',attempts:1}]};
- }},{artifactDirectory:directory,contextMode:options.adaptiveDefault||options.clarification?'adaptive':'legacy',notionDocuments:new NotionDocuments(f.store,mcp,{now:options.realClock?Date.now:()=>clock.now,delays:options.realClock?[50,100]:[5,10]}),reportCall:async()=>assert.fail('workflow does not buy an extra progress-summary model'),modelCall:async(model,messages,tools)=>{
+ }},{artifactDirectory:directory,contextMode:options.adaptiveDefault||options.clarification?'adaptive':'legacy',notionDocuments:new NotionDocuments(f.store,mcp,{now:options.realClock?Date.now:()=>clock.now,delays:options.realClock?[50,100]:[5,10]}),reportCall:async()=>assert.fail('workflow does not buy an extra progress-summary model'),modelCall:async(model,messages,tools,_requestId,controls)=>{
   calls.push({modelId:model.id,messages:structuredClone(messages),tools:structuredClone(tools)});
   if(model.id==='router'){
    if(messages.at(-1)?.role==='tool'&&!messages.at(-1)?.content?.includes('"status":"loaded"'))return answer('开始处理。');
@@ -1672,6 +1672,13 @@ async function workflowServiceFixture(options:{delayed?:boolean;noMatch?:boolean
    assert.equal(legacyRound,4);return answer(JSON.stringify({outcome:'completed',content:'完整方案和交互网页已做好。',summary:'完整方案和网页都已完成。'}));
   }
   counts.draft++;assert.deepEqual(tools,[]);assert.ok(JSON.stringify(messages).includes(source),'model receives the actual source body');
+  if(options.unexpectedToolResponse){
+   assert.equal(controls?.textOnly,true);
+   if(counts.draft===1||options.unexpectedToolResponse==='exhaust')return {...answer('我先看看还需要什么。'),finishReason:'tool_calls',toolCalls:[{id:'unexpected-private',type:'function',function:{name:'PRIVATE_UNOFFERED_TOOL',arguments:'PRIVATE_ARGUMENTS'}}]};
+   assert.match(messages.at(-1)!.content!,/上次返回了工具指令/);
+   assert.doesNotMatch(JSON.stringify(messages),/PRIVATE_UNOFFERED_TOOL|PRIVATE_ARGUMENTS/);
+   return answer(JSON.stringify({outcome:'completed',content:firstBody,summary:'完整方案已整理。'}));
+  }
   if(options.modelResult)return answer(JSON.stringify(options.modelResult));
   if(options.clarification){
    if(counts.draft===1)return answer(JSON.stringify({outcome:options.clarification,content:'案例还没整理出来，请澄清案例要求。',summary:'案例需要澄清'}));
@@ -5493,4 +5500,39 @@ for(const quality of ['read_failed','covered','missing','title_difference'] as c
  }
  await service.removeTask(a,admitted.taskId!,key);
  const persisted=(await f.store.read()).chatOperations!.find(op=>op.conversationId===admitted.taskId&&op.workRun)!;assert.equal(persisted.workRun!.state,'completed','archiving stops quality checks without retracting the delivered task');
+});
+
+
+for(const mode of ['recover','exhaust'] as const)test(`unexpected writing tools ${mode} inside one workflow with accurate delivery and recovery feedback`,async()=>{
+ const f=await workflowServiceFixture({noHtml:true,unexpectedToolResponse:mode});
+ try{
+  const admitted=await f.service.dispatch(a,{...input(`unexpected_writing_tools_${mode}`,'从得到大脑查青色42材料，写完整方案并保存到Notion。'),sourceIds:['wf-source'],outputDestination:'notion'},key);
+  assert.ok(admitted.taskId,JSON.stringify(admitted));await f.service.resume(a,key);
+  await waitFor(async()=>f.counts.draft===1);await new Promise(resolve=>setTimeout(resolve,1150));
+  await waitFor(async()=>['completed','failed'].includes((await f.service.task(a,admitted.taskId!)).jobs[0].state));
+  const db=await f.store.read(),op=db.chatOperations!.find(o=>o.conversationId===admitted.taskId&&o.workRun)!,detail=await f.service.task(a,admitted.taskId!);
+  assert.equal(f.counts.retrieval,1);assert.equal(f.counts.draft,2);assert.equal(f.counts.create,mode==='recover'?1:0);assert.equal(f.counts.update,0);
+  assert.equal(db.modelUsageRecords.filter(row=>row.conversationId===admitted.taskId&&row.activity==='task_worker'&&row.status==='success').length,2,'both real responses remain billed as responses');
+  assert.equal(detail.jobs[0].state,mode==='recover'?'completed':'failed');
+  if(mode==='recover'){assert.equal(f.body(),f.firstBody);assert.equal(detail.jobs[0].notionReceipt!.deliveryConfirmed,true);}
+  else{
+   assert.equal(op.failure?.code,'model_invalid_response');assert.equal(detail.recovery.kind,'support');
+   assert.match(detail.recovery.message,/操作指令/);assert.match(detail.recovery.message,/不用补材料/);
+   assert.match(detail.jobs[0].workflow!.next,/ONE 检查/);
+   assert.doesNotMatch(JSON.stringify(detail.jobs[0]),/PRIVATE_ARGUMENTS|PRIVATE_UNOFFERED_TOOL/);
+   const snapshot=await f.service.state(a);assert.ok(snapshot.conversation!.messages.some(message=>message.content.includes('操作指令')),'main chat receives the actual reason');
+   let inspected=false;
+   const reader=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>assert.fail('reading diagnostics cannot retrieve knowledge')},{modelCall:async(_model,messages)=>{
+    if(messages.at(-1)?.role==='tool'){
+     const result=JSON.parse(messages.at(-1)!.content!);assert.equal(result.modelDiagnostic.failure.code,'model_invalid_response');
+     assert.equal(result.modelDiagnostic.finishReason,'tool_calls');assert.equal(result.modelDiagnostic.automaticRetryScheduled,false);
+     assert.doesNotMatch(JSON.stringify(result.modelDiagnostic),/PRIVATE_ARGUMENTS|PRIVATE_UNOFFERED_TOOL/);inspected=true;return answer('模型返回了操作指令，正文还没交付。');
+    }
+    return {...answer(''),toolCalls:[{id:'read-exact-model-failure',type:'function',function:{name:'read_task',arguments:JSON.stringify({taskId:admitted.taskId})}}]};
+   }});
+   await reader.dispatch(a,input('read_unexpected_writing_failure','只读检查刚才这件事具体停在哪里。'),key);assert.equal(inspected,true);
+  }
+  await f.service.resume(a,key);assert.equal(f.counts.draft,2);assert.equal(f.counts.create,mode==='recover'?1:0);
+  await assert.rejects(()=>f.service.task(b,admitted.taskId!));assert.equal(db.powerAccounts[1].balanceMicros,100e6);
+ }finally{f.cleanup();}
 });

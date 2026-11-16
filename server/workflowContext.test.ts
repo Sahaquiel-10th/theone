@@ -41,6 +41,14 @@ test('step completion is scoped to its own deliverable while later saving remain
  assert.equal(built.tools.length,0,'describing a future save does not grant its tool to the writing model');
  for(const deferredSteps of [[{id:'write',title:'不能重复当前步骤',kind:'notion' as const}],[{id:'save',title:'保存',kind:'notion' as const},{id:'save',title:'重复',kind:'notion' as const}]])assert.throws(()=>buildWorkflowStepContext(fixture({deferredSteps})),WorkflowContextError);
 });
+test('a pure writing stage uses supplied knowledge while retaining honest retrieval coverage limits',()=>{
+ const note=input('selected_note','已实际检索取得的笔记正文，作者提出先验证需求再设计产品。',{kind:'knowledge',source:'GetNote',ref:'note_1',complete:false,truncated:false});
+ const built=buildWorkflowStepContext(fixture({step:{id:'write',kind:'model',instruction:'依据这篇笔记撰写完整专栏。'},inputs:[note],deferredSteps:[{id:'save',title:'保存到 Notion',kind:'notion'}]})),reference=data(built);
+ assert.equal(built.tools.length,0);assert.equal(reference.inputs[0].content,note.content);assert.equal(reference.inputs[0].complete,false);assert.equal(reference.knowledge.complete,false);
+ assert.match(built.messages[0].content!,/当前 model 步骤没有可调用工具/);assert.match(built.messages[0].content!,/不要返回工具调用或先去读取资料的处理前言/);
+ assert.match(built.messages[0].content!,/前置知识检索结果已经由平台取得，可直接用于本步写作/);assert.match(built.messages[0].content!,/检索覆盖范围未查全不代表这些已提供的资料尚未读取/);
+ assert.match(built.messages[0].content!,/后续保存、导出或制作由平台依次执行/);assert.match(reference.knowledge.note,/不表示已查全/);assert.match(reference.knowledge.note,/inputs 中的内容已实际取得，可直接使用/);assert.match(reference.knowledge.note,/是否截断见 truncated/);
+});
 test('all reference envelopes reject foreign workspace, user or operation even when history or candidates would not be selected',()=>{
  for(const key of ['workspaceId','userId','operationId'] as const){
   assert.throws(()=>buildWorkflowStepContext(fixture({inputs:[input('foreign','私有正文',{[key]:'other',kind:'knowledge'})],step:{id:'s',instruction:'当前要求',knowledgeLimit:0}})),/不属于当前授权任务/);
