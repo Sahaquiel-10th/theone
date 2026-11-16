@@ -27,9 +27,13 @@ export function workflowWebSearchPermission(text:string,previous=false,selected?
 
 /** Opt in to reuse only for a narrow writing clarification. New/unclear
  * material, date or object requests take a fresh authorized read instead. */
+export function workflowKnowledgeContinuation(text:string){
+ return /^(?:(?:ok|好的?|嗯|那就)[～~，,、。!！\s]*)?(?:请)?(?:继续(?:写|写作|处理|完成)?|接着(?:写|写作|处理|完成))(?:[，,\s]*(?:然后|再|并)(?:保存|存好)(?:到\s*Notion)?)?[吧啊呀啦～~，,、。!！?？\s]*$/iu.test(text.trim());
+}
 export function workflowKnowledgeReadUnchanged(text:string){
  const request=coordinatorPositiveRequest(text);
  if(/笔记|资料|来源|材料|记录|原文|对象|主题|日期|时间|今天|今日|昨天|昨日|前天|明天|上周|本周|这周|上月|本月|最新|最近|20\d{2}[-/.年]|重新(?:查|找|读|搜|检索)|再(?:查|找|读|搜|检索)|改用|更换|换(?:成|个|一|条|份)|另(?:一|份|条)/u.test(request))return false;
+ if(workflowKnowledgeContinuation(request))return true;
  return /案例|例子|写法|语气|篇幅|结构|格式|结尾|开头|论证/u.test(request);
 }
 

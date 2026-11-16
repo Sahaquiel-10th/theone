@@ -1610,7 +1610,7 @@ test('HTTP local admission is explicit and a duplicate pending operation is neve
 /** Full service-path fixture: only provider/model transports are synthetic.
  * Admission, workflow persistence, Notion ownership/readback, billing and HTML
  * file generation are the same implementations used by the live routes. */
-async function workflowServiceFixture(options:{unexpectedToolResponse?:'recover'|'exhaust';delayed?:boolean;noMatch?:boolean;twoSaves?:boolean;adaptiveDefault?:boolean;legacyChain?:boolean;clarification?:'failed'|'needs_input';supplementText?:string;noHtml?:boolean;realClock?:boolean;automaticReadback?:boolean;lostSaveAck?:boolean;modelResult?:{outcome:'completed'|'partial'|'needs_input'|'failed';content:string;summary:string}}={}){
+async function workflowServiceFixture(options:{failContinuationOnce?:boolean;withoutReadContinuation?:boolean;unexpectedToolResponse?:'recover'|'exhaust';delayed?:boolean;noMatch?:boolean;twoSaves?:boolean;adaptiveDefault?:boolean;legacyChain?:boolean;clarification?:'failed'|'needs_input';supplementText?:string;noHtml?:boolean;realClock?:boolean;automaticReadback?:boolean;lostSaveAck?:boolean;modelResult?:{outcome:'completed'|'partial'|'needs_input'|'failed';content:string;summary:string}}={}){
  const f=fixture(),directory=mkdtempSync(path.join(tmpdir(),'one-workflow-service-'));
  const parentId='1'.repeat(32),pageId='2'.repeat(32),clock={now:Date.now()+1000};
  const source='ONE-WORKFLOW-SOURCE-青色42：插入入口后先找资料，再写完整方案。';
@@ -1653,6 +1653,15 @@ async function workflowServiceFixture(options:{unexpectedToolResponse?:'recover'
  }},{artifactDirectory:directory,contextMode:options.adaptiveDefault||options.clarification?'adaptive':'legacy',notionDocuments:new NotionDocuments(f.store,mcp,{now:options.realClock?Date.now:()=>clock.now,delays:options.realClock?[50,100]:[5,10]}),reportCall:async()=>assert.fail('workflow does not buy an extra progress-summary model'),modelCall:async(model,messages,tools,_requestId,controls)=>{
   calls.push({modelId:model.id,messages:structuredClone(messages),tools:structuredClone(tools)});
   if(model.id==='router'){
+   const prior=options.withoutReadContinuation?(await f.store.read()).chatOperations!.filter(operation=>operation.workRun?.state==='failed').at(-1):undefined;
+   if(prior){
+    let lastResult:any;try{if(messages.at(-1)?.role==='tool')lastResult=JSON.parse(messages.at(-1)!.content!);}catch{}
+    if(lastResult?.taskId)return answer('继续处理原任务。');
+    if(!['read_task','delegate_task'].every(name=>tools.some(tool=>tool.function.name===name)))return {...answer(''),toolCalls:[{id:'load-continuation',type:'function',function:{name:'load_tools',arguments:JSON.stringify({names:['read_task','delegate_task']})}}]};
+    const inspected=messages.some(message=>{if(message.role!=='tool')return false;try{return JSON.parse(message.content!).id===prior.conversationId;}catch{return false;}});
+    if(!inspected)return {...answer(''),toolCalls:[{id:'read-continuation',type:'function',function:{name:'read_task',arguments:JSON.stringify({taskId:prior.conversationId})}}]};
+    return {...answer(''),toolCalls:[{id:'continue-without-read',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:prior.conversationId,title:'青色42完整方案',instruction:'继续撰写原任务的完整青色42方案，然后保存到Notion。',executorId:'general',featureIds:[],workflow:{version:1,steps:[{id:'continued_draft',title:'继续完成正文',kind:'model',instruction:'沿用原任务已取得的内容完成正文。',inputs:[]},{id:'continued_save',title:'保存完整正文',kind:'notion',instruction:'保存这一步取得的完整正文。',inputs:['continued_draft']}]}})}}]};
+   }
    if(messages.at(-1)?.role==='tool'&&!messages.at(-1)?.content?.includes('"status":"loaded"'))return answer('开始处理。');
    if(!tools.some(tool=>tool.function.name==='delegate_task'))return {...answer(''),toolCalls:[{id:'load-dispatch',type:'function',function:{name:'load_tools',arguments:JSON.stringify({names:['delegate_task']})}}]};
    return {...answer(''),toolCalls:[{id:'workflow-plan',type:'function',function:{name:'delegate_task',arguments:JSON.stringify({taskId:null,title:'青色42完整方案',instruction:'从得到大脑查找 ONE-WORKFLOW-SOURCE 青色42 入口方案，依据实际资料写完整方案并保存到 Notion。'+(options.noHtml?'':'随后做成交互网页。'),executorId:'general',featureIds:options.noHtml?[]:['oneHtml'],...(options.adaptiveDefault||options.legacyChain?{}:{workflow:{version:1,steps}})})}}]};
@@ -1671,7 +1680,9 @@ async function workflowServiceFixture(options:{unexpectedToolResponse?:'recover'
    if(legacyRound===3)return invoke('feature_0',{query:`把前置完整正文做成交互网页：\n${firstBody}\n已保存原稿：https://www.notion.so/${pageId}`});
    assert.equal(legacyRound,4);return answer(JSON.stringify({outcome:'completed',content:'完整方案和交互网页已做好。',summary:'完整方案和网页都已完成。'}));
   }
-  counts.draft++;assert.deepEqual(tools,[]);assert.ok(JSON.stringify(messages).includes(source),'model receives the actual source body');
+  counts.draft++;assert.deepEqual(tools,[]);
+  if(options.withoutReadContinuation&&counts.draft>1&&!JSON.stringify(messages).includes(source))return answer(JSON.stringify({outcome:'needs_input',content:'还没有取得本轮可用的原始资料。',summary:'需要明确本轮可用资料。'}));
+  assert.ok(JSON.stringify(messages).includes(source),'model receives the actual source body');
   if(options.unexpectedToolResponse){
    assert.equal(controls?.textOnly,true);
    if(counts.draft===1||options.unexpectedToolResponse==='exhaust')return {...answer('我先看看还需要什么。'),finishReason:'tool_calls',toolCalls:[{id:'unexpected-private',type:'function',function:{name:'PRIVATE_UNOFFERED_TOOL',arguments:'PRIVATE_ARGUMENTS'}}]};
@@ -1680,6 +1691,7 @@ async function workflowServiceFixture(options:{unexpectedToolResponse?:'recover'
    return answer(JSON.stringify({outcome:'completed',content:firstBody,summary:'完整方案已整理。'}));
   }
   if(options.modelResult)return answer(JSON.stringify(options.modelResult));
+  if(options.failContinuationOnce&&counts.draft===2)return answer(JSON.stringify({outcome:'failed',content:'本次写作未完成，没有完整正文。',summary:'本次写作未完成，已有资料保留。'}));
   if(options.clarification){
    if(counts.draft===1)return answer(JSON.stringify({outcome:options.clarification,content:'案例还没整理出来，请澄清案例要求。',summary:'案例需要澄清'}));
    assert.ok(JSON.stringify(messages).includes(options.supplementText??'公开案例我是让你自己想'));assert.match(JSON.stringify(messages),/青色42/);
@@ -5534,5 +5546,130 @@ for(const mode of ['recover','exhaust'] as const)test(`unexpected writing tools 
   }
   await f.service.resume(a,key);assert.equal(f.counts.draft,2);assert.equal(f.counts.create,mode==='recover'?1:0);
   await assert.rejects(()=>f.service.task(b,admitted.taskId!));assert.equal(db.powerAccounts[1].balanceMicros,100e6);
+ }finally{f.cleanup();}
+});
+
+async function failedKnowledgeContinuationFixture(suffix:string,failContinuationOnce=false){
+ const f=await workflowServiceFixture({failContinuationOnce,withoutReadContinuation:true,noHtml:true,clarification:'failed',supplementText:'那就继续写，然后保存？'});
+ const admitted=await f.service.dispatch(a,{...input(`knowledge_context_initial_${suffix}`,'从得到大脑查找青色42入口方案，写完整方案并保存到Notion。'),sourceIds:['wf-source'],outputDestination:'notion'},key);
+ assert.ok(admitted.taskId);await f.service.resume(a,key);
+ await waitFor(async()=>(await f.service.task(a,admitted.taskId!)).jobs[0].state==='failed');
+ const before=await f.store.read(),original=before.chatOperations!.find(operation=>operation.conversationId===admitted.taskId&&operation.workRun)!;
+ const read=original.workRun!.steps!.find(checkpoint=>checkpoint.effect==='read'&&checkpoint.state==='completed')!;
+ assert.ok(read);assert.equal(f.counts.retrieval,1);assert.equal(f.counts.draft,1);assert.equal(f.counts.create,0);
+ await f.store.mutate(db=>{
+  const run=db.chatOperations!.find(operation=>operation.id===original.id)!.workRun!;
+  // Production legacy snapshots can contain a proven explicit read while the
+  // short task contract does not require another read in the next revision.
+  // Preserve that valid read and its source binding instead of weakening the
+  // normal preflight requirement for contracts that explicitly require it.
+  run.instruction='撰写完整青色42方案并保存到Notion。';
+  run.contract={...run.contract!,requiredTools:['save_notion_draft'],knowledgeSourceIds:undefined};
+ });
+ return {...f,taskId:admitted.taskId!,originalId:original.id,read:structuredClone(read)};
+}
+
+test('a same-task writing continuation without a read node receives the proven original knowledge and saves once',async()=>{
+ const f=await failedKnowledgeContinuationFixture('same_task');
+ try{
+  const text='那就继续写，然后保存？',submission={...input('knowledge_context_follow_same_task',text),boundTaskId:f.taskId,sourceIds:['wf-source'],outputDestination:'notion' as const};
+  const continued=await f.service.dispatch(a,submission,key);
+  assert.equal(continued.taskId,f.taskId,JSON.stringify(continued));await f.service.resume(a,key);
+  await waitFor(async()=>(await f.service.task(a,f.taskId)).jobs.at(-1)!.state==='completed');
+  const db=await f.store.read(),jobs=db.chatOperations!.filter(operation=>operation.conversationId===f.taskId&&operation.workRun),latest=jobs.at(-1)!.workRun!;
+  assert.equal(jobs.length,2);assert.equal(jobs[0].id,f.originalId);
+  assert.deepEqual(latest.workflow!.spec.steps.map(step=>step.kind),['model','notion']);
+  assert.deepEqual(latest.workflow!.spec.steps[0].inputs,[]);
+  assert.equal(resolveTaskInputSource(db,a,latest.inputSource,{taskId:f.taskId,inputMessageId:latest.inputMessageId}).content,text);
+  assert.ok(latest.knowledgeContext,'the continuation owns a server-bound reference to the original read');
+  assert.equal(JSON.stringify(latest.knowledgeContext).includes(f.source),false,'knowledge references do not duplicate private source bodies');
+  const workerCalls=f.calls.filter(call=>call.modelId!=='router');assert.equal(workerCalls.length,2);
+  assert.ok(JSON.stringify(workerCalls[1].messages).includes(f.source),'the actual second writing request includes the original retrieved body');
+  const contextMessage=workerCalls[1].messages.find(message=>message.role==='user'&&message.content?.startsWith('以下仅为本步骤明确选择的参考资料'))!;
+  const context=JSON.parse(contextMessage.content!.slice(contextMessage.content!.indexOf('\n')+1));
+  assert.ok(context.knowledge.selection.knowledgeCandidates>0);
+  assert.ok(context.inputs.some((item:{kind:string;content:string})=>item.kind==='knowledge'&&item.content===f.source));
+  assert.deepEqual(db.chatOperations!.find(operation=>operation.id===f.originalId)!.workRun!.steps!.find(checkpoint=>checkpoint.key===f.read.key),f.read,'inheriting context does not change the original read checkpoint');
+  assert.deepEqual([f.counts.retrieval,f.counts.draft,f.counts.create,f.counts.update],[1,2,1,0]);
+  assert.equal(f.body(),f.firstBody);assert.equal((await f.service.task(a,f.taskId)).jobs.at(-1)!.notionReceipt!.deliveryConfirmed,true);
+  assert.equal(db.conversations.filter(conversation=>!conversation.coordinatorMain&&conversation.executorProfileId).length,1);
+  await f.service.dispatch(a,submission,key);await f.service.resume(a,key);
+  assert.deepEqual([f.counts.retrieval,f.counts.draft,f.counts.create],[1,2,1]);
+  await assert.rejects(()=>f.service.task(b,f.taskId));assert.equal((await f.store.read()).powerAccounts[1].balanceMicros,100e6);
+ }finally{f.cleanup();}
+});
+
+test('retryLatest preserves inherited knowledge through a failed no-read continuation and saves only the completed retry',async()=>{
+ const f=await failedKnowledgeContinuationFixture('explicit_retry',true);
+ try{
+  const continued=await f.service.dispatch(a,{...input('knowledge_context_failed_followup','那就继续写，然后保存？'),boundTaskId:f.taskId,sourceIds:['wf-source'],outputDestination:'notion'},key);
+  assert.equal(continued.taskId,f.taskId);await f.service.resume(a,key);
+  await waitFor(async()=>{const detail=await f.service.task(a,f.taskId);return detail.jobs.length===2&&detail.jobs.at(-1)!.state==='failed';});
+  const before=await f.store.read(),second=before.chatOperations!.filter(operation=>operation.conversationId===f.taskId&&operation.workRun).at(-1)!;
+  assert.ok(second.workRun!.knowledgeContext?.length);
+  assert.deepEqual(second.workRun!.workflow!.spec.steps.map(step=>step.kind),['model','notion']);
+  assert.equal(second.workRun!.steps!.some(checkpoint=>checkpoint.effect==='artifact'||checkpoint.effect==='external_write'||checkpoint.state==='started'),false,'the failed continuation has no unconfirmed side effects');
+  assert.deepEqual([f.counts.retrieval,f.counts.draft,f.counts.create],[1,2,0]);
+  await assert.rejects(()=>f.service.retryLatest(b,f.taskId,second.id,undefined,key));
+  assert.deepEqual([f.counts.retrieval,f.counts.draft,f.counts.create],[1,2,0]);
+
+  await f.service.retryLatest(a,f.taskId,second.id,undefined,key);await f.service.resume(a,key);
+  await waitFor(async()=>{const detail=await f.service.task(a,f.taskId);return detail.jobs.length===3&&detail.jobs.at(-1)!.state==='completed';});
+  const db=await f.store.read(),jobs=db.chatOperations!.filter(operation=>operation.conversationId===f.taskId&&operation.workRun),retried=jobs.at(-1)!;
+  assert.deepEqual(retried.workRun!.workflow!.spec.steps.map(step=>step.kind),['model','notion']);
+  assert.deepEqual(retried.workRun!.workflow!.spec.steps[0].inputs,[]);
+  assert.deepEqual(retried.workRun!.knowledgeContext,second.workRun!.knowledgeContext,'explicit retry retains the exact original source references');
+  const writingCalls=f.calls.filter(call=>call.modelId!=='router');assert.equal(writingCalls.length,3);
+  assert.ok(JSON.stringify(writingCalls[2].messages).includes(f.source),'the actual retry model receives the original knowledge body');
+  assert.deepEqual(db.chatOperations!.find(operation=>operation.id===f.originalId)!.workRun!.steps!.find(checkpoint=>checkpoint.key===f.read.key),f.read);
+  assert.deepEqual([f.counts.retrieval,f.counts.draft,f.counts.create,f.counts.update],[1,3,1,0]);
+  assert.equal(f.body(),f.firstBody);assert.equal((await f.service.task(a,f.taskId)).jobs.at(-1)!.notionReceipt!.deliveryConfirmed,true);
+  assert.equal(db.modelUsageRecords.filter(record=>record.conversationId===f.taskId&&record.activity==='task_worker'&&record.status==='success').length,3);
+  await f.service.retryLatest(a,f.taskId,second.id,undefined,key);await f.service.resume(a,key);
+  assert.deepEqual([f.counts.retrieval,f.counts.draft,f.counts.create],[1,3,1]);
+  assert.equal((await f.service.task(a,f.taskId)).jobs.length,3);assert.equal((await f.store.read()).powerAccounts[1].balanceMicros,100e6);
+ }finally{f.cleanup();}
+});
+
+for(const change of ['removed_checkpoint','changed_body'] as const)test(`retryLatest refuses inherited knowledge with ${change} before another model purchase`,async()=>{
+ const f=await failedKnowledgeContinuationFixture(`lost_${change}`,true);
+ try{
+  const continued=await f.service.dispatch(a,{...input(`knowledge_context_lost_follow_${change}`,'那就继续写，然后保存？'),boundTaskId:f.taskId,sourceIds:['wf-source'],outputDestination:'notion'},key);
+  assert.equal(continued.taskId,f.taskId);await f.service.resume(a,key);
+  await waitFor(async()=>{const detail=await f.service.task(a,f.taskId);return detail.jobs.length===2&&detail.jobs.at(-1)!.state==='failed';});
+  const before=await f.store.read(),second=before.chatOperations!.filter(operation=>operation.conversationId===f.taskId&&operation.workRun).at(-1)!;
+  assert.ok(second.workRun!.knowledgeContext?.length);
+  await f.store.mutate(db=>{
+   const original=db.chatOperations!.find(operation=>operation.id===f.originalId)!.workRun!;
+   if(change==='removed_checkpoint')original.steps=original.steps!.filter(checkpoint=>checkpoint.key!==f.read.key);
+   else{
+    const checkpoint=original.steps!.find(checkpoint=>checkpoint.key===f.read.key)!;
+    (checkpoint.output as {result:{chunks:{content:string}[]}}).result.chunks[0].content='CHANGED_PRIVATE_SOURCE_BODY';
+   }
+  });
+  await assert.rejects(()=>f.service.retryLatest(a,f.taskId,second.id,undefined,key),error=>(error as {code?:string}).code==='WORKFLOW_KNOWLEDGE_INPUT_INVALID');
+  await f.service.resume(a,key);
+  assert.deepEqual([f.counts.retrieval,f.counts.draft,f.counts.create,f.counts.update],[1,2,0,0]);
+  const after=await f.store.read();
+  assert.equal(after.modelUsageRecords.filter(record=>record.conversationId===f.taskId&&record.activity==='task_worker').length,2,'invalid source references cannot reserve or purchase another model call');
+  assert.equal(f.calls.filter(call=>call.modelId!=='router').length,2);
+  assert.equal(f.body(),'');
+ }finally{f.cleanup();}
+});
+
+for(const change of ['account','date','new_material'] as const)test(`a no-read continuation cannot inherit knowledge after changed ${change}`,async()=>{
+ const f=await failedKnowledgeContinuationFixture(change);
+ try{
+  if(change==='account')await f.store.mutate(db=>{db.knowledgeConnections.find(connection=>connection.id==='wf-source')!.providerUserId='different-account';});
+  const text=change==='date'?'改用今天的青色42资料，然后继续写并保存。':change==='new_material'?'只使用这次的新材料，原资料不要用。材料如下：NEW-CURRENT-MATERIAL-橙色17，这次的方案只讨论新入口。':'那就继续写，然后保存？';
+  await f.service.dispatch(a,{...input(`knowledge_context_changed_${change}`,text),boundTaskId:f.taskId,sourceIds:['wf-source'],outputDestination:'notion'},key);
+  await f.service.resume(a,key);
+  const current=await f.store.read(),jobs=current.chatOperations!.filter(operation=>operation.conversationId===f.taskId&&operation.workRun);
+  if(jobs.length>1)await waitFor(async()=>['failed','completed'].includes((await f.service.task(a,f.taskId)).jobs.at(-1)!.state));
+  const db=await f.store.read(),followups=db.chatOperations!.filter(operation=>operation.conversationId===f.taskId&&operation.workRun&&operation.id!==f.originalId);
+  assert.ok(followups.every(operation=>operation.workRun!.knowledgeContext===undefined),'changed scope cannot inherit the previous read');
+  for(const call of f.calls.filter(call=>call.modelId!=='router').slice(1))assert.equal(JSON.stringify(call.messages).includes(f.source),false,'the old private body cannot reach the changed-scope model');
+  assert.equal(f.counts.create,0);assert.equal(f.counts.update,0);assert.equal(f.counts.retrieval,1);
+  assert.deepEqual(db.chatOperations!.find(operation=>operation.id===f.originalId)!.workRun!.steps!.find(checkpoint=>checkpoint.key===f.read.key),f.read);
  }finally{f.cleanup();}
 });

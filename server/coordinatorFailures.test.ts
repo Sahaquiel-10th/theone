@@ -16,6 +16,15 @@ import {LocalExecutionNotStartedError} from './localExecutionAdmission.js';
 import {ToolRecoveryError} from './toolRecovery.js';
 import {TaskMaterialLimitError} from './taskMaterialLineage.js';
 import {textModelRetryable} from './modelStepRecovery.js';
+import {WorkflowKnowledgeInputError} from './workflowKnowledgeInputs.js';
+
+test('lost prior knowledge proof names the writing handoff and directs support without blaming saving',()=>{
+ const error=new WorkflowKnowledgeInputError();error.message='PRIVATE_SOURCE api_key=SECRET';
+ const failure=classifyCoordinatorFailure(error,{outcome:'failed'});
+ assert.deepEqual(failure,{code:'source_context_unavailable',stage:'planning',outcome:'failed'});
+ const copy=coordinatorRecoveryCopy(failure);assert.match(copy,/接到写作步骤/);assert.match(copy,/ONE 检查资料交接/);
+ assert.doesNotMatch(copy,/PRIVATE_SOURCE|SECRET|保存结果|补充材料|检查对应来源/);
+});
 
 test('only the typed selected-material limit is an actionable planning refusal, never model repair or a generic failure',()=>{
  const error=new TaskMaterialLimitError();error.message='PRIVATE_SOURCE api_key=SECRET';

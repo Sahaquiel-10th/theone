@@ -24,6 +24,9 @@ export type WorkRun = {
   /** Server-created practice contract. No source body or browser authority. */
   onboardingPractice?:{id:string;stage:'first'|'web';material?:import('./onboardingPractice.js').PracticeMaterial};
   workflow?:import('./taskWorkflow.js').WorkflowRun;
+  /** Exact same-task completed knowledge references, resolved and authorized
+   * afresh for each model call. Retrieved bodies stay in their original proof. */
+  knowledgeContext?:import('./workflowKnowledgeInputs.js').WorkflowKnowledgeReference[];
   /** Server-resolved published execution choices, never function arguments. */
   workflowModels?:Record<string,{modelId:string;systemPrompt:string;executorId:string;executorVersion:number}>;
   runtimeContext?:import('./runtimeContext.js').RuntimeContext;

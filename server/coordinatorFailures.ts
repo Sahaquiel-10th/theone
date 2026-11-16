@@ -17,6 +17,7 @@ import {LocalExecutionNotStartedError} from './localExecutionAdmission.js';
 import {trustedWorkflowFailureCause} from './taskWorkflow.js';
 import {parseCoordinatorFailure} from '../src/coordinatorRecovery.js';
 import {toolRecoveryDiagnostic} from './toolRecovery.js';
+import {WorkflowKnowledgeInputError} from './workflowKnowledgeInputs.js';
 
 type FailureContext={stage?:CoordinatorFailureStage;outcome?:CoordinatorFailure['outcome']};
 const orchestrationCodes:Record<string,CoordinatorFailureCode>={
@@ -33,6 +34,7 @@ export function classifyCoordinatorFailure(error:unknown,context:FailureContext=
   if(error instanceof TaskMaterialLimitError)return {code:'material_limit',stage:'planning',outcome:'not_started'};
   if(error instanceof TaskInputSourceError)return make('submission_invalid','planning');
   if(error instanceof TextModelRecoveryError)return make('model_invalid_response','model');
+  if(error instanceof WorkflowKnowledgeInputError)return make('source_context_unavailable','planning');
   if(error instanceof AttachmentPreparationError)return make(error.code==='result_incomplete'?'model_incomplete':error.code==='result_unknown'?'model_invalid_response':'submission_invalid',error.code==='binding_invalid'?'planning':'model');
   if(error instanceof LocalExecutionNotStartedError){
     const safe=parseCoordinatorFailure(error.failure);

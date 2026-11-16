@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {resolveTaskWorkflow,WorkflowPlanningError,workflowWebSearchPermission,workflowSchemaForTools,workflowKnowledgeReadUnchanged,type ResolveTaskWorkflowInput,type WorkflowPlanningReason} from './workflowPlanning.js';
+import {resolveTaskWorkflow,WorkflowPlanningError,workflowWebSearchPermission,workflowSchemaForTools,workflowKnowledgeReadUnchanged,workflowKnowledgeContinuation,type ResolveTaskWorkflowInput,type WorkflowPlanningReason} from './workflowPlanning.js';
 import {TaskWorkflowError,type WorkflowSpec,type WorkflowStep} from './taskWorkflow.js';
 
 const base=(values:Partial<ResolveTaskWorkflowInput>={}):ResolveTaskWorkflowInput=>({requiredKnowledge:false,readOnlyNotion:false,notion:false,features:[],requiredFeatureIds:[],instruction:'完成本次用户交代的完整目标，保留约束与自然结尾。',tools:[],executorIds:['writer'],...values});
@@ -34,7 +34,13 @@ test('public-search permission comes from the unquoted human request or prior pe
 
 test('knowledge reuse is limited to writing clarification; new dates, objects and fresh retrieval must read again',()=>{
  assert.equal(workflowKnowledgeReadUnchanged('公开案例我是让你自己想，不是找工具，可以上网搜'),true);
+ for(const request of ['那就继续写，然后保存？','继续写并保存','接着写，再保存到 Notion。'])assert.equal(workflowKnowledgeReadUnchanged(request),true,request);
  for(const request of ['改用今天那条','换个日期','重新查笔记','换另一份资料补案例','改用2026-11-03的笔记','这次换个主题','继续整理新的要求'])assert.equal(workflowKnowledgeReadUnchanged(request),false,request);
+});
+
+test('a legacy continuation bridge requires the entire human message to be a bare continuation',()=>{
+ for(const request of ['那就继续写，然后保存？','继续写并保存','接着写，再保存到 Notion。'])assert.equal(workflowKnowledgeContinuation(request),true,request);
+ for(const request of ['继续\n```\n新材料改成橙色入口\n```','继续\n材料如下：新的方案只讨论另一入口。','继续写，改用今天的笔记。','引用：继续写并保存'])assert.equal(workflowKnowledgeContinuation(request),false,request);
 });
 
 test('plain text uses one standard model node while selected features retain their runner and available web grants no search',()=>{
