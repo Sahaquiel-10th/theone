@@ -2,7 +2,86 @@ import Foundation
 import Darwin
 
 @main struct CodexGatewayConfigurationTests {
+    private struct ProcessTestFailure: Error, CustomStringConvertible {
+        let description: String
+    }
+
+    // Drain while the child runs. A full pipe or an inherited writer must never
+    // leave this test suite waiting for EOF or process termination indefinitely.
+    private static func runTestProcess(_ process: Process, output: Pipe, timeout: TimeInterval = 30,
+                                       afterStart: (() throws -> Void)? = nil) throws -> (Int32, Data) {
+        process.standardInput = process.standardInput ?? FileHandle.nullDevice
+        defer {
+            try? output.fileHandleForWriting.close()
+            try? output.fileHandleForReading.close()
+            if process.isRunning {
+                // Only the Process started by this harness is addressed.
+                _ = Darwin.kill(process.processIdentifier, SIGKILL)
+                let cleanupDeadline = DispatchTime.now().uptimeNanoseconds + 1_000_000_000
+                while process.isRunning && DispatchTime.now().uptimeNanoseconds < cleanupDeadline { usleep(10_000) }
+            }
+        }
+        try process.run()
+        try output.fileHandleForWriting.close()
+        try afterStart?()
+        let descriptor = output.fileHandleForReading.fileDescriptor
+        let flags = fcntl(descriptor, F_GETFL)
+        guard flags >= 0 && fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            throw ProcessTestFailure(description: "Could not configure the test output pipe")
+        }
+        let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeout * 1_000_000_000)
+        var data = Data(), buffer = [UInt8](repeating: 0, count: 65_536), reachedEOF = false
+        while true {
+            while !reachedEOF {
+                let count = Darwin.read(descriptor, &buffer, buffer.count)
+                if count > 0 {
+                    data.append(contentsOf: buffer.prefix(count))
+                    guard data.count <= 4 * 1024 * 1024 else {
+                        throw ProcessTestFailure(description: "Test subprocess exceeded its output limit")
+                    }
+                } else if count == 0 {
+                    reachedEOF = true
+                } else if errno == EINTR {
+                    continue
+                } else if errno == EAGAIN || errno == EWOULDBLOCK {
+                    break
+                } else {
+                    throw ProcessTestFailure(description: "Could not read the test subprocess output")
+                }
+            }
+            if !process.isRunning && reachedEOF { return (process.terminationStatus, data) }
+            guard DispatchTime.now().uptimeNanoseconds < deadline else {
+                throw ProcessTestFailure(description: "Test subprocess timed out after \(timeout) seconds")
+            }
+            usleep(10_000)
+        }
+    }
+
+    private static func processHarnessRegression() throws {
+        let process = Process(), output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "if read ignored; then exit 7; fi; /usr/bin/head -c 262144 /dev/zero >&2"]
+        process.standardOutput = output; process.standardError = output
+        let result = try runTestProcess(process, output: output)
+        precondition(result.0 == 0 && result.1.count == 262_144, "null stdin and output larger than a pipe must finish")
+
+        let sleeper = Process(), sleeperOutput = Pipe()
+        sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep"); sleeper.arguments = ["30"]
+        sleeper.standardOutput = sleeperOutput; sleeper.standardError = sleeperOutput
+        let started = DispatchTime.now().uptimeNanoseconds
+        do {
+            _ = try runTestProcess(sleeper, output: sleeperOutput, timeout: 0.1)
+            preconditionFailure("the child deadline must fail the test")
+        } catch let error as ProcessTestFailure {
+            precondition(error.description.contains("timed out"))
+        }
+        precondition(DispatchTime.now().uptimeNanoseconds - started < 2_000_000_000, "timeout cleanup must be bounded")
+        precondition(!sleeper.isRunning, "the deadline must stop the exact launched child")
+        print("Gateway subprocess harness: null stdin, concurrent drain and bounded child timeout passed")
+    }
+
     static func main() throws {
+        try processHarnessRegression()
         let config = CodexGatewayConfiguration(baseUrl: "https://one.example/api/executor-gateway/v1", token: String(repeating: "a", count: 43), model: "one-executor")
         let result = try config.launchOverrides(home: URL(fileURLWithPath: "/tmp/one-isolated"), environment: ["OPENAI_API_KEY": "personal", "OPENAI_BASE_URL": "personal-url", "CODEX_HOME": "/personal", "PATH": "/bin"])
         precondition(result.environment["OPENAI_API_KEY"] == nil && result.environment["OPENAI_BASE_URL"] == nil)
@@ -37,11 +116,11 @@ import Darwin
             environment["TMPPREFIX"] = scratchA.appendingPathComponent("zsh").path
             process.environment = environment
             let errors = Pipe()
+            process.standardInput = FileHandle.nullDevice
             process.standardOutput = FileHandle.nullDevice; process.standardError = errors
-            try process.run(); process.waitUntilExit()
-            let detail = errors.fileHandleForReading.readDataToEndOfFile()
-            if allowScratch && process.terminationStatus != 0 { FileHandle.standardError.write(detail) }
-            return process.terminationStatus
+            let result = try runTestProcess(process, output: errors)
+            if allowScratch && result.0 != 0 { FileHandle.standardError.write(result.1) }
+            return result.0
         }
         let denied = try hereDocument(allowScratch: false)
         precondition(denied != 0, "old root-only boundary should reproduce here-document failure")
@@ -88,9 +167,8 @@ import Darwin
             environment["CODEX_HOME"] = home.path; environment["TMPDIR"] = scratch.path; environment["TMPPREFIX"] = scratch.appendingPathComponent("zsh").path
             process.environment = environment; process.standardInput = FileHandle.nullDevice
             process.standardOutput = output; process.standardError = output
-            try process.run(); try output.fileHandleForWriting.close()
-            let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
-            return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+            let result = try runTestProcess(process, output: output)
+            return (result.0, String(decoding: result.1, as: UTF8.self))
         }
         let body = "set -e; printf INSIDE > inside.txt; cat inside.txt; printf SCRATCH > \"$TMPDIR/probe\"; "
             + "if cat \"\(outside.path)\"; then exit 31; fi; if cat outside-link; then exit 32; fi; "
@@ -148,10 +226,12 @@ import Darwin
             let overrides = try gateway.launchOverrides(home:home,environment:environment)
             helper.arguments = overrides.arguments + documentProfile.arguments + ["sandbox", "-P", documentProfile.name, "-C", work.path, "--", documentTool, "--one-create-document-exact", "helper.txt"]
             helper.environment = overrides.environment; helper.standardInput = input; helper.standardOutput = output; helper.standardError = output
-            try helper.run(); try output.fileHandleForWriting.close(); try input.fileHandleForReading.close()
-            try input.fileHandleForWriting.write(contentsOf: Data("SYNTHETIC_DOCUMENT_HELPER".utf8)); try input.fileHandleForWriting.close()
-            let detail = output.fileHandleForReading.readDataToEndOfFile(); helper.waitUntilExit()
-            precondition(helper.terminationStatus == 0, String(decoding: detail, as: UTF8.self))
+            let result = try runTestProcess(helper, output: output) {
+                try input.fileHandleForReading.close()
+                try input.fileHandleForWriting.write(contentsOf: Data("SYNTHETIC_DOCUMENT_HELPER".utf8))
+                try input.fileHandleForWriting.close()
+            }
+            precondition(result.0 == 0, String(decoding: result.1, as: UTF8.self))
             let savedHelper = try String(contentsOf: work.appendingPathComponent("helper.txt"), encoding: .utf8)
             precondition(savedHelper == "SYNTHETIC_DOCUMENT_HELPER")
         }

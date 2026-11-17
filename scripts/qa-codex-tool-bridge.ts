@@ -41,6 +41,7 @@ const calls = new Map<string, string>();
 const callbacks: string[] = [];
 const notifications = new Set<string>();
 const toolItems: Array<{ event: string; type: string; status?: string; success?: boolean; keys: string[] }> = [];
+const nativeFeedback: string[] = [];
 let threadId = '';
 let turnId = '';
 let protocolError: Error | undefined;
@@ -101,6 +102,11 @@ const server = http.createServer(async (request, response) => {
       assert(body.length < 2_000_000);
     }
     const input = JSON.parse(body);
+    // Only the response to our generated native command is diagnostic output.
+    // Never dump the whole model request or inherited environment.
+    for(const item of Array.isArray(input.input)?input.input:[]){
+      if(item?.type==='function_call_output'&&item.call_id==='native_command')nativeFeedback.push(JSON.stringify(item.output).slice(0,6000));
+    }
     if(environmentProof) { assert(!body.includes(syntheticToken),'Authentication must not enter model input'); assert(!body.includes('SYNTHETIC_INJECTED_SET_TOKEN'),'Loaded shell token must not enter model input'); }
     if (!toolCatalog.length) toolCatalog = input.tools.map((tool:any) => ({type:tool.type,name:tool.name,
       ...(tool.tools ? {tools:tool.tools.map((nested:any)=>({type:nested.type,name:nested.name}))} : {})}));
@@ -146,7 +152,7 @@ if (controllerFixture) {
     assert.equal(evidence.writes, 1);
     assert.equal(modelRequests, commandFirst ? 4 : 3);
     if (commandFirst) {
-      assert(fs.existsSync(path.join(project,'command-proof.txt')),`Advertised native command did not produce its proof; tools=${JSON.stringify(toolCatalog)}; controller=${JSON.stringify(evidence)}`);
+      assert(fs.existsSync(path.join(project,'command-proof.txt')),`Advertised native command did not produce its proof; tools=${JSON.stringify(toolCatalog)}; nativeFeedback=${JSON.stringify(nativeFeedback)}; controller=${JSON.stringify(evidence)}`);
       assert.equal(fs.readFileSync(path.join(project,'command-proof.txt'),'utf8'),marker);
       const scope = fs.readFileSync(path.join(project,'scope-proof.txt'),'utf8');
       assert(scope.includes('WRITE_DENIED'), 'Outside workspace write was not denied');
