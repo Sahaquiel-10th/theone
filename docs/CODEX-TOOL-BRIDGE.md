@@ -8,7 +8,7 @@
 - 主对话的 `delegate_task`、`delegate_tasks`、`execute_local_task` 可将一个完整任务交给就绪 Codex。资料、写作、ONE 原稿和 Notion 交付在同一 Codex 会话推进，不再为每个工具另套云端模型阶段。
 - 首批迁移本机文件、普通写作及从主对话选择的、未锁定 `modelId` 的单一纯提示词功能。单一提示词功能的要求与边界进入 Codex 交接，沿既有 `FeaturePrice` 记录用量；已指定专用模型、图像、专用工具、多功能计费及独立功能运行页仍走原执行服务，不静默改换功能指定模型。
 - 纯问答、状态询问与明确不执行的讨论保持轻量路径；旧启动器保持原路径。没有把本地目录授权扩大到整台电脑。
-- `localDeviceCanBridge` 按平台集中维护实测矩阵：当前 macOS / Windows 各只接固定 `0.160.1`，且须实测 ready、来源为 managed/existing。协议 capability 不等于安装完成；内置文件工具、未知平台和矩阵外旧/新版本不自动接管桥梁任务，仍保留原本机或云端路径。升级矩阵前须先通过该平台真实协议、重启恢复与权限边界测试。
+- `localDeviceCanBridge` 按平台集中维护实测矩阵。macOS 接固定 `0.160.1`，且须实测 ready、来源为 managed/existing。Windows 矩阵目前为空，native 安装和控制器继续验收。GitHub Windows 宿主不支持 MXC，同版本 elevated 也拒绝 root-deny 策略，须在支持的实体机通过完整严格边界后才开放。协议 capability 不等于安装完成，内置文件工具、未知平台和矩阵外版本沿原本机或云端路径。升级矩阵前须先通过该平台真实协议、重启恢复与权限边界测试。
 - 同一业务任务的后续交接复用原 `ExecutionTask` / Codex thread，推进 ONE round，并保存每次交接 admission。独立 conversation、不同设备/安装身份及尚未结束的旧操作不复用线程。
 
 ## 工具与传输
@@ -62,6 +62,8 @@
 
 只有本轮合同明确要求 `web_search` 时，业务完成还需要本轮成功持久化的 `one_web_search` 记录；模型口头声称联网、旧轮次检索或 Notion 成功都不能代替。普通“想案例／举例”未要求实际联网时，仍允许模型推理，不强加检索。
 
+知识检索沿用 `knowledgeResultComplete` 判断合同来源是否实际完成。失败、部分来源未完成和覆盖缺失都如实返回，已有可用片段、ONE 原稿与已确认保存的页面继续保留。结案会重新检查持久检索正文中的状态与来源覆盖，因此修复前误记 `success:true` 的失败记录也不能满足必需检索。
+
 `executorModelName` 在实际 Codex 网关授权时冻结为公开模型名。实际执行模型沿既有 `codex_execution` 服务端配置选择，不返回采购地址、模型凭据或内部供应商配置。未调整生产价格、余额或授权。
 
 ## 本机读取边界
@@ -69,6 +71,7 @@
 旧 `workspace-write` 只约束写入，不能作为“只能读取已选文件夹”的证据。Mac 新桥梁单独使用 Codex 0.160.1 的命名 permissions profile；旧任务保留原策略。
 
 - 每次进程使用随机 `one-workspace-<UUID>` 名称，防止已加载的同名项目配置合并额外根。`thread/start` / `thread/resume` 与 `turn/start` 都显式选择该 profile，不混传旧 `sandbox` / `sandboxPolicy`。
+- 项目及 cwd 全部祖先仅在本进程内覆盖为 untrusted，阻止父 Git 仓库的 `.codex/config.toml` 继承。固定关闭 plugins、plugin_hooks、codex_hooks、hooks 与 apps。命令 profile 不约束宿主 MCP 启动，因此 controller 在 thread/start/resume 前通过 config/read 只读盘点，再把全部已加载 MCP 的 enabled 覆盖为 false，动态工具只来自 ONE。
 - 根目录默认拒绝，`:minimal` 只读，业务工作区可写，`/tmp` 拒绝。本轮 `TMPDIR` 必须等于私有 scratch，因此 `:tmpdir` 仅允许该 scratch；不能指向整个系统临时目录。ONE task home 与用户 home 不授予读取。
 - ONE 文档助手仅授予其执行文件读取。系统 Python 沿 `:minimal`；已安装 Homebrew Node/Python 只授予实际运行包及解析到的动态依赖版本目录读取。允许 bin/opt 别名目录遍历不会放行未授权的包目标，真实拒绝测试覆盖该边界。没有为任意用户目录下的自定义运行时扩大权限或自动安装运行时。
 - 子命令网络关闭。模型服务和 ONE 服务器工具桥通过各自已认证通道调用，不受子命令网络开关控制。`features.multi_agent=false`、`features.goals=false` 禁止未经 ONE 映射的子会话/目标执行。
@@ -91,3 +94,5 @@ npx tsx --test server/notionDocuments.test.ts server/dispatchCapabilities.test.t
 Mac 命名权限实测：按现有 Mac workflow 编译 `CodexGatewayConfiguration.swift` 与其 Tests，设置 `ONE_CODEX_PERMISSION_TEST_BIN` 为固定 0.160.1 可执行文件；可选 `ONE_DOCUMENT_PERMISSION_TEST_TOOL` 指向刚构建的 ONE 执行文件。真实工具桥 fixture 编译还需加入 `CodexGatewayConfiguration.swift`，再运行 `scripts/qa-codex-tool-bridge.ts <codex> <fixture>`。全部为独立合成目录和本机 Responses，不消耗供应商调用。
 
 `--command-first --environment-proof` 为可选反例：在独立 CODEX_HOME 注入宽松 shell 配置和合成 TOKEN，实际运行命令验证目录外 `READ_DENIED WRITE_DENIED`、`TOKEN_HIDDEN`；同时要求每个模型 HTTP 请求带独立合成认证且正文没有 TOKEN 值。它不读取或输出真实凭据，未开启该标志时原 Mac/Go fixture 行为不变。
+
+追加 `--startup-proof` 会在独立父 Git 仓库配置 MCP，并在私有 home 配置另一份 MCP 与 SessionStart hook。命令仅尝试写合成 marker，首轮与新进程恢复均须确认 marker 未产生，同时 ONE 工具、授权目录命令和模型链路照常通过。

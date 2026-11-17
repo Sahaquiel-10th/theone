@@ -18,7 +18,10 @@ const executorStates:readonly string[]=['ready','unprepared','busy','unavailable
 const sources:readonly string[]=['existing','managed','builtin'];
 // Expand one platform only after its pinned real protocol, restart and
 // filesystem-boundary matrix has passed. Protocol support is not installation.
-const verifiedCodexBridgeVersions:Readonly<Record<'macos'|'windows',readonly string[]>>={macos:['0.160.1'],windows:['0.160.1']};
+const verifiedCodexBridgeVersions:Readonly<Record<'macos'|'windows',readonly string[]>>={macos:['0.160.1'],windows:[]};
+export function codexBridgePlatformEnabled(platform:'macos'|'windows'|'unknown'|undefined):boolean {
+  return (platform==='macos'||platform==='windows')&&verifiedCodexBridgeVersions[platform].length>0;
+}
 export function localDeviceCanBridge(value:LocalDeviceReadiness|undefined):boolean {
   const platform=value?.platform;
   return Boolean(value?.ready&&value.connected&&value.folder.state==='ready'&&value.executor.state==='ready'

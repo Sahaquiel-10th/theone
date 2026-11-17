@@ -12,6 +12,7 @@ import { validInstallationId } from "./oneKeyInstallation.js";
 import { compareRuntimeVersions, validRuntimeVersion, type RuntimeArchitecture, type RuntimeIdentity, type RuntimePlatform, type SignedRuntimeUpdate } from "./runtimeUpdate.js";
 import { recoverRuntimeUpdate, disconnectedRuntimeUpdate, confirmedRuntimeUpdate, runtimeRecoveryReceipt, type UpdateOwner } from './runtimeUpdateRecovery.js';
 import { acceptTerminalReceipt, maxTerminalReceiptBytes, parseTerminalReceipt, recordExecutionAttempt, terminalReceiptCapability } from './executionTerminalReceipt.js';
+import { codexBridgePlatformEnabled } from '../src/localDeviceReadiness.js';
 
 // Signing can include removable-disk I/O and a WAN round trip. A two-second
 // deadline disconnected healthy Keys under ordinary device/network contention.
@@ -366,12 +367,20 @@ export class OneKeyPresence {
     if(install&&options)throw new Error('只读探测不能准备执行工具');
     await this.requireProof({ ...scope, method: install ? 'POST' : 'GET', path: '/api/me/executor' },options);
     const socket = await this.ownedSocket(scope), state = this.states.get(socket)!;
-    // Windows file tools are built into the authenticated launcher, not a Mac
-    // Codex installation. Checking them must not require/download that catalog.
-    if (state.runtime?.platform === 'windows' && state.capabilities.has('local_tools_v1') && !state.capabilities.has('managed_codex_v1')) {
+    const windowsCodexPending = state.runtime?.platform === 'windows' && !codexBridgePlatformEnabled('windows');
+    // Keep the authenticated launcher's built-in file tools usable while its
+    // Codex permission matrix is awaiting validation.
+    if (state.runtime?.platform === 'windows' && state.capabilities.has('local_tools_v1')
+      && (!state.capabilities.has('managed_codex_v1') || windowsCodexPending)) {
       return { available: true, preparing: false, installedSource: 'builtin' as const,
         installedVersion: state.runtime.version, version: state.runtime.version,
-        message: '内置文件工具随 ONE 启动器提供，可在已授权的工作文件夹内读写文件。' };
+        message: windowsCodexPending && state.capabilities.has('managed_codex_v1')
+          ? '内置文件工具已可用，可在授权工作文件夹内读写文件。Codex 的 Windows 版本仍待验收。'
+          : '内置文件工具随 ONE 启动器提供，可在已授权的工作文件夹内读写文件。' };
+    }
+    if (windowsCodexPending && state.capabilities.has('managed_codex_v1')) {
+      if (install) throw new OneKeyPresenceError('Codex 的 Windows 版本仍待验收，暂未开放准备。');
+      return { available: false, message: 'Codex 的 Windows 版本仍待验收。' };
     }
     if (!managedEnabled) {
       if (install) throw new OneKeyPresenceError('统一工程执行尚未开放，现有文件工具仍可用');

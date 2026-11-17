@@ -50,6 +50,7 @@ jobs:
         env:
           ONE_CODEX_PERMISSION_PROFILE: one-workspace
           ONE_CODEX_WINDOWS_SANDBOX: mxc
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $fixture = Join-Path $env:RUNNER_TEMP 'one-codex-protocol'
@@ -57,6 +58,7 @@ jobs:
           $unpacked = Join-Path $env:RUNNER_TEMP 'one-codex-unpacked'
           node scripts/download-codex-protocol-fixture.mjs $fixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item Env:GITHUB_TOKEN
           tar.exe -tvzf (Join-Path $fixture 'codex-package-x86_64-pc-windows-msvc.tar.gz')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/prepare-windows-codex-release.mjs --version 0.160.1 --package (Join-Path $fixture 'codex-package-x86_64-pc-windows-msvc.tar.gz') --output $prepared

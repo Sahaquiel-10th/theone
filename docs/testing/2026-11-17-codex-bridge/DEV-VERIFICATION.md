@@ -16,14 +16,18 @@
 | 恢复轮额外写入 | 0 次 | 0 次 |
 | 首轮与恢复轮完成判断 | `canCompleteNormally=true` | `canCompleteNormally=true` |
 | 首轮与恢复轮进程退出 | 0 | 0 |
-| 合成模型请求总数 | 5 | 6 |
+| 合成模型请求总数 | 6 | 6 |
 | 权限检查 | 每次进程使用新的随机权限 profile | 原生命令探测返回 `READ_DENIED WRITE_DENIED` |
 
-Swift 最新完整证据为 `/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-tool-bridge-o3Ae5o/evidence.json`。首轮和恢复轮使用不同的 `one-workspace-*` profile，thread 保持一致。控制器检查官方返回的 `activePermissionProfile.id` 与本轮随机 profile 精确匹配，缺失或不匹配时在开始执行前拒绝。
+Swift 最新完整证据为 `/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-tool-bridge-IAwmpZ/evidence.json`，日志为 `/tmp/one-codex-startup-isolation-final.log`，模式为 `--command-first --environment-proof --startup-proof`。首轮和恢复轮使用不同的 `one-workspace-*` profile，thread 保持一致。控制器检查官方返回的 `activePermissionProfile.id` 与本轮随机 profile 精确匹配，缺失或不匹配时在开始执行前拒绝。
+
+这轮实际命令还验证了环境变量过滤。隔离配置故意使用 `inherit=all`、忽略默认排除项，并在 `set` 中重新导入合成 HTTP 凭据。最终 `include_only` 过滤得到 `TOKEN_HIDDEN`，外侧合成文件探测得到 `READ_DENIED WRITE_DENIED`。每次合成模型 HTTP 认证正常，模型输入正文没有包含该合成凭据。采用 core 继承与默认排除项的早期对照曾得到 `TOKEN_VISIBLE`，该反例已由最终过滤规则覆盖。整个验证使用合成凭据，供应商调用为 0。
+
+启动隔离反例在实际初始化的父 Git 仓库中放入受信任的 `.codex` MCP 配置，并在私有 Codex home 放入 MCP 与 `SessionStart` hook。生产控制器通过 `config/read` 将这些 MCP 标记为关闭，启动配置将当前目录的全部祖先设为不受信任，并关闭 plugins、hooks 与 apps。首轮及新进程恢复均没有出现启动标记，`startupProof` 为 `home/project MCP and hooks did not start`，ONE 工具、原生命令和合成模型认证正常。
 
 Mac 目录边界及文档工具测试记录为 `/tmp/one-codex-permissions-document-final.log`。已验证工作根与独立 scratch 可写，外侧合成文件的读写和指向外侧的链接读取被拒绝。Python 标准库生成 OOXML 后，ZIP 与 XML 回读字段 `B1=3000`。Homebrew Node 可以运行，无关包的链接读取被拒绝。真实编译的 ONE 文档助手在同一 profile 内写入并回读 `helper.txt` 一致。
 
-Go 完整证据为 `/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-tool-bridge-jnHKff/evidence.json`。`nativeCommand=true`，`scopeProof=READ_DENIED WRITE_DENIED`。该结果覆盖合成用例中的指定越界读取和写入探测。Go 控制器在 Mac 上运行的结果，不等同于 Windows 可执行文件或实体机已验收。
+Go 最新完整证据为 `/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-tool-bridge-EvkDSU/evidence.json`，日志为 `/tmp/one-bridge-final-go-protocol.log`。`nativeCommand=true`，`scopeProof=READ_DENIED WRITE_DENIED`。该结果覆盖合成用例中的指定越界读取和写入探测。Go 控制器的本次运行系统为 Mac，Windows 可执行文件和实体机继续使用后续验收记录。
 
 复测入口为 `scripts/qa-codex-tool-bridge.ts`，生产控制器 fixture 分别为 `launcher/macos/CodexToolBridgeRuntimeFixture.swift` 与 `launcher/windows/codex_app_server_runtime_fixture.go`。更早的协议证据保留在 [BASELINE.md](BASELINE.md)。
 
@@ -34,14 +38,17 @@ Go 完整证据为 `/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-tool-br
 | 准备状态与旧版本兼容 | 17 项通过 | 准备阶段优先显示；旧内置文件工具不会冒充已安装 Codex |
 | 工具桥梁业务回归 | 20 项通过 | 准确任务身份、来源撤销、重复调用、未知交付和新轮接续 |
 | Windows 包整理脚本 | 6 项通过 | 全部 45 个正式文件的路径、资源辅助程序、许可证及普通 ustar 文件结构 |
-| Windows 安装核心 | 新增 5 项，`go test -race ./...` 通过 | 签名、包完整性、路径、失败保留旧安装和重启校验 |
-| Windows 回执核心 | 新增 6 项，`go test -race ./...` 通过 | 精确身份、丢失确认、重启重发和原执行不重跑 |
+| Windows 安装核心 | 新增 8 项，`go test -race ./...` 通过 | 签名、包完整性、路径、失败保留旧安装、同版本修复回滚及额外 DLL 拒绝 |
+| Windows 回执核心 | 新增 8 项，`go test -race ./...` 通过 | 精确身份、丢失确认、重启重发、ACK tombstone 和 HTML 长正文 |
+| Windows 状态兼容 | 26 项相关状态套件通过，其中新增 3 项 Windows 回归 | 平台矩阵待开放时，已认证内置文件能力仍可就绪 |
 
 服务端的知识与 Notion 测试使用合成适配器。此次独立审查发现并新增回归的情况包括：不同调用编号同时保存同稿时重复创建；同稿从中间稿改为最终稿时状态不推进；新交接操作丢失上一轮未知保存的查询引用。最新 20 项回归包含这些情况并通过。
 
 Windows 安装测试使用包含 `MZ` 标记的合成文件和测试签名，不会运行这些文件。测试覆盖损坏包、路径穿越、大小写别名、链接、超大文件声明、健康检查失败、指针提交失败以及修改本地指针摘要后仍不能绕过原签名包检查。
 
 回执测试覆盖工作区、用户、设备、安装、执行尝试、任务和轮次共七个字段；同一回执在连续三次重启后仍保持原编号和摘要，匹配确认前继续重发。并发受理只允许一次原执行；晚到终态和确认落盘失败保留原结果。
+
+新增回归验证确认后的 tombstone 清除正文，并拒绝同身份再次写入晚到终态。包含 20 万个 `<` 的正文能够在 512 KiB 传输限制内持久化，重启后原文及摘要一致。同版本损坏修复先验证新包，再替换当前目录，激活失败会恢复原目录及指针，额外 DLL 会在执行前被拒绝。
 
 以上为已执行的本地检查。全量应用、Mac、Windows CI 最终计数和构建结果由正式 CI 完成后补充，不以局部检查替代发布通过。
 
@@ -53,7 +60,11 @@ Windows 安装测试使用包含 `MZ` 标记的合成文件和测试签名，不
 
 Windows CI 已取得完整官方资产并校验上述大小和摘要。正式 tar 清单包含 45 个普通文件，共 `450588539` 字节，约 429.7 MiB。新增根 LICENSE 和 NOTICE 后为 47 个文件，脚本和启动器的总解包上限按此调整为 512 MiB。主程序为 `326875440` 字节，code-mode-host 为 `74669360` 字节，单文件仍在 320 MiB 范围内。完整路径和大小保存在 [固定版本清单](windows-codex-0.160.1-inventory.json) 中。
 
-第一轮准备检查发现 voice DLL 资源未被识别。已按官方布局保留整个 `codex-resources` 树，包含原位置的 command-runner、sandbox-setup、voice-host、DLL、JSON 和许可证。6 项脚本回归已通过，重新封装、Windows 控制器实进程与恢复结果待下一轮 CI 补充。正式清单见 [Windows CI 记录](https://github.com/Sahaquiel-10th/theone/actions/runs/44088792778/job/134058292847)。
+第一轮准备检查发现 voice DLL 资源未被识别。已按官方布局保留整个 `codex-resources` 树，包含原位置的 command-runner、sandbox-setup、voice-host、DLL、JSON 和许可证。6 项脚本回归已通过。后续 Windows CI 已通过正式包重封、安装重建和篡改检查，严格 mxc 权限配置在 thread/start 阶段受阻，完整 Windows 实进程与恢复结果继续验收。正式清单见 [文件清单记录](https://github.com/Sahaquiel-10th/theone/actions/runs/44088792778/job/134058292847)，安装检查见 [后续 Windows CI](https://github.com/Sahaquiel-10th/theone/actions/runs/44091362830)。
+
+Windows 的 Codex 桥梁版本矩阵暂留空。状态检查按已认证启动器的 `local_tools_v1` 返回内置文件工具及真实启动器版本，目录正常时仍可继续使用内置文件读写。新启动器声明 managed/bridge 协议时也使用这一规则，当前状态明确显示 Codex 的 Windows 版本待验收。此分支已覆盖缺少 Windows Codex 清单、跳过原生 Codex 探测、权限归属与完整 readiness 回归。
+
+Windows 原生 CI 后续已通过包含真实 Job 对象测试的 Go race 检查。随后的正式包下载遇到 GitHub 元数据上游失败，下载与完整 Codex 实进程结果由后续 CI 继续补充。当前记录见 [Windows 原生检查](https://github.com/Sahaquiel-10th/theone/actions/runs/44095418363)。
 
 ## 尚未执行的验收
 

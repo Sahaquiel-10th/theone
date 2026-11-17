@@ -175,9 +175,10 @@ private func end(_ controller: CodexAppServerController, status: String, items: 
     ])])
 }
 private func bootstrap(_ controller: CodexAppServerController, fixture: Fixture, resume: Bool = false,
-                       instruction: String = "raw instruction", beforeTurnReply: (() async throws -> Void)? = nil) async throws -> JSON {
+                       instruction: String = "raw instruction", namedProfile: Bool = false, beforeTurnReply: (() async throws -> Void)? = nil) async throws -> JSON {
     let start = Task { try await controller.start(instruction: instruction) }
     try await reply(controller, fixture.request("initialize"))
+    if namedProfile { try await reply(controller,fixture.request("config/read"),.object(["config":.object(["mcp_servers":.object(["inherited":.object(["enabled":.bool(true)])])])])) }
     let thread = try await fixture.request(resume ? "thread/resume" : "thread/start")
     var threadResponse:[String:JSON] = ["thread": .object(["id": .string("thread_1")])]
     if let profile=thread["params"]?["permissions"]?.string { threadResponse["activePermissionProfile"] = .object(["id":.string(profile)]) }
@@ -240,10 +241,11 @@ private func namedWorkspacePolicy() async throws {
         let actor = try CodexAppServerController(attemptId: "named_permissions", authorizedCWD: "/tmp/ONE-QA",
             permissionProfile: profile, resumeThreadId: resume ? "thread_1" : nil,
             clientVersion: "test", sendLine: { try await fixture.send($0) }, onExecEvent: { await fixture.event($0) })
-        let turn = try await bootstrap(actor, fixture: fixture, resume: resume)
+        let turn = try await bootstrap(actor, fixture: fixture, resume: resume, namedProfile:true)
         let thread = try await fixture.request(resume ? "thread/resume" : "thread/start")
         try check(thread["params"]?["permissions"]?.string == profile && thread["params"]?["sandbox"] == nil,
                   "named thread permissions cannot be mixed with legacy sandbox")
+        try check(thread["params"]?["config"]?["mcp_servers"]?["inherited"]?["enabled"] == .bool(false),"inherited MCP must be disabled before thread start or resume")
         try check(turn["params"]?["permissions"]?.string == profile && turn["params"]?["sandboxPolicy"] == nil,
                   "named turn permissions cannot be weakened by legacy policy override")
         await actor.transportClosed()
@@ -256,6 +258,7 @@ private func namedWorkspacePolicyCannotFallBack() async throws {
         clientVersion:"test",sendLine:{try await fixture.send($0)},onExecEvent:{await fixture.event($0)})
     let starting=Task{try await actor.start(instruction:"must not run under a broader profile")}
     try await reply(actor,fixture.request("initialize"))
+    try await reply(actor,fixture.request("config/read"),.object(["config":.object([:])]))
     try await reply(actor,fixture.request("thread/start"),.object(["thread":.object(["id":.string("thread_1")]),"activePermissionProfile":.object(["id":.string(":workspace")])]))
     do { _=try await starting.value;throw TestFailure(message:"unconfirmed read boundary accepted") } catch CodexAppServerError.invalidProtocol {}
     try check(await fixture.methodCount("turn/start")==0,"a mismatched profile cannot dispatch the instruction")
@@ -381,12 +384,20 @@ private func deadlinesAndEOF() async throws {
     try await end(a3, status: "interrupted")
     try check(!(await a3.snapshot()).interruptAcknowledged, "late ACK cannot unlock")
     try check((await a3.snapshot()).assessment(treeCleanupVerified: true).requiresCheck, "late ACK hold")
-    let f4 = Fixture(), a4 = try controller(f4)
+    let f4 = Fixture(), lateClock = TestClock()
+    let a4 = try CodexAppServerController(attemptId:"late_terminal",authorizedCWD:"/tmp/ONE-QA",clientVersion:"test",
+        now:{lateClock.now()},sendLine:{try await f4.send($0)},onExecEvent:{await f4.event($0)})
     _ = try await bootstrap(a4, fixture: f4)
-    let lateTerminal = Task { await a4.requestInterrupt(timeout: 0.04) }
+    let lateTerminal = Task { await a4.requestInterrupt(timeout: 10) }
     try await reply(a4, f4.request("turn/interrupt"))
-    try check(!(await lateTerminal.value), "ACK alone cannot pass deadline")
+    let ackDeadline=ProcessInfo.processInfo.systemUptime+1
+    while !(await a4.snapshot()).interruptAcknowledged {
+        try check(ProcessInfo.processInfo.systemUptime<ackDeadline,"ACK was not processed")
+        await Task.yield()
+    }
+    lateClock.advance(20)
     try await end(a4, status: "interrupted")
+    try check(!(await lateTerminal.value), "ACK alone cannot pass deadline")
     let lateSnapshot = await a4.snapshot()
     try check(lateSnapshot.interruptAcknowledged && !lateSnapshot.interruptCompletedWithinDeadline,
         "late terminal cannot retroactively confirm timed-out stop")

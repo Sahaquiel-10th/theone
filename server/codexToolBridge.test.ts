@@ -6,6 +6,7 @@ import type { WorkRun } from './coordinatorTypes.js';
 import { CodexToolBridge, codexBridgeInstruction, codexBridgeSkillsSupported, resumeCodexBridgeTask, type CodexBridgeCall } from './codexToolBridge.js';
 import { NotionDocuments, writingTarget } from './notionDocuments.js';
 import type { NotionMcpService } from './knowledge/notionMcpService.js';
+import type { KnowledgeRecallResult } from './knowledge/knowledgeService.js';
 import { sourceBinding } from './publicSharing.js';
 import { publicExecutionTask } from './executionService.js';
 
@@ -39,7 +40,8 @@ function fixture(options: { notion?: boolean; sources?: boolean; web?: boolean }
   db.executionTasks.push(task);
   let body = '', reads = 0, writes = 0, loseResponse = false, beforeSearch: (() => Promise<void>) | undefined;
   const recalls: unknown[][] = [];
-  const knowledge = { recallWithDiagnostics: async (...args: unknown[]) => { recalls.push(args); await beforeSearch?.(); return { chunks: [{ content: '合成资料：从观察问题开始。', sourceId: 'source-a' }], status: 'used', failures: [] }; } };
+  let recallResult = { chunks: [{ content: '合成资料：从观察问题开始。', sourceId: 'source-a' }], status: 'used', failures: [] } as unknown as KnowledgeRecallResult;
+  const knowledge = { recallWithDiagnostics: async (...args: unknown[]) => { recalls.push(args); await beforeSearch?.(); return recallResult; } };
   const mcp = { readDocument: async (workspaceId: string, id: string) => { assert.equal(workspaceId, 'wa'); reads++; return { text: `<page url="https://www.notion.so/${id}"><content>${body}</content></page>` }; },
     callDocumentTool: async (workspaceId: string, connectionId: string, grantId: string, userId: string, name: string, args: any) => {
       assert.deepEqual([workspaceId, connectionId, grantId, userId], ['wa', 'notion-a', 'grant-a', 'a']);
@@ -61,6 +63,7 @@ function fixture(options: { notion?: boolean; sources?: boolean; web?: boolean }
   const prepare = async () => bridge.prepare((await store.read()).executionTasks[0]);
   return { store, bridge, documents, mcp, createBridge, call, prepare, recalls, searches, db: () => db, writes: () => writes, reads: () => reads,
     loseResponse: () => { loseResponse = true; }, setSearch: (effect: () => Promise<void>) => { beforeSearch = effect; },
+    setRecallResult: (value: KnowledgeRecallResult) => { recallResult = value; },
     setBody: (value: string) => { body = value; } };
 }
 const value = (response: { contentItems: { text: string }[] }) => JSON.parse(response.contentItems[0].text);
@@ -290,6 +293,35 @@ test('only explicitly required public retrieval needs real current-round search 
     assert.equal(f.db().executionTasks[0].businessOutcome,complete?'completed':'partial',scenario);
     if(!complete)assert.match(f.db().executionTasks[0].businessSummary!,/公开资料检索尚未确认完成/);
     assert.equal(f.writes(),1,'missing public retrieval does not undo a confirmed external write');
+  }
+});
+
+test('required knowledge keeps partial material and saved manuscripts, while completion requires actual coverage of every contracted source',async()=>{
+  for(const scenario of ['failed','partial','missing-source','complete','no-match','legacy-failed-success'] as const){
+    const f=fixture({notion:true,sources:true});await f.prepare();
+    await f.store.mutate(db=>{
+      const second={...db.knowledgeConnections[0],id:'source-c'};db.knowledgeConnections.push(second);
+      const job=db.chatOperations![0].workRun!;job.expectedOutput='text';job.sources.push({id:second.id,binding:sourceBinding(second)});
+      job.contract={version:1,requiredTools:['knowledge_search'],knowledgeSourceIds:['source-a','source-c']} as any;
+    });
+    const complete=scenario==='complete'||scenario==='no-match';
+    const coverage:KnowledgeRecallResult['coverage']=[{connectionId:'source-a',provider:'getnote',status:scenario==='no-match'?'no_match':scenario==='failed'||scenario==='legacy-failed-success'?'failed':'used',attempts:1}];
+    if(scenario!=='missing-source')coverage.push({connectionId:'source-c',provider:'getnote',status:scenario==='no-match'?'no_match':complete?'used':'failed',attempts:1});
+    const chunk={provider:'getnote',title:'合成来源原文',content:'SOURCE_A_PARTIAL_CONTENT_PRESERVED'};
+    f.setRecallResult({status:scenario==='failed'||scenario==='legacy-failed-success'?'failed':scenario==='partial'?'partial':scenario==='no-match'?'no_match':'used',chunks:scenario==='no-match'||scenario==='failed'||scenario==='legacy-failed-success'?[]:[chunk],coverage,failures:complete?[]:[{provider:'getnote',code:'TIMEOUT',message:'合成来源暂时失败',retryable:true}]} as KnowledgeRecallResult);
+    const searched=await f.bridge.call(owner,f.call('one_knowledge_search',{query:'合成资料'}));
+    assert.equal(searched.success,complete,scenario);
+    if(scenario==='partial')assert.equal(value(searched).chunks[0].content,chunk.content);
+    if(scenario==='legacy-failed-success')await f.store.mutate(db=>{const call=db.executionTasks[0].toolBridge!.calls.find(call=>call.tool==='one_knowledge_search')!;call.state='completed';call.result!.success=true;});
+    const manuscript='完整原稿和已保存页面都要保留。';
+    const artifactId=await original(f,manuscript);await f.bridge.call(owner,f.call('one_save_notion',{artifactId}));
+    await f.store.mutate(db=>{
+      const task=db.executionTasks[0];task.status='failed';task.terminalReceipt={id:'terminal',hash:'hash',attemptId:'attempt-a',round:0,outcome:'failed',receivedAt:'now',disposition:'accepted'};
+      f.bridge.settle(db,task.id);
+    });
+    assert.equal(f.db().executionTasks[0].businessOutcome,complete?'completed':'partial',scenario);
+    assert.ok(f.db().conversations[0].messages.some(message=>message.content===manuscript));
+    assert.equal(f.writes(),1);assert.equal(f.db().chatOperations![0].workRun!.notionReceipt!.pageId,pageId);
   }
 });
 

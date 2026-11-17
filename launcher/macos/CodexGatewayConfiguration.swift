@@ -14,6 +14,7 @@ struct CodexWorkspacePermissions {
     let name: String
     let setting: String
     let runtimeReadPaths: [String]
+    private let projectTrustSetting: String
 
     init(workspace: String, scratch: String, documentTool: String?, environment: [String: String]) throws {
         func canonicalDirectory(_ path: String) throws -> String {
@@ -25,11 +26,20 @@ struct CodexWorkspacePermissions {
             }
             return URL(fileURLWithPath: path).standardizedFileURL.path
         }
-        _ = try canonicalDirectory(workspace)
+        let workspace = try canonicalDirectory(workspace)
         let scratch = try canonicalDirectory(scratch)
         guard URL(fileURLWithPath: scratch).lastPathComponent.hasPrefix("scratch-"),
               environment["TMPDIR"].map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath().path == scratch }) == true else { throw NSError(domain: "ONE", code: 1) }
         name = "one-workspace-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        var projectRoots: [String] = []
+        var projectRoot = URL(fileURLWithPath: workspace, isDirectory: true)
+        while true {
+            projectRoots.append("\(codexTOMLString(projectRoot.path))={trust_level=\"untrusted\"}")
+            let parent = projectRoot.deletingLastPathComponent()
+            if parent.path == projectRoot.path { break }
+            projectRoot = parent
+        }
+        projectTrustSetting = "projects={\(projectRoots.joined(separator: ","))}"
         var readable = Set(Self.runtimePaths(environment: environment))
         if let documentTool {
             guard documentTool.hasPrefix("/"), !documentTool.contains("\0"), FileManager.default.isExecutableFile(atPath: documentTool) else {
@@ -50,6 +60,8 @@ struct CodexWorkspacePermissions {
 
     var arguments: [String] { ["-c", "default_permissions=\(codexTOMLString(name))", "-c", setting,
                                 "-c", "features.multi_agent=false", "-c", "features.goals=false",
+                                "-c", projectTrustSetting, "-c", "features.plugins=false", "-c", "features.plugin_hooks=false",
+                                "-c", "features.codex_hooks=false", "-c", "features.hooks=false", "-c", "features.apps=false",
                                 "-c", "shell_environment_policy.inherit=\"core\"", "-c", "shell_environment_policy.ignore_default_excludes=false",
                                 // Codex applies `set` after excludes. This final
                                 // allowlist runs after `set`, so a project cannot

@@ -57,6 +57,8 @@ import Darwin
         precondition(profile.setting.contains("network={enabled=false}") && !profile.setting.contains(config.token))
         precondition(profile.arguments.contains("features.multi_agent=false") && profile.arguments.contains("features.goals=false"))
         precondition(profile.arguments.contains("shell_environment_policy.inherit=\"core\"") && profile.arguments.contains("shell_environment_policy.ignore_default_excludes=false"))
+        precondition(profile.arguments.contains { $0.hasPrefix("projects={") && $0.contains("trust_level=\"untrusted\"") })
+        precondition(["features.plugins=false","features.plugin_hooks=false","features.codex_hooks=false","features.hooks=false","features.apps=false"].allSatisfy(profile.arguments.contains))
         precondition(profile.arguments.contains { $0.hasPrefix("shell_environment_policy.include_only=") && $0.contains("ONE_DOCUMENT_TOOL") && !$0.contains("TOKEN") })
         precondition(!profile.runtimeReadPaths.contains(home.deletingLastPathComponent().path), "no broad temporary or task-home grant")
         precondition(!profile.runtimeReadPaths.contains("/opt/homebrew") && !profile.runtimeReadPaths.contains("/usr/local"), "runtime dependencies must stay narrower than package-manager roots")

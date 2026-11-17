@@ -49,6 +49,7 @@ type windowsCodexHost struct {
 	mu                       sync.Mutex
 	credentialPath, deviceID string
 	writer                   *socketWriter
+	writerOwner              codexExecutionOwner
 	owner                    codexExecutionOwner
 	active                   *windowsCodexRun
 	tools                    map[string]*windowsCodexPendingTool
@@ -96,16 +97,29 @@ func (host *windowsCodexHost) send(value any) error {
 	}
 	return writer.json(value)
 }
+func (host *windowsCodexHost) sendOwned(id codexReceiptIdentity, value any) error {
+	host.mu.Lock()
+	writer := host.writer
+	matches := host.owner.WorkspaceID == id.WorkspaceID && host.owner.UserID == id.UserID && host.writerOwner == host.owner
+	host.mu.Unlock()
+	if writer == nil || !matches {
+		return errors.New("本轮用户的本机连接暂时不可用")
+	}
+	return writer.json(value)
+}
 func (host *windowsCodexHost) bind(writer *socketWriter) {
 	host.mu.Lock()
 	host.writer = writer
-	requests := make([]map[string]any, 0, len(host.tools))
+	host.writerOwner = host.owner
+	requests := make([]*windowsCodexPendingTool, 0, len(host.tools))
 	for _, pending := range host.tools {
-		requests = append(requests, pending.request)
+		if host.active != nil && pending.identity == host.active.identity && pending.identity.WorkspaceID == host.owner.WorkspaceID && pending.identity.UserID == host.owner.UserID {
+			requests = append(requests, pending)
+		}
 	}
 	host.mu.Unlock()
 	for _, request := range requests {
-		_ = host.send(request)
+		_ = host.sendOwned(request.identity, request.request)
 	}
 	go host.replay()
 }
@@ -142,7 +156,7 @@ func (host *windowsCodexHost) replay() {
 		return
 	}
 	for _, receipt := range receipts {
-		_ = host.send(receipt)
+		_ = host.sendOwned(receipt.codexReceiptIdentity, receipt)
 	}
 }
 func (host *windowsCodexHost) acknowledge(message socketMessage) {
@@ -163,7 +177,7 @@ func (host *windowsCodexHost) progress(id codexReceiptIdentity, kind, text, stat
 	if thread != "" {
 		event["providerThreadId"] = thread
 	}
-	_ = host.send(event)
+	_ = host.sendOwned(id, event)
 }
 func (host *windowsCodexHost) terminal(id codexReceiptIdentity, outcome, text, code, target, thread string) {
 	receipt, err := host.journal.complete(newCodexTerminalReceipt(id, outcome, text, code, target, thread))
@@ -171,10 +185,10 @@ func (host *windowsCodexHost) terminal(id codexReceiptIdentity, outcome, text, c
 		return
 	}
 	if err != nil {
-		_ = host.send(map[string]any{"type": "execution_delivery_error", "workspaceId": id.WorkspaceID, "userId": id.UserID, "deviceId": id.DeviceID, "installationId": id.InstallationID, "taskId": id.TaskID, "round": id.Round, "attemptId": id.AttemptID, "code": "outbox_unavailable", "phase": "result_not_persisted"})
+		_ = host.sendOwned(id, map[string]any{"type": "execution_delivery_error", "workspaceId": id.WorkspaceID, "userId": id.UserID, "deviceId": id.DeviceID, "installationId": id.InstallationID, "taskId": id.TaskID, "round": id.Round, "attemptId": id.AttemptID, "code": "outbox_unavailable", "phase": "result_not_persisted"})
 		return
 	}
-	_ = host.send(receipt)
+	_ = host.sendOwned(id, receipt)
 }
 func windowsManagedRoot() (string, error) {
 	root, err := os.UserCacheDir()
@@ -306,12 +320,12 @@ func (host *windowsCodexHost) start(message socketMessage) {
 	}
 	if previous, err := host.journal.reserve(id, root); err != nil {
 		host.mu.Unlock()
-		_ = host.send(map[string]any{"type": "execution_delivery_error", "workspaceId": id.WorkspaceID, "userId": id.UserID, "deviceId": id.DeviceID, "installationId": id.InstallationID, "taskId": id.TaskID, "round": id.Round, "attemptId": id.AttemptID, "code": "outbox_unavailable", "phase": "not_started"})
+		_ = host.sendOwned(id, map[string]any{"type": "execution_delivery_error", "workspaceId": id.WorkspaceID, "userId": id.UserID, "deviceId": id.DeviceID, "installationId": id.InstallationID, "taskId": id.TaskID, "round": id.Round, "attemptId": id.AttemptID, "code": "outbox_unavailable", "phase": "not_started"})
 		return
 	} else if previous != nil {
 		host.mu.Unlock()
 		if previous.Receipt != nil {
-			_ = host.send(*previous.Receipt)
+			_ = host.sendOwned(id, *previous.Receipt)
 		} else if previous.Acknowledged {
 			host.recoveryStatus(id, "receipt_acknowledged")
 		}
@@ -368,10 +382,14 @@ func (host *windowsCodexHost) callTool(ctx context.Context, id codexReceiptIdent
 	pending := &windowsCodexPendingTool{identity: id, threadID: call.ThreadID, turnID: call.TurnID, callID: call.CallID, result: make(chan codexDynamicToolResult, 1)}
 	pending.request = map[string]any{"type": "executor_tool_call", "taskId": id.TaskID, "round": id.Round, "attemptId": id.AttemptID, "requestId": requestID, "threadId": call.ThreadID, "turnId": call.TurnID, "callId": call.CallID, "tool": call.Tool, "arguments": call.Arguments}
 	host.mu.Lock()
+	if host.active == nil || host.active.identity != id || host.owner.WorkspaceID != id.WorkspaceID || host.owner.UserID != id.UserID {
+		host.mu.Unlock()
+		return codexDynamicToolResult{}, errors.New("本轮工具请求的用户或任务绑定已改变")
+	}
 	host.tools[requestID] = pending
 	host.mu.Unlock()
 	defer func() { host.mu.Lock(); delete(host.tools, requestID); host.mu.Unlock() }()
-	_ = host.send(pending.request)
+	_ = host.sendOwned(id, pending.request)
 	timer := time.NewTimer(180 * time.Second)
 	defer timer.Stop()
 	select {
@@ -386,8 +404,9 @@ func (host *windowsCodexHost) callTool(ctx context.Context, id codexReceiptIdent
 func (host *windowsCodexHost) acceptToolResult(message socketMessage) {
 	host.mu.Lock()
 	pending := host.tools[message.RequestID]
+	ownerMatches := pending != nil && host.active != nil && host.active.identity == pending.identity && host.owner.WorkspaceID == pending.identity.WorkspaceID && host.owner.UserID == pending.identity.UserID
 	host.mu.Unlock()
-	if pending == nil || pending.identity.TaskID != message.TaskID || pending.identity.Round != message.Round || pending.identity.AttemptID != message.AttemptID || pending.threadID != message.ThreadID || pending.turnID != message.TurnID || pending.callID != message.CallID {
+	if !ownerMatches || pending.identity.TaskID != message.TaskID || pending.identity.Round != message.Round || pending.identity.AttemptID != message.AttemptID || pending.threadID != message.ThreadID || pending.turnID != message.TurnID || pending.callID != message.CallID {
 		return
 	}
 	for _, content := range message.ContentItems {
@@ -641,7 +660,7 @@ func (host *windowsCodexHost) run(message socketMessage, run *windowsCodexRun) {
 }
 
 func (host *windowsCodexHost) recoveryStatus(id codexReceiptIdentity, state string) {
-	_ = host.send(map[string]any{"type": "execution_recovery_status", "workspaceId": id.WorkspaceID, "userId": id.UserID, "deviceId": id.DeviceID, "installationId": id.InstallationID, "taskId": id.TaskID, "round": id.Round, "attemptId": id.AttemptID, "state": state})
+	_ = host.sendOwned(id, map[string]any{"type": "execution_recovery_status", "workspaceId": id.WorkspaceID, "userId": id.UserID, "deviceId": id.DeviceID, "installationId": id.InstallationID, "taskId": id.TaskID, "round": id.Round, "attemptId": id.AttemptID, "state": state})
 }
 
 func (host *windowsCodexHost) event(run *windowsCodexRun, event map[string]any, root string) {
@@ -718,6 +737,13 @@ func windowsCodexLaunch(gateway *windowsCodexGateway, device, task, root, execut
 		profile = "one-workspace-" + codexRandomID()
 		runtimeRoot := filepath.Dir(filepath.Dir(executable))
 		settings = append(settings, "windows.sandbox=\"mxc\"", "default_permissions="+quote(profile), "permissions."+profile+".extends=\":workspace\"", "permissions."+profile+".filesystem={\":root\"=\"deny\",\":minimal\"=\"read\",\":tmpdir\"=\"write\",\":slash_tmp\"=\"deny\",\":workspace_roots\"={\".\"=\"write\"},"+quote(scratch)+"=\"write\","+quote(runtimeRoot)+"=\"read\"}", "permissions."+profile+".network.enabled=false", "shell_environment_policy.inherit=\"core\"", "shell_environment_policy.ignore_default_excludes=false", "shell_environment_policy.include_only=[\"PATH\",\"PATHEXT\",\"SHELL\",\"COMSPEC\",\"SYSTEMROOT\",\"WINDIR\",\"SYSTEMDRIVE\",\"USERNAME\",\"USERDOMAIN\",\"USERPROFILE\",\"HOMEDRIVE\",\"HOMEPATH\",\"PROGRAMFILES\",\"PROGRAMFILES(X86)\",\"PROGRAMW6432\",\"PROGRAMDATA\",\"LOCALAPPDATA\",\"APPDATA\",\"TEMP\",\"TMP\",\"TMPDIR\",\"POWERSHELL\",\"PWSH\",\"ONE_DOCUMENT_TOOL\",\"ONE_DOCUMENT_ROOT\"]", "features.multi_agent=false", "features.goals=false")
+		settings = append(settings, "features.plugins=false", "features.plugin_hooks=false", "features.codex_hooks=false", "features.hooks=false", "features.apps=false")
+		for directory := filepath.Clean(root); ; directory = filepath.Dir(directory) {
+			settings = append(settings, "projects."+quote(directory)+".trust_level=\"untrusted\"")
+			if filepath.Dir(directory) == directory {
+				break
+			}
+		}
 	}
 	arguments := []string{}
 	for _, setting := range settings {

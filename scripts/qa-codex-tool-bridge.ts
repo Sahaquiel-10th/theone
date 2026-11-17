@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import readline from 'node:readline';
 
@@ -13,6 +13,7 @@ const executable = process.argv[2];
 const controllerFixture = process.argv[3];
 const commandFirst = process.argv.includes('--command-first');
 const environmentProof = process.argv.includes('--environment-proof');
+const startupProof = process.argv.includes('--startup-proof');
 assert(!environmentProof || commandFirst && controllerFixture, 'Environment proof requires a production controller command fixture');
 const syntheticToken = 'SYNTHETIC_HTTP_AUTH_ONLY_NEVER_A_REAL_TOKEN';
 assert(executable && fs.existsSync(executable), 'Pass the fixed Codex executable');
@@ -22,6 +23,17 @@ const project = path.join(directory, 'project');
 fs.mkdirSync(home, { mode: 0o700 });
 fs.mkdirSync(project, { mode: 0o700 });
 if(environmentProof)fs.writeFileSync(path.join(home,'config.toml'),'[shell_environment_policy]\ninherit="all"\nignore_default_excludes=true\n[shell_environment_policy.set]\nONE_EXECUTOR_TOKEN="SYNTHETIC_INJECTED_SET_TOKEN"\nONE_QA_INJECTED_TOKEN="SYNTHETIC_INJECTED_SET_TOKEN"\n');
+const startupMarkers=['home-mcp-started','project-mcp-started','hook-started'].map(name=>path.join(directory,name));
+if(startupProof){
+  assert(controllerFixture&&process.platform!=='win32','Startup marker proof currently uses the Mac production fixture');
+  const git=spawnSync('/usr/bin/git',['-c','init.templateDir=','init','--quiet',directory],{env:{PATH:'/usr/bin:/bin',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null'}});
+  assert.equal(git.status,0,'Initialize the isolated parent repository');
+  const mcp=(marker:string)=>`command="/usr/bin/touch"\nargs=[${JSON.stringify(marker)}]\nstartup_timeout_sec=1\nenabled=true\n`;
+  const hookCommand=`/usr/bin/touch '${startupMarkers[2].replaceAll("'","'\\''")}'`;
+  fs.appendFileSync(path.join(home,'config.toml'),`\n[projects.${JSON.stringify(directory)}]\ntrust_level="trusted"\n[mcp_servers.one_home_startup]\n${mcp(startupMarkers[0])}\n[hooks]\nSessionStart=[{hooks=[{type="command",command=${JSON.stringify(hookCommand)}}]}]\n`);
+  fs.mkdirSync(path.join(directory,'.codex'));
+  fs.writeFileSync(path.join(directory,'.codex','config.toml'),`[features]\nplugins=true\ncodex_hooks=true\nhooks=true\nplugin_hooks=true\n[mcp_servers.one_project_startup]\n${mcp(startupMarkers[1])}`);
+}
 const marker = 'ONE-QA-CODEX-BRIDGE-20261117';
 let modelRequests = 0;
 let writes = 0;
@@ -139,6 +151,7 @@ if (controllerFixture) {
       if(environmentProof)assert.equal(fs.readFileSync(path.join(project,'environment-proof.txt'),'utf8'),'TOKEN_HIDDEN','Loaded shell set must not reintroduce a token');
     }
     assert.equal(fs.readFileSync(path.join(project, 'result.txt'), 'utf8'), marker);
+    if(startupProof)assert(startupMarkers.every(marker=>!fs.existsSync(marker)),'Inherited MCP or hooks started a host process');
     // A new controller and a new Codex process load the prior thread from the
     // isolated home. Its original dynamic tools must still be callable.
     const resumed = spawn(controllerFixture, [executable, `http://127.0.0.1:${address.port}/v1`, project, home, marker, evidence.threadId],
@@ -157,6 +170,7 @@ if (controllerFixture) {
       assert.deepEqual(resumedEvidence.toolCallbacks, ['one_fixture_read']);
       assert.equal(modelRequests, commandFirst ? 6 : 5);
       assert.equal(fs.readFileSync(path.join(project, 'result.txt'), 'utf8'), marker);
+      if(startupProof)assert(startupMarkers.every(marker=>!fs.existsSync(marker)),'Resume started an inherited host process');
     } finally {
       clearTimeout(resumeWatchdog);
       if (resumed.exitCode === null) resumed.kill('SIGTERM');
@@ -165,6 +179,7 @@ if (controllerFixture) {
       resumedEvidence, resumedAcrossNewProcesses: true,
       ...(commandFirst ? {nativeCommand:true,scopeProof:fs.readFileSync(path.join(project,'scope-proof.txt'),'utf8')} : {}),
       ...(environmentProof ? {environmentProof:'TOKEN_HIDDEN',modelHTTPAuthentication:'synthetic bearer verified'} : {}),
+      ...(startupProof?{startupProof:'home/project MCP and hooks did not start'}:{}),
       modelService: 'local synthetic Responses fixture', supplierCalls: 0 };
     fs.writeFileSync(path.join(directory, 'evidence.json'), JSON.stringify(result, null, 2));
     console.log(JSON.stringify(result));

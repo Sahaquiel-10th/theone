@@ -311,6 +311,20 @@ actor CodexAppServerController {
         ]
         if let permissionProfile { threadParams["permissions"] = .string(permissionProfile) }
         else { threadParams["sandbox"] = .string("workspace-write") }
+        if permissionProfile != nil {
+            // config/read only inventories configuration. MCP processes start
+            // with the thread, so disable every inherited server before that
+            // point, including unexpected entries in the private task home.
+            let effective = try await request("config/read", params: .object(["cwd":.string(cwd),"includeLayers":.bool(false)]))
+            try ensureMayStart()
+            guard let config = effective["config"]?.object,
+                  config["mcp_servers"] == nil || config["mcp_servers"]?.object != nil else {
+                poison("tool_configuration_unconfirmed"); throw CodexAppServerError.invalidProtocol
+            }
+            let servers = config["mcp_servers"]?.object ?? [:]
+            guard servers.count <= 256 else { throw CodexAppServerError.invalidConfiguration }
+            threadParams["config"] = .object(["mcp_servers":.object(servers.mapValues { _ in .object(["enabled":.bool(false)]) })])
+        }
         let method = resumeThreadId == nil ? "thread/start" : "thread/resume"
         if resumeThreadId == nil, !dynamicTools.isEmpty {
             threadParams["dynamicTools"] = .array(dynamicTools.map(\.declaration))

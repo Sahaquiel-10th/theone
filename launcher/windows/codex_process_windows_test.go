@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -148,5 +149,49 @@ func TestCodexWindowsJobStopsChildAfterRootExitsAndDrainsPipes(t *testing.T) {
 	}
 	if count, err := job.activeCount(); err != nil || count != 0 {
 		t.Fatal(fmt.Sprint("nonempty stopped job ", count, " ", err))
+	}
+}
+
+func TestCodexWindowsPermissionProbeJoinsHelpersAfterRootExit(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "probe-child.pid")
+	command := exec.Command(os.Args[0], "-test.run=^TestCodexWindowsProcessHelper$")
+	command.Env = append(os.Environ(), "ONE_CODEX_JOB_TEST_MODE=parent", "ONE_CODEX_JOB_TEST_PATH="+target)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := runWindowsCodexProbe(ctx, command); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := syscall.OpenProcess(0x1000|0x00100000, false, uint32(pid))
+	if err == nil {
+		defer syscall.CloseHandle(process)
+		result, _, _ := kernel.NewProc("WaitForSingleObject").Call(uintptr(process), 1000)
+		if result != 0 {
+			t.Fatal("permission probe returned while its helper remained alive")
+		}
+	}
+}
+
+func TestCodexWindowsPermissionProbeTimeoutReturnsAfterOwnedProcessExit(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=^TestCodexWindowsProcessHelper$")
+	command.Env = append(os.Environ(), "ONE_CODEX_JOB_TEST_MODE=child")
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if _, err := runWindowsCodexProbe(ctx, command); err == nil {
+		t.Fatal("timed out probe returned success")
+	}
+	if time.Since(started) > 12*time.Second {
+		t.Fatal("timed out probe did not finish cleanup promptly")
+	}
+	if command.ProcessState == nil || !command.ProcessState.Exited() {
+		t.Fatal("timed out probe root had no exit confirmation")
 	}
 }

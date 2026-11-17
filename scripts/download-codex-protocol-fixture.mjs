@@ -8,9 +8,18 @@ if (!directory) throw Error('A fresh fixture directory is required');
 fs.mkdirSync(directory, { recursive: false });
 const version = '0.160.1';
 const name = 'codex-package-x86_64-pc-windows-msvc.tar.gz';
-const metadataResponse = await fetch(`https://api.github.com/repos/openai/codex/releases/tags/rust-v${version}`,
-  { redirect: 'error', signal: AbortSignal.timeout(30_000) });
-if (!metadataResponse.ok) throw Error('Official Codex fixture metadata unavailable');
+// Authenticate only this fixed API origin to avoid the shared runner's public
+// rate limit. Never forward the token to asset/CDN redirects or print it.
+const metadataHeaders = process.env.GITHUB_TOKEN ? {Authorization: `Bearer ${process.env.GITHUB_TOKEN}`} : {};
+let metadataResponse;
+for (let attempt = 0; attempt < 3; attempt++) {
+  metadataResponse = await fetch(`https://api.github.com/repos/openai/codex/releases/tags/rust-v${version}`,
+    { headers: metadataHeaders, redirect: 'error', signal: AbortSignal.timeout(30_000) });
+  if (metadataResponse.ok || ![429,500,502,503,504].includes(metadataResponse.status)) break;
+  await metadataResponse.body?.cancel();
+  if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+}
+if (!metadataResponse?.ok) throw Error(`Official Codex fixture metadata unavailable (HTTP ${metadataResponse?.status ?? 'unknown'})`);
 const metadata = await metadataResponse.json();
 const asset = metadata.assets?.find(item => item.name === name);
 if (!asset || asset.browser_download_url !== `https://github.com/openai/codex/releases/download/rust-v${version}/${name}`

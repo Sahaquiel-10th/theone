@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -104,22 +105,14 @@ func checkWindowsCodexPermissions(executable string) error {
 	if err := os.WriteFile(outside, []byte("outside"), 0600); err != nil {
 		return err
 	}
-	args, environment, home, _, err := windowsCodexLaunch(&windowsCodexGateway{BaseURL: "https://theone.aiarrival.cn/api/executor-gateway/v1", Token: strings.Repeat("A", 43), Model: "one-executor"}, "permission-probe", codexRandomID(), inside, executable, true)
+	command, home, err := windowsCodexPermissionCommand(executable, inside, outside)
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(home)
-	literal := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }
-	written := filepath.Join(inside, "written.txt")
-	script := "$ErrorActionPreference='Stop';[IO.File]::WriteAllText(" + literal(written) + ",'inside');if([IO.File]::ReadAllText(" + literal(written) + ") -ne 'inside'){exit 2};try{[IO.File]::ReadAllText(" + literal(outside) + ")|Out-Null;exit 3}catch{};try{[IO.File]::WriteAllText(" + literal(outside) + ",'changed');exit 4}catch{};[Console]::Out.Write('ONE_PERMISSION_PROBE_OK')"
-	args = append(args[:len(args)-3], "sandbox", "windows", "--", "powershell.exe", "-NoLogo", "-NoProfile", "-Command", script)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, executable, args...)
-	command.Env = environment
-	command.Dir = inside
-	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, runErr := command.CombinedOutput()
+	output, runErr := runWindowsCodexProbe(ctx, command)
 	if runErr != nil || !strings.Contains(string(output), "ONE_PERMISSION_PROBE_OK") {
 		if strings.Contains(string(output), "native MXC is unavailable") {
 			return errors.New("这台 Windows 尚未具备 Codex 所需的文件夹隔离能力，请升级到受支持的 Windows 11 版本后再准备。ONE 内置文件工具仍可使用")
@@ -131,4 +124,97 @@ func checkWindowsCodexPermissions(executable string) error {
 		return errors.New("Codex 目录隔离检查未通过")
 	}
 	return nil
+}
+
+func windowsCodexPermissionCommand(executable, inside, outside string) (*exec.Cmd, string, error) {
+	args, environment, home, profile, err := windowsCodexLaunch(&windowsCodexGateway{BaseURL: "https://theone.aiarrival.cn/api/executor-gateway/v1", Token: strings.Repeat("A", 43), Model: "one-executor"}, "permission-probe", codexRandomID(), inside, executable, true)
+	if err != nil {
+		return nil, "", err
+	}
+	literal := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }
+	written := filepath.Join(inside, "written.txt")
+	script := "$ErrorActionPreference='Stop';[IO.File]::WriteAllText(" + literal(written) + ",'inside');if([IO.File]::ReadAllText(" + literal(written) + ") -ne 'inside'){exit 2};try{[IO.File]::ReadAllText(" + literal(outside) + ")|Out-Null;exit 3}catch{};try{[IO.File]::WriteAllText(" + literal(outside) + ",'changed');exit 4}catch{};[Console]::Out.Write('ONE_PERMISSION_PROBE_OK')"
+	args = append(args[:len(args)-3], "sandbox", "--permission-profile", profile, "--include-managed-config", "--", "powershell.exe", "-NoLogo", "-NoProfile", "-Command", script)
+	command := exec.Command(executable, args...)
+	command.Env, command.Dir = environment, inside
+	return command, home, nil
+}
+
+// Permission preparation has the same process ownership rule as user turns.
+// A timeout must join all helpers, including a child surviving its root.
+func runWindowsCodexProbe(ctx context.Context, command *exec.Cmd) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	job, err := newCodexProcessJob()
+	if err != nil {
+		return nil, err
+	}
+	defer job.close()
+	defer job.stopAndJoin()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	defer writer.Close()
+	command.Stdout, command.Stderr = writer, writer
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x200 | 0x4}
+	if err := command.Start(); err != nil {
+		return nil, err
+	}
+	writer.Close()
+	if err := job.assign(command); err != nil {
+		command.Process.Kill()
+		command.Wait()
+		return nil, err
+	}
+	if err := resumeCodexProcess(command); err != nil {
+		job.stopAndJoin()
+		command.Wait()
+		return nil, err
+	}
+	type probeOutput struct {
+		data []byte
+		err  error
+	}
+	output := make(chan probeOutput, 1)
+	go func() {
+		data, readErr := io.ReadAll(io.LimitReader(reader, 256*1024))
+		if readErr == nil {
+			_, readErr = io.Copy(io.Discard, reader)
+		}
+		output <- probeOutput{data: data, err: readErr}
+	}()
+	exited := make(chan error, 1)
+	go func() { exited <- command.Wait() }()
+	var exitErr error
+	rootExited := false
+	select {
+	case exitErr = <-exited:
+		rootExited = true
+	case <-ctx.Done():
+		exitErr = ctx.Err()
+		job.stopAndJoin()
+		select {
+		case <-exited:
+			rootExited = true
+		case <-time.After(3 * time.Second):
+		}
+	}
+	count, countErr := job.activeCount()
+	if countErr != nil || count != 0 {
+		if !job.stopAndJoin() {
+			exitErr = errors.New("Codex 准备检查的辅助进程尚未确认停止")
+		}
+	}
+	select {
+	case result := <-output:
+		if !rootExited || result.err != nil {
+			return result.data, errors.New("Codex 准备检查未能完成收尾")
+		}
+		return result.data, exitErr
+	case <-time.After(3 * time.Second):
+		return nil, errors.New("Codex 准备检查的输出尚未结束")
+	}
 }

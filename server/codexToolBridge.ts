@@ -14,6 +14,7 @@ import { appendExecutionEvent, executionTerminal, executionDeliveryPending } fro
 import { maxTerminalReceiptBytes } from './executionTerminalReceipt.js';
 import type { ScopedPublicSearch } from './webSearch.js';
 import { publicSearchOutcome, publicSearchPermitted, reviewedPublicQuery } from './publicSearch.js';
+import { knowledgeResultComplete } from './taskContract.js';
 
 export const codexToolBridgeCapability = 'codex_tool_bridge_v1';
 export type CodexBridgeTool = { name: string; description: string; inputSchema: Record<string, unknown> };
@@ -129,6 +130,15 @@ function artifactStep(job: WorkRun, operationId: string, artifactId: string) {
   const output = steps[0].output as { title: string; content: string; digest: string };
   if (!output || typeof output.title !== 'string' || typeof output.content !== 'string' || output.digest !== hash(output.content)) throw new Error('完整原稿记录已变化，请先查看原任务');
   return output;
+}
+function completedKnowledgeResult(call: { result?: CodexBridgeResult }, sourceIds: string[]) {
+  if (!call.result?.success) return false;
+  return call.result.contentItems.some(item => {
+    try {
+      const value = JSON.parse(item.text);
+      return ['used', 'no_match'].includes(value?.status) && knowledgeResultComplete(value, sourceIds);
+    } catch { return false; }
+  });
 }
 
 /** Tools are server-selected and private to one exact local execution. */
@@ -291,7 +301,8 @@ export class CodexToolBridge {
       await verify();
       const fresh = await this.store.read();
       const current = this.owned(fresh, owner, call); assertSources(fresh, current.task, current.job);
-      return result({ referenceOnly: true, ...(job.runtimeContext ? temporalKnowledgeResult(found, job.instruction, job.runtimeContext) as object : found) });
+      const evidence = job.runtimeContext ? temporalKnowledgeResult(found, job.instruction, job.runtimeContext) : found;
+      return result({ referenceOnly: true, ...(evidence as object) }, knowledgeResultComplete(evidence, job.contract?.knowledgeSourceIds ?? job.sources.map(source => source.id)));
     }
     if (call.tool === 'one_save_artifact') {
       const args = object(call.arguments, ['title', 'content']);
@@ -434,7 +445,8 @@ export class CodexToolBridge {
     const artifact = job.steps?.filter(step => step.namespace === 'codex-bridge' && step.scopeId === operation.id && step.effect === 'artifact' && step.state === 'completed').at(-1);
     const source = artifact ? artifactStep(job, operation.id, artifact.key) : undefined;
     const knowledgeRequired = job.contract?.requiredTools?.includes('knowledge_search') || Boolean(job.contract?.knowledgeSourceIds?.length);
-    const knowledgeCompleted = !knowledgeRequired || task.toolBridge.calls.some(call => call.round === (task.reportRound ?? 0) && call.tool === 'one_knowledge_search' && call.state === 'completed' && call.result?.success);
+    const knowledgeCompleted = !knowledgeRequired || task.toolBridge.calls.some(call => call.round === (task.reportRound ?? 0) && call.tool === 'one_knowledge_search' && call.state === 'completed'
+      && completedKnowledgeResult(call, job.contract?.knowledgeSourceIds ?? job.sources.map(source => source.id)));
     const webRequired = job.contract?.requiredTools?.includes('web_search');
     const webCompleted = !webRequired || task.toolBridge.calls.some(call => call.round === (task.reportRound ?? 0) && call.tool === 'one_web_search' && call.state === 'completed' && call.result?.success);
     const requiredReadsCompleted = knowledgeCompleted && webCompleted;
