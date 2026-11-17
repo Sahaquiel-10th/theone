@@ -31,13 +31,8 @@ struct CodexWorkspacePermissions {
         guard URL(fileURLWithPath: scratch).lastPathComponent.hasPrefix("scratch-"),
               environment["TMPDIR"].map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath().path == scratch }) == true else { throw NSError(domain: "ONE", code: 1) }
         name = "one-workspace-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        var projectRoots: [String] = []
-        var projectRoot = URL(fileURLWithPath: workspace, isDirectory: true)
-        while true {
-            projectRoots.append("\(codexTOMLString(projectRoot.path))={trust_level=\"untrusted\"}")
-            let parent = projectRoot.deletingLastPathComponent()
-            if parent.path == projectRoot.path { break }
-            projectRoot = parent
+        let projectRoots = Self.projectAncestors(workspace: workspace).map {
+            "\(codexTOMLString($0))={trust_level=\"untrusted\"}"
         }
         projectTrustSetting = "projects={\(projectRoots.joined(separator: ","))}"
         var readable = Set(Self.runtimePaths(environment: environment))
@@ -56,6 +51,21 @@ struct CodexWorkspacePermissions {
         rules += runtimeReadPaths.map { "\(codexTOMLString($0))=\"read\"" }
         rules.append("\(codexTOMLString(scratch))=\"write\"")
         setting = "permissions.\(name)={extends=\":workspace\",filesystem={\(rules.joined(separator: ","))},network={enabled=false}}"
+    }
+
+    // The workspace is already canonical. Walk its lexical parents so each
+    // iteration strictly shortens the path, including on older Foundation
+    // versions whose root file URL deletion does not stabilize at '/'.
+    static func projectAncestors(workspace: String) -> [String] {
+        precondition(workspace.hasPrefix("/"))
+        var roots: [String] = [], path = workspace
+        while path != "/" {
+            roots.append(path)
+            let separator = path.lastIndex(of: "/")!
+            path = separator == path.startIndex ? "/" : String(path[..<separator])
+        }
+        roots.append("/")
+        return roots
     }
 
     var arguments: [String] { ["-c", "default_permissions=\(codexTOMLString(name))", "-c", setting,

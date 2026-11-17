@@ -83,6 +83,14 @@ import Darwin
 
     static func main() throws {
         try processHarnessRegression()
+        precondition(CodexWorkspacePermissions.projectAncestors(workspace: "/") == ["/"], "root must terminate immediately")
+        precondition(CodexWorkspacePermissions.projectAncestors(workspace: "/one") == ["/one", "/"])
+        let deepComponents = (0..<100).map { "level-\($0)" }
+        let deepWorkspace = "/" + deepComponents.joined(separator: "/")
+        let deepAncestors = CodexWorkspacePermissions.projectAncestors(workspace: deepWorkspace)
+        precondition(deepAncestors.count == 101 && deepAncestors.first == deepWorkspace && deepAncestors.last == "/")
+        precondition(Set(deepAncestors).count == deepAncestors.count)
+        precondition(zip(deepAncestors, deepAncestors.dropFirst()).allSatisfy { $0.0.count > $0.1.count }, "every ancestor must strictly shorten the canonical path")
         let config = CodexGatewayConfiguration(baseUrl: "https://one.example/api/executor-gateway/v1", token: String(repeating: "a", count: 43), model: "one-executor")
         let result = try config.launchOverrides(home: URL(fileURLWithPath: "/tmp/one-isolated"), environment: ["OPENAI_API_KEY": "personal", "OPENAI_BASE_URL": "personal-url", "CODEX_HOME": "/personal", "PATH": "/bin"])
         precondition(result.environment["OPENAI_API_KEY"] == nil && result.environment["OPENAI_BASE_URL"] == nil)

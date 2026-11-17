@@ -10,7 +10,7 @@ const timer = setTimeout(() => {
   console.error('Native suite exceeded its 45 second deadline; sampling its owned process.');
   try {
     const sample = execFileSync('/usr/bin/sample', [String(child.pid), '1', '1'], {encoding:'utf8',timeout:8000,maxBuffer:1024*1024});
-    console.error(sample);
+    console.error(sample.split('Binary Images:')[0].slice(0,65536));
   } catch (error) { console.error('Native process sample unavailable:', error.code ?? 'unknown'); }
   child.kill('SIGKILL');
 }, 45000);

@@ -76,3 +76,24 @@ Windows 原生 CI 后续已通过包含真实 Job 对象测试的 Go race 检查
 - DeepSeek 组合和真实行业工作台试点。
 
 [cases.json](cases.json) 与 [results-template.json](results-template.json) 已准备好固定素材和统计口径。未执行项保持 `not_run` 与 `null`，不填写推测数字。
+
+## 候选构建与发布状态
+
+开发草稿为 [PR #1](https://github.com/Sahaquiel-10th/theone/pull/1)，未合入主干、未部署。应用检查已在 [3317 项测试的 CI](https://github.com/Sahaquiel-10th/theone/actions/runs/44097009486/job/134086696447) 取得 3316 通过、0 失败、1 跳过，包整理脚本 6/6 和生产构建通过。
+
+Mac 云端 Gateway 检查的挂死已由 [限时堆栈采样](https://github.com/Sahaquiel-10th/theone/actions/runs/44102880480/job/134107324671) 定位：旧 macOS 的根目录 URL 删除行为不收敛，导致权限配置构建不断累积祖先路径。修复改用 canonical 路径的字符串父目录，每轮严格变短，并明确在 `/` 结束；根目录、单层与 100 层无重复／有限终止回归通过。测试辅助程序也已限制进程与管道等待，避免再次盲等。
+
+修复后的真实生产 Swift controller 证明为 `one-tool-bridge-OGamto/evidence.json`，日志 `/tmp/one-codex-ancestor-controller-proof.log`：6 次合成模型请求、同 thread 新进程恢复、首轮写 1 次／恢复写 0 次，`READ_DENIED WRITE_DENIED`、`TOKEN_HIDDEN`、模型 synthetic bearer 正常，home／父 Git 项目 MCP 与 hook 均未启动，外部供应商调用为 0。旧系统云端复查仍以最后 CI 结果补记。
+
+Windows CI 已确证两个平台限制：MXC 在该宿主不可用，legacy unelevated 也拒绝精确的分离写入根。两者都保持明确拒绝，不扩大权限或冒充命令执行成功。CI 将这类兼容性反例与无本机命令的动态工具／同会话恢复正例分别记录；Windows 桥梁矩阵继续为空，内置文件能力仍可用。
+
+[Windows 完整安装与工具协议检查](https://github.com/Sahaquiel-10th/theone/actions/runs/44101006047/job/134100680717) 已通过：原生 Go race 和 Job 进程测试通过，正式包安装／重建／损坏拒绝通过；实际固定 Codex 的无本机命令正例为 5 次本机合成模型请求、首轮写入 1 次、新进程恢复同 thread 后额外写入 0 次，两轮实际退出码均为 0。日志同时明确记录 `STRICT_BRIDGE_UNAVAILABLE` 与 `LEGACY_COMMAND_UNAVAILABLE`，不以此验收本机文件任务或解除 Windows 桥梁关闭状态。
+
+两个 `0.4.31` 候选程序保存在本工作树的 `output/codex-bridge-candidates-20261117/`，不含 Key 凭据，没有安装或对外发布：
+
+| 候选 | 构建事实 | 主程序 SHA-256 |
+| --- | --- | --- |
+| macOS | 旧通用候选已退回历史目录；祖先循环修复后的双架构候选正在重建 | 待新构建完成补记 |
+| Windows | x86-64 GUI 构建 | `f0c0147d23c63576ef111772363720dcad56ae87395a4ea9c646afcc84d9dafa` |
+
+候选尚未生成受既有发布公钥信任的运行时更新清单。本地代码签名不代替正式更新签名；Key 恢复后仍先跑旧路径基线，再安装候选做对照，不能先自动切换而丢失比较条件。
