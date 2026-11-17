@@ -19,7 +19,7 @@
 | 合成模型请求总数 | 6 | 6 |
 | 权限检查 | 每次进程使用新的随机权限 profile | 原生命令探测返回 `READ_DENIED WRITE_DENIED` |
 
-Swift 最新完整证据为 `/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-tool-bridge-IAwmpZ/evidence.json`，日志为 `/tmp/one-codex-startup-isolation-final.log`，模式为 `--command-first --environment-proof --startup-proof`。首轮和恢复轮使用不同的 `one-workspace-*` profile，thread 保持一致。控制器检查官方返回的 `activePermissionProfile.id` 与本轮随机 profile 精确匹配，缺失或不匹配时在开始执行前拒绝。
+Swift 最新完整证据为 `/var/folders/bg/vcdydmhx7y52gty1pjsk1tsh0000gn/T/one-tool-bridge-OGamto/evidence.json`，日志为 `/tmp/one-codex-ancestor-controller-proof.log`，模式为 `--command-first --environment-proof --startup-proof`。首轮和恢复轮使用不同的 `one-workspace-*` profile，thread 保持一致。控制器检查官方返回的 `activePermissionProfile.id` 与本轮随机 profile 精确匹配，缺失或不匹配时在开始执行前拒绝。
 
 这轮实际命令还验证了环境变量过滤。隔离配置故意使用 `inherit=all`、忽略默认排除项，并在 `set` 中重新导入合成 HTTP 凭据。最终 `include_only` 过滤得到 `TOKEN_HIDDEN`，外侧合成文件探测得到 `READ_DENIED WRITE_DENIED`。每次合成模型 HTTP 认证正常，模型输入正文没有包含该合成凭据。采用 core 继承与默认排除项的早期对照曾得到 `TOKEN_VISIBLE`，该反例已由最终过滤规则覆盖。整个验证使用合成凭据，供应商调用为 0。
 
@@ -50,7 +50,7 @@ Windows 安装测试使用包含 `MZ` 标记的合成文件和测试签名，不
 
 新增回归验证确认后的 tombstone 清除正文，并拒绝同身份再次写入晚到终态。包含 20 万个 `<` 的正文能够在 512 KiB 传输限制内持久化，重启后原文及摘要一致。同版本损坏修复先验证新包，再替换当前目录，激活失败会恢复原目录及指针，额外 DLL 会在执行前被拒绝。
 
-以上为已执行的本地检查。全量应用、Mac、Windows CI 最终计数和构建结果由正式 CI 完成后补充，不以局部检查替代发布通过。
+以上为已执行的局部检查。正式应用、Mac、Windows CI 结果见下方候选构建记录；自动检查不代替真实业务验收与生产发布。
 
 ## Windows 官方实包
 
@@ -60,17 +60,17 @@ Windows 安装测试使用包含 `MZ` 标记的合成文件和测试签名，不
 
 Windows CI 已取得完整官方资产并校验上述大小和摘要。正式 tar 清单包含 45 个普通文件，共 `450588539` 字节，约 429.7 MiB。新增根 LICENSE 和 NOTICE 后为 47 个文件，脚本和启动器的总解包上限按此调整为 512 MiB。主程序为 `326875440` 字节，code-mode-host 为 `74669360` 字节，单文件仍在 320 MiB 范围内。完整路径和大小保存在 [固定版本清单](windows-codex-0.160.1-inventory.json) 中。
 
-第一轮准备检查发现 voice DLL 资源未被识别。已按官方布局保留整个 `codex-resources` 树，包含原位置的 command-runner、sandbox-setup、voice-host、DLL、JSON 和许可证。6 项脚本回归已通过。后续 Windows CI 已通过正式包重封、安装重建和篡改检查，严格 mxc 权限配置在 thread/start 阶段受阻，完整 Windows 实进程与恢复结果继续验收。正式清单见 [文件清单记录](https://github.com/Sahaquiel-10th/theone/actions/runs/44088792778/job/134058292847)，安装检查见 [后续 Windows CI](https://github.com/Sahaquiel-10th/theone/actions/runs/44091362830)。
+第一轮准备检查发现 voice DLL 资源未被识别。已按官方布局保留整个 `codex-resources` 树，包含原位置的 command-runner、sandbox-setup、voice-host、DLL、JSON 和许可证。6 项脚本回归已通过。正式包重封、安装重建和篡改检查已通过；实际 Windows Codex 的动态工具及新进程恢复也已通过，具体范围见下方完整检查记录。严格 MXC 权限配置仍因 CI 宿主不支持而受阻。正式清单见 [文件清单记录](https://github.com/Sahaquiel-10th/theone/actions/runs/44088792778/job/134058292847)。
 
 Windows 的 Codex 桥梁版本矩阵暂留空。状态检查按已认证启动器的 `local_tools_v1` 返回内置文件工具及真实启动器版本，目录正常时仍可继续使用内置文件读写。新启动器声明 managed/bridge 协议时也使用这一规则，当前状态明确显示 Codex 的 Windows 版本待验收。此分支已覆盖缺少 Windows Codex 清单、跳过原生 Codex 探测、权限归属与完整 readiness 回归。
 
-Windows 原生 CI 后续已通过包含真实 Job 对象测试的 Go race 检查。随后的正式包下载遇到 GitHub 元数据上游失败，下载与完整 Codex 实进程结果由后续 CI 继续补充。当前记录见 [Windows 原生检查](https://github.com/Sahaquiel-10th/theone/actions/runs/44095418363)。
+Windows 原生 CI 已通过包含真实 Job 对象测试的 Go race 检查。期间曾遇到 GitHub 元数据上游失败；后续完整检查已取得正式包并运行固定 Codex，结果见下方 Windows CI 记录。
 
 ## 尚未执行的验收
 
 - ONE Key 与真实模型供应商贯通、实际电力结算。
 - 真实已授权得到大脑与 Notion 连接器闭环。
-- Windows 正式 Codex 实包运行、原生进程与系统权限检查。
+- Windows 严格目录隔离配置下的本机命令、文件业务及系统权限验收。
 - Windows 实体机、Mac 完整业务入口及两端设备断线恢复。
 - A 至 E 新旧路径性能对照、真实成功率、人工介入和费用比较。
 - DeepSeek 组合和真实行业工作台试点。
@@ -83,7 +83,9 @@ Windows 原生 CI 后续已通过包含真实 Job 对象测试的 Go race 检查
 
 Mac 云端 Gateway 检查的挂死已由 [限时堆栈采样](https://github.com/Sahaquiel-10th/theone/actions/runs/44102880480/job/134107324671) 定位：旧 macOS 的根目录 URL 删除行为不收敛，导致权限配置构建不断累积祖先路径。修复改用 canonical 路径的字符串父目录，每轮严格变短，并明确在 `/` 结束；根目录、单层与 100 层无重复／有限终止回归通过。测试辅助程序也已限制进程与管道等待，避免再次盲等。
 
-修复后的真实生产 Swift controller 证明为 `one-tool-bridge-OGamto/evidence.json`，日志 `/tmp/one-codex-ancestor-controller-proof.log`：6 次合成模型请求、同 thread 新进程恢复、首轮写 1 次／恢复写 0 次，`READ_DENIED WRITE_DENIED`、`TOKEN_HIDDEN`、模型 synthetic bearer 正常，home／父 Git 项目 MCP 与 hook 均未启动，外部供应商调用为 0。旧系统云端复查仍以最后 CI 结果补记。
+修复后的真实生产 Swift controller 证明为 `one-tool-bridge-OGamto/evidence.json`，日志 `/tmp/one-codex-ancestor-controller-proof.log`：6 次合成模型请求、同 thread 新进程恢复、首轮写 1 次／恢复写 0 次，`READ_DENIED WRITE_DENIED`、`TOKEN_HIDDEN`、模型 synthetic bearer 正常，home／父 Git 项目 MCP 与 hook 均未启动，外部供应商调用为 0。
+
+[修复后的 Intel macOS 15 云端检查](https://github.com/Sahaquiel-10th/theone/actions/runs/44104021576/job/134111379215) 已通过，源码为 `6a8393d`。权限配置有限终止、24 组 App Server 控制器、13 组输入检查、9 组真实管道适配、动态工具重连、目录持久化、进程停止及 6 组回执传输均通过。该任务只运行 Mac 检查，应用、Windows 和部署步骤跳过；真实 Key、供应商与业务链路继续待验收。
 
 Windows CI 已确证两个平台限制：MXC 在该宿主不可用，legacy unelevated 也拒绝精确的分离写入根。两者都保持明确拒绝，不扩大权限或冒充命令执行成功。CI 将这类兼容性反例与无本机命令的动态工具／同会话恢复正例分别记录；Windows 桥梁矩阵继续为空，内置文件能力仍可用。
 
@@ -93,7 +95,7 @@ Windows CI 已确证两个平台限制：MXC 在该宿主不可用，legacy unel
 
 | 候选 | 构建事实 | 主程序 SHA-256 |
 | --- | --- | --- |
-| macOS | 旧通用候选已退回历史目录；祖先循环修复后的双架构候选正在重建 | 待新构建完成补记 |
+| macOS | 祖先循环修复后的 arm64 + x86_64 通用构建，本地代码签名检查通过；旧候选保留于历史目录 | `e149183ec77447953f6cbcc5f98f259b9e6130e46f605e6d489ca9e0543b7037` |
 | Windows | x86-64 GUI 构建 | `f0c0147d23c63576ef111772363720dcad56ae87395a4ea9c646afcc84d9dafa` |
 
 候选尚未生成受既有发布公钥信任的运行时更新清单。本地代码签名不代替正式更新签名；Key 恢复后仍先跑旧路径基线，再安装候选做对照，不能先自动切换而丢失比较条件。
