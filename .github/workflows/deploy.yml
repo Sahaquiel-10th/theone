@@ -10,6 +10,14 @@ on:
         required: false
         type: boolean
         default: false
+      macos_runner:
+        description: Standard Mac test host; Intel is an alternate when ARM hosts are queued
+        required: false
+        type: choice
+        options:
+          - macos-15
+          - macos-15-intel
+        default: macos-15
 
 permissions:
   contents: read
@@ -106,7 +114,7 @@ jobs:
 
   verify-macos-runtime:
     if: github.event.inputs.windows_only != 'true'
-    runs-on: macos-15
+    runs-on: ${{ github.event.inputs.macos_runner || 'macos-15' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
