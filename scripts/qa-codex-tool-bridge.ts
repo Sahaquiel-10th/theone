@@ -65,9 +65,12 @@ function stream(response: http.ServerResponse, step: number) {
   const responseId = `resp_fixture_${step}`;
   const responseBase = { id: responseId, object: 'response', model: 'one-executor',
     created_at: 0, status: 'in_progress', output: [] };
+  const advertised = toolCatalog.flatMap(tool => [tool, ...(tool.tools ?? [])]);
+  const commandName = advertised.some(tool => tool.name === 'exec_command') ? 'exec_command' : 'shell_command';
+  if(commandFirst&&step===0)assert(advertised.some(tool=>tool.name===commandName),`No advertised command tool: ${JSON.stringify(toolCatalog)}`);
   const output = commandFirst && step === 0
-    ? {id:'fc_native_command',type:'function_call',status:'completed',name:'exec_command',call_id:'native_command',
-      arguments:JSON.stringify({cmd:fixtureCommand(),workdir:project,yield_time_ms:1000,max_output_tokens:2000})}
+    ? {id:'fc_native_command',type:'function_call',status:'completed',name:commandName,call_id:'native_command',
+      arguments:JSON.stringify(commandName==='exec_command'?{cmd:fixtureCommand(),workdir:project,yield_time_ms:1000,max_output_tokens:2000}:{command:fixtureCommand(),workdir:project,timeout_ms:10000})}
     : logicalStep < 2 || logicalStep === 3
     ? { id: `fc_${step}`, type: 'function_call', status: 'completed',
       name: logicalStep === 1 ? 'one_fixture_save' : 'one_fixture_read',
@@ -143,6 +146,7 @@ if (controllerFixture) {
     assert.equal(evidence.writes, 1);
     assert.equal(modelRequests, commandFirst ? 4 : 3);
     if (commandFirst) {
+      assert(fs.existsSync(path.join(project,'command-proof.txt')),`Advertised native command did not produce its proof; tools=${JSON.stringify(toolCatalog)}; controller=${JSON.stringify(evidence)}`);
       assert.equal(fs.readFileSync(path.join(project,'command-proof.txt'),'utf8'),marker);
       const scope = fs.readFileSync(path.join(project,'scope-proof.txt'),'utf8');
       assert(scope.includes('WRITE_DENIED'), 'Outside workspace write was not denied');
