@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {localDeviceCanRequestExecution,localReadinessStatus,parseLocalDeviceReadiness,type LocalDeviceReadiness} from './localDeviceReadiness';
+import {codexBridgePlatformEnabled,localDeviceCanBridge,localDeviceCanRequestExecution,localReadinessStatus,parseLocalDeviceReadiness,type LocalDeviceReadiness} from './localDeviceReadiness';
 
 const ready:LocalDeviceReadiness={checkedAt:'2026-10-31T00:00:00.000Z',ready:true,connected:true,folder:{state:'ready',targetName:'/QA/合成目录'},executor:{state:'ready',installedVersion:'0.116.0',installedSource:'managed'},reason:'ready'};
 test('readiness parser accepts only coherent, dated, enumerated snapshots and strips unreviewed fields',()=>{
@@ -29,4 +29,19 @@ test('relative freshness and reviewed platform capabilities are strictly parsed 
   assert.deepEqual(parseLocalDeviceReadiness({...ready,...metadata}),{...ready,...metadata});
   for(const invalid of [{validForMs:-1},{validForMs:10001},{validForMs:NaN},{platform:'guess'},{capabilities:{staticPreview:'yes',taskDirectoryBinding:false}},{capabilities:{staticPreview:true}}])assert.equal(parseLocalDeviceReadiness({...ready,...invalid}),undefined);
   assert.deepEqual(parseLocalDeviceReadiness({...ready,capabilities:{staticPreview:false,taskDirectoryBinding:false,privateToken:'never'}})?.capabilities,{staticPreview:false,taskDirectoryBinding:false});
+});
+test('bridge execution requires the exact verified runtime for each known platform and never treats builtin or protocol alone as Codex',()=>{
+  assert.equal(codexBridgePlatformEnabled('macos'),true);assert.equal(codexBridgePlatformEnabled('windows'),false);assert.equal(codexBridgePlatformEnabled('unknown'),false);
+  const value:LocalDeviceReadiness={...ready,platform:'macos',capabilities:{staticPreview:true,taskDirectoryBinding:true,codexToolBridge:true},executor:{state:'ready',installedVersion:'0.160.1',installedSource:'managed'}};
+  for(const installedSource of ['managed','existing'] as const){
+    assert.equal(localDeviceCanBridge({...value,platform:'macos',executor:{...value.executor,installedSource}}),true);
+    assert.equal(localDeviceCanBridge({...value,platform:'windows',executor:{...value.executor,installedSource}}),false,'native Windows has not passed the strict read-boundary matrix');
+  }
+  for(const installedVersion of ['0.116.0','0.134.0','0.160.0','0.160.1-beta','0.162.0','1.0.0'])assert.equal(localDeviceCanBridge({...value,executor:{...value.executor,installedVersion}}),false);
+  for(const platform of [undefined,'unknown'] as const)assert.equal(localDeviceCanBridge({...value,platform}),false);
+  assert.equal(localDeviceCanBridge({...value,executor:{...value.executor,installedSource:'builtin'}}),false);
+  assert.equal(localDeviceCanBridge({...value,executor:{...value.executor,installedSource:undefined}}),false);
+  assert.equal(localDeviceCanBridge({...value,capabilities:{...value.capabilities!,codexToolBridge:false}}),false);
+  assert.equal(localDeviceCanBridge({...value,ready:false}),false);
+  assert.equal(localDeviceCanRequestExecution({...value,executor:{...value.executor,installedVersion:'0.4.31',installedSource:'builtin'}}),true,'original explicit builtin file path remains available');
 });

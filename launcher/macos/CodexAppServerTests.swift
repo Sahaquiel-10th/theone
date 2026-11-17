@@ -11,8 +11,12 @@ private final class TestClock: @unchecked Sendable {
 }
 private actor WriterGate {
     private var continuation: CheckedContinuation<Void, Never>?
-    func wait() async { await withCheckedContinuation { continuation = $0 } }
-    func release() { continuation?.resume(); continuation = nil }
+    private var released = false
+    func wait() async {
+        if released { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() { released = true; continuation?.resume(); continuation = nil }
 }
 private actor InterruptHookProbe {
     private var calls = 0
@@ -40,6 +44,105 @@ private actor Fixture {
     func methodCount(_ method: String) -> Int { writes.filter { $0["method"]?.string == method }.count }
     func lastWrite() -> JSON? { writes.last }
     func allEvents() -> [JSON] { events }
+    func response(_ id: JSON) async throws -> JSON {
+        let deadline = ProcessInfo.processInfo.systemUptime + 1
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            if let value = writes.last(where: { $0["id"] == id && $0["method"] == nil }) { return value }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        throw TestFailure(message: "tool response absent")
+    }
+}
+
+private actor ToolProbe {
+    private var calls: [CodexDynamicToolCall] = []
+    func record(_ call: CodexDynamicToolCall) { calls.append(call) }
+    func count() -> Int { calls.count }
+}
+
+private let bridgeDefinition = CodexDynamicToolDefinition(name: "one_fixture_read", description: "Read bound test source",
+    inputSchema: .object(["type": .string("object"), "properties": .object([:])]))
+
+private func dynamicCall(_ id: Int, callId: String = "call_1", tool: String = "one_fixture_read",
+                         thread: String = "thread_1", arguments: JSON = .object([:])) -> JSON {
+    .object(["id": .number(Double(id)), "method": .string("item/tool/call"), "params": .object([
+        "threadId": .string(thread), "turnId": .string("turn_1"), "callId": .string(callId),
+        "tool": .string(tool), "arguments": arguments
+    ])])
+}
+
+private func dynamicToolsAreScopedAndDeduplicated() async throws {
+    let fixture = Fixture(), probe = ToolProbe(), gate = WriterGate()
+    let actor = try CodexAppServerController(attemptId: "bridge_attempt", authorizedCWD: "/tmp/ONE-QA", clientVersion: "test",
+        dynamicTools: [bridgeDefinition], onToolCall: { call in
+            await probe.record(call); await gate.wait()
+            return CodexDynamicToolResult(contentItems: [.object(["type": .string("inputText"), "text": .string("bound source")])], success: true)
+        }, sendLine: { try await fixture.send($0) }, onExecEvent: { await fixture.event($0) })
+    _ = try await bootstrap(actor, fixture: fixture)
+    let initialization = try await fixture.request("initialize")
+    try check(initialization["params"]?["capabilities"]?["experimentalApi"] == .bool(true), "tool bridge explicitly enables supported protocol")
+    let thread = try await fixture.request("thread/start")
+    try check(thread["params"]?["dynamicTools"]?.array?.first?["type"]?.string == "function", "fixed runtime declaration shape")
+    try await item(actor, "item/started", .object(["id": .string("call_1"), "type": .string("dynamicToolCall"), "status": .string("inProgress")]))
+    try await receive(actor, dynamicCall(71, arguments: .object(["a": .number(1), "b": .number(2)])))
+    try await receive(actor, dynamicCall(72, arguments: .object(["b": .number(2), "a": .number(1)])))
+    while await probe.count() == 0 { await Task.yield() }
+    await gate.release()
+    let first = try await fixture.response(.number(71)), second = try await fixture.response(.number(72))
+    let count = await probe.count()
+    try check(first["result"] == second["result"] && count == 1, "same call executes once during concurrent duplicate")
+    try await receive(actor, dynamicCall(73, arguments: .object(["a": .number(1), "b": .number(2)])))
+    _ = try await fixture.response(.number(73))
+    try check(await probe.count() == 1, "completed duplicate returns same result")
+    try await item(actor, "item/completed", .object(["id": .string("call_1"), "type": .string("dynamicToolCall"), "status": .string("completed"), "success": .bool(true)]))
+    try await item(actor, "item/completed", .object(["id": .string("answer"), "type": .string("agentMessage"), "text": .string("ONE_LOCAL_RESULT_V1 VERIFIED\n结果已交付")]))
+    try await end(actor, status: "completed")
+    try check((await actor.snapshot()).canCompleteNormally(treeCleanupVerified: true, processExitCode: 0, requestSucceeded: true), "tool-only bridge task can complete")
+}
+
+private func dynamicToolsRejectForeignAndChangedCalls() async throws {
+    for mode in ["foreign", "unknown", "changed"] {
+        let fixture = Fixture(), probe = ToolProbe()
+        let actor = try CodexAppServerController(attemptId: "bridge_\(mode)", authorizedCWD: "/tmp/ONE-QA", clientVersion: "test",
+            dynamicTools: [bridgeDefinition], onToolCall: { call in
+                await probe.record(call)
+                return .failure("fixture")
+            }, sendLine: { try await fixture.send($0) }, onExecEvent: { await fixture.event($0) })
+        _ = try await bootstrap(actor, fixture: fixture)
+        if mode == "changed" {
+            try await receive(actor, dynamicCall(80))
+            _ = try await fixture.response(.number(80))
+            try await receive(actor, dynamicCall(81, arguments: .object(["changed": .bool(true)])))
+            try check(await probe.count() == 1, "changed arguments cannot execute under same identity")
+            try check((await actor.snapshot()).protocolIssue != nil, "changed call invalidates protocol")
+        } else {
+            try await receive(actor, dynamicCall(81, tool: mode == "unknown" ? "not_allowed" : "one_fixture_read",
+                thread: mode == "foreign" ? "another_thread" : "thread_1"))
+            try check(await probe.count() == 0, "foreign or undeclared tool cannot execute")
+        }
+        await actor.transportClosed()
+    }
+}
+
+private func dynamicToolBeforeTurnReplyAndInterruptedTerminal() async throws {
+    let fixture = Fixture(), probe = ToolProbe(), gate = WriterGate()
+    let actor = try CodexAppServerController(attemptId: "bridge_early", authorizedCWD: "/tmp/ONE-QA", clientVersion: "test",
+        dynamicTools: [bridgeDefinition], onToolCall: { call in
+            await probe.record(call); await gate.wait(); return .failure("stopped")
+        }, sendLine: { try await fixture.send($0) }, onExecEvent: { await fixture.event($0) })
+    _ = try await bootstrap(actor, fixture: fixture, beforeTurnReply: {
+        try await item(actor, "item/started", .object(["id": .string("call_1"), "type": .string("dynamicToolCall"), "status": .string("inProgress")]))
+        try await receive(actor, dynamicCall(90))
+    })
+    while await probe.count() == 0 { await Task.yield() }
+    let stop = Task { await actor.requestInterrupt(timeout: 0.5) }
+    let interrupt = try await fixture.request("turn/interrupt")
+    try await end(actor, status: "interrupted")
+    try await reply(actor, interrupt)
+    try await item(actor, "item/completed", .object(["id": .string("call_1"), "type": .string("dynamicToolCall"), "status": .string("interrupted")]))
+    try check(await stop.value, "exact interrupted tool terminal settles owned cancellation")
+    await gate.release()
+    try check((await actor.snapshot()).assessment(treeCleanupVerified: true).cancellationConfirmed, "late callback cannot change cancellation")
 }
 
 private func controller(_ fixture: Fixture, resume: String? = nil, timeout: TimeInterval = 1) throws -> CodexAppServerController {
@@ -72,11 +175,14 @@ private func end(_ controller: CodexAppServerController, status: String, items: 
     ])])
 }
 private func bootstrap(_ controller: CodexAppServerController, fixture: Fixture, resume: Bool = false,
-                       instruction: String = "raw instruction", beforeTurnReply: (() async throws -> Void)? = nil) async throws -> JSON {
+                       instruction: String = "raw instruction", namedProfile: Bool = false, beforeTurnReply: (() async throws -> Void)? = nil) async throws -> JSON {
     let start = Task { try await controller.start(instruction: instruction) }
     try await reply(controller, fixture.request("initialize"))
+    if namedProfile { try await reply(controller,fixture.request("config/read"),.object(["config":.object(["mcp_servers":.object(["inherited":.object(["enabled":.bool(true)])])])])) }
     let thread = try await fixture.request(resume ? "thread/resume" : "thread/start")
-    try await reply(controller, thread, .object(["thread": .object(["id": .string("thread_1")])]))
+    var threadResponse:[String:JSON] = ["thread": .object(["id": .string("thread_1")])]
+    if let profile=thread["params"]?["permissions"]?.string { threadResponse["activePermissionProfile"] = .object(["id":.string(profile)]) }
+    try await reply(controller, thread, .object(threadResponse))
     let turn = try await fixture.request("turn/start")
     try await beforeTurnReply?()
     try await reply(controller, turn, .object(["turn": .object(["id": .string("turn_1"), "status": .string("inProgress"), "items": .array([])])]))
@@ -127,6 +233,35 @@ private func privateScratchPolicy() async throws {
     try check(policy?["excludeTmpdirEnvVar"] == .bool(true) && policy?["excludeSlashTmp"] == .bool(true), "system temp remains blocked")
     try check(policy?["networkAccess"] == .bool(false), "scratch never enables network")
     await actor.transportClosed()
+}
+
+private func namedWorkspacePolicy() async throws {
+    for resume in [false, true] {
+        let fixture = Fixture(), profile = "one-workspace-" + String(repeating: "a", count: 32)
+        let actor = try CodexAppServerController(attemptId: "named_permissions", authorizedCWD: "/tmp/ONE-QA",
+            permissionProfile: profile, resumeThreadId: resume ? "thread_1" : nil,
+            clientVersion: "test", sendLine: { try await fixture.send($0) }, onExecEvent: { await fixture.event($0) })
+        let turn = try await bootstrap(actor, fixture: fixture, resume: resume, namedProfile:true)
+        let thread = try await fixture.request(resume ? "thread/resume" : "thread/start")
+        try check(thread["params"]?["permissions"]?.string == profile && thread["params"]?["sandbox"] == nil,
+                  "named thread permissions cannot be mixed with legacy sandbox")
+        try check(thread["params"]?["config"]?["mcp_servers"]?["inherited"]?["enabled"] == .bool(false),"inherited MCP must be disabled before thread start or resume")
+        try check(turn["params"]?["permissions"]?.string == profile && turn["params"]?["sandboxPolicy"] == nil,
+                  "named turn permissions cannot be weakened by legacy policy override")
+        await actor.transportClosed()
+    }
+}
+
+private func namedWorkspacePolicyCannotFallBack() async throws {
+    let fixture=Fixture(), profile="one-workspace-"+String(repeating:"a",count:32)
+    let actor=try CodexAppServerController(attemptId:"profile_refusal",authorizedCWD:"/tmp/ONE-QA",permissionProfile:profile,
+        clientVersion:"test",sendLine:{try await fixture.send($0)},onExecEvent:{await fixture.event($0)})
+    let starting=Task{try await actor.start(instruction:"must not run under a broader profile")}
+    try await reply(actor,fixture.request("initialize"))
+    try await reply(actor,fixture.request("config/read"),.object(["config":.object([:])]))
+    try await reply(actor,fixture.request("thread/start"),.object(["thread":.object(["id":.string("thread_1")]),"activePermissionProfile":.object(["id":.string(":workspace")])]))
+    do { _=try await starting.value;throw TestFailure(message:"unconfirmed read boundary accepted") } catch CodexAppServerError.invalidProtocol {}
+    try check(await fixture.methodCount("turn/start")==0,"a mismatched profile cannot dispatch the instruction")
 }
 
 private func exactCancellation() async throws {
@@ -249,12 +384,20 @@ private func deadlinesAndEOF() async throws {
     try await end(a3, status: "interrupted")
     try check(!(await a3.snapshot()).interruptAcknowledged, "late ACK cannot unlock")
     try check((await a3.snapshot()).assessment(treeCleanupVerified: true).requiresCheck, "late ACK hold")
-    let f4 = Fixture(), a4 = try controller(f4)
+    let f4 = Fixture(), lateClock = TestClock()
+    let a4 = try CodexAppServerController(attemptId:"late_terminal",authorizedCWD:"/tmp/ONE-QA",clientVersion:"test",
+        now:{lateClock.now()},sendLine:{try await f4.send($0)},onExecEvent:{await f4.event($0)})
     _ = try await bootstrap(a4, fixture: f4)
-    let lateTerminal = Task { await a4.requestInterrupt(timeout: 0.04) }
+    let lateTerminal = Task { await a4.requestInterrupt(timeout: 10) }
     try await reply(a4, f4.request("turn/interrupt"))
-    try check(!(await lateTerminal.value), "ACK alone cannot pass deadline")
+    let ackDeadline=ProcessInfo.processInfo.systemUptime+1
+    while !(await a4.snapshot()).interruptAcknowledged {
+        try check(ProcessInfo.processInfo.systemUptime<ackDeadline,"ACK was not processed")
+        await Task.yield()
+    }
+    lateClock.advance(20)
     try await end(a4, status: "interrupted")
+    try check(!(await lateTerminal.value), "ACK alone cannot pass deadline")
     let lateSnapshot = await a4.snapshot()
     try check(lateSnapshot.interruptAcknowledged && !lateSnapshot.interruptCompletedWithinDeadline,
         "late terminal cannot retroactively confirm timed-out stop")
@@ -567,6 +710,8 @@ private func ownedStopFailureOrTimeoutCannotTurnGreen() async throws {
         do {
             try await normalAndPolicy()
             try await privateScratchPolicy()
+            try await namedWorkspacePolicy()
+            try await namedWorkspacePolicyCannotFallBack()
             try await exactCancellation()
             try await unknownCommandsStayUnknown()
             try await earlyAndForeignEvents()
@@ -584,7 +729,10 @@ private func ownedStopFailureOrTimeoutCannotTurnGreen() async throws {
             try await lateCommandUsesOriginalDeadline()
             try await acceptedInterruptStopsOwnedCommandsBeforeWaitingForTerminal()
             try await ownedStopFailureOrTimeoutCannotTurnGreen()
-            print("CodexAppServerTests: 19 groups passed (mocked stdio only)")
+            try await dynamicToolsAreScopedAndDeduplicated()
+            try await dynamicToolsRejectForeignAndChangedCalls()
+            try await dynamicToolBeforeTurnReplyAndInterruptedTerminal()
+            print("CodexAppServerTests: 24 groups passed (mocked stdio only)")
         } catch { fputs("CodexAppServerTests failed: \(error)\n", stderr); exit(1) }
     }
 }

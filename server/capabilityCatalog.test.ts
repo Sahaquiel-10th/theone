@@ -25,6 +25,21 @@ function feature(id: string, userId: string, mode: "text" | "image" = "text"): O
   return { id, revision: 2, status: "approved", draft: values, current: version, history: [version], release: { id: `release-${id}`, version: 1, userIds: [userId], publishedAt: "fixture", publishedBy: "admin" } };
 }
 
+test('only an authenticated ready Codex bridge offers an unbound prompt workbench; locked models and foreign releases retain their scope', () => {
+  const db=fixture(), own=feature('unbound-own','a'), foreign=feature('unbound-foreign','b'), fixed=feature('fixed','a');
+  for(const record of [own,foreign]) { delete record.draft.modelId; delete record.current!.values.modelId; delete record.history[0].values.modelId; }
+  db.settings.officialFeatures=[own,foreign,fixed];
+  const scope={workspaceId:'wa',userId:'a'};
+  assert.ok(!routingCapabilities(db,scope,{localAvailable:true}).some(card=>card.featureId==='unbound-own'));
+  assert.ok(!routingCapabilities(db,scope,{codexToolBridgeAvailable:true}).some(card=>card.featureId==='unbound-own'));
+  const cards=routingCapabilities(db,scope,{localAvailable:true,codexToolBridgeAvailable:true});
+  assert.equal(cards.find(card=>card.featureId==='unbound-own')!.modelId,undefined);
+  assert.equal(cards.find(card=>card.featureId==='fixed')!.modelId,'gpt');
+  assert.ok(!cards.some(card=>card.featureId==='unbound-foreign'));
+  own.history[0].values.tools=[{id:'oneWorkbook',description:'synthetic spreadsheet tool'}];
+  assert.ok(!routingCapabilities(db,scope,{localAvailable:true,codexToolBridgeAvailable:true}).some(card=>card.featureId==='unbound-own'));
+});
+
 test('fixed workflows share the capability inventory and knowledge discovery never exposes another owner or credentials',()=>{
  const db=fixture();
  db.knowledgeConnections=[{id:'own',workspaceId:'wa',provider:'notion',status:'connected',encryptedAccessToken:'DO_NOT_EXPOSE'},{id:'foreign',workspaceId:'wb',provider:'getnote',status:'connected'},{id:'off',workspaceId:'wa',provider:'flomo',status:'disconnected'}] as any;

@@ -60,6 +60,42 @@ enum CodexAppServerTurnStatus: String, Sendable {
     var terminal: Bool { self != .inProgress }
 }
 
+struct CodexDynamicToolDefinition: Codable, Sendable {
+    let name: String
+    let description: String
+    let inputSchema: CodexAppServerJSON
+
+    var declaration: CodexAppServerJSON {
+        .object(["type": .string("function"), "name": .string(name),
+            "description": .string(description), "inputSchema": inputSchema])
+    }
+}
+
+struct CodexToolBridgeConfiguration: Codable, Sendable {
+    let tools: [CodexDynamicToolDefinition]
+}
+
+struct CodexDynamicToolCall: Codable, Sendable {
+    let threadId: String
+    let turnId: String
+    let callId: String
+    let tool: String
+    let arguments: CodexAppServerJSON
+}
+
+struct CodexDynamicToolResult: Codable, Sendable {
+    let contentItems: [CodexAppServerJSON]
+    let success: Bool
+
+    static func failure(_ text: String) -> Self {
+        Self(contentItems: [.object(["type": .string("inputText"), "text": .string(text)])], success: false)
+    }
+
+    var json: CodexAppServerJSON {
+        .object(["contentItems": .array(contentItems), "success": .bool(success)])
+    }
+}
+
 struct CodexAppServerTurnIdentity: Sendable, Equatable {
     let attemptId: String
     let threadId: String
@@ -157,6 +193,7 @@ actor CodexAppServerController {
     typealias SendLine = @Sendable (String) async throws -> Void
     typealias ExecEvent = @Sendable (String) async -> Void
     typealias InterruptAccepted = @Sendable () async -> Bool
+    typealias ToolCall = @Sendable (CodexDynamicToolCall) async throws -> CodexDynamicToolResult
     static let launchArguments = ["app-server", "--listen", "stdio://"]
     private struct Pending {
         let method: String
@@ -184,6 +221,7 @@ actor CodexAppServerController {
     let attemptId: String
     private let cwd: String
     private let scratchDirectory: String?
+    private let permissionProfile: String?
     private let model: String
     private let resumeThreadId: String?
     private let clientVersion: String
@@ -192,6 +230,11 @@ actor CodexAppServerController {
     private let sendLine: SendLine
     private let onExecEvent: ExecEvent
     private let onInterruptAccepted: InterruptAccepted
+    private let dynamicTools: [CodexDynamicToolDefinition]
+    private let onToolCall: ToolCall?
+    private var toolCallInputs: [String: String] = [:]
+    private var toolCallResults: [String: CodexDynamicToolResult] = [:]
+    private var toolCallRequests: [String: [CodexAppServerJSON]] = [:]
     private var sequence = 0
     private var pending: [String: Pending] = [:]
     private var turnWaiters: [UUID: TurnWaiter] = [:]
@@ -224,20 +267,31 @@ actor CodexAppServerController {
     private var flushingEarlyFrames = false
     private var endingTurn = false
 
-    init(attemptId: String, authorizedCWD: String, scratchDirectory: String? = nil, model: String = "one-executor", resumeThreadId: String? = nil,
+    init(attemptId: String, authorizedCWD: String, scratchDirectory: String? = nil, permissionProfile: String? = nil, model: String = "one-executor", resumeThreadId: String? = nil,
          clientVersion: String, requestTimeout: TimeInterval = 10,
          now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          onInterruptAccepted: @escaping InterruptAccepted = { true },
+         dynamicTools: [CodexDynamicToolDefinition] = [], onToolCall: ToolCall? = nil,
          sendLine: @escaping SendLine, onExecEvent: @escaping ExecEvent) throws {
         guard Self.validID(attemptId), authorizedCWD.hasPrefix("/"), !authorizedCWD.contains("\0"),
               URL(fileURLWithPath: authorizedCWD).standardizedFileURL.path == authorizedCWD,
               model == "one-executor", requestTimeout.isFinite, requestTimeout > 0,
+              permissionProfile.map({ $0.range(of: #"^one-workspace-[a-f0-9]{32}$"#, options: .regularExpression) != nil }) ?? true,
               resumeThreadId.map(Self.validID) ?? true,
+              dynamicTools.count <= 32, dynamicTools.isEmpty || onToolCall != nil,
+              Set(dynamicTools.map(\.name)).count == dynamicTools.count,
+              dynamicTools.allSatisfy({
+                  $0.name.range(of: #"^[a-zA-Z0-9_-]{1,64}$"#, options: .regularExpression) != nil
+                      && !$0.description.isEmpty && $0.description.utf8.count <= 8000
+                      && $0.inputSchema.object != nil && ((try? $0.inputSchema.line().utf8.count) ?? Int.max) <= 64 * 1024
+              }),
               scratchDirectory.map({ $0.hasPrefix("/") && !$0.contains("\0") && URL(fileURLWithPath: $0).standardizedFileURL.path == $0 && URL(fileURLWithPath: $0).lastPathComponent.hasPrefix("scratch-") }) ?? true else { throw CodexAppServerError.invalidConfiguration }
         self.attemptId = attemptId; cwd = authorizedCWD; self.model = model
         self.scratchDirectory = scratchDirectory
+        self.permissionProfile = permissionProfile
         self.resumeThreadId = resumeThreadId; self.clientVersion = clientVersion
         self.requestTimeout = requestTimeout; self.sendLine = sendLine; self.onExecEvent = onExecEvent
+        self.dynamicTools = dynamicTools; self.onToolCall = onToolCall
         self.now = now; self.onInterruptAccepted = onInterruptAccepted
     }
 
@@ -247,32 +301,57 @@ actor CodexAppServerController {
         try ensureMayStart()
         _ = try await request("initialize", params: .object([
             "clientInfo": .object(["name": .string("one_launcher"), "title": .string("ONE"), "version": .string(clientVersion)]),
-            "capabilities": .object(["experimentalApi": .bool(false)])
+            "capabilities": .object(["experimentalApi": .bool(!dynamicTools.isEmpty)])
         ]))
         try ensureMayStart()
         try await send(.object(["method": .string("initialized")]))
         try ensureMayStart()
         var threadParams: [String: CodexAppServerJSON] = [
-            "model": .string(model), "cwd": .string(cwd), "approvalPolicy": .string("never"),
-            "sandbox": .string("workspace-write")
+            "model": .string(model), "cwd": .string(cwd), "approvalPolicy": .string("never")
         ]
+        if let permissionProfile { threadParams["permissions"] = .string(permissionProfile) }
+        else { threadParams["sandbox"] = .string("workspace-write") }
+        if permissionProfile != nil {
+            // config/read only inventories configuration. MCP processes start
+            // with the thread, so disable every inherited server before that
+            // point, including unexpected entries in the private task home.
+            let effective = try await request("config/read", params: .object(["cwd":.string(cwd),"includeLayers":.bool(false)]))
+            try ensureMayStart()
+            guard let config = effective["config"]?.object,
+                  config["mcp_servers"] == nil || config["mcp_servers"]?.object != nil else {
+                poison("tool_configuration_unconfirmed"); throw CodexAppServerError.invalidProtocol
+            }
+            let servers = config["mcp_servers"]?.object ?? [:]
+            guard servers.count <= 256 else { throw CodexAppServerError.invalidConfiguration }
+            threadParams["config"] = .object(["mcp_servers":.object(servers.mapValues { _ in .object(["enabled":.bool(false)]) })])
+        }
         let method = resumeThreadId == nil ? "thread/start" : "thread/resume"
+        if resumeThreadId == nil, !dynamicTools.isEmpty {
+            threadParams["dynamicTools"] = .array(dynamicTools.map(\.declaration))
+        }
         if let resumeThreadId { threadParams["threadId"] = .string(resumeThreadId); threadParams["excludeTurns"] = .bool(true) }
         let thread = try await request(method, params: .object(threadParams))
         guard let id = thread["thread"]?["id"]?.string, Self.validID(id), resumeThreadId == nil || id == resumeThreadId else {
             poison("thread_identity_invalid"); throw CodexAppServerError.invalidProtocol
+        }
+        if let permissionProfile, thread["activePermissionProfile"]?["id"]?.string != permissionProfile {
+            poison("permission_profile_not_confirmed"); throw CodexAppServerError.invalidProtocol
         }
         threadId = id
         await emit(.object(["type": .string("thread.started"), "thread_id": .string(id)]))
         try ensureMayStart()
         // The raw instruction is sent once, never truncated or regenerated.
         turnStartSent = true
-        let turn = try await request("turn/start", params: .object([
+        var turnParams: [String: CodexAppServerJSON] = [
             "threadId": .string(id), "input": .array([.object(["type": .string("text"), "text": .string(instruction), "text_elements": .array([])])]),
-            "model": .string(model), "cwd": .string(cwd), "approvalPolicy": .string("never"),
-            "sandboxPolicy": .object(["type": .string("workspaceWrite"), "writableRoots": .array(([cwd] + (scratchDirectory.map { [$0] } ?? [])).map { .string($0) }),
+            "model": .string(model), "cwd": .string(cwd), "approvalPolicy": .string("never")
+        ]
+        if let permissionProfile { turnParams["permissions"] = .string(permissionProfile) }
+        else {
+            turnParams["sandboxPolicy"] = .object(["type": .string("workspaceWrite"), "writableRoots": .array(([cwd] + (scratchDirectory.map { [$0] } ?? [])).map { .string($0) }),
                 "networkAccess": .bool(false), "excludeTmpdirEnvVar": .bool(true), "excludeSlashTmp": .bool(true)])
-        ]))
+        }
+        let turn = try await request("turn/start", params: .object(turnParams))
         guard let newTurn = turn["turn"], let newID = newTurn["id"]?.string, Self.validID(newID),
               newTurn["status"]?.string == "inProgress" else {
             poison("turn_identity_invalid"); throw CodexAppServerError.invalidProtocol
@@ -281,7 +360,9 @@ actor CodexAppServerController {
         flushingEarlyFrames = true
         while !earlyFrames.isEmpty {
             let frame = earlyFrames.removeFirst()
-            await notification(frame)
+            if frame["method"]?.string == "item/tool/call", let requestId = frame["id"] {
+                await dynamicToolRequest(frame, id: requestId)
+            } else { await notification(frame) }
         }
         earlyBytes = 0; flushingEarlyFrames = false
         return CodexAppServerTurnIdentity(attemptId: attemptId, threadId: id, turnId: newID)
@@ -296,7 +377,18 @@ actor CodexAppServerController {
             poison("malformed_message"); return
         }
         if let method = value["method"]?.string {
-            if let id = value["id"], id != .null { await rejectServerRequest(method: method, id: id); return }
+            if let id = value["id"], id != .null {
+                if method == "item/tool/call", !dynamicTools.isEmpty {
+                    if turnStartSent && (turnId == nil || flushingEarlyFrames) {
+                        guard earlyFrames.count < 512, earlyBytes + bytes.count <= 2 * 1024 * 1024 else {
+                            poison("early_event_limit"); return
+                        }
+                        earlyFrames.append(value); earlyBytes += bytes.count; return
+                    }
+                    await dynamicToolRequest(value, id: id)
+                } else { await rejectServerRequest(method: method, id: id) }
+                return
+            }
             if turnStartSent && (turnId == nil || flushingEarlyFrames) && Self.scopedMethods.contains(method) {
                 guard earlyFrames.count < 512, earlyBytes + bytes.count <= 2 * 1024 * 1024 else {
                     poison("early_event_limit"); return
@@ -317,6 +409,61 @@ actor CodexAppServerController {
         } else {
             poison("malformed_response")
             waiting.continuation.resume(throwing: CodexAppServerError.invalidProtocol)
+        }
+    }
+
+    private func dynamicToolRequest(_ frame: CodexAppServerJSON, id: CodexAppServerJSON) async {
+        guard !closed, !cancelRequested, protocolIssue == nil, status == .inProgress,
+              let params = frame["params"], params["threadId"]?.string == threadId,
+              params["turnId"]?.string == turnId,
+              params["namespace"] == nil || params["namespace"] == .null,
+              let callId = params["callId"]?.string, Self.validID(callId),
+              let tool = params["tool"]?.string, dynamicTools.contains(where: { $0.name == tool }),
+              let arguments = params["arguments"], arguments.object != nil,
+              let threadId, let turnId, let onToolCall else {
+            await rejectServerRequest(method: "item/tool/call", id: id); return
+        }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        guard let bytes = try? encoder.encode(CodexAppServerJSON.object(["tool": .string(tool), "arguments": arguments])),
+              bytes.count <= 1024 * 1024 else { poison("invalid_tool_arguments"); return }
+        let fingerprint = String(decoding: bytes, as: UTF8.self)
+        if let prior = toolCallInputs[callId], prior != fingerprint {
+            poison("tool_call_identity_changed")
+            try? await send(.object(["id": id, "result": CodexDynamicToolResult.failure("工具调用编号与原参数不一致，请核对原任务。").json]))
+            return
+        }
+        if let result = toolCallResults[callId] {
+            try? await send(.object(["id": id, "result": result.json])); return
+        }
+        if toolCallRequests[callId] != nil {
+            guard toolCallRequests[callId]!.count < 16 else { poison("duplicate_tool_request_limit"); return }
+            toolCallRequests[callId]!.append(id); return
+        }
+        guard toolCallInputs.count < 256 else { poison("tool_call_limit"); return }
+        toolCallInputs[callId] = fingerprint
+        toolCallRequests[callId] = [id]
+        let call = CodexDynamicToolCall(threadId: threadId, turnId: turnId, callId: callId, tool: tool, arguments: arguments)
+        // Keep consuming stdio so the turn/start reply and Stop can settle while
+        // the authenticated ONE connection is servicing this tool request.
+        Task {
+            let result: CodexDynamicToolResult
+            do { result = try await onToolCall(call) }
+            catch { result = .failure(error.localizedDescription) }
+            await self.completeDynamicTool(callId: callId, result: result)
+        }
+    }
+
+    private func completeDynamicTool(callId: String, result: CodexDynamicToolResult) async {
+        let requests = toolCallRequests.removeValue(forKey: callId) ?? []
+        guard !closed, !cancelRequested, protocolIssue == nil, status == .inProgress else { return }
+        guard let encoded = try? result.json.line(), encoded.utf8.count <= 1536 * 1024,
+              !result.contentItems.isEmpty, result.contentItems.allSatisfy({
+                  $0["type"]?.string == "inputText" && $0["text"]?.string != nil
+              }) else { poison("invalid_tool_result"); return }
+        toolCallResults[callId] = result
+        for request in requests {
+            do { try await send(.object(["id": request, "result": result.json])) }
+            catch { poison("tool_result_delivery_failed"); return }
         }
     }
 
@@ -559,13 +706,18 @@ actor CodexAppServerController {
     private func interruptedCommandTerminal(method: String, params: CodexAppServerJSON) async {
         guard cancelRequested, acceptingInterruptedCommandTerminals, protocolIssue == nil,
               let deadline = interruptDeadline, now() <= deadline, !closed else { return }
-        // No late answer, progress, new command or other tool can alter this
-        // turn. Only terminal evidence for a command observed BEFORE the turn
-        // ended may settle its existing record; the turn itself stays cancelled.
+        // Only terminal evidence for an already observed command or tool may
+        // settle its existing record; the turn itself stays cancelled.
         guard ["item/started", "item/completed"].contains(method) else { return }
         guard let item = params["item"], let id = item["id"]?.string,
               let type = item["type"]?.string else { poison("malformed_late_item"); return }
         if type == "agentMessage", itemTypes[id] != "commandExecution" { return }
+        if method == "item/completed", pendingOtherTools.contains(id), itemTypes[id] == type,
+           ["fileChange", "mcpToolCall", "dynamicToolCall", "collabAgentToolCall"].contains(type) {
+            await handleItem(item, event: "item.completed", terminalBackfill: false, emitEvent: false)
+            if interruptedCommandsSettled { finishInterruptedCommandsWaiter(confirmed: true) }
+            return
+        }
         guard method == "item/completed", type == "commandExecution", itemTypes[id] == type,
               commands[id]?.started == true else { poison("uncorrelated_late_command_terminal"); return }
         await handleItem(item, event: "item.completed", terminalBackfill: false, emitEvent: false)
@@ -576,7 +728,7 @@ actor CodexAppServerController {
     private func handleItem(_ item: CodexAppServerJSON, event: String, terminalBackfill: Bool, emitEvent: Bool = true) async {
         guard let type = item["type"]?.string, let id = item["id"]?.string, Self.validID(id) else { poison("malformed_item"); return }
         let allowed = ["userMessage", "hookPrompt", "agentMessage", "functionCallOutput", "plan", "reasoning", "commandExecution",
-            "fileChange", "mcpToolCall", "collabAgentToolCall", "webSearch", "imageView", "enteredReviewMode", "exitedReviewMode", "contextCompaction"]
+            "fileChange", "mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "webSearch", "imageView", "enteredReviewMode", "exitedReviewMode", "contextCompaction"]
         guard allowed.contains(type) else { poison("unsupported_execution_item"); return }
         if let previous = itemTypes[id], previous != type { poison("item_type_changed"); return }
         itemTypes[id] = type
@@ -605,14 +757,14 @@ actor CodexAppServerController {
                     poison("malformed_tool_terminal"); return
                 }
                 pendingOtherTools.remove(id)
-                recordToolOutcome(succeeded: item["status"]?.string == "completed")
+                recordToolOutcome(succeeded: item["status"]?.string == "completed" && item["success"] != .bool(false))
                 if ["declined", "interrupted"].contains(item["status"]?.string ?? "") {
                     failureReason = failureReason ?? "tool_not_completed"
                 }
             }
         }
         let map = ["agentMessage": "agent_message", "commandExecution": "command_execution", "fileChange": "file_change",
-            "mcpToolCall": "mcp_tool_call", "collabAgentToolCall": "collab_tool_call", "reasoning": "reasoning", "webSearch": "web_search"]
+            "mcpToolCall": "mcp_tool_call", "dynamicToolCall": "dynamic_tool_call", "collabAgentToolCall": "collab_tool_call", "reasoning": "reasoning", "webSearch": "web_search"]
         guard let mappedType = map[type] else { return }
         if type == "agentMessage", event == "item.completed", let text = item["text"]?.string {
             finalResponse = String(text.prefix(120000))

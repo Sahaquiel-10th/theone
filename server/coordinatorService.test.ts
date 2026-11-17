@@ -26,6 +26,71 @@ import {resolveTaskInputSource} from './taskInputSource.js';
 import JSZip from 'jszip';
 import XLSX from 'xlsx';
 
+for (const { contextMode, workbench, lockedModel } of [{ contextMode: 'legacy', workbench: false, lockedModel: false }, { contextMode: 'adaptive', workbench: false, lockedModel: false }, { contextMode: 'adaptive', workbench: true, lockedModel: false }, { contextMode: 'adaptive', workbench: true, lockedModel: true }] as const) test(`Codex bridge ${contextMode} normal ${lockedModel?'model-locked workbench keeps cloud route':workbench?'prompt-workbench':'chat'} routes authorized knowledge, writing and Notion as one content task`, async () => {
+  const f = fixture();
+  const profile = await f.store.mutate(db => updateExecutor(db, 'a', undefined, { revision: 0, action: 'draft', values: { ...executorDefaults(), name: '合成桥梁交接', modelId: 'worker', routingRole: 'logic' } }));
+  await f.store.mutate(db => { updateExecutor(db, 'a', profile.id, { revision: 1, action: 'publish' }); db.models.find(model => model.id === 'worker')!.protocol = 'openai'; });
+  if (workbench) await f.store.mutate(db => { const values = { name: '已有提示词工作台', author: 'ONE', description: '用授权资料写客户建议', instructions: '先列事实，再给客户具体建议。', limitations: '不虚构客户经历。', ...(lockedModel ? {modelId:'worker'} : {}), integration: 'question_answer' as const, usageMultiplier: .6 };
+    const version = { version: 1, values, evidence: 'synthetic only', approvedAt: 'now', approvedBy: 'a' }; db.settings.officialFeatures = [{ id: 'bridge-workbench', revision: 1, draft: values, current: version, history: [version], status: 'approved', release: { id: 'bridge-workbench-release', version: 1, userIds: ['a'], publishedAt: 'now', publishedBy: 'a' } }]; });
+  await f.store.mutate(db => { db.knowledgeConnections.push(
+    { id: 'bridge-source', workspaceId: 'wa', provider: 'getnote', status: 'connected', encryptedApiKey: 'SYNTHETIC_BRIDGE_SOURCE' } as any,
+    { id: 'bridge-notion', workspaceId: 'wa', provider: 'notion', status: 'connected', notionWriting: { grantId: 'bridge-grant', userId: 'a', parentId: 'a'.repeat(32), authorizedAt: 'now' } } as any,
+    { id: 'foreign-bridge-source', workspaceId: 'wb', provider: 'getnote', status: 'connected', encryptedApiKey: 'SYNTHETIC_FOREIGN_SOURCE' } as any); });
+  let starts = 0, workerCalls = 0, routerCalls = 0; const routeFeedback: string[] = [];
+  const readiness = { checkedAt: new Date().toISOString(), ready: true, connected: true, folder: { state: 'ready' as const, targetName: '/synthetic/allowed' }, executor: { state: 'ready' as const, installedVersion: '0.160.1', installedSource: 'managed' as const }, reason: 'ready' as const, platform:'macos' as const, capabilities: { staticPreview: true, taskDirectoryBinding: true, codexToolBridge: true } };
+  const service = new CoordinatorService(f.store, { recallWithDiagnostics: async () => { throw Error('the coordinator must delegate this exact source read'); } }, {
+    contextMode, notionDocuments: new NotionDocuments(f.store, {} as NotionMcpService), modelCall: async (model, messages, tools) => {
+      if (model.id !== 'router') { workerCalls++; throw Error('must stay in one Codex session'); }
+      routerCalls++;
+      routeFeedback.push(messages.at(-1)?.content ?? '');
+      if ((await f.store.read()).chatOperations!.some(operation => operation.workRun)) return answer('我来完成这篇文章，有结果会告诉你。');
+      if (!tools.some(tool => tool.function.name === 'delegate_task')) return { ...answer(''), toolCalls: [{ id: `load-${routerCalls}`, type: 'function', function: { name: 'load_tools', arguments: JSON.stringify({ names: ['delegate_task'] }) } }] };
+      assert.match(JSON.stringify(messages), /Codex 桥梁已就绪/);
+      return { ...answer(''), toolCalls: [{ id: `bridge-${routerCalls}`, type: 'function', function: { name: 'delegate_task', arguments: JSON.stringify({ taskId: null, title: '合成资料文章', instruction: '根据本轮得到大脑授权资料完成一篇文章并保存到 Notion。', executorId: 'local_special', featureIds: workbench ? ['bridge-workbench'] : [], capabilityIds: ['builtin:codex_execution', 'knowledge:bridge-source'],
+        ...(lockedModel?{workflow:{version:1,steps:[{id:'source',title:'检索',kind:'tool',tool:'knowledge_search',instruction:'检索本轮授权资料',inputs:[]},{id:'draft',title:'写作',kind:'feature',featureId:'bridge-workbench',instruction:'按指定功能写完整文章',inputs:['source']},{id:'save',title:'保存',kind:'notion',instruction:'保存前置完整文章',inputs:['draft']}]}}:{}) }) } }] };
+    }
+  });
+  const started = await service.dispatch(a, { ...input(`bridge_${contextMode}_${workbench?'workbench':'normal'}_001`, '请用得到大脑的资料写一篇文章，然后保存到 Notion。'), outputDestination: 'notion', sourceIds: ['bridge-source'], ...(workbench ? { featureIds: ['bridge-workbench'], confirmedExternal: true } : {}) }, key, undefined,
+    async (taskId, messageId) => { starts++; const db = await f.store.read(), job = db.chatOperations!.find(operation => operation.conversationId === taskId && operation.workRun?.inputMessageId === messageId)!.workRun!;
+      assert.equal(job.executionMode, 'local'); assert.equal(job.localExecution!.toolBridge, true); assert.equal(job.expectedOutput, 'text'); assert.equal(job.notionTarget!.grantId, 'bridge-grant');
+      assert.deepEqual(job.sources.map(source => source.id), ['bridge-source']); assert.equal(job.workflow, undefined); assert.doesNotMatch(job.instruction, /必须在本任务绑定的已授权工作文件夹完成实际目标文件/);
+      if (workbench) { assert.equal(job.skills[0].values.instructions, '先列事实，再给客户具体建议。'); assert.equal(job.featurePricingVersion, 1); }
+      return { id: 'synthetic-bridge-execution', status: 'queued' }; }, undefined, async () => readiness, { deviceId: 'synthetic-key', installationId: 'a'.repeat(32) });
+  assert.ok(started.taskId, JSON.stringify({ started, routeFeedback })); assert.equal(starts, lockedModel ? 0 : 1); assert.equal(workerCalls, 0); assert.equal((await f.store.read()).chatOperations!.filter(operation => operation.workRun).length, 1);
+  if (lockedModel) { const job=(await f.store.read()).chatOperations!.find(operation=>operation.workRun)!.workRun!; assert.notEqual(job.executionMode,'local'); assert.equal(job.localExecution,undefined); assert.equal(job.skills[0].values.modelId,'worker'); }
+  await assert.rejects(() => service.dispatch({ userId: 'a', workspaceId: 'wb' }, input(`bridge_${contextMode}_foreign_001`, '写一篇文章'), key));
+});
+
+test('Codex bridge capability does not turn a status question into execution or select a folder', async () => {
+  const f = fixture(); let starts = 0, probes = 0;
+  const service = new CoordinatorService(f.store, { recallWithDiagnostics: async () => ({ chunks: [], failures: [], status: 'no_match' }) }, { modelCall: async (_model, _messages, tools) => {
+    return answer('还没有开始新的操作。');
+  } });
+  const response = await service.dispatch(a, input('bridge_status_question_0001', '只讨论，不执行任何任务：解释一下本机执行功能。'), key, undefined, async () => { starts++; return { id: 'must-not-start', status: 'queued' }; }, undefined,
+    async () => { probes++; throw Error('a status question does not probe for execution'); }, { deviceId: 'synthetic-key', installationId: 'a'.repeat(32) });
+  assert.equal(starts, 0); assert.equal(probes, 0); assert.equal(response.taskId, undefined);
+});
+
+for(const explicitLocal of [false,true])test(`a fresh Windows builtin-only executor with bridge protocol capability keeps ${explicitLocal?'the original file path':'ordinary writing off the Codex bridge'}`,async()=>{
+  const f=fixture();let starts=0;const feedback:string[]=[];
+  const readiness={checkedAt:new Date().toISOString(),ready:true,connected:true,folder:{state:'ready' as const,targetName:'C:\\Synthetic\\allowed'},executor:{state:'ready' as const,installedVersion:'0.4.31',installedSource:'builtin' as const},reason:'ready' as const,platform:'windows' as const,capabilities:{staticPreview:true,taskDirectoryBinding:true,codexToolBridge:true}};
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{modelCall:async(_model,messages,tools)=>{
+    assert.doesNotMatch(JSON.stringify(messages),/当前 Codex 桥梁已就绪/);
+    feedback.push(messages.at(-1)?.content??'');
+    if((await f.store.read()).chatOperations!.some(operation=>operation.workRun))return answer('已接到本轮合成要求。');
+    const name=explicitLocal?'execute_local_task':'delegate_task';
+    if(!tools.some(tool=>tool.function.name===name))return{...answer(''),toolCalls:[{id:'builtin-load',type:'function',function:{name:'load_tools',arguments:JSON.stringify({names:[name]})}}]};
+    return {...answer(''),toolCalls:[{id:'builtin-only',type:'function',function:{name,arguments:JSON.stringify({taskId:null,title:'合成说明',instruction:'用本轮合成材料写一份完整说明。',executorId:'general',featureIds:[]})}}]};
+  }});
+  const result=await service.dispatch(a,{...input(`builtin_only_${explicitLocal?'local':'writing'}_001`,explicitLocal?'在已选工作文件夹创建一份txt说明文件。':'根据这些合成材料写一份说明。'),...(explicitLocal?{localExecution:true,outputDestination:'local' as const}:{})},key,undefined,async(taskId,messageId)=>{
+    starts++;const job=(await f.store.read()).chatOperations!.find(operation=>operation.conversationId===taskId&&operation.workRun?.inputMessageId===messageId)!.workRun!;
+    assert.equal(job.localExecution?.toolBridge,undefined);return{id:'original-builtin-task',status:'queued'};
+  },undefined,async()=>readiness,{deviceId:'synthetic-windows',installationId:'a'.repeat(32)});
+  assert.ok(result.taskId,JSON.stringify({result,feedback}));assert.equal(starts,explicitLocal?1:0);
+  const job=(await f.store.read()).chatOperations!.find(operation=>operation.workRun)!.workRun!;
+  assert.equal(job.localExecution?.toolBridge,undefined);if(!explicitLocal)assert.notEqual(job.executionMode,'local');
+});
+
 async function activeModelProjectionFixture(){
  const f=fixture();let release!:(result:ToolChatResult)=>void,started!:()=>void;
  const pending=new Promise<ToolChatResult>(resolve=>release=resolve),entered=new Promise<void>(resolve=>started=resolve);

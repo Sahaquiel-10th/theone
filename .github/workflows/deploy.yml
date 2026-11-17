@@ -4,16 +4,38 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      windows_only:
+        description: Run only Windows verification on the selected development ref
+        required: false
+        type: boolean
+        default: false
+      macos_runner:
+        description: Standard Mac test host; Intel is an alternate when ARM hosts are queued
+        required: false
+        type: choice
+        options:
+          - macos-15
+          - macos-15-intel
+        default: macos-15
+      macos_only:
+        description: Run only Mac verification on the selected development ref
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: production
+  # Only production mutations share a lock. Independent development checks
+  # must not hold production or each other while a hosted Mac is queued.
+  group: ${{ github.ref == 'refs/heads/main' && 'production' || format('verification-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
   verify:
+    if: github.event.inputs.windows_only != 'true' && github.event.inputs.macos_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -24,19 +46,81 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm test
+      - run: node --test scripts/prepare-windows-codex-release.test.mjs
       - run: npm run build
 
   verify-windows-runtime:
+    if: github.event.inputs.macos_only != 'true'
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - name: Verify Windows runtime socket and installation hand-off
         working-directory: launcher/windows
         run: go test -race ./...
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - name: Verify pinned Codex protocol and strict Windows compatibility
+        shell: pwsh
+        env:
+          ONE_CODEX_PERMISSION_PROFILE: one-workspace
+          ONE_CODEX_WINDOWS_SANDBOX: mxc
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = Join-Path $env:RUNNER_TEMP 'one-codex-protocol'
+          $prepared = Join-Path $env:RUNNER_TEMP 'one-codex-prepared'
+          $unpacked = Join-Path $env:RUNNER_TEMP 'one-codex-unpacked'
+          node scripts/download-codex-protocol-fixture.mjs $fixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Remove-Item Env:GITHUB_TOKEN
+          tar.exe -tvzf (Join-Path $fixture 'codex-package-x86_64-pc-windows-msvc.tar.gz')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/prepare-windows-codex-release.mjs --version 0.160.1 --package (Join-Path $fixture 'codex-package-x86_64-pc-windows-msvc.tar.gz') --output $prepared
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:ONE_CODEX_PACKAGE_FIXTURE_DIR = $prepared
+          Push-Location launcher/windows
+          go test -v -run '^TestManagedCodexOfficialPackageFixture$' .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+          New-Item -ItemType Directory -Path $unpacked | Out-Null
+          tar.exe -xzf (Join-Path $prepared 'codex-windows-amd64-0.160.1.tar.gz') -C $unpacked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Push-Location launcher/windows
+          go build -o (Join-Path $fixture 'controller.exe') codex_app_server.go codex_app_server_runtime_fixture.go
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+          # This host can lack MXC. Record an exact pre-turn rejection as a
+          # compatibility result, never as a successful strict bridge test.
+          $strictOutput = & node --experimental-strip-types scripts/qa-codex-tool-bridge.ts (Join-Path $unpacked 'bin/codex.exe') (Join-Path $fixture 'controller.exe') --command-first 2>&1
+          $strictExit = $LASTEXITCODE
+          $strictOutput | ForEach-Object { Write-Output $_ }
+          if ($strictExit -ne 0) {
+            if (($strictOutput -join "`n") -notmatch 'native MXC is unavailable on this executor') { exit $strictExit }
+            Write-Output 'STRICT_BRIDGE_UNAVAILABLE: MXC host capability is absent. This is not a positive strict-isolation acceptance; Windows bridge rollout remains disabled.'
+          }
+          # The legacy backend also cannot enforce split writable roots on
+          # some hosts. Detect that precise refusal without broadening policy.
+          Remove-Item Env:ONE_CODEX_PERMISSION_PROFILE
+          $env:ONE_CODEX_WINDOWS_SANDBOX = 'unelevated'
+          $commandOutput = & node --experimental-strip-types scripts/qa-codex-tool-bridge.ts (Join-Path $unpacked 'bin/codex.exe') (Join-Path $fixture 'controller.exe') --command-first 2>&1
+          $commandExit = $LASTEXITCODE
+          if ($commandExit -ne 0) {
+            if (($commandOutput -join "`n") -notmatch 'windows unelevated restricted-token sandbox cannot enforce split writable root sets directly') {
+              $commandOutput | ForEach-Object { Write-Output $_ }
+              exit $commandExit
+            }
+            Write-Output 'LEGACY_COMMAND_UNAVAILABLE: split writable roots are unsupported. Native command acceptance remains pending; no permission fallback was applied.'
+          } else { $commandOutput | ForEach-Object { Write-Output $_ } }
+          # This independent positive proof covers dynamic tools and restart,
+          # with no native command or filesystem-isolation success claim.
+          node --experimental-strip-types scripts/qa-codex-tool-bridge.ts (Join-Path $unpacked 'bin/codex.exe') (Join-Path $fixture 'controller.exe')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   verify-macos-runtime:
-    runs-on: macos-15
+    if: github.event.inputs.windows_only != 'true'
+    runs-on: ${{ github.event.inputs.macos_runner || 'macos-15' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -55,13 +139,21 @@ jobs:
             xcrun swiftc -sdk "$ONE_TEST_SDK" -target "$ONE_TEST_ARCH-apple-macosx13.0" -parse-as-library \
               "launcher/macos/$suite.swift" "launcher/macos/${suite}Tests.swift" \
               -o "$RUNNER_TEMP/one-$suite-tests"
-            "$RUNNER_TEMP/one-$suite-tests"
+            if [ "$suite" = CodexGatewayConfiguration ]; then
+              node scripts/qa-native-suite.mjs "$RUNNER_TEMP/one-$suite-tests"
+            else
+              "$RUNNER_TEMP/one-$suite-tests"
+            fi
           done
           xcrun swiftc -sdk "$ONE_TEST_SDK" -target "$ONE_TEST_ARCH-apple-macosx13.0" -parse-as-library \
             launcher/macos/CodexAppServer.swift launcher/macos/CodexAppServerInput.swift \
             launcher/macos/CodexProcessTree.swift launcher/macos/CodexRuntime.swift \
             launcher/macos/CodexAppServerIntegrationTests.swift -o "$RUNNER_TEMP/one-app-server-integration-tests"
           "$RUNNER_TEMP/one-app-server-integration-tests"
+          xcrun swiftc -sdk "$ONE_TEST_SDK" -target "$ONE_TEST_ARCH-apple-macosx13.0" -parse-as-library \
+            launcher/macos/CodexAppServer.swift launcher/macos/CodexToolBridge.swift \
+            launcher/macos/CodexToolBridgeTests.swift -o "$RUNNER_TEMP/one-tool-bridge-tests"
+          "$RUNNER_TEMP/one-tool-bridge-tests"
           xcrun swiftc -sdk "$ONE_TEST_SDK" -target "$ONE_TEST_ARCH-apple-macosx13.0" -parse-as-library \
             launcher/macos/ResidentTakeover.swift launcher/macos/MachineResident.swift launcher/macos/MachineResidentTests.swift \
             -o "$RUNNER_TEMP/one-machine-tests"
@@ -76,7 +168,7 @@ jobs:
           npm run test:receipt-transport -- "$RUNNER_TEMP/one-receipt-transport-fixture"
 
   deploy:
-    if: vars.DEPLOY_ENABLED == 'true'
+    if: vars.DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main'
     needs: [verify, verify-windows-runtime, verify-macos-runtime]
     runs-on: ubuntu-latest
     timeout-minutes: 35

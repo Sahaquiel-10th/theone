@@ -7,7 +7,7 @@ import (
 )
 
 func launcherCapabilities() []string {
-	return []string{"local_tools_v1", "runtime_update_v1", "local_configuration_v1"}
+	return []string{"local_tools_v1", "runtime_update_v1", "local_configuration_v1", "codex_exec_v1", "execution_round_v1", "codex_gateway_v1", "managed_codex_v1", "codex_tool_bridge_v1", "execution_terminal_receipt_v1", "task_directory_binding_v1"}
 }
 
 // Settings reads never request new authorization. Only an explicit change may

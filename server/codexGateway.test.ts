@@ -65,6 +65,31 @@ function fixture() {
     setKeyAbsent: (value: boolean) => { keyAbsent = value; }, onWait: (effect: () => void) => { waitEffect = effect; }, waits: () => waits };
 }
 const signal = () => new AbortController().signal;
+test('Codex task freezes the public display name of its actual granted model', async () => {
+  const f = fixture(); f.db.models[0].name = 'ONE 合成执行模型';
+  assert.equal(await f.gateway.modelName(), 'ONE 合成执行模型');
+  await f.gateway.prepare(f.task);
+  assert.equal(f.task.executorModelName, 'ONE 合成执行模型');
+  f.db.models[0].name = '未来配置的新名字';
+  assert.equal(f.task.executorModelName, 'ONE 合成执行模型', 'a later global change must not relabel a saved task');
+});
+
+test('a prompt-only bridge workbench retains its published price and fresh entitlement without changing model routing', async () => {
+  const f = fixture();
+  const values = { name: '合成工作台', description: '合成工作台要求', instructions: '只按本轮资料写完整文章', limitations: '不编造经历', author: 'ONE', integration: 'question_answer' as const, usageMultiplier: 1.7 };
+  const version = { version: 1, values, evidence: 'synthetic only', approvedBy: 'a', approvedAt: 'now' };
+  f.db.settings.officialFeatures = [{ id: 'synthetic-workbench', revision: 1, draft: values, current: version, history: [version], status: 'approved', release: { id: 'release-a', version: 1, userIds: ['a'], publishedAt: 'now', publishedBy: 'a' } }];
+  f.task.sourceMessageId = 'input-a';
+  f.db.chatOperations = [{ workspaceId: 'wa', userId: 'a', conversationId: f.task.conversationId, id: 'bridge-operation', workRun: { inputMessageId: 'input-a', localExecution: { toolBridge: true }, featurePricingVersion: 1,
+    skills: [{ id: 'synthetic-workbench', releaseId: 'release-a', version: 1, values }] } } as any];
+  const grant = await f.gateway.prepare(f.task);
+  await f.gateway.responses(grant.token, request, signal(), () => {});
+  assert.deepEqual(f.db.modelUsageRecords[0].featurePriceSnapshot, { id: 'synthetic-workbench', releaseId: 'release-a', version: 1, name: '合成工作台', multiplier: 1.7 });
+  assert.equal(f.calls(), 1);
+  f.db.settings.officialFeatures[0].status = 'paused';
+  await assert.rejects(() => f.gateway.responses(grant.token, followup, signal(), () => {}));
+  assert.equal(f.calls(), 1, 'a revoked workbench cannot buy another supplier call');
+});
 test('Codex receives current sandbox and static-delivery boundaries even with a custom model prompt', async () => {
   const f = fixture(), config = await f.gateway.prepare(f.task);
   await f.gateway.responses(config.token, {...request, instructions: '按本轮网站要求交付，不添加其他目标。'}, signal(), () => {});

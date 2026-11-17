@@ -7,3 +7,8 @@
 
 .local-device-readiness{display:grid;gap:6px}.local-device-readiness>strong{font-size:15px;font-weight:600;line-height:1.5}.local-device-details{font-size:12px;line-height:1.7;color:var(--studio-muted,#747b6a)}.local-device-details>summary{cursor:pointer}.local-device-details dl{display:grid;gap:6px;margin:10px 0}.local-device-details dl>div{display:flex;gap:16px}.local-device-details dt{min-width:5em}.local-device-details dd{margin:0;color:var(--studio-ink,#28312b);overflow-wrap:anywhere}
 .one-shell .local-device-settings details.local-device-details{padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;backdrop-filter:none;}
+.local-executor-summary{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;margin:8px 0 12px}
+.local-executor-summary>strong{font-size:18px;line-height:1.4}
+.local-executor-summary>span{font-size:12px;color:var(--studio-muted,#747b6a)}
+.local-executor-model{margin:0 0 12px;font-size:13px;color:var(--studio-muted,#747b6a)}
+.local-executor-model>strong{font-weight:500;color:var(--studio-ink,#28312b)}

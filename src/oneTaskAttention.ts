@@ -2,6 +2,7 @@ type TaskSnapshot = {
   id: string;
   conversationId: string;
   status: string;
+  businessOutcome?: 'completed' | 'partial' | 'failed';
   updatedAt: string;
 };
 
@@ -23,6 +24,11 @@ export type TaskActivityRow = {
 
 const runningStatuses = new Set(["queued", "selecting_target", "running"]);
 const settledStatuses = new Set(["completed", "failed", "cancelled"]);
+
+/** Display durable business delivery without changing executor/stop facts. */
+export function taskPresentationStatus(task: {status:string;businessOutcome?:'completed'|'partial'|'failed'} | null | undefined) {
+  return task?.businessOutcome==='completed' && (task.status==='completed'||task.status==='failed') ? 'completed' : task?.status;
+}
 
 /** An explicit historical selection is local to its conversation, never global. */
 export function selectConversationExecution<T extends TaskSnapshot>(tasks: T[], conversationId: string, selectedTaskId?: string): T | null {
@@ -95,7 +101,8 @@ export function buildTaskActivityRows(
     if (running) status = "running";
     else if (thinking) status = "thinking";
     else if (failedIds.has(conversationId)) status = "failed";
-    else if (task?.status === "completed" || task?.status === "failed" || task?.status === "cancelled") status = task.status;
+    else if (taskPresentationStatus(task)==='completed') status='completed';
+    else if (task?.status === "failed" || task?.status === "cancelled") status = task.status;
 
     rows.push({
       conversationId,

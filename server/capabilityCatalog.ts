@@ -12,7 +12,7 @@ import type {DiscoveryMetadata} from './discoveryMetadata.js';
 import {onboardingWorkflow} from './fixedWorkflows.js';
 
 export type CapabilityOutputKind = "text" | "image" | "local_file";
-export type CapabilityRuntimeOptions = { localAvailable?: boolean; imageStorageAvailable?: boolean;webSearchAvailable?:boolean };
+export type CapabilityRuntimeOptions = { localAvailable?: boolean; codexToolBridgeAvailable?: boolean; imageStorageAvailable?: boolean;webSearchAvailable?:boolean };
 export type CapabilityCard = {
   id: string;
   kind: "executor" | "feature" | "builtin" | "knowledge" | "workflow";
@@ -129,13 +129,15 @@ export function builtinCapabilityCards(db: Database, options: CapabilityRuntimeO
   });
 }
 
-function featureCard(db: Database, record: NonNullable<Database["settings"]["officialFeatures"]>[number], scope?: FeatureScope): CapabilityCard {
+function featureCard(db: Database, record: NonNullable<Database["settings"]["officialFeatures"]>[number], scope?: FeatureScope, options: CapabilityRuntimeOptions = {}): CapabilityCard {
   const release = scope ? featureRelease(db, scope, record) : record.release;
   const version = release ? record.history.find((item) => item.version === release.version) : record.current;
   const values = version?.values ?? record.draft;
   const mode = values.experience?.mode === "image" ? "image" : "text";
   const model = usableModel(db, values.modelId, mode === "image" ? "image" : "chat");
-  const available = record.status === "approved" && !!release && !!version && !!model;
+  const bridgePrompt = options.codexToolBridgeAvailable === true && options.localAvailable === true && !values.modelId?.trim()
+    && values.integration === 'question_answer' && !values.tools?.length && mode !== 'image';
+  const available = record.status === "approved" && !!release && !!version && (!!model || bridgePrompt);
   return {
     id: `feature:${record.id}`, kind: "feature", mode, name: values.name, description: values.description,
     category:values.category??'general',discovery:values.discovery,
@@ -167,7 +169,8 @@ export function routingCapabilities(db: Database, scope: FeatureScope, options: 
     });
   });
   const builtins = builtinCapabilityCards(db, options).filter((card) => ["image_generation", "codex_execution"].includes(card.taskKind ?? "") && card.available);
-  const features = (db.settings.officialFeatures ?? []).filter((record) => featureEntitled(db, scope, record)).map((record) => featureCard(db, record, scope)).filter((card) => card.available);
+  const bridgeAvailable=options.codexToolBridgeAvailable === true && builtins.some(card=>card.taskKind==='codex_execution'&&card.available);
+  const features = (db.settings.officialFeatures ?? []).filter((record) => featureEntitled(db, scope, record)).map((record) => featureCard(db, record, scope, {...options,codexToolBridgeAvailable:bridgeAvailable})).filter((card) => card.available);
   const names:Record<string,string>={getnote:'得到大脑',notion:'Notion',feishu:'飞书',flowus:'FlowUs',yinxiang:'印象笔记',flomo:'flomo',ima:'腾讯 ima'};
   const sources:CapabilityCard[]=(db.knowledgeConnections??[]).filter(connection=>connection.workspaceId===scope.workspaceId&&connection.status==='connected'&&canReadKnowledge(db,scope,connection.id)).map(connection=>({
     id:`knowledge:${connection.id}`,kind:'knowledge',mode:'text',name:`查询${names[connection.provider]??connection.provider}`,

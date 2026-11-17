@@ -255,23 +255,25 @@ function localResult(db: Database, scope: TaskResultScope, execution: ExecutionT
     : execution.status as TaskResultOutcome;
   const endingUnconfirmed = executionDeliveryPending(execution);
   if (endingUnconfirmed) outcome = 'interrupted';
+  const deliveredBusiness = !endingUnconfirmed && execution.status !== 'cancelled' && execution.businessOutcome === 'completed';
+  if (deliveredBusiness) outcome = 'completed';
   // A normal process exit is not proof of goal completion. Preserve the full
   // receipt, but don't promote an executor's explicit non-completion to success.
   if (outcome === 'returned' && executionExplicitlyUnfinished(answer)) outcome = 'needs_input';
   const reported = Boolean(marker(db, scope, id) || (execution.reportedToCoordinatorAt
     && (execution.reportedRound === round || execution.reportedRound === undefined && round === 0)));
-  const summary = endingUnconfirmed
+  const summary = deliveredBusiness ? execution.businessSummary || '完整成果已交付，可以查看原任务。' : endingUnconfirmed
     ? execution.status === 'cancelled'
       ? '停止请求已发出，但电脑还没有确认原操作结束。请保持 ONE Key 连接，核对本轮状态或再次请求停止原操作；确认前不会重新启动或重复修改文件。'
       : '原本机操作的结束情况还没确认。请保持 ONE Key 连接，核对本轮状态；已有文件会保留，确认前不会重复启动。'
     : persisted?.content || result || '没有可确认的执行结果，请查看本轮过程。';
   return { id, sourceId: execution.id, source: 'local', taskId: task.id, title: clip(task.title, 120), outcome, state: outcome,
     summary: clip(outcome === 'cancelled' ? `本轮已停止，已产生的修改不会自动撤销。\n${summary}` : summary, max),
-    brief: (!endingUnconfirmed && currentCodexGatewayFailure(execution)) || resultBrief(outcome, undefined, summary),
+    brief: deliveredBusiness ? summary : (!endingUnconfirmed && currentCodexGatewayFailure(execution)) || resultBrief(outcome, undefined, summary),
     attemptAt:localAttemptAt(db,scope,execution),
     createdAt: execution.terminalReceipt?.round === round ? execution.terminalReceipt.receivedAt : execution.completedAt ?? execution.updatedAt,
     resultMessageId: persisted?.id, attachments: [],
-    location: clip(execution.targetName, 500) || undefined, round, reported, reviewed: execution.noticeReadRound === round };
+    location: clip(execution.targetName, 500) || undefined, notionUrl:execution.businessNotionUrl, round, reported, reviewed: execution.noticeReadRound === round };
 }
 function allResults(db: Database, scope: TaskResultScope, max: number) {
   authorize(db, scope);

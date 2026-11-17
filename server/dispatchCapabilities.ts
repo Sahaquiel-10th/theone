@@ -3,7 +3,7 @@ import {isImageInstruction,type PlannedTask} from './dispatchPlan.js';
 import {OrchestrationInputError} from './taskOrchestrator.js';
 
 /** Resolve only exact entries from the caller's fresh authorized catalog. Never strip arbitrary prefixes. */
-export function resolveDispatchCapabilities(task:PlannedTask,cards:CapabilityCard[],directFeature?:(id:string)=>string|undefined):PlannedTask{
+export function resolveDispatchCapabilities(task:PlannedTask,cards:CapabilityCard[],directFeature?:(id:string)=>string|undefined,options:{localToolBridge?:boolean}={}):PlannedTask{
   const result={...task,featureIds:[] as string[]};
   // These bindings are derived here, never trusted from an incoming task.
   delete result.knowledgeSourceIds;
@@ -40,9 +40,9 @@ export function resolveDispatchCapabilities(task:PlannedTask,cards:CapabilityCar
     if(result.featureIds.some(id=>cards.find(c=>c.featureId===id)?.mode!=='image'))throw new OrchestrationInputError('请先安排图片任务，再安排依赖该图片的网页任务；网页的 dependsOn 指向图片任务，不要用占位图冒充成品。');
     result.executorId='image_generation';result.outputKind='image';
   }
-  if(local){result.executorId='local_special';result.outputKind='local_file';}
+  if(local){result.executorId='local_special';if(!options.localToolBridge)result.outputKind='local_file';}
   const imageHandoff=result.outputKind==='image'||result.executorId==='image_generation'||isImageInstruction(result.title)&&!result.featureIds.some(id=>cards.some(card=>card.featureId===id&&card.mode==='image'));
-  if(referenceRead&&(imageHandoff||result.outputKind==='local_file'||result.executorId==='local_special'))throw new OrchestrationInputError('图片或本机的专用执行入口不能同时完成这些资料读取。请先单独读取所选知识或公开资料，拿到真实素材后，再明确交接给图片或本机任务；本次尚未开始执行。');
+  if(referenceRead&&(imageHandoff||!options.localToolBridge&&(result.outputKind==='local_file'||result.executorId==='local_special')))throw new OrchestrationInputError('图片或本机的专用执行入口不能同时完成这些资料读取。请先单独读取所选知识或公开资料，拿到真实素材后，再明确交接给图片或本机任务；本次尚未开始执行。');
   result.featureIds=[...new Set(result.featureIds)];
   return result;
 }

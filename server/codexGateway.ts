@@ -13,10 +13,13 @@ import { friendlyConversationGuidance } from './conversationTone.js';
 import { codexGatewayFailureMessage } from './codexGatewayFailure.js';
 import { PowerAvailabilityError } from './powerBilling.js';
 import { ExecutionBatchBudgetError } from './executionBatchBudget.js';
+import { availableFeature } from './featureRuns.js';
+import { featureMultiplier, type FeaturePrice } from './featurePricing.js';
 
 export type CodexGatewayConfiguration = { baseUrl: string; token: string; model: "one-executor" };
 type Grant = Pick<ExecutionTask, "id" | "workspaceId" | "userId" | "deviceId" | "installationId" | "conversationId" | "batchBudget"> & {
   round: number; expiresAt: number; model: ModelConfig; attemptId?: string;
+  featurePrice?: FeaturePrice;
 };
 type Proof = (scope: { workspaceId: string; userId: string; deviceId: string; installationId?: string; method: string; path: string }) => Promise<void>;
 const digest = (value: string) => crypto.createHash("sha256").update(value).digest("hex");
@@ -50,6 +53,11 @@ export class CodexGateway {
     waitForKey?: (signal: AbortSignal) => Promise<void>;
   }) {}
   enabled() { return this.options.enabled; }
+  async modelName() {
+    const db = await this.store.read();
+    const fallback = db.models.find(item => item.id === this.options.modelId && item.enabled && item.kind === 'chat');
+    return fallback ? resolveAiTask(db.settings, db.models, 'codex_execution', fallback).model.name : undefined;
+  }
   private now() { return this.options.now?.() ?? Date.now(); }
   private owned(db: Awaited<ReturnType<Store["read"]>>, grant: Grant) {
     const task = db.executionTasks.find(item => item.id === grant.id && item.workspaceId === grant.workspaceId
@@ -62,6 +70,10 @@ export class CodexGateway {
       || !db.workspaceMembers.some(item => item.status !== "disabled" && item.userId === grant.userId && item.workspaceId === grant.workspaceId)
       || !db.workspaces.some(item => item.id === grant.workspaceId && item.status === "active")
       || !db.oneKeyDevices.some(item => item.id === grant.deviceId && item.userId === grant.userId && item.workspaceId === grant.workspaceId && item.status === "active")) throw unavailable();
+    if (grant.featurePrice) {
+      const selected = availableFeature(db, grant, grant.featurePrice.id, grant.featurePrice.releaseId);
+      if (selected.version.version !== grant.featurePrice.version || featureMultiplier(selected.version.values) !== grant.featurePrice.multiplier) throw unavailable();
+    }
     return task;
   }
   private recoverable(task: ExecutionTask, grant: Grant) {
@@ -122,7 +134,14 @@ export class CodexGateway {
     const grant: Grant = { id: task.id, workspaceId: task.workspaceId, userId: task.userId, conversationId: task.conversationId,
       deviceId: task.deviceId, installationId: task.installationId, batchBudget: structuredClone(task.batchBudget), round: task.reportRound ?? 0, expiresAt: this.now() + 60 * 60_000, model: structuredClone(model) };
     if (!grant.installationId) throw unavailable();
+    const work = db.chatOperations?.find(operation => operation.workspaceId === task.workspaceId && operation.userId === task.userId
+      && operation.conversationId === task.conversationId && operation.workRun?.inputMessageId === task.sourceMessageId)?.workRun;
+    if (work?.localExecution?.toolBridge && work.featurePricingVersion === 1 && work.skills.length === 1) {
+      const skill = work.skills[0];
+      grant.featurePrice = { id: skill.id, releaseId: skill.releaseId, version: skill.version, name: skill.values.name, multiplier: featureMultiplier(skill.values) };
+    }
     this.active(db, grant);
+    await this.store.mutate(current => { this.active(current, grant).executorModelName = model.name; });
     for (const [key, saved] of this.grants) if (saved.expiresAt <= this.now() || (saved.id === grant.id && saved.workspaceId === grant.workspaceId && saved.userId === grant.userId)) this.grants.delete(key);
     if (this.grants.size >= 1000) throw unavailable();
     const token = crypto.randomBytes(32).toString("base64url");
@@ -191,7 +210,7 @@ export class CodexGateway {
     const check = setInterval(() => void this.store.read().then(db => { try { this.active(db, grant); } catch { abort(); } }).catch(abort), 1000);
     try {
       await runBilledModel(this.store, { workspaceId: grant.workspaceId, userId: grant.userId, conversationId: grant.conversationId,
-        model: billingModel, batchBudget: grant.batchBudget, input: { taskId: grant.id, round: grant.round, request: body }, activity: "codex_execution", requestId,
+        model: billingModel, featurePrice: grant.featurePrice, batchBudget: grant.batchBudget, input: { taskId: grant.id, round: grant.round, request: body }, activity: "codex_execution", requestId,
         beforeReserve: db => {
           this.active(db, grant);
           const calls = db.modelUsageRecords.filter(row => row.workspaceId === grant.workspaceId && row.userId === grant.userId && row.requestId?.startsWith(prefix));

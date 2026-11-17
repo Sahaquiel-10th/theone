@@ -194,6 +194,14 @@ export type ConnectorAuthorizationSession = {
 
 export type ExecutionTaskStatus = "queued" | "selecting_target" | "running" | "completed" | "failed" | "cancelled";
 export type ExecutionTask = {
+  /** Private scoped connector calls and their durable replay results. */
+  toolBridge?: import('./codexToolBridge.js').CodexBridgeState;
+  /** Public display name frozen when this round's actual gateway is granted. */
+  executorModelName?: string;
+  /** Business delivery facts do not replace the executor's terminal receipt. */
+  businessOutcome?: 'completed' | 'partial' | 'failed';
+  businessSummary?: string;
+  businessNotionUrl?: string;
   batchBudget?: import('./executionBatchBudget.js').ExecutionBatchBudget;
   id: string; workspaceId: string; userId: string; conversationId: string; sourceMessageId: string;
   provider: "codex" | "local_agent"; status: ExecutionTaskStatus; instruction: string; deviceId: string;

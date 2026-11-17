@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "fixtureSet": "ONE-QA-CODEX-BRIDGE-20261117",
+  "cases": [
+    {
+      "id": "A",
+      "title": "图片模板转 Excel 并接续修改",
+      "attachment": "fixtures/quote-template.png",
+      "initialPrompt": "请根据图片模板制作一个可打开编辑的 Excel。购方和销方公司名都改为杭州合成企业科技有限公司。第 1 项改为课程物料，金额 1000 元；第 2 项改为线上咨询服务，金额 2000 元；合计 3000 元。保存到 __QA_ROOT__/A，返回文件入口。",
+      "followupPrompt": "继续修改刚才这份 Excel，第 2 项金额改为 2500 元，合计改为 3500 元。",
+      "expected": {
+        "format": "xlsx",
+        "company": "杭州合成企业科技有限公司",
+        "categories": ["课程物料", "线上咨询服务"],
+        "initialAmounts": [1000, 2000],
+        "initialTotal": 3000,
+        "followupAmounts": [1000, 2500],
+        "followupTotal": 3500,
+        "sameTask": true
+      }
+    },
+    {
+      "id": "B",
+      "title": "得到大脑笔记写作并交付 Notion",
+      "sourceFixture": "fixtures/knowledge-note.txt",
+      "initialPrompt": "请在已授权的得到大脑里查找标题为 ONE-QA-CODEX-BRIDGE-20261117 合成笔记的内容，按这篇笔记写一篇 350 至 500 字的短文，标题为先验证五个人，再做二十节课。保留笔记里的试验人数、课时和结果事实，并保存到已授权的 Notion 草稿位置，返回文章入口。",
+      "expected": {
+        "sourceTitle": "ONE-QA-CODEX-BRIDGE-20261117 合成笔记",
+        "sourceMarker": "橙色课卡17",
+        "facts": ["5 位学员", "20 节课", "1 页方法卡", "3 位学员完成练习"],
+        "oneArtifactRetrievable": true,
+        "notionDeliveryReceipt": true,
+        "notionPageCount": 1
+      }
+    },
+    {
+      "id": "C",
+      "title": "先写稿后补充保存渠道",
+      "initialPrompt": "仅根据下面的合成材料写一篇 220 至 350 字短文，标题为一页方法卡。材料是：一位老师准备做 20 节课，先找 5 位学员，用 1 页方法卡试教。3 位学员完成了练习，2 位对步骤表述提出问题。老师据此修改方法卡，再决定课程安排。文中保留标记橙色课卡17。",
+      "followupPrompt": "把刚才的一页方法卡这篇原稿保存到我已授权的 Notion 草稿位置，保存后给我文章入口。",
+      "expected": {
+        "title": "一页方法卡",
+        "marker": "橙色课卡17",
+        "sameTask": true,
+        "originalBodyPreserved": true,
+        "notionPageCount": 1,
+        "notionDeliveryReceipt": true
+      }
+    },
+    {
+      "id": "D",
+      "title": "修改同一个本地网页项目",
+      "projectFixture": "fixtures/my-space",
+      "initialPrompt": "请把 __QA_ROOT__/D/my-space 这个独立项目的页面背景改为橙色 #f59e0b，保持原有标题和按钮文字。完成后给我页面入口。",
+      "followupPrompt": "继续修改这个项目，把标题改为合成课堂的个人空间，按钮文字保持原样。",
+      "expected": {
+        "entry": "my-space/index.html",
+        "initialBackground": "#dce8f0",
+        "finalBackground": "#f59e0b",
+        "initialTitle": "我的合成空间",
+        "finalTitle": "合成课堂的个人空间",
+        "buttonText": "查看课程",
+        "sameTask": true,
+        "outsideProjectUnchanged": true
+      }
+    },
+    {
+      "id": "E",
+      "title": "执行中补充与断线恢复",
+      "initialPrompt": "请在 __QA_ROOT__/E 建立一个独立资料包，包含 lesson.txt 和 summary.txt。lesson.txt 写入：橙色课卡17，5 位学员，1 页方法卡。summary.txt 根据这些材料写三行说明。完成后返回两个文件入口。",
+      "followupPrompt": "在刚才这个资料包的 summary.txt 末尾加一行：先收集反馈，再决定课时。",
+      "faultInjection": "每次独立运行只选择一个中断位置，记录其调用受理和写入事实，然后恢复原任务。",
+      "expected": {
+        "files": ["lesson.txt", "summary.txt"],
+        "marker": "橙色课卡17",
+        "followupText": "先收集反馈，再决定课时。",
+        "sameTask": true,
+        "sameThread": true,
+        "duplicateWrites": 0,
+        "duplicateSettlements": 0
+      }
+    }
+  ]
+}

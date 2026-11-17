@@ -1,10 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildTaskActivityRows, getSettledTaskTransitions, selectConversationExecution, shouldAutoReadTaskNotice } from "./oneTaskAttention";
+import { buildTaskActivityRows, getSettledTaskTransitions, selectConversationExecution, shouldAutoReadTaskNotice, taskPresentationStatus } from "./oneTaskAttention";
 
 const task = (id: string, conversationId: string, status: string, updatedAt = "2026-09-11T02:00:00Z") => ({ id, conversationId, status, updatedAt });
 const conversation = (id: string, updatedAt = "2026-09-11T01:00:00Z", archived = false) => ({ id, title: `任务 ${id}`, updatedAt, archived });
 const empty = () => new Set<string>();
+
+test('confirmed business delivery appears completed while retaining raw executor failure and stop facts',()=>{
+  const delivered={...task('a','one','failed'),businessOutcome:'completed' as const};
+  assert.equal(taskPresentationStatus(delivered),'completed');
+  assert.equal(buildTaskActivityRows([conversation('one')],[delivered],empty(),empty(),empty())[0].status,'completed');
+  assert.equal(buildTaskActivityRows([conversation('one')],[delivered],empty(),new Set(['one']),empty())[0].status,'failed');
+  assert.equal(delivered.status,'failed');
+  assert.equal(taskPresentationStatus({...delivered,status:'running'}),'running');
+  assert.equal(taskPresentationStatus({...delivered,status:'cancelled'}),'cancelled');
+  assert.equal(taskPresentationStatus({...delivered,businessOutcome:'partial'}),'failed');
+});
 
 test("explicit historical selection wins over running work in the same conversation", () => {
   const old = task("old", "one", "completed", "2026-09-11T01:00:00Z");

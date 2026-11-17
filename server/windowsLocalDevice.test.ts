@@ -5,6 +5,8 @@ import { createServer } from 'node:http';
 import test from 'node:test';
 import { WebSocket } from 'ws';
 import { OneKeyPresence } from './oneKeyPresence.js';
+import { assertLocalDeviceReadinessScope, createLocalDeviceReadiness } from './localDeviceReadiness.js';
+import { codexBridgePlatformEnabled, localDeviceCanBridge } from '../src/localDeviceReadiness.js';
 
 const installationId = 'a'.repeat(32);
 const capabilities = ['local_tools_v1', 'local_configuration_v1', 'runtime_update_v1'];
@@ -126,6 +128,66 @@ test('Windows needs both authenticated runtime identity and local-tools capabili
       assert.equal(f.messages.filter(message => ['executor_status', 'executor_prepare'].includes(message.type)).length, 0);
     } finally { await f.close(); }
   }
+});
+
+test('new Windows Codex capabilities retain built-in status while the platform matrix is pending', async () => {
+  assert.equal(codexBridgePlatformEnabled('windows'), false);
+  const f = await windowsDevice({ capabilities: [...capabilities, 'managed_codex_v1', 'codex_exec_v1', 'codex_tool_bridge_v1'] });
+  let catalogCalls = 0;
+  const catalog = () => { catalogCalls++; return undefined; };
+  try {
+    for (const install of [false, true]) {
+      const status = await f.presence.managedExecutor(f.scope, catalog, install);
+      assert.equal(status.available, true);
+      assert.equal(status.preparing, false);
+      assert.equal(status.installedSource, 'builtin');
+      assert.equal(status.installedVersion, '0.4.28');
+      assert.match(status.message ?? '', /内置文件工具已可用/);
+      assert.match(status.message ?? '', /Codex.*Windows.*待验收/);
+    }
+    assert.equal(catalogCalls, 0);
+    assert.equal(f.messages.filter(message => ['executor_status', 'executor_prepare'].includes(message.type)).length, 0);
+    for (const changed of [{ workspaceId: 'wb' }, { userId: 'b' }, { installationId: 'b'.repeat(32) }]) {
+      await assert.rejects(f.presence.managedExecutor({ ...f.scope, ...changed }, catalog), /不属于|当前这台电脑/);
+    }
+  } finally { await f.close(); }
+});
+
+test('pending Windows Codex without built-in capability stays unavailable without invoking native preparation', async () => {
+  const f = await windowsDevice({ capabilities: ['runtime_update_v1', 'local_configuration_v1', 'managed_codex_v1'] });
+  const catalog = () => { throw new Error('unvalidated platform must not use the native Codex path'); };
+  try {
+    const status = await f.presence.managedExecutor(f.scope, catalog);
+    assert.equal(status.available, false);
+    assert.equal('installedVersion' in status, false);
+    await assert.rejects(f.presence.managedExecutor(f.scope, catalog, true), /Windows.*待验收/);
+    assert.equal(f.messages.filter(message => ['executor_status', 'executor_prepare'].includes(message.type)).length, 0);
+  } finally { await f.close(); }
+});
+
+test('new Windows launcher remains ready for built-in file work with no Codex catalog or permission probe', async () => {
+  const f = await windowsDevice({ capabilities: [...capabilities, 'managed_codex_v1', 'codex_exec_v1', 'codex_tool_bridge_v1'] });
+  f.db.users = [{ id: 'a', enabled: true }];
+  f.db.workspaces = [{ id: 'wa', status: 'active' }];
+  f.db.workspaceMembers = [{ workspaceId: 'wa', userId: 'a', status: 'active' }];
+  f.onConfiguration(message => f.reply(message, { targetName: 'C:\\ONE\\confirmed' }));
+  const catalog = () => { throw new Error('built-in readiness must not query a missing Codex catalog'); };
+  const checker = createLocalDeviceReadiness({
+    authorize: async scope => assertLocalDeviceReadinessScope(f.db, scope),
+    connectionToken: scope => f.presence.readinessConnectionToken(scope.deviceId, scope.installationId),
+    probeFolder: (scope, signal) => f.presence.localConfiguration(scope, false, { signal, timeoutMs: 500 }),
+    probeExecutor: (scope, signal) => f.presence.managedExecutor(scope, catalog, false, true, { signal, timeoutMs: 500 }),
+    metadata: scope => f.presence.readinessMetadata(scope.deviceId, scope.installationId),
+    timeoutMs: 1000,
+  });
+  try {
+    const readiness = await checker.inspect(f.scope, { fresh: true });
+    assert.equal(readiness.ready, true);
+    assert.equal(readiness.folder.targetName, 'C:\\ONE\\confirmed');
+    assert.deepEqual(readiness.executor, { state: 'ready', installedVersion: '0.4.28', installedSource: 'builtin' });
+    assert.equal(localDeviceCanBridge(readiness), false);
+    assert.equal(f.messages.filter(message => ['executor_status', 'executor_prepare'].includes(message.type)).length, 0);
+  } finally { await f.close(); }
 });
 
 test('Windows settings preserve the selected folder on cancellation and enforce exact account and computer scope', async () => {

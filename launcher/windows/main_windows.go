@@ -44,16 +44,34 @@ type deviceCredential struct {
 }
 
 type socketMessage struct {
-	Type        string              `json:"type"`
-	ChallengeID string              `json:"challengeId,omitempty"`
-	Nonce       string              `json:"nonce,omitempty"`
-	DeviceID    string              `json:"deviceId,omitempty"`
-	TaskID      string              `json:"taskId,omitempty"`
-	RequestID   string              `json:"requestId,omitempty"`
-	Tool        string              `json:"tool,omitempty"`
-	Arguments   map[string]any      `json:"arguments,omitempty"`
-	Change      bool                `json:"change,omitempty"`
-	Envelope    signedRuntimeUpdate `json:"envelope,omitempty"`
+	Type           string                        `json:"type"`
+	ChallengeID    string                        `json:"challengeId,omitempty"`
+	Nonce          string                        `json:"nonce,omitempty"`
+	DeviceID       string                        `json:"deviceId,omitempty"`
+	TaskID         string                        `json:"taskId,omitempty"`
+	RequestID      string                        `json:"requestId,omitempty"`
+	Tool           string                        `json:"tool,omitempty"`
+	Arguments      map[string]any                `json:"arguments,omitempty"`
+	Change         bool                          `json:"change,omitempty"`
+	Envelope       signedRuntimeUpdate           `json:"envelope,omitempty"`
+	Instruction    string                        `json:"instruction,omitempty"`
+	Round          int                           `json:"round,omitempty"`
+	AttemptID      string                        `json:"attemptId,omitempty"`
+	Owner          *codexExecutionOwner          `json:"owner,omitempty"`
+	Gateway        *windowsCodexGateway          `json:"gateway,omitempty"`
+	TaskBinding    *windowsCodexTaskBinding      `json:"taskBinding,omitempty"`
+	ToolBridge     *codexToolBridgeConfiguration `json:"toolBridge,omitempty"`
+	ThreadID       string                        `json:"threadId,omitempty"`
+	TurnID         string                        `json:"turnId,omitempty"`
+	CallID         string                        `json:"callId,omitempty"`
+	Success        bool                          `json:"success,omitempty"`
+	ContentItems   []codexToolContent            `json:"contentItems,omitempty"`
+	ReceiptID      string                        `json:"receiptId,omitempty"`
+	ReceiptHash    string                        `json:"receiptHash,omitempty"`
+	Accepted       bool                          `json:"accepted,omitempty"`
+	WorkspaceID    string                        `json:"workspaceId,omitempty"`
+	UserID         string                        `json:"userId,omitempty"`
+	InstallationID string                        `json:"installationId,omitempty"`
 }
 
 type signedRuntimeUpdate struct {
@@ -116,7 +134,13 @@ func (writer *socketWriter) json(value any) error {
 	defer writer.mutex.Unlock()
 	// A dead progress socket must not hold an installed update indefinitely.
 	_ = writer.connection.SetWriteDeadline(time.Now().Add(3 * time.Second))
-	return writer.connection.WriteJSON(value)
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return err
+	}
+	return writer.connection.WriteMessage(websocket.TextMessage, encoded.Bytes())
 }
 
 type localExecutor struct {
@@ -573,6 +597,9 @@ func connectLauncher(base, credentialPath, deviceID string) (*websocket.Conn, er
 		connection.Close()
 		return nil, errors.New("ONE Key 在线验证失败")
 	}
+	if ready.Owner != nil {
+		windowsCodexHostFor(credentialPath, deviceID).setOwner(*ready.Owner)
+	}
 	connection.SetReadDeadline(time.Now().Add(100 * time.Second))
 	connection.SetPingHandler(func(data string) error {
 		connection.SetReadDeadline(time.Now().Add(100 * time.Second))
@@ -592,6 +619,9 @@ func serveProofsWithInstaller(connection *websocket.Conn, credentialPath, device
 func serveProofsWithWorkspaceChooser(connection *websocket.Conn, credentialPath, deviceID string, install func(runtimeUpdateArtifact, string, func(string)) error, choose func() (string, error)) (result error) {
 	defer connection.Close()
 	writer := &socketWriter{connection: connection}
+	codex := windowsCodexHostFor(credentialPath, deviceID)
+	codex.bind(writer)
+	defer codex.unbind(writer)
 	executor := &localExecutor{commands: make(map[string]*exec.Cmd)}
 	configuration := make(chan struct{}, 1)
 	active := make(chan struct{})
@@ -628,6 +658,7 @@ func serveProofsWithWorkspaceChooser(connection *websocket.Conn, credentialPath,
 				}
 				lastTick = now
 				if !fileExists(credentialPath) {
+					codex.cancelAll()
 					invalidate()
 					connection.Close()
 					close(removed)
@@ -667,12 +698,22 @@ func serveProofsWithWorkspaceChooser(connection *websocket.Conn, credentialPath,
 		case "runtime_recovery_ack":
 			journal, _ := windowsRecoveryJournal(deviceID)
 			_ = acknowledgeRuntimeRecovery(credentialPath, journal, message.RequestID)
+		case "executor_status", "executor_prepare":
+			go codex.prepare(message)
+		case "execution_terminal_ack":
+			codex.acknowledge(message)
+		case "executor_tool_result":
+			codex.acceptToolResult(message)
 		case "local_configuration":
 			if message.RequestID == "" {
 				continue
 			}
 			if update != nil {
 				_ = writer.json(map[string]any{"type": "local_error", "taskId": "device_settings", "requestId": message.RequestID, "error": "ONE 正在更新，请完成后再设置工作文件夹"})
+				continue
+			}
+			if message.Change && codex.busy() {
+				_ = writer.json(map[string]any{"type": "local_error", "taskId": "device_settings", "requestId": message.RequestID, "error": "本机任务正在处理，请结束或停止后再更换工作文件夹"})
 				continue
 			}
 			select {
@@ -719,6 +760,10 @@ func serveProofsWithWorkspaceChooser(connection *websocket.Conn, credentialPath,
 			if message.RequestID == "" || update != nil {
 				continue
 			}
+			if codex.busy() {
+				_ = writer.json(map[string]any{"type": "update_event", "requestId": message.RequestID, "status": "failed", "error": "本机执行工具正在工作，请结束或停止后再更新 ONE"})
+				continue
+			}
 			// The HTTP request may time out before the native picker closes. Keep
 			// local update and directory writes mutually exclusive after timeout.
 			if len(configuration) > 0 {
@@ -747,15 +792,13 @@ func serveProofsWithWorkspaceChooser(connection *websocket.Conn, credentialPath,
 				return nil
 			}, func() { _ = connection.Close() })
 		case "execution_cancel":
-			executor.cancel(message.TaskID)
+			if message.AttemptID != "" {
+				codex.cancel(message)
+			} else {
+				executor.cancel(message.TaskID)
+			}
 		case "execution_start", "execution_continue":
-			_ = writer.json(map[string]string{
-				"type":   "execution_event",
-				"taskId": message.TaskID,
-				"kind":   "error",
-				"text":   "当前 Windows 测试版暂未包含本机执行组件",
-				"status": "failed",
-			})
+			codex.start(message)
 		}
 	}
 }
