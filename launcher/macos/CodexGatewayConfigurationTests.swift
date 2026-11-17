@@ -56,6 +56,8 @@ import Darwin
         precondition(profile.setting.contains("\":root\"=\"deny\"") && profile.setting.contains("\":minimal\"=\"read\""))
         precondition(profile.setting.contains("network={enabled=false}") && !profile.setting.contains(config.token))
         precondition(profile.arguments.contains("features.multi_agent=false") && profile.arguments.contains("features.goals=false"))
+        precondition(profile.arguments.contains("shell_environment_policy.inherit=\"core\"") && profile.arguments.contains("shell_environment_policy.ignore_default_excludes=false"))
+        precondition(profile.arguments.contains { $0.hasPrefix("shell_environment_policy.include_only=") && $0.contains("ONE_DOCUMENT_TOOL") && !$0.contains("TOKEN") })
         precondition(!profile.runtimeReadPaths.contains(home.deletingLastPathComponent().path), "no broad temporary or task-home grant")
         precondition(!profile.runtimeReadPaths.contains("/opt/homebrew") && !profile.runtimeReadPaths.contains("/usr/local"), "runtime dependencies must stay narrower than package-manager roots")
         if let executable = ProcessInfo.processInfo.environment["ONE_CODEX_PERMISSION_TEST_BIN"] {
@@ -75,7 +77,7 @@ import Darwin
         try Data("SYNTHETIC_OUTSIDE".utf8).write(to: outside)
         try FileManager.default.createSymbolicLink(atPath: work.appendingPathComponent("outside-link").path, withDestinationPath: outside.path)
         // Known profiles/config cannot widen this fresh per-process profile.
-        try Data("[permissions.one-workspace.workspace_roots]\n\"\(home.path)\"=true\n".utf8).write(to: home.appendingPathComponent("config.toml"))
+        try Data("sandbox_mode=\"danger-full-access\"\n[permissions.one-workspace.workspace_roots]\n\"\(home.path)\"=true\n".utf8).write(to: home.appendingPathComponent("config.toml"))
         func run(_ command: [String], profileName: String? = nil) throws -> (Int32, String) {
             let process = Process(), output = Pipe()
             process.executableURL = URL(fileURLWithPath: executable)
@@ -137,10 +139,13 @@ import Darwin
                 documentTool: documentTool, environment: permissionEnvironment)
             let helper = Process(), input = Pipe(), output = Pipe()
             helper.executableURL = URL(fileURLWithPath: executable)
-            helper.arguments = documentProfile.arguments + ["sandbox", "-P", documentProfile.name, "-C", work.path, "--", documentTool, "--one-create-document-exact", "helper.txt"]
             var environment = ProcessInfo.processInfo.environment
             environment["CODEX_HOME"] = home.path; environment["TMPDIR"] = scratch.path; environment["ONE_DOCUMENT_ROOT"] = work.resolvingSymlinksInPath().path
-            helper.environment = environment; helper.standardInput = input; helper.standardOutput = output; helper.standardError = output
+            environment["ONE_DOCUMENT_TOOL"] = documentTool
+            let gateway = CodexGatewayConfiguration(baseUrl:"https://one.example/api/executor-gateway/v1",token:String(repeating:"a",count:43),model:"one-executor")
+            let overrides = try gateway.launchOverrides(home:home,environment:environment)
+            helper.arguments = overrides.arguments + documentProfile.arguments + ["sandbox", "-P", documentProfile.name, "-C", work.path, "--", documentTool, "--one-create-document-exact", "helper.txt"]
+            helper.environment = overrides.environment; helper.standardInput = input; helper.standardOutput = output; helper.standardError = output
             try helper.run(); try output.fileHandleForWriting.close(); try input.fileHandleForReading.close()
             try input.fileHandleForWriting.write(contentsOf: Data("SYNTHETIC_DOCUMENT_HELPER".utf8)); try input.fileHandleForWriting.close()
             let detail = output.fileHandleForReading.readDataToEndOfFile(); helper.waitUntilExit()

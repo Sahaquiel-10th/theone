@@ -56,10 +56,11 @@ private actor FixtureTools {
                 CodexDynamicToolDefinition(name: "one_fixture_save", description: "Save synthetic result", inputSchema: saveSchema)],
             onToolCall: { try await toolState.invoke($0) },
             sendLine: { try await writer.sendLine($0) }, onExecEvent: { _ in })
-        let settings = ["model=\"one-executor\"", "model_provider=\"one_fixture\"", "web_search=\"disabled\"",
+        var settings = ["model=\"one-executor\"", "model_provider=\"one_fixture\"", "web_search=\"disabled\"",
             "model_providers.one_fixture.name=\"ONE fixture\"", "model_providers.one_fixture.base_url=\"\(endpoint)\"",
             "model_providers.one_fixture.wire_api=\"responses\"", "model_providers.one_fixture.requires_openai_auth=false",
             "model_providers.one_fixture.request_max_retries=0", "model_providers.one_fixture.stream_max_retries=0"]
+        if ProcessInfo.processInfo.environment["ONE_QA_ENV_PROOF"] == "1" { settings.append("model_providers.one_fixture.env_key=\"ONE_EXECUTOR_TOKEN\"") }
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = settings.flatMap { ["-c", $0] } + permissions.arguments + ["app-server", "--listen", "stdio://"]
         var environment = ProcessInfo.processInfo.environment

@@ -272,6 +272,27 @@ test('complete content delivery survives a failed executor closing reply, but ca
   }
 });
 
+test('only explicitly required public retrieval needs real current-round search evidence before business completion',async()=>{
+  for(const scenario of ['not-required','missing','completed','old-round'] as const){
+    const f=fixture({notion:true,web:true});await f.prepare();
+    await f.store.mutate(db=>{db.chatOperations![0].workRun!.expectedOutput='text';db.chatOperations![0].workRun!.contract={version:1,requiredTools:scenario==='not-required'?[]:['web_search']} as any;});
+    if(scenario==='completed'||scenario==='old-round'){
+      const searched=await f.bridge.call(owner,f.call('one_web_search',{query:'公开的产品设计案例'}));assert.equal(searched.success,true);
+      if(scenario==='old-round')await f.store.mutate(db=>{db.executionTasks[0].toolBridge!.calls.find(call=>call.tool==='one_web_search')!.round=99;});
+    }
+    const artifactId=await original(f);await f.bridge.call(owner,f.call('one_save_notion',{artifactId}));
+    await f.store.mutate(db=>{
+      const task=db.executionTasks[0];task.status=scenario==='missing'?'completed':'failed';
+      task.terminalReceipt={id:'terminal',hash:'hash',attemptId:'attempt-a',round:0,outcome:scenario==='missing'?'completed':'failed',receivedAt:'now',disposition:'accepted'};
+      f.bridge.settle(db,task.id);
+    });
+    const complete=scenario==='not-required'||scenario==='completed';
+    assert.equal(f.db().executionTasks[0].businessOutcome,complete?'completed':'partial',scenario);
+    if(!complete)assert.match(f.db().executionTasks[0].businessSummary!,/公开资料检索尚未确认完成/);
+    assert.equal(f.writes(),1,'missing public retrieval does not undo a confirmed external write');
+  }
+});
+
 test('an independent conversation never inherits a Codex thread, and unresolved old termination cannot resume', async () => {
   for (const independent of [true, false]) {
     const f = fixture(); await f.prepare();

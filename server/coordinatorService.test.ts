@@ -37,7 +37,7 @@ for (const { contextMode, workbench, lockedModel } of [{ contextMode: 'legacy', 
     { id: 'bridge-notion', workspaceId: 'wa', provider: 'notion', status: 'connected', notionWriting: { grantId: 'bridge-grant', userId: 'a', parentId: 'a'.repeat(32), authorizedAt: 'now' } } as any,
     { id: 'foreign-bridge-source', workspaceId: 'wb', provider: 'getnote', status: 'connected', encryptedApiKey: 'SYNTHETIC_FOREIGN_SOURCE' } as any); });
   let starts = 0, workerCalls = 0, routerCalls = 0; const routeFeedback: string[] = [];
-  const readiness = { checkedAt: new Date().toISOString(), ready: true, connected: true, folder: { state: 'ready' as const, targetName: '/synthetic/allowed' }, executor: { state: 'ready' as const, installedVersion: '0.160.1', installedSource: 'managed' as const }, reason: 'ready' as const, capabilities: { staticPreview: true, taskDirectoryBinding: true, codexToolBridge: true } };
+  const readiness = { checkedAt: new Date().toISOString(), ready: true, connected: true, folder: { state: 'ready' as const, targetName: '/synthetic/allowed' }, executor: { state: 'ready' as const, installedVersion: '0.160.1', installedSource: 'managed' as const }, reason: 'ready' as const, platform:'macos' as const, capabilities: { staticPreview: true, taskDirectoryBinding: true, codexToolBridge: true } };
   const service = new CoordinatorService(f.store, { recallWithDiagnostics: async () => { throw Error('the coordinator must delegate this exact source read'); } }, {
     contextMode, notionDocuments: new NotionDocuments(f.store, {} as NotionMcpService), modelCall: async (model, messages, tools) => {
       if (model.id !== 'router') { workerCalls++; throw Error('must stay in one Codex session'); }
@@ -69,6 +69,26 @@ test('Codex bridge capability does not turn a status question into execution or 
   const response = await service.dispatch(a, input('bridge_status_question_0001', '只讨论，不执行任何任务：解释一下本机执行功能。'), key, undefined, async () => { starts++; return { id: 'must-not-start', status: 'queued' }; }, undefined,
     async () => { probes++; throw Error('a status question does not probe for execution'); }, { deviceId: 'synthetic-key', installationId: 'a'.repeat(32) });
   assert.equal(starts, 0); assert.equal(probes, 0); assert.equal(response.taskId, undefined);
+});
+
+for(const explicitLocal of [false,true])test(`a fresh Windows builtin-only executor with bridge protocol capability keeps ${explicitLocal?'the original file path':'ordinary writing off the Codex bridge'}`,async()=>{
+  const f=fixture();let starts=0;const feedback:string[]=[];
+  const readiness={checkedAt:new Date().toISOString(),ready:true,connected:true,folder:{state:'ready' as const,targetName:'C:\\Synthetic\\allowed'},executor:{state:'ready' as const,installedVersion:'0.4.31',installedSource:'builtin' as const},reason:'ready' as const,platform:'windows' as const,capabilities:{staticPreview:true,taskDirectoryBinding:true,codexToolBridge:true}};
+  const service=new CoordinatorService(f.store,{recallWithDiagnostics:async()=>({chunks:[],failures:[],status:'no_match'})},{modelCall:async(_model,messages,tools)=>{
+    assert.doesNotMatch(JSON.stringify(messages),/当前 Codex 桥梁已就绪/);
+    feedback.push(messages.at(-1)?.content??'');
+    if((await f.store.read()).chatOperations!.some(operation=>operation.workRun))return answer('已接到本轮合成要求。');
+    const name=explicitLocal?'execute_local_task':'delegate_task';
+    if(!tools.some(tool=>tool.function.name===name))return{...answer(''),toolCalls:[{id:'builtin-load',type:'function',function:{name:'load_tools',arguments:JSON.stringify({names:[name]})}}]};
+    return {...answer(''),toolCalls:[{id:'builtin-only',type:'function',function:{name,arguments:JSON.stringify({taskId:null,title:'合成说明',instruction:'用本轮合成材料写一份完整说明。',executorId:'general',featureIds:[]})}}]};
+  }});
+  const result=await service.dispatch(a,{...input(`builtin_only_${explicitLocal?'local':'writing'}_001`,explicitLocal?'在已选工作文件夹创建一份txt说明文件。':'根据这些合成材料写一份说明。'),...(explicitLocal?{localExecution:true,outputDestination:'local' as const}:{})},key,undefined,async(taskId,messageId)=>{
+    starts++;const job=(await f.store.read()).chatOperations!.find(operation=>operation.conversationId===taskId&&operation.workRun?.inputMessageId===messageId)!.workRun!;
+    assert.equal(job.localExecution?.toolBridge,undefined);return{id:'original-builtin-task',status:'queued'};
+  },undefined,async()=>readiness,{deviceId:'synthetic-windows',installationId:'a'.repeat(32)});
+  assert.ok(result.taskId,JSON.stringify({result,feedback}));assert.equal(starts,explicitLocal?1:0);
+  const job=(await f.store.read()).chatOperations!.find(operation=>operation.workRun)!.workRun!;
+  assert.equal(job.localExecution?.toolBridge,undefined);if(!explicitLocal)assert.notEqual(job.executionMode,'local');
 });
 
 async function activeModelProjectionFixture(){

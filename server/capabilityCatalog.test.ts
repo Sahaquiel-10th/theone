@@ -36,7 +36,7 @@ test('only an authenticated ready Codex bridge offers an unbound prompt workbenc
   assert.equal(cards.find(card=>card.featureId==='unbound-own')!.modelId,undefined);
   assert.equal(cards.find(card=>card.featureId==='fixed')!.modelId,'gpt');
   assert.ok(!cards.some(card=>card.featureId==='unbound-foreign'));
-  own.history[0].values.tools=[{id:'oneWorkbook'}];
+  own.history[0].values.tools=[{id:'oneWorkbook',description:'synthetic spreadsheet tool'}];
   assert.ok(!routingCapabilities(db,scope,{localAvailable:true,codexToolBridgeAvailable:true}).some(card=>card.featureId==='unbound-own'));
 });
 

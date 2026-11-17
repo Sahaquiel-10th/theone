@@ -115,7 +115,7 @@ import {parseToolRecoveryDiagnostic,toolRecoveryDiagnostic,toolRecoveryMessage} 
 import {selectNotionLinkRecovery,notionLinkRecoveryOffer,type NotionLinkRecoveryRequest} from './notionLinkRecovery.js';
 import {publicWorkflowProgress,availableWorkflowResults} from './workflowPresentation.js';
 import {CoordinatorLocalError,localActionRequested,naturalLocalActionRequested,localReadinessCanStart,localReadinessFailure,confirmedLocalFollowup} from './coordinatorLocalPolicy.js';
-import {parseLocalDeviceReadiness,type LocalDeviceReadiness} from '../src/localDeviceReadiness.js';
+import {localDeviceCanBridge,parseLocalDeviceReadiness,type LocalDeviceReadiness} from '../src/localDeviceReadiness.js';
 import {LocalExecutionNotStartedError} from './localExecutionAdmission.js';
 import {workflowModelDiagnostic} from './workflowModelDiagnostics.js';
 import {selectWorkflowKnowledgeReferences,resolveWorkflowKnowledgeInputs,WorkflowKnowledgeInputError} from './workflowKnowledgeInputs.js';
@@ -933,7 +933,7 @@ export class CoordinatorService {
     if (!answerOnly && !requestedLocalAction && localToolAuthorized && inspectLocalReadiness && localDevice) {
       try { localReadiness = parseLocalDeviceReadiness(await inspectLocalReadiness()); } catch { /* The regular route remains available if this optional local probe fails. */ }
     }
-    const codexBridgeReady=()=>localReadinessCanStart(localReadiness)&&localReadiness?.capabilities?.codexToolBridge===true;
+    const codexBridgeReady=()=>localDeviceCanBridge(localReadiness);
     const checkLocal=async(fresh=false)=>{
       if(!requestedLocalAction&&!localActionRequested(content,input.boundTaskId)&&!codexBridgeReady())throw new CoordinatorLocalError('local_tool_invalid',409);
       if(!localToolAuthorized)throw new CoordinatorLocalError('local_tool_unavailable');

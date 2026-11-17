@@ -320,6 +320,9 @@ actor CodexAppServerController {
         guard let id = thread["thread"]?["id"]?.string, Self.validID(id), resumeThreadId == nil || id == resumeThreadId else {
             poison("thread_identity_invalid"); throw CodexAppServerError.invalidProtocol
         }
+        if let permissionProfile, thread["activePermissionProfile"]?["id"]?.string != permissionProfile {
+            poison("permission_profile_not_confirmed"); throw CodexAppServerError.invalidProtocol
+        }
         threadId = id
         await emit(.object(["type": .string("thread.started"), "thread_id": .string(id)]))
         try ensureMayStart()

@@ -11,13 +11,17 @@ import readline from 'node:readline';
 // the pinned executable's tool protocol without using a supplier or an account.
 const executable = process.argv[2];
 const controllerFixture = process.argv[3];
-const commandFirst = process.argv[4] === '--command-first';
+const commandFirst = process.argv.includes('--command-first');
+const environmentProof = process.argv.includes('--environment-proof');
+assert(!environmentProof || commandFirst && controllerFixture, 'Environment proof requires a production controller command fixture');
+const syntheticToken = 'SYNTHETIC_HTTP_AUTH_ONLY_NEVER_A_REAL_TOKEN';
 assert(executable && fs.existsSync(executable), 'Pass the fixed Codex executable');
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'one-tool-bridge-'));
 const home = path.join(directory, 'home');
 const project = path.join(directory, 'project');
 fs.mkdirSync(home, { mode: 0o700 });
 fs.mkdirSync(project, { mode: 0o700 });
+if(environmentProof)fs.writeFileSync(path.join(home,'config.toml'),'[shell_environment_policy]\ninherit="all"\nignore_default_excludes=true\n[shell_environment_policy.set]\nONE_EXECUTOR_TOKEN="SYNTHETIC_INJECTED_SET_TOKEN"\nONE_QA_INJECTED_TOKEN="SYNTHETIC_INJECTED_SET_TOKEN"\n');
 const marker = 'ONE-QA-CODEX-BRIDGE-20261117';
 let modelRequests = 0;
 let writes = 0;
@@ -36,10 +40,12 @@ function fixtureCommand() {
   const blocked = path.join(directory, 'blocked.txt');
   if (process.platform === 'win32') {
     const quote = (value:string) => `'${value.replaceAll("'", "''")}'`;
-    return `$ErrorActionPreference='Stop'; [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'command-proof.txt'), ${quote(marker)}); $r='READ_DENIED'; try {[System.IO.File]::ReadAllText(${quote(outside)}) | Out-Null; $r='READ_ALLOWED'} catch {}; $w='WRITE_DENIED'; try {[System.IO.File]::WriteAllText(${quote(blocked)}, 'blocked'); $w='WRITE_ALLOWED'} catch {}; [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'scope-proof.txt'), "$r $w"); Write-Output "$r $w"`;
+    const proof=environmentProof?`; $e='TOKEN_HIDDEN'; if($env:ONE_EXECUTOR_TOKEN -or $env:ONE_QA_INJECTED_TOKEN){$e='TOKEN_VISIBLE'}; [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'environment-proof.txt'),$e)`:'';
+    return `$ErrorActionPreference='Stop'; [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'command-proof.txt'), ${quote(marker)}); $r='READ_DENIED'; try {[System.IO.File]::ReadAllText(${quote(outside)}) | Out-Null; $r='READ_ALLOWED'} catch {}; $w='WRITE_DENIED'; try {[System.IO.File]::WriteAllText(${quote(blocked)}, 'blocked'); $w='WRITE_ALLOWED'} catch {}; [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'scope-proof.txt'), "$r $w"); Write-Output "$r $w"${proof}`;
   }
   const quote = (value:string) => `'${value.replaceAll("'", "'\\''")}'`;
-  return `printf %s ${quote(marker)} > command-proof.txt; if cat ${quote(outside)} >/dev/null 2>&1; then r=READ_ALLOWED; else r=READ_DENIED; fi; if (printf blocked > ${quote(blocked)}) 2>/dev/null; then w=WRITE_ALLOWED; else w=WRITE_DENIED; fi; printf '%s %s' "$r" "$w" > scope-proof.txt; cat scope-proof.txt`;
+  const proof=environmentProof?`; if [ -n "\${ONE_EXECUTOR_TOKEN-}" ] || [ -n "\${ONE_QA_INJECTED_TOKEN-}" ]; then printf TOKEN_VISIBLE; else printf TOKEN_HIDDEN; fi > environment-proof.txt`:'';
+  return `printf %s ${quote(marker)} > command-proof.txt; if cat ${quote(outside)} >/dev/null 2>&1; then r=READ_ALLOWED; else r=READ_DENIED; fi; if (printf blocked > ${quote(blocked)}) 2>/dev/null; then w=WRITE_ALLOWED; else w=WRITE_DENIED; fi; printf '%s %s' "$r" "$w" > scope-proof.txt; cat scope-proof.txt${proof}`;
 }
 
 function stream(response: http.ServerResponse, step: number) {
@@ -73,12 +79,14 @@ const server = http.createServer(async (request, response) => {
   try {
     assert.equal(request.method, 'POST');
     assert(request.url?.endsWith('/responses'));
+    if(environmentProof)assert.equal(request.headers.authorization,`Bearer ${syntheticToken}`,'Model service must retain its separate synthetic authentication');
     let body = '';
     for await (const chunk of request) {
       body += chunk.toString();
       assert(body.length < 2_000_000);
     }
     const input = JSON.parse(body);
+    if(environmentProof) { assert(!body.includes(syntheticToken),'Authentication must not enter model input'); assert(!body.includes('SYNTHETIC_INJECTED_SET_TOKEN'),'Loaded shell token must not enter model input'); }
     if (!toolCatalog.length) toolCatalog = input.tools.map((tool:any) => ({type:tool.type,name:tool.name,
       ...(tool.tools ? {tools:tool.tools.map((nested:any)=>({type:nested.type,name:nested.name}))} : {})}));
     assert(input.tools.some((tool: { name?: string }) => tool.name === 'one_fixture_read'));
@@ -106,6 +114,7 @@ for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'ONE_EX
   'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) {
   delete (environment as Record<string, string | undefined>)[key];
 }
+if(environmentProof) { (environment as Record<string,string|undefined>).ONE_QA_ENV_PROOF='1'; (environment as Record<string,string|undefined>).ONE_EXECUTOR_TOKEN=syntheticToken; }
 if (controllerFixture) {
   const child = spawn(controllerFixture, [executable, `http://127.0.0.1:${address.port}/v1`, project, home, marker],
     { env: environment, cwd: project, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -127,6 +136,7 @@ if (controllerFixture) {
       assert(scope.includes('WRITE_DENIED'), 'Outside workspace write was not denied');
       if (process.env.ONE_CODEX_PERMISSION_PROFILE) assert(scope.includes('READ_DENIED'), 'Outside workspace read was not denied');
       assert(!fs.existsSync(path.join(directory,'blocked.txt')));
+      if(environmentProof)assert.equal(fs.readFileSync(path.join(project,'environment-proof.txt'),'utf8'),'TOKEN_HIDDEN','Loaded shell set must not reintroduce a token');
     }
     assert.equal(fs.readFileSync(path.join(project, 'result.txt'), 'utf8'), marker);
     // A new controller and a new Codex process load the prior thread from the
@@ -154,6 +164,7 @@ if (controllerFixture) {
     const result = { ...evidence, runtime: executable, directory, modelRequests, toolCatalog,
       resumedEvidence, resumedAcrossNewProcesses: true,
       ...(commandFirst ? {nativeCommand:true,scopeProof:fs.readFileSync(path.join(project,'scope-proof.txt'),'utf8')} : {}),
+      ...(environmentProof ? {environmentProof:'TOKEN_HIDDEN',modelHTTPAuthentication:'synthetic bearer verified'} : {}),
       modelService: 'local synthetic Responses fixture', supplierCalls: 0 };
     fs.writeFileSync(path.join(directory, 'evidence.json'), JSON.stringify(result, null, 2));
     console.log(JSON.stringify(result));

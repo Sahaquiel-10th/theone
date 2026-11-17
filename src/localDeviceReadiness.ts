@@ -16,6 +16,15 @@ export type LocalDeviceReadiness={
 const folderStates:readonly string[]=['ready','unselected','unavailable','denied','unknown'];
 const executorStates:readonly string[]=['ready','unprepared','busy','unavailable','unknown'];
 const sources:readonly string[]=['existing','managed','builtin'];
+// Expand one platform only after its pinned real protocol, restart and
+// filesystem-boundary matrix has passed. Protocol support is not installation.
+const verifiedCodexBridgeVersions:Readonly<Record<'macos'|'windows',readonly string[]>>={macos:['0.160.1'],windows:['0.160.1']};
+export function localDeviceCanBridge(value:LocalDeviceReadiness|undefined):boolean {
+  const platform=value?.platform;
+  return Boolean(value?.ready&&value.connected&&value.folder.state==='ready'&&value.executor.state==='ready'
+    &&value.capabilities?.codexToolBridge===true&&['managed','existing'].includes(value.executor.installedSource??'')
+    &&(platform==='macos'||platform==='windows')&&verifiedCodexBridgeVersions[platform].includes(value.executor.installedVersion??''));
+}
 const record=(value:unknown):value is Record<string,unknown>=>!!value&&typeof value==='object'&&!Array.isArray(value);
 export function localDeviceReadinessReason(value:Pick<LocalDeviceReadiness,'connected'|'folder'|'executor'>):LocalDeviceReadinessReason {
   if(!value.connected)return'offline';

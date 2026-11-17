@@ -435,16 +435,19 @@ export class CodexToolBridge {
     const source = artifact ? artifactStep(job, operation.id, artifact.key) : undefined;
     const knowledgeRequired = job.contract?.requiredTools?.includes('knowledge_search') || Boolean(job.contract?.knowledgeSourceIds?.length);
     const knowledgeCompleted = !knowledgeRequired || task.toolBridge.calls.some(call => call.round === (task.reportRound ?? 0) && call.tool === 'one_knowledge_search' && call.state === 'completed' && call.result?.success);
+    const webRequired = job.contract?.requiredTools?.includes('web_search');
+    const webCompleted = !webRequired || task.toolBridge.calls.some(call => call.round === (task.reportRound ?? 0) && call.tool === 'one_web_search' && call.state === 'completed' && call.result?.success);
+    const requiredReadsCompleted = knowledgeCompleted && webCompleted;
     // A final acknowledged content delivery can finish independently of a
     // failed closing model reply. It cannot fulfil a mandatory local-file goal
     // or waive an explicit stop, safety hold, or required knowledge lookup.
     const contentDelivery = job.expectedOutput === 'text' && source && saved && deliveryJob.notionReceipt?.final === true
-      && deliveryJob.notionReceipt.expectedRawDigest === hash(source.content) && knowledgeCompleted && task.status !== 'cancelled' && !task.executionSafetyHold;
-    const complete = Boolean(contentDelivery || task.status === 'completed' && knowledgeCompleted && (!job.notionTarget || saved && deliveryJob.notionReceipt?.final === true));
+      && deliveryJob.notionReceipt.expectedRawDigest === hash(source.content) && requiredReadsCompleted && task.status !== 'cancelled' && !task.executionSafetyHold;
+    const complete = Boolean(contentDelivery || task.status === 'completed' && requiredReadsCompleted && (!job.notionTarget || saved && deliveryJob.notionReceipt?.final === true));
     job.state = task.status === 'cancelled' ? 'cancelled' : complete ? 'completed' : 'failed';
     job.resultOutcome = complete ? 'completed' : artifact || saved ? 'partial' : 'failed';
     job.resultMessageId = artifact?.key ?? task.terminalReceipt.receiptMessageId;
-    job.error = complete ? undefined : task.lastError || (job.notionTarget && !saved ? '完整原稿保留在 ONE，Notion 这次尚未确认保存，请查看本次保存反馈。' : '本轮执行没有完成，请查看具体反馈。');
+    job.error = complete ? undefined : !knowledgeCompleted ? '本轮要求的资料检索尚未确认完成，已有成果会保留。' : !webCompleted ? '本轮要求的公开资料检索尚未确认完成，已有原稿和保存结果会保留。' : task.lastError || (job.notionTarget && !saved ? '完整原稿保留在 ONE，Notion 这次尚未确认保存，请查看本次保存反馈。' : '本轮执行没有完成，请查看具体反馈。');
     job.userReport = complete ? saved ? '完整成果已保存到 ONE 和 Notion。' : artifact ? '完整成果已保存在 ONE，可以查看原稿。' : '本轮成果已返回，可以查看文件与处理结果。' : job.error;
     task.businessOutcome = complete ? 'completed' : job.resultOutcome === 'partial' ? 'partial' : 'failed';
     task.businessSummary = job.userReport; task.businessNotionUrl = saved ? deliveryJob.notionReceipt?.url : undefined;

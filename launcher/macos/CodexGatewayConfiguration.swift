@@ -49,7 +49,12 @@ struct CodexWorkspacePermissions {
     }
 
     var arguments: [String] { ["-c", "default_permissions=\(codexTOMLString(name))", "-c", setting,
-                                "-c", "features.multi_agent=false", "-c", "features.goals=false"] }
+                                "-c", "features.multi_agent=false", "-c", "features.goals=false",
+                                "-c", "shell_environment_policy.inherit=\"core\"", "-c", "shell_environment_policy.ignore_default_excludes=false",
+                                // Codex applies `set` after excludes. This final
+                                // allowlist runs after `set`, so a project cannot
+                                // merge a TOKEN back into the command environment.
+                                "-c", "shell_environment_policy.include_only=[\"PATH\",\"SHELL\",\"TMPDIR\",\"TEMP\",\"TMP\",\"TMPPREFIX\",\"HOME\",\"LANG\",\"LC_ALL\",\"LC_CTYPE\",\"LOGNAME\",\"USER\",\"ONE_DOCUMENT_TOOL\",\"ONE_DOCUMENT_ROOT\"]"] }
 
     // :minimal already includes the operating-system runtime. Homebrew and
     // framework Python runtimes need their own package and dynamic libraries;

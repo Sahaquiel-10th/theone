@@ -179,7 +179,9 @@ private func bootstrap(_ controller: CodexAppServerController, fixture: Fixture,
     let start = Task { try await controller.start(instruction: instruction) }
     try await reply(controller, fixture.request("initialize"))
     let thread = try await fixture.request(resume ? "thread/resume" : "thread/start")
-    try await reply(controller, thread, .object(["thread": .object(["id": .string("thread_1")])]))
+    var threadResponse:[String:JSON] = ["thread": .object(["id": .string("thread_1")])]
+    if let profile=thread["params"]?["permissions"]?.string { threadResponse["activePermissionProfile"] = .object(["id":.string(profile)]) }
+    try await reply(controller, thread, .object(threadResponse))
     let turn = try await fixture.request("turn/start")
     try await beforeTurnReply?()
     try await reply(controller, turn, .object(["turn": .object(["id": .string("turn_1"), "status": .string("inProgress"), "items": .array([])])]))
@@ -246,6 +248,17 @@ private func namedWorkspacePolicy() async throws {
                   "named turn permissions cannot be weakened by legacy policy override")
         await actor.transportClosed()
     }
+}
+
+private func namedWorkspacePolicyCannotFallBack() async throws {
+    let fixture=Fixture(), profile="one-workspace-"+String(repeating:"a",count:32)
+    let actor=try CodexAppServerController(attemptId:"profile_refusal",authorizedCWD:"/tmp/ONE-QA",permissionProfile:profile,
+        clientVersion:"test",sendLine:{try await fixture.send($0)},onExecEvent:{await fixture.event($0)})
+    let starting=Task{try await actor.start(instruction:"must not run under a broader profile")}
+    try await reply(actor,fixture.request("initialize"))
+    try await reply(actor,fixture.request("thread/start"),.object(["thread":.object(["id":.string("thread_1")]),"activePermissionProfile":.object(["id":.string(":workspace")])]))
+    do { _=try await starting.value;throw TestFailure(message:"unconfirmed read boundary accepted") } catch CodexAppServerError.invalidProtocol {}
+    try check(await fixture.methodCount("turn/start")==0,"a mismatched profile cannot dispatch the instruction")
 }
 
 private func exactCancellation() async throws {
@@ -687,6 +700,7 @@ private func ownedStopFailureOrTimeoutCannotTurnGreen() async throws {
             try await normalAndPolicy()
             try await privateScratchPolicy()
             try await namedWorkspacePolicy()
+            try await namedWorkspacePolicyCannotFallBack()
             try await exactCancellation()
             try await unknownCommandsStayUnknown()
             try await earlyAndForeignEvents()
@@ -707,7 +721,7 @@ private func ownedStopFailureOrTimeoutCannotTurnGreen() async throws {
             try await dynamicToolsAreScopedAndDeduplicated()
             try await dynamicToolsRejectForeignAndChangedCalls()
             try await dynamicToolBeforeTurnReplyAndInterruptedTerminal()
-            print("CodexAppServerTests: 23 groups passed (mocked stdio only)")
+            print("CodexAppServerTests: 24 groups passed (mocked stdio only)")
         } catch { fputs("CodexAppServerTests failed: \(error)\n", stderr); exit(1) }
     }
 }

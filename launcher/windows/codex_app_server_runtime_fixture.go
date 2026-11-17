@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -144,11 +143,41 @@ func realCodexProtocolFixture() error {
 		scanner := bufio.NewScanner(output)
 		scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
 		for scanner.Scan() {
+			// This opt-in fixture has only generated input and an isolated CODEX_HOME.
+			// Keep the real rejection reason visible when a platform rejects a profile.
+			var diagnostic struct {
+				Error *struct {
+					Code    int    `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if json.Unmarshal(scanner.Bytes(), &diagnostic) == nil && diagnostic.Error != nil {
+				message := diagnostic.Error.Message
+				if len(message) > 4096 {
+					message = message[:4096]
+				}
+				fmt.Fprintf(os.Stderr, "fixture RPC rejection (%d): %s\n", diagnostic.Error.Code, message)
+			}
 			controller.Receive(scanner.Bytes())
 		}
 		controller.Close()
 	}()
-	go func() { defer readers.Done(); _, _ = io.Copy(io.Discard, errorOutput) }()
+	go func() {
+		defer readers.Done()
+		scanner := bufio.NewScanner(errorOutput)
+		scanner.Buffer(make([]byte, 4096), 64*1024)
+		remaining := 16 * 1024
+		for scanner.Scan() {
+			line := scanner.Text()
+			if len(line) > remaining {
+				line = line[:remaining]
+			}
+			if remaining > 0 {
+				fmt.Fprintln(os.Stderr, "fixture runtime:", line)
+				remaining -= len(line)
+			}
+		}
+	}()
 	identity, err := controller.Start(ctx, "Read the synthetic source, save it using the provided tools, then report completion.")
 	if err != nil {
 		return err
