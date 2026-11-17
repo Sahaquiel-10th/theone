@@ -78,6 +78,7 @@ import Darwin
         precondition(DispatchTime.now().uptimeNanoseconds - started < 2_000_000_000, "timeout cleanup must be bounded")
         precondition(!sleeper.isRunning, "the deadline must stop the exact launched child")
         print("Gateway subprocess harness: null stdin, concurrent drain and bounded child timeout passed")
+        fflush(stdout)
     }
 
     static func main() throws {
@@ -127,8 +128,10 @@ import Darwin
         let allowed = try hereDocument(allowScratch: true)
         let actualDocument = try String(contentsOf: work.appendingPathComponent("long.md"), encoding: .utf8)
         precondition(allowed == 0 && actualDocument == document, "exact private scratch must enable complete long-text writes")
+        print("Gateway real here-document boundary passed"); fflush(stdout)
         let profile = try CodexWorkspacePermissions(workspace: canonical(work), scratch: scratchA.path,
             documentTool: "/usr/bin/true", environment: ["PATH": "/usr/bin:/bin", "TMPDIR": scratchA.path])
+        print("Gateway first named permissions profile prepared"); fflush(stdout)
         let anotherProfile = try CodexWorkspacePermissions(workspace: canonical(work), scratch: scratchA.path,
             documentTool: "/usr/bin/true", environment: ["PATH": "/usr/bin:/bin", "TMPDIR": scratchA.path])
         precondition(profile.name != anotherProfile.name && profile.name.hasPrefix("one-workspace-"), "loaded profiles cannot merge into a predictable name")

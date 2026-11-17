@@ -18,6 +18,11 @@ on:
           - macos-15
           - macos-15-intel
         default: macos-15
+      macos_only:
+        description: Run only Mac verification on the selected development ref
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -30,7 +35,7 @@ concurrency:
 
 jobs:
   verify:
-    if: github.event.inputs.windows_only != 'true'
+    if: github.event.inputs.windows_only != 'true' && github.event.inputs.macos_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -45,6 +50,7 @@ jobs:
       - run: npm run build
 
   verify-windows-runtime:
+    if: github.event.inputs.macos_only != 'true'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -133,7 +139,11 @@ jobs:
             xcrun swiftc -sdk "$ONE_TEST_SDK" -target "$ONE_TEST_ARCH-apple-macosx13.0" -parse-as-library \
               "launcher/macos/$suite.swift" "launcher/macos/${suite}Tests.swift" \
               -o "$RUNNER_TEMP/one-$suite-tests"
-            "$RUNNER_TEMP/one-$suite-tests"
+            if [ "$suite" = CodexGatewayConfiguration ]; then
+              node scripts/qa-native-suite.mjs "$RUNNER_TEMP/one-$suite-tests"
+            else
+              "$RUNNER_TEMP/one-$suite-tests"
+            fi
           done
           xcrun swiftc -sdk "$ONE_TEST_SDK" -target "$ONE_TEST_ARCH-apple-macosx13.0" -parse-as-library \
             launcher/macos/CodexAppServer.swift launcher/macos/CodexAppServerInput.swift \
