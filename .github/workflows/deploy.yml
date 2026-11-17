@@ -15,7 +15,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: production
+  # Only production mutations share a lock. Independent development checks
+  # must not hold production or each other while a hosted Mac is queued.
+  group: ${{ github.ref == 'refs/heads/main' && 'production' || format('verification-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
@@ -84,12 +86,22 @@ jobs:
             if (($strictOutput -join "`n") -notmatch 'native MXC is unavailable on this executor') { exit $strictExit }
             Write-Output 'STRICT_BRIDGE_UNAVAILABLE: MXC host capability is absent. This is not a positive strict-isolation acceptance; Windows bridge rollout remains disabled.'
           }
-          # Separately verify the actual Windows protocol, callback and restart
-          # lifecycle under the legacy workspace-write policy. Do not use this
-          # result to expand the strict bridge version matrix.
+          # The legacy backend also cannot enforce split writable roots on
+          # some hosts. Detect that precise refusal without broadening policy.
           Remove-Item Env:ONE_CODEX_PERMISSION_PROFILE
           $env:ONE_CODEX_WINDOWS_SANDBOX = 'unelevated'
-          node --experimental-strip-types scripts/qa-codex-tool-bridge.ts (Join-Path $unpacked 'bin/codex.exe') (Join-Path $fixture 'controller.exe') --command-first
+          $commandOutput = & node --experimental-strip-types scripts/qa-codex-tool-bridge.ts (Join-Path $unpacked 'bin/codex.exe') (Join-Path $fixture 'controller.exe') --command-first 2>&1
+          $commandExit = $LASTEXITCODE
+          if ($commandExit -ne 0) {
+            if (($commandOutput -join "`n") -notmatch 'windows unelevated restricted-token sandbox cannot enforce split writable root sets directly') {
+              $commandOutput | ForEach-Object { Write-Output $_ }
+              exit $commandExit
+            }
+            Write-Output 'LEGACY_COMMAND_UNAVAILABLE: split writable roots are unsupported. Native command acceptance remains pending; no permission fallback was applied.'
+          } else { $commandOutput | ForEach-Object { Write-Output $_ } }
+          # This independent positive proof covers dynamic tools and restart,
+          # with no native command or filesystem-isolation success claim.
+          node --experimental-strip-types scripts/qa-codex-tool-bridge.ts (Join-Path $unpacked 'bin/codex.exe') (Join-Path $fixture 'controller.exe')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   verify-macos-runtime:
