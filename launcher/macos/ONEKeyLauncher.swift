@@ -78,6 +78,7 @@ struct SocketMessage: Decodable {
     let arguments: LocalFileArguments?
     let envelope: SignedRuntimeUpdate?
     let gateway: CodexGatewayConfiguration?
+    let toolBridge: CodexToolBridgeConfiguration?
     let taskBinding: ExecutionTaskBinding?
     let previewPath: String?
     let owner: ExecutionOwner?
@@ -95,7 +96,7 @@ struct SocketAuthResponse: Encodable {
     let type: String
     let challengeId: String
     let signature: String
-    let capabilities = ["runtime_update_v1", "local_configuration_v1", "local_tools_v1", "codex_exec_v1", "execution_round_v1", "codex_gateway_v1", "managed_codex_v1", "static_preview_v1", "static_preview_status_v1", "execution_terminal_receipt_v1", "task_directory_binding_v1"]
+    let capabilities = ["runtime_update_v1", "local_configuration_v1", "local_tools_v1", "codex_exec_v1", "execution_round_v1", "codex_gateway_v1", "managed_codex_v1", "codex_tool_bridge_v1", "static_preview_v1", "static_preview_status_v1", "execution_terminal_receipt_v1", "task_directory_binding_v1"]
     let platform = "macos"
     let architecture: String
     let launcherVersion: String
@@ -830,6 +831,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
     private var identities: [String: ExecutionReceiptIdentity] = [:]
     private var unsavedTerminals: [String: ExecutionTerminalReceipt] = [:]
     private var replayInFlight = false
+    private let toolBridge = CodexToolBridgeChannel()
 
     init(socket: URLSessionWebSocketTask, deviceId: String, credentialUrl: URL, owner: ExecutionOwner) throws {
         self.socket = socket
@@ -853,6 +855,36 @@ final class CodexExecutionRunner: @unchecked Sendable {
 
     func detach(_ socket: URLSessionWebSocketTask) {
         synchronized { if self.socket === socket { self.socket = nil } }
+    }
+
+    func replayTools() async {
+        await toolBridge.replay { [self] request in await transmitToolRequest(request) }
+    }
+
+    func receiveToolResult(_ text: String) async {
+        guard let reply = try? JSONDecoder().decode(CodexToolBridgeReply.self, from: Data(text.utf8)) else { return }
+        _ = await toolBridge.receive(reply)
+    }
+
+    private func transmitToolRequest(_ request: CodexToolBridgeRequest) async -> Bool {
+        let connection = synchronized { () -> (URLSessionWebSocketTask, URL)? in
+            guard let socket, let identity = identities[request.taskId], identity.round == request.round,
+                  identity.attemptId == request.attemptId, !cancelled.contains(request.attemptId),
+                  !finishing.contains(request.attemptId) else { return nil }
+            return (socket, credentialUrl)
+        }
+        guard let (socket, credential) = connection else { return false }
+        do {
+            _ = try signNonce(Data("one-codex-tool-call".utf8).base64EncodedString(), credentialUrl: credential, deviceId: deviceId)
+            let bytes = try JSONEncoder().encode(request)
+            try await boundedRuntimeOperation(timeout: .seconds(3)) {
+                try await socket.send(.string(String(decoding: bytes, as: UTF8.self)))
+            }
+            return true
+        } catch {
+            socket.cancel(with: .goingAway, reason: nil)
+            return false
+        }
     }
 
     func replay() async {
@@ -882,7 +914,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
         } catch { receiptDiagnostic(.acknowledgementRejected) }
     }
 
-    func start(taskId: String, instruction: String, resume: Bool, round: Int, attemptId: String, owner: ExecutionOwner, gateway: CodexGatewayConfiguration? = nil, taskBinding: ExecutionTaskBinding? = nil) {
+    func start(taskId: String, instruction: String, resume: Bool, round: Int, attemptId: String, owner: ExecutionOwner, gateway: CodexGatewayConfiguration? = nil, taskBinding: ExecutionTaskBinding? = nil, toolBridge: CodexToolBridgeConfiguration? = nil) {
         guard self.owner == owner else { receiptDiagnostic(.acknowledgementRejected); return }
         let identity = ExecutionReceiptIdentity(workspaceId: owner.workspaceId, userId: owner.userId, deviceId: deviceId, installationId: installationId(), attemptId: attemptId, taskId: taskId, round: round)
         do {
@@ -904,7 +936,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
             Task { await send(taskId: taskId, kind: "error", text: "上一轮的本机进程或授权窗口尚未退出，请关闭窗口后再执行；本次未启动，也不会自动重跑。", status: "failed", identity: identity) }
             return
         }
-        Task { await self.run(taskId: taskId, instruction: instruction, resume: resume, gateway: gateway, identity: identity, taskBinding: taskBinding) }
+        Task { await self.run(taskId: taskId, instruction: instruction, resume: resume, gateway: gateway, identity: identity, taskBinding: taskBinding, toolBridge: toolBridge) }
     }
 
     func cancel(taskId: String, attemptId: String, round: Int) {
@@ -942,6 +974,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
             return
         }
         Task { await recoveryStatus(identity: requested, state: "active") }
+        Task { await toolBridge.cancel(attemptId: attemptId) }
         if process != nil {
             let managed = synchronized { (appServers[identity.attemptId], appServerInputs[identity.attemptId]) }
             if let controller = managed.0 {
@@ -983,7 +1016,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
             status: stopped ? "cancelled" : status, identity: identity)
     }
 
-    private func run(taskId: String, instruction: String, resume: Bool, gateway: CodexGatewayConfiguration?, identity: ExecutionReceiptIdentity, taskBinding: ExecutionTaskBinding?) async {
+    private func run(taskId: String, instruction: String, resume: Bool, gateway: CodexGatewayConfiguration?, identity: ExecutionReceiptIdentity, taskBinding: ExecutionTaskBinding?, toolBridge: CodexToolBridgeConfiguration?) async {
         func report(taskId: String, kind: String, text: String? = nil, providerThreadId: String? = nil, targetName: String? = nil, status: String? = nil, error: String? = nil) async {
             await send(taskId: taskId, kind: kind, text: text, providerThreadId: providerThreadId, targetName: targetName, status: status, identity: identity, error: error)
         }
@@ -1057,7 +1090,7 @@ final class CodexExecutionRunner: @unchecked Sendable {
         if let gateway {
             await runManagedAppServer(taskId: taskId, instruction: instruction,
                 executable: executable, projectPath: projectPath,
-                resumeThreadId: resume ? threadId : nil, gateway: gateway, identity: identity)
+                resumeThreadId: resume ? threadId : nil, gateway: gateway, identity: identity, toolBridge: toolBridge)
             return
         }
 
@@ -1194,11 +1227,13 @@ final class CodexExecutionRunner: @unchecked Sendable {
     // path; a failed managed attempt is never replayed through another path.
     private func runManagedAppServer(taskId: String, instruction: String, executable: String,
                                      projectPath: String, resumeThreadId: String?,
-                                     gateway: CodexGatewayConfiguration, identity: ExecutionReceiptIdentity) async {
+                                     gateway: CodexGatewayConfiguration, identity: ExecutionReceiptIdentity,
+                                     toolBridge bridgeConfiguration: CodexToolBridgeConfiguration?) async {
         let process = Process(), stdout = Pipe(), stderr = Pipe(), stdin = Pipe()
         var ownedTree: CodexProcessTree?
         var input: CodexAppServerInput?
         defer {
+            Task { await self.toolBridge.cancel(attemptId: identity.attemptId) }
             input?.close(); ownedTree?.finish()
             try? stdout.fileHandleForWriting.close(); try? stderr.fileHandleForWriting.close()
             synchronized {
@@ -1224,19 +1259,29 @@ final class CodexExecutionRunner: @unchecked Sendable {
             environment["ONE_DOCUMENT_TOOL"] = Bundle.main.executableURL?.path
             environment["ONE_DOCUMENT_ROOT"] = projectPath
             let overrides = try gateway.launchOverrides(home: home, environment: environment)
+            let permissions = bridgeConfiguration == nil ? nil : try CodexWorkspacePermissions(workspace: projectPath,
+                scratch: scratch.path, documentTool: environment["ONE_DOCUMENT_TOOL"], environment: environment)
             process.executableURL = URL(fileURLWithPath: executable)
             process.environment = overrides.environment
-            process.arguments = overrides.arguments + CodexAppServerController.launchArguments
+            process.arguments = overrides.arguments + (permissions?.arguments ?? []) + CodexAppServerController.launchArguments
             process.standardOutput = stdout; process.standardError = stderr; process.standardInput = stdin
             let writer = try CodexAppServerInput(fileHandle: stdin.fileHandleForWriting)
             input = writer
             let controller = try CodexAppServerController(attemptId: identity.attemptId,
-                authorizedCWD: projectPath, scratchDirectory: scratch.path, resumeThreadId: resumeThreadId, clientVersion: launcherVersion,
+                authorizedCWD: projectPath, scratchDirectory: scratch.path, permissionProfile: permissions?.name,
+                resumeThreadId: resumeThreadId, clientVersion: launcherVersion,
                 onInterruptAccepted: { [self] in
                     guard let tree = synchronized({ identities[taskId] == identity ? processTrees[identity.attemptId] : nil }),
                           tree.attemptId == identity.attemptId else { return false }
                     let stopped = await tree.requestOwnedDescendantStop()
                     return stopped.descendantsExited && stopped.rootAvailable && !stopped.requiresCheck
+                },
+                dynamicTools: bridgeConfiguration?.tools ?? [],
+                onToolCall: { [self] call in
+                    guard synchronized({ identities[taskId] == identity && !cancelled.contains(identity.attemptId)
+                        && !finishing.contains(identity.attemptId) }) else { throw CodexToolBridgeError.cancelled }
+                    return try await self.toolBridge.call(call, taskId: taskId, round: identity.round,
+                        attemptId: identity.attemptId, send: { [self] request in await transmitToolRequest(request) })
                 },
                 sendLine: { line in try await writer.sendLine(line) },
                 onExecEvent: { [self] line in
@@ -1396,6 +1441,14 @@ final class CodexExecutionRunner: @unchecked Sendable {
             let paths = (item["changes"] as? [[String: Any]])?.compactMap { $0["path"] as? String }.joined(separator: "\n") ?? ""
             if item["status"] as? String == "failed" { synchronized { toolFailures.insert(taskId) } }
             await report(taskId: taskId, kind: "file_change", text: "执行器报告文件变更：\n\(String(paths.prefix(4000)))")
+        } else if itemType == "dynamic_tool_call", ["item.started", "item.completed"].contains(type) {
+            let toolNames = ["one_knowledge_search": "检索参考资料", "one_save_artifact": "保存完整成果",
+                "one_save_notion": "保存到 Notion", "one_get_delivery": "查看已有成果"]
+            let tool = toolNames[item["tool"] as? String ?? ""] ?? "ONE 工具"
+            let finished = type == "item.completed"
+            let failed = finished && (item["status"] as? String != "completed" || item["success"] as? Bool == false)
+            await report(taskId: taskId, kind: failed ? "error" : "status",
+                text: "\(finished ? (failed ? "工具暂未完成" : "工具已完成") : "正在使用") · \(tool)")
         }
     }
 
@@ -1550,6 +1603,7 @@ func serveProofs(_ transport: LauncherLiveSocket, credentialUrl: URL, deviceId: 
     let previews = LocalPreviewManager()
     defer { Task { await previews.stopAll() } }
     guard execution.attach(task, credentialUrl: credentialUrl, valid: { transport.active }) else { throw LauncherConnectionError.staleSession }
+    Task { await execution.replayTools() }
     let watchdog = Task {
         do { try await transport.monitor() }
         catch { if !Task.isCancelled { connectionDiagnostic(.livenessFailed) }; transport.invalidate() }
@@ -1591,6 +1645,8 @@ func serveProofs(_ transport: LauncherLiveSocket, credentialUrl: URL, deviceId: 
             try? acknowledgeMacRecovery(credential: credentialUrl, journal: macRecoveryJournal(deviceId: deviceId), requestId: requestId)
         } else if message.type == "execution_terminal_ack" {
             execution.acknowledge(message)
+        } else if message.type == "executor_tool_result" {
+            await execution.receiveToolResult(text)
         } else if ["preview_start", "preview_stop", "preview_status"].contains(message.type), let requestId = message.requestId, let taskId = message.taskId {
           Task {
             guard transport.active, !Task.isCancelled else { return }
@@ -1672,9 +1728,9 @@ func serveProofs(_ transport: LauncherLiveSocket, credentialUrl: URL, deviceId: 
                 }
             }
         } else if message.type == "execution_start", let taskId = message.taskId, let instruction = message.instruction, let round = message.round, let attemptId = message.attemptId, let owner = message.owner {
-            execution.start(taskId: taskId, instruction: instruction, resume: false, round: round, attemptId: attemptId, owner: owner, gateway: message.gateway, taskBinding: message.taskBinding)
+            execution.start(taskId: taskId, instruction: instruction, resume: false, round: round, attemptId: attemptId, owner: owner, gateway: message.gateway, taskBinding: message.taskBinding, toolBridge: message.toolBridge)
         } else if message.type == "execution_continue", let taskId = message.taskId, let instruction = message.instruction, let round = message.round, let attemptId = message.attemptId, let owner = message.owner {
-            execution.start(taskId: taskId, instruction: instruction, resume: true, round: round, attemptId: attemptId, owner: owner, gateway: message.gateway, taskBinding: message.taskBinding)
+            execution.start(taskId: taskId, instruction: instruction, resume: true, round: round, attemptId: attemptId, owner: owner, gateway: message.gateway, taskBinding: message.taskBinding, toolBridge: message.toolBridge)
         } else if message.type == "execution_cancel", let taskId = message.taskId, let attemptId = message.attemptId, let round = message.round {
             execution.cancel(taskId: taskId, attemptId: attemptId, round: round)
         } else if message.type == "execution_cancel", let taskId = message.taskId, message.attemptId == nil {

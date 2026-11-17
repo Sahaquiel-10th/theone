@@ -6,6 +6,7 @@ export type LocalExecutorState = {
   installedSource?: 'existing' | 'managed' | 'builtin';
   version?: string;
   size?: number;
+  modelName?: string;
   message?: string;
   error?: string;
 };
@@ -13,8 +14,9 @@ export type LocalExecutorState = {
 /** Readiness is based on confirmed state, never on an installation channel. */
 export function localDeviceStatus(executor:LocalExecutorState|undefined,checking:boolean,preparing:boolean,requestError='') {
   if(preparing||executor?.preparing){
-    const stages:Record<string,string>={confirming:'等待电脑确认',downloading:'正在下载执行工具',verifying:'正在安装并检查',checking:'正在检查本机工具'};
-    return {state:'preparing',title:stages[executor?.phase||'confirming']||'正在准备本机执行',description:'准备完成后再执行任务。'};
+    const stages:Record<string,string>={confirming:'等待安装确认',downloading:'正在下载 Codex',verifying:'正在校验和安装 Codex',checking:'正在检查 Codex'};
+    const phase=executor?.phase||'checking';
+    return {state:'preparing',title:stages[phase]||'正在准备 Codex',description:phase==='confirming'?'请在电脑上的 ONE 窗口确认安装。':'准备完成后，就可以在 ONE 中交代任务。'};
   }
   if(checking)return {state:'checking',title:'正在检查本机状态',description:'请稍候。'};
   if(requestError||executor?.error)return {state:'unconfirmed',title:'本机状态未确认',description:'保持 ONE Key 连接后，重新检查。'};

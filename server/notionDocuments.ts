@@ -319,6 +319,17 @@ export class NotionDocuments {
     const receipt=fresh?.workRun?.notionReceipt;
     return {state:result?.state==='verified'?'verified':'delivered',url:receipt?.url,operationId:op.id,expectedDigest:receipt?.expectedDigest,digest:receipt?.digest,checkpointKey:receipt?.checkpointKey};
   }
+  /** Executor recovery names its original operation, never the newest save in
+   * a conversation. This invokes only the existing read-only verifier. */
+  async reconcileOperation(s: WorkScope, cid: string, operationId: string, verify: () => Promise<void>, execution?: { taskId: string; round: number; attemptId: string }) {
+    await verify();
+    const db = await this.store.read();
+    featureMember(db, s);
+    const operation = db.chatOperations?.find(item => item.id === operationId && item.workspaceId === s.workspaceId && item.userId === s.userId && item.conversationId === cid);
+    if (!operation?.workRun?.notionReceipt || !operation.workRun.notionTarget) throw new NotionDocumentError('原保存记录不存在');
+    this.assertTarget(db, s, operation.workRun.notionTarget);
+    await this.verifyReceipt(s, operationId, verify, true, execution);
+  }
   /** A user-selected candidate stays separate from the original target until
    * ownership, location, actual title and every body byte are proved. This can
    * confirm an existing delivery; it never fabricates the lost create ACK. */
@@ -402,12 +413,15 @@ export class NotionDocuments {
     for(const op of due){const result=await this.verifyReceipt(s,op.id,verify);if(result)results.push(result);}
     return results;
   }
-  private async verifyReceipt(s:WorkScope,opId:string,verify:()=>Promise<void>,manual=false):Promise<VerificationResult|undefined>{
+  private async verifyReceipt(s:WorkScope,opId:string,verify:()=>Promise<void>,manual=false,execution?:{taskId:string;round:number;attemptId:string}):Promise<VerificationResult|undefined>{
     await verify();const leaseId=crypto.randomUUID(),now=this.now();
+    const runningBridge=(db:Database)=>Boolean(execution&&db.executionTasks.some(task=>task.id===execution.taskId&&task.workspaceId===s.workspaceId&&task.userId===s.userId
+      && (task.toolBridge?.operationId===opId||task.toolBridge?.deliveryOperations?.includes(opId))&&(task.reportRound??0)===execution.round&&task.deliveryAttempt?.round===execution.round&&task.deliveryAttempt.id===execution.attemptId
+      && ['running','queued','selecting_target'].includes(task.status)&&!task.executionSafetyHold&&!task.terminalReceipt));
     const claimed=await this.store.mutate(db=>{
       featureMember(db,s);const op=db.chatOperations?.find(o=>o.id===opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId),run=op?.workRun,r=run?.notionReceipt,target=run?.notionTarget;
       if(!op||!run||!r||!target)return;
-      if(run.state==='running')throw new NotionDocumentError('保存仍在进行，请等待这轮结束后核对');
+      if(run.state==='running'&&!runningBridge(db))throw new NotionDocumentError('保存仍在进行，请等待这轮结束后核对');
       if(!manual&&['cancelled','interrupted'].includes(run.state))return;
       if(!r.expectedDigest||!r.pageId&&!r.asyncTaskId||['not_sent','rejected'].includes(r.delivery??''))return;
       const existing=r.verification;
@@ -441,7 +455,7 @@ export class NotionDocuments {
     const snapshot=claimed.receipt;let pageId=snapshot.pageId,body:string|undefined,fetchedTitle:string|undefined,comparison:Comparison|undefined,writeAcknowledgement:Receipt['writeAcknowledgement'],reason:'read_failed'|'mismatch'|'incomplete'|'authorization'|'stale'|'no_page'='read_failed';
     const assertSnapshot=(db:Database)=>{
       const op=db.chatOperations?.find(o=>o.id===opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId&&o.conversationId===claimed.conversationId),run=op?.workRun,r=run?.notionReceipt;
-      if(!op||!run||!r||r.verification?.version!==claimed.version||r.verification.leaseId!==leaseId||!sameReceipt(r,snapshot)||run.state==='running'||!manual&&['cancelled','interrupted'].includes(run.state)||(db.chatOperations??[]).some(other=>other.id!==op.id&&other.workspaceId===s.workspaceId&&other.userId===s.userId&&other.conversationId===op.conversationId&&mayHaveWritten(other.workRun?.notionReceipt)&&(other.createdAt??'')>(op.createdAt??'')))throw new NotionVerificationChanged();
+      if(!op||!run||!r||r.verification?.version!==claimed.version||r.verification.leaseId!==leaseId||!sameReceipt(r,snapshot)||run.state==='running'&&!runningBridge(db)||!manual&&['cancelled','interrupted'].includes(run.state)||(db.chatOperations??[]).some(other=>other.id!==op.id&&other.workspaceId===s.workspaceId&&other.userId===s.userId&&other.conversationId===op.conversationId&&mayHaveWritten(other.workRun?.notionReceipt)&&(other.createdAt??'')>(op.createdAt??'')))throw new NotionVerificationChanged();
       this.assertTarget(db,s,claimed.target);
     };
     try{
@@ -494,7 +508,7 @@ export class NotionDocuments {
     if(matched)integrity={...integrity,state:'covered',reason:integrity.title==='different'?'title_difference':undefined};
     return this.store.mutate(db=>{
       featureMember(db,s);const op=db.chatOperations?.find(o=>o.id===opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId&&o.conversationId===claimed.conversationId),run=op?.workRun,r=run?.notionReceipt,v=r?.verification;
-      if(!op||!run||!r||!v||v.version!==claimed.version||v.leaseId!==leaseId||!sameReceipt(r,snapshot)||run.state==='running'||!manual&&['cancelled','interrupted'].includes(run.state))return {operationId:opId,conversationId:claimed.conversationId,state:'blocked' as const};
+      if(!op||!run||!r||!v||v.version!==claimed.version||v.leaseId!==leaseId||!sameReceipt(r,snapshot)||run.state==='running'&&!runningBridge(db)||!manual&&['cancelled','interrupted'].includes(run.state))return {operationId:opId,conversationId:claimed.conversationId,state:'blocked' as const};
       try{this.assertTarget(db,s,claimed.target);}catch{reason='authorization';}
       const newer=(db.chatOperations??[]).some(other=>other.id!==op.id&&other.workspaceId===s.workspaceId&&other.userId===s.userId&&other.conversationId===op.conversationId&&mayHaveWritten(other.workRun?.notionReceipt)&&(other.createdAt??'')>(op.createdAt??''));
       if(newer||reproof?.kind==='matched'&&exactLatestSourceDigest(db,s,op,snapshot)!==claimed.latestExpected||source!==undefined&&exactNotionSource(db,s,op,snapshot)!==source)reason='stale';
@@ -591,6 +605,7 @@ export class NotionDocuments {
           await verify();const beforeWrite=await this.store.read();this.assertTarget(beforeWrite,s,target);
           const active=beforeWrite.chatOperations?.find(o=>o.id===opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId&&o.conversationId===cid)?.workRun;
           if(active?.state!=='running'||active.notionReceipt&&!notionDeliveryConfirmed(active.notionReceipt,opId))throw new NotionDocumentError('本轮保存已经提交或任务已停止，请查看原回执，不会重复写入');
+          if (active.notionTarget?.pageId !== target.pageId || active.notionTarget?.connectionId !== target.connectionId || active.notionTarget?.grantId !== target.grantId || active.notionTarget?.parentId !== target.parentId) throw new NotionDocumentError('原保存目标已有新结果，请先读取本次保存记录；没有重复新建或覆盖。');
           const v = validateSave(value) as any;
           if(beforeWrite.chatOperations?.some(o=>o.id!==opId&&o.workspaceId===s.workspaceId&&o.userId===s.userId&&o.conversationId===cid&&o.workRun&&(
             o.workRun.notionReceipt&&!notionDeliveryConfirmed(o.workRun.notionReceipt,o.id)&&!['not_sent','rejected'].includes(o.workRun.notionReceipt.delivery||'')||
@@ -608,6 +623,7 @@ export class NotionDocuments {
             this.assertTarget(d, s, target);
             const o = d.chatOperations?.find(o => o.id === opId && o.workspaceId === s.workspaceId && o.userId === s.userId && o.conversationId === cid);
             if (o?.workRun?.state !== 'running' || o.workRun.notionReceipt&&!notionDeliveryConfirmed(o.workRun.notionReceipt,o.id)) throw new NotionDocumentError('本轮保存已经提交或任务已停止，请查看原回执，不会重复写入');
+            if (o.workRun.notionTarget?.pageId !== target.pageId || o.workRun.notionTarget?.connectionId !== target.connectionId || o.workRun.notionTarget?.grantId !== target.grantId || o.workRun.notionTarget?.parentId !== target.parentId) throw new NotionDocumentError('原保存目标已有新结果，请先读取本次保存记录；没有重复新建或覆盖。');
             const steps=o.workRun.steps??= [],matching=steps.filter(step=>step.key===expectedReceipt.checkpointKey);
             if(matching.length>1||matching.length===1&&(matching[0].namespace!=='worker'||matching[0].scopeId!==opId||matching[0].tool!=='save_notion_draft'||matching[0].effect!=='external_write'||matching[0].state!=='started'))throw new NotionDocumentError('原写入步骤已经变化，没有重复发送。');
             // Save the complete immutable manuscript before sending, including

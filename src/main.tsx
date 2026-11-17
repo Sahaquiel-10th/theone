@@ -188,7 +188,7 @@ import './IndustryWorkspaces.css';
 import { Pagination, SearchPicker, SettingsDialog } from "./SettingsControls";
 import { BetaUserInsights } from "./BetaUserInsights";
 import { mergeTaskSnapshots, recoverTaskDraft } from "./oneStudioState";
-import { buildTaskActivityRows, getSettledTaskTransitions, selectConversationExecution, shouldAutoReadTaskNotice, type TaskActivityRow } from "./oneTaskAttention";
+import { buildTaskActivityRows, getSettledTaskTransitions, selectConversationExecution, shouldAutoReadTaskNotice, taskPresentationStatus, type TaskActivityRow } from "./oneTaskAttention";
 import { OneCompanionEye as OneHeroEye } from "./OneCompanionEye";
 import { api, apiForUser, ApiError, expectUser, announceSessionChange, SESSION_EVENT, SESSION_STORAGE_KEY } from "./oneApi";
 import { chatSubmission, forgetChatSubmission, pendingChatSubmissions } from "./chatSubmission";
@@ -303,6 +303,10 @@ type ExecutionTask = {
   conversationId: string;
   sourceMessageId: string;
   provider: "codex" | "local_agent";
+  executorModelName?: string;
+  businessOutcome?: 'completed' | 'partial' | 'failed';
+  businessSummary?: string;
+  businessNotionUrl?: string;
   status: "queued" | "selecting_target" | "running" | "completed" | "failed" | "cancelled";
   targetName?: string;
   providerThreadId?: string;
@@ -582,14 +586,15 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
   const steps = events.filter(event => event.kind !== "user_message");
   const latestStep = friendlyExecutionProgress(steps[steps.length - 1]);
   const api = useContext(PrivateApiContext);
-  const status = preparing ? "preparing" : awaitingInput ? "needs_input" : executionNeedsReview(task) ? "needs_input" : task?.status || "preparing";
+  const delivered = task?.businessOutcome === 'completed';
+  const status = preparing ? "preparing" : delivered ? "completed" : awaitingInput ? "needs_input" : executionNeedsReview(task) ? "needs_input" : task?.status || "preparing";
   const busy = preparing || isExecutionRunning(task);
   const recovery = executionRecovery(task);
   return <section id={`${idPrefix}-current-execution`} className={`execution-disclosure ${status} ${expanded ? "is-expanded" : ""}`} aria-label="本机执行">
     <div className="execution-disclosure-header">
       <button className="execution-disclosure-toggle" type="button" aria-expanded={expanded} aria-controls={`${idPrefix}-execution-content`} onClick={onToggle}>
         <span className={`task-indicator ${busy ? "running" : status}`} aria-hidden="true">{status === "completed" ? <Check size={12} /> : null}</span>
-        <span><strong>{awaitingInput ? '等你确认后继续' : executionNeedsReview(task) ? '这轮有个问题，结果需要核对' : executionStatusLabel(task, preparing)}</strong><small>{preparing ? "正在连接这台电脑…" : awaitingInput ? "本机已暂停，要求和已有文件保留" : recovery?.title || (task?.status === "completed" ? "看看做了什么" : latestStep || "看看正在做什么")}</small></span>
+        <span><strong>{delivered ? '成果已交付' : awaitingInput ? '等你确认后继续' : executionNeedsReview(task) ? '这轮有个问题，结果需要核对' : executionStatusLabel(task, preparing)}</strong><small>{delivered ? task.businessSummary : preparing ? "正在连接这台电脑…" : awaitingInput ? "本机已暂停，要求和已有文件保留" : recovery?.title || (task?.status === "completed" ? "看看做了什么" : latestStep || "看看正在做什么")}</small></span>
         <span className="execution-expand-label">{expanded ? "收起" : "展开"}</span><ChevronDown size={15} />
       </button>
       {busy || task?.resultDeliveryPending || task?.requiresExecutionCheck ? <button className="execution-stop" type="button" disabled={recoveryDisabled} onClick={event => onStop(event.currentTarget)}><Square size={10} />{busy?'停止本机执行':'再次请求停止原操作'}</button> : awaitingInput&&onEndWait ? <button className="execution-stop" type="button" onClick={onEndWait} title="本轮已暂停；结束等待显示，原任务和已有文件保留。"><Square size={10}/>结束等待</button> : null}
@@ -597,9 +602,11 @@ function ExecutionDisclosure({ task, events, preparing, expanded, onToggle, onSt
     <div className="execution-disclosure-grid" data-open={expanded}>
       <div className="execution-disclosure-clip" inert={!expanded} aria-hidden={!expanded}>
         <div id={`${idPrefix}-execution-content`} className="execution-disclosure-body">
+          {task?.provider === 'codex' ? <p className="execution-current-step">执行器：Codex{task.executorModelName ? ` · ${task.executorModelName}` : ''}</p> : null}
+          {delivered ? <p className="execution-current-step">{task.businessSummary}{task.businessNotionUrl ? <> <a href={task.businessNotionUrl} target="_blank" rel="noopener noreferrer">打开 Notion</a></> : null}{task.status !== 'completed' ? ' 执行器收尾有异常，已交付的成果保留；下面可查看原处理记录。' : ''}</p> : null}
           {task?.targetName ? <p className="execution-current-step">工作文件夹：{task.targetName}（可在设置 → 本机执行中更换）</p> : null}
           {task && !busy && task.targetName ? <StaticPreviewPanel key={task.id} taskId={task.id} readiness={localReadiness} request={(action, path) => api(`/api/executions/${encodeURIComponent(task.id)}/preview`, {method: 'POST', body: JSON.stringify({action, path})})}/> : null}
-          {!busy && recovery ? <div className="execution-problem" role="status"><p>{recovery.message}</p>{recovery.canContinue && onContinue ? <button type="button" disabled={continuationDisabled} onClick={event=>onContinue(event.currentTarget)}>核对后继续这件事</button> : onCheck ? <button type="button" onClick={onCheck}>检查本机状态</button> : null}{task?<ExecutionReconcileStop actorRole={actorRole} task={task} disabled={recoveryDisabled} onReconcile={async request=>{const result=await api<{task:ExecutionTask;events:ExecutionEvent[]}>(request.path,{method:'POST',body:JSON.stringify(request.body)});onReconciled?.(result.task,result.events);}}/>:null}{task?.finalResponse?<MessageMarkdown>{task.finalResponse}</MessageMarkdown>:null}</div> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><MessageMarkdown>{task.finalResponse}</MessageMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接这台电脑…" : task?.status === "completed" ? "这轮操作已结束，结果保留在对应任务里。" : latestStep || "正在等这台电脑的反馈…"}</p>}
+          {!busy && delivered ? <>{task?.status === 'completed' && task.finalResponse ? <div className="markdown-body"><MessageMarkdown>{task.finalResponse}</MessageMarkdown></div> : task?.lastError ? <details className="execution-step-history"><summary>执行器收尾记录</summary><p>{task.lastError}</p></details> : null}</> : !busy && recovery ? <div className="execution-problem" role="status"><p>{recovery.message}</p>{recovery.canContinue && onContinue ? <button type="button" disabled={continuationDisabled} onClick={event=>onContinue(event.currentTarget)}>核对后继续这件事</button> : onCheck ? <button type="button" onClick={onCheck}>检查本机状态</button> : null}{task?<ExecutionReconcileStop actorRole={actorRole} task={task} disabled={recoveryDisabled} onReconcile={async request=>{const result=await api<{task:ExecutionTask;events:ExecutionEvent[]}>(request.path,{method:'POST',body:JSON.stringify(request.body)});onReconciled?.(result.task,result.events);}}/>:null}{task?.finalResponse?<MessageMarkdown>{task.finalResponse}</MessageMarkdown>:null}</div> : !busy && task?.status === "completed" && task.finalResponse ? <div className="markdown-body"><MessageMarkdown>{task.finalResponse}</MessageMarkdown></div> : <p className="execution-current-step">{preparing ? "正在连接这台电脑…" : task?.status === "completed" ? "这轮操作已结束，结果保留在对应任务里。" : latestStep || "正在等这台电脑的反馈…"}</p>}
           {steps.length > 0 ? <details className="execution-step-history"><summary>过程记录 · {steps.length} 条</summary><ol>{steps.slice(-30).map(event => <li key={event.id} className={event.kind}>{event.text}</li>)}</ol>{steps.length > 30 ? <small>最近 30 条</small> : null}</details> : null}
           {task ? <details className="execution-step-history" onToggle={async event => {
             if (!event.currentTarget.open || trace) return;
@@ -1290,7 +1297,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
     for (const task of settled) announceTask({
       id: `${task.id}:${task.updatedAt}`, conversationId: task.conversationId, taskId: task.id,
       title: conversations.find(item => item.id === task.conversationId)?.title || "本机任务",
-      outcome: task.status as "completed" | "failed" | "cancelled"
+      outcome: taskPresentationStatus(task) as "completed" | "failed" | "cancelled"
     });
   }, [executionTasks]);
 
@@ -2314,7 +2321,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
   const settledOthers = otherRows.filter(item => item.status !== "running" && item.status !== "thinking");
   const latestTurnStart = Math.max(0, (active?.messages || []).map(message => message.role).lastIndexOf("user"));
   const replyPending=waitingForCurrentReply(activeLoading,active?.messages??[]);
-  const currentStatus = activePreparing ? "正在连接" : currentRunningExecution ? "本机执行中" : activeLoading ? replyPending?'准备回复中':'正在回复' : failedTaskIds.has(activeId) ? "待重试" : executionNeedsReview(executionTask) ? "本轮未完成 · 查看下一步" : executionTask?.status === "completed" ? "本机已完成" : executionTask?.status === "cancelled" ? "本机已停止" : executionTask?.status === "failed" ? "本轮未完成 · 查看原因" : "当前任务";
+  const currentStatus = activePreparing ? "正在连接" : currentRunningExecution ? "本机执行中" : activeLoading ? replyPending?'准备回复中':'正在回复' : failedTaskIds.has(activeId) ? "待重试" : taskPresentationStatus(executionTask) === "completed" ? "成果已交付" : executionNeedsReview(executionTask) ? "本轮未完成 · 查看下一步" : executionTask?.status === "completed" ? "本机已完成" : executionTask?.status === "cancelled" ? "本机已停止" : executionTask?.status === "failed" ? "本轮未完成 · 查看原因" : "当前任务";
   const currentBusy = activePreparing || Boolean(currentRunningExecution) || activeLoading;
 
   function activityLabel(row: TaskActivityRow) {
@@ -2728,7 +2735,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
             <button id="one-studio-send" className="primary send" type="submit" aria-label={composeMode === "execution" ? "发送并继续执行" : "发送消息"} title={targetLoading ? (preview.enabled ? "ONE 正在回复，可以先编辑下一条" : "这件事正在回复，可以新开一件事") : "发送消息"} disabled={uploadingAttachments || pendingAttachments.some(a => a.status && a.status !== "ready") || (composeMode === "execution" ? !localDevice.canRequestExecution || preparingExecution || executionBusy || !content.trim() || pendingAttachments.length > 0 : !activeModelId || targetLoading || (!content.trim() && !pendingAttachments.length))}>
               {composeMode === "execution" ? <Zap size={18} /> : <ArrowUp size={19} />}
             </button>
-            {composeMode==='chat' && !demo.enabled && outputDestination !== 'notion' && currentModel?.kind==='chat' ? <button type="button" className="composer-execute" aria-label="发送并执行本机任务" title="把当前要求和相关上下文交给本机执行" disabled={!content.trim()||targetLoading||uploadingAttachments||pendingAttachments.some(file=>file.status!=='ready')||pendingAttachments.length>0&&!coordinator.enabled||preparingExecution||executionBusy||!localDevice.canRequestExecution} onClick={event=>void executeDraft(content,event.currentTarget,coordinator.enabled?undefined:targetConversation?.id)}><Zap size={16}/><span>本机执行</span></button> : null}
+            {composeMode==='chat' && !demo.enabled && (outputDestination !== 'notion' || coordinator.enabled&&localDevice.value?.capabilities?.codexToolBridge===true) && currentModel?.kind==='chat' ? <button type="button" className="composer-execute" aria-label="发送并执行本机任务" title="把当前要求和相关上下文交给本机执行" disabled={!content.trim()||targetLoading||uploadingAttachments||pendingAttachments.some(file=>file.status!=='ready')||pendingAttachments.length>0&&!coordinator.enabled||preparingExecution||executionBusy||!localDevice.canRequestExecution} onClick={event=>void executeDraft(content,event.currentTarget,coordinator.enabled?undefined:targetConversation?.id)}><Zap size={16}/><span>本机执行</span></button> : null}
           </div>
           </div>
           <div className="studio-compose-tools">
@@ -2767,7 +2774,7 @@ function ChatApp({ user, onLogout }: { user: User; onLogout: () => void }) {
           <header className="fluid-panel-heading"><h2>接管任务</h2><button type="button" aria-label="收起本机执行" onClick={()=>toggleFluidPanel('local')}><X size={15}/></button></header>
           <div className="fluid-panel-content" data-fluid-panel-content="local">
           <div className="fluid-runtime-notices">{renderRuntimeNotices()}</div>
-          {fluidLocalTask||preparingExecution||awaitingExecutionOperationId?<ExecutionDisclosure idPrefix="fluid-local" task={fluidLocalTask} events={fluidLocalTask?eventsByTask[fluidLocalTask.id]||[]:[]} preparing={preparingExecution||Boolean(awaitingExecutionOperationId)} expanded={true} onToggle={()=>toggleFluidPanel('local')} onStop={source=>void cancelExecution(source,preparingExecution||awaitingExecutionOperationId?null:fluidLocalTask)} onContinue={source=>void sendExecutionMessage(executionResumeInstruction,fluidLocalTask,source,true)} awaitingInput={Boolean(executionAppearance.waiting&&executionAppearance.waiting.id===fluidLocalTask?.id&&executionAppearance.waiting.round===(fluidLocalTask?.reportRound??0))} onEndWait={()=>{if(fluidLocalTask)executionAppearance.endWait(fluidLocalTask);}} actorRole={user.role} onReconciled={rememberReconciledExecution} localReadiness={localDevice.status==='confirmed'?localDevice.value:undefined} continuationDisabled={preparingExecution||executionBusy||!localDevice.canRequestExecution} onCheck={()=>{if(fluidLocalTask)void loadLatestExecution(fluidLocalTask.conversationId,fluidLocalTask.id,true);}}/>:<LocalTaskEmptyState unavailable={taskStatusUnavailable} canExecute={localDevice.canRequestExecution&&composeMode==='chat'&&!demo.enabled&&outputDestination!=='notion'&&currentModel?.kind==='chat'} onCompose={()=>{focusFluid('main');requestAnimationFrame(()=>featurePicker.input.current?.focus({preventScroll:true}));}} onSettings={()=>{setAccountSection('device');openSurface('account');}} onRetry={()=>void refreshExecutionTasks()}/>}
+          {fluidLocalTask||preparingExecution||awaitingExecutionOperationId?<ExecutionDisclosure idPrefix="fluid-local" task={fluidLocalTask} events={fluidLocalTask?eventsByTask[fluidLocalTask.id]||[]:[]} preparing={preparingExecution||Boolean(awaitingExecutionOperationId)} expanded={true} onToggle={()=>toggleFluidPanel('local')} onStop={source=>void cancelExecution(source,preparingExecution||awaitingExecutionOperationId?null:fluidLocalTask)} onContinue={source=>void sendExecutionMessage(executionResumeInstruction,fluidLocalTask,source,true)} awaitingInput={Boolean(executionAppearance.waiting&&executionAppearance.waiting.id===fluidLocalTask?.id&&executionAppearance.waiting.round===(fluidLocalTask?.reportRound??0))} onEndWait={()=>{if(fluidLocalTask)executionAppearance.endWait(fluidLocalTask);}} actorRole={user.role} onReconciled={rememberReconciledExecution} localReadiness={localDevice.status==='confirmed'?localDevice.value:undefined} continuationDisabled={preparingExecution||executionBusy||!localDevice.canRequestExecution} onCheck={()=>{if(fluidLocalTask)void loadLatestExecution(fluidLocalTask.conversationId,fluidLocalTask.id,true);}}/>:<LocalTaskEmptyState unavailable={taskStatusUnavailable} canExecute={localDevice.canRequestExecution&&composeMode==='chat'&&!demo.enabled&&(outputDestination!=='notion'||coordinator.enabled&&localDevice.value?.capabilities?.codexToolBridge===true)&&currentModel?.kind==='chat'} onCompose={()=>{focusFluid('main');requestAnimationFrame(()=>featurePicker.input.current?.focus({preventScroll:true}));}} onSettings={()=>{setAccountSection('device');openSurface('account');}} onRetry={()=>void refreshExecutionTasks()}/>}
           {runningExecutions.length>1?<p className="fluid-queue-note">另有 {runningExecutions.length-1} 个任务等待这台电脑处理</p>:null}
                   </div>
         </section>

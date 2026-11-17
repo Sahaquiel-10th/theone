@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760">
+  <rect width="1200" height="760" fill="#fff"/>
+  <g font-family="PingFang SC,Microsoft YaHei,sans-serif" fill="#172d3b">
+    <text x="600" y="90" text-anchor="middle" font-size="40" font-weight="700">合成咨询服务报价单</text>
+    <text x="90" y="156" font-size="24">日期 2026年11月17日</text>
+    <text x="90" y="205" font-size="24">购方 杭州合成课堂科技有限公司</text>
+    <text x="90" y="253" font-size="24">销方 杭州合成课堂科技有限公司</text>
+    <rect x="90" y="300" width="1020" height="64" fill="#dce8f0"/>
+    <g fill="none" stroke="#476477" stroke-width="2">
+      <rect x="90" y="300" width="1020" height="256"/>
+      <path d="M210 300v256M830 300v256M90 364h1020M90 428h1020M90 492h1020"/>
+    </g>
+    <g font-size="26">
+      <text x="150" y="343" text-anchor="middle">序号</text><text x="250" y="343">项目</text><text x="970" y="343" text-anchor="middle">金额（元）</text>
+      <text x="150" y="407" text-anchor="middle">1</text><text x="250" y="407">纸质资料</text><text x="970" y="407" text-anchor="middle">1000</text>
+      <text x="150" y="471" text-anchor="middle">2</text><text x="250" y="471">线下咨询</text><text x="970" y="471" text-anchor="middle">2000</text>
+      <text x="250" y="535">合计</text><text x="970" y="535" text-anchor="middle">3000</text>
+    </g>
+    <text x="90" y="632" font-size="21">ONE-QA-CODEX-BRIDGE-20261117 · 独立合成模板</text>
+  </g>
+</svg>

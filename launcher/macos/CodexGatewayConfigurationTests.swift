@@ -48,6 +48,19 @@ import Darwin
         let allowed = try hereDocument(allowScratch: true)
         let actualDocument = try String(contentsOf: work.appendingPathComponent("long.md"), encoding: .utf8)
         precondition(allowed == 0 && actualDocument == document, "exact private scratch must enable complete long-text writes")
+        let profile = try CodexWorkspacePermissions(workspace: canonical(work), scratch: scratchA.path,
+            documentTool: "/usr/bin/true", environment: ["PATH": "/usr/bin:/bin", "TMPDIR": scratchA.path])
+        let anotherProfile = try CodexWorkspacePermissions(workspace: canonical(work), scratch: scratchA.path,
+            documentTool: "/usr/bin/true", environment: ["PATH": "/usr/bin:/bin", "TMPDIR": scratchA.path])
+        precondition(profile.name != anotherProfile.name && profile.name.hasPrefix("one-workspace-"), "loaded profiles cannot merge into a predictable name")
+        precondition(profile.setting.contains("\":root\"=\"deny\"") && profile.setting.contains("\":minimal\"=\"read\""))
+        precondition(profile.setting.contains("network={enabled=false}") && !profile.setting.contains(config.token))
+        precondition(profile.arguments.contains("features.multi_agent=false") && profile.arguments.contains("features.goals=false"))
+        precondition(!profile.runtimeReadPaths.contains(home.deletingLastPathComponent().path), "no broad temporary or task-home grant")
+        precondition(!profile.runtimeReadPaths.contains("/opt/homebrew") && !profile.runtimeReadPaths.contains("/usr/local"), "runtime dependencies must stay narrower than package-manager roots")
+        if let executable = ProcessInfo.processInfo.environment["ONE_CODEX_PERMISSION_TEST_BIN"] {
+            try fixedRuntimePermissions(executable: executable, home: home, work: work, scratch: scratchA, profile: profile)
+        }
         for url in ["http://one.example/api/executor-gateway/v1", "https://user:pass@one.example/api/executor-gateway/v1", "https://one.example/api/executor-gateway/v1?key=secret"] {
             do {
                 _ = try CodexGatewayConfiguration(baseUrl: url, token: config.token, model: config.model).launchOverrides(home: URL(fileURLWithPath: "/tmp/one-isolated"), environment: [:])
@@ -55,5 +68,88 @@ import Darwin
             } catch { }
         }
         print("Codex gateway configuration isolation tests passed")
+    }
+
+    private static func fixedRuntimePermissions(executable: String, home: URL, work: URL, scratch: URL, profile: CodexWorkspacePermissions) throws {
+        let outside = home.appendingPathComponent("outside.txt")
+        try Data("SYNTHETIC_OUTSIDE".utf8).write(to: outside)
+        try FileManager.default.createSymbolicLink(atPath: work.appendingPathComponent("outside-link").path, withDestinationPath: outside.path)
+        // Known profiles/config cannot widen this fresh per-process profile.
+        try Data("[permissions.one-workspace.workspace_roots]\n\"\(home.path)\"=true\n".utf8).write(to: home.appendingPathComponent("config.toml"))
+        func run(_ command: [String], profileName: String? = nil) throws -> (Int32, String) {
+            let process = Process(), output = Pipe()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = profile.arguments + ["sandbox", "-P", profileName ?? profile.name, "-C", work.path, "--"] + command
+            var environment = ProcessInfo.processInfo.environment
+            environment["CODEX_HOME"] = home.path; environment["TMPDIR"] = scratch.path; environment["TMPPREFIX"] = scratch.appendingPathComponent("zsh").path
+            process.environment = environment; process.standardInput = FileHandle.nullDevice
+            process.standardOutput = output; process.standardError = output
+            try process.run(); try output.fileHandleForWriting.close()
+            let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+            return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+        }
+        let body = "set -e; printf INSIDE > inside.txt; cat inside.txt; printf SCRATCH > \"$TMPDIR/probe\"; "
+            + "if cat \"\(outside.path)\"; then exit 31; fi; if cat outside-link; then exit 32; fi; "
+            + "if echo BAD > \"\(home.appendingPathComponent("bad.txt").path)\"; then exit 33; fi; echo ONE_BOUNDARY_OK"
+        let result = try run(["/bin/zsh", "-f", "-c", body])
+        precondition(result.0 == 0 && result.1.contains("ONE_BOUNDARY_OK"), result.1)
+        precondition(!FileManager.default.fileExists(atPath: home.appendingPathComponent("bad.txt").path))
+        let originalOutside = try String(contentsOf: outside, encoding: .utf8)
+        precondition(originalOutside == "SYNTHETIC_OUTSIDE")
+        // Real standard-library OOXML generation/read-back. No vendor/model or
+        // preinstalled spreadsheet package is involved in this boundary test.
+        let python = """
+        import zipfile, xml.etree.ElementTree as E
+        files={
+        '[Content_Types].xml':'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>',
+        '_rels/.rels':'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+        'xl/workbook.xml':'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="验收" sheetId="1" r:id="rId1"/></sheets></workbook>',
+        'xl/_rels/workbook.xml.rels':'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>',
+        'xl/worksheets/sheet1.xml':'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>ONE-QA</t></is></c><c r="B1"><v>3000</v></c></row></sheetData></worksheet>'}
+        with zipfile.ZipFile('synthetic.xlsx','x',zipfile.ZIP_DEFLATED) as z:
+            for name,content in files.items(): z.writestr(name,content)
+        with zipfile.ZipFile('synthetic.xlsx') as z:
+            assert z.testzip() is None
+            sheet=E.fromstring(z.read('xl/worksheets/sheet1.xml'))
+            assert sheet.find('.//{*}c[@r="B1"]/{*}v').text=='3000'
+        print('ONE_EXCEL_OK')
+        """
+        let excel = try run(["/usr/bin/python3", "-c", python])
+        precondition(excel.0 == 0 && excel.1.contains("ONE_EXCEL_OK"), excel.1)
+        if let node = profile.runtimeReadPaths.first(where: { $0.hasSuffix("/bin/node") }) {
+            let nodeResult = try run([node, "-e", "console.log('ONE_NODE_OK')"])
+            precondition(nodeResult.0 == 0 && nodeResult.1.contains("ONE_NODE_OK"), nodeResult.1)
+            let aliases = URL(fileURLWithPath: node).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("opt")
+            let entries = (try? FileManager.default.contentsOfDirectory(at: aliases, includingPropertiesForKeys: nil)) ?? []
+            let unrelated = entries.flatMap { package in ["LICENSE", "COPYING", "README.md"].map { package.appendingPathComponent($0) } }.first { file in
+                let resolved = file.resolvingSymlinksInPath().path
+                return FileManager.default.fileExists(atPath: file.path) && !profile.runtimeReadPaths.contains { resolved == $0 || resolved.hasPrefix($0 + "/") }
+            }
+            if let unrelated {
+                let deniedRuntime = try run(["/bin/cat", unrelated.path])
+                precondition(deniedRuntime.0 != 0, "runtime alias traversal must not grant an unrelated package")
+            }
+        }
+        if let documentTool = ProcessInfo.processInfo.environment["ONE_DOCUMENT_PERMISSION_TEST_TOOL"] {
+            var permissionEnvironment = ProcessInfo.processInfo.environment
+            permissionEnvironment["TMPDIR"] = scratch.path
+            let documentProfile = try CodexWorkspacePermissions(workspace: work.resolvingSymlinksInPath().path, scratch: scratch.path,
+                documentTool: documentTool, environment: permissionEnvironment)
+            let helper = Process(), input = Pipe(), output = Pipe()
+            helper.executableURL = URL(fileURLWithPath: executable)
+            helper.arguments = documentProfile.arguments + ["sandbox", "-P", documentProfile.name, "-C", work.path, "--", documentTool, "--one-create-document-exact", "helper.txt"]
+            var environment = ProcessInfo.processInfo.environment
+            environment["CODEX_HOME"] = home.path; environment["TMPDIR"] = scratch.path; environment["ONE_DOCUMENT_ROOT"] = work.resolvingSymlinksInPath().path
+            helper.environment = environment; helper.standardInput = input; helper.standardOutput = output; helper.standardError = output
+            try helper.run(); try output.fileHandleForWriting.close(); try input.fileHandleForReading.close()
+            try input.fileHandleForWriting.write(contentsOf: Data("SYNTHETIC_DOCUMENT_HELPER".utf8)); try input.fileHandleForWriting.close()
+            let detail = output.fileHandleForReading.readDataToEndOfFile(); helper.waitUntilExit()
+            precondition(helper.terminationStatus == 0, String(decoding: detail, as: UTF8.self))
+            let savedHelper = try String(contentsOf: work.appendingPathComponent("helper.txt"), encoding: .utf8)
+            precondition(savedHelper == "SYNTHETIC_DOCUMENT_HELPER")
+        }
+        let refused = try run(["/bin/sh", "-c", "echo SHOULD_NOT_RUN"], profileName: "one-workspace-" + String(repeating: "b", count: 32))
+        precondition(refused.0 != 0 && !refused.1.contains("SHOULD_NOT_RUN"), "unknown policy must fail closed")
+        print("Pinned Codex permission profile: folder/scratch write, outside read/write/symlink refusal, OOXML and runtime checks passed")
     }
 }

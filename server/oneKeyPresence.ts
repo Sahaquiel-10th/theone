@@ -6,6 +6,7 @@ import type { Store } from "./db.js";
 import { uid } from "./security.js";
 import type { CodexGatewayConfiguration } from "./codexGateway.js";
 import type { ExecutionTask } from "./types.js";
+import { codexToolBridgeCapability, type CodexToolBridge, type CodexBridgeCall } from './codexToolBridge.js';
 import { appendExecutionEvent, executionDeliveryPending, executionTerminal, requestExecutionCancellation, saveExecutionReceipt } from "./executionService.js";
 import { validInstallationId } from "./oneKeyInstallation.js";
 import { compareRuntimeVersions, validRuntimeVersion, type RuntimeArchitecture, type RuntimeIdentity, type RuntimePlatform, type SignedRuntimeUpdate } from "./runtimeUpdate.js";
@@ -103,6 +104,9 @@ export class OneKeyPresence {
   private pingTimer?: NodeJS.Timeout;
 
   constructor(private store: Store) {}
+
+  private toolBridge?: CodexToolBridge;
+  configureCodexToolBridge(bridge: CodexToolBridge) { this.toolBridge = bridge; }
 
   private codexGateway?: (task: ExecutionTask) => Promise<CodexGatewayConfiguration>;
   configureCodexGateway(prepare: (task: ExecutionTask) => Promise<CodexGatewayConfiguration>) { this.codexGateway = prepare; }
@@ -207,7 +211,7 @@ export class OneKeyPresence {
   }
   readinessMetadata(deviceId:string,installationId?:string){
     const socket=this.readinessConnectionToken(deviceId,installationId) as WebSocket|undefined,state=socket?this.states.get(socket):undefined;
-    return{platform:state?.runtime?.platform??'unknown' as const,capabilities:{staticPreview:!!state?.capabilities.has('static_preview_v1'),taskDirectoryBinding:!!state?.capabilities.has('task_directory_binding_v1')}};
+    return{platform:state?.runtime?.platform??'unknown' as const,capabilities:{staticPreview:!!state?.capabilities.has('static_preview_v1'),taskDirectoryBinding:!!state?.capabilities.has('task_directory_binding_v1'),...(state?.capabilities.has(codexToolBridgeCapability)?{codexToolBridge:true}: {})}};
   }
 
   supportsLocalAgent(deviceId: string, installationId?: string) {
@@ -364,7 +368,7 @@ export class OneKeyPresence {
     const socket = await this.ownedSocket(scope), state = this.states.get(socket)!;
     // Windows file tools are built into the authenticated launcher, not a Mac
     // Codex installation. Checking them must not require/download that catalog.
-    if (state.runtime?.platform === 'windows' && state.capabilities.has('local_tools_v1')) {
+    if (state.runtime?.platform === 'windows' && state.capabilities.has('local_tools_v1') && !state.capabilities.has('managed_codex_v1')) {
       return { available: true, preparing: false, installedSource: 'builtin' as const,
         installedVersion: state.runtime.version, version: state.runtime.version,
         message: '内置文件工具随 ONE 启动器提供，可在已授权的工作文件夹内读写文件。' };
@@ -373,7 +377,7 @@ export class OneKeyPresence {
       if (install) throw new OneKeyPresenceError('统一工程执行尚未开放，现有文件工具仍可用');
       return { available: false, message: '统一工程执行正在准备，现有文件工具仍可用' };
     }
-    if (!state.runtime || state.runtime.platform !== 'macos' || !state.capabilities.has('managed_codex_v1')) {
+    if (!state.runtime || !['macos','windows'].includes(state.runtime.platform) || !state.capabilities.has('managed_codex_v1')) {
       if (install) throw new OneKeyPresenceError('请先升级 ONE 启动器，当前版本不支持一键准备执行工具');
       return { available: false, message: '当前启动器尚不支持一键准备；现有文件工具仍可用' };
     }
@@ -425,7 +429,8 @@ export class OneKeyPresence {
     const taskBinding=task?.targetName?executionTaskBinding(task):undefined;
     if(taskBinding){const socket=await this.executionSocket(deviceId,taskId,installationId);if(!this.states.get(socket)?.capabilities.has('task_directory_binding_v1'))throw new OneKeyPresenceError('请升级 ONE 启动器后沿用原任务目录。','ONE_KEY_UPGRADE_REQUIRED');}
     const gateway = await this.gatewayConfiguration(taskId, deviceId, installationId);
-    await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_start", taskId, instruction, round, gateway,taskBinding });
+    const toolBridge = await this.bridgeConfiguration(taskId, deviceId, installationId);
+    await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_start", taskId, instruction, round, gateway,taskBinding,toolBridge });
   }
 
   async continueExecution(deviceId: string, taskId: string, instruction: string, installationId?: string) {
@@ -436,7 +441,20 @@ export class OneKeyPresence {
     if(!task)throw new OneKeyPresenceError('执行任务不存在');
     const round=task.reportRound??0,taskBinding=executionTaskBinding(task,true);
     const gateway = await this.gatewayConfiguration(taskId, deviceId, installationId);
-    await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_continue", taskId, instruction, round, gateway,taskBinding });
+    const toolBridge = await this.bridgeConfiguration(taskId, deviceId, installationId);
+    await this.sendToDevice(deviceId, taskId, installationId, { type: "execution_continue", taskId, instruction, round, gateway,taskBinding,toolBridge });
+  }
+
+  private async bridgeConfiguration(taskId: string, deviceId: string, installationId?: string) {
+    if (!this.toolBridge) return;
+    const socket = await this.executionSocket(deviceId, taskId, installationId);
+    const task = (await this.store.read()).executionTasks.find(item => item.id === taskId && item.deviceId === deviceId && item.installationId === installationId);
+    if (!task) throw new OneKeyPresenceError('原任务不存在');
+    if (!this.states.get(socket)?.capabilities.has(codexToolBridgeCapability)) {
+      if (task.toolBridge) throw new OneKeyPresenceError('请更新 ONE 后继续这件工具任务', 'ONE_KEY_UPGRADE_REQUIRED');
+      return;
+    }
+    return this.toolBridge.prepare(task);
   }
 
   async cancelExecution(deviceId: string, taskId: string, installationId?: string, expectedRound?: number) {
@@ -509,8 +527,29 @@ export class OneKeyPresence {
       kind?: string; text?: string; providerThreadId?: string; targetName?: string; status?: string; round?: number;
       requestId?: string; ok?: boolean; output?: string; error?: string; capabilities?: unknown;
       platform?: unknown; architecture?: unknown; launcherVersion?: unknown; updateProtocol?: unknown; version?: unknown; attemptId?: string; state?: string;
+      threadId?: string; turnId?: string; callId?: string; tool?: string; arguments?: unknown;
     };
     try { message = JSON.parse(raw); } catch { socket.close(4000, "Invalid message"); return; }
+    if (message.type === 'executor_tool_call' && state.authenticated && state.capabilities.has(codexToolBridgeCapability)) {
+      const requestId = message.requestId;
+      if (!this.toolBridge || typeof requestId !== 'string' || !requestId || requestId.length > 200) return;
+      const call = { taskId: message.taskId, round: message.round, attemptId: message.attemptId, threadId: message.threadId,
+        turnId: message.turnId, callId: message.callId, tool: message.tool, arguments: message.arguments } as CodexBridgeCall;
+      const db = await this.store.read();
+      const device = db.oneKeyDevices.find(item => item.id === state.deviceId && item.status === 'active');
+      if (!device || this.sockets.get(state.deviceId) !== socket || !this.isConnected(state.deviceId, state.installationId)) return;
+      let response;
+      try {
+        response = await this.toolBridge.call({ workspaceId: device.workspaceId, userId: device.userId, deviceId: state.deviceId, installationId: state.installationId }, call);
+      } catch (error) {
+        response = { success: false, contentItems: [{ type: 'inputText', text: JSON.stringify({ error: error instanceof Error ? error.message.slice(0, 2000) : '这一步暂时没有完成，请查看原任务' }) }] };
+      }
+      if (this.sockets.get(state.deviceId) === socket && this.isConnected(state.deviceId, state.installationId)) socket.send(JSON.stringify({
+        type: 'executor_tool_result', taskId: call.taskId, round: call.round, attemptId: call.attemptId, requestId,
+        threadId: call.threadId, turnId: call.turnId, callId: call.callId, ...response
+      }));
+      return;
+    }
     if (message.type === "auth_response" && !state.authenticated && message.challengeId === state.authChallengeId && message.signature) {
       const db = await this.store.read();
       const device = db.oneKeyDevices.find((item) => item.id === state.deviceId && item.status === "active");
@@ -629,8 +668,10 @@ export class OneKeyPresence {
           if (!device) return;
           const company = companyWorkspace(database, device.workspaceId);
           if (company && (company.status !== 'active' || !activeMember(database, { userId: device.userId, workspaceId: device.workspaceId }))) return;
-          return acceptTerminalReceipt(database, { deviceId: device.id, installationId: state.installationId,
+          const accepted = acceptTerminalReceipt(database, { deviceId: device.id, installationId: state.installationId,
             workspaceId: device.workspaceId, userId: device.userId }, receipt);
+          if (accepted?.disposition === 'accepted') this.toolBridge?.settle(database, receipt.taskId);
+          return accepted;
         });
       } catch { return; }
       if (ack && state.authenticated && this.sockets.get(state.deviceId) === socket && socket.readyState === WebSocket.OPEN) {

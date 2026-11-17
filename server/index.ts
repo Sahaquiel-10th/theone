@@ -103,6 +103,7 @@ import { publicPayment } from "./payments.js";
 import { runtimeUpdateWasCompleted } from "./runtimeUpdate.js";
 import { codexGateway, managedExecutorDistribution } from "./runtime.js";
 import { installCodexGatewayRoutes } from "./codexGateway.js";
+import { CodexToolBridge, codexBridgeInstruction, resumeCodexBridgeTask } from './codexToolBridge.js';
 import {assertLocalDeviceReadinessScope,createLocalDeviceReadiness,installLocalDeviceReadinessRoute,localDeviceReadinessScope} from './localDeviceReadiness.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -858,6 +859,9 @@ app.post("/api/knowledge/connections/notion/oauth/start", ...keyAuth, requireWor
   res.json(await notionMcpService.beginAuthorization({ workspaceId: req.workspaceId!, userId: req.user!.id, appOrigin, enableWriting: req.body?.enableWriting === true }));
 }));
 const notionDocuments = new NotionDocuments(store, notionMcpService);
+const codexToolBridge = new CodexToolBridge(store, knowledgeService, notionDocuments,
+  owner => oneKeyPresence.requireProof({ ...owner, method: 'POST', path: '/internal/codex/tool-call' }), { webSearch: publicWebSearch.search });
+oneKeyPresence.configureCodexToolBridge(codexToolBridge);
 app.get('/api/knowledge/connections/notion/writing', ...keyAuth, asyncRoute(async (req, res) => res.json(await notionDocuments.settings({ workspaceId: req.workspaceId!, userId: req.user!.id }))));
 app.put('/api/knowledge/connections/notion/writing', ...keyAuth, requireWorkspaceOwner, asyncRoute(async (req, res) => {
   await confirmKeyBeforeModel(req);
@@ -1027,9 +1031,9 @@ async function startLocalExecutionAttempt(req: express.Request, res: express.Res
   const prepared=preparedOperation?.workRun;
   const admissionRevision=prepared?.localExecution?.admissionRevision;
   const admissionScope={workspaceId:req.workspaceId!,userId:req.user!.id,deviceId:req.oneKeyDeviceId,installationId:req.oneKeyInstallationId,conversationId,sourceMessageId};
-  const replay=operationId&&db.executionTasks.find(t=>t.dispatchOperationId===operationId&&t.workspaceId===req.workspaceId&&t.userId===req.user!.id);
+  const replay=operationId&&db.executionTasks.find(t=>(t.dispatchOperationId===operationId||t.toolBridge?.admissions?.some(admission=>admission.operationId===operationId&&admission.sourceMessageId===sourceMessageId))&&t.workspaceId===req.workspaceId&&t.userId===req.user!.id);
   if(replay){
-    if(replay.deviceId!==req.oneKeyDeviceId||replay.installationId!==req.oneKeyInstallationId||replay.conversationId!==conversationId||replay.sourceMessageId!==sourceMessageId)throw new CoordinatorLocalError('local_binding_changed',409);
+    if(replay.deviceId!==req.oneKeyDeviceId||replay.installationId!==req.oneKeyInstallationId||replay.conversationId!==conversationId||replay.sourceMessageId!==sourceMessageId&&!replay.toolBridge?.admissions?.some(admission=>admission.operationId===operationId&&admission.sourceMessageId===sourceMessageId))throw new CoordinatorLocalError('local_binding_changed',409);
     return{task:publicExecutionForRequest(req,replay),events:taskEvents(db,replay)};
   }
   const initialReadiness=await localDeviceReadiness.inspect(admissionScope,{fresh:true});
@@ -1078,14 +1082,16 @@ async function startLocalExecutionAttempt(req: express.Request, res: express.Res
   const timestamp = now();
   if (compiled.finishReason === "length" || compiled.finishReason === "filtered") throw new Error("执行指令未完整生成，未发送到本机。请缩小任务范围后再试；本次模型用量已记录。");
   if (!compiled.content.trim()) throw new Error("未生成有效执行指令，未发送到本机；原始要求已保留。");
-  const instruction = inputPolicy === "direct_input" ? buildDirectExecutionInstruction({
+  const compiledInstruction = inputPolicy === "direct_input" ? buildDirectExecutionInstruction({
     workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id, sourceMessageId,
     records: prefix, compiledInstruction: compiled.content,
     preparedHandoff: prepared && preparedOperation ? { workspaceId: preparedOperation.workspaceId, userId: preparedOperation.userId,
       conversationId: conversation.id, messageId: prepared.inputMessageId, instruction: prepared.instruction } : undefined
   }) : compiled.content.trim();
+  const instruction = prepared?.localExecution?.toolBridge && executionProvider === 'codex'
+    ? codexBridgeInstruction(prepared, compiledInstruction) : compiledInstruction;
   const useLocalAgent = executionProvider === "local_agent";
-  const task: ExecutionTask = {
+  let task: ExecutionTask = {
     id: uid("ext"), workspaceId: req.workspaceId!, userId: req.user!.id, conversationId: conversation.id,
     sourceMessageId, dispatchOperationId: requestOperationId, provider: executionProvider, status: "queued", instruction, deviceId: req.oneKeyDeviceId, installationId: req.oneKeyInstallationId,
     createdAt: timestamp, updatedAt: timestamp, batchBudget,targetName:initialReadiness.folder.state==='ready'?initialReadiness.folder.targetName:undefined
@@ -1096,13 +1102,17 @@ async function startLocalExecutionAttempt(req: express.Request, res: express.Res
   const finalReadiness=await localDeviceReadiness.inspect(admissionScope,{fresh:true});
   assertLocalAdmission(finalSnapshot,admissionScope,finalReadiness);
   assertLocalDirectoryUnchanged(initialReadiness,finalReadiness);
+  let continuation = false;
   await store.mutate((mutable) => {
     executionPreparationStops.assertActive(preparationScope);
     assertLocalExecutionAvailable(mutable, { workspaceId: scope.workspaceId, userId: scope.userId, deviceId: scope.deviceId!, installationId: scope.installationId });
     if(mutable.chatOperations?.some(o=>o.workspaceId===scope.workspaceId&&o.userId===scope.userId&&o.operationId===requestOperationId&&o.executionCancelled))throw new Error('执行准备已停止');
     if(prepared)assertPreparedLocalExecutionActive(mutable,{workspaceId:scope.workspaceId,userId:scope.userId,conversationId,sourceMessageId});
     assertLocalAdmissionRevision(mutable,admissionScope,admissionRevision);
-    mutable.executionTasks.push(task);
+    const resumed = prepared?.localExecution?.toolBridge && executionProvider === 'codex' && req.oneKeyInstallationId
+      ? resumeCodexBridgeTask(mutable, { workspaceId: scope.workspaceId, userId: scope.userId, deviceId: scope.deviceId!, installationId: req.oneKeyInstallationId, conversationId, sourceMessageId }, requestOperationId, instruction, timestamp, batchBudget) : undefined;
+    if (resumed) { task = resumed; continuation = true; }
+    else mutable.executionTasks.push(task);
     const c = mutable.conversations.find(c => c.id === conversationId && c.workspaceId === req.workspaceId && c.userId === req.user!.id)!;
     const receipt = { id: uid("msg"), role: "assistant" as const, content: "本机执行已受理，正在连接执行器。结果确认后会在这里保留。", createdAt: timestamp };
     c.messages.push(receipt); c.updatedAt = timestamp;
@@ -1113,7 +1123,7 @@ async function startLocalExecutionAttempt(req: express.Request, res: express.Res
   });
   try {
     executionPreparationStops.assertActive(preparationScope);
-    await connectorService.dispatch(scope, task.id, "start");
+    await connectorService.dispatch(scope, task.id, continuation ? "continue" : "start", continuation ? instruction : undefined);
   }
   catch (error) {
     const failure = error instanceof Error ? error.message : "无法连接本机执行";
@@ -1148,8 +1158,9 @@ app.post('/api/executions/:id/preview', ...keyAuth, asyncRoute(async (req, res) 
   res.json(await oneKeyPresence.staticPreview({deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, workspaceId: req.workspaceId!, userId: req.user!.id}, String(req.params.id), req.body.action, req.body.path));
 }));
 for (const method of ['get', 'post'] as const) app[method]('/api/me/executor', ...keyAuth, asyncRoute(async (req, res) => {
-  try{res.status(method === 'post' ? 202 : 200).json(await oneKeyPresence.managedExecutor({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, workspaceId: req.workspaceId!, userId: req.user!.id },
-    runtime => managedExecutorDistribution.release(runtime), method === 'post', codexGateway.enabled()));}
+  try{const status=await oneKeyPresence.managedExecutor({ deviceId: req.oneKeyDeviceId!, installationId: req.oneKeyInstallationId, workspaceId: req.workspaceId!, userId: req.user!.id },
+    runtime => managedExecutorDistribution.release(runtime), method === 'post', codexGateway.enabled());
+    res.status(method === 'post' ? 202 : 200).json({...status,...(status.available&&status.installedSource!=='builtin'?{executorName:'Codex',modelName:await codexGateway.modelName()}: {})});}
   finally{if(method==='post')localDeviceReadiness.invalidate(localDeviceReadinessScope(req));}
 }));
 app.post("/api/me/local-device", ...keyAuth, asyncRoute(async (req, res) => {
@@ -1178,6 +1189,8 @@ app.post("/api/executions/:id/messages", ...keyAuth, asyncRoute(async (req, res)
     // A user-authored follow-up is a new round, not a continuation of an old dispatch allowance.
     target.batchBudget=undefined;
     target.reportRound = (target.reportRound ?? 0) + 1; target.reportedToCoordinatorAt = undefined; target.finalResponse = undefined;
+    target.businessOutcome = undefined; target.businessSummary = undefined; target.businessNotionUrl = undefined;
+    if(target.toolBridge){target.toolBridge.turn=undefined;target.toolBridge.roundInstruction=undefined;target.toolBridge.deliveryProof=undefined;}
     target.deliveryAttempt = undefined; target.terminalReceipt = undefined; target.transportInterruption = undefined;
     appendExecutionEvent(database, { id: uid("exe"), workspaceId: target.workspaceId, userId: target.userId, taskId: target.id, kind: "user_message", text: content, createdAt: timestamp });
     return target;

@@ -24,16 +24,43 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm test
+      - run: node --test scripts/prepare-windows-codex-release.test.mjs
       - run: npm run build
 
   verify-windows-runtime:
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - name: Verify Windows runtime socket and installation hand-off
         working-directory: launcher/windows
         run: go test -race ./...
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - name: Verify pinned Codex with the production Go controller
+        shell: pwsh
+        env:
+          ONE_CODEX_PERMISSION_PROFILE: one-workspace
+          ONE_CODEX_WINDOWS_SANDBOX: mxc
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = Join-Path $env:RUNNER_TEMP 'one-codex-protocol'
+          $prepared = Join-Path $env:RUNNER_TEMP 'one-codex-prepared'
+          $unpacked = Join-Path $env:RUNNER_TEMP 'one-codex-unpacked'
+          node scripts/download-codex-protocol-fixture.mjs $fixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/prepare-windows-codex-release.mjs --version 0.160.1 --package (Join-Path $fixture 'codex-package-x86_64-pc-windows-msvc.tar.gz') --output $prepared
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path $unpacked | Out-Null
+          tar.exe -xzf (Join-Path $prepared 'codex-windows-amd64-0.160.1.tar.gz') -C $unpacked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Push-Location launcher/windows
+          go build -o (Join-Path $fixture 'controller.exe') codex_app_server.go codex_app_server_runtime_fixture.go
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+          node --experimental-strip-types scripts/qa-codex-tool-bridge.ts (Join-Path $unpacked 'bin/codex.exe') (Join-Path $fixture 'controller.exe') --command-first
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   verify-macos-runtime:
     runs-on: macos-15
@@ -63,6 +90,10 @@ jobs:
             launcher/macos/CodexAppServerIntegrationTests.swift -o "$RUNNER_TEMP/one-app-server-integration-tests"
           "$RUNNER_TEMP/one-app-server-integration-tests"
           xcrun swiftc -sdk "$ONE_TEST_SDK" -target "$ONE_TEST_ARCH-apple-macosx13.0" -parse-as-library \
+            launcher/macos/CodexAppServer.swift launcher/macos/CodexToolBridge.swift \
+            launcher/macos/CodexToolBridgeTests.swift -o "$RUNNER_TEMP/one-tool-bridge-tests"
+          "$RUNNER_TEMP/one-tool-bridge-tests"
+          xcrun swiftc -sdk "$ONE_TEST_SDK" -target "$ONE_TEST_ARCH-apple-macosx13.0" -parse-as-library \
             launcher/macos/ResidentTakeover.swift launcher/macos/MachineResident.swift launcher/macos/MachineResidentTests.swift \
             -o "$RUNNER_TEMP/one-machine-tests"
           "$RUNNER_TEMP/one-machine-tests"
@@ -76,7 +107,7 @@ jobs:
           npm run test:receipt-transport -- "$RUNNER_TEMP/one-receipt-transport-fixture"
 
   deploy:
-    if: vars.DEPLOY_ENABLED == 'true'
+    if: vars.DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main'
     needs: [verify, verify-windows-runtime, verify-macos-runtime]
     runs-on: ubuntu-latest
     timeout-minutes: 35

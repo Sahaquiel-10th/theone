@@ -28,3 +28,16 @@ test('authenticated Windows built-in file tools are ready without claiming Codex
   assert.equal(localDeviceStatus(builtin,false,false,'Key disconnected').state,'unconfirmed');
   assert.equal(localDeviceStatus({...builtin,installedVersion:undefined},false,false).state,'setup');
 });
+
+test('Codex preparation reports the current stage before an existing ready installation',()=>{
+  const previous={available:true,installedVersion:'0.160.1',installedSource:'managed' as const,preparing:true};
+  const waiting=localDeviceStatus({...previous,phase:'confirming'},false,false);
+  assert.equal(waiting.state,'preparing');
+  assert.match(waiting.description,/电脑上的 ONE 窗口/);
+  for(const phase of ['checking','downloading','verifying']){
+    const status=localDeviceStatus({...previous,phase},false,false);
+    assert.equal(status.state,'preparing');
+    assert.match(status.title,/Codex/);
+    assert.doesNotMatch(status.title,/就绪/);
+  }
+});

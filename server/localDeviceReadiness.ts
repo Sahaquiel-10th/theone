@@ -14,7 +14,7 @@ export type LocalDeviceReadinessDependencies={
   connectionToken:(scope:LocalDeviceReadinessScope)=>object|undefined;
   probeFolder:(scope:LocalDeviceReadinessScope,signal:AbortSignal)=>Promise<{targetName?:string}>;
   probeExecutor:(scope:LocalDeviceReadinessScope,signal:AbortSignal)=>Promise<ReadinessExecutorProbe>;
-  metadata?:(scope:LocalDeviceReadinessScope)=>{platform:'macos'|'windows'|'unknown';capabilities:{staticPreview:boolean;taskDirectoryBinding:boolean}};
+  metadata?:(scope:LocalDeviceReadinessScope)=>{platform:'macos'|'windows'|'unknown';capabilities:{staticPreview:boolean;taskDirectoryBinding:boolean;codexToolBridge?:boolean}};
   now?:()=>number;timeoutMs?:number;ttlMs?:number;
 };
 export function assertLocalDeviceReadinessScope(db:Database,scope:LocalDeviceReadinessScope):{busy:boolean} {

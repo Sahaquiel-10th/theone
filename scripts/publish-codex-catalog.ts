@@ -18,7 +18,7 @@ const payload=Buffer.from(JSON.stringify(catalog));const envelope={payload:paylo
 verifyManagedExecutorCatalog(envelope,publicKey,origins);
 const files=catalogs.flatMap((c,i)=>c.releases.map(release=>{
   const name=path.basename(new URL(release.url).pathname),file=path.join(sources[i],name);
-  if(!/^codex-macos-(arm64|x86_64)-\d+(?:\.\d+){1,3}\.tar\.gz$/.test(name)||!fs.lstatSync(file).isFile()||fs.statSync(file).size!==release.size
+  if(!/^codex-(?:macos-(?:arm64|x86_64)|windows-amd64)-\d+(?:\.\d+){1,3}\.tar\.gz$/.test(name)||!fs.lstatSync(file).isFile()||fs.statSync(file).size!==release.size
     ||crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')!==release.sha256)throw Error('Package integrity failed');
   return {name,file};
 }));

@@ -1,0 +1,25 @@
+{
+  "fixtureSet": "ONE-QA-CODEX-BRIDGE-20261117",
+  "files": [
+    {
+      "path": "quote-template.svg",
+      "bytes": 1553,
+      "sha256": "3bda8f7fcf442ddc70e9e37b87bfbff44b8d6e3427e21032cb26ce6c1d1f33cd"
+    },
+    {
+      "path": "quote-template.png",
+      "bytes": 56061,
+      "sha256": "cd3fc12a347c7aaa56095fafcc46500dde0c6369dffd0b97a64d45469ff6025f"
+    },
+    {
+      "path": "knowledge-note.txt",
+      "bytes": 455,
+      "sha256": "e6d5d1c19efe28f02611c0ef755111d8d777fe1e8294b061343370e310da84fa"
+    },
+    {
+      "path": "my-space/index.html",
+      "bytes": 631,
+      "sha256": "595e1b3c4ae462ffdea610bd26fe3e1c66e4ec9e175be692dd90207bd442b096"
+    }
+  ]
+}
