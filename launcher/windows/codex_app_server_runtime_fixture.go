@@ -46,7 +46,7 @@ func realCodexProtocolFixture() error {
 		if backend == "" {
 			backend = "unelevated"
 		}
-		if backend != "unelevated" && backend != "mxc" {
+		if backend != "unelevated" && backend != "mxc" && backend != "elevated" {
 			return errors.New("unsupported fixture sandbox backend")
 		}
 		settings = append(settings, `windows.sandbox="`+backend+`"`)

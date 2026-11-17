@@ -49,7 +49,7 @@ jobs:
         shell: pwsh
         env:
           ONE_CODEX_PERMISSION_PROFILE: one-workspace
-          ONE_CODEX_WINDOWS_SANDBOX: mxc
+          ONE_CODEX_WINDOWS_SANDBOX: elevated
         run: |
           $ErrorActionPreference = 'Stop'
           $fixture = Join-Path $env:RUNNER_TEMP 'one-codex-protocol'
@@ -69,6 +69,8 @@ jobs:
           New-Item -ItemType Directory -Path $unpacked | Out-Null
           tar.exe -xzf (Join-Path $prepared 'codex-windows-amd64-0.160.1.tar.gz') -C $unpacked
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & (Join-Path $unpacked 'bin/codex.exe') sandbox --help
+          & (Join-Path $unpacked 'bin/codex.exe') sandbox setup --help
           Push-Location launcher/windows
           go build -o (Join-Path $fixture 'controller.exe') codex_app_server.go codex_app_server_runtime_fixture.go
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
