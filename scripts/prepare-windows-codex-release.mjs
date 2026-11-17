@@ -9,11 +9,14 @@ import { createGzip } from 'node:zlib';
 
 const triple = 'x86_64-pc-windows-msvc';
 const maximumPackageSize = 512 * 1024 * 1024;
-const maximumUnpackedSize = 768 * 1024 * 1024;
+const maximumFileSize = 320 * 1024 * 1024;
+// The reviewed 0.160.1 Windows package expands to 450,588,539 bytes before
+// adding ONE's root LICENSE and NOTICE files. Match the installer allowance.
+const maximumUnpackedSize = 512 * 1024 * 1024;
 const tarProgram = process.platform === 'win32' ? 'tar.exe' : '/usr/bin/tar';
 
 export function windowsCodexMembers(names) {
-  if (!Array.isArray(names) || !names.length || names.length > 100) throw Error('Official package member count needs review');
+  if (!Array.isArray(names) || !names.length || names.length > 256) throw Error('Official package member count needs review');
   const originals = new Set(), normalized = new Set();
   const files = [];
   for (const original of names) {
@@ -36,30 +39,43 @@ export function windowsCodexMembers(names) {
     if (file === executable[0]) destination = 'bin/codex.exe';
     else if (file === ripgrep[0]) destination = 'codex-path/rg.exe';
     else if (file === metadata[0]) destination = 'codex-package.json';
+    // The official manifest resolves voice helpers and their DLLs relative to
+    // codex-resources. Keep that complete resource tree and its license files.
+    else if (file.name.startsWith('codex-resources/')) destination = file.name;
     else if (/\.exe$/i.test(file.name)) destination = `bin/${path.posix.basename(file.name).replace(`-${triple}.exe`, '.exe')}`;
     else if (/(?:LICENSE|NOTICE|COPYING|licenses)/i.test(file.name)) destination = `third-party/${file.name}`;
     else throw Error(`Official package member needs review: ${file.name}`);
     return { source: file.original, path: destination, executable: /\.exe$/i.test(destination) };
   });
-  for (const helper of ['codex-code-mode-host.exe', 'codex-windows-sandbox-setup.exe', 'codex-command-runner.exe']) {
-    if (!members.some(member => member.path === `bin/${helper}`)) throw Error(`Official package helper missing: ${helper}`);
+  for (const helper of ['bin/codex-code-mode-host.exe', 'codex-resources/codex-windows-sandbox-setup.exe', 'codex-resources/codex-command-runner.exe']) {
+    if (!members.some(member => member.path === helper)) throw Error(`Official package helper missing: ${helper}`);
   }
   const outputPaths = members.map(member => member.path.toLowerCase());
-  if (new Set(outputPaths).size !== outputPaths.length || members.length + 2 > 40) throw Error('Managed package members need review');
+  // Match the managed installer's bounded regular-file allowance.
+  if (new Set(outputPaths).size !== outputPaths.length || members.length + 2 > 80) throw Error('Managed package members need review');
   return members;
 }
 
 export function ustarFileHeader(name, size, executable = false) {
-  if (!/^[a-zA-Z0-9_./-]+$/.test(name) || name.length > 99 || name.startsWith('/') || name.split('/').some(part => !part || part === '.' || part === '..')
-      || !Number.isSafeInteger(size) || size <= 0 || size > maximumPackageSize) throw Error('Managed file needs review');
+  if (!/^[a-zA-Z0-9_./-]+$/.test(name) || name.length > 240 || name.startsWith('/') || name.split('/').some(part => !part || part === '.' || part === '..')
+      || !Number.isSafeInteger(size) || size <= 0 || size > maximumFileSize) throw Error('Managed file needs review');
+  let filename = name;
+  let prefix = '';
+  if (name.length > 100) {
+    const separator = [...name.matchAll(/\//g)].map(match => match.index)
+      .findLast(index => index <= 155 && name.length - index - 1 <= 100);
+    if (separator === undefined) throw Error('Managed file path cannot fit ordinary ustar');
+    prefix = name.slice(0, separator);
+    filename = name.slice(separator + 1);
+  }
   const header = Buffer.alloc(512);
   const field = (value, offset) => header.write(value, offset, 'ascii');
-  field(name, 0);
+  field(filename, 0);
   field((executable ? 0o700 : 0o600).toString(8).padStart(7, '0'), 100);
   field('0000000', 108); field('0000000', 116);
   field(size.toString(8).padStart(11, '0'), 124); field('00000000000', 136);
   header.fill(32, 148, 156); header[156] = 48;
-  field('ustar', 257); field('00', 263);
+  field('ustar', 257); field('00', 263); field(prefix, 345);
   field(header.reduce((sum, byte) => sum + byte, 0).toString(8).padStart(6, '0'), 148);
   header[154] = 0; header[155] = 32;
   return header;
@@ -129,7 +145,7 @@ async function main() {
     await pipeline(fs.createReadStream(tarPath), createGzip(), fs.createWriteStream(archivePath, { flags: 'wx', mode: 0o600 }));
     const sha256 = await fileHash(archivePath), size = fs.statSync(archivePath).size;
     if (size > maximumPackageSize) throw Error('Managed compressed package is too large');
-    const licenseFiles = staged.filter(member => member.path === 'LICENSE' || member.path === 'NOTICE' || member.path.startsWith('third-party/')).map(member => member.path);
+    const licenseFiles = staged.filter(member => /(?:LICENSE|NOTICE|COPYING|licenses)/i.test(member.path)).map(member => member.path);
     const catalog = { kind: 'one-managed-executors', schemaVersion: 1, releasedAt: new Date().toISOString(), releases: [{
       executor: 'codex', version, platform: 'windows', architecture: 'amd64', url: new URL(`/executor-downloads/${artifact}`, origin).toString(),
       sourceUrl: asset.browser_download_url, sha256, size, entrypoint: 'bin/codex.exe', license: 'Apache-2.0', licenseFiles

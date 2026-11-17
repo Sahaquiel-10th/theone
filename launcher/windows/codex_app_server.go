@@ -249,6 +249,12 @@ func (c *codexAppServer) Start(ctx context.Context, instruction string) (codexTu
 	if err != nil {
 		return codexTurnIdentity{}, err
 	}
+	if c.config.PermissionProfile != "" && codexString(codexMap(reply["activePermissionProfile"])["id"]) != c.config.PermissionProfile {
+		c.mu.Lock()
+		c.poisonLocked("permission_profile_mismatch")
+		c.mu.Unlock()
+		return codexTurnIdentity{}, errors.New("本机访问范围尚未被执行器确认，本轮没有开始操作")
+	}
 	thread := codexMap(reply["thread"])
 	id := codexString(thread["id"])
 	if !codexProtocolID.MatchString(id) || c.config.ResumeThreadID != "" && id != c.config.ResumeThreadID {

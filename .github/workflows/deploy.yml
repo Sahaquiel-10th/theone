@@ -61,6 +61,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/prepare-windows-codex-release.mjs --version 0.160.1 --package (Join-Path $fixture 'codex-package-x86_64-pc-windows-msvc.tar.gz') --output $prepared
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:ONE_CODEX_PACKAGE_FIXTURE_DIR = $prepared
+          Push-Location launcher/windows
+          go test -v -run '^TestManagedCodexOfficialPackageFixture$' .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
           New-Item -ItemType Directory -Path $unpacked | Out-Null
           tar.exe -xzf (Join-Path $prepared 'codex-windows-amd64-0.160.1.tar.gz') -C $unpacked
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

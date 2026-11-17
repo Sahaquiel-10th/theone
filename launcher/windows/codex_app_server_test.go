@@ -344,3 +344,14 @@ func TestCodexOwnedJobProofCanSettleOnlyCancellationWithMissingCommandTerminal(t
 		t.Fatal("protocol conflict bypassed")
 	}
 }
+
+func TestCodexMissingProfileAcknowledgementNeverStartsUserTurn(t *testing.T) {
+	f := newCodexProtocolFixture(t, nil)
+	f.c.config.PermissionProfile = "one-workspace"
+	if _, err := f.c.Start(context.Background(), "must not run with broader access"); err == nil {
+		t.Fatal("unacknowledged named profile accepted")
+	}
+	if f.c.Snapshot().TurnStartSent || f.c.Snapshot().ProtocolIssue != "permission_profile_mismatch" {
+		t.Fatal("user turn started after scope mismatch")
+	}
+}

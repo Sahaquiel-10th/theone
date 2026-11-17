@@ -61,6 +61,7 @@ func realCodexProtocolFixture() error {
 			`permissions.one-workspace.filesystem={":root"="deny",":minimal"="read",":workspace_roots"="write",":tmpdir"="deny",":slash_tmp"="deny"}`,
 			`permissions.one-workspace.network.enabled=false`)
 	}
+	settings = append(settings, `features.multi_agent=false`, `features.goals=false`)
 	commandArgs := []string{}
 	for _, value := range settings {
 		commandArgs = append(commandArgs, "-c", value)

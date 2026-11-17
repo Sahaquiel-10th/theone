@@ -1,0 +1,193 @@
+{
+  "version": "0.160.1",
+  "platform": "windows",
+  "architecture": "amd64",
+  "source": "https://github.com/openai/codex/releases/download/rust-v0.160.1/codex-package-x86_64-pc-windows-msvc.tar.gz",
+  "officialSha256": "25c6fe4e46d5bff939312fc46de67ace37561f6f1f89b409af63fd8cc6098425",
+  "officialCompressedSize": 157434529,
+  "evidence": "https://github.com/Sahaquiel-10th/theone/actions/runs/44088792778/job/134058292847",
+  "fileCount": 45,
+  "totalFileBytes": 450588539,
+  "files": [
+    {
+      "path": "bin/codex-code-mode-host.exe",
+      "size": 74669360
+    },
+    {
+      "path": "bin/codex.exe",
+      "size": 326875440
+    },
+    {
+      "path": "codex-package.json",
+      "size": 215
+    },
+    {
+      "path": "codex-path/rg.exe",
+      "size": 4218880
+    },
+    {
+      "path": "codex-resources/codex-command-runner.exe",
+      "size": 8207152
+    },
+    {
+      "path": "codex-resources/codex-windows-sandbox-setup.exe",
+      "size": 17684272
+    },
+    {
+      "path": "codex-resources/voice/NOTICE.md",
+      "size": 2439
+    },
+    {
+      "path": "codex-resources/voice/bin/codex-voice-host.exe",
+      "size": 8603952
+    },
+    {
+      "path": "codex-resources/voice/bin/gio-2.0-0.dll",
+      "size": 1695536
+    },
+    {
+      "path": "codex-resources/voice/bin/glib-2.0-0.dll",
+      "size": 1390896
+    },
+    {
+      "path": "codex-resources/voice/bin/gmodule-2.0-0.dll",
+      "size": 34608
+    },
+    {
+      "path": "codex-resources/voice/bin/gobject-2.0-0.dll",
+      "size": 348464
+    },
+    {
+      "path": "codex-resources/voice/bin/gstapp-1.0-0.dll",
+      "size": 100136
+    },
+    {
+      "path": "codex-resources/voice/bin/gstapp.dll",
+      "size": 25392
+    },
+    {
+      "path": "codex-resources/voice/bin/gstaudio-1.0-0.dll",
+      "size": 512304
+    },
+    {
+      "path": "codex-resources/voice/bin/gstaudioconvert.dll",
+      "size": 48432
+    },
+    {
+      "path": "codex-resources/voice/bin/gstaudioresample.dll",
+      "size": 45360
+    },
+    {
+      "path": "codex-resources/voice/bin/gstbase-1.0-0.dll",
+      "size": 484144
+    },
+    {
+      "path": "codex-resources/voice/bin/gstcoreelements.dll",
+      "size": 409904
+    },
+    {
+      "path": "codex-resources/voice/bin/gstnet-1.0-0.dll",
+      "size": 116528
+    },
+    {
+      "path": "codex-resources/voice/bin/gstopus.dll",
+      "size": 69424
+    },
+    {
+      "path": "codex-resources/voice/bin/gstpbutils-1.0-0.dll",
+      "size": 262448
+    },
+    {
+      "path": "codex-resources/voice/bin/gstreamer-1.0-0.dll",
+      "size": 1257264
+    },
+    {
+      "path": "codex-resources/voice/bin/gstrtp-1.0-0.dll",
+      "size": 167216
+    },
+    {
+      "path": "codex-resources/voice/bin/gstrtp.dll",
+      "size": 607536
+    },
+    {
+      "path": "codex-resources/voice/bin/gstrtpmanager.dll",
+      "size": 501040
+    },
+    {
+      "path": "codex-resources/voice/bin/gsttag-1.0-0.dll",
+      "size": 254256
+    },
+    {
+      "path": "codex-resources/voice/bin/gstvideo-1.0-0.dll",
+      "size": 769840
+    },
+    {
+      "path": "codex-resources/voice/bin/intl-8.dll",
+      "size": 25392
+    },
+    {
+      "path": "codex-resources/voice/bin/libffi-8.dll",
+      "size": 43312
+    },
+    {
+      "path": "codex-resources/voice/bin/opus.dll",
+      "size": 440112
+    },
+    {
+      "path": "codex-resources/voice/bin/pcre2-8.dll",
+      "size": 398128
+    },
+    {
+      "path": "codex-resources/voice/bin/vcruntime140.dll",
+      "size": 123472
+    },
+    {
+      "path": "codex-resources/voice/bin/z.dll",
+      "size": 105264
+    },
+    {
+      "path": "codex-resources/voice/licenses/LGPL-2.1.txt",
+      "size": 26934
+    },
+    {
+      "path": "codex-resources/voice/licenses/Opus.txt",
+      "size": 1989
+    },
+    {
+      "path": "codex-resources/voice/licenses/PCRE2.md",
+      "size": 4115
+    },
+    {
+      "path": "codex-resources/voice/licenses/libffi.txt",
+      "size": 1153
+    },
+    {
+      "path": "codex-resources/voice/licenses/proxy-libintl.txt",
+      "size": 25774
+    },
+    {
+      "path": "codex-resources/voice/licenses/sljit.txt",
+      "size": 1469
+    },
+    {
+      "path": "codex-resources/voice/licenses/zlib.txt",
+      "size": 1024
+    },
+    {
+      "path": "codex-resources/voice/manifest.json",
+      "size": 4773
+    },
+    {
+      "path": "codex-resources/voice/runtime.json",
+      "size": 16894
+    },
+    {
+      "path": "codex-resources/voice/sources.json",
+      "size": 4911
+    },
+    {
+      "path": "codex-resources/voice/windows-crt.json",
+      "size": 1385
+    }
+  ]
+}
