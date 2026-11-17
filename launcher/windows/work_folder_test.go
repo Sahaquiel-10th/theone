@@ -10,13 +10,13 @@ import (
 
 func TestSettingsCapabilityMatchesImplementedProtocol(t *testing.T) {
 	capabilities := launcherCapabilities()
-	for _, capability := range []string{"local_configuration_v1", "local_tools_v1", "runtime_update_v1"} {
+	for _, capability := range []string{"local_configuration_v1", "local_tools_v1", "runtime_update_v1", "managed_codex_v1", "codex_exec_v1", "codex_tool_bridge_v1", "execution_terminal_receipt_v1", "task_directory_binding_v1"} {
 		if !slices.Contains(capabilities, capability) {
 			t.Fatal("missing implemented capability", capability)
 		}
 	}
-	if slices.Contains(capabilities, "managed_codex_v1") || slices.Contains(capabilities, "codex_exec_v1") {
-		t.Fatal("built-in file tools must not advertise an unimplemented Codex runtime")
+	if slices.Contains(capabilities, "static_preview_v1") {
+		t.Fatal("Windows must not advertise an unimplemented static preview")
 	}
 }
 

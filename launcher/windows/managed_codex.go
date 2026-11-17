@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -286,11 +285,28 @@ func commitManagedCodex(archive []byte, envelope managedCodexEnvelope, release m
 	if err := managedCheckPath(target); err != nil {
 		return "", err
 	}
+	backup := ""
+	activated := false
+	defer func() {
+		if backup == "" {
+			return
+		}
+		if activated {
+			_ = os.RemoveAll(backup)
+			return
+		}
+		_ = os.RemoveAll(target)
+		_ = os.Rename(backup, target)
+	}()
 	if _, err := os.Stat(target); err == nil {
-		for name, content := range files {
-			actual, err := os.ReadFile(filepath.Join(target, filepath.FromSlash(name)))
-			if err != nil || !bytes.Equal(actual, content) {
-				return "", errors.New("已安装的 Codex 文件发生变化")
+		if err := managedInstalledFilesMatch(target, files, archive); err != nil {
+			backup = target + ".replaced-" + codexRandomID()
+			if err := os.Rename(target, backup); err != nil {
+				backup = ""
+				return "", errors.New("已有 Codex 工具暂时无法修复，请先停止占用它的任务")
+			}
+			if err := os.Rename(stage, target); err != nil {
+				return "", err
 			}
 		}
 	} else if !os.IsNotExist(err) {
@@ -312,7 +328,51 @@ func commitManagedCodex(archive []byte, envelope managedCodexEnvelope, release m
 	if err := writeWorkFolderConfig(filepath.Join(root, "active.json"), string(pointer), replace); err != nil {
 		return "", err
 	}
+	activated = true
 	return filepath.Join(target, filepath.FromSlash(release.Entrypoint)), nil
+}
+
+// Every installed file is accounted for by the signed archive. Extra DLLs or
+// helpers must fail integrity checks before a process can load them.
+func managedInstalledFilesMatch(target string, files map[string][]byte, archive []byte) error {
+	count := 0
+	err := filepath.WalkDir(target, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := managedCheckPath(path); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		count++
+		relative, err := filepath.Rel(target, path)
+		if err != nil {
+			return err
+		}
+		name := filepath.ToSlash(relative)
+		expected, exists := files[name]
+		if name == ".one-package.tar.gz" {
+			expected, exists = archive, true
+		}
+		info, err := entry.Info()
+		if err != nil || !exists || !info.Mode().IsRegular() || info.Size() != int64(len(expected)) {
+			return errors.New("Codex 工具目录与签名包不符")
+		}
+		actual, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(actual, expected) {
+			return errors.New("Codex 工具文件校验失败")
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if count != len(files)+1 {
+		return errors.New("Codex 工具目录不完整")
+	}
+	return nil
 }
 
 func installedManagedCodex(root, key, origin string) (string, string, error) {
@@ -365,18 +425,9 @@ func installedManagedCodex(root, key, origin string) (string, string, error) {
 		if !managedSafeMember(name) || !managedHashPattern.MatchString(digest) {
 			return "", "", errors.New("Codex 安装记录无效")
 		}
-		file := filepath.Join(target, filepath.FromSlash(name))
-		if err := managedCheckPath(file); err != nil {
-			return "", "", err
-		}
-		info, err := os.Lstat(file)
-		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() != int64(len(expected)) {
-			return "", "", errors.New("Codex 工具文件暂时不可用")
-		}
-		content, err := os.ReadFile(file)
-		if err != nil || managedDigest(content) != digest {
-			return "", "", fmt.Errorf("Codex 工具文件校验失败")
-		}
+	}
+	if err := managedInstalledFilesMatch(target, files, archive); err != nil {
+		return "", "", err
 	}
 	return filepath.Join(target, filepath.FromSlash(release.Entrypoint)), release.Version, nil
 }

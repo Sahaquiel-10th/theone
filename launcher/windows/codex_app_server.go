@@ -230,6 +230,36 @@ func (c *codexAppServer) Start(ctx context.Context, instruction string) (codexTu
 	if c.config.PermissionProfile != "" {
 		delete(params, "sandbox")
 		params["permissions"] = c.config.PermissionProfile
+		// The command sandbox does not contain inherited MCP startup processes.
+		// Inventory before creating/resuming a thread and disable every server;
+		// this bridge uses only ONE's explicit dynamic-tool declarations.
+		effective, readErr := c.request(ctx, "config/read", map[string]any{"cwd": c.config.CWD, "includeLayers": false})
+		if readErr != nil {
+			return codexTurnIdentity{}, readErr
+		}
+		if err := c.mayStart(); err != nil {
+			return codexTurnIdentity{}, err
+		}
+		config, configOK := effective["config"].(map[string]any)
+		servers := map[string]any{}
+		if raw, exists := config["mcp_servers"]; exists {
+			var ok bool
+			servers, ok = raw.(map[string]any)
+			if !ok {
+				configOK = false
+			}
+		}
+		if !configOK || len(servers) > 256 {
+			c.mu.Lock()
+			c.poisonLocked("tool_configuration_unconfirmed")
+			c.mu.Unlock()
+			return codexTurnIdentity{}, errCodexProtocol
+		}
+		disabled := map[string]any{}
+		for name := range servers {
+			disabled[name] = map[string]any{"enabled": false}
+		}
+		params["config"] = map[string]any{"mcp_servers": disabled}
 	}
 	if c.config.ResumeThreadID != "" {
 		method = "thread/resume"

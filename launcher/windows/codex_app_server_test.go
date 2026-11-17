@@ -14,6 +14,8 @@ type codexProtocolFixture struct {
 	beforeTurn         func()
 	beforeThread       func()
 	skipInterruptReply func() bool
+	configValue        any
+	profileReply       string
 }
 
 func newCodexProtocolFixture(t *testing.T, callback func(context.Context, codexDynamicToolCall) (codexDynamicToolResult, error)) *codexProtocolFixture {
@@ -34,11 +36,20 @@ func newCodexProtocolFixture(t *testing.T, callback func(context.Context, codexD
 		switch method {
 		case "initialize":
 			reply = map[string]any{}
+		case "config/read":
+			value := f.configValue
+			if value == nil {
+				value = map[string]any{}
+			}
+			reply = map[string]any{"config": value}
 		case "thread/start", "thread/resume":
 			if f.beforeThread != nil {
 				f.beforeThread()
 			}
 			reply = map[string]any{"thread": map[string]any{"id": "thread-fixture"}}
+			if f.profileReply != "" {
+				reply["activePermissionProfile"] = map[string]any{"id": f.profileReply}
+			}
 		case "turn/start":
 			if f.beforeTurn != nil {
 				f.beforeTurn()
@@ -353,5 +364,48 @@ func TestCodexMissingProfileAcknowledgementNeverStartsUserTurn(t *testing.T) {
 	}
 	if f.c.Snapshot().TurnStartSent || f.c.Snapshot().ProtocolIssue != "permission_profile_mismatch" {
 		t.Fatal("user turn started after scope mismatch")
+	}
+}
+
+func TestCodexStrictBridgeDisablesAllInheritedMCPBeforeThreadCreation(t *testing.T) {
+	f := newCodexProtocolFixture(t, nil)
+	f.c.config.PermissionProfile = "one-workspace"
+	f.profileReply = "one-workspace"
+	f.configValue = map[string]any{"mcp_servers": map[string]any{"synthetic.host": map[string]any{"command": "never-run"}, "other": map[string]any{"url": "https://example.invalid"}}}
+	f.start(t)
+	seenConfig := false
+	for len(f.sent) > 0 {
+		frame := <-f.sent
+		switch frame["method"] {
+		case "config/read":
+			seenConfig = true
+		case "thread/start":
+			if !seenConfig {
+				t.Fatal("thread created before configuration inventory")
+			}
+			servers := codexMap(codexMap(codexMap(frame["params"])["config"])["mcp_servers"])
+			for _, name := range []string{"synthetic.host", "other"} {
+				if codexMap(servers[name])["enabled"] != false {
+					t.Fatal("inherited server was not disabled")
+				}
+			}
+		}
+	}
+}
+
+func TestCodexUnreviewableInheritedToolConfigurationPreventsAnyThread(t *testing.T) {
+	f := newCodexProtocolFixture(t, nil)
+	f.c.config.PermissionProfile = "one-workspace"
+	f.configValue = map[string]any{"mcp_servers": []any{"invalid"}}
+	if _, err := f.c.Start(context.Background(), "must not start"); err == nil {
+		t.Fatal("unreviewable configuration accepted")
+	}
+	if f.c.Snapshot().TurnStartSent || f.c.Snapshot().ProtocolIssue != "tool_configuration_unconfirmed" {
+		t.Fatal("invalid configuration lost its explicit failure")
+	}
+	for len(f.sent) > 0 {
+		if frame := <-f.sent; frame["method"] == "thread/start" {
+			t.Fatal("thread created before confirming tools")
+		}
 	}
 }

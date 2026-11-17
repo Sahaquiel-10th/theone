@@ -45,11 +45,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
-      - name: Verify pinned Codex with the production Go controller
+      - name: Verify pinned Codex protocol and strict Windows compatibility
         shell: pwsh
         env:
           ONE_CODEX_PERMISSION_PROFILE: one-workspace
-          ONE_CODEX_WINDOWS_SANDBOX: elevated
+          ONE_CODEX_WINDOWS_SANDBOX: mxc
         run: |
           $ErrorActionPreference = 'Stop'
           $fixture = Join-Path $env:RUNNER_TEMP 'one-codex-protocol'
@@ -69,12 +69,24 @@ jobs:
           New-Item -ItemType Directory -Path $unpacked | Out-Null
           tar.exe -xzf (Join-Path $prepared 'codex-windows-amd64-0.160.1.tar.gz') -C $unpacked
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & (Join-Path $unpacked 'bin/codex.exe') sandbox --help
-          & (Join-Path $unpacked 'bin/codex.exe') sandbox setup --help
           Push-Location launcher/windows
           go build -o (Join-Path $fixture 'controller.exe') codex_app_server.go codex_app_server_runtime_fixture.go
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Pop-Location
+          # This host can lack MXC. Record an exact pre-turn rejection as a
+          # compatibility result, never as a successful strict bridge test.
+          $strictOutput = & node --experimental-strip-types scripts/qa-codex-tool-bridge.ts (Join-Path $unpacked 'bin/codex.exe') (Join-Path $fixture 'controller.exe') --command-first 2>&1
+          $strictExit = $LASTEXITCODE
+          $strictOutput | ForEach-Object { Write-Output $_ }
+          if ($strictExit -ne 0) {
+            if (($strictOutput -join "`n") -notmatch 'native MXC is unavailable on this executor') { exit $strictExit }
+            Write-Output 'STRICT_BRIDGE_UNAVAILABLE: MXC host capability is absent. This is not a positive strict-isolation acceptance; Windows bridge rollout remains disabled.'
+          }
+          # Separately verify the actual Windows protocol, callback and restart
+          # lifecycle under the legacy workspace-write policy. Do not use this
+          # result to expand the strict bridge version matrix.
+          Remove-Item Env:ONE_CODEX_PERMISSION_PROFILE
+          $env:ONE_CODEX_WINDOWS_SANDBOX = 'unelevated'
           node --experimental-strip-types scripts/qa-codex-tool-bridge.ts (Join-Path $unpacked 'bin/codex.exe') (Join-Path $fixture 'controller.exe') --command-first
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

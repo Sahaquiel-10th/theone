@@ -285,3 +285,106 @@ func TestManagedCodexRejectsLinkedInstallRoot(t *testing.T) {
 		t.Fatal("linked external directory modified", err)
 	}
 }
+
+func TestManagedCodexSameVersionDamageCanBeRepaired(t *testing.T) {
+	root := managedTestRoot(t)
+	key, private := managedTestKey(t)
+	archive := managedTestArchive(t, managedTestFiles())
+	release := managedTestRelease(archive, "0.160.1")
+	envelope := managedTestSign(t, release, private)
+	healthChecks := 0
+	health := func(file, version string) error {
+		healthChecks++
+		content, err := os.ReadFile(file)
+		if err != nil || string(content) != managedTestFiles()[0].content || version != release.Version {
+			return errors.New("staged executable did not match the reviewed package")
+		}
+		return nil
+	}
+	entry, err := commitManagedCodex(archive, envelope, release, root, health, os.Rename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entry, []byte("MZ damaged same-version executable"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := installedManagedCodex(root, key, "https://one.example"); err == nil {
+		t.Fatal("damaged install was still ready")
+	}
+	repaired, err := commitManagedCodex(archive, envelope, release, root, health, os.Rename)
+	if err != nil || repaired != entry {
+		t.Fatal("same-version repair failed", repaired, err)
+	}
+	actual, version, err := installedManagedCodex(root, key, "https://one.example")
+	if err != nil || actual != entry || version != release.Version || healthChecks != 2 {
+		t.Fatal("repaired package was not verified", actual, version, healthChecks, err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 2 {
+		t.Fatal("repair retained staging or backup entries", entries, err)
+	}
+}
+
+func TestManagedCodexFailedSameVersionActivationRestoresOriginalDamagedFiles(t *testing.T) {
+	root := managedTestRoot(t)
+	key, private := managedTestKey(t)
+	archive := managedTestArchive(t, managedTestFiles())
+	release := managedTestRelease(archive, "0.160.1")
+	envelope := managedTestSign(t, release, private)
+	health := func(string, string) error { return nil }
+	entry, err := commitManagedCodex(archive, envelope, release, root, health, os.Rename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(root, "active.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	damaged := []byte("MZ previous damaged executable kept for recovery")
+	if err := os.WriteFile(entry, damaged, 0700); err != nil {
+		t.Fatal(err)
+	}
+	extraPath := filepath.Join(filepath.Dir(entry), "diagnostic.dll")
+	if err := os.WriteFile(extraPath, []byte("previous damaged package diagnostic"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	failCommit := func(string, string) error { return errors.New("simulated pointer replacement failure") }
+	if _, err := commitManagedCodex(archive, envelope, release, root, health, failCommit); err == nil {
+		t.Fatal("failed same-version activation succeeded")
+	}
+	after, err := os.ReadFile(filepath.Join(root, "active.json"))
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("failed activation changed the previous pointer", err)
+	}
+	actual, err := os.ReadFile(entry)
+	if err != nil || !bytes.Equal(actual, damaged) {
+		t.Fatal("failed activation lost the previous damaged executable", err)
+	}
+	if actual, err := os.ReadFile(extraPath); err != nil || string(actual) != "previous damaged package diagnostic" {
+		t.Fatal("failed activation lost the previous package's extra file", err)
+	}
+	if _, _, err := installedManagedCodex(root, key, "https://one.example"); err == nil {
+		t.Fatal("rolled-back damaged package was reported ready")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 2 {
+		t.Fatal("failed activation retained staging or backup entries", entries, err)
+	}
+}
+
+func TestManagedCodexUnexpectedDLLIsRejectedBeforeExecution(t *testing.T) {
+	root := managedTestRoot(t)
+	key, private := managedTestKey(t)
+	archive := managedTestArchive(t, managedTestFiles())
+	release := managedTestRelease(archive, "0.160.1")
+	entry, err := commitManagedCodex(archive, managedTestSign(t, release, private), release, root, func(string, string) error { return nil }, os.Rename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(entry), "unexpected.dll"), []byte("unreviewed library"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := installedManagedCodex(root, key, "https://one.example"); err == nil {
+		t.Fatal("unreviewed DLL next to the signed executable was accepted")
+	}
+}

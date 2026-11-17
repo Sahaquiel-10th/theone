@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -233,5 +234,59 @@ func TestCodexReceiptFailedACKPersistenceRetainsPendingOriginal(t *testing.T) {
 	pending, err := journal.pending(codexExecutionOwner{WorkspaceID: id.WorkspaceID, UserID: id.UserID}, id.DeviceID, id.InstallationID, nil)
 	if err != nil || len(pending) != 1 || pending[0].ReceiptHash != receipt.ReceiptHash {
 		t.Fatal("failed ACK persistence lost original", pending, err)
+	}
+}
+
+func TestCodexReceiptAcknowledgedTombstoneRejectsLateTerminalResults(t *testing.T) {
+	journal := receiptTestJournal(t)
+	id := receiptTestID()
+	receiptTestReserve(t, journal, id)
+	first := newCodexTerminalReceipt(id, "completed", "first private original", "", "output.xlsx", "thread-a")
+	if _, err := journal.complete(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.acknowledge(id, first.ReceiptID, first.ReceiptHash, true); err != nil {
+		t.Fatal(err)
+	}
+	journal = &codexReceiptJournal{root: journal.root, replace: os.Rename}
+	late := newCodexTerminalReceipt(id, "failed", "late conflicting result", "late", "output.xlsx", "thread-a")
+	if _, err := journal.complete(late); err == nil {
+		t.Fatal("acknowledged identity accepted another terminal result")
+	}
+	entry, err := journal.read(id)
+	if err != nil || entry == nil || !entry.Acknowledged || entry.Receipt != nil {
+		t.Fatal("acknowledged tombstone acquired another terminal body", entry, err)
+	}
+	data, err := os.ReadFile(journal.filename(id))
+	if err != nil || strings.Contains(string(data), first.FinalResponse) || strings.Contains(string(data), late.FinalResponse) {
+		t.Fatal("acknowledged tombstone retained a terminal body", err)
+	}
+	existing, err := journal.reserve(id, "output.xlsx")
+	if err != nil || existing == nil || !existing.Acknowledged {
+		t.Fatal("acknowledged original became executable again", existing, err)
+	}
+	pending, err := journal.pending(codexExecutionOwner{WorkspaceID: id.WorkspaceID, UserID: id.UserID}, id.DeviceID, id.InstallationID, nil)
+	if err != nil || len(pending) != 0 {
+		t.Fatal("acknowledged tombstone replayed a result", pending, err)
+	}
+}
+
+func TestCodexReceiptHTMLHeavyOriginalSurvivesPersistenceAndRestart(t *testing.T) {
+	journal := receiptTestJournal(t)
+	id := receiptTestID()
+	receiptTestReserve(t, journal, id)
+	body := strings.Repeat("<", 200_000)
+	receipt := newCodexTerminalReceipt(id, "completed", body, "", "output.html", "thread-a")
+	if _, err := journal.complete(receipt); err != nil {
+		t.Fatal("HTML-heavy original was expanded beyond the receipt limit", err)
+	}
+	data, err := os.ReadFile(journal.filename(id))
+	if err != nil || len(data) > 512*1024 {
+		t.Fatal("persisted receipt exceeded the transport limit", len(data), err)
+	}
+	journal = &codexReceiptJournal{root: journal.root, replace: os.Rename}
+	pending, err := journal.pending(codexExecutionOwner{WorkspaceID: id.WorkspaceID, UserID: id.UserID}, id.DeviceID, id.InstallationID, nil)
+	if err != nil || len(pending) != 1 || pending[0].FinalResponse != body || pending[0].ReceiptHash != receipt.ReceiptHash {
+		t.Fatal("restart changed the original body or its receipt hash", err)
 	}
 }
